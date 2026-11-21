@@ -1,0 +1,6 @@
+{"items":[
+ {"id":"run-a4000000-0000-4000-8000-0000000000a4","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a01","status":"FINISHED","createdAt":"2026-10-17T19:10:02.000Z","updatedAt":"2026-10-17T19:12:45.514Z","durationMs":163514,"git":{"branches":[{"repoUrl":"https://github.com/acme-dev/widgets","branch":"cursor/add-retry-to-loader-1a2b"}]}},
+ {"id":"run-a3000000-0000-4000-8000-0000000000a3","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a01","status":"FINISHED","createdAt":"2026-10-17T18:40:00.000Z","updatedAt":"2026-10-17T18:52:11.300Z","durationMs":731300,"git":{"branches":[{"repoUrl":"https://github.com/acme-dev/widgets","branch":"cursor/add-retry-to-loader-1a2b"}]}},
+ {"id":"run-a2000000-0000-4000-8000-0000000000a2","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a01","status":"CANCELLED","createdAt":"2026-10-17T18:20:00.000Z","updatedAt":"2026-10-17T18:21:05.000Z","durationMs":65000,"git":{"branches":[{"repoUrl":"https://github.com/acme-dev/widgets","branch":"cursor/add-retry-to-loader-1a2b"}]}},
+ {"id":"run-a1000000-0000-4000-8000-0000000000a1","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a01","status":"FINISHED","createdAt":"2026-10-17T18:01:47.000Z","updatedAt":"2026-10-17T18:05:06.221Z","durationMs":199221,"git":{"branches":[{"repoUrl":"https://github.com/acme-dev/widgets","branch":"cursor/add-retry-to-loader-1a2b"}]}}
+]}

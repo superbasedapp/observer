@@ -8,7 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/localipc"
+	"github.com/marmutapp/superbased-observer/internal/peerproc"
 )
 
 // handshakeTimeout bounds how long the server waits for a client's spawn frame
@@ -69,6 +73,13 @@ type SpawnRequest struct {
 	// AutoResume marks a daemon-death auto-resume (vs a user-initiated resume),
 	// so the Host applies the rediscovered-orphan validation gate only then.
 	AutoResume bool
+	// AgentEnv and AgentEnvSession are the client's agent-session hint
+	// (lane cli-2): the client found an agent session's environment marker
+	// (procmodel.SessionTokenEnvKeys) in its own environment, and the
+	// session id it named. A hint can only make the launch an agent's, never
+	// a human's; the daemon judges the caller's ancestry itself. Additive.
+	AgentEnv        bool
+	AgentEnvSession string
 }
 
 // CorrelatedSession is one correlated-session announcement the server relays to
@@ -165,6 +176,9 @@ type server struct {
 	wg    sync.WaitGroup // tracks in-flight connection handlers (A6)
 	mu    sync.Mutex
 	conns map[*frameConn]net.Conn
+	// activeWaits counts the control-op waits in progress, bounded by
+	// maxConcurrentWaits (control.go).
+	activeWaits atomic.Int64
 }
 
 // Serve accepts attach connections on ln until ctx is canceled or ln fails.
@@ -265,10 +279,15 @@ func (s *server) serveConn(ctx context.Context, nc net.Conn) {
 	defer s.untrack(fc)
 	defer func() { _ = nc.Close() }()
 
+	// Lane cli-2: the connecting process, for the launch initiator, read
+	// at accept before any frame (fixes-3, audit M1). The endpoint is
+	// owner-only, so this is a process of the owner's.
+	ctx = s.observeCaller(ctx, nc)
+
 	// Handshake: bounded wait for the spawn frame so a dead pre-spawn client
 	// cannot pin the connection.
 	_ = nc.SetReadDeadline(time.Now().Add(handshakeTimeout))
-	sm, err := s.readSpawn(fc)
+	op, payload, err := s.readFirst(fc)
 	if err != nil {
 		if errors.Is(err, ErrProtocol) {
 			_ = fc.sendError(CodeProtocol, err.Error())
@@ -276,6 +295,17 @@ func (s *server) serveConn(ctx context.Context, nc net.Conn) {
 		return
 	}
 	_ = nc.SetReadDeadline(time.Time{}) // clear; idle live connections are fine
+	// A control op (launch, list, show, stop, wait) is a one-shot request
+	// with one reply and no PTY stream (control.go).
+	if isControlOp(op) {
+		s.serveControl(ctx, fc, nc, payload)
+		return
+	}
+	sm, err := parseSpawn(op, payload)
+	if err != nil {
+		_ = fc.sendError(CodeProtocol, err.Error())
+		return
+	}
 
 	sess, err := s.host.LaunchAttachable(ctx, SpawnRequest{
 		Tool:              sm.Tool,
@@ -288,6 +318,8 @@ func (s *server) serveConn(ctx context.Context, nc net.Conn) {
 		AutoResumeCapable: sm.AutoResumeCapable,
 		ResumeSession:     sm.ResumeSession,
 		AutoResume:        sm.AutoResume,
+		AgentEnv:          sm.AgentEnv,
+		AgentEnvSession:   sm.AgentEnvSession,
 	})
 	if err != nil {
 		// A resume-guard refusal maps to its own code so the client prints why
@@ -341,19 +373,51 @@ func (s *server) serveConn(ctx context.Context, nc net.Conn) {
 	s.readLoop(fc, sess)
 }
 
-// readSpawn reads and validates the initial spawn control frame.
-func (s *server) readSpawn(fc *frameConn) (spawnMsg, error) {
+// callerStartToken is peerproc.StartToken (a var so tests can make it
+// fail).
+var callerStartToken = peerproc.StartToken
+
+// observeCaller records the connecting process as it is at accept (lane
+// cli-2 fixes-3, audit M1): its pid from the endpoint's peer credentials,
+// the token naming that start of the process, and what an optional
+// CallerSnapshotter host reads about it. The pid names the process that
+// connected, while the request may come from another process that
+// inherited the connection; a Controller refuses a launch or a confirm
+// whose caller no longer holds the start recorded here.
+func (s *server) observeCaller(ctx context.Context, nc net.Conn) context.Context {
+	pid, ok := localipc.PeerPID(nc)
+	if !ok {
+		return ctx
+	}
+	ctx = WithCallerPID(ctx, pid)
+	if tok, ok := callerStartToken(pid); ok {
+		ctx = WithCallerStart(ctx, tok)
+	}
+	if cs, ok := s.host.(CallerSnapshotter); ok {
+		ctx = cs.SnapshotCaller(ctx, pid)
+	}
+	return ctx
+}
+
+// readFirst reads the connection's first frame, which must be a control
+// frame, and returns its op and payload.
+func (s *server) readFirst(fc *frameConn) (string, []byte, error) {
 	t, payload, err := fc.readFrame()
 	if err != nil {
-		return spawnMsg{}, err
+		return "", nil, err
 	}
 	if t != frameControl {
-		return spawnMsg{}, fmt.Errorf("%w: expected a control spawn frame, got type %d", ErrProtocol, t)
+		return "", nil, fmt.Errorf("%w: expected a control spawn frame, got type %d", ErrProtocol, t)
 	}
 	op, err := peekOp(payload)
 	if err != nil {
-		return spawnMsg{}, err
+		return "", nil, err
 	}
+	return op, payload, nil
+}
+
+// parseSpawn validates the initial spawn control frame.
+func parseSpawn(op string, payload []byte) (spawnMsg, error) {
 	if op != opSpawn {
 		return spawnMsg{}, fmt.Errorf("%w: expected op %q, got %q", ErrProtocol, opSpawn, op)
 	}
@@ -428,11 +492,16 @@ func (s *server) relayCorrelations(fc *frameConn, ch <-chan CorrelatedSession) {
 // gets its own code so the client prints why and neither loops nor spawns a
 // duplicate; anything else is a generic spawn_failed.
 func spawnErrorCode(err error) string {
+	var ce *ControlError
 	switch {
 	case errors.Is(err, ErrResumeConflict):
 		return CodeResumeConflict
 	case errors.Is(err, ErrResumeNotResumable):
 		return CodeResumeNotResumable
+	case errors.As(err, &ce) && ce.Code != "":
+		// A coded refusal the Host chose (lane cli-2 fixes-1: an agent's
+		// attach launch held for a human, confirm_required).
+		return ce.Code
 	default:
 		return CodeSpawnFailed
 	}

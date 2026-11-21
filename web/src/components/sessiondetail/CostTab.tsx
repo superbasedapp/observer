@@ -5,6 +5,7 @@ import { ComboChip, ModelId, Pill, Tooltip, type ComboOption } from "@/component
 import { modelFamily } from "@shared/lib/modelFamilies";
 import { ChartState } from "@/components/ChartState";
 import { HelpInd } from "@/components/HelpInd";
+import { BudgetProjectionSection, LimitProjectionList } from "@/components/sessiondetail/LimitProjection";
 import { useApi } from "@/lib/useApi";
 import { useNowTick } from "@/lib/useNowTick";
 import { costLabel, dollarsShown, fmtCompact, fmtCost, fmtInt, fmtUSD } from "@/lib/format";
@@ -152,8 +153,11 @@ function PredictorBody({ data, tool }: { data: PredictResponse; tool: string }) 
         </div>
       )}
 
-      {/* Limit gauge — proxy-gated half. */}
-      <PredictLimitSection limit={data.limit} />
+      {/* Limit gauge: the proxy-gated half, with its run-out projection. */}
+      <PredictLimitSection limit={data.limit} projection={data.projection} />
+
+      {/* Budget projection: absent when no budget is in force. */}
+      <BudgetProjectionSection projection={data.projection} />
     </div>
   );
 }
@@ -277,7 +281,13 @@ function PredictWarningPill({ kind }: { kind: PredictWarning }) {
 // FIRST, since it must never fall through to the proxy hint below),
 // no_window ("provider exposes no window"), or the "route through the
 // proxy to unlock" hint (a real, actionable remedy).
-function PredictLimitSection({ limit }: { limit: PredictResponse["limit"] }) {
+function PredictLimitSection({
+  limit,
+  projection,
+}: {
+  limit: PredictResponse["limit"];
+  projection?: PredictResponse["projection"];
+}) {
   return (
     <div className="rounded-3 border bg-bg-1 px-3 py-2.5">
       <div className="flex items-center gap-1.5">
@@ -324,6 +334,7 @@ function PredictLimitSection({ limit }: { limit: PredictResponse["limit"] }) {
           headers, which the proxy is the only component able to read.
         </p>
       )}
+      {!limit.no_source && <LimitProjectionList projection={projection} />}
     </div>
   );
 }
@@ -349,7 +360,9 @@ function LimitWindowStat({
       </span>
       {reset != null && (
         <span className="mt-0.5 text-[10px] text-fg-3">
-          resets <ResetClock unixSec={reset} />
+          {/* A reading whose window already reset describes a window that
+              is over: say so rather than "resets now". */}
+          {reset * 1000 <= Date.now() ? "at the last reading; window has reset" : <>resets <ResetClock unixSec={reset} /></>}
         </span>
       )}
     </div>

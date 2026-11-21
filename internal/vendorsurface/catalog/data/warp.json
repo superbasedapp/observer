@@ -1,0 +1,369 @@
+{
+ "group": "warp",
+ "research_file": "docs/plans/cloud-agents/grounding/wave-c-vendors-2026-11-01.md",
+ "checked_on": "2026-11-01",
+ "surfaces": [
+  {
+   "id": "warp.agent_api.runs_list",
+   "vendor_group": "warp",
+   "vendor": "warp",
+   "plane": "warp.agent_api",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Warp API key (prefix wk-, created in the Warp app under Settings > Platform > API Keys, or with `oz api-key create`) or a supported Warp-issued user token, as Bearer; a Personal key acts as the user, an Agent key as the team's service account"
+   },
+   "paging": {
+    "style": "cursor",
+    "doc": "cursor in, page_info.next_cursor out while page_info.has_next_page is true; limit 1 to 500 (default 20); sorted by updated_at descending by default"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published in the OpenAPI"
+   },
+   "tier": {
+    "doc": "every plan; Free cloud runs use the built-in Warp Agent (oz) only, third-party harnesses (Claude Code, Codex) need a paid plan"
+   },
+   "freshness_doc": "list data can lag live activity by a few minutes (ListRunsResponse.as_of)",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (the runs the key can see: a Personal key's own and its teams' runs)",
+   "mechanism_doc": "GET /api/v1/agent/runs (limit, cursor, sort_by, sort_order, state, task_status, execution_location LOCAL or REMOTE, created_after/before, updated_after, environment_id, source, creator, ancestor_run_id and more); records: run id, state, execution location, timestamps, source, creator, request_usage (credits and USD per inference, compute and platform; total tokens; per-model usage), agent_config.harness, conversation id, parent and root run ids, artifacts (pull requests)",
+   "read_write_doc": "R",
+   "class_doc": "Sessions, Usage, Cost",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "credits",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "usd_micros",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.warp.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://docs.warp.dev/support-and-community/plans-and-billing/credits",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/warp RunsList: one warp.run snapshot per run (state, execution location, harness, model, timestamps, conversation, parent and root run ids, creator type and uid, environment, first pull request url and branch) plus up to two usage rows, the run's credits (unit warp_credit) and its billed USD (unit usd), each the sum of its inference, compute and platform parts and never summed with the other. The prompt, title, creator e-mail and display name are never decoded. The driver always sends execution_location=REMOTE. Consumed by the node cloud-agents connector warp-cloud (lane CA-V1), not by the org runner. Conformance against the vendormock mock through the pure adapter. Synthetic only: fixtures built from the OpenAPI at the pinned docs commit; no live response observed yet.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V1: pure driver internal/vendorapi/warp (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenAPI components.securitySchemes.bearerAuth (http bearer, a Warp API key or a Warp-issued user token)"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "warp.agent_api.run_detail",
+   "vendor_group": "warp",
+   "vendor": "warp",
+   "plane": "warp.agent_api",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Warp API key (prefix wk-, created in the Warp app under Settings > Platform > API Keys, or with `oz api-key create`) or a supported Warp-issued user token, as Bearer; a Personal key acts as the user, an Agent key as the team's service account"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "a single run object"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published in the OpenAPI"
+   },
+   "tier": {
+    "doc": "every plan; Free cloud runs use the built-in Warp Agent (oz) only, third-party harnesses (Claude Code, Codex) need a paid plan"
+   },
+   "freshness_doc": "list data can lag live activity by a few minutes (ListRunsResponse.as_of)",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (a run the key can view)",
+   "mechanism_doc": "GET /api/v1/agent/runs/{runId}; the RunItem of one run",
+   "read_write_doc": "R",
+   "class_doc": "Sessions, Usage, Cost",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "credits",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "usd_micros",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.warp.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/warp RunDetail: the same snapshot and usage rows as the runs list, for one run. Consumed by the node cloud-agents connector warp-cloud (lane CA-V1), not by the org runner. Conformance against the vendormock mock through the pure adapter. Synthetic only: fixtures built from the OpenAPI at the pinned docs commit; no live response observed yet.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V1: pure driver internal/vendorapi/warp (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenAPI components.securitySchemes.bearerAuth (http bearer, a Warp API key or a Warp-issued user token)"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "warp.agent_api.run_conversation",
+   "vendor_group": "warp",
+   "vendor": "warp",
+   "plane": "warp.agent_api",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Warp API key (prefix wk-, created in the Warp app under Settings > Platform > API Keys, or with `oz api-key create`) or a supported Warp-issued user token, as Bearer; a Personal key acts as the user, an Agent key as the team's service account"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "a single conversation document (root steps with nested steps)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published in the OpenAPI"
+   },
+   "tier": {
+    "doc": "every plan; Free cloud runs use the built-in Warp Agent (oz) only, third-party harnesses (Claude Code, Codex) need a paid plan"
+   },
+   "freshness_doc": "list data can lag live activity by a few minutes (ListRunsResponse.as_of)",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (a run the key can view)",
+   "mechanism_doc": "GET /api/v1/agent/runs/{runId}/conversation; the run's conversation as normalized steps and messages (text, action, action_result and event blocks); 404 when the run has no conversation, 422 when the format is not supported",
+   "read_write_doc": "R",
+   "class_doc": "Content, Audit",
+   "grain_doc": "Event",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "content",
+   "secret_class": "may_return_secret",
+   "supplies": [
+    {
+     "class": "Content",
+     "grain": "event",
+     "unit": "text",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Audit",
+     "grain": "event",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.warp.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/warp RunConversation: user and assistant text lands as content items (prompt, response); each action block lands as a metadata-only tool_call event (action id, public action name, category) and each action_result as a tool_result event with its state; event blocks land as event rows with their name. Action input and output objects are never decoded. Consumed by the node cloud-agents connector warp-cloud (lane CA-V1), not by the org runner. Conformance against the vendormock mock through the pure adapter. Synthetic only: fixtures built from the OpenAPI at the pinned docs commit; no live response observed yet.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V1: pure driver internal/vendorapi/warp (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenAPI components.securitySchemes.bearerAuth (http bearer, a Warp API key or a Warp-issued user token)"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "warp.agent_api.run_harness_usage",
+   "vendor_group": "warp",
+   "vendor": "warp",
+   "plane": "warp.agent_api",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Warp API key (prefix wk-, created in the Warp app under Settings > Platform > API Keys, or with `oz api-key create`) or a supported Warp-issued user token, as Bearer; a Personal key acts as the user, an Agent key as the team's service account"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "a single usage document"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published in the OpenAPI"
+   },
+   "tier": {
+    "doc": "every plan; Free cloud runs use the built-in Warp Agent (oz) only, third-party harnesses (Claude Code, Codex) need a paid plan"
+   },
+   "freshness_doc": "list data can lag live activity by a few minutes (ListRunsResponse.as_of)",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (a run the key can view)",
+   "mechanism_doc": "GET /api/v1/agent/runs/{runId}/harness-usage; the latest cumulative native usage snapshot of a Claude Code or Codex harness run (input, output, cache read and cache creation with the 5m and 1h split for Claude Code; cached input, cache write, reasoning output and total for Codex), per-model attribution, tool-call counts and a coverage status; an unavailable result instead of zeros when nothing was measured",
+   "read_write_doc": "R",
+   "class_doc": "Usage",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.warp.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/warp RunHarnessUsage: one usage row of native counters keyed by the run id, revision the capture sequence, flagged with the harness, the coverage status and the input basis (Codex input includes cached input and its output includes reasoning; netting is the consumer's). A null counter is absent, never zero; an unavailable result or tokenStatus unavailable lands no usage row. Consumed by the node cloud-agents connector warp-cloud (lane CA-V1), not by the org runner. Conformance against the vendormock mock through the pure adapter. Synthetic only: fixtures built from the OpenAPI at the pinned docs commit; no live response observed yet.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V1: pure driver internal/vendorapi/warp (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenAPI components.securitySchemes.bearerAuth (http bearer, a Warp API key or a Warp-issued user token)"
+   },
+   "status": "synthetic, awaiting live validation"
+  }
+ ]
+}

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudagents"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/cursorusage"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
@@ -25,6 +26,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/hooklifecycle"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
+	"github.com/marmutapp/superbased-observer/internal/intelligence/costseries"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard/webapp"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/discover"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/learn"
@@ -34,6 +36,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/notify/feedstate"
 	"github.com/marmutapp/superbased-observer/internal/requestclass"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
+	"github.com/marmutapp/superbased-observer/internal/secfixstate"
 	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/sessionmsg"
 	"github.com/marmutapp/superbased-observer/internal/stash"
@@ -59,6 +62,9 @@ const (
 type Server struct {
 	opts Options
 
+	// callerRefusals logs each refused caller path once (caller_guard.go).
+	callerRefusals callerRefusalLog
+
 	// notifyState is the notification bell's read / dismiss state seam
 	// (internal/notify/feedstate), created once per server.
 	notifyStateOnce sync.Once
@@ -68,6 +74,17 @@ type Server struct {
 	// (internal/firstrunstate, T-922), created once per server.
 	firstRunOnce sync.Once
 	firstRun     *firstrunstate.Store
+	// apps holds the daemon's AI Apps seams (apps_enable.go, first-run plan
+	// 3.8), set once by SetApps after New; nil in a process without them.
+	apps atomic.Pointer[appsSeams]
+	// connectFlow owns the one `observer connect --json --no-browser`
+	// subprocess the Get started panel and the top bar start
+	// (connect_flow.go). The zero value is ready.
+	connectFlow connectFlow
+	// secFix is the "Fix with an agent" attempts seam
+	// (internal/secfixstate), created once per server.
+	secFixOnce sync.Once
+	secFix     *secfixstate.Store
 	// installSignals caches Options.InstallSignalTools (setup_installsignal.go).
 	installSignals installSignalCache
 
@@ -85,6 +102,13 @@ type Server struct {
 	// comps caches the live component snapshot the route guard consults
 	// (components_manage.go).
 	comps componentCache
+	// sandboxProbe is the one in-flight sandbox probe GET
+	// /api/terminal/sandbox waits on under its deadline (sandbox.go).
+	sandboxProbe sandboxProbeFlights
+
+	// secScan is the Code security page's "Scan now" job
+	// (security_scan_now.go).
+	secScan securityScanJobs
 
 	// windows caches the model context-window table the context gauge reads
 	// (sessiongauge.go); refreshed at most once per windowCacheTTL.
@@ -126,6 +150,11 @@ type Server struct {
 	// barely changes between polls — and serve the read fresh every time.
 	correlateMu   sync.Mutex
 	lastCorrelate map[string]time.Time
+
+	// procCapture owns the process capture read side's caches (the findings
+	// count per session and the estimate endpoint's replay basis,
+	// processcapture.go). Its zero value is ready.
+	procCapture processCaptureState
 
 	// orgOverride caches the org-granted per-rule override posture
 	// read off the on-disk org policy bundle (guard_override.go,
@@ -323,7 +352,11 @@ func (s *Server) Handler() http.Handler {
 	// build's handler chain is unchanged.
 	// analyticsInvalidateOnWrite clears the analytics response cache after a
 	// successful mutation (identity when ReadCaches is off).
-	return s.analyticsInvalidateOnWrite(s.governanceGuard(mux, sections, mux))
+	// dbIdentityGuard refuses a CLI that names another database before any
+	// route runs (db_identity_guard.go, L-125). It rides here, so every way of
+	// serving the loopback handler names its database; the remote handler,
+	// which does not go through Handler, gets it in guardedHandler.
+	return s.dbIdentityGuard(s.analyticsInvalidateOnWrite(s.governanceGuard(mux, sections, mux)))
 }
 
 // sessionSubRouteCapabilities is the DECLARED (documentation + test) suffix→
@@ -425,6 +458,9 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 		// inside the mux and so inside every guard (analytics_cache.go); it
 		// returns h unchanged when ReadCaches is off or the route is not
 		// allow-listed.
+		// Lane cli-2 fixes-1: a launch route's agent write is held for a
+		// human (launch_hold.go); every other route is returned unchanged.
+		h = s.holdAgentLaunch(pattern, h)
 		mux.HandleFunc(pattern, s.analyticsCacheWrap(pattern, s.componentGuard(comp, h)))
 		capMap[pattern] = cap
 		sectionMap[pattern] = section
@@ -471,6 +507,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 		secSettings    = SectionSettings
 		secRequests    = SectionRequests
 		secMessages    = SectionMessages
+		secYou         = SectionYou
 	)
 
 	const V = CapabilityView
@@ -497,6 +534,13 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 
 	reg("/api/status", V, secNone, s.handleStatus)
 	reg("/api/status/scoped", V, secNone, s.handleStatusScoped)
+	// The You page (docs/you-page.md): read-only identity routes. Owner-local:
+	// they reveal vendor account emails, the machine fingerprint and which
+	// keychain services exist, none of which a remote viewer should read.
+	reg("/api/me/tool-accounts", L, secYou, s.handleMeToolAccounts)
+	reg("/api/me/machine", L, secYou, s.handleMeMachine)
+	reg("/api/me/credentials", L, secYou, s.handleMeCredentials)
+	reg("/api/me/aggregate-share", L, secYou, s.handleMeAggregateShare)
 	reg("/api/codex/support", V, secNone, s.handleCodexSupport)
 	reg("/api/cowork/reconcile", V, secNone, s.handleCoworkReconcile)
 	// Setup POST writes AI-client config → whole-route Local (the GET status
@@ -514,6 +558,13 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/plans/optin", L, secPlans, s.handlePlanOptIn)
 	reg("/api/plans/probe", L, secPlans, s.handlePlanProbe)
 	reg("/api/plans/statusline", L, secPlans, s.handlePlanStatusLine)
+	// Cloud agents (cloudagents.go, docs/cloud-agents.md): owner-local;
+	// writes carry the confirm token. Governed as Settings > tools.
+	reg("/api/cloud-agents", L, secSettings.WithSettings("tools"), s.handleCloudAgents)
+	reg("/api/cloud-agents/test", L, secSettings.WithSettings("tools"), s.handleCloudAgentsTest)
+	reg("/api/cloud-agents/connect", L, secSettings.WithSettings("tools"), s.handleCloudAgentsConnect)
+	reg("/api/cloud-agents/sync", L, secSettings.WithSettings("tools"), s.handleCloudAgentsSyncAll)
+	reg("/api/cloud-agents/accounts/", L, secSettings.WithSettings("tools"), s.handleCloudAgentsAccount)
 	reg("/api/discover", V, secDiscovery, s.handleDiscover)
 	reg("/api/suggestions", V, secSuggestions, s.handleSuggestions)
 	reg("/api/suggestions/state", L, secSuggestions, s.handleSuggestionState)
@@ -534,6 +585,9 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/verbosity/aggregate", V, secAnalysis, s.handleVerbosityAggregate)
 	reg("/api/sessions", V, secSessions, s.handleSessions)
 	reg("/api/sessions/calendar", V, secSessions, s.handleSessionsCalendar)
+	// Own agents (P-228, ownagents.go): the Sessions page's Own agents view,
+	// custom-agent sessions grouped by agent name. A pure read.
+	reg("/api/own-agents", V, secSessions, s.handleOwnAgents)
 	// Session classification (plan §4). The vocabulary + per-tag rollup is a
 	// pure read (View); vocabulary MANAGEMENT (rename/delete across every
 	// session) is a whole-route Execute mutation — the same tier as the
@@ -587,6 +641,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// /api/terminal/sessions and /api/models. The more-specific pattern
 	// takes mux precedence over /api/terminal/launch above.
 	reg("/api/terminal/launch/models", V, secTerminals, s.handleTerminalLaunchModels)
+	// Launches held for a human because an agent asked for them (lane
+	// cli-2 fixes-1): the list, and each hold's confirm and reject.
+	// Owner-local: confirming a launch is the owner's call.
+	reg("/api/terminal/pending", L, secTerminals, s.handleTerminalPending)
+	reg("/api/terminal/pending/", L, secTerminals, s.handleTerminalPending)
 	// B9 sandbox probe (plan §5). VIEW, FAIL-SOFT (always 200) — the same
 	// posture as the model-picker endpoint above: informational, reads only
 	// the daemon's cached probe result + the [terminal.sandbox] config, no
@@ -637,10 +696,35 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// above, this writes [terminal.sandbox], including authority-expanding
 	// remote-clone / extra-rw-bind escape hatches.
 	reg("/api/terminal/sandbox/config", L, secTerminals.WithTab("settings"), s.handleTerminalSandboxConfig)
+	// The strace switch (lane ptrace, PT-96): owner-local and confirm-token
+	// gated, the only writer of [terminal.sandbox].seccomp_allow_seize.
+	reg("/api/terminal/sandbox/ptrace-seize", L, secTerminals.WithTab("settings"), s.handleTerminalSandboxSeize)
+	// The sandbox egress refusal audit (lane N1, OpenShell plan 05 section
+	// 3.1). LOCAL: the rows name the hosts a sandboxed agent tried to
+	// reach and the run's project root.
+	reg("/api/sandbox/refusals", L, secTerminals, s.handleSandboxRefusals)
+	// The refusal advisor (OpenShell lane N5): GET offers "allow this host"
+	// per refusal, PUT applies one through the config save pipeline. LOCAL +
+	// confirm-token-gated; guard rule R-167 denies an agent's PUT.
+	reg("/api/sandbox/refusals/allow", L, secTerminals, s.handleSandboxRefusalAllow)
 	// The first-start install's version picker (lane LEFT-SBX). LOCAL: it
 	// makes the daemon read a vendor registry, which a remote principal
 	// must never drive.
 	reg("/api/terminal/sandbox/install-versions", L, secTerminals.WithTab("settings"), s.handleTerminalSandboxInstallVersions)
+	// Sandbox setup (sandbox installation lifecycle plan section 3.6):
+	// LOCAL. The GETs read this machine's setup (passive facts, its install
+	// records); the check runs a driver probe and the run carries out one
+	// server-derived step (confirm token). The subtree holds the per-backend
+	// plan, check and run, and the op progress.
+	reg("/api/terminal/sandbox/setup", L, secTerminals, s.handleSandboxSetupSummary)
+	reg("/api/terminal/sandbox/setup/", L, secTerminals, s.handleSandboxSetup)
+	// cli-parity L3 (plan docs/plans/dashboard-cli-parity-plan-2026-11-06.md,
+	// item B-G3): "Re-attach in a terminal" runs the fixed `observer sandbox
+	// readopt <run>` in a local-writer-only setup PTY. LOCAL + confirm token;
+	// guard rule R-165 already denies an agent the /api/terminal/sandbox/readopt
+	// prefix.
+	reg("/api/terminal/sandbox/readopt/attach", L, secTerminals, s.handleSandboxReadoptTerminal)
+	// end cli-parity L3
 	// Guided one-click install (tool-binary-resolution arc). LOCAL + confirm-
 	// token-gated, EXACTLY like the Tailscale setup handlers: it spawns a
 	// grounded, compile-time-constant install command in a visible local-only
@@ -684,6 +768,12 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// enable-capture WRITES config.toml (turns on [observer.process] + fixes a
 	// non-runnable backend) → whole-route Local, like /api/config/section/.
 	reg("/api/process/enable-capture", L, secSettings.WithSettings("process"), s.handleProcessEnableCapture)
+	// The capture-limits data-volume estimate (process capture budget plan
+	// §9.3): a read-only replay of the node's recent stored runs through the
+	// draft [observer.process.capture] values the Settings page is editing.
+	// Local like the config editor it serves: it reads the saved config and
+	// summarises this machine's process capture.
+	reg("/api/process/capture/estimate", L, secSettings.WithSettings("process"), s.handleProcessCaptureEstimate)
 	// Elevated-ETW-capturer setup DETECTION (ETW dashboard plan §E2). VIEW: it
 	// reads config, runs the same read-only `schtasks /Query` probe
 	// `observer init` runs, and reads the daemon's own published health record.
@@ -717,6 +807,17 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// mutation. Never hidden as a route (it is the welcome on a fresh node).
 	reg("/api/firstrun", L, secNone, s.handleFirstRun)
 	reg("/api/firstrun/seen", L, secNone, s.handleFirstRunSeen)
+	// The first-run "at a glance" card (firstrun_glance.go): 30-day spend,
+	// top model, busiest project, re-reads. Local, like /api/firstrun.
+	reg("/api/firstrun/glance", L, secNone, s.handleFirstRunGlance)
+	// AI Apps hot-enable (apps_enable.go, first-run plan 3.5 and 3.8): the
+	// one enable seam the dashboard button, `observer apps on|off|status`
+	// and the VS Code action share. Local: enable and disable write the
+	// config, and the status names this machine's receiver addresses. Never
+	// hidden as a route (the first-run surface depends on it).
+	reg("/api/apps/status", L, secNone, s.handleAppsStatus)
+	reg("/api/apps/enable", L, secNone, s.handleAppsEnable)
+	reg("/api/apps/disable", L, secNone, s.handleAppsDisable)
 	// Admin and developer messaging (T-854, messages.go): the Messages
 	// page's own section, which sits on the unhideable floor (D-695), so an
 	// org message is never hidden from the developer it was sent to. Local:
@@ -803,6 +904,13 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// (web/src/lib/exportTarget.ts).
 	reg("/api/security/status", V, secCodeSec, s.handleSecurityStatus)
 	reg("/api/security/findings", V, secCodeSec, s.handleSecurityFindings)
+	// The findings list's facet counts and grouped rows (redesign plan
+	// section 4.4) and the Coverage read (section 4.5): read-only, the same
+	// class and page-level section as the list, since the Overview reads
+	// them too.
+	reg("/api/security/findings/facets", V, secCodeSec, s.handleSecurityFindingsFacets)
+	reg("/api/security/findings/groups", V, secCodeSec, s.handleSecurityFindingsGroups)
+	reg("/api/security/coverage", V, secCodeSec, s.handleSecurityCoverage)
 	// The affected-worker notice (security plan 7.12, lane SEC-E3): never
 	// hidden, so a page the org hides cannot hide what it is told.
 	reg("/api/security/org-notice", V, secNone, s.handleSecurityOrgNotice)
@@ -822,6 +930,41 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/security/editor", L, secCodeSec, s.handleSecurityEditor)
 	// The on-demand history scan: runs git and writes findings.
 	reg("/api/security/scan-history", L, secCodeSec.WithTab("findings"), s.handleSecurityScanHistory)
+	// "Scan now" (security_scan_now.go): starts every ready scanner on one
+	// project or on every active one, in the background; the GET lists the
+	// scanners and the job. Runs scanners and writes findings: owner-local.
+	reg("/api/security/scan", L, secCodeSec, s.handleSecurityScan)
+	// "Fix with an agent" (security_fix.go): the fix plan of a selection, one
+	// project's task started as a fresh terminal launch (the New terminal
+	// gates all apply), and the recent attempts with their findings' state.
+	// Starts an agent: owner-local, the launch with the confirm token.
+	reg("/api/security/fix/plan", L, secCodeSec.WithTab("findings"), s.handleSecurityFixPlan)
+	reg("/api/security/fix/launch", L, secCodeSec.WithTab("findings"), s.handleSecurityFixLaunch)
+	reg("/api/security/fix/attempts", L, secCodeSec.WithTab("findings"), s.handleSecurityFixAttempts)
+	// "Security assessments" (security_assess.go): the kinds and recent runs,
+	// one project's plan, the launch of an agent in a dashboard terminal (the
+	// New terminal gates all apply), a run's report as plain text, and the
+	// developer's import of a run's findings file through the SARIF import
+	// seam. Starts an agent: owner-local, the launch and the import with the
+	// confirm token.
+	reg("/api/security/assessments", L, secCodeSec.WithTab("overview"), s.handleSecurityAssess)
+	reg("/api/security/assessments/plan", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessPlan)
+	reg("/api/security/assessments/launch", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessLaunch)
+	reg("/api/security/assessments/report", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessReport)
+	reg("/api/security/assessments/import", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessImport)
+	reg("/api/security/assessments/request", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessRequest)
+	reg("/api/security/assessments/cancel", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessCancel)
+	reg("/api/security/assessments/stop", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessStop)
+	reg("/api/security/assessments/delete-data", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessDeleteData)
+	reg("/api/security/assessments/validate", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessValidate)
+	reg("/api/security/assessments/model", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessModel)
+	// The fix of one checked item (a write-capable agent: the POST is a launch
+	// row, held and asked about) and the export of the checked copy.
+	reg("/api/security/assessments/fix", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessFix)
+	reg("/api/security/assessments/export", L, secCodeSec.WithTab("overview"), s.handleSecurityAssessExport)
+	// The Findings tab's drawer: one finding with its sightings, commits,
+	// lifecycle events and exceptions. Read-only, no evidence.
+	reg("/api/security/findings/{id}", V, secCodeSec.WithTab("findings"), s.handleSecurityFinding)
 	// The opt-in local git hooks (security.githooks): writes into a
 	// repository on the developer's consent.
 	reg("/api/security/githooks", L, secCodeSec.WithTab("baselines"), s.handleSecurityGithooks)
@@ -830,20 +973,37 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/security/provenance", L, secCodeSec.WithTab("baselines"), s.handleSecurityProvenance)
 	// Dependency scanners (security.scan.scalibr and security.scan.osv,
 	// Phase D2): the Scanners card; reads the database epochs file only.
-	reg("/api/security/scanners", V, secCodeSec.WithTab("findings"), s.handleSecurityScanners)
+	reg("/api/security/scanners", V, secCodeSec.WithTab("scanners"), s.handleSecurityScanners)
 	// The one-time accept of the scanners' OSV database download (operator
 	// ruling PT-19 (2)): owner-local, consent is never a remote viewer's
 	// action; the POST needs the confirm token its GET mints.
-	reg("/api/security/scanners/db", L, secCodeSec.WithTab("findings"), s.handleSecurityScannersDB)
+	reg("/api/security/scanners/db", L, secCodeSec.WithTab("scanners"), s.handleSecurityScannersDB)
+	// Trivy's database accept for the Trivy image driver (lane OS-2 T):
+	// owner-local like the OSV accept; the POST needs the confirm token.
+	reg("/api/security/scanners/trivydb", L, secCodeSec.WithTab("scanners"), s.handleSecurityScannersTrivyDB)
+	// The package lookup posture (lane RM-2, plan section 13.10): the
+	// Privacy page's card and first-run choice; owner-local like the
+	// accepts, the PUT needs the confirm token its GET mints.
+	reg("/api/security/lookup", L, secPrivacy, s.handleSecurityLookup)
+	// The artifact folders (M3L-2 item 4, ruling 2026-11-05): a project's
+	// candidate build output folders and the per-folder opt-in to scanning
+	// them. Owner-local like the accepts; the PUT needs the confirm token its
+	// GET mints.
+	reg("/api/security/artifacts", L, secCodeSec.WithTab("scanners"), s.handleSecurityArtifacts)
+	// The Go source check (3b-src): a project's opt-in and its runs, which
+	// run this machine's Go toolchain on the project. Owner-local; every
+	// write needs the confirm token its GET mints.
+	reg("/api/security/reach/go-source", L, secCodeSec.WithTab("scanners"), s.handleSecurityReachSource)
+	reg("/api/security/reach/go-source/run", L, secCodeSec.WithTab("scanners"), s.handleSecurityReachSourceRun)
 	// The code rules' card and guided install (security.scan.opengrep,
 	// lane SEC-G2): owner-local, the size consent is never a remote
 	// viewer's action; the POST needs the confirm token its GET mints.
-	reg("/api/security/code/install", L, secCodeSec.WithTab("findings"), s.handleSecurityOpengrep)
-	reg("/api/security/iac/install", L, secCodeSec.WithTab("findings"), s.handleSecurityIaCInstall)
+	reg("/api/security/code/install", L, secCodeSec.WithTab("scanners"), s.handleSecurityOpengrep)
+	reg("/api/security/iac/install", L, secCodeSec.WithTab("scanners"), s.handleSecurityIaCInstall)
 	// The SARIF upload (security.scan.sarif-import, lane SEC-P4):
 	// owner-local, a file the developer picked; the POST needs the confirm
 	// token its GET mints and is capped at the CLI's own file cap.
-	reg("/api/security/import-sarif", L, secCodeSec.WithTab("findings"), s.handleSecurityImportSARIF)
+	reg("/api/security/import-sarif", L, secCodeSec.WithTab("scanners"), s.handleSecurityImportSARIF)
 	// Repository trust (component security.trust): the New Terminal
 	// dialog's trust chip for a chosen directory. Local-only: it reads a
 	// directory the caller names. Page-level, and its READ is shared with
@@ -853,17 +1013,38 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// Custom scanners (component security.scan.custom): owner-local, since a
 	// scanner runs a program on this machine; writes need the confirm
 	// token the GET mints.
-	reg("/api/security/scanners/custom", L, secCodeSec.WithTab("findings"), s.handleSecurityCustom)
-	reg("/api/security/scanners/custom/", L, secCodeSec.WithTab("findings"), s.handleSecurityCustomSub)
+	reg("/api/security/scanners/custom", L, secCodeSec.WithTab("scanners"), s.handleSecurityCustom)
+	reg("/api/security/scanners/custom/", L, secCodeSec.WithTab("scanners"), s.handleSecurityCustomSub)
 	// Package checks (component security.deps): the Code security page's
 	// card, and the dashboard accept of the online checks' disclosure.
 	// Local-only: consent is never a remote viewer's action.
-	reg("/api/security/deps", L, secCodeSec.WithTab("findings"), s.handleSecurityDeps)
+	reg("/api/security/deps", L, secCodeSec.WithTab("scanners"), s.handleSecurityDeps)
+	// The DAST card (security.dast, security coverage gaps plan section 2):
+	// its state and candidates, the accept and one run against a dev server
+	// on this machine. Owner-local: the accept is never a remote viewer's
+	// action and the run sends requests from this machine; every POST needs
+	// the confirm token the GET mints. R-165 reserves the prefix.
+	reg("/api/security/dast", L, secCodeSec.WithTab("scanners"), s.handleSecurityDAST)
+	reg("/api/security/dast/accept", L, secCodeSec.WithTab("scanners"), s.handleSecurityDASTAccept)
+	reg("/api/security/dast/run", L, secCodeSec.WithTab("scanners"), s.handleSecurityDASTRun)
+	// The Projects tab's "Export SBOM" (security.deps, plan section 3): a
+	// download naming the project's packages, owner-local.
+	reg("/api/security/sbom", L, secCodeSec.WithTab("projects"), s.handleSecuritySBOM)
 	reg("/api/guard/summary", V, secSecurity, s.handleGuardSummary)
 	reg("/api/guard/events", V, secSecurity, s.handleGuardEvents)
 	reg("/api/guard/conformance", V, secSecurity.WithTab("coverage"), s.handleGuardConformance)
 	reg("/api/guard/rules", V, secSecurity, s.handleGuardRules)
 	reg("/api/guard/simulate", V, secSecurity, s.handleGuardSimulate)
+	// Guard recipes (guard_recipes.go): the catalog GET mints the confirm
+	// token and lists what is applied, so it is Local like the writes; show
+	// and preview are reads of the catalog and a fresh guard.
+	reg("/api/guard/recipes", L, secSecurity.WithTab("rules"), s.handleGuardRecipes)
+	reg("/api/guard/recipes/show", V, secSecurity.WithTab("rules"), s.handleGuardRecipeShow)
+	reg("/api/guard/recipes/preview", V, secSecurity.WithTab("rules"), s.handleGuardRecipePreview)
+	reg("/api/guard/recipes/apply", L, secSecurity.WithTab("rules"), s.handleGuardRecipeApply)
+	reg("/api/guard/recipes/remove", L, secSecurity.WithTab("rules"), s.handleGuardRecipeRemove)
+	reg("/api/guard/recipes/user", L, secSecurity.WithTab("rules"), s.handleGuardRecipeUser)
+	reg("/api/guard/recipes/user/delete", L, secSecurity.WithTab("rules"), s.handleGuardRecipeUserDelete)
 	// Guard tools (T-154, guard_tools.go): the `guard test` dry run is a
 	// read-shaped View POST; the job routes run `guard rescan | compile` and
 	// `guard mcp scan | report` and are owner-local (a state-changing kind
@@ -915,6 +1096,9 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// spawns a subprocess that reads local hook config files, so it is
 	// Local too (machine-reaching, not a remote viewer's decision).
 	reg("/api/guard/prompt/status", V, secSecurity.WithTab("prompt-guard"), s.handleGuardPromptStatus)
+	// The organization's coding-agent prompt judge on this node (lane
+	// adm-p2, promptjudge.go): read-only, the `observer guard status` facts.
+	reg("/api/guard/prompt/judge", V, secSecurity.WithTab("prompt-guard"), s.handlePromptJudgeStatus)
 	reg("/api/guard/prompt/events", V, secSecurity, s.handleGuardPromptEvents)
 	reg("/api/guard/prompt/detectors", V, secSecurity, s.handleGuardPromptDetectors)
 	reg("/api/guard/prompt/clear", L, secSecurity.WithTab("prompt-guard"), s.handleGuardPromptClear)
@@ -927,6 +1111,15 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/guard/hook-coverage", V, secSecurity.WithTab("coverage"), s.handleGuardHookCoverage)
 	reg("/api/guard/hook-doctor", L, secSecurity.WithTab("coverage"), s.handleGuardHookDoctor)
 	reg("/api/guard/hook-probe", L, secSecurity.WithTab("coverage"), s.handleGuardHookProbe)
+	// cli-parity L4 (plan docs/plans/dashboard-cli-parity-plan-2026-11-06.md):
+	// the [guard.cloud] consent card (B-G5, guard_cloud.go: GET state + confirm
+	// token, PUT the switches through the one save pipeline) and the audit
+	// chain repair jobs (B-G8, guard_tools.go: each dry run a read, each apply
+	// behind the confirm token). Both whole-route Local, and guard rule R-165
+	// denies an agent's write to either (rules_selfapproval.go).
+	reg("/api/guard/cloud", L, secSecurity.WithTab("mcp"), s.handleGuardCloud)
+	reg("/api/guard/jobs/chain", L, secSecurity.WithTab("coverage"), s.guardJobsHandler(guardChainJobs, false))
+	// end cli-parity L4
 	reg("/api/cache/status", V, secCache, s.handleCacheStatus)
 	reg("/api/cache/overview", V, secCache, s.handleCacheOverview)
 	reg("/api/cache/timeseries", V, secCache, s.handleCacheTimeseries)
@@ -967,6 +1160,9 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// Cloud ACCOUNT actions (cloud_account.go): login / login/state / logout,
 	// all Local — they spawn `observer cloud <verb>` on THIS machine.
 	s.registerCloudAccountRoutes(reg)
+	// Cloud-session ship tokens (cloudsession_ingest.go, lane CA-B3): the
+	// individual Rail S destination and its owner-local token management.
+	s.registerCloudSessionRoutes(reg)
 	// /api/tasks — the Phase-2 session-level task-tracking rollup
 	// (docs/task-tracking.md "Phase 2"): project/tool/window aggregate
 	// over LoadSessionTaskReport. Filed under Analysis, the same
@@ -995,7 +1191,13 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/project/{id}/commits", V, secProjects, s.handleProjectCommits)
 	reg("/api/project/{id}/prompts", V, secProjects, s.handleProjectPrompts)
 	reg("/api/project/{id}/cost", V, secProjects, s.handleProjectCost)
+	// Where it ran (cloud-agents lane CA-B5, cloudlane.go): the per-project
+	// cloud lane on the Overview and Spend tabs. A read, like /cost.
+	reg("/api/project/{id}/cloud", V, secProjects, s.handleProjectCloudLane)
 	reg("/api/project/{id}/skills", V, secProjects, s.handleProjectSkills)
+	// Quality metrics (quality.go): reads the project's coverage report
+	// files under a cap and the codeintel index; writes nothing.
+	reg("/api/project/{id}/quality", V, secProjects, s.handleProjectQuality)
 	reg("/api/project/{id}/prompts/{action_id}/grade", V, secProjects, s.handleProjectGrade)
 	// "Rescan now" (2026-10-15): runs git on this machine, so Local with
 	// the confirm token, like the other on-demand local actions.
@@ -1071,6 +1273,20 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// a config mutation. governanceGuard has a body-aware arm for /keys.
 	reg("/api/config/schema", L, secSettings, s.handleConfigSchema)
 	reg("/api/config/keys", L, secSettings, s.handleConfigKeys)
+	// Plane A lane B6 (sdk_settings.go): the SDK discovery read, SDK key
+	// sign-in/out, and the settings proposals an agent filed (D19).
+	// Local (review E-89): the discovery body names the org, the key id,
+	// the gateway URL and the key file's path. The SDKs read it on loopback,
+	// which a Local route keeps; a remote dashboard viewer does not get it.
+	// No section: an org hiding a Settings section must not break the SDKs'
+	// discovery.
+	reg("/api/sdk/destination", L, secNone, s.handleSDKDestination)
+	// The local OTLP receiver's bind state for the AI Apps pages (E-72):
+	// addresses and a bind error only, so a View read.
+	reg("/api/sdk/receiver", V, secNone, s.handleOTLPReceiver)
+	reg("/api/sdk/credential", L, secSettings.WithSettings("observability"), s.handleSDKCredential)
+	reg("/api/config/proposals", L, secSettings, s.handleConfigProposals)
+	reg("/api/config/proposals/", L, secSettings, s.handleConfigProposals)
 	reg("/api/config/backup", L, secSettings, s.handleConfigBackup)
 	reg("/api/config/reload", L, secSettings, s.handleConfigReload)
 	reg("/api/config/profiles", L, secSettings.WithSettings("profiles"), s.handleConfigProfiles)
@@ -1094,6 +1310,13 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/shell-wrap/status", L, secSettings.WithSettings("terminal"), s.handleShellWrapStatus)
 	reg("/api/shell-wrap/apply", L, secSettings.WithSettings("terminal"), s.handleShellWrapApply)
 	reg("/api/shell-wrap/disable", L, secSettings.WithSettings("terminal"), s.handleShellWrapDisable)
+	// cli-parity L2: Claude Code status line, start at login and browser
+	// capture setup. Whole-route Local (each writes outside Observer's own
+	// files); POSTs need the confirm token the GET mints and preview first.
+	reg("/api/setup/statusline", L, secSettings.WithSettings("tools"), s.handleSetupStatusline)
+	reg("/api/setup/login-start", L, secSettings.WithSettings("health"), s.handleSetupLoginStart)
+	reg("/api/setup/browser", L, secSettings.WithSettings("browser"), s.handleSetupBrowser)
+	reg("/api/browser/sites", L, secSettings.WithSettings("browser"), s.handleBrowserSites)
 	// Re-pricing stored costs (gap PRICE-REPRICE-1): dry run, apply, revert.
 	// Whole-route Local - an apply rewrites stored spend rows; the writes
 	// also need the confirm token the status GET mints.
@@ -1119,6 +1342,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// local paths and the run probes this machine (the mcp-doctor class).
 	reg("/api/health/doctor/tool", L, secSettings.WithSettings("tools"), s.handleToolDoctor)
 	reg("/api/health/failures", V, secSettings.WithSettings("health"), s.handleHealthFailures)
+	// cli-parity L5: "Update in a terminal" on the Settings > Health update
+	// card. Whole-route Local (it runs the install method's fixed update argv
+	// in a local setup PTY); the POST also needs the confirm token.
+	reg("/api/health/update-terminal", L, secSettings.WithSettings("health"), s.handleHealthUpdateTerminal)
+	// end cli-parity L5
 	reg("/api/mcp/value", V, secSettings.WithSettings("mcp"), s.handleMCPValue)
 	reg("/api/admin/restart", L, secNone, s.handleAdminRestart)
 	// In-place binary update (enterprise-update-management plan §3.10).
@@ -1131,6 +1359,18 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// version and update state to a viewer who can already see /api/status,
 	// and the Settings -> Health card needs it on every bind mode.
 	reg("/api/update/status", V, secSettings, s.handleUpdateStatus)
+	// The "Update automatically" switch (dashboard CLI parity B-S7): writes
+	// [update].auto_apply, a sensitive key, through the config save pipeline.
+	// Local like the apply route; governed with the Org settings section that
+	// owns the [update] keys.
+	reg("/api/update/auto-apply", L, secSettings.WithSettings("org"), s.handleUpdateAutoApply)
+	// Launch binary paths (dashboard CLI parity follow-up): the [launch.tools.<tool>].path
+	// overrides, Local like every config write, governed with Settings > Session attach.
+	reg("/api/launch/tool-paths", L, secSettings.WithSettings("terminal"), s.handleLaunchToolPaths)
+	// The default workspace folder ([workspace].default_dir): Local because
+	// the answer names a local path and a save creates a folder; governed
+	// with Settings > Terminal, where its card lives.
+	reg("/api/workspace/default", L, secSettings.WithSettings("terminal"), s.handleDefaultWorkspace)
 	// The node-local update ledger (`observer update history`). Local, not
 	// View: a ledger reason can name a local path, which is exactly why the
 	// org-bound posture carries enums only.
@@ -1152,6 +1392,19 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/backfill/jobs/", V, secSettings, s.handleBackfillJob)
 	reg("/api/health/watcher", V, secNone, s.handleWatcherHealth)
 	reg("/api/enrolment/status", V, secSettings.WithSettings("enrolment"), s.handleEnrolmentStatus)
+	// The front door's one sentence (plan 07 M8.4, connect.go): identity and
+	// destination, the same sentence `observer status` prints.
+	reg("/api/connect/status", V, secSettings.WithSettings("enrolment"), s.handleConnectStatus)
+	// "Sign in and connect this machine" (Getting started v2,
+	// connect_flow.go): start runs `observer connect --json --no-browser
+	// [team]` as a child of this binary, progress reads its latest JSON
+	// line, cancel stops it. All Local: the child stores a credential on
+	// THIS machine and writes its config. start and cancel need the confirm
+	// token. The Enrolment (Account) section is a floor section, so an
+	// organization can never hide these.
+	reg("/api/connect/start", L, secSettings.WithSettings("enrolment"), s.handleConnectStart)
+	reg("/api/connect/progress", L, secSettings.WithSettings("enrolment"), s.handleConnectProgress)
+	reg("/api/connect/cancel", L, secSettings.WithSettings("enrolment"), s.handleConnectCancel)
 	reg("/api/enrolment/last-payload", V, secSettings.WithSettings("enrolment"), s.handleEnrolmentLastPayload)
 	reg("/api/enrolment/unenroll", L, secSettings.WithSettings("enrolment"), s.handleEnrolmentUnenroll)
 	// Mints a one-time enrolment token for a teammate through the org server
@@ -1253,6 +1506,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// writes the privilege-expanding allow_fresh_agent/allowed_tools/
 	// allowed_project_roots block. The runs history is a metadata-only View read.
 	reg("/api/terminal/policy", L, secTerminals, s.handleTerminalPolicy)
+	// The launchpad's first-launch consent (door A): the three launch-policy
+	// opt-ins a first launch needs, previewed and applied as one save, plus
+	// the playground folder created only on consent. Whole-route Local like
+	// the policy editor; the guard's self-approval rule denies it to an agent.
+	reg("/api/terminal/first-launch", L, secTerminals, s.handleTerminalFirstLaunch)
 	reg("/api/terminal/runs", V, secTerminals, s.handleTerminalRuns)
 	// Runtime bounds (max_concurrent / idle_timeout) — a Local write that
 	// live-applies to the PTY manager with no restart, unlike the start-captured
@@ -1373,9 +1631,20 @@ func browserGuard(next http.Handler, hostAllowed func(host string) bool) http.Ha
 	})
 }
 
-// isWebSocketUpgrade reports whether r is a WebSocket upgrade handshake.
+// isWebSocketUpgrade reports whether r is a WebSocket upgrade handshake:
+// "websocket" as any token of any Upgrade header line, matched without
+// case, the way coder/websocket's Accept reads it (an exact match on the
+// first line alone let "Upgrade: h2c, websocket", or a second Upgrade line,
+// pass as a plain GET and then upgrade; callerid fixes-1, H1).
 func isWebSocketUpgrade(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	for _, line := range r.Header.Values("Upgrade") {
+		for _, token := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "websocket") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hostAllowlistPredicate returns a Host-allow predicate for a remotely-exposed
@@ -1602,7 +1871,9 @@ var processStartedAt = time.Now().UTC()
 // The snapshot comes from statusSnapshot, NOT straight from diag.Snapshot:
 // the scan is an unfiltered COUNT(*) over a dozen tables and the SPA polls
 // this endpoint from three places at once, so it is memoized per
-// statusSnapshotTTL with singleflight on a miss (status_cache.go).
+// statusSnapshotTTL with singleflight on a miss (status_cache.go). The
+// cached scan also carries the counts only the dashboard can compute
+// (scanStatus: the open security issues behind the Code security badge).
 //
 // Version / StartedAt / UptimeSeconds are stamped AFTER cache retrieval and
 // are deliberately outside the cache: they describe THIS process at THIS
@@ -1713,7 +1984,7 @@ func (s *Server) handleStatusScoped(w http.ResponseWriter, r *http.Request) {
 	atExtra, atArgs = atExtra+mExtra, append(atArgs, mArgs...)
 	atUpper, atArgs := upper("timestamp", atArgs)
 	atQ := `SELECT COUNT(*) FROM api_turns WHERE timestamp >= ?` + atExtra + atUpper
-	_ = s.db().QueryRowContext(r.Context(), atQ, append([]any{since}, atArgs...)...).Scan(&out.APITurns)
+	_ = s.db().QueryRowContext(r.Context(), atQ, append([]any{since}, atArgs...)...).Scan(&out.APITurns) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 
 	// token_usage: no project_id column → walk through sessions for project
 	tuExtra := ""
@@ -2365,6 +2636,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		where = append(where, "s.surface_host = ?")
 		args = append(args, host)
 	}
+	// Where it ran (agent migration 240, cloud-agents lane CA-B5): a fixed
+	// fragment from executionFilterSQL (cloudlane.go), "unknown" = the NULL
+	// column, anything else fails open to no filter. Shared `where`, so the
+	// total and scored_count agree with the page.
+	if frag := sessionExecutionFilter(r); frag != "" {
+		where = append(where, frag)
+	}
 	if !since.IsZero() {
 		// Reconcile the Sessions window with the cost engine. /api/cost and
 		// /api/models window by turn/token TIMESTAMP (cost/summary.go), so a
@@ -2424,7 +2702,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// data query so page math stays coherent.
 	var total int
 	countArgs := append([]any{}, args...)
-	if err := s.db().QueryRowContext(
+	if err := s.db().QueryRowContext( //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		r.Context(),
 		"SELECT COUNT(*) FROM sessions s "+whereClause, countArgs...,
 	).Scan(&total); err != nil {
@@ -2439,7 +2717,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// users into thinking scoring is unsupported. Same WHERE as `total`
 	// so the count is consistent with the visible filter.
 	var scoredCount int
-	_ = s.db().QueryRowContext(
+	_ = s.db().QueryRowContext( //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		r.Context(),
 		"SELECT COUNT(*) FROM sessions s "+whereClause+
 			func() string {
@@ -2469,7 +2747,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// last_seen falls back to MAX(actions.timestamp) when ended_at is
 	// NULL (open session) so DurationSeconds is still meaningful for
 	// in-flight sessions. Subqueries are cheap at LIMIT 20.
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments, ORDER BY column from a fixed allow-list, and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT s.id, s.tool, COALESCE(p.root_path, ''), s.started_at,
 		        COALESCE(s.ended_at,
@@ -2495,7 +2773,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(s.surface, ''), COALESCE(s.surface_host, ''),
 		        -- Captured tool/CLI version (migration 125): same plain-column
 		        -- read; '' = unstamped (honest unknown, never fabricated).
-		        COALESCE(s.tool_version, '')
+		        COALESCE(s.tool_version, ''),
+		        -- Where it ran (migration 240): '' = unstamped (unknown,
+		        -- never a defaulted "local").
+		        COALESCE(s.execution_location, ''), COALESCE(s.vendor_session_ref, '')
 		 FROM sessions s
 		 LEFT JOIN projects p ON p.id = s.project_id
 		 `+whereClause+` `+orderAndLimit, dataArgs...)
@@ -2660,6 +2941,15 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// NODE-LOCAL). omitempty + ABSENT MEANS UNSTAMPED — the list never
 		// fabricates a version. Same field the detail response exposes.
 		ToolVersion string `json:"tool_version,omitempty"`
+		// ExecutionLocation is where the session's agent ran (migration
+		// 240): local | vendor_cloud | customer_worker. VendorSessionRef is
+		// the vendor's second native session id used to join capture rails.
+		// Both omitempty and ABSENT MEANS UNKNOWN: the list never fabricates
+		// "local", and an unstamped corpus emits the byte-identical payload
+		// it did before the columns existed. Same two fields the detail
+		// response exposes.
+		ExecutionLocation string `json:"execution_location,omitempty"`
+		VendorSessionRef  string `json:"vendor_session_ref,omitempty"`
 	}
 	var out []sessRow
 	for rows.Next() {
@@ -2671,7 +2961,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			&sr.TotalActions, &sr.SidechainActionCount,
 			&q, &er, &rr,
 			&rrWasteful, &stWasteful, &stNecessary,
-			&sr.Surface, &sr.SurfaceHost, &sr.ToolVersion); err != nil {
+			&sr.Surface, &sr.SurfaceHost, &sr.ToolVersion,
+			&sr.ExecutionLocation, &sr.VendorSessionRef); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -2885,7 +3176,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		placeholders := strings.Repeat("?,", len(ids))
 		placeholders = strings.TrimRight(placeholders, ",")
 		modelArgs := append(append([]any{}, ids...), ids...)
-		modelRows, mErr := s.db().QueryContext(r.Context(),
+		modelRows, mErr := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 			//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 			`SELECT session_id, model, SUM(c) AS turns FROM (
 				SELECT session_id, COALESCE(model, '') AS model, COUNT(*) AS c
@@ -3054,7 +3345,7 @@ func (s *Server) handleSessionsCalendar(w http.ResponseWriter, r *http.Request) 
 		where = append(where, frag)
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT substr(started_at, 1, 10) AS day, COUNT(*) AS n
 		   FROM sessions
@@ -3315,7 +3606,7 @@ func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
 
 	var total int
 	countArgs := append([]any{}, args...)
-	if err := s.db().QueryRowContext(
+	if err := s.db().QueryRowContext( //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		r.Context(),
 		"SELECT COUNT(*) FROM actions a "+whereClause, countArgs...,
 	).Scan(&total); err != nil {
@@ -3328,7 +3619,7 @@ func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
 	// Excerpt is loaded in a second batch query — see loadActionExcerpts
 	// for why an inline subquery is O(N×M) on the FTS5 action_excerpts
 	// table.
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT a.id, a.timestamp, a.tool, a.session_id,
 		        COALESCE(p.root_path, ''), a.action_type,
@@ -3541,7 +3832,7 @@ func (s *Server) handleActionsDayCounts(w http.ResponseWriter, r *http.Request) 
 		where = append(where, frag)
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT substr(a.timestamp, 1, 10) AS day, COUNT(*) AS n
 		   FROM actions a
@@ -3647,6 +3938,17 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// session tree (docs/process-observability.md §13.1). Attributed
 	// fork/exec/exit lineage with the spawning command per subtree. Empty
 	// unless [observer.process] is enabled; drives the Processes drawer.
+	// Sub-route: /api/session/<id>/processes/summary → the process capture
+	// summary (capture counters, budget, service roots, top rollups, findings
+	// count) with an ETag: what the System tab polls (processcapture.go, plan
+	// §9.3). Must precede the /processes match below.
+	if strings.HasSuffix(id, "/processes/summary") {
+		id = strings.TrimSuffix(id, "/processes/summary")
+		s.handleSessionProcessSummary(w, r, id)
+		return
+	}
+	// /processes takes the window parameters from, to, limit and since and
+	// returns the newest `limit` rows by default, never the whole history.
 	if strings.HasSuffix(id, "/processes") {
 		id = strings.TrimSuffix(id, "/processes")
 		s.handleSessionProcesses(w, r, id)
@@ -3951,6 +4253,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		// (migration 162), equal to ToolVersion when no upgrade was seen.
 		// When the two differ the session was upgraded mid-session.
 		ToolVersionLast string `json:"tool_version_last,omitempty"`
+		// ExecutionLocation / VendorSessionRef: where the session's agent
+		// ran and the vendor's second native session id (migration 240,
+		// cloud-agents arc). Omitted when unstamped (= unknown, never
+		// "local"); the list rows carry the same two fields.
+		ExecutionLocation string `json:"execution_location,omitempty"`
+		VendorSessionRef  string `json:"vendor_session_ref,omitempty"`
 		// Resume declares how a CLOSED session on this tool can be reopened
 		// (session-attach design Phase 3): kind "native" (grounded
 		// ResumeNative → the Resume button POSTs /resume), "handoff" (no native
@@ -4290,6 +4598,11 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// a failure leaves it empty (= unknown) and omitted.
 	if first, last, terr := store.New(s.db()).LoadSessionToolVersions(r.Context(), id); terr == nil {
 		d.ToolVersion, d.ToolVersionLast = first, last
+	}
+	// Where it ran (migration 240) - same best-effort read; a failure
+	// leaves both empty (= unknown) and omitted.
+	if ex, xerr := store.New(s.db()).LoadSessionExecution(r.Context(), id); xerr == nil {
+		d.ExecutionLocation, d.VendorSessionRef = ex.ExecutionLocation, ex.VendorSessionRef
 	}
 	if lin, lerr := store.New(s.db()).LoadSessionLineage(r.Context(), id); lerr == nil {
 		d.ForkedFromID = lin.ForkedFromID
@@ -5359,13 +5672,13 @@ func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var total int
-	if err := s.db().QueryRowContext(r.Context(),
+	if err := s.db().QueryRowContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		`SELECT COUNT(*) FROM project_patterns pp`+whereSQL, countArgs...).Scan(&total); err != nil {
 		writeErr(w, err)
 		return
 	}
 	listArgs = append(listArgs, limit, offset)
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT COALESCE(p.root_path, ''), pattern_type, pattern_data,
 		        COALESCE(confidence, 0), COALESCE(observation_count, 0)
@@ -5442,7 +5755,7 @@ func (s *Server) handlePatternsTimeseries(w http.ResponseWriter, r *http.Request
 		projClause += " AND " + frag
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression, WHERE/scope fragments) is built from code constants; all values are bound via ? args.
 		`SELECT `+slot.SQLiteExpr("last_reinforced_at")+` AS bucket, pattern_type, COUNT(*) AS c
 		 FROM project_patterns
@@ -5677,7 +5990,7 @@ func (s *Server) lossyEvictedBytesByBucket(ctx context.Context, spec timebucket.
 		where = append(where, frag)
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(ctx,
+	rows, err := s.db().QueryContext(ctx, //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (the bucket expression is rendered by internal/timebucket from code constants; WHERE fragments + the IN placeholder list likewise); all values are bound via ? args.
 		`SELECT `+slot.SQLiteExpr("ce.timestamp")+` AS bucket, COALESCE(SUM(ce.original_bytes), 0)
 		 FROM compression_events ce
@@ -5745,14 +6058,11 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 		CompEvictedBytes int64 `json:"compression_evicted_bytes"`
 	}
 
-	// Lean on the cost engine so pricing stays consistent with /api/cost.
-	summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
-		Days: days, Since: since, Until: until, GroupBy: cost.GroupByDay, Source: cost.SourceAuto,
-		// One row per bucket; the grid is capped (sub-day) or data-bounded
-		// (day/week), so this never truncates a real window.
-		Limit:     1 << 20,
-		BucketKey: tsBucketKeyer(spec),
-		Tool:      tool, ProjectRoot: project, Model: modelParam(r),
+	// Lean on the cost engine (through costseries, the one owner shared
+	// with `observer chart`) so pricing stays consistent with /api/cost.
+	buckets, err := costseries.Cost(r.Context(), s.opts.CostEngine, s.db(), costseries.Query{
+		Spec: spec, Days: days, Since: since, Until: until,
+		Tool: tool, Project: project, Model: modelParam(r),
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -5767,9 +6077,13 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	byKey := make(map[string]point, len(summary.Rows))
-	starts := make(map[string]time.Time, len(summary.Rows))
-	for _, row := range summary.Rows {
+	series := make([]point, 0, len(buckets))
+	for _, b := range buckets {
+		if !b.HasData {
+			series = append(series, point{Bucket: b.Key, T: millis(b.T)})
+			continue
+		}
+		row := b.Row
 		gross := row.Compression.SavedBytesSigned()
 		evicted := evictedByBucket[row.Key]
 		bytesSaved := gross
@@ -5793,9 +6107,9 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 			usdInputTier *= factor
 			usdCacheTier *= factor
 		}
-		starts[row.Key] = keyStart(spec, row.Key)
-		byKey[row.Key] = point{
+		series = append(series, point{
 			Bucket:                        row.Key,
+			T:                             millis(b.T),
 			Input:                         row.Tokens.Input,
 			Output:                        row.Tokens.Output,
 			CacheRead:                     row.Tokens.CacheRead,
@@ -5809,17 +6123,7 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 			CompCostUSDSavedCacheReadTier: usdCacheTier,
 			CompTurns:                     row.Compression.Turns,
 			CompEvictedBytes:              evicted,
-		}
-	}
-	slots := bucketSlots(spec, starts)
-	series := make([]point, 0, len(slots))
-	for _, sl := range slots {
-		p, ok := byKey[sl.Key]
-		if !ok {
-			p = point{Bucket: sl.Key}
-		}
-		p.T = millis(sl.T)
-		series = append(series, p)
+		})
 	}
 	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "cost",
@@ -5860,64 +6164,37 @@ func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Re
 		writeBucketErr(w, err)
 		return
 	}
-	summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
-		Days:        days,
-		Since:       since,
-		Until:       until,
-		GroupBy:     cost.GroupByDayModel,
-		BucketKey:   tsBucketKeyer(spec),
-		Source:      cost.SourceAuto,
-		ProjectRoot: projectFilter,
-		Tool:        toolFilter,
-		Model:       modelParam(r),
-		// One row per (bucket, model); the bucket count is capped
-		// (sub-day) or data-bounded (day/week), so this never truncates.
-		Limit: 1 << 20,
+	// costseries is the one owner of this series (shared with `observer
+	// chart models`): SourceAuto rows, chronological then by model.
+	points, grid, err := costseries.TokensByModel(r.Context(), s.opts.CostEngine, s.db(), costseries.Query{
+		Spec: spec, Days: days, Since: since, Until: until,
+		Tool: toolFilter, Project: projectFilter, Model: modelParam(r),
 	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-
-	series := make([]point, 0, len(summary.Rows))
-	starts := map[string]time.Time{}
-	for _, row := range summary.Rows {
-		bucket, model := cost.SplitDayModelKey(row.Key)
-		st, ok := starts[bucket]
-		if !ok {
-			st = keyStart(spec, bucket)
-			starts[bucket] = st
-		}
+	series := make([]point, 0, len(points))
+	for _, p := range points {
+		row := p.Row
 		series = append(series, point{
-			Bucket:        bucket,
-			T:             millis(st),
-			Model:         model,
+			Bucket:        p.Bucket,
+			T:             millis(p.T),
+			Model:         p.Model,
 			Input:         row.Tokens.Input,
 			Output:        row.Tokens.Output,
 			CacheRead:     row.Tokens.CacheRead,
 			CacheCreation: row.Tokens.CacheCreation,
-			TotalTokens:   row.Tokens.Input + row.Tokens.Output + row.Tokens.CacheRead + row.Tokens.CacheCreation,
+			TotalTokens:   costseries.TotalTokens(row.Tokens),
 			CostUSD:       row.CostUSD,
 			TurnCount:     row.TurnCount,
 		})
 	}
-	// Engine returns rows sorted by cost_usd DESC. Re-sort chronologically
-	// (then by model for a stable stacking order within a bucket) so the
-	// chart axis reads left-to-right.
-	sort.SliceStable(series, func(i, j int) bool {
-		if series[i].T != series[j].T {
-			return series[i].T < series[j].T
-		}
-		if series[i].Bucket != series[j].Bucket {
-			return series[i].Bucket < series[j].Bucket
-		}
-		return series[i].Model < series[j].Model
-	})
 	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "tokens_by_model",
 		"days":   days,
 		"series": series,
-		"grid":   gridJSON(bucketSlots(spec, starts)),
+		"grid":   gridJSON(grid),
 	}))
 }
 
@@ -5971,7 +6248,7 @@ func (s *Server) handleTimeseriesActions(w http.ResponseWriter, r *http.Request)
 	}
 	mExtra, mArgs := modelfilter.AndSessionsUsing("session_id", modelParam(r))
 	extra, args = extra+mExtra, append(args, mArgs...)
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression and WHERE fragments) is built from code constants; all values are bound via ? args.
 		`SELECT `+slot.SQLiteExpr("timestamp")+` AS bucket, tool,
 		        COUNT(*),
@@ -6098,7 +6375,7 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	      WHERE ` + strings.Join(where, " AND ") + `
 	      GROUP BY tool
 	      ORDER BY COUNT(*) DESC`
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	rows, err := s.db().QueryContext(r.Context(), q, args...) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -6197,7 +6474,7 @@ func (s *Server) handleToolsBreakdown(w http.ResponseWriter, r *http.Request) {
 	      WHERE ` + whereClause + `
 	      GROUP BY tool, action_type
 	      ORDER BY tool, COUNT(*) DESC`
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	rows, err := s.db().QueryContext(r.Context(), q, args...) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -6230,29 +6507,39 @@ func (s *Server) handleToolsBreakdown(w http.ResponseWriter, r *http.Request) {
 // pass, streaming each (tool, raw_tool_name) group straight into the
 // accumulator. It is a separate function so the cursor is closed by
 // defer on every path, and so the handler reads as two passes.
+//
+// A row a cloud-agent connector wrote also groups by its source_file (one
+// value per connector; every other row groups under the empty string),
+// because the vocabulary its native name belongs to is the connector's,
+// not always the tool's: Cline Cloud lands under cline while its calls
+// carry cline-cli's names. cloudagents.VocabularyForSource reads that
+// from the connector table, the same answer MapActivity used at capture.
 func (s *Server) foldBreakdownSurfaces(ctx context.Context, acc *breakdownAccumulator, whereClause string, args []any) error {
 	//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
-	q := `SELECT tool, COALESCE(raw_tool_name, ''), COUNT(*)
+	q := `SELECT tool,
+	             CASE WHEN substr(source_file, 1, ?) = ? THEN source_file ELSE '' END AS connector_source,
+	             COALESCE(raw_tool_name, ''), COUNT(*)
 	      FROM actions
 	      WHERE ` + whereClause + `
-	      GROUP BY tool, raw_tool_name
+	      GROUP BY tool, connector_source, raw_tool_name
 	      ORDER BY COUNT(*) DESC
 	      LIMIT ?`
-	qArgs := make([]any, 0, len(args)+1)
+	qArgs := make([]any, 0, len(args)+3)
+	qArgs = append(qArgs, len(cloudagents.SourceFilePrefix), cloudagents.SourceFilePrefix)
 	qArgs = append(qArgs, args...)
 	qArgs = append(qArgs, breakdownNativeGroupCap)
-	rows, err := s.db().QueryContext(ctx, q, qArgs...)
+	rows, err := s.db().QueryContext(ctx, q, qArgs...) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var tool, rawName string
+		var tool, origin, rawName string
 		var n int
-		if err := rows.Scan(&tool, &rawName, &n); err != nil {
+		if err := rows.Scan(&tool, &origin, &rawName, &n); err != nil {
 			return err
 		}
-		acc.AddNativeCount(tool, rawName, n)
+		acc.AddNativeCountIn(tool, cloudagents.VocabularyForSource(tool, origin), rawName, n)
 	}
 	return rows.Err()
 }
@@ -6460,7 +6747,7 @@ func (s *Server) handleCompressionByModel(w http.ResponseWriter, r *http.Request
 		where = append(where, frag)
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT COALESCE(at.model, '(unknown)') AS model,
 		        ce.mechanism,
@@ -6571,7 +6858,7 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 		where = append(where, frag)
 		args = append(args, margs...)
 	}
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression, WHERE/JOIN/scope fragments) is built from code constants; all values are bound via ? args.
 		`SELECT `+slot.SQLiteExpr("ce.timestamp")+` AS bucket,
 		        ce.mechanism,
@@ -6743,6 +7030,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		Commits30d     int                            `json:"commits_30d,omitempty"`
 		LastCommitAt   string                         `json:"last_commit_at,omitempty"`
 		Capture        *dashapi.APIProjectCaptureInfo `json:"capture,omitempty"`
+		// Where it ran (cloud-agents lane CA-B5). ExecutionMix is the
+		// project's all-time session count per execution location ("unknown"
+		// for an unstamped session); absent on a project where nothing was
+		// ever stamped, so a node with no cloud sessions emits the
+		// byte-identical list. SyntheticCloud marks a "cloud:<remote>"
+		// project (CA-D3); CloudTwinOf names the local project it now folds
+		// under (the page groups it there) and CloudTwins the reverse.
+		ExecutionMix   map[string]int `json:"execution_mix,omitempty"`
+		SyntheticCloud bool           `json:"synthetic_cloud,omitempty"`
+		CloudTwinOf    int64          `json:"cloud_twin_of,omitempty"`
+		CloudTwins     []int64        `json:"cloud_twins,omitempty"`
 	}
 	out := []projectRow{}
 	for rows.Next() {
@@ -6755,9 +7053,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if lastSeen.Valid {
 			pr.LastSeen = lastSeen.String
 		}
+		pr.SyntheticCloud = models.IsSyntheticCloudProjectRoot(pr.RootPath)
 		out = append(out, pr)
 	}
 	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := attachProjectExecution(r.Context(), store.New(s.db()), out, func(pr *projectRow) (int64, *map[string]int, *int64, *[]int64) {
+		return pr.ID, &pr.ExecutionMix, &pr.CloudTwinOf, &pr.CloudTwins
+	}); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -6965,7 +7270,10 @@ func projectListQuery(sc projectListScope) (string, []any) {
 			sessArgs = append(sessArgs, margs...)
 		}
 	}
-	var projPred []string
+	// A row the worktree-roots backfill folded into its repository's
+	// project, with nothing filed under it since, is not a project of its
+	// own: it is left out of every list (the FilterBar picker included).
+	projPred := []string{"NOT (" + store.FoldedProjectSQL("p") + ")"}
 	var projArgs []any
 	if sc.project != "" {
 		projPred = append(projPred, "p.root_path = ?")
@@ -7424,13 +7732,13 @@ func (s *Server) handleCompactionEvents(w http.ResponseWriter, r *http.Request) 
 	mExtra, mArgs := modelfilter.AndSessionsUsing("session_id", modelParam(r))
 	whereExtra, args = whereExtra+mExtra, append(args, mArgs...)
 
-	_ = s.db().QueryRowContext(r.Context(),
+	_ = s.db().QueryRowContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		`SELECT COUNT(*), COUNT(DISTINCT session_id),
 		        COALESCE(SUM(CASE WHEN injected_at IS NOT NULL THEN 1 ELSE 0 END), 0)
 		 FROM compaction_events WHERE timestamp >= ?`+whereExtra,
 		args...).Scan(&out.Count, &out.SessionsAffected, &out.InjectionsFired)
 
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT id, session_id, timestamp, COALESCE(tool, ''),
 		        COALESCE(pre_action_count, 0),
@@ -7531,7 +7839,7 @@ func (s *Server) handleCompressionRollingCost(w http.ResponseWriter, r *http.Req
 	model := modelParam(r)
 	mWhere, mArgs := modelfilter.AndRowIs("sc.model", model)
 	scWhere, scArgs = scWhere+mWhere, append(scArgs, mArgs...)
-	_ = s.db().QueryRowContext(r.Context(),
+	_ = s.db().QueryRowContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		`SELECT COUNT(*),
 		        COALESCE(SUM(sc.input_tokens), 0),
 		        COALESCE(SUM(sc.output_tokens), 0),
@@ -7559,7 +7867,7 @@ func (s *Server) handleCompressionRollingCost(w http.ResponseWriter, r *http.Req
 	}
 	mWhere, mArgs = modelfilter.AndRowIs("at.model", model)
 	ceWhere, ceArgs = ceWhere+mWhere, append(ceArgs, mArgs...)
-	rows, err := s.db().QueryContext(r.Context(),
+	rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
 		`SELECT COALESCE(at.model, ''),
 		        COALESCE(SUM(ce.original_bytes - ce.compressed_bytes), 0)

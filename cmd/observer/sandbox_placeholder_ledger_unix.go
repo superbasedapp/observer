@@ -275,6 +275,22 @@ func placeholderInode(path string) (dev, ino uint64, size int64, ok bool) {
 	return uint64(st.Dev), uint64(st.Ino), st.Size, true //nolint:unconvert,gosec // Dev is int32 on darwin, uint64 on linux/amd64; a device number is never negative
 }
 
+// clearRunPlaceholderLedger clears runID's ledger under observerDir, and
+// the placeholders it proves, when its helper is gone (nobody holds the
+// lock): the daemon-start sweep's rule for one run, which a backend's own
+// reaper calls once it has judged the run abandoned, so a SIGKILLed
+// helper's placeholders do not wait for the next daemon start (build
+// tracker F-052: the OpenShell row's read-only `{}` placeholder at
+// ~/.claude/settings.json stayed on the host after O1B-L1 killed run 2's
+// helper). A held ledger, a missing one and an invalid run id clear
+// nothing. It reports whether a ledger was cleared.
+func clearRunPlaceholderLedger(observerDir, runID string) bool {
+	if observerDir == "" || !sandboxrelay.ValidRunID(runID) {
+		return false
+	}
+	return clearStaleLedger(placeholderLedgerPath(observerDir, runID), true)
+}
+
 // sweepStaleSandboxPlaceholders is the daemon-start sweep of the placeholders
 // killed helpers left behind (N3); it logs what it cleared.
 func sweepStaleSandboxPlaceholders(observerDir string, logger *slog.Logger) {

@@ -42,7 +42,7 @@ export const CLOUD_OUTBOX_STATES: Record<string, CloudStateMeta> = {
     label: "Review needed",
     variant: "warn",
     meaning:
-      "The session changed since you confirmed the preview (a local edit, a scrubber upgrade, a schema bump, or an invalidated receipt). It will never auto-send and the confirmed digests are never auto-updated - re-preview and confirm (`observer cloud consent --session <id>`) to re-enqueue the new bytes.",
+      "The session changed since you confirmed the preview (a local edit, a scrubber upgrade, a schema bump, or an invalidated receipt). It will never auto-send and the confirmed digests are never auto-updated - open the session's Cloud row and use Preview, then Confirm and enrich, to re-enqueue the new bytes (the same as `observer cloud consent --session <id>`).",
   },
   sending: {
     label: "Uploading",

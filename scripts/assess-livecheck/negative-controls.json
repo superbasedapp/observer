@@ -1,0 +1,89 @@
+{
+  "_doc": [
+    "The launch controls of `collect.sh negative core` (plan section 8, F), one body each, as data.",
+    "The kit renders every body from this file with jq, and TestAssessKitControlsMatchTheRoute",
+    "(internal/intelligence/dashboard) renders the same bodies and posts them to the real launch",
+    "handler, so a renamed member, a new required member or a changed rule order fails a Go test",
+    "and not a live run.",
+    "A body is `base` with every `@name` filled from the plan answer, then `set` laid over it.",
+    "The values: @project_root_hash is the fixture project's hash from /api/security/status,",
+    "@run_id the plan's run id, @tool an agent from the plan's allowed_tools, @target the confirmed",
+    "loopback target, and @tripwire_digest the plan's prompt digest with its first character",
+    "changed. The tripwire is what makes a control unable to start a terminal: the digest is",
+    "checked after every eligibility rule and before anything is claimed or started, so a launch",
+    "that gets past the rule under test is stopped there with 409 plan_changed. A control row that",
+    "answers plan_changed therefore means the body was ACCEPTED (BASE says the body is otherwise",
+    "good; any other row answering it means its rule did not fire).",
+    "A row with `needs` is built only when that environment variable is set (the kit fills",
+    "@needs from it) and is not run by the Go test."
+  ],
+  "base": {
+    "assessment": "pentest_local",
+    "project_root_hash": "@project_root_hash",
+    "run_id": "@run_id",
+    "tool": "@tool",
+    "target": "@target",
+    "confirm_target": "@target",
+    "prompt_sha256": "@tripwire_digest"
+  },
+  "controls": [
+    {
+      "id": "BASE",
+      "label": "BASE the unmodified body is accepted (only the tripwire digest stops it)",
+      "set": {},
+      "status": 409,
+      "rule": "",
+      "code": "plan_changed"
+    },
+    {
+      "id": "E4",
+      "label": "E4 confirmation does not match",
+      "set": { "confirm_target": "http://localhost:9/" },
+      "status": 409,
+      "rule": "E4",
+      "code": "target_unconfirmed"
+    },
+    {
+      "id": "E6-flag",
+      "label": "E6 sandbox false is not read: the route sandboxes, so the body is accepted as a sandboxed launch",
+      "set": { "sandbox": false },
+      "status": 409,
+      "rule": "",
+      "code": "plan_changed"
+    },
+    {
+      "id": "E6-rules",
+      "label": "E6 sandbox false is answered by the sandbox rules (a backend that is not grounded: E9, never E6)",
+      "set": { "sandbox": false, "backend": "oci-runc" },
+      "status": 409,
+      "rule": "E9",
+      "code": "backend_not_grounded"
+    },
+    {
+      "id": "E9",
+      "label": "E9 a non-bwrap backend",
+      "set": { "backend": "oci-runc" },
+      "status": 409,
+      "rule": "E9",
+      "code": "backend_not_grounded"
+    },
+    {
+      "id": "E10",
+      "label": "E10 a clone workspace",
+      "set": { "workspace_source": "clone-local" },
+      "status": 409,
+      "rule": "E10",
+      "code": "source_not_live"
+    },
+    {
+      "id": "E8b",
+      "label": "E8b an agent that is not proxy routed (NEG_UNROUTED_TOOL)",
+      "needs": "NEG_UNROUTED_TOOL",
+      "skip_hint": "a launchable agent the Adapters page shows as not proxy routed",
+      "set": { "tool": "@needs" },
+      "status": 409,
+      "rule": "E8b",
+      "code": "tool_not_proxy_routed"
+    }
+  ]
+}

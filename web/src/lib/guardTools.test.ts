@@ -44,7 +44,20 @@ test("guardTestEnforceLine says whether enforce would decide differently", () =>
 });
 
 test("guardJobLabel has a plain name for every job kind and no em dash", () => {
-  for (const kind of ["rescan", "compile-diff", "compile", "mcp-scan", "mcp-report"]) {
+  for (const kind of [
+    "rescan",
+    "compile-diff",
+    "compile",
+    "mcp-scan",
+    "mcp-report",
+    // B-G8: the audit chain repairs, each a dry run and an apply.
+    "repair-anchors",
+    "repair-anchors-apply",
+    "dedup-events",
+    "dedup-events-apply",
+    "relink-gaps",
+    "relink-gaps-apply",
+  ]) {
     const label = guardJobLabel(kind);
     assert.ok(label && label !== kind, kind);
     assert.ok(!/—/.test(label), kind);

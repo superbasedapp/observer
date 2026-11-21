@@ -1,0 +1,15 @@
+{"SchemaVersion":2,"Trivy":{"Version":"0.75.0"},"ArtifactName":"image.tar","ArtifactType":"container_image","Metadata":{"OS":{"Family":"debian","Name":"12.15"}},
+"Results":[{"Target":"image.tar (debian 12.15)","Class":"os-pkgs","Type":"debian",
+"Packages":[
+{"ID":"apt@2.6.1","Name":"apt","Identifier":{"UID":"a1"},"Version":"2.6.1","SrcName":"apt","SrcVersion":"2.6.1"},
+{"ID":"libssl3@3.0.17-1~deb12u2","Name":"libssl3","Identifier":{"UID":"a2"},"Version":"3.0.17-1~deb12u2","SrcName":"openssl","SrcVersion":"3.0.17-1~deb12u2"},
+{"ID":"tzdata@2025b-0+deb12u1","Name":"tzdata","Identifier":{"UID":"a3"},"Version":"2025b-0+deb12u1","SrcName":"tzdata"},
+{"ID":"linux-libc-dev@6.1.140-1","Name":"linux-libc-dev","Identifier":{"UID":"a4"},"Version":"6.1.140-1","SrcName":"linux"}],
+"Vulnerabilities":[
+{"VulnerabilityID":"CVE-2011-3374","PkgID":"apt@2.6.1","PkgName":"apt","PkgIdentifier":{"UID":"a1"},"InstalledVersion":"2.6.1","Status":"affected","Severity":"LOW"},
+{"VulnerabilityID":"CVE-2025-9230","VendorIDs":["DSA-6015-1"],"PkgID":"libssl3@3.0.17-1~deb12u2","PkgName":"libssl3","PkgIdentifier":{"UID":"a2"},"InstalledVersion":"3.0.17-1~deb12u2","FixedVersion":"3.0.17-1~deb12u3","Status":"fixed","Severity":"CRITICAL"},
+{"VulnerabilityID":"CVE-2026-1111","PkgID":"libssl3@3.0.17-1~deb12u2","PkgName":"libssl3","PkgIdentifier":{"UID":"a2"},"InstalledVersion":"3.0.17-1~deb12u2","Status":"will_not_fix","Severity":"UNKNOWN"},
+{"VulnerabilityID":"DLA-4867-1","PkgID":"tzdata@2025b-0+deb12u1","PkgName":"tzdata","PkgIdentifier":{"UID":"a3"},"InstalledVersion":"2025b-0+deb12u1","FixedVersion":"2025c-0+deb12u1","Status":"fixed","Severity":"UNKNOWN"},
+{"VulnerabilityID":"CVE-2026-2222","PkgID":"linux-libc-dev@6.1.140-1","PkgName":"linux-libc-dev","PkgIdentifier":{"UID":"a4"},"InstalledVersion":"6.1.140-1","Status":"affected","Severity":"HIGH"},
+{"VulnerabilityID":"CVE-2026-3333","PkgID":"apt@2.6.1","PkgName":"apt","PkgIdentifier":{"UID":"a1"},"InstalledVersion":"2.6.1; rm -rf /","Status":"affected","Severity":"HIGH"},
+{"VulnerabilityID":"bad id with spaces","PkgID":"apt@2.6.1","PkgName":"apt","PkgIdentifier":{"UID":"a1"},"InstalledVersion":"2.6.1","Status":"affected","Severity":"HIGH"}]}]}

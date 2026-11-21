@@ -94,12 +94,74 @@ var linuxPackageManagers = []pmRule{
 	{[]string{"opensuse", "suse", "sles"}, PackageManager{Name: "zypper", Install: "sudo zypper install -y", Family: "openSUSE/SLES"}},
 }
 
+// brewPackageManager is the macOS row PackageManagerFor answers.
+var brewPackageManager = PackageManager{Name: "brew", Install: "brew install", Family: "macOS, Homebrew"}
+
+// PackageManagerByName returns the package manager row for a channel name
+// (apt, dnf, apk, pacman, zypper, brew); ok is false for any other name.
+func PackageManagerByName(name string) (PackageManager, bool) {
+	if name == brewPackageManager.Name {
+		return brewPackageManager, true
+	}
+	for _, row := range linuxPackageManagers {
+		if row.pm.Name == name {
+			return row.pm, true
+		}
+	}
+	return PackageManager{}, false
+}
+
+// InstallArgvFor builds the install argv for packages on pm's channel: the
+// channel's program, its install verb and its non-interactive flags, then
+// the packages, under sudo when the channel is Elevated (the OS package
+// managers). It is the one builder the sandbox setup planner and its runner
+// use, so the argv a setup terminal runs is the argv PlanUninstall reads
+// back. ok is false when pm has no channel row with a program (an unknown
+// family, the zero PackageManager), when packages is empty, when a package
+// name is not a plain name (empty, starting with "-", or holding whitespace
+// or a shell metacharacter), or when the channel takes one package and more
+// are given.
+func InstallArgvFor(pm PackageManager, packages []string) (channel string, argv []string, ok bool) {
+	r, found := channelTable[pm.Name]
+	if !found || r.Program == "" || len(packages) == 0 {
+		return "", nil, false
+	}
+	if len(packages) > 1 && !r.MultiPackage {
+		return "", nil, false
+	}
+	for _, p := range packages {
+		if !plainPackageName(p) {
+			return "", nil, false
+		}
+	}
+	argv = make([]string, 0, 2+len(r.InstallVerb)+len(r.InstallFlags)+len(packages))
+	if r.Elevated {
+		argv = append(argv, sudoProgram)
+	}
+	argv = append(argv, r.Program)
+	argv = append(argv, r.InstallVerb...)
+	argv = append(argv, r.InstallFlags...)
+	argv = append(argv, packages...)
+	return pm.Name, argv, true
+}
+
+// plainPackageName reports whether p is a package name a builder may put on
+// an argv: non-empty, not a flag, and free of whitespace and shell
+// metacharacters (the argv is never run through a shell, but a name that
+// needs quoting is not a package name any of the tables holds).
+func plainPackageName(p string) bool {
+	if p == "" || strings.HasPrefix(p, "-") {
+		return false
+	}
+	return !strings.ContainsAny(p, " \t\r\n\"'`$;&|<>()*?![]{}\\")
+}
+
 // PackageManagerFor picks the package manager for a host. darwin is Homebrew;
 // Linux is decided by os-release ID then ID_LIKE through the table above;
 // anything else (Windows, an unknown distro) yields the zero value.
 func PackageManagerFor(goos string, osRelease map[string]string) PackageManager {
 	if goos == "darwin" {
-		return PackageManager{Name: "brew", Install: "brew install", Family: "macOS, Homebrew"}
+		return brewPackageManager
 	}
 	if goos != "linux" {
 		return PackageManager{}

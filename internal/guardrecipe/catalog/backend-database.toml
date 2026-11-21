@@ -1,0 +1,55 @@
+# Pack "backend-database": services and databases.
+#
+# The database family blocks: UPDATE without WHERE, schema and NoSQL
+# destruction, SQL files that do either, and any database command against a
+# production pattern. ORM and migration resets ask. Fill in
+# [guard.database] prod_patterns (Settings > Guard > Database) to name the
+# production hosts, databases and profiles.
+
+name = "backend-database"
+kind = "pack"
+title = "Backend & database"
+summary = "Destructive SQL and NoSQL deny, ORM and migration resets ask, and database commands against [guard.database] prod_patterns deny."
+version = 1
+inputs = ["guard.database.prod_patterns"]
+advice = ["Name your production databases in [guard.database] prod_patterns (Settings > Guard > Database); R-125 is inert while the list is empty."]
+
+[[override]]
+rule = "R-120"
+enforce = true
+note = "DROP, TRUNCATE and DELETE without WHERE hold in observe mode too"
+
+[[override]]
+rule = "R-121"
+decision = "deny"
+enforce = true
+note = "UPDATE without WHERE"
+
+[[override]]
+rule = "R-122"
+decision = "deny"
+enforce = true
+note = "dropping indexes, views, users, roles or columns"
+
+[[override]]
+rule = "R-123"
+enforce = true
+note = "dropDatabase, FLUSHALL and their kin"
+
+[[override]]
+rule = "R-124"
+decision = "ask"
+enforce = true
+note = "prisma migrate reset, rails db:drop and their kin"
+
+[[override]]
+rule = "R-125"
+decision = "deny"
+enforce = true
+note = "a database command against a production pattern"
+
+[[override]]
+rule = "R-126"
+decision = "deny"
+enforce = true
+note = "a SQL file that drops, truncates or updates without WHERE"

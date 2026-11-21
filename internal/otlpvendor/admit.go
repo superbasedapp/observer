@@ -22,6 +22,10 @@ type Admission struct {
 // RefusedTeamGrain is the refusal for a team-grain export.
 const RefusedTeamGrain = "team-grain export (sent once per team from the vendor's cloud): its destination is the org server, not one developer's node"
 
+// RefusedCaptureOff is the refusal for an adapter-gated vendor whose
+// adapter is not enabled on this node (Vendor.AdapterGated).
+const RefusedCaptureOff = "the tool's capture is off on this node (not in [observer.watch].enabled_adapters, or compiled out): its export is not stored"
+
 // TokensOwnedByProxy is Admission.TokensOwner when the tool's proxy route is
 // active and the export's turns cannot merge into the proxy's own rows
 // (operator ruling D-343, "proxy owns tokens"; T-536).
@@ -32,7 +36,9 @@ const TokensOwnedByProxy = "the tool's proxy route is active: the proxy owns its
 // (never from previously stored rows), so a decision cannot race the data.
 type AdmitInput struct {
 	// TranscriptCapture: the tool's own transcript adapter is enabled on
-	// this node ([observer.watch].enabled_adapters).
+	// this node ([observer.watch].enabled_adapters). For an AdapterGated
+	// vendor it is the capture switch itself (the adapter has no
+	// transcript).
 	TranscriptCapture bool
 	// ProxyRouted: the tool's calls go through this node's proxy: its
 	// persisted route points at the proxy, or the export's resource
@@ -48,11 +54,14 @@ type admitRule struct {
 
 // admitRules is walked top-down; the first row whose condition holds decides.
 //  1. A team-grain export never lands on a node.
-//  2. With the tool's proxy route active, the proxy owns the tokens unless
+//  2. An adapter-gated export (the own-agent row) lands only while its
+//     adapter is enabled, and then owns every kind: there is no transcript
+//     to share with, so the transcript rule below sees capture "off".
+//  3. With the tool's proxy route active, the proxy owns the tokens unless
 //     the export's turns merge into the proxy's rows by request id (the row
 //     declares TokensMergeWithProxy): the export's token rows are dropped
 //     and its other kinds follow the transcript rule below (T-536).
-//  3. Otherwise the transcript rule decides (transcriptAdmission): with the
+//  4. Otherwise the transcript rule decides (transcriptAdmission): with the
 //     tool's own transcript capture off (adapter disabled, or the tool has
 //     none) the export owns every kind; with it on, only the kinds the row
 //     declares dedup-safe land (tokens fold against the transcript twin);
@@ -66,18 +75,27 @@ var admitRules = []admitRule{
 		then: func(Vendor, AdmitInput) Admission { return Admission{Refused: RefusedTeamGrain} },
 	},
 	{
+		when: func(v Vendor, in AdmitInput) bool { return v.AdapterGated && !in.TranscriptCapture },
+		then: func(Vendor, AdmitInput) Admission { return Admission{Refused: RefusedCaptureOff} },
+	},
+	{
 		when: func(v Vendor, in AdmitInput) bool { return in.ProxyRouted && !v.Owner.TokensMergeWithProxy },
 		then: func(v Vendor, in AdmitInput) Admission {
-			a := transcriptAdmission(v, in.TranscriptCapture)
+			a := transcriptAdmission(v, hasTranscript(v, in))
 			a.Tokens, a.TokensOwner = false, TokensOwnedByProxy
 			return a
 		},
 	},
 	{
 		when: func(Vendor, AdmitInput) bool { return true },
-		then: func(v Vendor, in AdmitInput) Admission { return transcriptAdmission(v, in.TranscriptCapture) },
+		then: func(v Vendor, in AdmitInput) Admission { return transcriptAdmission(v, hasTranscript(v, in)) },
 	},
 }
+
+// hasTranscript reports whether a transcript adapter shares this export's
+// tool on the node: never for an adapter-gated vendor, whose adapter has no
+// transcript (row 2 already refused it when the adapter is off).
+func hasTranscript(v Vendor, in AdmitInput) bool { return in.TranscriptCapture && !v.AdapterGated }
 
 // transcriptAdmission is the transcript rule: what lands given only whether
 // the tool's transcript capture is active.

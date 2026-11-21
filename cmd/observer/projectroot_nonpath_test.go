@@ -40,7 +40,7 @@ func TestCodeIntelStartSkipsANonPathRoot(t *testing.T) {
 // never resolves a non-path root through git.
 func TestWorktreeRootsBackfillSkipsANonPathRoot(t *testing.T) {
 	nonPathRootCwd(t)
-	if target, ok, reason := worktreeRootTarget(xcodehost.ProjectUnknown); ok || target != "" || reason != "" {
+	if target, ok, reason, gone := worktreeRootTarget(xcodehost.ProjectUnknown); ok || target != "" || reason != "" || gone {
 		t.Errorf("worktreeRootTarget = %q, %v, %q; want a silent skip", target, ok, reason)
 	}
 }

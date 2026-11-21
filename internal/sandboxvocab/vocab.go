@@ -152,6 +152,14 @@ const (
 	CustodyHostBound        KeyCustody = "host_bound"
 )
 
+// CustodyAuto is a CONFIGURATION value of [terminal.sandbox.hosted]
+// .key_custody, never a run's custody (decision SBXD-1): per launch and per
+// tool it resolves to home_relay when this machine can add the key for that
+// tool, otherwise to in_box_api_key (internal/sandboxcred ResolveCustody,
+// the one owner). A run's evidence and plan record the resolved value, so
+// Valid stays the closed set of run custodies and does not accept it.
+const CustodyAuto KeyCustody = "auto"
+
 // Valid reports whether k is in the closed vocabulary.
 func (k KeyCustody) Valid() bool {
 	switch k {
@@ -222,3 +230,106 @@ const (
 	LocationLocal  Location = "local"
 	LocationRemote Location = "remote"
 )
+
+// Seccomp is the syscall filter a layer puts on the agent (gap G16, lane
+// N2): the registry's grounded field and the state a run's seccomp
+// read-back names. The zero value means not grounded.
+type Seccomp string
+
+// The closed Seccomp vocabulary.
+const (
+	// SeccompNone: the layer adds no syscall filter of its own.
+	SeccompNone Seccomp = "none"
+	// SeccompEngineDefault: the container engine's own default profile,
+	// read back from the engine (the OCI rows).
+	SeccompEngineDefault Seccomp = "engine_default"
+	// SeccompObserverProfile: Observer's own profile
+	// (internal/sandboxseccomp), loaded by the layer when
+	// [terminal.sandbox].seccomp is on and read back from /proc before the
+	// agent runs (bwrap, process_lite).
+	SeccompObserverProfile Seccomp = "observer_profile"
+)
+
+// Valid reports whether s is in the closed vocabulary.
+func (s Seccomp) Valid() bool {
+	switch s {
+	case SeccompNone, SeccompEngineDefault, SeccompObserverProfile:
+		return true
+	}
+	return false
+}
+
+// SeccompRun is what one run's agent got from the syscall filter (tracker
+// F-002, lane FU4): the per-run evidence (terminal_run.seccomp) and the
+// posture bucket. A filter that was applied is named by its id, so the one
+// value says both whether a filter was applied and which one. The empty
+// value means not recorded (a run from before the column).
+type SeccompRun string
+
+// The closed SeccompRun vocabulary.
+const (
+	// SeccompRunObserverDefault: Observer's profile observer_default
+	// (internal/sandboxseccomp.ProfileObserverDefault, pinned equal by a
+	// test) was planned and is enforced: the value is recorded when the run
+	// is created, before the host helper's read-back, and a run whose
+	// read-back refuses is ended with that refusal (fail closed) while its
+	// row keeps this value (audit FU4-A4). A recorded observer_default
+	// therefore means "planned, and enforced on every run that went on".
+	// Nothing on the run row tells a refused run apart (tracker F-035): on
+	// bwrap the refusal reaches the run only as the host helper's exit 125
+	// and the refusal text in the run's terminal (which names
+	// built_below_plan and the state), and the sandbox posture still counts
+	// the run as filtered.
+	SeccompRunObserverDefault SeccompRun = "observer_default"
+	// SeccompRunObserverSeizePIDNS and SeccompRunObserverSeizeYama: Observer's
+	// profile with PTRACE_SEIZE lifted, because [terminal.sandbox]
+	// .seccomp_allow_seize was on and a containment ground held at launch (lane
+	// ptrace, PT-96): the sandbox's own pid namespace, or Yama ptrace_scope 1
+	// or more. The value names the ground. Each equals its profile id
+	// (internal/sandboxseccomp, pinned by a test) and is enforced like
+	// observer_default: the host helper re-checks the ground and reads the
+	// filter back before the run goes on, or refuses it.
+	SeccompRunObserverSeizePIDNS SeccompRun = "observer_seize_pidns"
+	SeccompRunObserverSeizeYama  SeccompRun = "observer_seize_yama"
+	// SeccompRunEngineDefault: the container engine's own default profile,
+	// read back from the engine.
+	SeccompRunEngineDefault SeccompRun = "engine_default"
+	// SeccompRunOff: the row loads Observer's profile on request, and
+	// [terminal.sandbox].seccomp was off.
+	SeccompRunOff SeccompRun = "off"
+	// SeccompRunNotApplicable: [terminal.sandbox].seccomp was on, but no
+	// layer of the row loads Observer's profile or carries a grounded
+	// engine filter (macOS, Windows, VM, hosted and openshell rows; a
+	// backend may apply its own filter Observer has not grounded): the run
+	// was not filtered by Observer, and the launch said so (audit N2-A9).
+	SeccompRunNotApplicable SeccompRun = "not_applicable"
+	// SeccompRunNone: the key was off and no layer carries a grounded
+	// filter.
+	SeccompRunNone SeccompRun = "none"
+)
+
+// SeccompRuns lists the vocabulary, applied filters first.
+func SeccompRuns() []SeccompRun {
+	return []SeccompRun{SeccompRunObserverDefault, SeccompRunObserverSeizePIDNS, SeccompRunObserverSeizeYama, SeccompRunEngineDefault, SeccompRunOff, SeccompRunNotApplicable, SeccompRunNone}
+}
+
+// Valid reports whether s is in the closed vocabulary.
+func (s SeccompRun) Valid() bool {
+	for _, v := range SeccompRuns() {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Applied reports whether the value names a filter that was on the agent.
+func (s SeccompRun) Applied() bool {
+	return s == SeccompRunObserverDefault || s.LiftsSeize() || s == SeccompRunEngineDefault
+}
+
+// LiftsSeize reports whether the value names Observer's profile with
+// PTRACE_SEIZE lifted (lane ptrace, PT-96).
+func (s SeccompRun) LiftsSeize() bool {
+	return s == SeccompRunObserverSeizePIDNS || s == SeccompRunObserverSeizeYama
+}

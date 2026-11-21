@@ -51,3 +51,45 @@ func TestRunLive(t *testing.T) {
 		t.Fatal("a held lock is not live")
 	}
 }
+
+// TestTerminalRunLive: a terminal run is live while a relay run bound to it
+// has a live helper; an unbound run, another terminal run's box and an
+// empty id are not.
+func TestTerminalRunLive(t *testing.T) {
+	obs := t.TempDir()
+	if TerminalRunLive(obs, "term-1") || TerminalRunLive(obs, "") {
+		t.Fatal("nothing recorded, yet live")
+	}
+	rec, err := NewRunRecord(RunRecord{RunID: "relay-1", Tool: "claude-code", WorkspaceDir: obs, Roots: []string{obs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRun(obs, rec); err != nil {
+		t.Fatal(err)
+	}
+	if TerminalRunLive(obs, "term-1") {
+		t.Fatal("an unbound relay run counts for term-1")
+	}
+	if err := BindTerminalRun(obs, "relay-1", "term-1"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := HoldRun(obs, "relay-1")
+	if err != nil {
+		if errors.Is(err, errAliveNotOffered) && !aliveLockOS(runtime.GOOS) {
+			t.Skipf("no liveness lock on %s: %v", runtime.GOOS, err)
+		}
+		t.Fatalf("HoldRun: %v", err)
+	}
+	if !TerminalRunLive(obs, "term-1") {
+		t.Fatal("a held helper bound to term-1 is not live")
+	}
+	if TerminalRunLive(obs, "term-2") {
+		t.Fatal("term-1's box counts for term-2")
+	}
+	// The helper goes: its lock file stays, nobody holds it.
+	DropRunLock(obs, "relay-1")
+	if TerminalRunLive(obs, "term-1") {
+		t.Fatal("a gone helper is live")
+	}
+	release()
+}

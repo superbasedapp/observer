@@ -144,3 +144,30 @@ func TestEnrichmentByRequestID_GuardVerdict(t *testing.T) {
 		t.Errorf("GuardVerdict = %q, want %q", e.GuardVerdict, "flag R-172 (destructive)")
 	}
 }
+
+// TestEnrichmentByRequestID_UnpricedTurn pins review finding R-C06: a proxy
+// turn with tokens the cost engine could not price reads unpriced, never a
+// priced $0.
+func TestEnrichmentByRequestID_UnpricedTurn(t *testing.T) {
+	t.Parallel()
+	st, ctx := openRoutingTestStore(t)
+	for _, tc := range []struct {
+		req      string
+		cost     float64
+		unpriced bool
+	}{{"unpriced", 0, true}, {"priced", 0.01, false}} {
+		if _, _, err := st.UpsertTurnByRequestID(ctx, models.APITurn{
+			Provider: "openai", Model: "local-model", RequestID: tc.req,
+			InputTokens: 10, OutputTokens: 2, CostUSD: tc.cost, Source: SourceProxy, Timestamp: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("UpsertTurnByRequestID: %v", err)
+		}
+		e, found, err := st.EnrichmentByRequestID(ctx, tc.req)
+		if err != nil || !found {
+			t.Fatalf("EnrichmentByRequestID(%s): found=%v err=%v", tc.req, found, err)
+		}
+		if e.CostUnpriced != tc.unpriced {
+			t.Errorf("%s: CostUnpriced = %v, want %v", tc.req, e.CostUnpriced, tc.unpriced)
+		}
+	}
+}

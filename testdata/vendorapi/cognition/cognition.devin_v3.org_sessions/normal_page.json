@@ -1,0 +1,54 @@
+{
+  "items": [
+    {
+      "session_id": "devin-synth0001",
+      "url": "https://app.devin.ai/sessions/devin-synth0001",
+      "status": "running",
+      "title": "Fix the flaky login test",
+      "tags": [
+        "observer-synth"
+      ],
+      "org_id": "org_synth01",
+      "user_id": "user_synth0001",
+      "service_user_id": null,
+      "origin": "webapp",
+      "created_at": 1793350800,
+      "updated_at": 1793353200,
+      "acus_consumed": 3.75,
+      "on_demand_usage": 0,
+      "pull_requests": [
+        {
+          "pr_url": "https://github.com/acme/widget/pull/42",
+          "pr_state": "open"
+        }
+      ],
+      "parent_session_id": null,
+      "child_session_ids": [
+        "devin-synth0002"
+      ],
+      "playbook_id": null,
+      "automation_id": null
+    },
+    {
+      "session_id": "devin-synth0002",
+      "url": "https://app.devin.ai/sessions/devin-synth0002",
+      "status": "finished",
+      "title": "Run the nightly dependency audit",
+      "tags": [],
+      "org_id": "org_synth01",
+      "user_id": null,
+      "service_user_id": "service_user_synth01",
+      "origin": "automation",
+      "created_at": 1793325600,
+      "updated_at": 1793327400,
+      "acus_consumed": null,
+      "pull_requests": [],
+      "parent_session_id": "devin-synth0001",
+      "child_session_ids": [],
+      "playbook_id": "playbook-synth01",
+      "automation_id": "automation-synth01"
+    }
+  ],
+  "has_next_page": true,
+  "end_cursor": "synthsession0002"
+}

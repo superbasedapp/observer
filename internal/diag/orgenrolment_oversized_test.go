@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // TestOrgEnrolmentReportsOversizedPushRows: a snapshot row too large for any
@@ -34,6 +36,11 @@ func TestOrgEnrolmentReportsOversizedPushRows(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no oversized detail line: %v", c.Details)
+	}
+	// The budget is a Settings > Org sharing key: the row links there.
+	assertSpelled(t, c, remedy.OpenSettings)
+	if len(c.Remediations) != 1 || c.Remediations[0].Tool != "org" {
+		t.Errorf("remediations = %+v, want one Settings > Org sharing link", c.Remediations)
 	}
 }
 

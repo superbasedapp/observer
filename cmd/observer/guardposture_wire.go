@@ -40,6 +40,9 @@ func computeGuardPosture(g config.GuardConfig, gd *guard.Guard, now time.Time) g
 			p.Managed, p.TenancyRecorded = in.Managed, true
 		}
 	}
+	// The organization's prompt judge (lane adm-2) is independent of the
+	// local guard's own mode: the hook asks it whenever it is active here.
+	p.PromptJudgeActive, p.PromptJudgeFailClosed = processPlaneBLane.hookPosture()
 	if gd == nil || !g.Enabled || g.Mode == "off" {
 		return p
 	}

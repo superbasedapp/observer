@@ -155,70 +155,70 @@ func checkRegex(re string) error {
 // checkRuleFile strictly decodes a rule file and checks that it holds
 // exactly the one rule the manifest names, with the manifest's languages
 // (nil: any listed language), Semgrep severity and CWE ("" skips the
-// metadata check, for the canary).
-func checkRuleFile(b []byte, id string, languages []string, severity, cwe string) error {
+// metadata check, for the canary). It reports whether the rule is taint mode.
+func checkRuleFile(b []byte, id string, languages []string, severity, cwe string) (taint bool, err error) {
 	if len(b) > MaxRuleBytes {
-		return fmt.Errorf("%d bytes over the %d byte cap", len(b), MaxRuleBytes)
+		return false, fmt.Errorf("%d bytes over the %d byte cap", len(b), MaxRuleBytes)
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	var f ruleFile
 	if err := dec.Decode(&f); err != nil {
-		return fmt.Errorf("not a pack rule file: %w", err)
+		return false, fmt.Errorf("not a pack rule file: %w", err)
 	}
 	var extra ruleFile
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("a rule file holds exactly one YAML document")
+		return false, errors.New("a rule file holds exactly one YAML document")
 	}
 	if len(f.Rules) != 1 {
-		return fmt.Errorf("%d rules in the file (want exactly one)", len(f.Rules))
+		return false, fmt.Errorf("%d rules in the file (want exactly one)", len(f.Rules))
 	}
 	r := f.Rules[0]
 	switch {
 	case r.ID != id:
-		return fmt.Errorf("the file's rule id %q is not the manifest's %q", r.ID, id)
+		return false, fmt.Errorf("the file's rule id %q is not the manifest's %q", r.ID, id)
 	case r.Severity != severity:
-		return fmt.Errorf("severity %q (the manifest says %q)", r.Severity, severity)
+		return false, fmt.Errorf("severity %q (the manifest says %q)", r.Severity, severity)
 	case r.Message == "" || len(r.Message) > MaxTextBytes:
-		return errors.New("a message of at most 400 bytes is required")
+		return false, errors.New("a message of at most 400 bytes is required")
 	case strings.Contains(r.Message, "://"):
-		return errors.New("a message may not carry a URL")
+		return false, errors.New("a message may not carry a URL")
 	case len(r.Languages) == 0:
-		return errors.New("no languages")
+		return false, errors.New("no languages")
 	}
 	for _, l := range r.Languages {
 		if !slices.Contains(Languages, l) {
-			return fmt.Errorf("language %q is not supported", l)
+			return false, fmt.Errorf("language %q is not supported", l)
 		}
 	}
 	if languages != nil && !slices.Equal(r.Languages, languages) {
-		return fmt.Errorf("languages %v (the manifest says %v)", r.Languages, languages)
+		return false, fmt.Errorf("languages %v (the manifest says %v)", r.Languages, languages)
 	}
 	if cwe != "" && (r.Metadata == nil || r.Metadata.CWE != cwe) {
-		return fmt.Errorf("metadata.cwe must be %s", cwe)
+		return false, fmt.Errorf("metadata.cwe must be %s", cwe)
 	}
 	count := 0
 	switch r.Mode {
 	case "", "search":
 		if len(r.Sources)+len(r.Sinks)+len(r.Sanitizers) > 0 {
-			return errors.New("taint keys in a search-mode rule")
+			return false, errors.New("taint keys in a search-mode rule")
 		}
-		return checkNode(r.patternNode, 0, &count)
+		return false, checkNode(r.patternNode, 0, &count)
 	case "taint":
 		if r.operators() != 0 {
-			return errors.New("a taint-mode rule takes sources and sinks, not a top-level pattern")
+			return false, errors.New("a taint-mode rule takes sources and sinks, not a top-level pattern")
 		}
 		if len(r.Sources) == 0 || len(r.Sinks) == 0 {
-			return errors.New("a taint-mode rule needs sources and sinks")
+			return false, errors.New("a taint-mode rule needs sources and sinks")
 		}
 		for _, list := range [][]patternNode{r.Sources, r.Sinks, r.Sanitizers} {
 			for _, n := range list {
 				if err := checkNode(n, 1, &count); err != nil {
-					return err
+					return false, err
 				}
 			}
 		}
-		return nil
+		return true, nil
 	}
-	return fmt.Errorf("mode %q is not allowed", r.Mode)
+	return false, fmt.Errorf("mode %q is not allowed", r.Mode)
 }

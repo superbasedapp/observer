@@ -32,6 +32,15 @@ export type RequestableBudget = {
   /** When the budget's current period ends (a budget increase lasts at most
    *  until then, D-081). */
   period_end_ns?: number;
+  /** The org budget-increase grant raising this budget right now (absent
+   *  when none does, or on an older daemon). While it is set, cap_tokens /
+   *  cap_usd are the RAISED caps and base_cap_tokens / base_cap_usd the
+   *  budget's own; grant_expires_at_ns is when the increase ends (absent for
+   *  a perpetual one). */
+  grant_id?: number;
+  base_cap_tokens?: number;
+  base_cap_usd?: number;
+  grant_expires_at_ns?: number;
 };
 
 const PERIOD_WORDS: Record<string, string> = {
@@ -69,6 +78,33 @@ export function capWords(b: RequestableBudget, dollars: boolean): string {
   if (b.cap_tokens) return `${compactTokens(b.cap_tokens)} tokens`;
   if (b.cap_usd) return dollars ? `${b.cap_usd.toFixed(2)} USD` : "a spend cap";
   return "no cap";
+}
+
+/** baseBudget is b at its own caps: a budget a live budget-increase grant
+ *  raised reads its base, so a surface can name it as base plus increase
+ *  ("100000.00 USD (+10.00 USD)") without counting the increase twice. A
+ *  budget no grant raises is returned as it is. */
+export function baseBudget(b: RequestableBudget): RequestableBudget {
+  if (!b.grant_id) return b;
+  return { ...b, cap_tokens: b.base_cap_tokens, cap_usd: b.base_cap_usd };
+}
+
+/** increaseWords is an increase in its own unit, with a leading space:
+ *  " (+500,000 tokens)" or " (+10.00 USD)"; tokens first, dollars only where
+ *  the org shows dollars (D-013 / D-179); "" for none. */
+export function increaseWords(tokens: number | undefined, usd: number | undefined, dollars: boolean): string {
+  if (tokens && tokens > 0) return ` (+${tokens.toLocaleString()} tokens)`;
+  if (usd && usd > 0.005 && dollars) return ` (+${usd.toFixed(2)} USD)`;
+  return "";
+}
+
+/** grantIncrease is how much a live budget-increase grant raises b, per
+ *  unit (zero when no grant raises it). */
+export function grantIncrease(b: RequestableBudget): { tokens: number; usd: number } {
+  if (!b.grant_id) return { tokens: 0, usd: 0 };
+  const tokens = b.cap_tokens && b.base_cap_tokens ? Math.max(0, b.cap_tokens - b.base_cap_tokens) : 0;
+  const usd = b.cap_usd && b.base_cap_usd ? Math.max(0, b.cap_usd - b.base_cap_usd) : 0;
+  return { tokens, usd };
 }
 
 /** levelWords is the budget's state this period with the current use, so the

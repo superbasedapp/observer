@@ -22,6 +22,9 @@ type AccountInfo struct {
 	Enabled   bool              `json:"enabled"`
 	State     RunState          `json:"state"`
 	CreatedAt time.Time         `json:"created_at"`
+	// DailyUsage is the source's capability (SourceDef.DailyUsage): the
+	// account may have a daily usage reconciliation to show.
+	DailyUsage bool `json:"daily_usage,omitempty"`
 }
 
 // ScopedSnapshot is a passive reading bound to an account scope.

@@ -2,6 +2,7 @@ package secciwf
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ on: pull_request_target
 permissions: {contents: read}
 jobs:
   b:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,7 +134,7 @@ jobs:
   a:
     steps:
       - run: npx claude -p "fix the build" --dangerously-skip-permissions
-`, []string{"S-778"}},
+`, []string{"S-778", "S-781"}},
 		{"S-778 bypass flag in action args", `
 on: push
 permissions: {contents: read}
@@ -151,6 +152,224 @@ jobs:
   a:
     steps:
       - run: ./deploy --yolo
+`, nil},
+		{"S-780 unpinned apt", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt-get install -y jq
+`, []string{"S-780"}},
+		{"S-780 pinned apt is clean", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt-get install -y jq=1.7.1-3build1
+`, nil},
+		{"S-781 unpinned pip", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: pip install requests
+`, []string{"S-781"}},
+		{"S-781 npm ci and pip -r are clean", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          npm ci
+          pip install -r requirements.txt
+`, nil},
+		{"S-782 curl pipe bash", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: curl -fsSL https://example.com/install.sh | bash
+`, []string{"S-782"}},
+		{"S-782 windows runner iwr iex", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: windows-2022
+    steps:
+      - run: iwr https://example.com/install.ps1 | iex
+`, []string{"S-782"}},
+		{"S-782 windows runner with shell bash does not parse as powershell", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: windows-2022
+    steps:
+      - shell: bash
+        run: iwr https://example.com/install.ps1 | iex
+`, nil},
+		{"defaults.run.shell pwsh on a linux runner", `
+on: push
+permissions: {contents: read}
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: iwr https://example.com/install.ps1 | iex
+`, []string{"S-782"}},
+		{"job defaults.run.shell overrides the workflow's", `
+on: push
+permissions: {contents: read}
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: iwr https://example.com/install.ps1 | iex
+`, nil},
+		{"python shell is not analyzed", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: python
+        run: curl x | bash
+`, nil},
+		{"S-783 moving runner label, one per file", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make
+  b:
+    runs-on: macos-latest
+    steps:
+      - run: make
+`, []string{"S-783"}},
+		{"S-783 label inside a list", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: [windows-latest]
+    steps:
+      - run: make
+`, []string{"S-783"}},
+		{"S-783 mapping labels form", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on:
+      labels: [ubuntu-latest]
+    steps:
+      - run: make
+`, []string{"S-783"}},
+		{"self-hosted runner is not S-783", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: make
+`, nil},
+		{"expression runs-on is not S-783", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: make
+`, nil},
+		{"pinned runner image is not S-783", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-22.04
+    steps:
+      - run: make
+`, nil},
+		{"S-784 container string tag", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    container: node:20
+    steps:
+      - run: make
+`, []string{"S-784"}},
+		{"S-784 container mapping image and service image", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    container:
+      image: node:20
+    services:
+      db:
+        image: postgres:16
+    steps:
+      - run: make
+`, []string{"S-784", "S-784"}},
+		{"S-784 docker:// step", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker://alpine:3.20
+`, []string{"S-784"}},
+		{"images pinned by digest are clean", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    container: node:20@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    services:
+      db:
+        image: postgres@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: docker://alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`, nil},
+		{"expression image is not S-784", `
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      - run: make
 `, nil},
 		{"not yaml", "::: not yaml [", nil},
 	}
@@ -196,8 +415,12 @@ func TestIsWorkflowPath(t *testing.T) {
 func TestRuleIDsInRange(t *testing.T) {
 	seen := map[string]bool{}
 	for _, r := range Rules {
-		if !strings.HasPrefix(r.ID, "S-77") || r.ID == "S-770" || seen[r.ID] {
-			t.Fatalf("rule id %q out of the S-771 to S-779 range or duplicated", r.ID)
+		n := 0
+		if strings.HasPrefix(r.ID, "S-") {
+			n, _ = strconv.Atoi(r.ID[2:])
+		}
+		if n < 771 || n > 784 || seen[r.ID] {
+			t.Fatalf("rule id %q out of the S-771 to S-784 range or duplicated", r.ID)
 		}
 		seen[r.ID] = true
 	}
@@ -227,5 +450,43 @@ func TestCheckStatus(t *testing.T) {
 		if r.Status != StatusComplete && (r.Complete() || len(r.Findings) != 0) {
 			t.Errorf("%s: an incomplete check reads complete: %+v", tc.name, r)
 		}
+	}
+}
+
+// TestScriptRuleLines pins the file line of the run: script rules (block
+// scalars start the line after the header; a one-line scalar is the node's
+// line) and that S-783 is one finding at the first moving label.
+func TestScriptRuleLines(t *testing.T) {
+	wf := "on: push\npermissions: {contents: read}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          echo hi\n          sudo apt-get install -y jq\n          curl https://x.example/i.sh | sh\n      - run: pip install requests\n  b:\n    runs-on: windows-latest\n    steps:\n      - run: make\n"
+	got := map[string]int{}
+	n := map[string]int{}
+	for _, f := range Check([]byte(wf)).Findings {
+		got[f.RuleID] = f.Line
+		n[f.RuleID]++
+	}
+	want := map[string]int{"S-780": 9, "S-782": 10, "S-781": 11, "S-783": 5}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lines = %v, want %v", got, want)
+	}
+	if n["S-783"] != 1 {
+		t.Fatalf("S-783 raised %d times, want once per file", n["S-783"])
+	}
+}
+
+// TestCheckNeverEmitsMatchedRule pins S-779 as a row Check never raises:
+// matching needs the OSV database and runs in the dependency scan child.
+func TestCheckNeverEmitsMatchedRule(t *testing.T) {
+	wf := "on: push\npermissions: {contents: read}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: tj-actions/changed-files@v35\n"
+	for _, f := range Check([]byte(wf)).Findings {
+		if f.RuleID == "S-779" {
+			t.Fatalf("Check raised S-779: %+v", f)
+		}
+	}
+	found := false
+	for _, r := range Rules {
+		found = found || r.ID == "S-779"
+	}
+	if !found {
+		t.Fatal("S-779 row missing from Rules")
 	}
 }

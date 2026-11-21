@@ -1,0 +1,58 @@
+# Pack "networking": what agents reach on the network.
+#
+# The network family asks: private, link-local and raw-IP targets, hosts off
+# [guard.network] allow_hosts (when you keep one), tunnels, listeners and
+# scanners. Firewall changes ask. Cloud metadata endpoints and the deny list
+# already deny (R-174). Leave allow_hosts empty to keep the allow-list rule
+# from asking about every public host.
+
+name = "networking"
+kind = "pack"
+title = "Networking"
+summary = "Private, link-local and raw-IP targets, hosts off the allow list, tunnels, listeners, scanners and firewall changes ask."
+version = 1
+inputs = ["guard.network.allow_hosts", "guard.network.deny_hosts"]
+advice = ["Keep the hosts agents may reach in [guard.network] allow_hosts and the ones they never may in deny_hosts (Settings > Guard > Network)."]
+
+[[override]]
+rule = "R-174"
+enforce = true
+note = "cloud metadata endpoints and the deny list hold in observe mode too"
+
+[[override]]
+rule = "R-175"
+decision = "ask"
+enforce = true
+note = "private, link-local, CGNAT and raw-IP targets"
+
+[[override]]
+rule = "R-176"
+decision = "ask"
+enforce = true
+note = "hosts not on [guard.network] allow_hosts (every non-loopback host while the list is empty)"
+
+[[override]]
+rule = "R-177"
+enforce = true
+note = "reverse shells deny and listeners ask in every mode"
+
+[[override]]
+rule = "R-178"
+enforce = true
+note = "tunnels that expose this machine"
+
+[[override]]
+rule = "R-179"
+enforce = true
+note = "network scanners"
+
+[[rule]]
+id = "RC-NET-01"
+doc = "firewall change (networking pack)"
+advice = "Describe the firewall change to the developer and let them make it."
+category = "posture"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|pfctl|netsh\s+(advfirewall|firewall)|set-netfirewallrule|new-netfirewallrule|remove-netfirewallrule|disable-netfirewallrule)(\s|$)'

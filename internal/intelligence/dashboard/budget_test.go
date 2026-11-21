@@ -36,10 +36,13 @@ func jsonNum(f float64) string {
 // TestHandleBudget pins the P6.3 surface: unconfigured short-circuit,
 // global + per-project month-to-date rollups, linear forecast,
 // threshold levels, and the method guard. Spend is seeded as recorded
-// api_turns cost inside the current month.
+// api_turns cost inside the current month. The server clock is pinned
+// mid-month so the fixtures (built from the same instant) can never fall
+// into the prior month when the wall clock sits just after midnight UTC
+// on the 1st (the v1.37.0 tag-run flake, FU-231).
 func TestHandleBudget(t *testing.T) {
 	server, _ := wizardTestServer(t)
-	now := time.Now().UTC()
+	now := pinServerClock(server, midMonthTestNow)
 
 	// Unconfigured: no DB work, configured=false.
 	rr := httptest.NewRecorder()
@@ -155,7 +158,7 @@ func TestHandleBudget(t *testing.T) {
 // all three folding into one project's month-to-date total.
 func TestHandleBudget_DatedPricingLadder(t *testing.T) {
 	server, _ := wizardTestServer(t)
-	now := time.Now().UTC()
+	now := pinServerClock(server, midMonthTestNow)
 	boundary := now.Add(-2 * time.Hour)
 	server.opts.CostEngine = newLadderTestEngine(t, boundary)
 

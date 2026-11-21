@@ -5,7 +5,7 @@
 // mark each provider wears. No React and no fetch, so the node test runner
 // covers every rule (plansView.test.ts).
 
-import { dollarsShown, fmtRelative } from "../../../shared/lib/format.ts";
+import { dollarsShown, fmtCompact, fmtRelative } from "../../../shared/lib/format.ts";
 import {
   COVERAGE_LABELS,
   GAP_LABELS,
@@ -24,6 +24,7 @@ import {
   type PlanCard,
   type PlanHeadline,
   type PlanSpend,
+  type PlanUsageView,
   type StatusVocab,
   type Tone,
 } from "./plans.ts";
@@ -551,4 +552,114 @@ export function monogramLetter(label: string): string {
 /** providerMark: the mark a provider wears, or its monogram. */
 export function providerMark(id: string): MarkRef {
   return PROVIDER_MARKS[id] ?? { kind: "monogram", letter: monogramLetter(providerLabel(id)) };
+}
+
+// ---------- daily usage reconciliation ----------
+
+/** UsageLabels words one provider's "usage by day" block. */
+export type UsageLabels = { title: string; vendor: string; gap: string };
+
+/**
+ * USAGE_LABELS: the wording per provider whose source reports daily usage
+ * (SourceDef.DailyUsage). The gap is "not captured here", never "cloud
+ * usage": the vendor's daily total cannot say where the rest ran.
+ */
+export const USAGE_LABELS: Record<string, UsageLabels> = {
+  chatgpt: {
+    title: "Codex usage by day",
+    vendor: "OpenAI",
+    gap: "Codex cloud chats, other devices or sessions Observer did not run on",
+  },
+};
+
+const USAGE_DEFAULT: UsageLabels = {
+  title: "Usage by day",
+  vendor: "Vendor",
+  gap: "other surfaces, other devices or sessions Observer did not run on",
+};
+
+export function usageLabels(provider: string): UsageLabels {
+  return USAGE_LABELS[provider] ?? USAGE_DEFAULT;
+}
+
+/** UsageRow is one day of the block, numbers already worded. */
+export type UsageRow = {
+  day: string;
+  /** The UTC day as "Oct 30", never shifted into the viewer's zone. */
+  label: string;
+  vendor: string;
+  captured: string;
+  uncaptured: string;
+  share: string;
+  capturedN: number;
+  uncapturedN: number;
+  totalN: number;
+};
+
+/** UsageBlockView is what the card's "usage by day" block renders. */
+export type UsageBlockView = {
+  title: string;
+  window: string;
+  totals: { label: string; value: string }[];
+  rows: UsageRow[];
+  /** The widest bar in the list (vendor or captured, whichever is larger). */
+  max: number;
+  empty?: string;
+  notes: string[];
+};
+
+const usageDayFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/** usageDayLabel words a UTC "YYYY-MM-DD" day as "Oct 30" in UTC. */
+export function usageDayLabel(day: string): string {
+  const t = Date.parse(`${day}T00:00:00Z`);
+  return Number.isNaN(t) ? day : usageDayFmt.format(t);
+}
+
+function tokens(n: number): string {
+  return fmtCompact(n);
+}
+
+function share(r: number | undefined): string {
+  return r == null ? "" : `${Math.round(r * 100)}% captured`;
+}
+
+/**
+ * usageBlock: the card block for an account's daily usage, or null when
+ * there is nothing to show (the source has no daily usage, or no reading
+ * has stored any yet). Tokens only, never a dollar figure.
+ */
+export function usageBlock(v: PlanUsageView | null | undefined): UsageBlockView | null {
+  const r = v?.reconciliation;
+  if (!v || !v.available || !r) return null;
+  const l = usageLabels(v.provider);
+  const tools = v.tools.length > 0 ? v.tools.join(", ") : "this tool";
+  const rows: UsageRow[] = r.days.map((d) => ({
+    day: d.day,
+    label: usageDayLabel(d.day),
+    vendor: d.vendor_reported ? tokens(d.vendor_tokens) : "none reported",
+    captured: tokens(d.captured_tokens),
+    uncaptured: tokens(d.uncaptured_tokens),
+    share: share(d.ratio),
+    capturedN: d.captured_tokens,
+    uncapturedN: d.uncaptured_tokens,
+    totalN: Math.max(d.vendor_tokens, d.captured_tokens),
+  }));
+  return {
+    title: l.title,
+    window: `Last ${v.days} ${v.days === 1 ? "day" : "days"}, UTC`,
+    totals: [
+      { label: `${l.vendor} total`, value: tokens(r.totals.vendor_tokens) },
+      { label: "Captured here", value: tokens(r.totals.captured_tokens) },
+      { label: "Not captured here", value: tokens(r.totals.uncaptured_tokens) },
+    ],
+    rows,
+    max: rows.reduce((m, x) => Math.max(m, x.totalN), 0),
+    empty: rows.length === 0 ? "No usage on any day in this window." : undefined,
+    notes: [
+      `Not captured here: ${l.gap}.`,
+      `The ${l.vendor} total covers every surface and device on the login; captured here counts this machine's ${tools} sessions for any login.`,
+      `Tokens only. Days are UTC; ${l.vendor} does not document its day boundary.`,
+    ],
+  };
 }

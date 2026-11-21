@@ -192,6 +192,8 @@ type Opener struct {
 	sum     [MACSize]byte
 	streams map[uint32]*streamState
 	pending *pendingKey
+	// verified is set once a frame has passed its MAC and sequence checks.
+	verified bool
 }
 
 type pendingKey struct {
@@ -203,6 +205,10 @@ type pendingKey struct {
 func NewOpener(role Role, key []byte, epoch uint32, lim Limits) *Opener {
 	return &Opener{role: role, lim: lim, epoch: epoch, nextSeq: 1, mac: hmac.New(sha256.New, key), streams: map[uint32]*streamState{}}
 }
+
+// Verified reports whether any frame has passed its MAC and sequence
+// checks in this direction: before one has, the peer has proven nothing.
+func (o *Opener) Verified() bool { return o.verified }
 
 // Grant registers a stream the HOST opened, so the guest may send on it
 // (host side only; the guest never opens streams). Stream 0 is reserved
@@ -259,6 +265,7 @@ func (o *Opener) Open(buf []byte) (Header, []byte, error) {
 		return Header{}, nil, ErrSeq
 	}
 	o.nextSeq++
+	o.verified = true
 	payload := buf[HeaderSize : HeaderSize+int(h.Len)]
 	if err := o.apply(h, payload); err != nil {
 		return Header{}, nil, err

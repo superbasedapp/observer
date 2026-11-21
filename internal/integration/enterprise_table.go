@@ -336,6 +336,7 @@ var enterpriseAnswers = map[string]EnterpriseAnswer{
 	"cursor": {Surfaces: []vendorsurface.SurfaceID{
 		"cursor.admin.audit_logs",
 		"cursor.admin.billing_groups",
+		"cursor.admin.cloud_agent_owners",
 		"cursor.admin.daily_usage",
 		"cursor.admin.directory_groups",
 		"cursor.admin.members",
@@ -1429,5 +1430,11 @@ var enterpriseAnswers = map[string]EnterpriseAnswer{
 	}}},
 	"vtcode": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
 		"docs/vtcode-adapter.md",
+	}}},
+	// custom-agent (P-228): the developer's own agent has no vendor and so
+	// no vendor enterprise plane.
+	"custom-agent": {None: &EnterpriseNone{Checked: "2026-11-03", SourcesSearched: []string{
+		"docs/own-agents.md",
+		"docs/plans/discovery-sdk-2026-11-03.md",
 	}}},
 }

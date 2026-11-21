@@ -14,7 +14,9 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/planlimitssvc"
 	"github.com/marmutapp/superbased-observer/internal/predict"
+	"github.com/marmutapp/superbased-observer/internal/predictsvc"
 	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -36,7 +38,11 @@ func newPredictCmd() *cobra.Command {
 			"fan-out. Pure read-side math over token_usage - no proxy required for\n" +
 			"the cost estimate. The 5-hour / weekly subscription-window gauge needs\n" +
 			"the client routed through the observer proxy (those numbers live only\n" +
-			"in upstream response headers).",
+			"in upstream response headers).\n\n" +
+			"It also prints the run-out projection of each limit window and budget\n" +
+			"in force (the same one the dashboard's Cost & limits tab shows): used\n" +
+			"and left, when it resets, when it runs out at the current rate, and the\n" +
+			"rate that still lasts. --json carries it as \"projection\".",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionID := args[0]
@@ -119,8 +125,17 @@ func newPredictCmd() *cobra.Command {
 				noSourceNote = ic.Limit.Note
 			}
 
+			// The run-out projection: the same assembly GET
+			// /api/session/<id>/predict returns (predictsvc.Build), over the
+			// same gauge ladder. The Plans & limits page model is read from
+			// the database only (no keychain, no poll).
+			now := time.Now().UTC()
+			proj := predictsvc.Build(cmd.Context(), predictsvc.Deps{
+				Store: st, Config: &cfg, Plans: planlimitssvc.New(planlimitssvc.Options{Store: st}), Now: now,
+			}, shape.Tool, sessionID, predictsvc.LoadLimitGauge(cmd.Context(), st, shape.Tool, sessionID, now), est)
+
 			if jsonOut {
-				out := map[string]any{"session_id": sessionID, "estimate": est}
+				out := map[string]any{"session_id": sessionID, "estimate": est, "projection": proj}
 				switch {
 				case noSourceNote != "":
 					out["limit"] = map[string]any{"no_source": true, "source_note": noSourceNote}
@@ -132,6 +147,7 @@ func newPredictCmd() *cobra.Command {
 				return enc.Encode(out)
 			}
 			printPredict(cmd, sessionID, shape, est, snap, snapOK, noSourceNote)
+			printProjection(cmd.OutOrStdout(), proj, costtext.Tokens(costModeFrom(cmd.Context())), now)
 			return nil
 		},
 	}

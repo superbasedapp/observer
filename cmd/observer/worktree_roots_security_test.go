@@ -10,9 +10,12 @@ import (
 
 // TestSecurityQuickScanLinkedWorktree: a commit in a linked worktree shares
 // the main checkout's project root (F0-14) but not its index, so the quick
-// scan never answers it from the main checkout: the plan is opaque
-// (unknown, the gate asks), as it was before F0-14. A `cd` from the main
-// checkout into a worktree leaves the root's checkout too.
+// scan never answers it from the main checkout: it reads the worktree's own
+// checkout instead (one request naming the worktree, covering no dirty
+// counter), whether the event's working directory is the worktree or a
+// `cd` from the main checkout reaches it. Before, this plan was always
+// opaque, and S-793 asked on every worktree commit with "the quick scan did
+// not finish" although no scan had run.
 func TestSecurityQuickScanLinkedWorktree(t *testing.T) {
 	mainRoot, wtRoot := linkedWorktreeFixture(t)
 	if got := hookRootOf(wtRoot); got != mainRoot {
@@ -28,14 +31,20 @@ func TestSecurityQuickScanLinkedWorktree(t *testing.T) {
 	commit := func(cwd, cmd string) securityQuickScanPlan {
 		return securityQuickScanPlanFor(&policy.Event{Kind: policy.KindShellExec, Target: cmd, Cwd: cwd}, root, nil)
 	}
-	if p := commit(wtRoot, "git commit -m x"); !p.opaque || len(p.reqs) != 0 {
-		t.Errorf("worktree commit plan = %+v, want opaque", p)
+	wantWorktree := func(name string, p securityQuickScanPlan) {
+		t.Helper()
+		if p.opaque || !p.otherCheckout || len(p.reqs) != 1 || !hookSamePath(p.reqs[0].ProjectRoot, wtRoot) {
+			t.Errorf("%s plan = %+v, want one request for the worktree %s", name, p, wtRoot)
+		}
 	}
-	if p := commit(mainRoot, "git commit -m x"); p.opaque || len(p.reqs) != 1 {
-		t.Errorf("main commit plan = %+v, want one request", p)
+	wantWorktree("worktree commit", commit(wtRoot, "git commit -m x"))
+	if p := commit(mainRoot, "git commit -m x"); p.opaque || p.otherCheckout || len(p.reqs) != 1 || p.reqs[0].ProjectRoot != root {
+		t.Errorf("main commit plan = %+v, want one request for the main checkout", p)
 	}
-	if p := commit(mainRoot, "cd "+wtRoot+" && git commit -m x"); !p.opaque {
-		t.Errorf("cd into the worktree plan = %+v, want opaque", p)
+	wantWorktree("cd into the worktree", commit(mainRoot, "cd "+shPath(wtRoot)+" && git commit -m x"))
+	// Writes in both checkouts on one line cannot be scanned as one index.
+	if p := commit(mainRoot, "git commit -m x && cd "+shPath(wtRoot)+" && git commit -m y"); !p.opaque {
+		t.Errorf("commits in two checkouts plan = %+v, want opaque", p)
 	}
 	// A working directory outside the project is not this case either: it
 	// is another repository, whose own posture is read (lane SEC-GATE5

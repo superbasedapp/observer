@@ -248,6 +248,15 @@ func canonicalForm(p Posture, withTenancy bool) []byte {
 	if p.CommitGateFloorHeld {
 		b.WriteString("\ncommit_gate_floor_held")
 	}
+	// The organization's prompt judge (lane adm-2), only when set, in both
+	// forms: no earlier binary wrote them, so a posture without them keeps
+	// the MAC every earlier binary computes.
+	if p.PromptJudgeActive {
+		b.WriteString("\nprompt_judge_active")
+	}
+	if p.PromptJudgeFailClosed {
+		b.WriteString("\nprompt_judge_fail_closed")
+	}
 	return b.Bytes()
 }
 

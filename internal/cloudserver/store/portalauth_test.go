@@ -316,7 +316,7 @@ func TestStepUpAuthorizationRLSScoped(t *testing.T) {
 		if _, err := tx.Exec(ctx, `SET LOCAL ROLE sbci_app`); err != nil {
 			t.Fatalf("set role: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, viewer); err != nil {
+		if err := s.SetAccountContext(ctx, tx, viewer); err != nil {
 			t.Fatalf("set tenant: %v", err)
 		}
 		var n int

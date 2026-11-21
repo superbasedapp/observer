@@ -64,7 +64,11 @@ type OrgBudgetCache struct {
 	// coming BACK, never node data going out. A body whose Empty() reports
 	// true is the SIGNED EXPLICIT NONE and is a legitimate stored value.
 	Body orgcontract.BudgetPolicyBody
-	// FetchedAt is when the 200 that produced this row landed.
+	// FetchedAt is when the org last confirmed this body: the 200 that
+	// produced the row, or a later 304 that re-confirmed it
+	// (TouchOrgBudgetConfirmed). Before demo bug #4 only a 200 moved it, so
+	// `observer guard status` showed a months-old persist time for a body the
+	// daemon re-confirmed every poll.
 	FetchedAt time.Time
 }
 
@@ -188,6 +192,31 @@ UPDATE org_budget_cache
 		return OrgBudgetWitness{}, fmt.Errorf("store.SaveOrgBudget: %w", ErrOrgBudgetIdentityChanged)
 	}
 	return witness, nil
+}
+
+// TouchOrgBudgetConfirmed records that the org re-confirmed the stored
+// document (a 304 on the conditional fetch) by moving fetched_at to now. It
+// writes nothing else - not the body, not the version, not the ETag - so the
+// document witness (which covers body_json only) and the "only a SIGNED body
+// may replace a node's cap" rule are untouched. It is fenced to a stored body
+// accepted under binding, so a late 304 for a replaced enrolment moves
+// nothing. A second feed path into SaveOrgBudget's table by design: one
+// column, one meaning ("last confirmed by the org").
+func (s *Store) TouchOrgBudgetConfirmed(ctx context.Context, binding string, at time.Time) error {
+	if strings.TrimSpace(binding) == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE org_budget_cache
+   SET fetched_at = ?
+ WHERE id = 1
+   AND body_json != ''
+   AND json_valid(body_json)
+   AND json_extract(body_json, '$.binding') = ?`,
+		at.UTC().Format(time.RFC3339), binding); err != nil {
+		return fmt.Errorf("store.TouchOrgBudgetConfirmed: %w", err)
+	}
+	return nil
 }
 
 // ClearOrgBudgetForIdentity clears the document only while identity remains

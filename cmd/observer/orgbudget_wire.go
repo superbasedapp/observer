@@ -235,6 +235,11 @@ func (h *orgBudgetHandle) onBudgetFetch(o orgclient.BudgetFetchOutcome) {
 // seed the initial posture through exactly the same path.
 func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 	o = h.bindOutcomeToCurrentIdentity(o)
+	// The local dashboard's failed-pull notice reads this (budgetwarnfile
+	// Fetch, via the warning service's status file).
+	if h.warn != nil {
+		h.warn.SetFetch(o.State, time.Now())
+	}
 	granted := false
 	// The composition's left operand with fail_closed resolved LIVE (P4-04):
 	// the guard's liveness table reads it back through budgetConfig(), so a
@@ -278,6 +283,8 @@ func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 	}
 	// D-502: blocking on an ABSENT body is the org's explicit opt-in only.
 	caps.FailClosed = local.FailClosed
+	// Plane A app caps (W4-1) for the admission check (orgbudget_appcaps.go).
+	publishOrgAppBudget(o, h.local.FromOrg, granted)
 	effective, posture := orgbudget.Compose(thresholdsOf(h.local), o.Body, caps)
 	// WHICH PRICE TABLE the caps are measured in (pricing arc §3.3). It is
 	// stamped HERE, at the boundary, rather than inside Compose: internal/
@@ -431,7 +438,7 @@ func wireCLIBudgetPosture(ctx context.Context, b orgBundle, logger *slog.Logger)
 	b.client.SetPricingAuthoritative(func() bool { return granted })
 	b.client.SetPricingRail(func() bool { return b.cfg.Guard.Budget.FromOrg }, pricingWire.onPricingFetch)
 	if _, err := b.client.LoadPersistedPricing(ctx); err != nil {
-		logger.Warn("org pricing: could not load the persisted document", "err", err)
+		logger.Warn("team pricing: could not load the persisted document", "err", err)
 	}
 
 	budgetWire := newOrgBudgetHandle(nil, b.cfg.Guard.Budget, func() bool { return granted }, b.store, logger)
@@ -442,7 +449,7 @@ func wireCLIBudgetPosture(ctx context.Context, b orgBundle, logger *slog.Logger)
 	b.client.SetBudgetMaxDocumentAge(budgetDocumentMaxAge(b.cfg.Guard.Budget, logger))
 	primed, err := b.client.LoadPersistedBudget(ctx)
 	if err != nil {
-		logger.Warn("org budget: could not load the persisted document", "err", err)
+		logger.Warn("team budget: could not load the persisted document", "err", err)
 	}
 	budgetWire.Prime(primed)
 }

@@ -66,8 +66,8 @@ func TestComponentsListAndShow(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("list --json: %v\n%s", err, out)
 	}
-	if len(rep.Components) != 55 {
-		t.Errorf("--class adapter = %d rows, want 55", len(rep.Components))
+	if len(rep.Components) != 56 {
+		t.Errorf("--class adapter = %d rows, want 56", len(rep.Components))
 	}
 
 	out, err = runComponents(t, "list", "--distro", "minimal")

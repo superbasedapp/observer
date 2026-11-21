@@ -1,0 +1,50 @@
+rules:
+  - id: php.unsafe-deserialization
+    languages: [php]
+    severity: ERROR
+    message: Data from a web request is passed to unserialize, which can build objects of any loaded class and run their magic methods; decode it with json_decode, or pass allowed_classes false.
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sinks:
+      - patterns:
+          - pattern: unserialize($D, ...)
+          - pattern-not: "unserialize($D, ['allowed_classes' => false])"
+          - pattern-not: "unserialize($D, array('allowed_classes' => false))"
+          - focus-metavariable: $D

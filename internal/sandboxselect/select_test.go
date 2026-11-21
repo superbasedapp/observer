@@ -1,6 +1,7 @@
 package sandboxselect
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -155,6 +156,18 @@ func TestSelectionRules(t *testing.T) {
 			in.Request.Custody = vocab.CustodyHomeRelay
 			in.Tool.SatisfiableCustody = []vocab.KeyCustody{vocab.CustodyHostBound}
 		}, false},
+		{"S7e", VerdictRefusalAuditRequired, nil, nil, func(in *Input, r *sandboxbackend.Capability) {
+			in.Floors.RequireRefusalAudit = true
+			r.Net.RefusalAuditTiers = nil
+		}, false},
+		{"S7e", VerdictRefusalAuditRequired, nil, nil, func(in *Input, r *sandboxbackend.Capability) {
+			// The row audits other tiers, not the launch's (N4-A1).
+			in.Floors.RequireRefusalAudit = true
+			r.Net.RefusalAuditTiers = []vocab.Tier{vocab.TierProxyOnly}
+		}, false},
+		{"S7e", VerdictRefusalAuditRequired, remoteRow, remoteInput, func(in *Input, _ *sandboxbackend.Capability) {
+			in.Floors.RequireRefusalAudit = true // a provider-enforced row never audits
+		}, false},
 		{"S8", VerdictEgressUnsupported, nil, nil, func(_ *Input, r *sandboxbackend.Capability) { r.Net.Egress = []vocab.Tier{vocab.TierNone} }, false},
 		{"S8", VerdictEgressUnsupported, remoteRow, remoteInput, func(in *Input, r *sandboxbackend.Capability) {
 			r.Net.Egress = append(r.Net.Egress, vocab.TierHost)
@@ -195,6 +208,49 @@ func TestSelectionRules(t *testing.T) {
 				t.Fatal("a drop without a reason")
 			}
 		})
+	}
+}
+
+// TestPlatformRuleNamesTheRowsOwnReason (live check O5-L2, 2026-11-01):
+// S3 reports a row's declared refusal reason for the host, and the generic
+// text for a host the row declares none for; the verdict is the same.
+func TestPlatformRuleNamesTheRowsOwnReason(t *testing.T) {
+	const declared = "this row says why it does not run on macOS"
+	for _, tc := range []struct {
+		name, want string
+		refusals   map[sandboxbackend.HostKind]string
+	}{
+		{"declared", declared, map[sandboxbackend.HostKind]string{sandboxbackend.HostMacOS: declared}},
+		{"declared for another host", "this backend does not run on macos", map[sandboxbackend.HostKind]string{sandboxbackend.HostWindows: declared}},
+		{"none", "this backend does not run on macos", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, in := bwrapRow(t), okInput()
+			row.Iso.HostRefusals = tc.refusals
+			in.Host = sandboxbackend.HostMacOS
+			d, ok := judge(newCandidate(row, in, false))
+			if ok || d.Rule != "S3" || d.Verdict != VerdictUnsupportedPlatform || d.Reason != tc.want {
+				t.Fatalf("drop = %+v (ok %v), want S3 %s %q", d, ok, VerdictUnsupportedPlatform, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpenShellOnWSL2NamesWhy: the registry's openshell row, selected on
+// WSL2, is refused by S3 with the row's own reason (WSL2 and ENOSYS), not
+// the generic text.
+func TestOpenShellOnWSL2NamesWhy(t *testing.T) {
+	row, ok := sandboxbackend.Get(sandboxbackend.BackendOpenShell)
+	if !ok {
+		t.Fatal("no openshell row")
+	}
+	in := okInput()
+	in.Request.Backend = sandboxbackend.BackendOpenShell
+	in.Enabled = []string{sandboxbackend.BackendOpenShell}
+	in.Probes = map[string]Probe{sandboxbackend.BackendOpenShell: {Compiled: true, Verdict: VerdictAvailable, Version: "0.1.6", VersionAuthenticated: true}}
+	d, passed := judge(newCandidate(row, in, false))
+	if passed || d.Rule != "S3" || d.Verdict != VerdictUnsupportedPlatform || !strings.Contains(d.Reason, "WSL2") || !strings.Contains(d.Reason, "ENOSYS") {
+		t.Fatalf("drop = %+v (passed %v)", d, passed)
 	}
 }
 
@@ -480,5 +536,124 @@ func TestConsentChangeIsNamed(t *testing.T) {
 	d, ok := judge(newCandidate(row, in, false))
 	if ok || d.Verdict != VerdictConsentRequired || !strings.Contains(d.Reason, "consent_changed_cap") || strings.Contains(d.Reason, "no recorded consent") {
 		t.Fatalf("drop %+v", d)
+	}
+}
+
+// TestRefusalAuditFloorPerBackend (lane N4): under require_refusal_audit
+// the floor rules drop exactly the launches whose tier the row does not
+// audit, by rule S7e with a reason naming the floor and the tier; one case
+// per backend and per tier it offers, so a new row or tier states its
+// outcome here (audit finding N4-A1: bwrap on host is refused).
+func TestRefusalAuditFloorPerBackend(t *testing.T) {
+	audited := []vocab.Tier{vocab.TierInternet, vocab.TierProxyOnly, vocab.TierNone}
+	cases := []struct {
+		id string
+		// keep are the tiers the floor accepts; every other offered tier
+		// is dropped.
+		keep []vocab.Tier
+	}{
+		{sandboxbackend.BackendBwrap, audited},
+		{sandboxbackend.BackendProcessLite, nil},
+		{sandboxbackend.BackendOCIRunc, audited},
+		{sandboxbackend.BackendOCIRunsc, audited},
+		{sandboxbackend.BackendCloudHypervisor, audited},
+		{sandboxbackend.BackendSeatbelt, audited},
+		{sandboxbackend.BackendAppleContainer, audited},
+		{sandboxbackend.BackendMXCProcess, audited},
+		{sandboxbackend.BackendMXCAppContainer, nil},
+		{sandboxbackend.BackendWSLC, nil},
+		{sandboxbackend.BackendHCS, nil},
+		{sandboxbackend.BackendOpenShell, audited},
+		// The org-hosted row declares no refusal audit tier in v1: denials
+		// happen on the org's machine and are not carried to the node, so
+		// the floor refuses every tier it offers (fold audit H2, lane FX5).
+		{sandboxbackend.BackendOpenShellOrg, nil},
+		{sandboxbackend.BackendE2B, nil},
+		{sandboxbackend.BackendModal, nil},
+		{sandboxbackend.BackendVercelSandbox, nil},
+		{sandboxbackend.BackendDockerSandboxes, nil},
+		{sandboxbackend.BackendInstaBox, nil},
+		{sandboxbackend.BackendDaytona, nil},
+		{sandboxbackend.BackendCodespaces, nil},
+		{sandboxbackend.BackendCoder, nil},
+		{sandboxbackend.BackendK8sAgentSandbox, nil},
+		{sandboxbackend.BackendAgentCore, nil},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		seen[tc.id] = true
+		row, ok := sandboxbackend.Get(tc.id)
+		if !ok {
+			t.Errorf("%s: no row", tc.id)
+			continue
+		}
+		tiers := row.Net.Egress
+		if len(tiers) == 0 {
+			tiers = []vocab.Tier{vocab.TierInternet}
+		}
+		for _, tier := range tiers {
+			t.Run(tc.id+"/"+string(tier), func(t *testing.T) {
+				in := okInput()
+				// Every other floor rule passes: beta accepted, remote
+				// allowed, consent recorded, a tier the row offers.
+				in.Floors = Floors{RequireRefusalAudit: true, FloorAcceptsBeta: true, AllowRemote: true}
+				in.Probes = map[string]Probe{tc.id: {Compiled: true, Verdict: VerdictAvailable, ConsentRecorded: true}}
+				in.Request.Tier = tier
+				want := !slices.Contains(tc.keep, tier)
+				d, dropped := FloorDrop(row, in, false)
+				if dropped != want {
+					t.Fatalf("dropped %v (%+v), want %v", dropped, d, want)
+				}
+				if dropped && (d.Rule != "S7e" || d.Verdict != VerdictRefusalAuditRequired || !strings.Contains(d.Reason, "require_refusal_audit") || !strings.Contains(d.Reason, string(tier))) {
+					t.Fatalf("drop %+v, want S7e naming the floor and the tier", d)
+				}
+				// Without the floor the same launch passes the floor rules.
+				in.Floors.RequireRefusalAudit = false
+				if d, dropped := FloorDrop(row, in, false); dropped {
+					t.Fatalf("without the floor: %+v", d)
+				}
+			})
+		}
+	}
+	for _, id := range sandboxbackend.IDs() {
+		if !seen[id] {
+			t.Errorf("%s: no case", id)
+		}
+	}
+}
+
+// TestRefusalAuditFloorSelection (lane N4): the floor is raise-only. It
+// counts as a floor in force, auto still picks an auditing row, and an
+// explicit non-auditing row is refused, never substituted.
+func TestRefusalAuditFloorSelection(t *testing.T) {
+	if !(Floors{RequireRefusalAudit: true}).InForce() {
+		t.Fatal("require_refusal_audit is not a floor in force")
+	}
+	in := okInput()
+	in.Floors.RequireRefusalAudit = true
+	if res := Select(in); res.Chosen == nil || res.Chosen.Backend != sandboxbackend.BackendBwrap {
+		t.Fatalf("auto under the floor: %+v", res)
+	}
+	in.Request.Backend = sandboxbackend.BackendProcessLite
+	in.Request.Tier = vocab.TierHost
+	in.Request.AcceptReducedCapture = true
+	in.Enabled = []string{sandboxbackend.BackendProcessLite}
+	in.Probes[sandboxbackend.BackendProcessLite] = Probe{Compiled: true, Verdict: VerdictAvailable, Version: "9", Sources: []string{"live"}}
+	in.Floors.FloorAcceptsBeta = true
+	in.Host = sandboxbackend.HostLinux
+	res := Select(in)
+	if res.Chosen != nil || len(res.Drops) != 1 || res.Drops[0].Verdict != VerdictRefusalAuditRequired {
+		t.Fatalf("explicit process_lite under the floor: %+v", res)
+	}
+	// bwrap on the host tier starts no gateway, so the floor refuses it
+	// even though bwrap audits its private tiers (N4-A1).
+	in = okInput()
+	in.Floors.RequireRefusalAudit = true
+	in.Request.Backend = sandboxbackend.BackendBwrap
+	in.Request.Tier = vocab.TierHost
+	in.Request.AcceptReducedCapture = true
+	res = Select(in)
+	if res.Chosen != nil || len(res.Drops) != 1 || res.Drops[0].Verdict != VerdictRefusalAuditRequired || !strings.Contains(res.Drops[0].Reason, "host") {
+		t.Fatalf("explicit bwrap on host under the floor: %+v", res)
 	}
 }

@@ -5,7 +5,7 @@
 // API as before), so every page moved onto the one icon family without an
 // import change. New code imports lucide icons and renders
 // <Icon icon={X} /> directly; brand marks (tool / model / host / IdP logos,
-// the SuperBased mark) are NOT icons and never go through here.
+// the superbased mark) are NOT icons and never go through here.
 //
 // The abstract provider glyphs (AnthropicGlyph ... ProviderGlyph) were
 // removed: nothing rendered them, and serving-host marks now come from

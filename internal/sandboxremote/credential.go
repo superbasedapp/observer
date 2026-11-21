@@ -1,6 +1,7 @@
 package sandboxremote
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,19 @@ var ErrCredentialMissing = errors.New("credential_missing")
 const (
 	SourceKeystore = "keystore"
 	SourceEnv      = "env"
+	// SourceMinted: the credential is a CredentialSource that mints a
+	// short-lived token per call (a Vendor with MintedCredential).
+	SourceMinted = "minted"
 )
+
+// CredentialSource mints the short-lived token a MintedCredential vendor's
+// wire client sends (lane G4: the org-hosted row's run tokens, refreshed
+// before expiry). A token never reaches a log line, an argv or an error.
+type CredentialSource interface {
+	// Token returns a valid token for the run, minting a new one when the
+	// last is near its expiry.
+	Token(ctx context.Context) (string, error)
+}
 
 // Credential is one provider credential, resolved at use time.
 type Credential struct {
@@ -46,6 +59,10 @@ type Credential struct {
 	// connected for a pinned endpoint (lane SBX-UPD, SBX-GOV-4; "" for
 	// none). The vendor client pins it.
 	SPKISHA256 string
+	// Minted is the token source of a SourceMinted credential (nil
+	// otherwise). Its tokens are never in Fields, so Secrets and the stored
+	// encoding never hold one.
+	Minted CredentialSource
 }
 
 // String names the credential without its values.

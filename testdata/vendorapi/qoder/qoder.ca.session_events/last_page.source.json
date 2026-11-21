@@ -1,0 +1,34 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-02",
+  "field_ledger": {
+    "data": "VerifiedSDK",
+    "data[]": "VerifiedSDK",
+    "data[].id": "VerifiedSDK",
+    "data[].is_error": "VerifiedSDK",
+    "data[].name": "VerifiedSDK",
+    "data[].processed_at": "VerifiedSDK",
+    "data[].stop_reason": "VerifiedSDK",
+    "data[].stop_reason.type": "VerifiedSDK",
+    "data[].tool_use_id": "VerifiedSDK",
+    "data[].type": "VerifiedSDK",
+    "first_id": "Inferred",
+    "has_more": "VerifiedSDK",
+    "last_id": "Inferred",
+    "next_page": "VerifiedSDK"
+  },
+  "fixture_sha256": "84d6ad9cfb837d239112369e61ae8fe8d3bd101d792adff4ef9b10da3f34987a",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/cloud/sessions/{session_id}/events",
+    "status": 200
+  },
+  "notes": "Members from qca/managed/types/session_event.py (SessionEvent, SessionEventStopReason, SessionEventUsage, SpanModelUsage) and the PageCursor envelope from qca/common/pagination.py; event types from the README streaming example and tests/test_session_credit_contract.py (session.usage, agent.thread_context_compacted usage.credits, span.model_request_end model_usage.credits). That session.status_idle usage.credits is the credits of the turn it ends is Inferred from the Cloud Agents release notes (credits shown per turn, split into generation and compaction). Every value is synthesized. Shape confirmed live 2026-11-02 (a free account, region global; a second session on a public GitHub repository), values synthesized: the members graded Inferred (the corpus has no live grade) are ones the live responses carried beyond the SDK's types and the closed DTO ignores. session.status_idle carries no usage member live.",
+  "scenario": "last_page",
+  "sdk_or_spec_version_or_commit": "github.com/QoderAI/qoder-cloud-agents-sdk-python at commit 54e7a3140c51d76fd3143e993c5dfbf550bac082 (2026-10-29, qca-sdk; README: aligned with the official API documentation retrieved on 2026-10-27)",
+  "source_kind": "sdk_type",
+  "source_sha256": "bc140fd9b5e609bbdadf97050404fe9fd5b8e573489bda25b365df5be08e69f0",
+  "source_url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python/blob/54e7a3140c51d76fd3143e993c5dfbf550bac082/src/qca/managed/types/session_event.py",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "qoder.ca.session_events"
+}

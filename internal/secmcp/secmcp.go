@@ -5,13 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secciwf"
 	"github.com/marmutapp/superbased-observer/internal/secdetect"
+	"github.com/marmutapp/superbased-observer/internal/secdockerfile"
+	"github.com/marmutapp/superbased-observer/internal/secexploit"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
+	"github.com/marmutapp/superbased-observer/internal/secrank"
 )
 
 // FindingsReader returns the open findings of the project whose root
@@ -76,6 +82,20 @@ type Deps struct {
 	// sec-gate2, decision log P-025): an agent cannot read another
 	// repository's findings by naming its directory.
 	WorkDir string
+	// Evidence reads one finding's redacted evidence by id ("" when none).
+	// The dependency fields (package, version, fixed_version, direct, dev)
+	// come from a dependency finding's evidence; nil leaves them out.
+	Evidence func(ctx context.Context, id string) (string, error)
+	// ReadFile reads a project-relative lockfile under root (the caller
+	// owns containment and the size cap: secdepdetail.ErrOutsideProject,
+	// ErrFileTooLarge). Nil leaves direct and dev out.
+	ReadFile func(root, rel string) ([]byte, error)
+	// LookupRecord reads one OSV record from the node's LOCAL database
+	// (secdepdetail.ErrDatabaseNotInstalled, ErrRecordNotFound). Nil leaves
+	// fixed_version out. The record's prose is never read into the answer.
+	LookupRecord func(ecosystem, id string) ([]byte, error)
+	// Enrich supplies reach, kev and epss per finding (nil: absent).
+	Enrich Enricher
 }
 
 // Tool is one MCP tool (the shape of internal/mcp.Tool).
@@ -103,7 +123,7 @@ type findingsTool struct{ d Deps }
 func (*findingsTool) Name() string { return "get_security_findings" }
 
 func (*findingsTool) Description() string {
-	return "List this project's open code security findings (rule, severity, file and line, fix hint) from Observer's local scans. Answers only for the project the MCP server runs in. Read-only."
+	return "List this project's open code security findings (rule, severity, confidence, file:line, fix hint; for dependencies package, version, fixed_version, direct, dev) from local scans. Own project only. Read-only."
 }
 
 func (*findingsTool) InputSchema() map[string]any {
@@ -130,6 +150,22 @@ type FindingOut struct {
 	Line     int    `json:"line"`
 	Message  string `json:"message"`
 	FixHint  string `json:"fix_hint,omitempty"`
+	// Confidence is the finding's detection confidence (an enum).
+	Confidence string `json:"confidence,omitempty"`
+	// Package, Version and FixedVersion are a dependency finding's package
+	// name, installed version and the smallest fixed version one upgrade can
+	// move to (view time, from the lockfile and the local OSV database; never
+	// advisory prose). Direct and Dev are nil when the lockfile does not say.
+	Package      string `json:"package,omitempty"`
+	Version      string `json:"version,omitempty"`
+	FixedVersion string `json:"fixed_version,omitempty"`
+	Direct       *bool  `json:"direct,omitempty"`
+	Dev          *bool  `json:"dev,omitempty"`
+	// Reach, KEV and EPSS are filled by Deps.Enrich (reachability tier,
+	// exploited-in-the-wild state, exploit-prediction score).
+	Reach string   `json:"reach,omitempty"`
+	KEV   *KEV     `json:"kev,omitempty"`
+	EPSS  *float64 `json:"epss,omitempty"`
 }
 
 // FindingsOut is get_security_findings's answer.
@@ -138,6 +174,9 @@ type FindingsOut struct {
 	Open      int          `json:"open"`
 	Findings  []FindingOut `json:"findings"`
 	Truncated bool         `json:"truncated,omitempty"`
+	// Attribution is FIRST's EPSS citation, set when a finding carries an
+	// epss score.
+	Attribution string `json:"attribution,omitempty"`
 }
 
 func (t *findingsTool) Invoke(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -164,24 +203,102 @@ func (t *findingsTool) Invoke(ctx context.Context, raw json.RawMessage) (any, er
 			return nil, ErrOtherProject
 		}
 	}
-	return Summarize(fs), nil
+	return t.d.summarize(ctx, root, fs), nil
 }
 
-// Summarize is the answer for a project's open findings: at most 100,
-// every string capped, the templated message and fix hint only.
+// Summarize is the answer for a project's open findings with no dependency
+// reads and no enrichment: at most 100, every string capped, the templated
+// message and fix hint only.
 func Summarize(fs []secfinding.Finding) FindingsOut {
+	return Deps{}.summarize(context.Background(), "", fs)
+}
+
+// maxRanked caps the findings one answer enriches and ranks before it
+// keeps the first maxFindings (the store's own list cap).
+const maxRanked = 1000
+
+// summarize is Summarize with the dependency fields (d.Evidence,
+// d.ReadFile, d.LookupRecord) and the enrichment (d.Enrich) of the listed
+// findings; root is the project root the lockfiles are read under. The
+// findings are ordered worst severity first, then ranked (secrank: a
+// dependency finding listed in KEV first, then its reach tier, then its
+// EPSS score, among the places dependency findings hold), then cut to
+// maxFindings, so the cut keeps the highest-ranked ones.
+func (d Deps) summarize(ctx context.Context, root string, fs []secfinding.Finding) FindingsOut {
+	deps := newDepSource(d, root)
 	out := FindingsOut{Note: dataNote, Open: len(fs), Findings: []FindingOut{}}
+	fs = bySeverity(fs)
+	if len(fs) > maxRanked {
+		fs, out.Truncated = fs[:maxRanked], true
+	}
+	if d.Enrich == nil && len(fs) > maxFindings {
+		// Nothing to rank on: the first maxFindings are the answer.
+		fs, out.Truncated = fs[:maxFindings], true
+	}
 	for _, f := range fs {
-		if len(out.Findings) == maxFindings {
-			out.Truncated = true
-			break
-		}
-		out.Findings = append(out.Findings, FindingOut{
+		fo := FindingOut{
 			ID: f.ID, RuleID: f.Rule.ID, Category: string(f.Category), Severity: string(f.Severity),
 			Baseline: string(f.Baseline), File: capText(f.Location.RelPath, secfinding.MaxPath), Line: f.Location.StartLine,
 			Message: capText(f.Message, 300), FixHint: capText(f.FixHint, 300),
-		})
+			Confidence: capText(string(f.Confidence), 16),
+		}
+		df, isDep := deps.fields(ctx, f)
+		if isDep {
+			fo.Package, fo.Version = capText(df.pkg.Name, 214), capText(df.pkg.Version, 214)
+			fo.FixedVersion, fo.Direct, fo.Dev = capText(df.fixed, 214), df.direct, df.dev
+		}
+		if d.Enrich != nil {
+			in := EnrichInput{Finding: f, Root: root}
+			if isDep {
+				p := df.pkg
+				in.Dependency, in.AdvisoryIDs = &p, df.advisoryIDs
+			}
+			e := cleanEnrichment(d.Enrich(ctx, in))
+			fo.Reach, fo.KEV, fo.EPSS = e.Reach, e.KEV, e.EPSS
+		}
+		out.Findings = append(out.Findings, fo)
 	}
+	out.Findings = secrank.Apply(out.Findings, rankKey)
+	if len(out.Findings) > maxFindings {
+		out.Findings, out.Truncated = out.Findings[:maxFindings], true
+	}
+	for _, fo := range out.Findings {
+		if fo.EPSS != nil {
+			// FIRST's requested citation rides every answer that shows a
+			// score (ruling Q14-8).
+			out.Attribution = secexploit.EPSSCitation
+			break
+		}
+	}
+	return out
+}
+
+// rankKey is a listed finding's rank key: only a dependency finding
+// carries one; a finding with no enrichment ranks as "no signal".
+func rankKey(fo FindingOut) secrank.Key {
+	if fo.Category != string(policy.FindingVulnerableDependency) {
+		return secrank.Key{}
+	}
+	k := secrank.NoSignal()
+	k.Reach = secrank.ReachRankOfToken(fo.Reach)
+	if fo.KEV != nil {
+		k.Exploit.KEV = fo.KEV.Listed
+	}
+	if fo.EPSS != nil {
+		k.Exploit.EPSSMilli = int(math.Round(*fo.EPSS * secexploit.Milli))
+	}
+	return k
+}
+
+// bySeverity is fs ordered worst severity first, the order given kept
+// among equal severities (a worktree's findings follow the project's).
+func bySeverity(fs []secfinding.Finding) []secfinding.Finding {
+	rank := map[policy.FindingSeverity]int{}
+	for i, s := range policy.FindingSeverities() {
+		rank[s] = i
+	}
+	out := append([]secfinding.Finding(nil), fs...)
+	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] > rank[out[j].Severity] })
 	return out
 }
 
@@ -190,7 +307,7 @@ type checkChangeTool struct{}
 func (*checkChangeTool) Name() string { return "check_change" }
 
 func (*checkChangeTool) Description() string {
-	return "Before writing a file, check the proposed content with Observer's local detectors (secrets; CI workflow rules for .github/workflows files). Returns rule hits by line, never the matched value."
+	return "Before writing a file, check the proposed content with Observer's local detectors (secrets; CI workflow rules for .github/workflows files; Dockerfile rules). Returns rule hits by line, never the matched value."
 }
 
 func (*checkChangeTool) InputSchema() map[string]any {
@@ -271,6 +388,19 @@ func Check(rel, content string) CheckOut {
 		}
 		for _, f := range rep.Findings {
 			out.Hits = append(out.Hits, Hit{Rule: f.RuleID, Kind: "ci_workflow", Line: f.Line, Message: f.Message})
+		}
+	}
+	if secdockerfile.IsDockerfilePath(rel) {
+		rep := secdockerfile.Check([]byte(content))
+		if !rep.Complete() || rep.TruncatedRuns > 0 {
+			incomplete = true
+		}
+		for _, f := range rep.Findings {
+			msg := f.Message
+			if f.Detail != "" {
+				msg += " (" + f.Detail + ")"
+			}
+			out.Hits = append(out.Hits, Hit{Rule: f.RuleID, Kind: "container_config", Line: f.Line, Message: msg})
 		}
 	}
 	switch {

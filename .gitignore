@@ -73,6 +73,10 @@ webcloud/*.log
 # ever be a source of drift.
 website/model-prices/
 website/tokenomics/
+# The one-command connect wrappers, staged from scripts/ at website build time
+# (scripts/website-stage-connect.sh). One source: scripts/connect.{sh,ps1}.
+website/connect.sh
+website/connect.ps1
 model-pricing/web/node_modules/
 model-pricing/web/out/
 
@@ -107,6 +111,8 @@ coverage.html
 # the negation re-include one file.
 **/.claude/*
 !/.claude/settings.json
+# Project skills (invokable by name in any session, e.g. /planea-e2e).
+!/.claude/skills/
 # Negation: keep .claude/ fixture trees under testdata/ tracked.
 # Required by TestSidechain_CrossReferencedFromSubagentFiles in
 # internal/adapter/cowork — the test walks
@@ -188,6 +194,9 @@ model-pricing/scripts/extract-cache/
 # The compact app root's tofu test fixtures: placeholder-only .env files (CHANGEME / a
 # labelled fake value); the global .env rule above must not hide them from git or CI.
 !deploy/modules/**/tests/bundles/*/.env
+
+# OpenShell build working files (decision OB-012 on openshell/integration)
+!docs/plans/openshell/build/
 
 # Internal docs — kept locally on the private repo for development
 # context, untracked from the public repo. The dashboard's runtime
@@ -274,6 +283,7 @@ model-pricing/scripts/extract-cache/
 /internal/vendorsurface/livecheck/
 /harness-gateway/
 /tests/e2e/orgserver/
+/tests/sdke2e/
 # The org-server load test and the org-only helper packages.
 /cmd/observer-loadtest/
 /internal/loadgen/
@@ -281,6 +291,7 @@ model-pricing/scripts/extract-cache/
 /internal/orgmsg/
 /scripts/loadtest/
 /scripts/ci/perf/
+/scripts/ci/cicost/
 /.github/workflows/perf-smoke.yml
 # deploy/ except the sandbox image recipes (a public feature's inputs).
 /deploy/*
@@ -310,11 +321,22 @@ model-pricing/scripts/extract-cache/
 /tools/adapterparitygen/
 # The shipped-migrations record generator: records private lineages from git.
 /tools/shippedmiggen/
+# The parallel test runner: maintainer tooling for the private CI selection.
+/tools/testrunner/
+# Managed-SaaS structural checks: their tests read the private org server.
+/tools/migcheck/
+/tools/orgstateinv/
+/tools/structcheck/
+# The Track E gate driver: hosted-SaaS operations tooling.
+/tools/gatedriver/
+# The hosted service's canary prober (imports the private org server).
+/tools/canaryprobe/
 # Private CI + release pipelines. ci.yml stays (it is the public
 # contributor gate); ci-private.yml holds the five jobs whose inputs are
 # private-only paths.
 /.github/workflows/ci-private.yml
 /.github/workflows/npm-release.yml
+/.github/workflows/sdk-release.yml
 /.github/workflows/teams-golden-path.yml
 /.github/workflows/obs-eval.yml
 /.github/workflows/website-deploy.yml
@@ -322,6 +344,13 @@ model-pricing/scripts/extract-cache/
 /.github/workflows/agent-access-images.yml
 /scripts/agent-access-supply-chain-check.sh
 /tests/invariant/agent_access_supply_chain_test.go
+# The on-demand half of release.sh's green-before-tag check (P-229).
+/scripts/ci/release-dispatch.sh
+/scripts/ci/release-dispatch-paths.tsv
+/tests/invariant/release_dispatch_test.go
+# The gate attestation's private half (L-139).
+/scripts/ci/publish-gate-attestation.sh
+/scripts/ci/gate-coverage.tsv
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
 /examples/copilot-harness/README-orgplane.md

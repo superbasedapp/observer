@@ -1627,6 +1627,78 @@
    "status": "synthetic, awaiting live validation"
   },
   {
+   "id": "cursor.admin.cloud_agent_owners",
+   "vendor_group": "cursor-xai",
+   "vendor": "cursor",
+   "plane": "cursor.admin",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "basic",
+    "doc": "team key"
+   },
+   "paging": {
+    "style": "page_number",
+    "doc": "page, pageSize<=1000"
+   },
+   "rate": {
+    "documented": true,
+    "doc": "60/min"
+   },
+   "tier": {
+    "doc": "Admin API tier"
+   },
+   "freshness_doc": "aggregated hourly; poll <= hourly",
+   "lookback_doc": "not stated",
+   "per_user_doc": "yes (userEmail or serviceAccountId per cloud agent)",
+   "mechanism_doc": "POST /teams/filtered-usage-events with hostingType CLOUD (the usage-events endpoint, filtered to cloud-hosted agents); reads cloudAgentId and userEmail or serviceAccountId only",
+   "read_write_doc": "R",
+   "class_doc": "Identity",
+   "grain_doc": "PerCall",
+   "build": "built",
+   "build_doc": "Driverable",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Identity",
+     "grain": "per_call",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "built",
+     "verification": {
+      "synthetic": "mock_verified",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cursor.com",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://cursor.com/docs/account/teams/admin-api",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Built in lane CA-C8 (cloud agents arc): the usage-events endpoint again, sharing cursor.admin.usage_events's DTO and paging (internal/vendorapi/cursor CloudAgentOwners), narrowed to hostingType CLOUD through the egress seam's reviewed POST row (body kind epoch_range_page_hosting). It lands one cursor.cloud_agent_owner snapshot per (cloudAgentId, identity): the id, and the serviceAccountId when the event carries one, else the member's folded userEmail; tokens, cents and the billing breakdown are never read into the page (the node rail owns Cursor cloud usage). A separate row from cursor.admin.usage_events because that row lands every token and cent it parses and waits on the cursoradminpoll ownership gate (invariant I8). The reference calls cloudAgentId the ID of the cloud agent run; whether it is the agent id (bc-) or a run id is open, and internal/orgserver/cloudproj tries both. Needs a team Admin API key (Teams or Enterprise). Synthetic only, no vendor response observed.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "build column",
+    "source_rule": "legend_key",
+    "auth_rule": "plane: cursor admin-api.md: Basic auth, team Admin API key as username; closed-DTO driver lane CA-C8"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
    "id": "cursor.admin.user_spend_limit",
    "vendor_group": "cursor-xai",
    "vendor": "cursor",
@@ -2719,10 +2791,10 @@
    "read_write_doc": "R/W",
    "class_doc": "Sessions",
    "grain_doc": "PerSession",
-   "build": "buildable",
+   "build": "built",
    "build_doc": "Driverable",
    "sensitivity": "pii",
-   "secret_class": "unclassified",
+   "secret_class": "may_return_secret",
    "supplies": [
     {
      "class": "Sessions",
@@ -2732,7 +2804,7 @@
      "coverage": {
       "completeness": "segment"
      },
-     "build": "buildable",
+     "build": "built",
      "verification": {
       "synthetic": "doc_only",
       "live": "live_pending"
@@ -2740,18 +2812,25 @@
     }
    ],
    "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cursor.com",
+     "port": 443
+    }
+   ],
    "sources": [
     {
      "url": "https://cursor.com/docs/cloud-agent/api/endpoints",
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cursor CloudAgents (lane CA-A4, cloud agents arc), conformance against the vendormock mock through the pure adapter. Consumed by the node cloud-agents connector (lane CA-B2), and, since lane CA-C3 (cloud agents arc), by the org vendor-connection runner too: the API is per user (the key owner's agents only, typically a team service account's), so an org connection lists that key's agents and internal/orgserver/cloudproj projects each as an org-level row (the agent names no person). Classified may_return_secret with a closed-DTO driver (the agent list returns no credential; the classification is the conservative one the operation gate requires). Synthetic only, no vendor response observed.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": "keyword: basic"
+    "auth_rule": "plane: the cursor.cloudagent key (user or service-account key) as Basic user; closed-DTO driver lane CA-A4, org runner lane CA-C3"
    },
    "status": "synthetic, awaiting live validation"
   },
@@ -2962,8 +3041,8 @@
    "reach": "pull_api",
    "transport": "api",
    "auth": {
-    "kind": "header_key",
-    "doc": "any key"
+    "kind": "basic",
+    "doc": "any key (Basic, key as user)"
    },
    "paging": {
     "style": "unspecified",
@@ -2983,7 +3062,7 @@
    "read_write_doc": "R",
    "class_doc": "Credentials, Policy",
    "grain_doc": "Snapshot",
-   "build": "buildable",
+   "build": "built",
    "build_doc": "Driverable",
    "sensitivity": "credential_metadata",
    "secret_class": "may_return_secret",
@@ -2996,9 +3075,9 @@
      "coverage": {
       "completeness": "segment"
      },
-     "build": "buildable",
+     "build": "built",
      "verification": {
-      "synthetic": "doc_only",
+      "synthetic": "mock_verified",
       "live": "live_pending"
      }
     },
@@ -3024,14 +3103,21 @@
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cursor CloudAgentMeta (lane CA-C8, cloud agents arc) reads GET /v1/me only (not /v1/models or /v1/repositories) through ParseKeyInfo, the one parser the node connector's connect probe also uses. An org connection on the same auth binding as a cursor.cloudagent.agents connection lands one cursor.cloud_agent_key snapshot: the key kind (user when the call names a user id and an e-mail, no_user otherwise) and, for a user key, the user id and folded e-mail, which internal/orgserver/cloudproj uses to attribute that key's agents to the key owner. The key name and the user's names never land. Classified may_return_secret with a closed-DTO driver (the key-info call returns no credential; the classification is the conservative one the operation gate requires). Live 2026-11-01 on a user key (node connector): 200 with e-mail and numeric user id; the org runner path is synthetic only.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": "keyword: header_key"
+    "auth_rule": "plane: the cursor.cloudagent key (user or service-account key) as Basic user; closed-DTO driver lane CA-C8"
    },
-   "status": "synthetic, awaiting live validation"
+   "status": "synthetic, awaiting live validation",
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cursor.com",
+     "port": 443
+    }
+   ]
   },
   {
    "id": "cursor.cloudagent.runs",
@@ -3041,7 +3127,7 @@
    "reach": "pull_api",
    "transport": "api",
    "auth": {
-    "kind": "unclassified",
+    "kind": "basic",
     "doc": "as above"
    },
    "paging": {
@@ -3103,12 +3189,12 @@
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cursor CloudAgentRuns (lane CA-A4, cloud agents arc), conformance against the vendormock mock through the pure adapter. Consumed by the node cloud-agents connector (lane CA-B2), not by the org vendor-connection runner: the API is per user (the caller's agents only), so the row stays buildable and has no driver-table entry. Synthetic only, no vendor response observed.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": ""
+    "auth_rule": "plane: the cursor.cloudagent.agents key (user or service-account key, Basic or Bearer); pure driver lane CA-A4"
    },
    "status": "synthetic, awaiting live validation"
   },
@@ -3355,7 +3441,7 @@
    "reach": "pull_api",
    "transport": "api",
    "auth": {
-    "kind": "unclassified",
+    "kind": "basic",
     "doc": "as above"
    },
    "paging": {
@@ -3403,12 +3489,12 @@
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cursor CloudAgentUsage (lane CA-A4, cloud agents arc), conformance against the vendormock mock through the pure adapter. Consumed by the node cloud-agents connector (lane CA-B2), not by the org vendor-connection runner: the API is per user (the caller's agents only), so the row stays buildable and has no driver-table entry. Synthetic only, no vendor response observed.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": ""
+    "auth_rule": "plane: the cursor.cloudagent.agents key (user or service-account key, Basic or Bearer); pure driver lane CA-A4"
    },
    "status": "synthetic, awaiting live validation"
   },

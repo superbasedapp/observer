@@ -69,6 +69,44 @@ export function isLiveStatus(s: Status | undefined): boolean {
 // /ws/terminal/status, components/useTerminalStatuses) the dock folds in.
 export type AgentExit = { status: string; confidence: string };
 
+/** One row of GET /api/launch/sessions, as foldSessionExit reads it. */
+export type LaunchSessionRow = { token: string; exited?: boolean };
+
+// foldSessionExit makes a setup terminal's tile (a guided install, a sandbox
+// setup step) follow its process's end. A setup PTY is not an agent run, so
+// the status stream foldAgentExits reads never names it, and its own socket
+// can keep reading live after the command exited; the daemon's session list
+// says exited (or no longer lists the token once it is reaped). The resume
+// of the New Terminal dialog waits on exactly that status. sessions null (the
+// list could not be read) changes nothing. Returns prev itself when nothing
+// changes.
+export function foldSessionExit(
+  prev: Record<string, Status>,
+  token: string,
+  sessions: readonly LaunchSessionRow[] | null,
+): Record<string, Status> {
+  if (!sessions) return prev;
+  const cur = prev[token];
+  if (cur === "exited" || cur === "error") return prev;
+  const row = sessions.find((s) => s.token === token);
+  if (row && !row.exited) return prev;
+  return { ...prev, [token]: "exited" };
+}
+
+// installResume is the draft the New Terminal dialog reopens with once the
+// setup terminal a resume waits on has ended (D-6): the same draft, so the
+// dialog comes back on the same row and reads a fresh plan for it. While
+// that terminal still reads live, or nothing waits, it is null.
+export function installResume<D>(
+  pending: { token: string; draft: D } | null,
+  statuses: Record<string, Status>,
+): D | null {
+  if (!pending) return null;
+  const status = statuses[pending.token];
+  if (status !== "exited" && status !== "error") return null;
+  return pending.draft;
+}
+
 // foldAgentExits makes a dock tile follow its run's end at once (R-183):
 // the daemon's status stream reports a run "exited" (trusted, from the
 // process itself) as soon as the child ends, while the tile's own socket

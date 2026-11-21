@@ -39,6 +39,16 @@ var securityOptIn = map[string]bool{
 	"security.scan.actionlint":   true,
 	"security.scan.trivy":        true,
 	"security.scan.kics":         true,
+	// Lane OS-2 T: the Trivy image driver, off in every distro like the
+	// Trivy row and opt-in for the same reason (a third-party process and a
+	// 140 MB download).
+	"security.scan.image.trivy": true,
+	// Plan 14.9 (M3L-5): the local passive DAST checker, opt-in in every
+	// distro (14.13), with its own accept; with no block no verb runs.
+	"security.dast": true,
+	// Plan 14.5 item 3b (spike RG-0): the Go symbol check in binary mode,
+	// opt-in in every distro (14.13); with no block no binary is checked.
+	"security.reach.go": true,
 }
 
 // securitySelected is the optional-module predicate for a security id with

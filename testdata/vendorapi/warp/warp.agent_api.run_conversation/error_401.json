@@ -1,0 +1,8 @@
+{
+  "type": "https://docs.warp.dev/factories/api-and-sdk/troubleshooting/errors/authentication_required",
+  "title": "Authentication required",
+  "status": 401,
+  "detail": "The request lacks valid authentication credentials.",
+  "error": "Authentication required: The request lacks valid authentication credentials.",
+  "retryable": false
+}

@@ -59,10 +59,10 @@ var policyRules = []policyRule{
 		return "today's sandbox settings could not be read: " + f.TodayErr
 	}},
 	{"listed", func(f PolicyFacts) bool { return !f.Listed }, func(f PolicyFacts) string {
-		return f.Backend + " is no longer in [terminal.sandbox].backends (or the sandbox is off, or your organization's pin left no backend)"
+		return f.Backend + " is no longer in the backend list of the Sandbox isolation settings card (Terminals > Settings; [terminal.sandbox].backends), or the sandbox is off, or your organization's pin left no backend"
 	}},
 	{"min_isolation", func(f PolicyFacts) bool { return f.BelowMinIsolation != "" }, func(f PolicyFacts) string {
-		return f.Backend + " is below [terminal.sandbox].min_isolation = " + f.BelowMinIsolation
+		return f.Backend + " is below the Minimum isolation of the Sandbox isolation settings card (Terminals > Settings; [terminal.sandbox].min_isolation = " + f.BelowMinIsolation + ")"
 	}},
 	{"org_floor", func(f PolicyFacts) bool { return f.FloorDropped != "" }, func(f PolicyFacts) string {
 		return "an organization floor in force now rules the run out: " + f.FloorDropped

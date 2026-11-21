@@ -61,6 +61,10 @@ type APIProjectCostBucketRow struct {
 	// CommentLines), set ONLY on /cost?by=session rows and omitted when
 	// the session authored no code or comment lines.
 	AISplit *loc.AuthoredSplit `json:"ai_split,omitempty"`
+	// ExecutionLocation is where the session ran (local, vendor_cloud,
+	// customer_worker), set ONLY on /cost?by=session rows and omitted when
+	// nothing stamped it (unknown, never local). Cloud-agents lane CA-C1.
+	ExecutionLocation string `json:"execution_location,omitempty"`
 }
 
 type apiProjectSpendByDay struct {
@@ -92,6 +96,9 @@ type apiProjectSpendBySession struct {
 	// no pricing entry for their model (2026-09-22 rework finding S5) -
 	// same honesty contract as apiProjectSpendByDay.UnpricedTurns.
 	UnpricedTurns int `json:"unpriced_turns,omitempty"`
+	// ExecutionLocation is where the session ran; omitted when nothing
+	// stamped it (unknown, never local). Cloud-agents lane CA-C1.
+	ExecutionLocation string `json:"execution_location,omitempty"`
 }
 
 type apiProjectDetailSpend struct {
@@ -105,6 +112,10 @@ type apiProjectDetailSpend struct {
 	ByModel       []APIProjectCostBucketRow  `json:"by_model"`
 	ByDay         []apiProjectSpendByDay     `json:"by_day"`
 	BySession     []apiProjectSpendBySession `json:"by_session"`
+	// Locations is the local/cloud split of the figures above (CA-D21):
+	// absent for a project that never ran off this machine and folds no
+	// cloud twin, so its payload is unchanged.
+	Locations *APIProjectSpendLocations `json:"locations,omitempty"`
 }
 
 type apiProjectRoiTile struct {

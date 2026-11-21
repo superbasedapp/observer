@@ -32,7 +32,12 @@ import (
 // ConsentVersion is bumped when the accept text changes materially (a new
 // source, a much larger download); a record of an older version reads not
 // accepted, so the developer is asked again.
-const ConsentVersion = 1
+//
+// Version 2 (2026-11-03, static feed mirroring plan section 8): the
+// databases come from SuperBased's signed mirror on superbased.app first,
+// with the OSV bucket as the fallback, so every individual node is asked
+// once more.
+const ConsentVersion = 2
 
 // ConsentFile is the record's name in the security directory.
 const ConsentFile = "osv-db-consent.json"
@@ -42,20 +47,39 @@ const ConsentFile = "osv-db-consent.json"
 const consentMACDomain = "sbo-osv-db-consent-v1"
 
 // ApproxDownloadMB is the first download's size, about (npm is about 220
-// MB of it); later refreshes fetch only the ecosystems whose export
-// changed.
+// MB of it); later refreshes fetch only the changed records or deltas.
+//
+// Recomputed 2026-11-06 when Pub, SwiftURL, Hex, Hackage, Julia and CRAN
+// joined the mirror: the fifteen exports' Content-Length on the OSV bucket
+// that day sum to 307.0 MB (the nine earlier ones 303.8 MB, the six new
+// ones 3.2 MB together, Julia's 2.1 MB the largest of them), so "about
+// 300 MB" still holds and the accept text (which names no ecosystem, so
+// it covers every one the store downloads) needs no new version: a node
+// that accepted already fetches the new ecosystems on its next refresh.
+// TestApproxDownloadMBHonest holds the sum.
 const ApproxDownloadMB = 300
 
-// Source is the host the databases come from.
-const Source = "osv-vulnerabilities.storage.googleapis.com"
+// FeedHost serves SuperBased's signed mirror of the exports (source
+// SourceFeed).
+const FeedHost = "superbased.app"
 
-// ConsentText is what the developer accepts, on both surfaces.
+// UpstreamHost is the OSV project's public export bucket (source
+// SourceUpstream, the fallback).
+const UpstreamHost = "osv-vulnerabilities.storage.googleapis.com"
+
+// Source names where the databases come from, as the surfaces print it.
+const Source = FeedHost + " (falling back to " + UpstreamHost + ")"
+
+// ConsentText is what the developer accepts, on both surfaces (version
+// ConsentVersion; docs/dependency-scanning.md "The one-time accept" quotes
+// it verbatim).
 var ConsentText = fmt.Sprintf("Observer's dependency scanners match your projects' lockfiles against a local copy of the OSV "+
-	"vulnerability database. Accepting downloads it, about %d MB at first, from %s (the OSV project's public "+
-	"export bucket on Google Cloud Storage); after that Observer checks every 6 hours and downloads only the "+
-	"ecosystems whose export changed. The download sends nothing about your projects: it fetches the same public "+
-	"files for everyone, and the bucket can see your IP address and the time. Until you accept, your projects' "+
-	"dependencies show as not scanned.", ApproxDownloadMB, Source)
+	"vulnerability database. Accepting downloads it, about %d MB at first, from superbased's signed mirror on %s, "+
+	"falling back to the OSV project's public export bucket (%s) when the mirror is unavailable, unless you turn "+
+	"the fallback off. After the first download Observer checks every 6 hours and fetches only the changed records "+
+	"or deltas. The download sends nothing about your projects: it fetches the same public files for everyone, and "+
+	"both hosts can see your IP address and the time. Until you accept, your projects' dependencies show as not "+
+	"scanned.", ApproxDownloadMB, FeedHost, UpstreamHost)
 
 // ConsentSurfaces are the places that may record the accept: each is an
 // explicit action by the developer (the dashboard's confirm dialog, the
@@ -102,7 +126,23 @@ func (c Consent) Accepted() bool {
 // record with no MAC or one that does not verify reads back unverified
 // (Accepted false).
 func ReadConsent(securityDir string, key []byte) Consent {
-	f, err := os.Open(filepath.Join(securityDir, ConsentFile))
+	return readConsentRecord(securityDir, ConsentFile, consentMACDomain, key)
+}
+
+// RecordConsent records the accept given on surface by the account by at
+// at, signed under key, atomically (0600, the directory 0700).
+func RecordConsent(securityDir, surface, by string, at time.Time, key []byte) (Consent, error) {
+	c, err := writeConsentRecord(securityDir, ConsentFile, consentMACDomain, ConsentVersion, surface, by, at, key)
+	if err != nil {
+		return Consent{}, fmt.Errorf("osvdb.RecordConsent: %w", err)
+	}
+	return c, nil
+}
+
+// readConsentRecord reads one signed accept record (file, MAC domain) in
+// the security directory; see ReadConsent.
+func readConsentRecord(securityDir, file, domain string, key []byte) Consent {
+	f, err := os.Open(filepath.Join(securityDir, file))
 	if err != nil {
 		return Consent{}
 	}
@@ -115,34 +155,34 @@ func ReadConsent(securityDir string, key []byte) Consent {
 	if json.Unmarshal(b, &c) != nil {
 		return Consent{}
 	}
-	c.Verified = guardposture.VerifyRecordMAC(consentMACDomain, c.canonical(), key, c.MAC)
+	c.Verified = guardposture.VerifyRecordMAC(domain, c.canonical(), key, c.MAC)
 	return c
 }
 
-// RecordConsent records the accept given on surface by the account by at
-// at, signed under key, atomically (0600, the directory 0700).
-func RecordConsent(securityDir, surface, by string, at time.Time, key []byte) (Consent, error) {
+// writeConsentRecord records one signed accept record (file, MAC domain,
+// version) atomically; see RecordConsent.
+func writeConsentRecord(securityDir, file, domain string, version int, surface, by string, at time.Time, key []byte) (Consent, error) {
 	if !ConsentSurfaces[surface] || at.IsZero() {
-		return Consent{}, errors.New("osvdb.RecordConsent: an accepting surface and a time are required")
+		return Consent{}, errors.New("an accepting surface and a time are required")
 	}
 	if len(key) == 0 {
-		return Consent{}, errors.New("osvdb.RecordConsent: no signing key")
+		return Consent{}, errors.New("no signing key")
 	}
 	if len(by) > 128 {
 		by = by[:128]
 	}
-	c := Consent{Version: ConsentVersion, AcceptedAt: at.UTC(), Surface: surface, By: by}
-	c.MAC = guardposture.RecordMAC(consentMACDomain, c.canonical(), key)
+	c := Consent{Version: version, AcceptedAt: at.UTC(), Surface: surface, By: by}
+	c.MAC = guardposture.RecordMAC(domain, c.canonical(), key)
 	b, err := json.Marshal(c)
 	if err != nil {
 		return Consent{}, err
 	}
 	if err := os.MkdirAll(securityDir, 0o700); err != nil {
-		return Consent{}, fmt.Errorf("osvdb.RecordConsent: %w", err)
+		return Consent{}, err
 	}
 	tmp, err := os.CreateTemp(securityDir, ".tmp-osv-consent-*")
 	if err != nil {
-		return Consent{}, fmt.Errorf("osvdb.RecordConsent: %w", err)
+		return Consent{}, err
 	}
 	name := tmp.Name()
 	_, werr := tmp.Write(b)
@@ -154,11 +194,11 @@ func RecordConsent(securityDir, surface, by string, at time.Time, key []byte) (C
 		werr = os.Chmod(name, 0o600)
 	}
 	if werr == nil {
-		werr = os.Rename(name, filepath.Join(securityDir, ConsentFile))
+		werr = os.Rename(name, filepath.Join(securityDir, file))
 	}
 	if werr != nil {
 		_ = os.Remove(name)
-		return Consent{}, fmt.Errorf("osvdb.RecordConsent: %w", werr)
+		return Consent{}, werr
 	}
 	c.Verified = true
 	return c, nil

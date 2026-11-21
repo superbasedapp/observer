@@ -121,6 +121,8 @@ type mxcDriver struct {
 	mu     sync.Mutex
 	last   sandboxmxc.ProbeResult
 	lastAt time.Time
+	// lastGen is the probe-cache generation last was taken under.
+	lastGen uint64
 }
 
 // newMXCDriver builds the driver. Nothing is probed until a dialog or a
@@ -167,19 +169,20 @@ func (d *mxcDriver) probeResult(ctx context.Context) sandboxmxc.ProbeResult {
 		return sandboxmxc.Probe(sandboxmxc.HostFacts{Windows: false, Active: true}, sandboxmxc.ManifestX64)
 	}
 	d.mu.Lock()
-	if !d.lastAt.IsZero() && time.Since(d.lastAt) < sandboxProbeTTL {
+	if sandboxProbeFresh(d.lastAt, d.lastGen, time.Now()) {
 		res := d.last
 		d.mu.Unlock()
 		return res
 	}
 	d.mu.Unlock()
+	gen := sandboxProbeGeneration()
 	timeout := mxcDefaultProbeTimeout
 	if s := d.cfg.ProbeTimeoutSeconds; s > 0 {
 		timeout = time.Duration(s) * time.Second
 	}
 	res := mxcProbeRunner(ctx, d.r.observerBin, d.r.observerDir, timeout)
 	d.mu.Lock()
-	d.last, d.lastAt = res, time.Now()
+	d.last, d.lastAt, d.lastGen = res, time.Now(), gen
 	d.mu.Unlock()
 	if res.Rule == mxcSignedRuleID("age") {
 		// The installed signed manifest is past its age floor: every launch
@@ -555,7 +558,7 @@ func (d *mxcDriver) plan(created termsvc.CreateResult) (mxcPlanFile, error) {
 		TempDirEnv: sandboxenv.TempDirEnv(run.Tool),
 	}
 	if capture := sandboxRunCaptureFor(mxcRow(), created.ProxyRouted, tier, r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
-		plan.ProviderBlock, plan.ProviderHosts = true, r.providerHosts
+		plan.ProviderBlock, plan.ProviderHosts = true, r.providerHostList()
 	}
 	return plan, nil
 }

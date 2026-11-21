@@ -151,10 +151,24 @@ func keyID(pub ed25519.PublicKey) string {
 // key lost before its rotation release means no node can ever verify
 // again until every one of them is re-enrolled.
 func generateKeypair(dir string) (pubB64, keyPath string, err error) {
+	return generateKeypairNamed(dir, vendorKeyFile)
+}
+
+// The key file names keygen writes: the release vendor key, and the
+// content-feed key (internal/update/contentfeedkey.go), which lives only on
+// the feed publisher host as /etc/sbo-feed/content-feed.key.
+const (
+	vendorKeyFile      = "vendor-signing-key.key"
+	contentFeedKeyFile = "content-feed.key"
+)
+
+// generateKeypairNamed is generateKeypair with the key file name chosen by
+// the caller (keygen -feed writes contentFeedKeyFile). Same O_EXCL refusal.
+func generateKeypairNamed(dir, name string) (pubB64, keyPath string, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", fmt.Errorf("vendorsign keygen: %w", err)
 	}
-	keyPath = filepath.Join(dir, "vendor-signing-key.key")
+	keyPath = filepath.Join(dir, name)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", fmt.Errorf("vendorsign keygen: %w", err)

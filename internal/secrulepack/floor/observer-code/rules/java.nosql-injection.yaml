@@ -1,0 +1,52 @@
+rules:
+  - id: java.nosql-injection
+    languages: [java]
+    severity: ERROR
+    message: Web request input is parsed as a MongoDB query document or run as a server-side JavaScript condition, so a caller can change the query; build the filter with Filters or Criteria and pass the input as a value.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletRequest $R).$M(...)
+              - patterns:
+                  - pattern: $R.$M(...)
+                  - metavariable-regex:
+                      metavariable: $R
+                      regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getInputStream|getReader)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $FN(..., @$A $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RT $FN(..., @$A(...) $T $P, ...) { ... }
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|String\[\]|List<String>|Optional<String>|CharSequence)$
+    pattern-sanitizers:
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+      - pattern: new ObjectId(...)
+      - pattern: UUID.fromString(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new BasicQuery($Q, ...)
+              - pattern: Document.parse($Q)
+              - pattern: BasicDBObject.parse($Q)
+              - pattern: BsonDocument.parse($Q)
+              - pattern: Filters.where($Q)
+              - pattern: new BasicDBObject("$where", $Q)
+              - pattern: new Document("$where", $Q)
+              - pattern: $D.append("$where", $Q)
+              - pattern: $D.put("$where", $Q)
+          - focus-metavariable: $Q

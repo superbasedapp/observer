@@ -51,7 +51,9 @@ type Remote interface {
 	Get(ctx context.Context, eco string) (Meta, io.ReadCloser, error)
 }
 
-// Epoch is one ecosystem's record.
+// Epoch is one ecosystem's record. LastModified, CRC32C and Size always
+// describe the upstream BASE object (the full export last installed); an
+// incremental update moves Watermark, DeltaRecords and FetchedAt only.
 type Epoch struct {
 	Ecosystem    string    `json:"ecosystem"`
 	LastModified string    `json:"last_modified"`
@@ -63,14 +65,49 @@ type Epoch struct {
 	CheckedAt time.Time `json:"checked_at"`
 	// LastError is the last refresh failure, "" after a success.
 	LastError string `json:"last_error,omitempty"`
+	// Watermark: records modified after it are not in the local file. Zero
+	// means no incremental update is possible yet (a full download is due,
+	// and a remote with no per-record listing never sets it).
+	Watermark time.Time `json:"watermark,omitzero"`
+	// BaseFetchedAt is when the full export was last installed.
+	BaseFetchedAt time.Time `json:"base_fetched_at,omitzero"`
+	// DeltaRecords counts the records applied on top of the base.
+	DeltaRecords int `json:"delta_records,omitempty"`
+	// DeltaFailures counts consecutive failed incremental updates; at
+	// MaxDeltaFailures the next refresh downloads the full export.
+	DeltaFailures int `json:"delta_failures,omitempty"`
+	// Source names where the installed base came from: "" for the OSV
+	// bucket (SourceUpstream), else the SourcedRemote's SourceFeed,
+	// SourceImport or SourceOrgMirror.
+	Source string `json:"source,omitempty"`
 }
 
-// String is the epoch as findings and scan runs record it.
+// SourcedRemote is a Remote that names its source (Epoch.Source): the
+// content-channel sets (the signed mirror, an imported set, the org
+// mirror). The OSV bucket's remote is not one, so its epochs read as they
+// always did.
+type SourcedRemote interface {
+	OSVSource() string
+}
+
+// String is the epoch as findings and scan runs record it: the base
+// object's Last-Modified and CRC32C, plus " delta=<watermark>" (RFC 3339
+// with nanoseconds, UTC) once records were applied on top of it, and
+// " source=<source>" for a base that did not come from the OSV bucket, so a
+// finding names the exact data it was matched against and where it came
+// from.
 func (e Epoch) String() string {
 	if e.LastModified == "" && e.CRC32C == "" {
 		return ""
 	}
-	return e.LastModified + " crc32c=" + e.CRC32C
+	s := e.LastModified + " crc32c=" + e.CRC32C
+	if e.DeltaRecords > 0 && !e.Watermark.IsZero() {
+		s += " delta=" + e.Watermark.UTC().Format(time.RFC3339Nano)
+	}
+	if e.Source != "" {
+		s += " source=" + e.Source
+	}
+	return s
 }
 
 // Installed reports whether a verified export is on disk for the record.
@@ -82,6 +119,8 @@ type Store struct {
 	mu  *sync.Mutex
 	// bodyIdle and bodyTotal are the body download's deadlines.
 	bodyIdle, bodyTotal time.Duration
+	// deltaTotal bounds one ecosystem's incremental update.
+	deltaTotal time.Duration
 }
 
 var storeLocks sync.Map // dir -> *sync.Mutex: one refresh per directory per process
@@ -89,7 +128,7 @@ var storeLocks sync.Map // dir -> *sync.Mutex: one refresh per directory per pro
 // Open returns the store at dir (created 0700 on first refresh).
 func Open(dir string) Store {
 	m, _ := storeLocks.LoadOrStore(dir, &sync.Mutex{})
-	return Store{dir: dir, mu: m.(*sync.Mutex), bodyIdle: DefaultBodyIdle, bodyTotal: DefaultBodyTotal}
+	return Store{dir: dir, mu: m.(*sync.Mutex), bodyIdle: DefaultBodyIdle, bodyTotal: DefaultBodyTotal, deltaTotal: DefaultDeltaTotal}
 }
 
 // WithBodyDeadlines returns the store with other body download deadlines
@@ -176,13 +215,19 @@ type Report struct {
 	Unchanged []string
 	// Failed maps an ecosystem to its failure; its previous file stays.
 	Failed map[string]string
+	// Incremental maps an ecosystem updated record by record to the number
+	// of records applied; such an ecosystem is also in Changed.
+	Incremental map[string]int
 }
 
-// Refresh brings each ecosystem's export up to date through remote.
+// Refresh brings each ecosystem's export up to date through remote. A
+// remote that is also a DeltaRemote is asked for the changed records
+// whenever the rebase rules allow (see rebaseRules); otherwise, and when
+// a rebase is due, the full export is checked and downloaded as before.
 func (s Store) Refresh(ctx context.Context, remote Remote, ecos []string, now time.Time) (Report, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rep := Report{Failed: map[string]string{}}
+	rep := Report{Failed: map[string]string{}, Incremental: map[string]int{}}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return rep, fmt.Errorf("osvdb.Refresh: %w", err)
 	}
@@ -196,18 +241,22 @@ func (s Store) Refresh(ctx context.Context, remote Remote, ecos []string, now ti
 		}
 		cur := eps[eco]
 		cur.Ecosystem = eco
-		changed, next, err := s.refreshOne(ctx, remote, eco, cur, now)
+		out, next, err := s.refreshEco(ctx, remote, eco, cur, now)
 		if err != nil {
-			cur.LastError = err.Error()
-			cur.CheckedAt = now
-			eps[eco] = cur
+			next.LastError = err.Error()
+			next.CheckedAt = now
+			eps[eco] = next
 			rep.Failed[eco] = err.Error()
 			continue
 		}
 		eps[eco] = next
-		if changed {
+		switch {
+		case out.applied > 0:
 			rep.Changed = append(rep.Changed, eco)
-		} else {
+			rep.Incremental[eco] = out.applied
+		case out.changed:
+			rep.Changed = append(rep.Changed, eco)
+		default:
 			rep.Unchanged = append(rep.Unchanged, eco)
 		}
 	}
@@ -217,7 +266,13 @@ func (s Store) Refresh(ctx context.Context, remote Remote, ecos []string, now ti
 	return rep, ctx.Err()
 }
 
-func (s Store) refreshOne(ctx context.Context, remote Remote, eco string, cur Epoch, now time.Time) (bool, Epoch, error) {
+// refreshFull is the full-export path: the export's metadata first, the
+// body only when its CRC32C differs from the installed base's. The body
+// comes from Get, or, when the remote is a LocalRemote, from a hard link
+// (a copy where the link is refused) of a file already on this disk; both
+// pass the same checks (size, CRC32C, zip directory) before the same two
+// renames.
+func (s Store) refreshFull(ctx context.Context, remote Remote, eco string, cur Epoch, now time.Time) (bool, Epoch, error) {
 	head, err := remote.Head(ctx, eco)
 	if err != nil {
 		return false, cur, err
@@ -225,43 +280,41 @@ func (s Store) refreshOne(ctx context.Context, remote Remote, eco string, cur Ep
 	if head.CRC32C == "" {
 		return false, cur, errors.New("the export carries no CRC32C; refusing an unverifiable download")
 	}
+	final := s.zipPath("osv-scalibr", eco)
 	if cur.Installed() && head.CRC32C == cur.CRC32C {
-		if _, err := os.Stat(s.zipPath("osv-scalibr", eco)); err == nil {
+		if _, err := os.Stat(final); err == nil {
 			cur.CheckedAt, cur.LastError = now, ""
+			// An export installed before incremental updates (or by a
+			// remote with no per-record listing) IS the upstream object
+			// the metadata names, so it can take a watermark without a
+			// download.
+			if dr, ok := remote.(DeltaRemote); ok && cur.Watermark.IsZero() && cur.DeltaRecords == 0 {
+				cur.Watermark = baseWatermark(ctx, dr, eco, head.LastModified)
+				if cur.BaseFetchedAt.IsZero() {
+					cur.BaseFetchedAt = cur.FetchedAt
+				}
+			}
 			return false, cur, nil
 		}
 	}
-	getCtx, cancel := context.WithTimeout(ctx, s.bodyTotal)
-	defer cancel()
-	meta, body, err := remote.Get(getCtx, eco)
-	if err != nil {
-		return false, cur, err
-	}
-	wd := newWatchdog(body, cancel, s.bodyIdle)
-	defer wd.stop()
-	if meta.CRC32C == "" {
-		return false, cur, errors.New("the export carries no CRC32C; refusing an unverifiable download")
-	}
-	final := s.zipPath("osv-scalibr", eco)
 	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
 		return false, cur, err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(final), "all.zip.*.part")
+	var got fetched
+	if lr, ok := remote.(LocalRemote); ok {
+		got, err = s.linkLocal(ctx, lr, eco, filepath.Dir(final))
+	} else {
+		got, err = s.download(ctx, remote, eco, filepath.Dir(final))
+	}
+	if got.tmp != "" {
+		defer os.Remove(got.tmp)
+	}
 	if err != nil {
 		return false, cur, err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(wd, MaxExportBytes+1))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if wd.fired() || errors.Is(getCtx.Err(), context.DeadlineExceeded) {
-		return false, cur, fmt.Errorf("download: %w", ErrBodyStalled)
-	}
-	if err != nil {
-		return false, cur, fmt.Errorf("download: %w", err)
+	meta, n := got.meta, got.n
+	if meta.CRC32C == "" {
+		return false, cur, errors.New("the export carries no CRC32C; refusing an unverifiable download")
 	}
 	if n > MaxExportBytes {
 		return false, cur, fmt.Errorf("the export is larger than %d bytes", MaxExportBytes)
@@ -269,37 +322,155 @@ func (s Store) refreshOne(ctx context.Context, remote Remote, eco string, cur Ep
 	if meta.Size >= 0 && n != meta.Size {
 		return false, cur, fmt.Errorf("short download: %d of %d bytes", n, meta.Size)
 	}
-	got := CRC32CString(h.Sum32())
-	if got != meta.CRC32C {
-		return false, cur, fmt.Errorf("CRC32C mismatch: got %s, the bucket says %s", got, meta.CRC32C)
+	if got.crc != meta.CRC32C {
+		return false, cur, fmt.Errorf("CRC32C mismatch: got %s, the source says %s", got.crc, meta.CRC32C)
 	}
-	zr, err := zip.OpenReader(tmpName)
-	if err != nil {
-		return false, cur, fmt.Errorf("not a zip archive: %w", err)
-	}
-	_ = zr.Close()
-	// The osv-scanner copy is made BEFORE either file is replaced: a copy
-	// that fails (a full disk) leaves both old files and the old epoch
-	// record, never the new export under the old record. Only the two
-	// renames, in one directory tree, follow.
-	scanner := s.zipPath("osv-scanner", eco)
-	part, err := s.stageScanner(tmpName, scanner)
-	if err != nil {
-		return false, cur, fmt.Errorf("osv-scanner copy: %w", err)
-	}
-	defer os.Remove(part)
-	if err := os.Rename(tmpName, final); err != nil {
+	if err := checkZip(got.tmp, -1); err != nil {
 		return false, cur, err
 	}
-	next := Epoch{Ecosystem: eco, LastModified: meta.LastModified, CRC32C: meta.CRC32C, Size: n, FetchedAt: now, CheckedAt: now}
-	if err := os.Rename(part, scanner); err != nil {
-		// The SCALIBR file is already the new export; the osv-scanner one
-		// is removed rather than left older than the record, so that
-		// driver finds no database ("not scanned") until the next refresh.
-		_ = os.Remove(scanner)
-		next.LastError = "osv-scanner copy: " + err.Error()
+	next := Epoch{Ecosystem: eco, LastModified: meta.LastModified, CRC32C: meta.CRC32C, Size: n, FetchedAt: now, CheckedAt: now, BaseFetchedAt: now}
+	if sr, ok := remote.(SourcedRemote); ok {
+		next.Source = sr.OSVSource()
+	}
+	next.LastError, err = s.install(got.tmp, eco)
+	if err != nil {
+		return false, cur, err
+	}
+	if dr, ok := remote.(DeltaRemote); ok {
+		next.Watermark = baseWatermark(ctx, dr, eco, meta.LastModified)
 	}
 	return true, next, nil
+}
+
+// fetched is a verified-to-be candidate export under a temporary name.
+type fetched struct {
+	tmp  string
+	meta Meta
+	n    int64
+	crc  string
+}
+
+// download streams the export into a temporary file in dir, computing its
+// size and CRC32C as it arrives, under the body deadlines.
+func (s Store) download(ctx context.Context, remote Remote, eco, dir string) (fetched, error) {
+	var out fetched
+	getCtx, cancel := context.WithTimeout(ctx, s.bodyTotal)
+	defer cancel()
+	meta, body, err := remote.Get(getCtx, eco)
+	if err != nil {
+		return out, err
+	}
+	out.meta = meta
+	wd := newWatchdog(body, cancel, s.bodyIdle)
+	defer wd.stop()
+	if meta.CRC32C == "" {
+		return out, errors.New("the export carries no CRC32C; refusing an unverifiable download")
+	}
+	tmp, err := os.CreateTemp(dir, "all.zip.*.part")
+	if err != nil {
+		return out, err
+	}
+	out.tmp = tmp.Name()
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(wd, MaxExportBytes+1))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if wd.fired() || errors.Is(getCtx.Err(), context.DeadlineExceeded) {
+		return out, fmt.Errorf("download: %w", ErrBodyStalled)
+	}
+	if err != nil {
+		return out, fmt.Errorf("download: %w", err)
+	}
+	out.n, out.crc = n, CRC32CString(h.Sum32())
+	return out, nil
+}
+
+// linkLocal puts the LocalRemote's file under a temporary name in dir: a
+// hard link, or a copy where the filesystem refuses one (design B3: the
+// mirrored export is not kept twice). Its size and CRC32C are then read
+// from the linked file, so the same checks as a download apply.
+func (s Store) linkLocal(ctx context.Context, lr LocalRemote, eco, dir string) (fetched, error) {
+	var out fetched
+	path, meta, err := lr.LocalExport(ctx, eco)
+	if err != nil {
+		return out, err
+	}
+	out.meta = meta
+	f, err := os.CreateTemp(dir, "all.zip.*.part")
+	if err != nil {
+		return out, err
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	if err := linkFile(path, name); err != nil {
+		if err := copyFile(path, name); err != nil {
+			_ = os.Remove(name)
+			return out, fmt.Errorf("local export: %w", err)
+		}
+	}
+	out.tmp = name
+	out.n, out.crc, err = fileCRC32C(name)
+	if err != nil {
+		return out, fmt.Errorf("local export: %w", err)
+	}
+	return out, nil
+}
+
+// fileCRC32C reads a file's size and base64 CRC32C.
+func fileCRC32C(path string) (int64, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	n, err := io.Copy(h, io.LimitReader(f, MaxExportBytes+1))
+	if err != nil {
+		return 0, "", err
+	}
+	return n, CRC32CString(h.Sum32()), nil
+}
+
+// checkZip opens the candidate's zip directory; want >= 0 also requires
+// exactly that many entries.
+func checkZip(path string, want int) error {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return fmt.Errorf("not a zip archive: %w", err)
+	}
+	got := len(zr.File)
+	_ = zr.Close()
+	if want >= 0 && got != want {
+		return fmt.Errorf("the merged export holds %d entries, %d were written", got, want)
+	}
+	return nil
+}
+
+// install puts a verified candidate in place for both engines. The
+// osv-scanner copy is made BEFORE either file is replaced: a copy that
+// fails (a full disk) leaves both old files and the old epoch record,
+// never the new export under the old record (err). Only the two renames,
+// in one directory tree, follow; a failed second rename leaves the SCALIBR
+// file new and removes the osv-scanner one, so that driver finds no
+// database ("not scanned") until the next refresh (note, recorded as the
+// epoch's LastError).
+func (s Store) install(tmp, eco string) (note string, err error) {
+	scanner := s.zipPath("osv-scanner", eco)
+	part, err := s.stageScanner(tmp, scanner)
+	if err != nil {
+		return "", fmt.Errorf("osv-scanner copy: %w", err)
+	}
+	defer os.Remove(part)
+	if err := os.Rename(tmp, s.zipPath("osv-scalibr", eco)); err != nil {
+		return "", err
+	}
+	if err := os.Rename(part, scanner); err != nil {
+		_ = os.Remove(scanner)
+		return "osv-scanner copy: " + err.Error(), nil
+	}
+	return "", nil
 }
 
 // stageScanner puts the verified export where osv-scanner will read it,
@@ -415,12 +586,16 @@ func CRC32CString(sum uint32) string {
 // running the child unisolated on a host that has a provider. An ecosystem with no export
 // on disk is skipped (the child reports it not scanned).
 func (s Store) LinkInto(dst string, ecos []string) error {
+	return s.linkLayout("osv-scalibr", dst, ecos)
+}
+
+func (s Store) linkLayout(sub, dst string, ecos []string) error {
 	for _, eco := range ecos {
-		src := s.zipPath("osv-scalibr", eco)
+		src := s.zipPath(sub, eco)
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		to := filepath.Join(dst, "osv-scalibr", eco, "all.zip")
+		to := filepath.Join(dst, sub, eco, "all.zip")
 		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
 			return fmt.Errorf("osvdb.LinkInto: %w", err)
 		}

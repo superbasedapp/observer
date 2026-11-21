@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "id": "5b8f0c3e-0000-4000-8000-000000000003",
+      "created_by_user_id": null,
+      "selected_repository": null,
+      "selected_branch": null,
+      "title": "Untitled conversation",
+      "trigger": "gui",
+      "llm_model": "litellm_proxy/gpt-5",
+      "metrics": {
+        "accumulated_cost": 0.0125,
+        "accumulated_token_usage": {
+          "prompt_tokens": 2100,
+          "completion_tokens": 340
+        }
+      },
+      "created_at": "2026-10-29T18:00:00Z",
+      "updated_at": "2026-10-29T18:05:00Z",
+      "sandbox_status": "MISSING",
+      "execution_status": "idle"
+    }
+  ],
+  "next_page_id": null
+}

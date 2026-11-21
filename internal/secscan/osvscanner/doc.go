@@ -24,9 +24,15 @@
 // osv-scanner fails the whole run when any ecosystem's database is missing
 // (exit 127, measured with v2.6.0), so the driver runs only when every
 // ecosystem's database is installed and otherwise reports
-// database_missing without starting a process. The canary project
-// (depscan.CanaryFiles) is scanned in the same run; a canary that does not
-// come back flagged marks its ecosystem "not scanned".
+// database_missing without starting a process. A project file of an
+// ecosystem osv-scanner reads but Observer offers no database for (a
+// pubspec.lock while Pub has none) still makes it log "could not find local
+// databases for ecosystems" and exit 127 when it found nothing; such a run
+// is read anyway, its other ecosystems keep their results, and the missing
+// ecosystem's files become gaps (no_database_offered), so the run is
+// partial, never clean, and not failed for the whole project. The canary
+// project (depscan.CanaryFiles) is scanned in the same run; a canary that
+// does not come back flagged marks its ecosystem "not scanned".
 //
 // The package holds no I/O of its own beyond the injected runner. It
 // belongs to security.scan.osv and is compiled out with

@@ -1,0 +1,17 @@
+rules:
+  - id: js.xxe-parser
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: libxmljs is asked to substitute entities (noent), so a document can read local files through an external entity; parse with noent off.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    patterns:
+      - pattern-either:
+          - pattern: '$L.parseXml($X, {..., noent: true, ...})'
+          - pattern: '$L.parseXmlString($X, {..., noent: true, ...})'
+          - pattern: '$L.parseXmlAsync($X, {..., noent: true, ...})'
+          - pattern: '$L.Document.fromXml($X, {..., noent: true, ...})'
+          - pattern: '$L.parseXml($X, {..., replaceEntities: true, ...})'
+          - pattern: '$L.parseXmlString($X, {..., replaceEntities: true, ...})'
+          - pattern: '$L.parseXmlAsync($X, {..., replaceEntities: true, ...})'

@@ -30,7 +30,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	browseringest "github.com/marmutapp/superbased-observer/internal/ingest/browser"
-	otlpingest "github.com/marmutapp/superbased-observer/internal/ingest/otlp"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
 	"github.com/marmutapp/superbased-observer/internal/localipc"
@@ -264,6 +263,12 @@ func newStartCmd() *cobra.Command {
 				); warn != "" {
 					fmt.Fprint(cmd.ErrOrStderr(), warn)
 				}
+
+				// The default workspace (internal/defaultworkspace): a scratch
+				// folder for steps that need a folder that is not a project.
+				// Created when missing; a failure is a WARN, never fatal, and
+				// config.toml is never written to record the built-in default.
+				ensureDefaultWorkspace(ctx, cmd.ErrOrStderr(), cfgForLock)
 			}
 
 			// Auto-register hooks for every detected tool, idempotently.
@@ -342,7 +347,7 @@ func newStartCmd() *cobra.Command {
 			}) {
 				bundle, oerr := buildOrgBundle(ctx, configPath)
 				if oerr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "org push disabled: client init failed: %v\n", oerr)
+					fmt.Fprintf(cmd.ErrOrStderr(), "team push disabled: client init failed: %v\n", oerr)
 				} else {
 					orgClient, orgStore = bundle.client, bundle.store
 					defer bundle.cleanup()
@@ -365,7 +370,7 @@ func newStartCmd() *cobra.Command {
 				// notice above (NIT-1: they used to disagree, one on stdout
 				// and one on stderr).
 				fmt.Fprintln(cmd.ErrOrStderr(),
-					"org push disabled: [org_client].enabled = true but org_server_url is empty and no enrolment record was found (not enrolled)")
+					"team push disabled: [org_client].enabled = true but org_server_url is empty and no saved connection was found (not connected)")
 			}
 			// The hook-path budget admission has one publisher, the org
 			// budget service, built only with an org client below. Without
@@ -393,6 +398,9 @@ func newStartCmd() *cobra.Command {
 			if lanePort, ok := proxyPortFromAddr(addr); ok {
 				routeLanes = installRouteLanesAtStart(p, lanePort, cmd.ErrOrStderr())
 			}
+			// Lane FU8 (OSH-43): a sandboxed run's provider block also refuses
+			// the hosts of the live lane table (gateway.providers lanes).
+			bindSandboxLiveProviderHosts(p)
 
 			// ONE daemon-lifetime gateway.providers install seam, shared by
 			// the LKG loader, the steady-state poller AND the P0-6 reporter.
@@ -479,14 +487,12 @@ func newStartCmd() *cobra.Command {
 				// handle writes in the MAC'd org lock and repairs the files from it.
 				setProcessGovernanceCopy(ngov.VerifiedCopy())
 				// Track C item 3: report the EFFECTIVE value of every
-				// reportable pinnable key. cfgForLock is the config this
-				// daemon process is actually running — including whatever
-				// the governance sidecar applied at load — which is
-				// precisely the fact the organization cannot otherwise
-				// learn from an ack that only says "accepted".
-				ngov.SetEffectivePinReader(func() map[string]string {
-					return effectivePinValues(cfgForLock)
-				})
+				// reportable pinnable key, read off the config as it loads
+				// at each report (governance sidecar applied), so a local
+				// edit reaches the organization without a restart
+				// (managed policy visibility G3, policystate_livepins.go).
+				ngov.SetEffectivePinReader(livePinReader(daemonConfigPath, cfgForLock,
+					func(c config.Config) config.Config { return applyInertOverlay(c, comps) }))
 			}
 			// The renewal latch is per-daemon-run and in-memory (§4.3): a
 			// persisted deny latch would be a second, node-local revocation
@@ -518,6 +524,10 @@ func newStartCmd() *cobra.Command {
 					// provider resolves cfg.Share ∧ Effective.Share on every
 					// push, reading the same handle the dashboard guard reads.
 					orgClient.SetShareProvider(governanceShareProvider(cfgForLock.OrgClient, ngov))
+					// CG-13: the project scope is governed the same way (a
+					// managed node's guard verdicts ignore the local lists;
+					// the org's extract.scope raise applies).
+					orgClient.SetScopeProvider(governanceScopeProvider(cfgForLock.OrgClient, ngov))
 					// The org's push-interval CEILING (signed node-governance
 					// pin org_client.push_interval_seconds, 2026-10-02
 					// budget-latency arc) is HOT: the push loop re-reads it
@@ -610,6 +620,10 @@ func newStartCmd() *cobra.Command {
 							// S-15 (D17): a cached vendor org policy blocks
 							// Observer's MCP server or pins a tool's route.
 							addVendorPolicyRisks(home, os.Getenv, &rep)
+							// OpenShell lane O4 (R-17): a sandbox gateway
+							// config Observer owns was changed outside it
+							// (tamper-evident, never tamper-proof).
+							addSandboxGatewayPosture(configPath, &rep)
 							return rep
 						})
 					}
@@ -672,6 +686,14 @@ func newStartCmd() *cobra.Command {
 					// Per-tool / per-model caps are warned too (Sol A5-04),
 					// measured through the guard's own accounting lookup.
 					budgetWire.warn.SetSubjectSpend(processBudgetSubjectSpend(dbPath))
+					// What THIS machine can do about a hard cap, resolved
+					// live like the budget handle's own grant: the guard's
+					// mode, and whether the org cap is authoritative here.
+					// Every warning sentence says what the node will
+					// actually do, never only what the org asked for.
+					budgetWire.warn.SetMachine(processBudgetMachine(dbPath,
+						cfgForLock.Guard.Budget.FromOrg,
+						func() bool { return ngov.Effective(context.Background()).GrantsBudgetEnforcement() }))
 					// The hook path's budget stop (T-519): the managed
 					// decision the process controller takes, published for
 					// every hook-capable tool's next prompt or tool call.
@@ -743,7 +765,7 @@ func newStartCmd() *cobra.Command {
 					// written at capture and this arc has no retroactive
 					// re-pricing (ruling R8).
 					if _, perr := orgClient.LoadPersistedPricing(ctx); perr != nil {
-						slog.Default().Warn("org pricing: could not load the persisted document", "err", perr)
+						slog.Default().Warn("team pricing: could not load the persisted document", "err", perr)
 					}
 
 					// Org-served Cloud Intelligence RESULT rail (org-served-
@@ -821,6 +843,11 @@ func newStartCmd() *cobra.Command {
 			// is pure file reads and lands regardless; only the remote-less-
 			// clone fold (resolver rule 6) needs the root commit.
 			w.SetRootCommitResolver(git.DefaultRootCommit)
+			// Every live writer files a session under one root: the watcher's
+			// store resolves a reported folder to its git root the way the hook
+			// processes do (hook_ingestroot.go), so an adapter that reports the
+			// folder a tool opened cannot move a session the hooks filed.
+			w.SetProjectRootResolver(daemonIngestRootResolver())
 
 			// OTel exporter (Teams M4) — constructed only when [exporter.otel]
 			// enabled = true, so a solo-local install builds no OTLP client and
@@ -843,6 +870,11 @@ func newStartCmd() *cobra.Command {
 			// or a different port without conflict.
 			var dashboardServer daemonDashboard
 			var dashboardListen string
+			// AI Apps hot-enable (first-run plan 3.8, obs_wire_apps.go): the
+			// one runtime the gated obs routes, the enable seam and the OTLP
+			// receiver goroutine share. Nil without a dashboard in this
+			// process, which keeps the receiver's old start-time behaviour.
+			var apps *appsRuntime
 			// Session-attach socket Host (design Phase 1): derived directly off
 			// the ONE shared terminal stack (buildTerminalSurfaces) below, so
 			// `observer <tool> --attach` spawns through the same PTY stack the
@@ -860,6 +892,12 @@ func newStartCmd() *cobra.Command {
 			// attach-only branch); the bounded stop checkpoints the WAL
 			// through it after every component has returned (T-553).
 			var daemonDB *sql.DB
+			// assessTerminals is the dashboard launch manager's session resolver, kept
+			// for the security assessments' relaxation loop (nil without a launch
+			// manager: that loop only runs where the terminals live).
+			var assessTerminals func(string) (dashapi.TerminalSessionLink, bool)
+			var assessDBPath string
+			var assessClose func(string)
 			if !noDashboard && !comps.Active("ui.dashboard") {
 				// D-514: one reason, then headless. A build without the
 				// dashboard (-tags sbo_omit_ui_dashboard) names the build;
@@ -912,6 +950,10 @@ func newStartCmd() *cobra.Command {
 				nf.SetToolGrant(daemonToolGrant(store.New(database)))
 				nf.SetFeatureGrant(daemonFeatureGrant(store.New(database)))
 				launchMgr, launchStatus, policyStop := surfaces.launchMgr, surfaces.launchStatus, surfaces.policyStop
+				assessTerminals, assessDBPath = sessionResolver(launchMgr), cfg.Observer.DBPath
+				if launchMgr != nil {
+					assessClose = launchMgr.Close
+				}
 				attachHostImpl = surfaces.attachHost
 				remoteCtrl := buildRemoteController(cfg, database)
 				// Wire the §4.δ remote-execute authorizer onto the launch manager
@@ -929,11 +971,18 @@ func newStartCmd() *cobra.Command {
 				// §4 W3): the §3.6 "J" judge-tier seam is build-tag-split
 				// (projects_wire.go/projects_judge_wire.go).
 				projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
+				apps = newAppsRuntime(appsRuntimeOptions{
+					Ctx: ctx, ConfigPath: configPath, DB: database, Admission: admissionHandle,
+					Share: governanceShareProvider(cfg.OrgClient, ngov), Logger: slog.Default(),
+					BootOn: cfg.Observability.Enabled,
+				})
 				opts := dashapi.Options{
 					ProcessArchive: processArchive,
 					Projects:       cfg.Projects,
 					// Plans & limits: the same service the "plans" loop below runs.
 					Plans: processPlans(cfg, database, slog.Default()),
+					// Cloud agents: the same service the "cloud-agents" loop runs.
+					CloudAgents: processCloudAgents(cfg, database, slog.Default()),
 					// Custom scanners (security_custom_cmd.go): nil unless the
 					// security.scan.custom component is active.
 					CustomScanners: customScannersForDashboard(cmd.Context(), comps, configPath, store.New(database)),
@@ -944,6 +993,7 @@ func newStartCmd() *cobra.Command {
 					CloudGradeAvailability: CommitAlignmentAvailability,
 					JudgeGrade:             projectsJudgeGrade,
 					JudgeGradeReason:       projectsJudgeGradeReason,
+					JudgeGradePlace:        projectsJudgeGradePlace(&cfg, projectsJudgeGrade != nil),
 					// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
 					// commit scanner, nil when [projects].commit_scan is off.
 					CommitRescan: commitRescanWithDelivery(cfg, database),
@@ -956,6 +1006,13 @@ func newStartCmd() *cobra.Command {
 					// SARIF upload (security_sarifimport.go): one file the
 					// developer picked, through the CLI's own import (lane SEC-P4).
 					SARIFImport: sarifImportDash(database),
+					// Code security "Scan now" (security_scan_now.go): one manual run of a
+					// selected scanner on one project, the same run its CLI verb starts.
+					SecurityScanNow: securityScanNowDash(resolvedConfigPath, database),
+					// DAST card (security_dast_dashboard.go) and Projects tab SBOM
+					// export (security_sbom_dashboard.go), security coverage gaps plan.
+					SecurityDAST:        securityDASTDash(resolvedConfigPath, database),
+					SecurityProjectSBOM: securityProjectSBOMDash(resolvedConfigPath),
 					// Code rules card (security_opengrep_dash.go): the guided
 					// install with its size consent (lane SEC-G2).
 					Opengrep: opengrepDash(resolvedConfigPath, database),
@@ -1036,7 +1093,7 @@ func newStartCmd() *cobra.Command {
 					ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
 					// OSH-R-005: may an Arena drive skip the harness's permission checks.
 					ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
-					ProxyPort:             cfg.Proxy.Port,
+					ProxyPort:             effectiveProxyPort(cfg.Proxy.Port, port),
 					// OSH-R-009: the Setup route writers write the client
 					// token form when the node wants client auth.
 					ProxyClientToken: daemonProxyClientToken(cfg),
@@ -1057,6 +1114,8 @@ func newStartCmd() *cobra.Command {
 					// a restart. Nil when compression is off at boot (the
 					// master switch stays restart-gated).
 					OnConfigSaved: profilesReload,
+					// Plane A W2-7: SDK discovery and SDK key sign-in/out.
+					SDK: sdkDashboardSeams(cfg, store.New(database)),
 					// P6.7: demo mode — temp DB seeded from embedded
 					// fixtures; never touches the real observer.db.
 					DemoSeeder: demoSeeder(slog.Default()),
@@ -1071,7 +1130,9 @@ func newStartCmd() *cobra.Command {
 					// admissionHandle (gap P0-7) shares the proxy's ONE live
 					// admission service with the dashboard policy/egress editors,
 					// so an edit hot-swaps the instance the proxy enforces.
-					ExtraRoutes: append(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default()), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
+					// The obs routes ride the hot-enable gate (obs_wire_apps.go):
+					// every pattern is registered now, served once AI Apps is on.
+					ExtraRoutes: append(apps.gatedRoutes(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default())), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
 					// Embedded web-terminal launcher (docs/session-handoff.md
 					// launch section). Nil when [handoff].allow_dashboard_launch
 					// is false → endpoints 503, button hidden.
@@ -1086,13 +1147,32 @@ func newStartCmd() *cobra.Command {
 					// GET /api/terminal/sandbox + the fail-closed launch
 					// validation. Nil unless [terminal.sandbox].enabled →
 					// endpoint reports disabled and a sandbox request 501s.
-					SandboxProber: surfaces.sandboxProber,
+					SandboxProber:      surfaces.sandboxProber,
+					LoopbackCallerGate: surfaces.loopbackCallerGate,
+					LaunchCaller:       surfaces.launchCaller,
+					PendingLaunches:    surfaces.pendingLaunches,
 					// The first-start install's version picker (lane LEFT-SBX):
 					// nil in a build without the container driver.
 					SandboxInstallVersions: sandboxInstallVersionsSeam(resolvedConfigPath),
 					// The Settings card's org forbid of sign-in seeding (lane
 					// BOXSIGNIN): the composed managed view, nil without the sandbox.
 					SandboxSignInForbidden: sandboxSignInForbiddenSeam(resolvedConfigPath),
+					// The strace switch's per-sandbox answer (lane ptrace): nil
+					// without the sandbox.
+					SandboxSeize: sandboxSeizeHostSeam(),
+					// The refusal advisor's host check (OpenShell lane N5): the
+					// gateway's own, nil without the sandbox.
+					SandboxEgressHostCheck: sandboxEgressHostCheckSeam(),
+					SandboxProviderHost:    sandboxProviderHostSeam(),
+					// Sandbox setup (sandbox installation lifecycle plan, P-249): nil in a
+					// build without the sandbox module, so the setup routes answer 501.
+					SandboxSetup: newSandboxSetup(sandboxSetupOptions{ConfigPath: resolvedConfigPath, Surface: "dashboard", Ledger: surfaces.toolInstalls, Logger: slog.Default(), Spawn: func(_ context.Context, argv []string, label string) (string, int, error) {
+						if surfaces.launchMgr == nil {
+							return "", -1, errors.New("the dashboard terminal is off ([handoff].allow_dashboard_launch)")
+						}
+						h, err := surfaces.launchMgr.CreateSetup(dashapi.SetupSpec{Argv: argv, Label: label})
+						return h, -1, err
+					}}),
 					// The New Terminal "project policy" line (lane sec-p2b): reads the
 					// project match record; shown only when the node holds a project delivery.
 					ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
@@ -1133,6 +1213,10 @@ func newStartCmd() *cobra.Command {
 					// session-link resolver from termsvc. Nil when the launch
 					// manager is absent → cockpit 404s.
 					SessionResolver: sessionResolver(launchMgr),
+					// The agent-run security assessments' relaxations read the guard's own
+					// lock and decision per rule and project (fail closed when unreadable).
+					RuleRelaxation:     dashboardRuleRelaxation(resolvedConfigPath, database),
+					SandboxGatewayPort: sandboxGatewayPortFunc(),
 					// Restart-from-dashboard (docs/plans/dashboard-daemon-
 					// restart-plan-2026-07-14.md): preflight the config, then
 					// cancel the root context so the daemon runs its NORMAL
@@ -1179,6 +1263,11 @@ func newStartCmd() *cobra.Command {
 					// VS Code status item - the `observer mcp status` body
 					// plus coverage rows, effective state and connect URL.
 					MCPAccessStatus: mcpAccessStatusSeam(resolvedConfigPath, database),
+					// Lane adm-p2 (planeb_admission_dashboard.go): GET
+					// /api/guard/prompt/judge for the Security page's
+					// organization prompt judge card, the `observer guard
+					// status` facts.
+					PromptJudgeStatus: promptJudgeStatusSeam(resolvedConfigPath, database),
 					// Settings > Enrolment management (backlog item 6): enrol / consent /
 					// status / grant / push-now / leave through the CLI's own code
 					// paths. Wired even when not enrolled - that is how a node enrols
@@ -1186,7 +1275,9 @@ func newStartCmd() *cobra.Command {
 					// needed before pushes start. The governance hook makes an enrol or
 					// leave show on /api/governance at once.
 					EnrolManager:       enrolManagerFor(resolvedConfigPath, orgClient != nil, ngov).withRetire(orgClient), // T-718: Leave retires the daemon's budget rail live
+					ConnectStatus:      connectStatusSeam(database),                                                       // plan 07 M8.4: the front door's one sentence
 					Components:         dashboardComponents(resolvedConfigPath, database),                                 // Settings > Components + route guard (MP-DASH)
+					SetupExtras:        dashboardSetupExtras(resolvedConfigPath),                                          // cli-parity L2: status line, start at login, browser capture setup
 					ComponentArtifacts: dashboardComponentArtifacts(resolvedConfigPath),                                   // artifact_states on /api/components (T-707)
 					BinaryInstall:      dashboardBinaryInstall,                                                            // binary_install on /api/components (U12)
 					// Settings > Cloud Intelligence (org plane): the same
@@ -1211,6 +1302,9 @@ func newStartCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				// The AI Apps seams (/api/apps/*, the /api/firstrun plane and
+				// apps fields): one runtime behind the dashboard.
+				bindAppsDashboard(dashboardServer, apps)
 				// Standing-takeover provenance hook (opt-in policy
 				// [remote].revoke_standing_on_takeover, default off): the
 				// concrete manager reports a local takeover of a
@@ -1334,6 +1428,7 @@ func newStartCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(),
 					"start: %s + watcher + dashboard - ctrl-c to stop\n", proxyStartLabel(addr, comps))
 				fmt.Fprintf(cmd.OutOrStdout(), "  dashboard → %s (starting…)\n", dashURL)
+				printStartSignInHint(ctx, cmd.OutOrStdout(), configPath, daemonDB, true)
 				// Print a distinct "ready" line the moment the listener
 				// actually accepts a connection, so the operator isn't told
 				// the URL works before it does. Honest readiness: dials the
@@ -1365,6 +1460,7 @@ func newStartCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(),
 					"start: %s + watcher (%s) - ctrl-c to stop\n",
 					proxyStartLabel(addr, comps), why)
+				printStartSignInHint(ctx, cmd.OutOrStdout(), configPath, daemonDB, false)
 			}
 
 			// Plane-A P0-5 Phase W (plan §6.5): load a verified
@@ -1497,6 +1593,14 @@ func newStartCmd() *cobra.Command {
 				plansLoop(gctx, configPath)
 				return nil
 			})
+			// Cloud agents (internal/cloudagentssvc, docs/cloud-agents.md):
+			// pulls the cloud-agent sessions of accounts the user linked.
+			// With no linked account it reads the local database once a
+			// minute and makes no vendor call. P1 fail-soft.
+			ng.Go("cloud-agents", func() error {
+				cloudAgentsLoop(gctx, configPath)
+				return nil
+			})
 			// Commit-history capture (internal/commitscan): a read-only `git
 			// log` scanner over every active project root, feeding the
 			// Projects page's commit ledger and ROI proxies. Never installs a
@@ -1506,6 +1610,15 @@ func newStartCmd() *cobra.Command {
 			// scanner (doctor + the page surface the reason honestly).
 			ng.Go("commit-scan", func() error {
 				commitScanLoop(gctx, configPath)
+				return nil
+			})
+			// Projects-page quality trend (internal/codequalitysvc): one
+			// daily point per active project from the coverage reports its
+			// own test runs wrote and the codeintel near-clone index. Reads
+			// files only, never runs a test or a process, no network.
+			// Self-gating on [projects].quality_metrics; P1 fail-soft.
+			ng.Go("code-quality", func() error {
+				codeQualityLoop(gctx, configPath)
 				return nil
 			})
 			// Delivery (internal/deliverysvc, D-689): the code-host and
@@ -1804,7 +1917,7 @@ func newStartCmd() *cobra.Command {
 				// which returns before PushLoop pokes the outcome sink.
 				orgClient.SetRoutingReloadSink(func(ctx context.Context) {
 					if rerr := routingHandle.Reload(ctx); rerr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "routing: org policy hot-reload failed: %v\n", rerr)
+						fmt.Fprintf(cmd.ErrOrStderr(), "routing: team policy hot-reload failed: %v\n", rerr)
 					}
 				})
 				// Arc 4 P3b managed-enforce (§R23 lift): let the live router
@@ -1843,7 +1956,29 @@ func newStartCmd() *cobra.Command {
 						rlogger := newLogger(rcfg.Observer.LogLevel)
 						rst := store.New(rdb)
 						rguard := acquireProcessGuard(gctx, rcfg, rst, rlogger)
+						// A managed node's stale local rule disables leave its
+						// config file before the first report names them, and
+						// each report strips any found since
+						// (guard_managed_disables.go).
+						stripManagedGuardDisables(gctx, configPath, rcfg, rguard, rst, rlogger)
 						rep := buildPolicyStateReporter(orgClient, rguard, rst, admissionHandle, routingHandle, gw, ngov, nf, rcfg, version, rlogger)
+						// The local opt-in is read live, and a change wakes
+						// the reporter (round 3): no restart to start or stop
+						// reporting.
+						rep.localSwitch = newLiveConfigSwitch(rcfg, resolvedPolicyConfigPath(configPath),
+							func(c config.Config) bool { return c.OrgClient.Share.PolicyState }, rlogger)
+						ng.Go("policy-state-switch", func() error {
+							watchLiveConfigSwitch(gctx, rep.localSwitch, rep.notifier.Poke, policyListsCheckInterval)
+							return nil
+						})
+						// A local edit to the config or a guard policy file
+						// reports at once (managed policy visibility G3).
+						if home, herr := os.UserHomeDir(); herr == nil {
+							ng.Go("policy-state-inputs", func() error {
+								watchPolicyInputs(gctx, policyInputsStamp(daemonConfigPath, home, recentProjectRootsFor(rst)), rep.notifier.Poke, policyInputsCheckInterval)
+								return nil
+							})
+						}
 						orgClient.SetGuardOutcomeSink(rep.recordGuard)
 						orgClient.SetRoutingOutcomeSink(rep.recordRouting)
 						policyResourceSink = rep.recordPolicyResource
@@ -1869,7 +2004,7 @@ func newStartCmd() *cobra.Command {
 				if budgetWire != nil {
 					primed, perr := orgClient.LoadPersistedBudget(ctx)
 					if perr != nil {
-						slog.Default().Warn("org budget: could not load the persisted document", "err", perr)
+						slog.Default().Warn("team budget: could not load the persisted document", "err", perr)
 					}
 					budgetWire.Prime(primed)
 				}
@@ -1973,7 +2108,7 @@ func newStartCmd() *cobra.Command {
 					if !ok {
 						return nil
 					}
-					runPolicyResourcePoller(gctx, pcfg, orgClient, admissionHandle, gw, ngov, nf, policyResourceSink, newLogger(pcfg.Observer.LogLevel))
+					runPolicyResourcePoller(gctx, pcfg, resolvedPolicyConfigPath(configPath), orgClient, admissionHandle, gw, ngov, nf, policyResourceSink, newLogger(pcfg.Observer.LogLevel))
 					return nil
 				})
 				// Grant renewal (§4). P1 like every sibling loop: it never
@@ -2009,7 +2144,7 @@ func newStartCmd() *cobra.Command {
 				defer mcleanup()
 				mlogger := newLogger(mcfg.Observer.LogLevel)
 				if _, rerr := startMCPRelayRuntime(gctx, mcfg, mdb, store.New(mdb), h, mlogger); rerr != nil {
-					mlogger.Warn("mcp-relay: runtime start failed; node-side seams keep answering from the cached table", "err", rerr)
+					mlogger.Warn("mcp-relay: runtime start failed; machine-side seams keep answering from the cached table", "err", rerr)
 					return nil
 				}
 				<-gctx.Done()
@@ -2094,67 +2229,21 @@ func newStartCmd() *cobra.Command {
 			// and the tool's transcript. Gated by [ingest.otel] enabled
 			// (default off → no listener, solo-local UX unchanged), loopback-
 			// only unless allow_non_loopback, which then requires the receiver
-			// token. Fail-soft + P1: a bind failure logs and returns nil,
-			// never cancelling siblings.
-			ng.Go("otlp-receiver", func() error {
-				rcfg, rdb, rcleanup, rerr := loadConfigAndDB(gctx, configPath)
-				if rerr != nil {
-					return nil
-				}
-				defer rcleanup()
-				// The shared OTLP receiver serves logs when [ingest.otel]
-				// is on and traces when [observability] is on (the obs
-				// subsystem registers its trace handler here — the single
-				// host->obs seam, build-tagged). Off only when both are off.
-				if !rcfg.Ingest.OTel.Enabled && !rcfg.Observability.Enabled {
-					return nil
-				}
-				rlogger := newLogger(rcfg.Observer.LogLevel)
-				opts := otlpingest.Options{
-					GRPCAddr:         rcfg.Ingest.OTel.GRPCAddr,
-					HTTPAddr:         rcfg.Ingest.OTel.HTTPAddr,
-					AllowNonLoopback: rcfg.Ingest.OTel.AllowNonLoopback,
-					Logger:           rlogger,
-				}
-				// A receiver opened to the network authenticates every
-				// request (SR27-B5, T-475): the shared token is generated
-				// once and kept 0600 beside the DB. Fail closed: no
-				// token, no non-loopback listener.
-				if rcfg.Ingest.OTel.AllowNonLoopback {
-					tok, terr := resolveLocalTokenFile(otlpIngestTokenPath(rcfg))
-					if terr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "otlp receiver disabled: allow_non_loopback needs a receiver token and it could not be resolved: %v\n", terr)
-						return nil
-					}
-					opts.RequireToken, opts.ReceiverToken = true, tok
-					rlogger.Info("otlp receiver: non-loopback bind requires the receiver token header",
-						"header", otlpingest.HeaderEdgeToken, "token_file", otlpIngestTokenPath(rcfg))
-				}
-				// Plane A (internal/obs) gets every trace resource no
-				// coding-tool mapping row claims; Plane B (the vendor
-				// table) gets the claimed ones, plus every logs export.
-				planeA := newObsTraceHandler(gctx, rcfg, rdb, rlogger)
-				opts.TraceHandler = planeA
-				if rcfg.Ingest.OTel.Enabled {
-					// The vendor table and logs handler belong to
-					// ingest.otlp (otlp_ingest.go / otlp_ingest_omit.go).
-					opts.Handler, opts.TraceHandler = wireVendorOTLPIngest(gctx, rcfg, rdb, rlogger, planeA)
-				}
-				if opts.Handler == nil && opts.TraceHandler == nil {
-					return nil // nothing this build can serve
-				}
-				recv, err := otlpingest.New(opts)
-				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "otlp receiver disabled: init failed: %v\n", err)
-					return nil
-				}
-				recv.Start()
-				<-gctx.Done()
-				sctx, scancel := context.WithTimeout(context.WithoutCancel(gctx), 5*time.Second)
-				_ = recv.Shutdown(sctx)
-				scancel()
-				return nil
-			})
+			// token. Fail-soft + P1: a bind failure logs, is recorded and
+			// never cancels a sibling. With a dashboard here it waits for an
+			// AI Apps enable instead of returning (hot-enable, first-run plan
+			// 3.8; obs_wire_receiver.go).
+			recvLoop := func() error {
+				return runOTLPReceiver(gctx, configPath, cmd.ErrOrStderr(), apps)
+			}
+			// With AI Apps off in an edition that has it (the developer
+			// default) the gate keeps the receiver stopped at boot; an AI Apps
+			// enable adds the obs component at run time, so the enable seam
+			// starts the receiver on its first request (POLISH-F2 F2-1).
+			if apps != nil && apps.inBuild && !ng.allows("otlp-receiver") {
+				apps.recv.setSpawn(func() { ng.goOTLPReceiverLater(recvLoop) })
+			}
+			ng.Go("otlp-receiver", recvLoop)
 			// Browser-chatbot loopback ingest listener (opt-in alternate to
 			// the native-messaging bridge). Gated by [browser].enabled AND
 			// [browser.listener].enabled (both default so the LISTENER is
@@ -2235,9 +2324,19 @@ func newStartCmd() *cobra.Command {
 				guardPostureLoop(gctx, configPath)
 				return nil
 			})
+			// The organization's prompt judge, hook lane (P-228 phase 2):
+			// the owner-only ask endpoint every prompt-gate hook dials while
+			// the signed posture says the judge is active here.
+			ng.Go("prompt-judge", func() error {
+				servePromptJudge(gctx, configPath, newLogger("info"))
+				return nil
+			})
 			// Code security (security pillar Phase A): the signed posture
 			// writer and the quick-scan endpoint, both moduleGates rows.
 			startSecurityModule(gctx, ng, configPath, comps)
+			// The security assessments' relaxation loop: ends a run's relaxations
+			// when its terminal is gone (security_assess_wire.go).
+			startSecurityAssessRelax(gctx, ng, configPath, assessDBPath, daemonDB, assessTerminals, assessClose)
 			// Repository trust (security Phase B): the config baseline
 			// loop, a moduleGates row of security.trust.
 			startRepoTrustBaseline(gctx, ng, configPath, comps)
@@ -2794,7 +2893,7 @@ func autoRegisterTarget(reg *hook.Registry, tool string, promptLaneEnabled bool,
 	logAutoRegisterRewrites(stdout, tool, res)
 	if len(rec.Repaired) > 0 {
 		fmt.Fprintf(stderr,
-			"WARN auto-register %s: repaired %d previously registered hook(s) in %s: %s (reported to the org as hook_repaired on a managed node)\n",
+			"WARN auto-register %s: repaired %d previously registered hook(s) in %s: %s (reported to the team as hook_repaired on a team-managed machine)\n",
 			tool, len(rec.Repaired), res.ConfigPath, strings.Join(rec.Repaired, ", "))
 	}
 	switch {
@@ -2989,7 +3088,7 @@ var initOnlyHookMechanisms = map[integration.HookMechanism]string{
 	// a user's devices, and a pre-tool hook that fails BLOCKS the call: a
 	// hook written on one OS (its binary path) would block every tool on a
 	// synced device of another OS. Writing it needs the user's consent.
-	integration.HookAutohandConfig: "Autohand device sync mirrors config.json hooks across devices, and a failing pre-tool hook blocks every tool there",
+	integration.HookAutohandConfig: "Autohand syncs config.json hooks across your machines, and a failing pre-tool hook blocks every tool there",
 }
 
 // autoRegisterLiveGate reports whether `observer start` may write c's

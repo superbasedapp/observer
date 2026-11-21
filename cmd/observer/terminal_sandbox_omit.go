@@ -100,3 +100,36 @@ func sandboxHelperDispatch([]string) (int, bool) { return 0, false }
 // sandboxSignInForbiddenSeam is nil in a build without the sandbox (the
 // Settings card shows no forbid).
 func sandboxSignInForbiddenSeam(string) func() bool { return nil }
+
+// sandboxSeizeHostSeam is nil: a build without the sandbox has no strace
+// switch rows.
+func sandboxSeizeHostSeam() func() dashapi.SandboxSeizeHost { return nil }
+
+// sandboxCLIMarkers is empty: a build without the sandbox has no
+// sandboxed CLI launches.
+func sandboxCLIMarkers(string) []sandboxCLIMarker { return nil }
+
+// sandboxCLIMarkerSweeper keeps nothing: there are no markers to sweep.
+func sandboxCLIMarkerSweeper(string) func([]sandboxCLIMarker, map[string]cliRunState) []sandboxCLIMarker {
+	return func([]sandboxCLIMarker, map[string]cliRunState) []sandboxCLIMarker { return nil }
+}
+
+// sandboxRowHostLoopbackRelay is false: a build without the sandbox has
+// no boxes.
+func sandboxRowHostLoopbackRelay(string) bool { return false }
+
+// sandboxRowDeniesObserverPorts is false: a build without the sandbox has
+// no boxes.
+func sandboxRowDeniesObserverPorts(string) bool { return false }
+
+// sandboxRowTreeContained is false: a build without the sandbox has no
+// boxes.
+func sandboxRowTreeContained(string) bool { return false }
+
+// sandboxCLIProcessAlive is false: a build without the sandbox has no
+// sandboxed CLI launch whose CLI could be alive.
+func sandboxCLIProcessAlive(int, string) bool { return false }
+
+// sandboxGatewayPortFunc answers nil in a build without the sandbox: there is
+// no in-box gateway whose port a target could collide with.
+func sandboxGatewayPortFunc() func(int) int { return nil }

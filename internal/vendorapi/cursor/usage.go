@@ -136,6 +136,7 @@ type usageEvent struct {
 	ServiceAccountID   *string          `json:"serviceAccountId"`
 	ServiceAccountName *string          `json:"serviceAccountName"`
 	AutomationID       *string          `json:"automationId"`
+	CloudAgentID       *string          `json:"cloudAgentId"`
 	ConversationID     *string          `json:"conversationId"`
 	Model              *string          `json:"model"`
 	Kind               *string          `json:"kind"`

@@ -811,9 +811,12 @@ function NetworkTraffic({
   if (networkEnabled === false) {
     return (
       <div className="mt-2 text-[10.5px] text-fg-4">
-        <Tooltip content="Network capture is off - set [observer.process.network].enabled to record this session's outbound API/network activity."><span tabIndex={0}>
+        <Tooltip content="Network capture is off - turn it on in Settings > Process capture (More settings: observer.process.network.enabled) to record this session's outbound API/network activity."><span tabIndex={0}>
           Network capture off
-        </span></Tooltip>
+        </span></Tooltip>{" "}
+        <Link to="/settings?section=process" className="text-accent hover:underline">
+          Turn on
+        </Link>
       </div>
     );
   }
@@ -830,9 +833,9 @@ function NetworkTraffic({
       <Tooltip
         content={
           (hasBytes
-            ? "Body byte totals exist only for SuperBased-proxied/plaintext API flows; per-process network bytes are not captured."
+            ? "Body byte totals exist only for superbased-proxied/plaintext API flows; per-process network bytes are not captured."
             : bodyCapture === false
-              ? "Body byte capture is off ([observer.process.network].capture_bodies) - proxied calls are counted, but their request/response bytes were not measured."
+              ? "Body byte capture is off (Settings > Process capture, More settings: observer.process.network.capture_bodies) - proxied calls are counted, but their request/response bytes were not measured."
               : "No request/response bytes have been recorded yet for this session's proxied calls.") +
           (stale ? " The last network refresh failed; showing the previous values." : "")
         }

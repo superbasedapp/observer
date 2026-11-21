@@ -392,3 +392,30 @@ func TestPendingOffersRoundTrip(t *testing.T) {
 		t.Fatalf("a pending hold lapsed at the short lease: %v", held)
 	}
 }
+
+// TestHintAsksForATest (security coverage gaps plan item 6): an
+// input-handling CWE on a code finding gets the test-asking hint; other
+// CWEs, other categories and malformed ids keep the category's hint.
+func TestHintAsksForATest(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		f    Finding
+		want string
+	}{
+		{"sql injection", Finding{Category: policy.FindingCodeVuln, CWE: []string{"CWE-89"}}, TestAskHint},
+		{"regression with ReDoS", Finding{Category: policy.FindingSecurityRegression, CWE: []string{"CWE-327", "CWE-1333"}}, TestAskHint},
+		{"weak crypto only", Finding{Category: policy.FindingCodeVuln, CWE: []string{"CWE-327"}}, categoryHints[policy.FindingCodeVuln]},
+		{"secret keeps its hint", Finding{Category: policy.FindingSecret, CWE: []string{"CWE-89"}}, categoryHints[policy.FindingSecret]},
+		{"malformed id", Finding{Category: policy.FindingCodeVuln, CWE: []string{"cwe-89", "CWE-89x"}}, categoryHints[policy.FindingCodeVuln]},
+	}
+	for _, c := range cases {
+		if got := hintFor(c.f); got != c.want {
+			t.Errorf("%s: hint %q, want %q", c.name, got, c.want)
+		}
+	}
+	line := Line(Finding{Category: policy.FindingCodeVuln, Confidence: policy.FindingConfidenceHigh, CWE: []string{"CWE-78"}, Path: "cmd/run.go", Line: 12})
+	if !strings.Contains(line, "add a test") || len(line) > MaxLineBytes {
+		t.Errorf("line %q (%d bytes)", line, len(line))
+	}
+}

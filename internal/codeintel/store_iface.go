@@ -32,6 +32,9 @@ type FileResult struct {
 	// node has no usable body span). Only these hashes are persisted (into
 	// codeintel_minhash); the body bytes never reach the store (privacy).
 	BodyBuckets [][]uint64
+	// ExtractVersion is the [ExtractVersion] the file was parsed under
+	// (codeintel_files.extract_version).
+	ExtractVersion int
 }
 
 // FileState is the index bookkeeping stored for one already-seen file.
@@ -51,6 +54,10 @@ type FileState struct {
 	// that same second would be invisible to a seconds-granularity mtime
 	// comparison (git's racily-clean rule).
 	IndexedAt int64
+	// ExtractVersion is the [ExtractVersion] the row was indexed under; a
+	// row from an older version is re-parsed even when its content hash
+	// matches.
+	ExtractVersion int
 }
 
 // EngineStore is the narrow READ surface the native engine depends on —

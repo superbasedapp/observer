@@ -57,6 +57,8 @@ public static class P {
   public static int Main(string[] a) {
     File.AppendAllText(@"$log", string.Join(" ", a) + Environment.NewLine);
     if (a.Length > 0 && a[0] == "--version") Console.WriteLine("observer version $($ver.Substring(1)) ($ed stub)");
+    if (a.Length > 0 && a[0] == "connect" && Environment.GetEnvironmentVariable("FAKE_CONNECT_FAIL") == "1") return 1;
+    if (a.Length > 0 && a[0] == "apps" && Environment.GetEnvironmentVariable("FAKE_APPS_FAIL") == "1") { Console.Error.WriteLine("stub: could not listen on 127.0.0.1:4318"); return 1; }
     if (a.Length > 0 && a[0] == "uninstall" && Environment.GetEnvironmentVariable("FAKE_UNINSTALL_FAIL") == "1") return 1;
     return 0;
   }
@@ -101,9 +103,10 @@ public static class P {
     # T-744: the minimal edition's next steps never claim a proxy.
     $claimsProxy = $r.out -match "proxy \+ watcher"
     if (($ed -eq "minimal") -eq $claimsProxy) { Bad "edition $ed next steps (proxy claim = $claimsProxy)" $r.out } else { Ok "edition $ed next steps match its proxy" }
-    # T-746: the managed next step is the real enrol command.
+    # T-746: the managed next step is the real command (Getting started
+    # v2: `observer connect <server>`, never the retired enroll words).
     if ($ed -eq "managed") {
-      if ($r.out -match "observer enroll --link" -and $r.out -notmatch "observer org enroll") { Ok "managed next step names observer enroll --link" } else { Bad "managed enrol next step" $r.out }
+      if ($r.out -match "observer connect <server>" -and $r.out -notmatch "observer (org )?enroll") { Ok "managed next step names observer connect <server>" } else { Bad "managed connect next step" $r.out }
     }
   }
 
@@ -242,6 +245,105 @@ public static class P {
   # An archive with no mxc\ leaves an installed set alone.
   $r = Run @("-FromDir", $rel, "-Prefix", $pM, "-Edition", "developer", "-Yes")
   if ($r.rc -eq 0 -and [IO.File]::ReadAllText("$pM\mxc\wxc-exec.exe") -eq "fake exe!") { Ok "an archive without mxc\ leaves the installed sandbox files alone" } else { Bad "no mxc in the archive" $r.out }
+
+  # -Connect: the default edition is developer; the daemon is started
+  # (`setup launch`, no --open: the installer opens the page itself), the
+  # local dashboard is shown BEFORE the stub's `connect <team>
+  # --wire-clients=false` runs, and the role lines close it. The sign-in
+  # entry is written to a stand-in Run key path, never the real one, and no
+  # browser opens (OBSERVER_INSTALL_TEST_NO_OPEN).
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
+  $calls = @(Get-Content $log)
+  $ci = [array]::IndexOf($calls, "connect acme --wire-clients=false")
+  $li = [array]::IndexOf($calls, "setup launch")
+  $li2 = [array]::LastIndexOf($calls, "setup launch")
+  $oi = $r.out.IndexOf("Opening the local dashboard: http://127.0.0.1:8081")
+  $ki = $r.out.IndexOf("Connecting this machine.")
+  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $li -ge 0 -and $ci -gt $li -and $oi -ge 0 -and $ki -gt $oi `
+      -and $r.out -match "Local dashboard   http://127.0.0.1:8081" -and $r.out -match "everything Observer records on this computer, in full; it stays here" `
+      -and $r.out -match "Team dashboard    https://cloud.superbased.app" -and $r.out.Contains("full detail (prompts, responses, file paths); the team's admins can read it") -and $r.out -match "Undo any time: observer disconnect" `
+      -and $r.out -match "Restarting Observer so it starts sending to team acme\." -and $li2 -gt $ci) {
+    Ok "-Connect acme: daemon started, local dashboard shown before connect, role lines, restart after connect"
+  } else { Bad "-Connect acme" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  # A failed connect is never followed by a restart: setup launch runs once.
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1b", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1"; FAKE_CONNECT_FAIL = "1" }
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and @($calls | Where-Object { $_ -eq "setup launch" }).Count -eq 1 -and $r.out -notmatch "Restarting Observer" -and $r.out -match "not connected yet") {
+    Ok "-Connect: a failed connect is not followed by a restart"
+  } else { Bad "-Connect failed connect" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc2", "-Connect", "-Edition", "minimal", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "needs the developer or full edition" -and -not (Test-Path "$T\pc2\observer.exe")) { Ok "-Connect refuses the minimal edition" } else { Bad "-Connect minimal" $r.out }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc3", "-Connect", "Bad_Team", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "is not a team name") { Ok "-Connect refuses a bad team name" } else { Bad "-Connect bad team" $r.out }
+  $r = Run @("-Prefix", "$T\pc4", "-Connect", "-Uninstall", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "does not go with -Uninstall") { Ok "-Connect refuses -Uninstall" } else { Bad "-Connect -Uninstall" $r.out }
+
+  # -Apps (first-run plan 3.3, 3.5, 4.4): `observer apps on --yes
+  # --installer` runs after the binary is in place and before Observer is
+  # started; with -Connect the hand-off URL carries intent=apps;
+  # SBO_CONNECT_APPS=1 is the same as -Apps; an edition without AI Apps, a
+  # bad SBO_CONNECT_APPS and -Uninstall are refused; a failing `apps on`
+  # keeps the install.
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa1", "-Apps", "-Yes")
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $calls -contains "apps on --yes --installer" -and $r.out -match "observer apps status" -and -not ($calls -contains "setup launch")) {
+    Ok "-Apps: apps on after install, developer edition, apps status in next steps"
+  } else { Bad "-Apps" ($r.out + ($calls -join "`n")) }
+
+  foreach ($how in @("switch", "env")) {
+    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+    $envs = @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
+    $args2 = @("-FromDir", $rel, "-Prefix", "$T\pa2$how", "-Connect", "acme", "-Yes")
+    if ($how -eq "switch") { $args2 += "-Apps" } else { $envs["SBO_CONNECT_APPS"] = "1" }
+    $r = Run $args2 $envs
+    $calls = @(Get-Content $log)
+    $ai = [array]::IndexOf($calls, "apps on --yes --installer")
+    $li = [array]::IndexOf($calls, "setup launch")
+    if ($r.rc -eq 0 -and $ai -ge 0 -and $li -gt $ai -and $r.out.Contains("opens at http://127.0.0.1:8081/?connecting=1&team=acme&intent=apps)") `
+        -and $r.out.Contains("AI Apps           http://127.0.0.1:8081/apps")) {
+      Ok "-Connect acme with AI Apps ($how): apps on before the daemon starts, intent=apps in the hand-off, AI Apps line"
+    } else { Bad "-Connect acme with AI Apps ($how)" ($r.out + ($calls -join "`n")) }
+    Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa3", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and $r.out.Contains("opens at http://127.0.0.1:8081/?connecting=1&team=acme)") -and -not ($calls -contains "apps on --yes --installer")) {
+    Ok "-Connect without AI Apps carries no intent and runs no apps on"
+  } else { Bad "-Connect without AI Apps" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  foreach ($ed in @("minimal", "managed")) {
+    $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa4$ed", "-Apps", "-Edition", $ed, "-Yes")
+    # Windows PowerShell 5.1 wraps the child's error record at the console
+    # width, sometimes mid-word ("does not inc" / "lude AI Apps"), so the
+    # message is compared with every whitespace character taken out.
+    $flat = $r.out -replace '\s', ''
+    if ($r.rc -ne 0 -and $flat.Contains("doesnotincludeAIApps") -and $flat.Contains("pass-Editiondeveloper") -and -not (Test-Path "$T\pa4$ed\observer.exe")) { Ok "-Apps refuses the $ed edition" } else { Bad "-Apps $ed" $r.out }
+  }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa5", "-Yes") @{ SBO_CONNECT_APPS = "maybe" }
+  if ($r.rc -ne 0 -and $r.out -match "is not 1 or 0" -and -not (Test-Path "$T\pa5\observer.exe")) { Ok "an unknown SBO_CONNECT_APPS is refused" } else { Bad "SBO_CONNECT_APPS=maybe" $r.out }
+  $r = Run @("-Prefix", "$T\pa6", "-Apps", "-Uninstall", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "does not go with -Uninstall") { Ok "-Apps refuses -Uninstall" } else { Bad "-Apps -Uninstall" $r.out }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa7", "-Apps", "-Yes") @{ FAKE_APPS_FAIL = "1" }
+  if ($r.rc -eq 0 -and (Test-Path "$T\pa7\observer.exe") -and $r.out -match "Turn it on any time: observer apps on" -and $r.out -notmatch "observer apps status") {
+    Ok "-Apps: a failing apps on keeps the install and names the command"
+  } else { Bad "-Apps failing apps on" $r.out }
+
+  # connect.ps1 refuses an unknown SBO_CONNECT_APPS before it fetches anything.
+  $connectScript = Join-Path $PSScriptRoot "connect.ps1"
+  $ErrorActionPreference = "Continue"
+  $cout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "`$env:SBO_CONNECT_APPS='maybe'; `$env:SBO_CONNECT_FROM_DIR='$T\nowhere'; & '$connectScript'" 2>&1 | Out-String
+  $crc = $LASTEXITCODE
+  $ErrorActionPreference = "Stop"
+  if ($crc -ne 0 -and $cout -match "is not 1 or 0") { Ok "connect.ps1 refuses an unknown SBO_CONNECT_APPS" } else { Bad "connect.ps1 SBO_CONNECT_APPS=maybe" $cout }
 
   $r = Run @("-Uninstall", "-Prefix", "$T\p2", "-Yes")
   if ($r.rc -eq 0 -and -not (Test-Path "$T\p2\observer.exe") -and (Get-Content $log) -contains "uninstall --all") { Ok "uninstall runs observer uninstall --all and removes the binaries" } else { Bad "uninstall" $r.out }

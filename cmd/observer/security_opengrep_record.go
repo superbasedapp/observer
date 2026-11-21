@@ -58,6 +58,52 @@ func codeScanGone(open []secfinding.Finding, scanned []string) secsvc.Gone {
 	return gone
 }
 
+// codeScanGoneFor is codeScanGone over a full run's files with the taint
+// pass's hold (opengrep.Scanned.TaintHold): a held file closes only the
+// findings of TaintHoldRules (the rules that are not taint rules), and
+// nothing when that list is empty. Every other read file closes every rule
+// of the pack, as before.
+func codeScanGoneFor(open []secfinding.Finding, scanned opengrep.Scanned) secsvc.Gone {
+	held := map[string]bool{}
+	for _, f := range scanned.TaintHold {
+		held[f] = true
+	}
+	var free, kept []string
+	for _, f := range scanned.Files {
+		if held[f] {
+			kept = append(kept, f)
+		} else {
+			free = append(free, f)
+		}
+	}
+	parts := goneChunks(codeScanGone(open, free))
+	if len(kept) > 0 && len(scanned.TaintHoldRules) > 0 {
+		for _, g := range goneChunks(codeScanGone(open, kept)) {
+			g.RulePrefixes = scanned.TaintHoldRules
+			parts = append(parts, g)
+		}
+	}
+	var gone secsvc.Gone
+	for i, g := range parts {
+		if i == 0 {
+			gone = g
+			continue
+		}
+		gone.Also = append(gone.Also, g)
+	}
+	return gone
+}
+
+// goneChunks flattens a Gone and its Also into one list (empty for none).
+func goneChunks(g secsvc.Gone) []secsvc.Gone {
+	if g.Pack == "" {
+		return nil
+	}
+	also := g.Also
+	g.Also = nil
+	return append([]secsvc.Gone{g}, also...)
+}
+
 // recordCodeScan writes the run's findings and scan-run row and closes
 // what a complete full run proved gone.
 func recordCodeScan(ctx context.Context, st *store.Store, t secscan.Target, res secscan.Result, scanned opengrep.Scanned, started time.Time, notify func()) (int, error) {
@@ -67,7 +113,7 @@ func recordCodeScan(ctx context.Context, st *store.Store, t secscan.Target, res 
 			ProjectRootHash: secposture.ProjectRootHash(t.ProjectRoot), Status: policy.FindingStatusOpen, Limit: 1000,
 		})
 		if err == nil {
-			gone = codeScanGone(open, scanned.Files)
+			gone = codeScanGoneFor(open, scanned)
 		}
 	}
 	if res.Engine.Name == "" {

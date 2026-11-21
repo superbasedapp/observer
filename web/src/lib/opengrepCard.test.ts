@@ -71,9 +71,22 @@ test("rows name engine, verification, pack, last run, schedule and isolation; a 
     }),
   );
   const m = new Map(rows);
-  assert.deepEqual([...m.keys()], ["Engine", "Verification", "Rule pack", "Last content fetch", "Last run", "Triggers", "Isolation"]);
+  assert.deepEqual([...m.keys()], ["Engine", "Verification", "Rule pack", "Last content fetch", "Last run", "Intrafile taint pass", "Triggers", "Isolation"]);
   assert.ok(m.get("Rule pack")?.includes("signed update, stale"));
   assert.ok(m.get("Last content fetch")?.includes("never current"));
   assert.ok(m.get("Triggers")?.includes("full scan weekly"));
   assert.equal(m.get("Last run"), "none");
+});
+
+test("the intrafile taint pass row names the last full scan's pass status", () => {
+  const m = new Map(
+    opengrepRows(
+      status({
+        last_taint_pass: "timed_out (budget_exhausted): 6 of 8 batches merged",
+        last_taint_pass_at: "2026-11-05T08:00:00Z",
+      }),
+    ),
+  );
+  assert.ok(m.get("Intrafile taint pass")?.startsWith("timed_out (budget_exhausted): 6 of 8 batches merged (full scan at "));
+  assert.equal(new Map(opengrepRows(status({}))).get("Intrafile taint pass"), "none");
 });

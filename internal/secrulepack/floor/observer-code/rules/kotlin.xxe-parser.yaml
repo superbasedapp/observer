@@ -1,0 +1,155 @@
+rules:
+  - id: kotlin.xxe-parser
+    languages: [kotlin]
+    severity: ERROR
+    message: An XML parser factory is used without turning off DOCTYPE declarations or external entities, so a document can read local files or reach internal hosts; set the disallow-doctype-decl feature (or the external-entity features off) before parsing.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: val $F = $FACT.newInstance(...)
+                  - pattern: val $F = $FACT.newFactory(...)
+                  - pattern: val $F = $FACT.newDefaultFactory(...)
+                  - pattern: $F = $FACT.newInstance(...)
+                  # Used inline (or configured in an apply block).
+                  - pattern: $FACT.newInstance(...).$NEW(...)
+                  - pattern: $FACT.newFactory(...).$NEW(...)
+              - metavariable-regex:
+                  metavariable: $FACT
+                  regex: ^(DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory|SAXTransformerFactory)$
+          # dom4j and JDOM2 readers.
+          - patterns:
+              - pattern: val $F = $PARSER(...)
+              - metavariable-regex:
+                  metavariable: $PARSER
+                  regex: ^(SAXReader|SAXBuilder)$
+      # A safe setting on the same factory later in the same function.
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setFeature("http://xml.org/sax/features/external-general-entities", false)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setFeature("http://xml.org/sax/features/external-general-entities", false)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setProperty(XMLInputFactory.SUPPORT_DTD, false)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setProperty(XMLInputFactory.SUPPORT_DTD, false)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setProperty(XMLInputFactory.SUPPORT_DTD, false)
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setProperty("javax.xml.stream.supportDTD", false)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setProperty("javax.xml.stream.supportDTD", false)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setProperty("javax.xml.stream.supportDTD", false)
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false)
+            ...
+          }
+      - pattern-not-inside: |
+          $F = $X
+          ...
+          $F.setExpandEntities(false)
+      - pattern-not-inside: |
+          val $F = $X
+          ...
+          $F.setExpandEntities(false)
+      - pattern-not-inside: |
+          $X.apply {
+            ...
+            setExpandEntities(false)
+            ...
+          }

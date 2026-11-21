@@ -1,22 +1,38 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { DataTable } from "@/components/DataTable";
+import { DataTable, Pagination } from "@/components/DataTable";
+import { pageSlice } from "@/lib/codeSecurity";
+import { FINDING_GROUPS_PER_PAGE, MAX_OCCURRENCES_SHOWN, groupProcessFindings } from "@/lib/processFindings";
+import {
+  TREE_WINDOW_LIMIT,
+  countNodes,
+  mergeWindows,
+  oldestStartedAt,
+  servicesRunning,
+  windowNote,
+} from "@/lib/processCapture";
+import { useProcessSummary } from "@/lib/useProcessSummary";
 import { Icon, InlineLoading, Pill, Spinner, Tooltip } from "@/components/primitives";
 import { severityTone } from "@shared/lib/guardCatalog";
 import { VocabPill } from "@shared/lib/vocabPill";
 import {
+  CaptureLine,
   ProcessTree,
+  RolledUpBlock,
+  ServicesBlock,
   flattenProcessNodes,
   processHasMetrics,
 } from "@shared/components/sessiondetail";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
+import { fetchJSON } from "@/lib/api";
 import { fmtBytes, fmtClock, fmtDuration, fmtInt } from "@/lib/format";
 import type {
   ProcessFinding,
   ProcessDiagnostics,
   ProcessNetworkEvent,
+  ProcessNode,
   SessionNetworkResponse,
   SessionProcessResponse,
 } from "@/lib/types";
@@ -39,14 +55,97 @@ import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
 
 const SECTION_OPEN_KEY = "sb_proc_section_open";
 
-function FindingRow({ f }: { f: ProcessFinding }) {
+// FindingsList is the observe-only findings block: identical findings (same
+// rule, executable and detail) fold into one row with a count, worst severity
+// first, ten rows a page. A folded row expands to its occurrences, each of
+// which can pick its process in the views below.
+export function FindingsList({
+  findings,
+  onSelectProc,
+}: {
+  findings: ProcessFinding[];
+  onSelectProc?: (key: string | null) => void;
+}) {
+  const groups = useMemo(() => groupProcessFindings(findings), [findings]);
+  const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // A new data load can shrink the list below the current page.
+  const shown = pageSlice(groups, page, FINDING_GROUPS_PER_PAGE);
+  useEffect(() => {
+    if (page > 1 && (page - 1) * FINDING_GROUPS_PER_PAGE >= groups.length) setPage(1);
+  }, [groups.length, page]);
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px]">
-      {/* Process findings share the guard severity scale (info / warn / high). */}
-      <VocabPill vocab="guardSeverity" value={f.severity} tone={severityTone(f.severity)} />
-      <span className="font-mono text-fg-2">{f.rule_id.replace(/^process\./, "")}</span>
-      {f.exe_basename && <span className="text-fg-1">{f.exe_basename}</span>}
-      {f.detail && <span className="text-fg-3">{f.detail}</span>}
+    <div className="rounded-3 border border-line-2 bg-bg-2 p-3" data-testid="process-findings">
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-3">Findings · observe-only</span>
+        <span className="text-[10.5px] text-fg-3">
+          {fmtInt(findings.length)} finding{findings.length === 1 ? "" : "s"}
+          {groups.length < findings.length ? ` in ${fmtInt(groups.length)} kinds` : ""}
+        </span>
+      </div>
+      <ul className="m-0 list-none space-y-1 p-0">
+        {shown.map((g) => {
+          const open = expanded.has(g.key);
+          return (
+            <li key={g.key} className="text-[11.5px]">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {/* Process findings share the guard severity scale (info / warn / high). */}
+                <VocabPill vocab="guardSeverity" value={g.severity} tone={severityTone(g.severity)} />
+                <span className="font-mono text-fg-2">{g.rule_id.replace(/^process\./, "")}</span>
+                {g.exe_basename && <span className="text-fg-1">{g.exe_basename}</span>}
+                {g.detail && <span className="text-fg-3">{g.detail}</span>}
+                {g.count > 1 && <Pill variant="neutral">{`×${fmtInt(g.count)}`}</Pill>}
+                <span className="text-[10.5px] tabular-nums text-fg-4">{g.count > 1 ? "last " : ""}{fmtClock(g.last)}</span>
+                {(g.count > 1 || onSelectProc) && (
+                  <button
+                    type="button"
+                    onClick={() => (g.count > 1 ? toggle(g.key) : onSelectProc?.(g.items[0].process_key))}
+                    aria-expanded={g.count > 1 ? open : undefined}
+                    className="text-[10.5px] text-accent hover:underline"
+                  >
+                    {g.count > 1 ? (open ? "Hide" : "Show each") : "Show process"}
+                  </button>
+                )}
+              </div>
+              {open && (
+                <ul className="m-0 mt-1 list-none space-y-0.5 border-l border-line-2 py-0.5 pl-3">
+                  {g.items.slice(0, MAX_OCCURRENCES_SHOWN).map((it, i) => (
+                    <li key={`${it.process_key}-${i}`} className="flex flex-wrap items-center gap-x-2 text-[10.5px] text-fg-3">
+                      <span className="tabular-nums">{fmtClock(it.timestamp)}</span>
+                      {it.turn_index != null && <span>turn {it.turn_index}</span>}
+                      {it.target && <span className="font-mono text-fg-2">{it.target}</span>}
+                      {onSelectProc && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectProc(it.process_key)}
+                          className="text-accent hover:underline"
+                        >
+                          Show process
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                  {g.items.length > MAX_OCCURRENCES_SHOWN && (
+                    <li className="text-[10.5px] text-fg-4">
+                      and {fmtInt(g.items.length - MAX_OCCURRENCES_SHOWN)} more
+                    </li>
+                  )}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {groups.length > FINDING_GROUPS_PER_PAGE && (
+        <Pagination page={page} limit={FINDING_GROUPS_PER_PAGE} total={groups.length} onPage={setPage} />
+      )}
     </div>
   );
 }
@@ -117,7 +216,7 @@ function ProcessDiagnosticsPanel({
           <Link to={processURL} className="text-accent hover:underline">
             Body capture = proxied
           </Link>
-          . Payload capture is only for SuperBased-proxied/plaintext flows; non-proxied TLS stays metadata-only.
+          . Payload capture is only for superbased-proxied/plaintext flows; non-proxied TLS stays metadata-only.
         </p>
       )}
       {hasNetworkRows && !hasProcessRows && (
@@ -127,7 +226,7 @@ function ProcessDiagnosticsPanel({
       )}
       {!hasNetworkRows && !hasProcessRows && (
         <p>
-          Historical sessions may not have process/network rows. Run new tool sessions with SuperBased running after changing settings; use{" "}
+          Historical sessions may not have process/network rows. Run new tool sessions with superbased running after changing settings; use{" "}
           <Link to={backfillURL} className="text-accent hover:underline">
             Backfill
           </Link>{" "}
@@ -135,7 +234,7 @@ function ProcessDiagnosticsPanel({
         </p>
       )}
       <p>
-        If you save process, network, or proxy settings, restart SuperBased from{" "}
+        If you save process, network, or proxy settings, restart superbased from{" "}
         <Link to={restartURL} className="text-accent hover:underline">
           Settings → Health
         </Link>
@@ -143,7 +242,7 @@ function ProcessDiagnosticsPanel({
         <Link to={proxyURL} className="text-accent hover:underline">
           Settings → Proxy
         </Link>{" "}
-        if Codex is not routed through the SuperBased proxy.
+        if Codex is not routed through the superbased proxy.
       </p>
     </div>
   );
@@ -323,6 +422,31 @@ function BodyBlock({
   );
 }
 
+// MessageLinkRenderer renders the id of the message that started something as
+// a jump link (the control the tree uses); absent, a plain id.
+type MessageLinkRenderer = (id: string) => React.ReactNode;
+
+function messageLinkFor(onFocusMessage?: (messageId: string) => void): MessageLinkRenderer | undefined {
+  if (!onFocusMessage) return undefined;
+  return (id: string) => (
+    <Tooltip content={`Jump to the message that spawned this process (${id})`}>
+      <button
+        type="button"
+        onClick={() => onFocusMessage(id)}
+        className="font-mono text-caption text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
+      >
+        {id}
+      </button>
+    </Tooltip>
+  );
+}
+
+// CaptureLine / ServicesBlock / RolledUpBlock moved to the shared design
+// system (shared/components/sessiondetail/ProcessCaptureBlocks.tsx) so the org
+// drawer's System panel renders the same blocks; re-exported for this file's
+// importers.
+export { CaptureLine, RolledUpBlock, ServicesBlock };
+
 // PROC_REFRESH_MS: how often the open Processes panel re-polls while something
 // is still running. Slower than the rest of the drawer (8s) — a process tree
 // changes far less than the live conversation, and each poll can trigger a
@@ -373,53 +497,108 @@ export function ProcessesSection({
   // the first fetch is one-shot and polling starts only if needed.
   const [poll, setPoll] = useState(false);
 
+  // The summary is read first and is what gets polled (a small document with
+  // an ETag; an unchanged session answers 304). A daemon without the endpoint
+  // answers 404: `summary.unavailable` then restores the earlier behaviour,
+  // the tree alone, polled itself while something runs.
+  const summary = useProcessSummary(sessionId, open, open && poll ? PROC_REFRESH_MS : 0);
+  const sum = summary.data;
+
+  // The tree is re-read when the summary's ETag moves (the capture changed),
+  // never on its own timer. treeRev counts those moves after the first read.
+  const [treeRev, setTreeRev] = useState(0);
+  const lastEtag = useRef<string | null>(null);
+  useEffect(() => {
+    lastEtag.current = null;
+    setTreeRev(0);
+  }, [sessionId]);
+  useEffect(() => {
+    const e = summary.etag;
+    if (e && lastEtag.current && e !== lastEtag.current) setTreeRev((r) => r + 1);
+    if (e) lastEtag.current = e;
+  }, [summary.etag]);
+
   // Lazy-load: only fetch (and trigger the daemon's correlation passes) once the
-  // section is open. A closed section makes no request.
+  // section is open, and only after the summary has answered. A closed section
+  // makes no request. The window is the most recent TREE_WINDOW_LIMIT rows; an
+  // older daemon ignores the limit and returns the whole tree.
   const procs = useApi<SessionProcessResponse>(
-    open && sessionId ? `/api/session/${sessionId}/processes` : null,
+    open && sessionId && !summary.loading ? `/api/session/${sessionId}/processes?limit=${TREE_WINDOW_LIMIT}` : null,
     undefined,
-    [sessionId, open],
-    open && poll ? { refreshMs: PROC_REFRESH_MS } : undefined,
+    [sessionId, open, treeRev],
+    open && poll && summary.unavailable ? { refreshMs: PROC_REFRESH_MS } : undefined,
   );
   const data = procs.data;
   const findings = data?.findings ?? [];
 
-  const flat = useMemo(() => (data ? flattenProcessNodes(data.roots) : []), [data]);
-  const hasProcessRows = Boolean(data && data.total > 0);
+  // "Load earlier" windows, newest-last-loaded; dropped when the session changes.
+  const [earlier, setEarlier] = useState<ProcessNode[][]>([]);
+  const [earlierMore, setEarlierMore] = useState<boolean | null>(null);
+  const [earlierBusy, setEarlierBusy] = useState(false);
+  const [earlierErr, setEarlierErr] = useState<string | null>(null);
+  useEffect(() => {
+    setEarlier([]);
+    setEarlierMore(null);
+    setEarlierErr(null);
+  }, [sessionId]);
+
+  const roots = useMemo<ProcessNode[]>(
+    () => (!data ? [] : earlier.length > 0 ? mergeWindows(earlier, data.roots) : data.roots),
+    [data, earlier],
+  );
+  const hasMoreEarlier = earlier.length === 0 || earlierMore == null ? Boolean(data?.truncated) : earlierMore;
+  const loadEarlier = useCallback(async () => {
+    if (!sessionId || earlierBusy) return;
+    const to = oldestStartedAt(roots);
+    if (!to) return;
+    setEarlierBusy(true);
+    setEarlierErr(null);
+    try {
+      const r = await fetchJSON<SessionProcessResponse>(`/api/session/${sessionId}/processes`, {
+        limit: TREE_WINDOW_LIMIT,
+        to,
+      });
+      const known = new Set(roots.map((n) => n.process_key));
+      const fresh = (r.roots ?? []).filter((n) => !known.has(n.process_key));
+      // A window with nothing new ends the paging, so a boundary row cannot loop.
+      setEarlier((cur) => (fresh.length > 0 ? [...cur, r.roots] : cur));
+      setEarlierMore(fresh.length > 0 && Boolean(r.truncated));
+    } catch (e) {
+      setEarlierErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEarlierBusy(false);
+    }
+  }, [sessionId, earlierBusy, roots]);
+
+  const flat = useMemo(() => flattenProcessNodes(roots), [roots]);
+  const shownCount = useMemo(() => countNodes(roots), [roots]);
+  const hasProcessRows = Boolean((data && data.total > 0) || shownCount > 0);
   const hasNetworkRows = Boolean(data && (data.network_total ?? 0) > 0);
   const runningCount = useMemo(() => flat.filter((n) => !n.exited).length, [flat]);
   const withMetrics = useMemo(() => flat.filter(processHasMetrics).length, [flat]);
+  const hasSummaryRows = Boolean(sum && (sum.observed > 0 || (sum.rollups?.length ?? 0) > 0 || (sum.services?.length ?? 0) > 0));
 
-  // Auto-refresh only while open AND something is still running — a fully-exited
+  // Auto-refresh only while open AND something is still running - a fully-exited
   // tree never changes, so one fetch is enough (A2). Derived after the fetch so
-  // the first load is one-shot; polling then starts only if needed.
+  // the first load is one-shot; polling then starts only if needed. A service
+  // seen alive a moment ago counts as running even when the tree window shows
+  // none of its rows.
+  const servicesLive = servicesRunning(sum?.services, Date.now());
   useEffect(() => {
-    setPoll(open && runningCount > 0);
-  }, [open, runningCount]);
+    setPoll(open && (runningCount > 0 || servicesLive));
+  }, [open, runningCount, servicesLive]);
 
   // The spawning-message link is injected into the shared ProcessTree; without
   // an onFocusMessage handler the tree renders a plain, non-interactive id.
-  const renderMessageLink = onFocusMessage
-    ? (id: string) => (
-        <Tooltip content={`Jump to the message that spawned this process (${id})`}>
-          <button
-            type="button"
-            onClick={() => onFocusMessage(id)}
-            className="font-mono text-caption text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
-          >
-            {id}
-          </button>
-        </Tooltip>
-      )
-    : undefined;
+  const renderMessageLink = messageLinkFor(onFocusMessage);
 
-  const summary = data
-    ? `${fmtInt(data.total)} captured · ${fmtInt(runningCount)} running${
+  const total = sum && !sum.legacy ? sum.kept : (data?.total ?? 0);
+  const headline = data
+    ? `${fmtInt(total)} captured · ${fmtInt(runningCount)} running${
         withMetrics > 0 ? ` · ${fmtInt(withMetrics)} with metrics` : ""
       }${data.network_total ? ` · net ${fmtInt(data.network_total)}` : ""}`
-    : open
-      ? <InlineLoading size="sm" label="Loading processes" />
-      : "click to load OS-level process tree";
+    : null;
+  const summaryText = headline ?? (open ? <InlineLoading size="sm" label="Loading processes" /> : "click to load OS-level process tree");
 
   return (
     <section className="space-y-2">
@@ -435,7 +614,7 @@ export function ProcessesSection({
             Processes
           </span>
           <span className="inline-flex items-center gap-1 text-[10.5px] text-fg-3">
-            {summary}
+            {summaryText}
             {data && findings.length > 0 && (
               <>
                 {" · "}
@@ -461,37 +640,54 @@ export function ProcessesSection({
             <div className="space-y-3">
               <ProcessDiagnosticsPanel
                 diagnostics={data.diagnostics}
-                hasProcessRows={hasProcessRows}
+                hasProcessRows={hasProcessRows || hasSummaryRows}
                 hasNetworkRows={hasNetworkRows}
               />
 
-              {findings.length > 0 && (
-                <div className="space-y-1.5 rounded-3 border border-line-2 bg-bg-2 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-3">
-                    Findings · observe-only
-                  </div>
-                  {findings.map((f) => (
-                    <FindingRow key={f.process_key + f.rule_id} f={f} />
-                  ))}
-                </div>
-              )}
+              {sum && (hasSummaryRows || sum.legacy) && <CaptureLine summary={sum} />}
+
+              {findings.length > 0 && <FindingsList findings={findings} onSelectProc={onSelectProc} />}
 
               {/* network_total is a count: a bare `0 &&` would render "0". */}
               {(data.network_total ?? 0) > 0 && sessionId && (
                 <NetworkEventsPanel sessionId={sessionId} />
               )}
 
+              {sum && (sum.services?.length ?? 0) > 0 && (
+                <ServicesBlock services={sum.services ?? []} renderMessageLink={renderMessageLink} />
+              )}
+
+              {sum && (sum.rollups?.length ?? 0) > 0 && <RolledUpBlock rollups={sum.rollups ?? []} />}
+
               {hasProcessRows && (
-                <ProcessTree
-                  roots={data.roots}
-                  total={data.total}
-                  sessionKey={sessionId}
-                  renderMessageLink={renderMessageLink}
-                  onOpenMessage={onFocusMessage}
-                  onOpenTimeline={onOpenTimeline}
-                  sessionLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Session"}
-                  {...(onSelectProc ? { selectedKey: selectedProc ?? null, onSelectedKeyChange: onSelectProc } : {})}
-                />
+                <div className="space-y-2">
+                  {(data.truncated || earlier.length > 0) && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-3" data-testid="process-window-note">
+                      <span>{windowNote(shownCount, sum && !sum.legacy ? sum.kept : data.total)}</span>
+                      {hasMoreEarlier && (
+                        <button
+                          type="button"
+                          onClick={() => void loadEarlier()}
+                          disabled={earlierBusy}
+                          className="text-accent hover:underline disabled:opacity-50"
+                        >
+                          {earlierBusy ? "Loading…" : "Load earlier"}
+                        </button>
+                      )}
+                      {earlierErr && <span className="text-danger">{earlierErr}</span>}
+                    </div>
+                  )}
+                  <ProcessTree
+                    roots={roots}
+                    total={shownCount}
+                    sessionKey={sessionId}
+                    renderMessageLink={renderMessageLink}
+                    onOpenMessage={onFocusMessage}
+                    onOpenTimeline={onOpenTimeline}
+                    sessionLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Session"}
+                    {...(onSelectProc ? { selectedKey: selectedProc ?? null, onSelectedKeyChange: onSelectProc } : {})}
+                  />
+                </div>
               )}
             </div>
           )}

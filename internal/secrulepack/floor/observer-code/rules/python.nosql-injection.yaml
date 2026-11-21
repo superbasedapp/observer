@@ -1,0 +1,40 @@
+rules:
+  - id: python.nosql-injection
+    languages: [python]
+    severity: ERROR
+    message: A JSON request body reaches a MongoDB query filter as it is, so a caller can send an operator object such as a not-equal match in place of a value; convert each value to a string or id first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      # JSON bodies only: form and query-string values are strings, which
+      # cannot carry an operator.
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(json|get_json|data|body)$
+      - pattern: await request.json()
+    pattern-sanitizers:
+      - pattern: str(...)
+      - pattern: int(...)
+      - pattern: float(...)
+      - pattern: ObjectId(...)
+      - pattern: bson.ObjectId(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: $COLL.$F($Q, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(find|find_one|find_one_and_update|find_one_and_delete|find_one_and_replace|update_one|update_many|delete_one|delete_many|count_documents|replace_one|count)$
+          - metavariable-regex:
+              metavariable: $COLL
+              regex: ^(.*\bdb\b.*|.*\bmongo\b.*|(self\.)?\w*(collection|coll|_col)s?|.*\[\s*["'][\w.-]+["']\s*\])$
+          - focus-metavariable: $Q
+      - patterns:
+          - pattern: '{..., "$where": $X, ...}'
+          - focus-metavariable: $X

@@ -76,8 +76,32 @@ func openCodeRows() []Translation {
 			Note: "destructive SQL verbs sit inside database-CLI arguments and heredocs, not in a command-prefix pattern",
 		},
 		{
+			RuleID: "R-121", Fidelity: FidelityNone,
+			Note: "the missing WHERE clause is a property of the SQL inside database-CLI arguments and heredocs, which no command-prefix pattern can see",
+		},
+		{
+			RuleID: "R-122", Fidelity: FidelityNone,
+			Note: "the dropped schema object sits inside database-CLI arguments and heredocs, not in a command-prefix pattern",
+		},
+		{
+			RuleID: "R-123", Fidelity: FidelityNone,
+			Note: "the destructive call (dropDatabase, FLUSHALL, DROP KEYSPACE, del --prefix) follows connection flags inside the CLI's arguments, not in a command-prefix pattern",
+		},
+		{
+			RuleID: "R-124", Fidelity: FidelityNone,
+			Note: "a flag-only rule (it records, never blocks) compiles to nothing: the dialect holds deny and ask entries only",
+		},
+		{
+			RuleID: "R-125", Fidelity: FidelityNone,
+			Note: "the production host, connection string or database is matched against [guard.database] prod_patterns inside CLI flags and environment assignments, which no command-prefix pattern can see",
+		},
+		{
+			RuleID: "R-126", Fidelity: FidelityNone,
+			Note: "the destructive statements are inside the SQL file the command runs, which only the hook reads",
+		},
+		{
 			RuleID: "R-130", Fidelity: FidelityApprox,
-			Note: "partial: kubectl delete --all, gcloud ... delete and aws s3 rm --recursive carry their destructive flags mid-command and are omitted; the emitted arms mirror the rule trigger",
+			Note: "partial: kubectl delete --all, gcloud ... delete and aws s3 rm --recursive carry their destructive flags mid-command and are omitted, as are the pulumi, cdk, az group delete and docker prune / volume arms (hook-enforced only); the emitted arms mirror the rule trigger",
 			Entries: []Entry{
 				{Action: ActionAsk, Value: "terraform destroy*"},
 				{Action: ActionAsk, Value: "aws ec2 terminate-instances*"},
@@ -171,12 +195,35 @@ func openCodeRows() []Translation {
 		},
 		{
 			RuleID: "R-165", Fidelity: FidelityApprox,
-			Note: "the observer binary's grant verbs as the leading command; package-runner forms, the dashboard's approval routes reached through curl and SQL into guard_approvals stay hook-enforced, and the request row is flag-only",
+			Note: "the observer binary's grant verbs as the leading command; guard recipe apply and remove ask instead of deny, because a command pattern cannot exempt their --dry-run preview; package-runner forms, the dashboard's approval and recipe routes reached through curl and SQL into guard_approvals stay hook-enforced, and the request row is flag-only",
 			Entries: []Entry{
 				{Action: ActionDeny, Value: "observer guard approve*"},
 				{Action: ActionDeny, Value: "observer guard mcp approve*"},
 				{Action: ActionDeny, Value: "observer guard prompt allow*"},
 				{Action: ActionDeny, Value: "observer guard disable*"},
+				// Sweep finding CFG-7: the guard recipe writes. A bash pattern
+				// cannot tell `apply --dry-run` (a read R-165 allows) from an
+				// apply, so those two ask and the hook still denies the write;
+				// save and delete have no preview and deny.
+				{Action: ActionAsk, Value: "observer guard recipe apply*"},
+				{Action: ActionAsk, Value: "observer guard recipe remove*"},
+				{Action: ActionDeny, Value: "observer guard recipe save*"},
+				{Action: ActionDeny, Value: "observer guard recipe delete*"},
+			},
+		},
+		{
+			RuleID: "R-167", Fidelity: FidelityApprox,
+			Note: "the leading `observer config set` of the sandbox host allow-list only; the dashboard routes reached through curl and package-runner forms stay hook-enforced",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "observer config set terminal.sandbox.egress_allow_hosts*"},
+			},
+		},
+		{
+			RuleID: "R-168", Fidelity: FidelityApprox,
+			Note: "`observer launch` and `observer terminals confirm` as the leading command only; the per-tool launcher verbs come from the integration registry at runtime, and package-runner forms and the dashboard's launch routes reached through curl stay hook-enforced",
+			Entries: []Entry{
+				{Action: ActionAsk, Value: "observer launch*"},
+				{Action: ActionAsk, Value: "observer terminals confirm*"},
 			},
 		},
 		{
@@ -198,6 +245,62 @@ func openCodeRows() []Translation {
 		{
 			RuleID: "R-173", Fidelity: FidelityNone,
 			Note: "flag-only rule; encoded-subdomain grading is content analysis",
+		},
+		{
+			RuleID: "R-174", Fidelity: FidelityNone,
+			Note: "the metadata address (any encoding) or denied host sits mid-command inside a URL or operand; a bash pattern cannot read it and a curl/wget glob would block every download",
+		},
+		{
+			RuleID: "R-175", Fidelity: FidelityNone,
+			Note: "allow/allow by default (silent until a recipe or override raises it); the host also sits mid-command",
+		},
+		{
+			RuleID: "R-176", Fidelity: FidelityNone,
+			Note: "allow/allow by default (silent until a recipe or override raises it); the allow-list comparison is config-driven, not a command-shape pattern",
+		},
+		{
+			RuleID: "R-177", Fidelity: FidelityNone,
+			Note: "reverse-shell (/dev/tcp redirect, nc -e, socat EXEC:) and listener (nc -l) shapes sit mid-command",
+		},
+		{
+			RuleID: "R-178", Fidelity: FidelityApprox,
+			Note: "the unambiguous tunnel bases are captured; ssh -R sits mid-command and the subcommand-gated tools are over-matched by their pattern, so entries are ask",
+			Entries: []Entry{
+				{Action: ActionAsk, Value: "ngrok*"},
+				{Action: ActionAsk, Value: "cloudflared tunnel*"},
+				{Action: ActionAsk, Value: "lt*"},
+				{Action: ActionAsk, Value: "localtunnel*"},
+				{Action: ActionAsk, Value: "bore local*"},
+				{Action: ActionAsk, Value: "tailscale funnel*"},
+				{Action: ActionAsk, Value: "zrok share*"},
+				{Action: ActionAsk, Value: "frpc*"},
+				{Action: ActionAsk, Value: "devtunnel host*"},
+				{Action: ActionAsk, Value: "code tunnel*"},
+			},
+		},
+		{
+			RuleID: "R-179", Fidelity: FidelityApprox,
+			Note: "each scanner base maps to a pattern; the trailing-glob form misses a bare invocation with no arguments, so the match is approximate (hydra uses the pattern 'hydra *' so hydrate-style commands do not match)",
+			Entries: []Entry{
+				{Action: ActionAsk, Value: "nmap*"},
+				{Action: ActionAsk, Value: "masscan*"},
+				{Action: ActionAsk, Value: "zmap*"},
+				{Action: ActionAsk, Value: "rustscan*"},
+				{Action: ActionAsk, Value: "naabu*"},
+				{Action: ActionAsk, Value: "unicornscan*"},
+				{Action: ActionAsk, Value: "hping3*"},
+				{Action: ActionAsk, Value: "nikto*"},
+				{Action: ActionAsk, Value: "nuclei*"},
+				{Action: ActionAsk, Value: "sqlmap*"},
+				{Action: ActionAsk, Value: "ffuf*"},
+				{Action: ActionAsk, Value: "gobuster*"},
+				{Action: ActionAsk, Value: "feroxbuster*"},
+				{Action: ActionAsk, Value: "hydra *"},
+				{Action: ActionAsk, Value: "wfuzz*"},
+				{Action: ActionAsk, Value: "zaproxy*"},
+				{Action: ActionAsk, Value: "zap.sh*"},
+				{Action: ActionAsk, Value: "zap-baseline.py*"},
+			},
 		},
 		{
 			RuleID: "R-180", Fidelity: FidelityNone,
@@ -226,14 +329,14 @@ func openCodeRows() []Translation {
 		{RuleID: "T-503", Fidelity: FidelityNone, Note: "session taint is runtime state; no static native expression"},
 		{RuleID: "T-504", Fidelity: FidelityNone, Note: "session taint is runtime state; no static native expression"},
 		{RuleID: "T-505", Fidelity: FidelityNone, Note: "session taint is runtime state; no static native expression"},
-		{RuleID: "B-601", Fidelity: FidelityNone, Note: "session spend is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-602", Fidelity: FidelityNone, Note: "daily spend is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-603", Fidelity: FidelityNone, Note: "monthly spend is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-604", Fidelity: FidelityNone, Note: "weekly spend is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-621", Fidelity: FidelityNone, Note: "session token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-622", Fidelity: FidelityNone, Note: "daily token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-623", Fidelity: FidelityNone, Note: "monthly token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
-		{RuleID: "B-624", Fidelity: FidelityNone, Note: "weekly token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)"},
+		{RuleID: "B-601", Fidelity: FidelityNone, Note: "session spend is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-602", Fidelity: FidelityNone, Note: "daily spend is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-603", Fidelity: FidelityNone, Note: "monthly spend is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-604", Fidelity: FidelityNone, Note: "weekly spend is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-621", Fidelity: FidelityNone, Note: "session token usage is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-622", Fidelity: FidelityNone, Note: "daily token usage is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-623", Fidelity: FidelityNone, Note: "monthly token usage is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
+		{RuleID: "B-624", Fidelity: FidelityNone, Note: "weekly token usage is runtime state; enforced at runtime by the proxy and, on an enforcing managed node, by the pre-send hooks (T-519), never by a static native rule"},
 		{RuleID: "B-625", Fidelity: FidelityNone, Note: "whether the organization's budget ever verified is daemon state; the refusal is the proxy's (org-budget ruling R2)"},
 		{RuleID: "B-626", Fidelity: FidelityNone, Note: "per-tool budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)"},
 		{RuleID: "B-627", Fidelity: FidelityNone, Note: "per-tool budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)"},

@@ -173,7 +173,7 @@ var cleanupRules = []cleanupRule{
 				got = "could not be run"
 			}
 			return fmt.Sprintf("the database now in place does not pass quick_check (%s), so a leftover may be the good copy. "+
-				"Investigate with `observer doctor db --integrity` before deleting anything", got)
+				"Investigate with the integrity check (Run the integrity check in Settings > Health, or `observer doctor db --integrity`) before deleting anything", got)
 		},
 	},
 	{

@@ -1,0 +1,150 @@
+# omit-tag-weights.tsv - measured seconds per omit-tag set, for balancing the
+# omit-tag batches (scripts/omit-tag-check.sh --batch i/n).
+#
+# Columns: <set key> TAB <integer seconds>. The key is the set itself, or for
+# a distro set (a comma list carrying a sbo_distro_* stamp) that stamp, so a
+# catalog change to the distro's tag list keeps its row. A set with no row
+# weighs 120 s (about the median single set). Lines starting with '#' and
+# blank lines are ignored.
+#
+# A HEURISTIC ONLY: the batches are a partition of the set list whatever the
+# numbers say (each set goes to exactly one batch), so a stale row costs
+# balance, never coverage.
+#
+# Source (lane CICD, 2026-11-01, "Vet only"): from the omit-tag batch logs of
+# the full runs 41274192950 (v1.37.0, 101a900f3) and 41246980707
+# (7d8f2d643), the max of the two. An edition row is its whole log group
+# (vet and full tests). A single sbo_omit_* row is its vet time only, which
+# is all it runs now: the time from its group's start to its first test
+# output line, an upper bound (it includes the first tagged package's test
+# build). Singles total about 211 minutes of vet, editions 46 minutes of
+# vet and tests; LPT plans six batches of about 43 minutes each.
+
+no_obs	659
+sbo_distro_developer	659
+sbo_distro_managed	627
+sbo_distro_minimal	816
+sbo_omit_adapter_aider	132
+sbo_omit_adapter_antigravity	133
+sbo_omit_adapter_antigravity_cli	95
+sbo_omit_adapter_autohand	113
+sbo_omit_adapter_chatgpt_web	104
+sbo_omit_adapter_claude_code	14
+sbo_omit_adapter_claude_web	126
+sbo_omit_adapter_cline	129
+sbo_omit_adapter_cline_cli	88
+sbo_omit_adapter_codebuddy	110
+sbo_omit_adapter_codex	111
+sbo_omit_adapter_command_code	14
+sbo_omit_adapter_copilot	127
+sbo_omit_adapter_copilot_cli	129
+sbo_omit_adapter_copilot_web	87
+sbo_omit_adapter_cortex_code	109
+sbo_omit_adapter_cowork	101
+sbo_omit_adapter_crush	14
+sbo_omit_adapter_cursor	138
+sbo_omit_adapter_deepagents_code	129
+sbo_omit_adapter_deepseek	87
+sbo_omit_adapter_devin	109
+sbo_omit_adapter_dimcode	101
+sbo_omit_adapter_dirac	14
+sbo_omit_adapter_droid	128
+sbo_omit_adapter_freebuff	130
+sbo_omit_adapter_gemini_cli	89
+sbo_omit_adapter_gemini_web	108
+sbo_omit_adapter_goose	100
+sbo_omit_adapter_grok	14
+sbo_omit_adapter_grokbot	127
+sbo_omit_adapter_hermes	129
+sbo_omit_adapter_ibm_bob	89
+sbo_omit_adapter_junie	109
+sbo_omit_adapter_kilo_code	90
+sbo_omit_adapter_kilo_code_cli	14
+sbo_omit_adapter_kimchi	128
+sbo_omit_adapter_kimi_code	130
+sbo_omit_adapter_kiro_cli	90
+sbo_omit_adapter_kiro_crew	109
+sbo_omit_adapter_mistral_code	96
+sbo_omit_adapter_muse	14
+sbo_omit_adapter_open_interpreter	139
+sbo_omit_adapter_openclaw	130
+sbo_omit_adapter_opencode	92
+sbo_omit_adapter_perplexity_web	102
+sbo_omit_adapter_pi	97
+sbo_omit_adapter_poolside	14
+sbo_omit_adapter_prime_agent	127
+sbo_omit_adapter_qoder	130
+sbo_omit_adapter_qwen_code	98
+sbo_omit_adapter_stakpak	109
+sbo_omit_adapter_vtcode	97
+sbo_omit_adapter_zcode	14
+sbo_omit_adapter_zed	126
+sbo_omit_agentaccess_relay	196
+sbo_omit_archive	94
+sbo_omit_benchmark	141
+sbo_omit_capture_browser	113
+sbo_omit_capture_proxy	14
+sbo_omit_cloud_intelligence	113
+sbo_omit_codeintel	166
+sbo_omit_demo	98
+sbo_omit_egress_aggregate_share	140
+sbo_omit_egress_pricing_feed	91
+sbo_omit_export_otel	14
+sbo_omit_ingest_otlp	119
+sbo_omit_integration_mcp_server	120
+sbo_omit_integration_shell_wrap	104
+sbo_omit_isolation	158
+sbo_omit_isolation_seal	96
+sbo_omit_judge_client	14
+sbo_omit_notify_email	113
+sbo_omit_obs	119
+sbo_omit_org_agentaccess	140
+sbo_omit_org_aigateway	116
+sbo_omit_org_deploy_planner	109
+sbo_omit_org_log_kafka	14
+sbo_omit_org_opamp	128
+sbo_omit_org_openshell	140
+sbo_omit_org_planea_gateway	139
+sbo_omit_org_saml	116
+sbo_omit_org_scim	116
+sbo_omit_org_security	153
+sbo_omit_org_security_ci	140
+sbo_omit_org_security_githubapp	268
+sbo_omit_org_security_relay	290
+sbo_omit_org_selfobs	104
+sbo_omit_org_sor_azblob	118
+sbo_omit_org_sor_s3	110
+sbo_omit_org_update	30
+sbo_omit_processobs	120
+sbo_omit_proxy_routing	168
+sbo_omit_remote	123
+sbo_omit_security	165
+sbo_omit_security_deps	124
+sbo_omit_security_scan_actionlint	14
+sbo_omit_security_scan_custom	118
+sbo_omit_security_scan_kics	122
+sbo_omit_security_scan_opengrep	90
+sbo_omit_security_scan_osv	114
+sbo_omit_security_scan_sarif_import	90
+sbo_omit_security_scan_scalibr	14
+sbo_omit_security_scan_trivy	113
+sbo_omit_security_trust	126
+sbo_omit_terminals	112
+sbo_omit_terminals_sandbox	128
+sbo_omit_terminals_sandbox_apple_container	92
+sbo_omit_terminals_sandbox_credentials	14
+sbo_omit_terminals_sandbox_e2b	114
+sbo_omit_terminals_sandbox_hcs	119
+sbo_omit_terminals_sandbox_landlock	86
+sbo_omit_terminals_sandbox_modal	123
+sbo_omit_terminals_sandbox_mxc	88
+sbo_omit_terminals_sandbox_mxc_appcontainer	14
+sbo_omit_terminals_sandbox_oci	114
+sbo_omit_terminals_sandbox_oci_readopt	118
+sbo_omit_terminals_sandbox_seatbelt	86
+sbo_omit_terminals_sandbox_vercel	119
+sbo_omit_terminals_sandbox_vm	92
+sbo_omit_terminals_sandbox_wslc	14
+sbo_omit_terminals_ssh	115
+sbo_omit_ui_dashboard	119
+sbo_omit_ui_export_xlsx	88

@@ -218,19 +218,52 @@ func ValidateLeaf(leaf Leaf, v any) error {
 			return fmt.Errorf("%s %q not in {%s}", leaf.Path, s, strings.Join(nonEmpty(leaf.Enum), ", "))
 		}
 	case KindInt:
-		n, ok := v.(int64)
+		n, ok := asInt64(v)
 		if !ok {
 			return fmt.Errorf("%s wants an integer", leaf.Path)
 		}
 		return checkBounds(leaf, float64(n))
 	case KindFloat:
-		fl, ok := v.(float64)
+		fl, _, ok := asFloat64(v)
 		if !ok {
 			return fmt.Errorf("%s wants a number", leaf.Path)
 		}
 		return checkBounds(leaf, fl)
 	}
 	return nil
+}
+
+// asInt64 widens any Go integer (signed or unsigned, named or not) to int64.
+// ParseValue yields int64 but Get returns the field's own type (int for most
+// leaves), so every numeric consumer goes through here rather than asserting
+// one width. An unsigned value above MaxInt64 does not fit and is refused.
+func asInt64(v any) (int64, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		u := rv.Uint()
+		if u > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(u), true
+	}
+	return 0, false
+}
+
+// asFloat64 widens a float32 or float64 to float64 and reports the source
+// bit size, so a float32 renders as its shortest float32 form rather than
+// the widened float64 noise (0.1 -> 0.10000000149011612).
+func asFloat64(v any) (fl float64, bitSize int, ok bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32:
+		return rv.Float(), 32, true
+	case reflect.Float64:
+		return rv.Float(), 64, true
+	}
+	return 0, 0, false
 }
 
 func checkBounds(leaf Leaf, v float64) error {
@@ -349,17 +382,17 @@ func TOMLScalar(leaf Leaf, v any) (rhs string, ok bool) {
 		}
 		return strconv.FormatBool(b), true
 	case KindInt:
-		n, isInt := v.(int64)
+		n, isInt := asInt64(v)
 		if !isInt {
 			return "", false
 		}
 		return strconv.FormatInt(n, 10), true
 	case KindFloat:
-		fl, isFloat := v.(float64)
+		fl, bits, isFloat := asFloat64(v)
 		if !isFloat || math.IsNaN(fl) || math.IsInf(fl, 0) {
 			return "", false
 		}
-		s := strconv.FormatFloat(fl, 'g', -1, 64)
+		s := strconv.FormatFloat(fl, 'g', -1, bits)
 		// TOML floats need a fraction or exponent; "1" is an integer.
 		if !strings.ContainsAny(s, ".eE") {
 			s += ".0"

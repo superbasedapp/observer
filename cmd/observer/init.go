@@ -90,6 +90,7 @@ func newInitCmd() *cobra.Command {
 		flagWinCodexHome     string
 		flagWinCursorHome    string
 		flagOTLPExport       []string
+		flagOTLPCloudEP      string
 		flagBobNoVendorTel   bool
 		flagComponents       initComponentFlags
 	)
@@ -184,6 +185,12 @@ func newInitCmd() *cobra.Command {
 				})
 			}
 			out := cmd.OutOrStdout()
+			// --otlp-cloud-endpoint (cloud-agents CA-B4) only PRINTS the
+			// Settings text for a Claude Code cloud environment's exporter;
+			// it writes nothing, so it runs alone.
+			if flagOTLPCloudEP != "" {
+				return runOTLPCloudEnvironment(out, resolvedConfig, flagOTLPCloudEP)
+			}
 			// Non-interactive: the defaults stay; one line says where to
 			// choose (modular packaging 7.1).
 			if !flagComponents.set() && !flagUninstall {
@@ -371,6 +378,11 @@ func newInitCmd() *cobra.Command {
 			// unable to run itself. Silent unless [observer.process.etw] is
 			// enabled AND this host has schtasks.exe.
 			if !flagUninstall {
+				// The default workspace folder, created when missing (never
+				// on a dry run; a failure is a WARN line).
+				if !flagDryRun {
+					initDefaultWorkspaceStep(cmd.Context(), out, resolvedConfig)
+				}
 				initProcessBridgeTaskStep(cmd.Context(), out, resolvedConfig)
 				printCommunityFooter(out)
 			}
@@ -389,6 +401,7 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&flagStatuslineTools, "statusline-tools", nil, "Register the observer statusline in these tools' own status-line command (comma-separated: "+strings.Join(integration.StatusLineWriterTools(integration.StatusLineInitTools), ", ")+"). Opt-in only: never implied by --all and never written by `observer start`; alone it writes nothing else. --dry-run previews, --force replaces a status line you set yourself, --uninstall removes Observer's")
 	cmd.Flags().BoolVar(&flagUninstall, "uninstall", false, "Uninstall instead of install - honoured for --hermes, --statusline, --statusline-tools, --otlp-export and --ibm-bob-disable-vendor-telemetry")
 	cmd.Flags().BoolVar(&flagBobNoVendorTel, "ibm-bob-disable-vendor-telemetry", false, "Turn IBM Bob's own telemetry to IBM off (telemetry.enabled=false in ~/.bob/settings/settings.json, and the Windows .bob seen from WSL). Opt-in only: never implied by --all and never written by `observer start`. Bob gates its OTLP export on the same setting, so this refuses when this node's Bob policy exports to a receiver; it also stops Bobalytics. --uninstall hands the setting back to Bob's default")
+	cmd.Flags().StringVar(&flagOTLPCloudEP, "otlp-cloud-endpoint", "", "Print (write nothing) the server-managed settings env block and the per-environment network setting that point Claude Code CLOUD sessions' OpenTelemetry exporter at this node's receiver, reached at this URL (e.g. https://node.tailnet.example:4318). The credential goes in the organization's server-managed settings, never a cloud environment's variables")
 	cmd.Flags().StringSliceVar(&flagOTLPExport, "otlp-export", nil, "Point these tools' own OpenTelemetry exporters at this node's OTLP receiver (comma-separated, e.g. qwen-code,codex; needs [ingest.otel] enabled). Opt-in only: never implied by --all and never written by `observer start`. Edits only the exporter keys of the tool's config (a credential in the same file is never read out or changed); --dry-run previews, --uninstall removes")
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Select every detected tool")
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Print intended changes without writing any files")
@@ -1918,7 +1931,7 @@ func discoverExtensionIDs(home string, winHomes []string) []browserhost.Extensio
 // is still written with the placeholder).
 func promptBrowserExtensionID(out io.Writer, r *bufio.Reader, found []browserhost.ExtensionCandidate) (string, error) {
 	if len(found) > 0 {
-		fmt.Fprintln(out, "browser: the SuperBased extension is loaded in:")
+		fmt.Fprintln(out, "browser: the superbased extension is loaded in:")
 		opts := make([]string, 0, len(found)+2)
 		for _, c := range found {
 			opts = append(opts, fmt.Sprintf("%s (%s)  %s", c.Browser, c.Profile, c.ID))

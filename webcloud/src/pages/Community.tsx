@@ -303,7 +303,7 @@ export function Community() {
           {own && !own.contributed && (
             <div className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3 text-[12px] text-fg-2">
               You are not contributing this metric yet, so there is no band
-              to highlight. Once your devices sync activity that covers this
+              to highlight. Once your machines sync activity that covers this
               metric under your community grant, your own placement appears
               here. (Opting in to contribute is handled where you grant cloud
               data - not from this page.)

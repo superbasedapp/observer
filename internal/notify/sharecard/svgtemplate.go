@@ -64,6 +64,6 @@ const svgTemplateSrc = `<svg xmlns="http://www.w3.org/2000/svg" width="{{.W}}" h
 
   <!-- footer -->
   <line x1="72" y1="566" x2="1128" y2="566" stroke="{{.Colors.Border}}" stroke-width="1"/>
-  <text x="72" y="600" fill="{{.Colors.Muted}}" font-size="20">Tracked locally by SuperBased Observer</text>
+  <text x="72" y="600" fill="{{.Colors.Muted}}" font-size="20">Tracked locally by superbased Observer</text>
   <text x="1128" y="600" fill="{{.Colors.Gold}}" font-size="20" font-weight="700" text-anchor="end">superbased.app</text>
 </svg>`

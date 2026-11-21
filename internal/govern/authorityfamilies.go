@@ -11,7 +11,11 @@ import "sort"
 // govern must stay import-clean of internal/config/internal/store/etc
 // (imports_test.go) regardless.
 const (
-	familyAdmissionInput   = "admission.input"
+	familyAdmissionInput = "admission.input"
+	// familyPlaneBAdmission mirrors policyfam.FamilyPlaneBAdmission
+	// (`planeb.admission`): the Plane-B coding-agent prompt judge. Its node
+	// lane runs only under enforce.admission on a managed node (P-228).
+	familyPlaneBAdmission  = "planeb.admission"
 	familyEgressGuardrail  = "egress.routing_guardrail"
 	familyGatewayProviders = "gateway.providers"
 	familyNodeGovernance   = "node.governance"
@@ -78,7 +82,11 @@ type authorityFamilyRow struct {
 //     share directive (intelligence.org_enrichment).
 //
 //   - enforce.admission lifts the §R23 structural-ignore for the
-//     admission.input family (internal/obs/admission).
+//     admission.input family (internal/obs/admission) AND governs the
+//     planeb.admission family (P-228): the org's coding-agent prompt judge
+//     runs on a node's proxy only on a managed node holding this authority,
+//     so a managed enrolment consents to that family at enrol, and a node
+//     that enrolled earlier gets it backfilled once at daemon start.
 //
 //   - enforce.egress lifts it for the egress.routing_guardrail family
 //     (internal/guard's egress policy).
@@ -154,7 +162,7 @@ var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityExtractPolicyState, []string{familyNodeGovernance}},
 	{AuthorityExtractObsEgress, []string{familyNodeGovernance}},
 	{AuthorityExtractHookActivity, []string{familyNodeGovernance}},
-	{AuthorityEnforceAdmission, []string{familyAdmissionInput}},
+	{AuthorityEnforceAdmission, []string{familyAdmissionInput, familyPlaneBAdmission}},
 	{AuthorityEnforceEgress, []string{familyEgressGuardrail}},
 	{AuthorityEnforceRouting, []string{familyGatewayProviders}},
 	{AuthorityEnforceBudget, []string{familyNodeGovernance}},

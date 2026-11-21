@@ -1,0 +1,13 @@
+{
+  "completedAt": "2026-10-31T10:12:30Z",
+  "createdAt": "2026-10-31T09:02:11Z",
+  "id": "8f1c2d3e-4b5a-4c6d-9e7f-0a1b2c3d4e5f",
+  "name": "Add retry budget to the push loop",
+  "pullRequestNumber": 412,
+  "pullRequestState": "OPEN",
+  "pullRequestUrl": "https://github.com/acme-dev/observer-demo/pull/412",
+  "repository": "acme-dev/observer-demo",
+  "state": "completed",
+  "updatedAt": "2026-10-31T10:12:30Z",
+  "user": "octo-dev"
+}

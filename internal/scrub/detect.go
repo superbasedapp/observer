@@ -175,6 +175,9 @@ var typedDetectors = []typedDetector{
 		re:         regexp.MustCompile(`\Abearer\s+([a-z0-9\-._~+/]{8,}=*)`),
 		valueGroup: 1,
 		gates:      []string{"bearer"},
+		// One English word after "Bearer" is prose, not a credential
+		// (bearerprose.go).
+		validate: bearerNotProse,
 	},
 	{
 		name: "api_key_prefixed", certain: true, class: classSecret, lowercase: true, anchored: true,

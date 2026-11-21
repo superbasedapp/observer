@@ -28,6 +28,11 @@ func TestConformanceMatrix(t *testing.T) {
 		if cap, ok := integration.For(client); ok && cap.Hook.Mechanism == integration.HookBrowserExtension {
 			continue
 		}
+		// A proxy-only row (custom-agent) has no transcript or store for a
+		// post-hoc watcher to read; its only channel is the proxy turn.
+		if cap, ok := integration.For(client); ok && cap.ProxyOnlyCapture {
+			continue
+		}
 		caps, ok := CapabilitiesFor(client, ChannelWatcher)
 		if !ok {
 			t.Errorf("adapter %q has no watcher row — coverage gap would be silent", client)

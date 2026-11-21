@@ -1,0 +1,75 @@
+rules:
+  - id: php.nosql-injection
+    languages: [php]
+    severity: ERROR
+    message: Web request input reaches a MongoDB query filter as it is; PHP turns a parameter such as user[$ne]= into an array, so a caller can send an operator in place of a value. Cast each value to a string first ((string) or strval).
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (string) $X
+      - pattern: (int) $X
+      - pattern: strval(...)
+      - pattern: intval(...)
+      - pattern: new ObjectId(...)
+      - pattern: new MongoDB\BSON\ObjectId(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: $COLL->$F($Q, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|updateOne|updateMany|deleteOne|deleteMany|replaceOne|countDocuments|count|distinct|aggregate)$
+          # A collection by its name, or a variable assigned one.
+          - pattern-either:
+              - patterns:
+                  - pattern: $COLL->$F(...)
+                  - metavariable-regex:
+                      metavariable: $COLL
+                      regex: (?i)^\$(this->)?\w*(coll|collection|mongo)\w*$|->selectCollection\(
+              - pattern-inside: |
+                  $COLL = $CLIENT->selectCollection(...);
+                  ...
+              - pattern-inside: |
+                  $COLL = $CLIENT->$DB->$NAME;
+                  ...
+          - focus-metavariable: $Q
+      # A server-side JavaScript condition.
+      - patterns:
+          - pattern: "[..., '$where' => $X, ...]"
+          - focus-metavariable: $X

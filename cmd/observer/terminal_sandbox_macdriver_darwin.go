@@ -166,9 +166,15 @@ func startMacHostServices(h sandbox.HostArgs, opts macServiceOpts) (macServices,
 		if tcp, ok := ln.Addr().(*net.TCPAddr); ok {
 			out.GatewayPort = tcp.Port
 		}
+		audit := sandboxEgressRefusalHooks(ctx, h.ObserverDir, h.RelayRun)
 		srv := &http.Server{
 			// The helper's stderr is the agent's terminal: no log lines.
-			Handler:           &sandboxnet.Gateway{Allow: allow, Hosts: hosts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Providers: providerBlockFor(h)},
+			// Refusals go to the daemon's refusal audit on the relay link
+			// (lane N1); a lost link closes egress under the floor (F-012).
+			Handler: &sandboxnet.Gateway{
+				Allow: allow, Hosts: hosts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Providers: providerBlockFor(h),
+				Report: audit.Report, Closed: audit.Closed,
+			},
 			ReadHeaderTimeout: 30 * time.Second,
 			BaseContext:       func(net.Listener) context.Context { return ctx },
 		}

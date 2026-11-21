@@ -109,6 +109,8 @@ type ociDriver struct {
 	mu     sync.Mutex
 	last   sandboxoci.ProbeResult
 	lastAt time.Time
+	// lastGen is the probe-cache generation last was taken under.
+	lastGen uint64
 
 	// choices holds each created run's image and repository environment
 	// (run id -> ociRunChoice) until Attach composes it.
@@ -210,12 +212,13 @@ func (d *ociDriver) version() string {
 // probeResult runs (or reuses) the ladder and keeps what it established.
 func (d *ociDriver) probeResult(ctx context.Context) sandboxoci.ProbeResult {
 	d.mu.Lock()
-	if !d.lastAt.IsZero() && time.Since(d.lastAt) < sandboxProbeTTL {
+	if sandboxProbeFresh(d.lastAt, d.lastGen, time.Now()) {
 		res := d.last
 		d.mu.Unlock()
 		return res
 	}
 	d.mu.Unlock()
+	gen := sandboxProbeGeneration()
 	env := ociProbeEnvFn(ctx, d.cfg, d.r.observerDir)
 	env.Runtime = d.profile
 	res := sandboxoci.Probe(env)
@@ -227,6 +230,7 @@ func (d *ociDriver) probeResult(ctx context.Context) sandboxoci.ProbeResult {
 	if d.r.inDaemon {
 		if res.Verdict.OK() {
 			if id, err := ociInstallID(d.r.observerDir); err == nil {
+				processOCIReaper.useLogger(d.r.logger)
 				processOCIReaper.ensure(res.Socket, res.Identity.APIVersion, id, d.r.observerDir, d.r.managedRoot)
 			}
 		} else {
@@ -234,7 +238,7 @@ func (d *ociDriver) probeResult(ctx context.Context) sandboxoci.ProbeResult {
 		}
 	}
 	d.mu.Lock()
-	d.last, d.lastAt = res, time.Now()
+	d.last, d.lastAt, d.lastGen = res, time.Now(), gen
 	d.mu.Unlock()
 	return res
 }
@@ -644,7 +648,7 @@ func (d *ociDriver) compose(created termsvc.CreateResult, res sandboxoci.ProbeRe
 
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs}
 	if capture := sandboxRunCaptureFor(d.row(), created.ProxyRouted, vocab.Tier(r.egress.Mode), r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
-		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHosts
+		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHostList()
 	}
 	netReq.HostSocketDir = filepath.Join(os.TempDir(), "observer-sbx-"+run.ID)
 
@@ -693,7 +697,11 @@ func (d *ociDriver) compose(created termsvc.CreateResult, res sandboxoci.ProbeRe
 		_ = ociRemoveRunState(r.observerDir, r.managedRoot, run.ID)
 		return nil, fmt.Errorf("terminal_sandbox: %w", err)
 	}
-	plan := d.bindPlan(home, run, spec.Sandbox, overlays, netReq.HostSocketDir, proj)
+	plan, err := d.bindPlan(home, run, spec.Sandbox, overlays, netReq.HostSocketDir, proj)
+	if err != nil {
+		_ = ociRemoveRunState(r.observerDir, r.managedRoot, run.ID)
+		return nil, err
+	}
 	ociPinMounts(&plan, pins)
 	plan.RunID, plan.InstallID = run.ID, installID
 	plan.Runtime = d.profile.CreateRuntime
@@ -829,16 +837,21 @@ func (d *ociDriver) checkBinds(home string, spec integration.SandboxSpec) error 
 // ociMaskPaths are the host paths bwrap masks with a tmpfs that a container
 // bind could show again: the foreign-OS mounts and the operator's
 // [terminal.sandbox].mask_paths (r.maskPaths, A1: /mnt/c on WSL2), and the
-// host socket and interop directories (hostSocketMasks). One that cannot be
-// listed is skipped; the rest still apply.
-func (d *ociDriver) ociMaskPaths() []string {
-	out := d.r.maskPaths()
+// host socket and interop directories (hostSocketMasks). A host socket
+// directory that cannot be listed is skipped; the rest still apply. The
+// foreign-OS mounts are not skipped: when they cannot be determined
+// (r.maskPaths fails closed) the error is returned and the launch refused.
+func (d *ociDriver) ociMaskPaths() ([]string, error) {
+	out, err := d.r.maskPaths()
+	if err != nil {
+		return nil, err
+	}
 	if masks, err := hostSocketMasks(os.Getuid()); err == nil {
 		for _, m := range masks {
 			out = append(out, m.Path)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // maskUnderBinds masks every mask path a bind shows (SBX-P3A merge finding
@@ -875,7 +888,9 @@ func maskUnderBinds(p *sandboxoci.CreatePlan, masks []string, seen map[string]bo
 // path, the operator's extra binds, and the protection table's overlays
 // (hidden or read-only). Nothing else of the host is in the box: the
 // container's root is the image, read-only.
-func (d *ociDriver) bindPlan(home string, run termsvc.SandboxRun, spec integration.SandboxSpec, overlays []sandbox.Overlay, sockDir string, proj []sandboxoci.ProjectedDir) sandboxoci.CreatePlan {
+//
+// It fails when the foreign-OS mounts cannot be determined (ociMaskPaths).
+func (d *ociDriver) bindPlan(home string, run termsvc.SandboxRun, spec integration.SandboxSpec, overlays []sandbox.Overlay, sockDir string, proj []sandboxoci.ProjectedDir) (sandboxoci.CreatePlan, error) {
 	r := d.r
 	var p sandboxoci.CreatePlan
 	p.WorkDir = run.Dir
@@ -945,9 +960,13 @@ func (d *ociDriver) bindPlan(home string, run termsvc.SandboxRun, spec integrati
 		}
 	}
 
-	maskUnderBinds(&p, d.ociMaskPaths(), seen)
+	masks, err := d.ociMaskPaths()
+	if err != nil {
+		return sandboxoci.CreatePlan{}, err
+	}
+	maskUnderBinds(&p, masks, seen)
 	d.overlayMounts(&p, overlays, seen, bind)
-	return p
+	return p, nil
 }
 
 // ociPinMounts adds the launch's pins (sandboxRuntime.protection: every

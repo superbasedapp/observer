@@ -11,7 +11,8 @@
 // ?watch=, the session and project drawers' ?dtab=, every page tab's ?tab=,
 // Settings ?section=, Search ?q=, Projects/Cost statement ?project= ?root=,
 // Benchmarks ?run=, Routing ?reason= ?applied=, Cost statement ?month=,
-// Terminals ?dock=): applyFilterParams only
+// Terminals ?dock=, Code security's Findings filters, lib/codeSecurityApi.ts
+// FINDINGS_URL_PARAMS, pinned apart in its test): applyFilterParams only
 // ever sets or deletes the names in this table, so a page's own params are
 // never clobbered.
 //
@@ -137,6 +138,18 @@ function parseText(max: number) {
     raw.trim() !== "" && raw.length <= max && !CONTROL_RE.test(raw) ? raw : null;
 }
 
+// A project root HASH (sha256 hex of the root, Code security's spelling) is
+// never a root path. Code security's Findings tab wrote one under `proj=`
+// until 2026-11-06 (lib/codeSecurityApi.ts), so links from that build (a
+// bookmark, the history, an open tab) still carry one: it is ignored, never
+// shown in the Project chip as a raw hash or sent as the project filter.
+const ROOT_HASH_RE = /^[0-9a-f]{64}$/i;
+
+function parseProject(raw: string): string | null {
+  const v = parseText(4096)(raw);
+  return v != null && !ROOT_HASH_RE.test(v.trim()) ? v : null;
+}
+
 /**
  * FilterParam is one row of the table: the query-string name, the filter
  * field it carries, how to parse a raw value (null = invalid, ignore), and
@@ -181,7 +194,7 @@ export const FILTER_PARAMS: readonly FilterParam[] = [
   {
     param: "proj",
     field: "project",
-    parse: parseText(4096),
+    parse: parseProject,
     write: (f) => (f.project === FILTER_DEFAULTS.project || f.project === "" ? null : f.project),
   },
   {

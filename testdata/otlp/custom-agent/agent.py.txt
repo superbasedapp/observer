@@ -1,0 +1,24 @@
+# A developer's own agent: stock OpenTelemetry SDK + the OpenAI GenAI instrumentor.
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor
+from openai import OpenAI
+
+provider = TracerProvider(resource=Resource.create({
+    "service.name": "fixture-agent", "sbo.agent": "fixture-bot", "session.id": "run-1"}))
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint="http://127.0.0.1:18802/v1/traces")))
+trace.set_tracer_provider(provider)
+OpenAIInstrumentor().instrument()
+
+client = OpenAI(base_url="http://127.0.0.1:18801/v1", api_key="test-key-not-real")
+tracer = trace.get_tracer("fixture-agent")
+client.chat.completions.create(model="gpt-5.5-mini", messages=[{"role": "user", "content": "list the files"}])
+with tracer.start_as_current_span("execute_tool list_files") as sp:
+    sp.set_attribute("gen_ai.operation.name", "execute_tool")
+    sp.set_attribute("gen_ai.tool.name", "list_files")
+    sp.set_attribute("gen_ai.tool.call.id", "call_fixture_1")
+client.chat.completions.create(model="gpt-5.5-mini", messages=[{"role": "user", "content": "thanks"}])
+provider.shutdown()

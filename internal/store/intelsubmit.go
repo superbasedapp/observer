@@ -79,15 +79,29 @@ func scanOrgIntelSubmission(scan func(...any) error) (OrgIntelSubmission, error)
 	return r, nil
 }
 
+// ErrOrgIntelSessionNotThisOrg refuses an org-plane submission for a session
+// whose data belongs to another organization, or to no organization (agent
+// migration 250, operator ruling D-43).
+var ErrOrgIntelSessionNotThisOrg = errors.New("store.EnqueueOrgIntelSubmission: the session was not captured under this organization")
+
 // EnqueueOrgIntelSubmission adds a submission (state pending). The same bytes
 // for the same (org, session, purpose) are not queued twice: the existing row
-// is returned with inserted=false.
+// is returned with inserted=false. A session captured under another
+// organization (or none) is refused with ErrOrgIntelSessionNotThisOrg, so
+// neither the background sweep nor a developer's Enrich now can send it.
 func (s *Store) EnqueueOrgIntelSubmission(ctx context.Context, in OrgIntelSubmission, now time.Time) (OrgIntelSubmission, bool, error) {
 	if in.OrgID == "" || in.SessionID == "" || in.Purpose == "" || in.EvidenceLevel == "" || len(in.Envelope) == 0 || in.UploadDigest == "" {
 		return OrgIntelSubmission{}, false, errors.New("store.EnqueueOrgIntelSubmission: org, session, purpose, level, bytes and digest are required")
 	}
 	if in.Trigger != OrgIntelTriggerBackground && in.Trigger != OrgIntelTriggerDeveloper {
 		return OrgIntelSubmission{}, false, fmt.Errorf("store.EnqueueOrgIntelSubmission: unknown trigger %q", in.Trigger)
+	}
+	ok, err := s.sessionBelongsToOrg(ctx, in.OrgID, in.SessionID)
+	if err != nil {
+		return OrgIntelSubmission{}, false, fmt.Errorf("store.EnqueueOrgIntelSubmission: %w", err)
+	}
+	if !ok {
+		return OrgIntelSubmission{}, false, ErrOrgIntelSessionNotThisOrg
 	}
 	ts := cloudFormatTime(now.UTC())
 	res, err := s.db.ExecContext(ctx, `
@@ -255,13 +269,23 @@ type OrgIntelSubmitCandidate struct {
 	Actions      int
 }
 
-// ListOrgIntelSubmitCandidates returns ORG-authority sessions started at or
-// after since, with at least minActions actions, quiet for quietFor, that have
-// no submission row for this org yet (the background sweep submits a session
-// once; a developer re-run is its own act). Oldest-quiet first.
+// ListOrgIntelSubmitCandidates returns ORG-authority sessions captured under
+// orgID (sessions.authority_org_key, agent migration 250, D-43) and started
+// at or after since, with at least minActions actions, quiet for quietFor,
+// that have no submission row for this org yet (the background sweep submits
+// a session once; a developer re-run is its own act). Oldest-quiet first.
+// orgID must be the org enrolled now; for any other org, or on a node that is
+// not enrolled, there are no candidates.
 func (s *Store) ListOrgIntelSubmitCandidates(ctx context.Context, orgID string, since time.Time, quietFor time.Duration, minActions, limit int, now time.Time) ([]OrgIntelSubmitCandidate, error) {
 	if limit <= 0 {
 		limit = 5
+	}
+	key, ok, err := s.orgIntelDestinationKey(ctx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListOrgIntelSubmitCandidates: %w", err)
+	}
+	if !ok {
+		return nil, nil
 	}
 	cutoff := now.UTC().Add(-quietFor)
 	rows, err := s.db.QueryContext(ctx, `
@@ -269,12 +293,13 @@ SELECT s.id, MAX(a.timestamp) AS last_action_at, COUNT(a.id)
   FROM sessions s
   JOIN actions a ON a.session_id = s.id
  WHERE s.authority = 'org'
+   AND s.authority_org_key = ?
    AND s.started_at >= ?
    AND NOT EXISTS (SELECT 1 FROM org_intel_outbox o WHERE o.org_id = ? AND o.session_id = s.id)
  GROUP BY s.id
 HAVING MAX(a.timestamp) <= ? AND COUNT(a.id) >= ?
  ORDER BY last_action_at ASC
- LIMIT ?`, cloudFormatTime(since.UTC()), orgID, timestamp(cutoff), minActions, limit)
+ LIMIT ?`, key, cloudFormatTime(since.UTC()), orgID, timestamp(cutoff), minActions, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListOrgIntelSubmitCandidates: %w", err)
 	}
@@ -292,4 +317,41 @@ HAVING MAX(a.timestamp) <= ? AND COUNT(a.id) >= ?
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// orgIntelDestinationKey is the authority_org_key an org-plane submission for
+// orgID may carry: the key of the enrolment in force, only when orgID is that
+// enrolment's org. ok=false when the node is not enrolled or is enrolled in
+// another org (nothing may be submitted to orgID).
+func (s *Store) orgIntelDestinationKey(ctx context.Context, orgID string) (key string, ok bool, err error) {
+	if orgID == "" {
+		return "", false, nil
+	}
+	dest, err := s.orgDestinationFor(ctx, orgID)
+	switch {
+	case errors.Is(err, errOrgDestinationChanged):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case dest.open:
+		return "", false, nil
+	}
+	return dest.key, true, nil
+}
+
+// sessionBelongsToOrg reports whether an org-plane submission for sessionID
+// may go to orgID. A session with no row here carries no captured data of
+// this node and is not refused (the envelope cannot have been built from it);
+// a session keyed to anything but orgID's enrolment is.
+func (s *Store) sessionBelongsToOrg(ctx context.Context, orgID, sessionID string) (bool, error) {
+	key, ok, err := s.orgIntelDestinationKey(ctx, orgID)
+	if err != nil || !ok {
+		return false, err
+	}
+	keys, err := s.sessionOrgKeys(ctx, []string{sessionID})
+	if err != nil {
+		return false, err
+	}
+	got, found := keys[sessionID]
+	return keepAttributedRow(sessionID, found, got, orgDestination{key: key}), nil
 }

@@ -135,8 +135,8 @@ func TestNodeToolGateLegacyClineScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := nodeToolGateFor(c, binary, cfgPath)
-	if st.Current || !strings.Contains(st.Reason, "missing or stale") {
-		t.Fatalf("legacy cline script = %+v, want not current (missing or stale)", st)
+	if st.Current || !strings.Contains(st.Reason, "missing or stale") || !st.Fixable {
+		t.Fatalf("legacy cline script = %+v, want not current (missing or stale) and fixable by setup", st)
 	}
 	if got := c.NodeEnforcement(st.Current, true); got != integration.EnforceSandbox {
 		t.Errorf("legacy cline script: NodeEnforcement = %q, want sandbox_enforce", got)

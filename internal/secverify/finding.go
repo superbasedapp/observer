@@ -21,6 +21,7 @@ const (
 	CategoryCIConfig      = policy.FindingCIConfig
 	CategoryTestTampering = policy.FindingTestTampering
 	CategoryMalicious     = policy.FindingMaliciousPackage
+	CategoryIaC           = policy.FindingIaC
 )
 
 // Severity is the closed severity scale.

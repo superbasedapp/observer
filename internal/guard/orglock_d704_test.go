@@ -50,7 +50,7 @@ func TestUnreadableBundleKeepsTheLastVerifiedOrgLayer(t *testing.T) {
 			if err != nil {
 				t.Fatalf("guard.New: %v", err)
 			}
-			g.SetApprovalLookup(func(string, string, string) bool { return true })
+			g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 			av, _ := g.EvaluateHook(rmRfEvent())
 			if av.Verdict.Decision != policy.DecisionDeny {
 				t.Fatalf("rm -rf / = %v (%s), want deny from the last verified org layer (issues %v)", av.Verdict.Decision, av.Verdict.Reason, g.LoadIssues())

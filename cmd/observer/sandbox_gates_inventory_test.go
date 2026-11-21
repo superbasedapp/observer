@@ -17,14 +17,16 @@ import (
 // key, its node home (the panel file that shows or edits it) and its admin
 // home. The re-adoption keys and the MXC tier floor have a nodegov pin row
 // since lane LEFT2-SBX (R-034); the wslc and hcs admin homes are still owed
-// and recorded in docs/security.md SBX-BE-9.
+// and recorded in docs/security.md SBX-BE-9. A wslc or hcs row names the
+// panel's editable() call for the key, since the panel edits those values
+// (dashboard CLI parity plan lane L3) rather than only showing them.
 var sandboxGatesSettingsInventory = map[string]struct{ panel, field, admin string }{
 	"readopt.bound_minutes":      {"SandboxCredentialsPanel.tsx", "bound_minutes", "pin: terminal.sandbox.readopt.bound_minutes (lowering only)"},
 	"readopt.checkpoint_cap_mib": {"SandboxCredentialsPanel.tsx", "checkpoint_cap_mib", "pin: terminal.sandbox.readopt.checkpoint_cap_mib (lowering only)"},
 	"windows.mxc_tier":           {"SandboxWindowsTiersPanel.tsx", "windows?.mxc_tier", "pin: terminal.sandbox.windows.mxc_tier (restrictive only)"},
-	"wslc.path":                  {"SandboxWindowsTiersPanel.tsx", "wslc?.path", "owed: a machine path, a per-node override only"},
-	"wslc.image":                 {"SandboxWindowsTiersPanel.tsx", "wslc?.image", "owed: a nodegov pin row (restrictive only)"},
-	"hcs.utility_vm_image":       {"SandboxWindowsTiersPanel.tsx", "hcs?.utility_vm_image", "owed: a machine path, a per-node override only"},
+	"wslc.path":                  {"SandboxWindowsTiersPanel.tsx", `editable("wslc.path")`, "owed: a machine path, a per-node override only"},
+	"wslc.image":                 {"SandboxWindowsTiersPanel.tsx", `editable("wslc.image")`, "owed: a nodegov pin row (restrictive only)"},
+	"hcs.utility_vm_image":       {"SandboxWindowsTiersPanel.tsx", `editable("hcs.utility_vm_image")`, "owed: a machine path, a per-node override only"},
 }
 
 // TestSandboxGatesSettingsInventory: every key of the lane's blocks has an

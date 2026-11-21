@@ -111,7 +111,10 @@ var wantRow = map[string]struct {
 	"ibm-bob":         {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"kimchi":          {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"stakpak":         {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
-	"vtcode":          {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	// custom-agent (P-228): the developer's own code, captured only by the
+	// proxy, whose prompt scan is its one prompt-submit lever.
+	"custom-agent": {integration.EnforceRecordedAcceptance, PromptSubmitProxyOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"vtcode":       {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
 }
 
 // wantRouteNotObserved pins, per tool, the surfaces the registry-only route

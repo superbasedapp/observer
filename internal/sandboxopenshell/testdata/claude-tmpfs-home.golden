@@ -1,0 +1,67 @@
+# policy.yaml
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only:
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/bin"
+    - "/sbin"
+    - "/etc"
+    - "/proc"
+    - "/dev"
+    - "/run"
+    - "/var"
+    - "/home/dev/.observer/bin/observer"
+    - "/home/dev/src/app/.git/config"
+    - "/home/dev/src/app/.git/hooks"
+    - "/tmp/observer-sbx-RUN"
+  read_write:
+    - "/tmp"
+    - "/dev/null"
+    - "/dev/pts"
+    - "/home/dev"
+    - "/home/dev/.claude"
+    - "/home/dev/src/app"
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+# driver-config-json
+{"docker":{"mounts":[{"type":"tmpfs","target":"/home/dev","mode":1023},{"type":"bind","source":"/tmp/observer-sbx-RUN","target":"/tmp/observer-sbx-RUN","read_only":true},{"type":"bind","source":"/home/dev/.claude","target":"/home/dev/.claude","read_only":false},{"type":"bind","source":"/home/dev/src/app","target":"/home/dev/src/app","read_only":false},{"type":"bind","source":"/home/dev/.observer/bin/observer","target":"/home/dev/.observer/bin/observer","read_only":true},{"type":"bind","source":"/home/dev/src/app/.git/config","target":"/home/dev/src/app/.git/config","read_only":true},{"type":"bind","source":"/home/dev/src/app/.git/hooks","target":"/home/dev/src/app/.git/hooks","read_only":true}]}}
+# copy-sync
+/home/dev/.claude.json -> /home/dev/.claude.json
+# shared-home
+true
+# create-argv
+openshell
+-g
+openshell
+sandbox
+create
+--name
+sbo-ri6lvslpepzlnlq
+--policy
+/home/dev/.observer/sandbox-openshell/runs/RUN/policy.yaml
+--driver-config-json
+{"docker":{"mounts":[{"type":"tmpfs","target":"/home/dev","mode":1023},{"type":"bind","source":"/tmp/observer-sbx-RUN","target":"/tmp/observer-sbx-RUN","read_only":true},{"type":"bind","source":"/home/dev/.claude","target":"/home/dev/.claude","read_only":false},{"type":"bind","source":"/home/dev/src/app","target":"/home/dev/src/app","read_only":false},{"type":"bind","source":"/home/dev/.observer/bin/observer","target":"/home/dev/.observer/bin/observer","read_only":true},{"type":"bind","source":"/home/dev/src/app/.git/config","target":"/home/dev/src/app/.git/config","read_only":true},{"type":"bind","source":"/home/dev/src/app/.git/hooks","target":"/home/dev/src/app/.git/hooks","read_only":true}]}}
+--label
+observer.superbased.install=o0123456789abcdefo
+--label
+observer.superbased.run=o-RunSENTINEL0000_aao
+--no-auto-providers
+--no-keep
+--tty
+--env
+HOME=/home/dev
+--env
+ANTHROPIC_BASE_URL=http://127.0.0.1:8820
+--env
+TERM=xterm-256color
+--
+/home/dev/.observer/bin/observer
+sandbox-guest
+--
+claude

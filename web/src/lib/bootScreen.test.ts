@@ -6,6 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BOOT_LABELS,
   BOOT_TOKENS,
@@ -15,12 +17,12 @@ import {
 } from "../../../shared/lib/bootScreen.ts";
 import type { ThemeApp } from "../../../shared/lib/theme.ts";
 
-const repo = new URL("../../../", import.meta.url).pathname;
+const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const HTML: Record<ThemeApp, string> = { web: "web/index.html", web2: "web2/index.html", webcloud: "webcloud/index.html" };
 
 for (const app of Object.keys(HTML) as ThemeApp[]) {
   test(`${HTML[app]} boot screen is generated from shared/lib/bootScreen.ts`, () => {
-    const html = readFileSync(repo + HTML[app], "utf8").replace(/\r\n/g, "\n");
+    const html = readFileSync(join(repo, HTML[app]), "utf8").replace(/\r\n/g, "\n");
     const want = bootScreenHtml(app);
     assert.equal(bootScreenBlock(html), want, `${HTML[app]} must hold exactly:\n${want}`);
     // One boot screen, and the retired two-square mark is gone.
@@ -63,7 +65,7 @@ function tokenBlock(css: string, opener: string): string {
 }
 
 test("every inlined boot token equals shared/styles/tokens.css in both themes", () => {
-  const css = readFileSync(repo + "shared/styles/tokens.css", "utf8");
+  const css = readFileSync(join(repo, "shared/styles/tokens.css"), "utf8");
   const blocks = { dark: tokenBlock(css, ":root,\n"), light: tokenBlock(css, ':root[data-theme="light"]') };
   for (const theme of ["dark", "light"] as const) {
     for (const [name, value] of Object.entries(BOOT_TOKENS[theme])) {

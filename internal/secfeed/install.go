@@ -435,6 +435,18 @@ func ParseInstalls(ev *policy.Event) Installs {
 	return InstallsFromCommands(cmds)
 }
 
+// UnpinnedInstallEcosystem reports the ecosystem of the first install in
+// cmds that names a package with no version (or "latest"): the detector
+// cmd/observer registers as internal/secshellrisk's LangInstalls.
+func UnpinnedInstallEcosystem(cmds []policy.Command) (string, bool) {
+	for _, s := range InstallsFromCommands(cmds).Specs {
+		if !s.Invalid && (s.Version == "" || strings.EqualFold(s.Version, "latest")) {
+			return string(s.Eco), true
+		}
+	}
+	return "", false
+}
+
 // InstallsFromCommands reads the installs out of parsed command units. A
 // registry or index flag, or a variable that sets one (on the unit itself,
 // through env, or exported by an earlier unit of the same command), makes

@@ -1344,7 +1344,7 @@ func runBareRoot(cmd *cobra.Command, deps usageDeps) error {
 		return printWelcome(cmd)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(),
-		"no local SuperBased state found - showing a one-shot usage report (`%s usage`); nothing is written outside a temp dir. `%s --help` for everything else, OBSERVER_ONESHOT=off to disable.\n",
+		"no local superbased state found - showing a one-shot usage report (`%s usage`); nothing is written outside a temp dir. `%s --help` for everything else, OBSERVER_ONESHOT=off to disable.\n",
 		invocationName(), invocationName())
 	return runUsage(cmd, defaultUsageOptions(), deps)
 }

@@ -6,6 +6,7 @@ import { ThemeProvider } from "./lib/theme";
 import { LaunchDockProvider } from "./components/LaunchDock";
 import { RemotePairingGate } from "./components/RemotePairing";
 import { CostDisplayGate } from "./lib/costDisplay";
+import { ConfirmDialogHost } from "@shared/primitives";
 import "./index.css";
 
 // Input-event trace overlay (lib/sttdebug.ts) — the diagnostic that cracked
@@ -54,6 +55,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           </LaunchDockProvider>
         </RemotePairingGate>
       </BrowserRouter>
+      {/* The one renderer of confirmDialog (shared/primitives/ConfirmDialog):
+          outside the router and the dock so a hook, a page or the launch
+          dock can all ask. */}
+      <ConfirmDialogHost />
     </ThemeProvider>
   </React.StrictMode>,
 );

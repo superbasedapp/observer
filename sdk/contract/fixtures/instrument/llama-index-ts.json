@@ -1,0 +1,339 @@
+{
+  "_source": {
+    "target": "llama-index",
+    "instrumentor": "@traceloop/instrumentation-llamaindex 0.27.0",
+    "library": "llamaindex 0.12.1",
+    "grounding": "LlamaIndex.TS ContextChatEngine.chat and RetrieverQueryEngine.query over an in-process retriever and a BaseLLM subclass reporting usage (no network). The workflow and task spans use the traceloop.* dialect; the LLM chat span uses GenAI semconv.",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "llama-index",
+  "_gaps": [
+    "The workflow and task spans (traceloop.span.kind workflow / task) have no OpenInference span kind, so span_kind is empty; genaiattr reads their input and output through traceloop.entity.input / traceloop.entity.output, and also returns those two as tool_arguments / tool_result on these non-tool spans (the fixture does not pin that).",
+    "The compact synthesizer calls llm.complete, which the instrumentation does not wrap, so the query engine's LLM call has no span (only chat is instrumented).",
+    "gen_ai.provider.name is the LLM class name lowercased (fixturellm), not a provider."
+  ],
+  "spans": [
+    {
+      "name": "fixture_retriever.retrieve",
+      "parent": "context_chat_engine.chat",
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[],\"kwargs\":{\"query\":\"Capital of France?\"}}",
+        "traceloop.entity.output": "[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}]",
+        "traceloop.span.kind": "task"
+      },
+      "want": {
+        "input_value": {
+          "args": [],
+          "kwargs": {
+            "query": "Capital of France?"
+          }
+        },
+        "output_value": [
+          {
+            "node": {
+              "excludedEmbedMetadataKeys": [],
+              "excludedLlmMetadataKeys": [],
+              "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+              "id_": "node-1",
+              "metadata": {},
+              "metadataSeparator": "\n",
+              "relationships": {},
+              "text": "Paris is the capital of France.",
+              "textTemplate": "",
+              "type": "TEXT"
+            },
+            "score": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "name": "chat fixture-llm-1",
+      "parent": "context_chat_engine.chat",
+      "attrs": {
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]},{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"Context information is below.\\n---------------------\\nParis is the capital of France.\\n---------------------\"}]}]",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"finish_reason\":\"\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}]}]",
+        "gen_ai.provider.name": "fixturellm",
+        "gen_ai.request.model": "fixture-llm-1",
+        "gen_ai.request.temperature": 0.2,
+        "gen_ai.request.top_p": 1,
+        "gen_ai.response.model": "fixture-llm-1",
+        "gen_ai.usage.input_tokens": 42,
+        "gen_ai.usage.output_tokens": 3,
+        "gen_ai.usage.total_tokens": 45
+      },
+      "want": {
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "content": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "content": "Context information is below.\n---------------------\nParis is the capital of France.\n---------------------",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          }
+        ],
+        "input_tokens": 42,
+        "model": "fixture-llm-1",
+        "operation": "chat",
+        "output_messages": [
+          {
+            "finish_reason": "",
+            "parts": [
+              {
+                "content": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "output_tokens": 3,
+        "provider": "fixturellm",
+        "request_model": "fixture-llm-1",
+        "request_params": {
+          "temperature": 0.2,
+          "top_p": 1
+        },
+        "total_derived": false,
+        "total_tokens": 45
+      }
+    },
+    {
+      "name": "context_chat_engine.chat",
+      "parent": null,
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[],\"kwargs\":{\"message\":\"Capital of France?\"}}",
+        "traceloop.entity.output": "{\"metadata\":{},\"message\":{\"role\":\"assistant\",\"content\":\"Paris.\"},\"raw\":{\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":3,\"total_tokens\":45}},\"sourceNodes\":[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}],\"stream\":false}",
+        "traceloop.span.kind": "workflow",
+        "traceloop.workflow.name": "context_chat_engine.chat"
+      },
+      "want": {
+        "input_value": {
+          "args": [],
+          "kwargs": {
+            "message": "Capital of France?"
+          }
+        },
+        "output_value": {
+          "message": {
+            "content": "Paris.",
+            "role": "assistant"
+          },
+          "metadata": {},
+          "raw": {
+            "usage": {
+              "completion_tokens": 3,
+              "prompt_tokens": 42,
+              "total_tokens": 45
+            }
+          },
+          "sourceNodes": [
+            {
+              "node": {
+                "excludedEmbedMetadataKeys": [],
+                "excludedLlmMetadataKeys": [],
+                "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+                "id_": "node-1",
+                "metadata": {},
+                "metadataSeparator": "\n",
+                "relationships": {},
+                "text": "Paris is the capital of France.",
+                "textTemplate": "",
+                "type": "TEXT"
+              },
+              "score": 0.9
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "fixture_retriever.retrieve #2",
+      "parent": "retriever_query_engine.retrieve",
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[\"Capital of France?\"],\"kwargs\":{}}",
+        "traceloop.entity.output": "[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}]",
+        "traceloop.span.kind": "task"
+      },
+      "want": {
+        "input_value": {
+          "args": [
+            "Capital of France?"
+          ],
+          "kwargs": {}
+        },
+        "output_value": [
+          {
+            "node": {
+              "excludedEmbedMetadataKeys": [],
+              "excludedLlmMetadataKeys": [],
+              "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+              "id_": "node-1",
+              "metadata": {},
+              "metadataSeparator": "\n",
+              "relationships": {},
+              "text": "Paris is the capital of France.",
+              "textTemplate": "",
+              "type": "TEXT"
+            },
+            "score": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "name": "retriever_query_engine.retrieve",
+      "parent": "retriever_query_engine.query",
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[\"Capital of France?\"],\"kwargs\":{}}",
+        "traceloop.entity.output": "[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}]",
+        "traceloop.span.kind": "task"
+      },
+      "want": {
+        "input_value": {
+          "args": [
+            "Capital of France?"
+          ],
+          "kwargs": {}
+        },
+        "output_value": [
+          {
+            "node": {
+              "excludedEmbedMetadataKeys": [],
+              "excludedLlmMetadataKeys": [],
+              "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+              "id_": "node-1",
+              "metadata": {},
+              "metadataSeparator": "\n",
+              "relationships": {},
+              "text": "Paris is the capital of France.",
+              "textTemplate": "",
+              "type": "TEXT"
+            },
+            "score": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "name": "compact_and_refine.synthesize",
+      "parent": "retriever_query_engine.query",
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[],\"kwargs\":{\"query\":{\"query\":\"Capital of France?\"},\"nodes\":[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}]}}",
+        "traceloop.entity.output": "{\"metadata\":{},\"message\":{\"content\":\"Paris.\",\"role\":\"assistant\"},\"raw\":null,\"sourceNodes\":[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}],\"stream\":false}",
+        "traceloop.span.kind": "task"
+      },
+      "want": {
+        "input_value": {
+          "args": [],
+          "kwargs": {
+            "nodes": [
+              {
+                "node": {
+                  "excludedEmbedMetadataKeys": [],
+                  "excludedLlmMetadataKeys": [],
+                  "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+                  "id_": "node-1",
+                  "metadata": {},
+                  "metadataSeparator": "\n",
+                  "relationships": {},
+                  "text": "Paris is the capital of France.",
+                  "textTemplate": "",
+                  "type": "TEXT"
+                },
+                "score": 0.9
+              }
+            ],
+            "query": {
+              "query": "Capital of France?"
+            }
+          }
+        },
+        "output_value": {
+          "message": {
+            "content": "Paris.",
+            "role": "assistant"
+          },
+          "metadata": {},
+          "raw": null,
+          "sourceNodes": [
+            {
+              "node": {
+                "excludedEmbedMetadataKeys": [],
+                "excludedLlmMetadataKeys": [],
+                "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+                "id_": "node-1",
+                "metadata": {},
+                "metadataSeparator": "\n",
+                "relationships": {},
+                "text": "Paris is the capital of France.",
+                "textTemplate": "",
+                "type": "TEXT"
+              },
+              "score": 0.9
+            }
+          ],
+          "stream": false
+        }
+      }
+    },
+    {
+      "name": "retriever_query_engine.query",
+      "parent": null,
+      "attrs": {
+        "traceloop.entity.input": "{\"args\":[],\"kwargs\":{\"query\":\"Capital of France?\"}}",
+        "traceloop.entity.output": "{\"metadata\":{},\"message\":{\"content\":\"Paris.\",\"role\":\"assistant\"},\"raw\":null,\"sourceNodes\":[{\"node\":{\"id_\":\"node-1\",\"metadata\":{},\"excludedEmbedMetadataKeys\":[],\"excludedLlmMetadataKeys\":[],\"relationships\":{},\"text\":\"Paris is the capital of France.\",\"textTemplate\":\"\",\"metadataSeparator\":\"\\n\",\"type\":\"TEXT\",\"hash\":\"lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=\"},\"score\":0.9}],\"stream\":false}",
+        "traceloop.span.kind": "workflow",
+        "traceloop.workflow.name": "retriever_query_engine.query"
+      },
+      "want": {
+        "input_value": {
+          "args": [],
+          "kwargs": {
+            "query": "Capital of France?"
+          }
+        },
+        "output_value": {
+          "message": {
+            "content": "Paris.",
+            "role": "assistant"
+          },
+          "metadata": {},
+          "raw": null,
+          "sourceNodes": [
+            {
+              "node": {
+                "excludedEmbedMetadataKeys": [],
+                "excludedLlmMetadataKeys": [],
+                "hash": "lEPb6nfzaS8ztMKj3uN+mV4gNsiVvez+fD39ZhyHn4w=",
+                "id_": "node-1",
+                "metadata": {},
+                "metadataSeparator": "\n",
+                "relationships": {},
+                "text": "Paris is the capital of France.",
+                "textTemplate": "",
+                "type": "TEXT"
+              },
+              "score": 0.9
+            }
+          ],
+          "stream": false
+        }
+      }
+    }
+  ]
+}

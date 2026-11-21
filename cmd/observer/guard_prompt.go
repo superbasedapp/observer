@@ -299,18 +299,24 @@ func newGuardPromptAllowCmd() *cobra.Command {
 			row := store.GuardApprovalRow{
 				TS: now, RuleID: ruleID, Scope: scope,
 				SessionID: anchorSession, ProjectRootHash: anchorHash,
-				GrantedBy: localOperatorIdentity(),
+				GrantedBy: localOperatorIdentity(), Channel: "cli",
 			}
 			if ttl > 0 {
 				row.ExpiresAt = now.Add(ttl)
 			}
-			id, err := store.New(database).InsertGuardApproval(cmd.Context(), row)
+			id, existing, err := store.New(database).GrantGuardApproval(cmd.Context(), row)
 			if err != nil {
 				return err
 			}
 			expiry := "no expiry"
 			if ttl > 0 {
 				expiry = "expires " + row.ExpiresAt.Format(time.RFC3339)
+			}
+			if existing {
+				// Grant-or-extend (P-232): the same key already had a
+				// grant, which now carries the later expiry.
+				fmt.Fprintf(cmd.OutOrStdout(), "approval %d already covers detector=%s -> %s scope=%s; kept, with the later expiry (%s requested)\n", id, args[0], ruleID, scope, expiry)
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "approval %d granted: detector=%s -> %s scope=%s (%s)\n", id, args[0], ruleID, scope, expiry)
 			return nil

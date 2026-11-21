@@ -11,14 +11,14 @@ import {
   knownRatio,
   type GaugeBand,
   type GaugeVariant,
-} from "./gaugeStat";
+} from "./gaugeBands";
 
 // GaugeStat: a HeroStat-shaped tile whose share-of-a-ceiling reads as one or
 // more radial gauges (the session drawer's context-window fill and rate-limit
 // windows). Same chrome as HeroStat (border, corner glow, label row, help
 // slot, loading shimmer) so it sits in a HeroStat band without a seam; the
 // ring tones and the tile chrome come from the GAUGE_BANDS table in
-// gaugeStat.ts, never a ladder here.
+// gaugeBands.ts, never a ladder here.
 //
 // Unknown means unknown: an unknown ratio draws an EMPTY ring that says
 // "unknown" (visibly and to assistive tech) beside whatever value text the

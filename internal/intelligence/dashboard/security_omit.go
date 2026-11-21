@@ -19,3 +19,13 @@ func (s *Server) handleSecurityStatus(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleSecurityFindings(w http.ResponseWriter, _ *http.Request) {
 	writeCompiledOut(w, "security")
 }
+
+// handleSecurityFinding refuses: security is not in this build.
+func (s *Server) handleSecurityFinding(w http.ResponseWriter, _ *http.Request) {
+	writeCompiledOut(w, "security")
+}
+
+// handleSecurityScan refuses: security is not in this build.
+func (s *Server) handleSecurityScan(w http.ResponseWriter, _ *http.Request) {
+	writeCompiledOut(w, "security")
+}

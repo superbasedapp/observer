@@ -145,7 +145,7 @@ export function installRecordView(rec: ToolInstallRecord): InstallRecordView {
 export function uninstallErrorMessage(status: number, reason: string): string {
   switch (status) {
     case 503:
-      return "The in-dashboard terminal is unavailable on this daemon, so there is nowhere to run the uninstaller.";
+      return "The in-dashboard terminal is unavailable on this daemon, so there is nowhere to run the uninstaller. Dashboard launch may be turned off (handoff.allow_dashboard_launch, under More settings in Settings > Session attach).";
     case 403:
       return /confirm token/i.test(reason)
         ? "The dashboard's confirm token for this panel is stale - reload the page and try again."
@@ -153,7 +153,7 @@ export function uninstallErrorMessage(status: number, reason: string): string {
     case 404:
       return "This dashboard has no record of installing this tool, so it will not uninstall it.";
     case 501:
-      return "This dashboard runs without the install record (run SuperBased with `observer start`).";
+      return "This dashboard runs without the install record (run superbased with `observer start`).";
     default:
       return reason || "The uninstall could not be started.";
   }

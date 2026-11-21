@@ -133,6 +133,7 @@ var orgclientStoreWriters = map[string]writerDecision{
 	"MarkOrgIntelSubmission":      {clearedBy: store.IdentityDocIntel},
 	"SaveOrgPricingRaw":           {clearedBy: store.IdentityDocPricing},
 	"SaveOrgBudgetWithWitness":    {clearedBy: store.IdentityDocBudget},
+	"TouchOrgBudgetConfirmed":     {clearedBy: store.IdentityDocBudget},
 	"SaveOrgPolicyETag":           {clearedBy: store.IdentityDocGuardETag},
 	"SaveVerifiedManifest":        {clearedBy: store.IdentityDocUpdateManifest},
 	"SaveOrgMessagePage":          {clearedBy: store.IdentityDocMessages},

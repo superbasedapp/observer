@@ -12,6 +12,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/secciwf"
 	"github.com/marmutapp/superbased-observer/internal/secdetect"
 	"github.com/marmutapp/superbased-observer/internal/secdiffobs"
+	"github.com/marmutapp/superbased-observer/internal/secdockerfile"
 )
 
 // Verdict is the quick scan's answer.
@@ -99,6 +100,21 @@ type CIFinding struct {
 	FlagOnly bool
 }
 
+// ContainerFinding is one Dockerfile rule hit (S-750 to S-755,
+// internal/secdockerfile): the file, the rule, its line and the rule
+// table's detail words, never repository text.
+type ContainerFinding struct {
+	Path     string
+	RuleID   string
+	Line     int
+	Severity secdockerfile.Severity
+	FlagOnly bool
+	// Message is the rule's fixed text (S-752 has a near-end-of-life
+	// variant); Detail the end-of-life table's words for S-752.
+	Message string
+	Detail  string
+}
+
 // Finding is one hit in the diff. A high-confidence hit outside a fixture
 // path blocks; a hit in a fixture or test-data path (Fixture) is reported
 // but never blocks, as S-721 asks there instead of denying and verify
@@ -146,6 +162,17 @@ type Result struct {
 	// MaxFindings): a workflow rule finding there that CI does not report
 	// again is no longer seen.
 	CIChecked []string
+	// Container are the native Dockerfile rule hits (S-750 to S-755,
+	// internal/secdockerfile) on the Dockerfiles the change records, each
+	// checked whole. Like CI they never change the verdict.
+	Container []ContainerFinding
+	// ContainerUnchecked counts changed Dockerfiles the scan could not
+	// check whole (read like a workflow; also a RUN script past the shell
+	// classifier's cap): never read as clean.
+	ContainerUnchecked int
+	// ContainerChecked are the changed Dockerfiles the scan checked whole
+	// (at most MaxFindings).
+	ContainerChecked []string
 	// Files is the number of changed files the diff touched.
 	Files int
 	// DiffHash identifies the diff ("" when it could not be read).
@@ -155,8 +182,13 @@ type Result struct {
 	// CoveredDirty is the dirty counter value a clean answer covers (the
 	// request's DirtySeen); zero otherwise.
 	CoveredDirty uint64
-	// Elapsed is the scan's wall time.
+	// Elapsed is the scan's wall time, Budget the time it was given.
 	Elapsed time.Duration
+	Budget  time.Duration
+	// GitRoute names the git that read the change when it was not the
+	// host's own (R3-86): a policy.QuickScanGit* value the injected GitFunc
+	// noted (NoteGitRoute), "" otherwise.
+	GitRoute string
 	// Retained are the parsed diffs of the files Engine.Retain accepts (at
 	// most MaxRetained), for a caller that reads more out of a file than
 	// the scan does (the install gate's S-747 at commit, lane SEC-D1FIX2).
@@ -234,8 +266,10 @@ func (e *Engine) Scan(ctx context.Context, req Request) Result {
 		budget = IndividualBudget
 	}
 	deadline := start.Add(budget)
+	ctx, note := withGitRouteNote(ctx)
 	res := e.scan(ctx, req, deadline, now)
-	res.Elapsed = now().Sub(start)
+	res.Elapsed, res.Budget = now().Sub(start), budget
+	res.GitRoute = note.get()
 	if res.Verdict == VerdictClean {
 		res.CoveredDirty = req.DirtySeen
 	}
@@ -315,6 +349,7 @@ func (e *Engine) scanBytes(ctx context.Context, req Request, diff []byte, deadli
 		res.Observations = res.Observations[:MaxFindings]
 	}
 	res.CI, res.CIChecked, res.CIUnchecked = e.checkWorkflows(ctx, req, files)
+	res.Container, res.ContainerChecked, res.ContainerUnchecked = e.checkDockerfiles(ctx, req, files, now())
 	incomplete, blocking := false, false
 	for _, f := range files {
 		if f.text == "" {
@@ -738,15 +773,51 @@ func (e *Engine) rememberClean(hash string, at time.Time) {
 	}
 }
 
-// touchesWorkflow reports a change to a workflow file (its CI hits are not
-// cached with the clean verdict).
+// touchesWorkflow reports a change to a workflow file or a Dockerfile
+// (their rule hits are not cached with the clean verdict).
 func touchesWorkflow(files []addedFile) bool {
 	for _, f := range files {
-		if secciwf.IsWorkflowPath(f.path) {
+		if secciwf.IsWorkflowPath(f.path) || secdockerfile.IsDockerfilePath(f.path) {
 			return true
 		}
 	}
 	return false
+}
+
+// checkDockerfiles runs the native Dockerfile rules over every changed
+// Dockerfile, read whole as the change records it (the same reads as a
+// workflow), judging end of life at now.
+func (e *Engine) checkDockerfiles(ctx context.Context, req Request, files []addedFile, now time.Time) ([]ContainerFinding, []string, int) {
+	var (
+		out       []ContainerFinding
+		checked   []string
+		unchecked int
+	)
+	for _, f := range files {
+		if !secdockerfile.IsDockerfilePath(f.path) {
+			continue
+		}
+		content, ok := e.readCapped(ctx, req, f.path, secdockerfile.MaxDockerfileBytes+1)
+		if !ok {
+			unchecked++
+			continue
+		}
+		rep := secdockerfile.CheckAt(content, now)
+		if !rep.Complete() || rep.TruncatedRuns > 0 {
+			unchecked++
+			continue
+		}
+		if len(checked) < MaxFindings {
+			checked = append(checked, f.path)
+		}
+		for _, h := range rep.Findings {
+			if len(out) >= MaxFindings {
+				break
+			}
+			out = append(out, ContainerFinding{Path: f.path, RuleID: h.RuleID, Line: h.Line, Severity: h.Severity, FlagOnly: h.FlagOnly, Message: h.Message, Detail: h.Detail})
+		}
+	}
+	return out, checked, unchecked
 }
 
 // checkWorkflows runs the native workflow rules over every changed
@@ -790,7 +861,13 @@ func (e *Engine) checkWorkflows(ctx context.Context, req Request, files []addedF
 // readWorkflow reads one workflow as the request's form records it, capped
 // one byte past the rules' cap so an over-cap file is reported, never cut.
 func (e *Engine) readWorkflow(ctx context.Context, req Request, rel string) ([]byte, bool) {
-	limit := secciwf.MaxWorkflowBytes + 1
+	return e.readCapped(ctx, req, rel, secciwf.MaxWorkflowBytes+1)
+}
+
+// readCapped reads one changed file as the request's form records it,
+// capped at limit; an over-cap file comes back as limit bytes so the
+// rules report it over their cap.
+func (e *Engine) readCapped(ctx context.Context, req Request, rel string, limit int) ([]byte, bool) {
 	var spec string
 	switch {
 	case req.Form.Push:

@@ -146,8 +146,9 @@ func (s *Server) handleProcessETWRegister(w http.ResponseWriter, r *http.Request
 		// the New Terminal launch path since 2026-07-04 — reuse
 		// errTerminalUnavailable (audit DI-16) instead of the stale
 		// "run under WSL/Linux" claim.
-		writeErrStatus(w, errors.New("the elevation prompt cannot be brokered from here: "+errTerminalUnavailable+
-			" - run the elevated schtasks command shown on the card yourself"), http.StatusServiceUnavailable)
+		writeTerminalUnavailableOr(w, "the elevation prompt cannot be brokered from here: "+errTerminalUnavailable+
+			" - run the elevated schtasks command shown on the card yourself",
+			"Or run the elevated schtasks command shown on the card yourself.")
 		return
 	}
 	if s.opts.ConfigPath == "" {

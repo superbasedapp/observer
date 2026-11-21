@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // IBM Bob administrator policy, the two 2026-10-24 decisions (AP-135):
@@ -50,14 +52,14 @@ func checkIBMBobTeamsPolicy(cfg config.Config, pol hook.IBMBobPolicy, dom hook.I
 		note(StatusOK, "policy present without a usable OtelConfiguration - Bob's OTLP export is not policy-managed")
 	}
 	noteBobPolicyTelemetry(pol, note)
-	noteBobPolicyHooks(pol, home, note)
+	rems := noteBobPolicyHooks(pol, home, note)
 	noteBobPolicyGateway(pol, note)
 	noteBobUserDomain(cfg, dom, note)
 	msg := "ibm bob policy deployed - all checks passed"
 	if worst != StatusOK {
 		msg = "ibm bob policy deployed - see warnings below"
 	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return Check{Name: name, Status: worst, Message: msg, Details: details, Remediations: rems}
 }
 
 // bobNodeManaged reports whether this node is org-managed as the doctor
@@ -168,12 +170,15 @@ func noteBobPolicyGateway(pol hook.IBMBobPolicy, note func(Status, string)) {
 }
 
 // noteBobPolicyHooks reports whether EnforcedHooks carries Observer's Bob
-// hooks and whether the per-node registration under home stood down.
-func noteBobPolicyHooks(pol hook.IBMBobPolicy, home string, note func(Status, string)) {
+// hooks and whether the per-node registration under home stood down. It
+// returns the structured fixes for what it reported (the Remove panel when
+// per-node entries are left beside the policy's).
+func noteBobPolicyHooks(pol hook.IBMBobPolicy, home string, note func(Status, string)) []remedy.Remediation {
 	if pol.EnforcedHooks == nil && !pol.EnforcedHooksWrongType {
 		note(StatusOK, "no EnforcedHooks - Observer's Bob hooks are registered per node (`observer init` / `observer start`)")
-		return
+		return nil
 	}
+	var rems []remedy.Remediation
 	events := hook.IBMBobHookEvents()
 	cov := pol.Coverage(events)
 	var left []string
@@ -193,11 +198,13 @@ func noteBobPolicyHooks(pol hook.IBMBobPolicy, home string, note func(Status, st
 			note(StatusWarn, "the policy hook command "+strings.Join(missing, ", ")+" does not resolve to a runnable observer for this process - Bob runs it with its own PATH; if it is missing there too the policy hooks fail and nothing gates (put observer on PATH, or regenerate with --hook-binary)")
 		}
 		if len(left) > 0 {
-			note(StatusWarn, "~/.bob/settings/settings.json still holds Observer's per-node entries for "+strings.Join(left, ", ")+" - Bob runs both, so those events fire twice; remove them (observer uninstall) and the registration stays stood down")
+			note(StatusWarn, "~/.bob/settings/settings.json still holds Observer's per-node entries for "+strings.Join(left, ", ")+" - Bob runs both, so those events fire twice; remove them (Remove Observer's wiring from ibm-bob in Settings > Connected tools) and the registration stays stood down")
+			rems = append(rems, remedy.Of(remedy.UninstallTool, models.ToolIBMBob))
 		} else {
 			note(StatusOK, "per-node ibm-bob hook registration stood down (no Observer entry in ~/.bob/settings/settings.json)")
 		}
 	}
+	return rems
 }
 
 // systemFileUntrusted mirrors the hook package's trust rule for a policy

@@ -129,7 +129,7 @@ func (s *Server) opengrepScannerRow(r *http.Request) opengrepDriverRow {
 	}
 	row.Beta = row.Platform != "supported"
 	if !s.opengrepSelected(r) {
-		row.Note = "Not selected: the code rules are opt-in (add security.scan.opengrep under [components]). Nothing is installed, downloaded or run."
+		row.Note = "Off: the code rules are opt-in. Turn them on with the Opengrep switch on the Code security Scanners tab. Nothing is installed, downloaded or run until then."
 		return row
 	}
 	row.Selected = true

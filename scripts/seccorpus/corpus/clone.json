@@ -303,5 +303,55 @@
     "repo": "https://github.com/nopSolutions/nopCommerce",
     "commit": "f9e883bc9586b9a2138f8580fc1cbbdc6ec561c6",
     "cloned": true
+  },
+  {
+    "repo": "https://github.com/mastodon/mastodon",
+    "commit": "ca2f092f4f580b1993bae3ac4f4742b748f18ad1",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/chatwoot/chatwoot",
+    "commit": "a8364f9c4385b12b4f217649c1dad23755459215",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/forem/forem",
+    "commit": "5f0276dce15e3859f7bf4d39c5460efbdc398288",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/BookStackApp/BookStack",
+    "commit": "0b6b667e0d84ebb3406de6de9fadbf4230c29c0b",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/FreshRSS/FreshRSS",
+    "commit": "4e8a258b011aad190597d7953b7122fc43f4658f",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/phpmyadmin/phpmyadmin",
+    "commit": "6f240a8f64d0a4c62a02b0ef484568fe39017480",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/gotson/komga",
+    "commit": "ff800c21253793d4d3fd855651b82d4924915950",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/ktorio/ktor-samples",
+    "commit": "e9763d69954723094da05c3d57b34755b9a1359a",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/spring-petclinic/spring-petclinic-kotlin",
+    "commit": "817dba3b02261e4291f138d5d8bb8c85c7d49758",
+    "cloned": true
+  },
+  {
+    "repo": "https://github.com/thunderbird/thunderbird-android",
+    "commit": "1d8a4caf60e372b25eb791de216f9409d441a7ca",
+    "cloned": true
   }
 ]

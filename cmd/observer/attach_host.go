@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/agentlaunch"
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
@@ -90,6 +91,17 @@ type attachHost struct {
 	// attach spawn that no client ever reaches over the websocket still leaves
 	// exactly one terminal_attach row. Metadata only — run id, tool, handle.
 	audit func(runID, tool, handle string)
+	// origin resolves who started an attach launch (lane cli-2,
+	// launch_initiator.go): the endpoint's caller and the client's
+	// agent-session hint, or a coded refusal when that caller is gone
+	// (fixes-3, audit M1). nil records nothing.
+	origin func(ctx context.Context, req attachsock.SpawnRequest) (termrun.Origin, error)
+	// snapshot reads an attach caller's facts at accept
+	// (attachsock.CallerSnapshotter; fixes-3, audit M1). nil reads nothing.
+	snapshot func(ctx context.Context, pid int) context.Context
+	// pending is the store an agent's attach launch is held in for a human
+	// (lane cli-2 fixes-1); nil refuses an agent's attach launch.
+	pending *pendingLaunchStore
 	// hub, when non-nil, sources per-run correlated-session announcements (from
 	// the trusted OOB/correlation feed) that the server relays to an
 	// AutoResumeCapable client as frameCorrelated frames, AND maintains the
@@ -159,6 +171,9 @@ type attachHost struct {
 	// reacquire hook nil, so the server sees no working Reclaimer and keeps the
 	// fence-and-notify behavior.
 	reclaimOnInput bool
+	// control is the optional Controller behind the one-shot control ops
+	// (withControl). Nil answers unsupported.
+	control attachsock.Controller
 }
 
 // newAttachHost builds an attach-socket Host over a terminal service and PTY
@@ -168,6 +183,48 @@ type attachHost struct {
 // for the surfaces (and tests) that don't need it.
 func newAttachHost(svc attachLauncher, mgr attachPTYManager, audit func(runID, tool, handle string)) *attachHost {
 	return &attachHost{svc: svc, mgr: mgr, audit: audit}
+}
+
+// withOrigin wires the launch initiator (lane cli-2). Returns the host for
+// chaining.
+func (h *attachHost) withOrigin(origin func(ctx context.Context, req attachsock.SpawnRequest) (termrun.Origin, error)) *attachHost {
+	h.origin = origin
+	return h
+}
+
+// withCallerSnapshot wires the read of an attach caller's facts at accept
+// (lane cli-2 fixes-3, audit M1). Returns the host for chaining.
+func (h *attachHost) withCallerSnapshot(snapshot func(ctx context.Context, pid int) context.Context) *attachHost {
+	h.snapshot = snapshot
+	return h
+}
+
+// SnapshotCaller implements attachsock.CallerSnapshotter.
+func (h *attachHost) SnapshotCaller(ctx context.Context, pid int) context.Context {
+	if h.snapshot == nil {
+		return ctx
+	}
+	return h.snapshot(ctx, pid)
+}
+
+// withPending wires the store agent launches are held in (lane cli-2
+// fixes-1). Returns the host for chaining.
+func (h *attachHost) withPending(p *pendingLaunchStore) *attachHost {
+	h.pending = p
+	return h
+}
+
+// originOf is who started an attach launch: the origin of a confirmed hold,
+// else the resolver's answer (or its refusal of a caller that is gone),
+// else the zero value.
+func (h *attachHost) originOf(ctx context.Context, req attachsock.SpawnRequest) (termrun.Origin, error) {
+	if o, ok := heldOrigin(ctx); ok {
+		return o, nil
+	}
+	if h.origin == nil {
+		return termrun.Origin{}, nil
+	}
+	return h.origin(ctx, req)
 }
 
 // withResume wires the resilient-attach Layer-1 plumbing: the correlation hub
@@ -214,6 +271,71 @@ func (h *attachHost) withResumeAuthority(authority func(sessionID string, exclud
 func (h *attachHost) withReclaim(on bool) *attachHost {
 	h.reclaimOnInput = on
 	return h
+}
+
+// withControl arms the one-shot control ops (detached launch, run list,
+// show, stop, wait: `observer launch` and `observer terminals`, decision
+// P-228) over ctl. Without it the ops answer unsupported.
+func (h *attachHost) withControl(ctl attachsock.Controller) *attachHost {
+	h.control = ctl
+	return h
+}
+
+// errNoControl is the answer of an attach host built without a controller.
+var errNoControl = &attachsock.ControlError{
+	Code:    attachsock.CodeUnsupported,
+	Message: "this observer daemon does not offer detached launch control",
+}
+
+// LaunchDetached implements attachsock.Controller by delegation.
+func (h *attachHost) LaunchDetached(ctx context.Context, spec attachsock.LaunchSpec) (attachsock.RunInfo, error) {
+	if h.control == nil {
+		return attachsock.RunInfo{}, errNoControl
+	}
+	return h.control.LaunchDetached(ctx, spec)
+}
+
+// Runs implements attachsock.Controller by delegation.
+func (h *attachHost) Runs(ctx context.Context) ([]attachsock.RunInfo, error) {
+	if h.control == nil {
+		return nil, errNoControl
+	}
+	return h.control.Runs(ctx)
+}
+
+// Run implements attachsock.Controller by delegation.
+func (h *attachHost) Run(ctx context.Context, ref string) (attachsock.RunInfo, error) {
+	if h.control == nil {
+		return attachsock.RunInfo{}, errNoControl
+	}
+	return h.control.Run(ctx, ref)
+}
+
+// StopRun implements attachsock.Controller by delegation.
+func (h *attachHost) StopRun(ctx context.Context, ref string) (attachsock.RunInfo, error) {
+	if h.control == nil {
+		return attachsock.RunInfo{}, errNoControl
+	}
+	return h.control.StopRun(ctx, ref)
+}
+
+// ConfirmLaunch implements attachsock.PendingController by delegation (lane
+// cli-2 fixes-1).
+func (h *attachHost) ConfirmLaunch(ctx context.Context, id string) (attachsock.RunInfo, error) {
+	pc, ok := h.control.(attachsock.PendingController)
+	if !ok {
+		return attachsock.RunInfo{}, errNoControl
+	}
+	return pc.ConfirmLaunch(ctx, id)
+}
+
+// RejectLaunch implements attachsock.PendingController by delegation.
+func (h *attachHost) RejectLaunch(ctx context.Context, id string) (attachsock.RunInfo, error) {
+	pc, ok := h.control.(attachsock.PendingController)
+	if !ok {
+		return attachsock.RunInfo{}, errNoControl
+	}
+	return pc.RejectLaunch(ctx, id)
 }
 
 // resumeConflict reports whether a resume of sessionID must be refused because a
@@ -290,6 +412,21 @@ func (h *attachHost) LaunchAttachable(ctx context.Context, req attachsock.SpawnR
 	if err := validateAttachCapability(req); err != nil {
 		return nil, err
 	}
+	// An agent's attach launch is held for a human (lane cli-2 fixes-1): the
+	// client is told the hold's id and nothing spawns. Confirming it starts
+	// the same request as a daemon-owned terminal with no client attached
+	// (open it from the dashboard's Terminals page).
+	// A caller that is gone is refused (fixes-3, audit M1). The origin is
+	// resolved once and recorded on the run below.
+	origin, err := h.originOf(ctx, req)
+	if err != nil {
+		return nil, &attachsock.ControlError{Code: agentlaunch.CodeOf(err), Message: err.Error()}
+	}
+	if _, confirmed := heldOrigin(ctx); !confirmed {
+		if hold, _ := agentlaunch.ShouldHold(origin); hold {
+			return nil, h.holdAttach(req, origin)
+		}
+	}
 
 	// Resume guard (resilient-attach Layer 1). When this attach resumes a
 	// session, single-flight the whole check+spawn+reserve per session id so two
@@ -344,6 +481,7 @@ func (h *attachHost) LaunchAttachable(ctx context.Context, req attachsock.SpawnR
 		Cols:       req.Cols,
 		ExtraEnv:   req.Env,
 		ExtraArgs:  req.ExtraArgs,
+		Origin:     origin,
 	})
 	if err != nil {
 		return nil, err
@@ -1233,3 +1371,39 @@ func (s *attachSession) Detach() {
 		}
 	})
 }
+
+// holdAttach holds an agent's attach launch and returns the refusal the
+// client prints (code confirm_required, naming the hold).
+func (h *attachHost) holdAttach(req attachsock.SpawnRequest, o termrun.Origin) error {
+	if h.pending == nil {
+		return &attachsock.ControlError{Code: agentlaunch.CodeRefused, Message: errNoPendingStore.Error()}
+	}
+	held, err := h.pending.hold(agentlaunch.Pending{
+		Front: agentlaunch.FrontCLI, What: "observer " + req.Subcommand + " --attach in " + req.Dir,
+		Tool: req.Tool, Project: req.Dir, Origin: o, Details: spawnDetails(req),
+	}, func(ctx context.Context) (pendingOutcome, error) {
+		sess, err := h.LaunchAttachable(ctx, req)
+		if err != nil {
+			return pendingOutcome{}, err
+		}
+		detachConfirmedAttach(sess) // no client: the run lives on as a daemon terminal
+		ri := attachsock.RunInfo{
+			RunID: sess.RunID(), Handle: sess.Handle(), Tool: req.Tool, Subcommand: req.Subcommand,
+			Kind: string(termrun.KindAttach), State: attachsock.StateRunning,
+			Initiator: string(o.Initiator), ParentSessionID: o.ParentSessionID,
+		}
+		return pendingOutcome{run: &ri}, nil
+	})
+	if err != nil {
+		return &attachsock.ControlError{Code: agentlaunch.CodeOf(err), Message: err.Error()}
+	}
+	return &attachsock.ControlError{
+		Code: agentlaunch.CodeConfirmRequired,
+		Message: "an agent asked for this launch, so it waits for a human: confirm it with `observer terminals confirm " + held.ID +
+			"` or on the dashboard's Terminals page before " + stamp(held.ExpiresAt) + "; once confirmed it runs as a dashboard terminal",
+	}
+}
+
+// detachConfirmedAttach detaches a confirmed attach launch's session (a var
+// so a test over stub PTY handles can skip the lease release).
+var detachConfirmedAttach = func(s attachsock.Session) { s.Detach() }

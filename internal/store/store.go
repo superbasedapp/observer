@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,10 @@ type Store struct {
 	// nil (the New() default) disables it entirely, so internal/store's
 	// own test suite never shells out to git. See SetRootCommitResolver.
 	rootCommitResolver RootCommitResolverFunc
+	// projectRootResolver maps a raw working directory to the git root the
+	// watcher records it under (ingestroot.go). nil (the New() default)
+	// resolves nothing. See SetProjectRootResolver.
+	projectRootResolver ProjectRootResolver
 	// postWriteSink is the security post-write seam (internal/store/
 	// postwrite.go, security plan section 5.3). nil (the New() default)
 	// reports nothing. See SetPostWriteSink.
@@ -400,6 +405,9 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 	defer func() { _ = tx.Rollback() }()
 
 	authStamp, authVerStamp := s.resolveAuthorityStampFrom(ctx, tx)
+	// Which org the session's data belongs to (agent migration 250, D-43):
+	// read through the same transaction, so it is atomic with the write too.
+	orgKeyStamp := resolveAuthorityOrgKeyFrom(ctx, tx)
 
 	// upsertSessionMidTxHook fires here, between the in-tx enrolment read and
 	// the session write, for the FD2 barrier regression test only (nil in
@@ -414,10 +422,22 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 
 	_, err = tx.ExecContext(
 		ctx,
-		`INSERT INTO sessions (id, project_id, tool, model, git_branch, started_at, ended_at, total_actions, metadata, org_id, user_email, authority, authority_classifier_version, workspace, workspace_hash, is_worktree)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sessions (id, project_id, tool, model, git_branch, started_at, ended_at, total_actions, metadata, org_id, user_email, authority, authority_classifier_version, workspace, workspace_hash, is_worktree, authority_org_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
-		   project_id = excluded.project_id,
+		   -- A bracketed per-tool placeholder project ("[<tool>]", the
+		   -- root a capture path uses when it knows no working directory)
+		   -- never replaces a real project already recorded: a later
+		   -- write that only knows the placeholder (a span tool call of an
+		   -- own agent whose session the proxy already moved to its
+		   -- working directory) must not move it back (sdk-2 lows, N2).
+		   -- Placeholder to real, and real to real, still update.
+		   project_id = CASE
+		     WHEN (SELECT root_path FROM projects WHERE id = excluded.project_id) = '[' || sessions.tool || ']'
+		      AND COALESCE((SELECT root_path FROM projects WHERE id = sessions.project_id), '') NOT IN ('', '[' || sessions.tool || ']')
+		     THEN sessions.project_id
+		     ELSE excluded.project_id
+		   END,
 		   -- A router placeholder ("default" / "auto": the model id an
 		   -- auto-routing client reports before the answering model is
 		   -- known) never replaces a concrete model already recorded -
@@ -486,7 +506,15 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		     WHEN sessions.authority = 'org' OR excluded.authority = 'org' THEN ?
 		     WHEN sessions.authority = 'personal' AND excluded.authority = 'personal' THEN ?
 		     ELSE sessions.authority_classifier_version
-		   END`,
+		   END,
+		   -- Org attribution (agent migration 250, D-43): the FIRST
+		   -- determinable stamp wins and is never rewritten. An org key is
+		   -- never replaced by another org's, and 'personal' never becomes
+		   -- an org's (a session that keeps capturing after the node enrols
+		   -- stays personal, so data captured before the enrolment never
+		   -- reaches the org). Only an unknown (NULL) stamp - a capture
+		   -- whose enrolment could not be read - takes this write's value.
+		   authority_org_key = COALESCE(sessions.authority_org_key, excluded.authority_org_key)`,
 		// project_id is always overwritten on conflict because the
 		// caller's incoming value reflects the latest adapter parse
 		// (which may correct an earlier mis-attribution). The
@@ -518,6 +546,7 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		sess.Workspace,
 		workspaceHash,
 		boolToInt(sess.IsWorktree),
+		orgKeyStamp,           // INSERT: authority_org_key (nil == unknown)
 		dataauthority.Version, // ON CONFLICT: version carried on an 'org' result
 		dataauthority.Version, // ON CONFLICT: version carried on a personal upgrade (FD5)
 	)
@@ -2125,6 +2154,18 @@ type IngestOptions struct {
 	// error. NODE-LOCAL — never on the org-push wire. Empty/nil is a
 	// clean no-op.
 	SessionToolVersions []models.SessionToolVersion
+	// SessionExecutions carries cloud-execution attribution (agent
+	// migration 240, cloud-agents arc CA-D1/CA-D2): where a session's
+	// agent ran and the vendor's cross-rail reference, resolved by the
+	// emitting capture path through its own marker table (a transcript
+	// field, a hook-environment variable). Ingest persists each onto its
+	// session row via SetSessionExecution after the sessions are upserted,
+	// FIRST-WINS-UNLESS-EMPTY per column. Best-effort like the surface
+	// seam: a rejected or failing stamp is counted in
+	// IngestResult.SessionExecutionsSkipped, never returned as an error.
+	// Both columns ship on the org wire as metadata. Empty/nil is a clean
+	// no-op.
+	SessionExecutions []models.SessionExecution
 	// OutcomeUpdates carries outcomes for actions inserted by an
 	// EARLIER Ingest call: a tool_result an adapter parsed in a later
 	// watcher tick than the tool_use that created the row (see
@@ -2192,6 +2233,11 @@ type IngestResult struct {
 	// landed, so the count is how a write failure stays visible without a
 	// logger the store does not have.
 	SessionToolVersionsSkipped int
+	// SessionExecutionsSkipped counts the IngestOptions.SessionExecutions
+	// entries this batch did NOT persist: an out-of-vocabulary location or
+	// a malformed vendor reference (the emitting path skipped its table)
+	// or a write error. Best-effort like SessionSurfacesSkipped.
+	SessionExecutionsSkipped int
 }
 
 // Ingest is the high-level batch API used by the watcher and scan commands.
@@ -2220,6 +2266,11 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 	// (the daemon watcher passes its long-lived indexer this way).
 	if opts.Indexer == nil && s.indexer != nil {
 		opts.Indexer = s.indexer
+	}
+	// A hook process's rows carry the raw cwd: resolve it to the root the
+	// watcher records (ingestroot.go) before anything reads ProjectRoot.
+	if s.projectRootResolver != nil {
+		events, tokens = resolveIngestRoots(s.projectRootResolver, events, tokens)
 	}
 
 	projectIDs := map[string]int64{}
@@ -2746,6 +2797,21 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		}
 	}
 
+	// Cloud-execution attribution (agent migration 240): stamp where the
+	// session ran and the vendor's cross-rail reference onto the sessions
+	// upserted above, through the one writer SetSessionExecution.
+	// FIRST-WINS-UNLESS-EMPTY per column. Same best-effort posture as the
+	// surface seam: it runs AFTER the actions/tokens landed, so a rejected
+	// or failing stamp is counted, not returned.
+	for _, ex := range opts.SessionExecutions {
+		if ex.SessionID == "" {
+			continue
+		}
+		if _, err := s.SetSessionExecution(ctx, ex); err != nil {
+			result.SessionExecutionsSkipped++
+		}
+	}
+
 	// Adapter-side message-content capture (enterprise ruling 2026-08-28):
 	// feed the conversation text the adapters already parsed into
 	// otel_content, so the org admin's Messages panel is populated for EVERY
@@ -3257,8 +3323,8 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 			http_status, error_class, error_message,
 			org_id, user_email, fast, source,
 			route, routing_generation, authority_source,
-			prompt_id, request_class
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			prompt_id, request_class, upstream_lane
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullableString(t.SessionID),
 		nullableInt64(t.ProjectID),
 		timestamp(t.Timestamp),
@@ -3296,6 +3362,7 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 		nullableString(t.AuthoritySource),
 		nullableString(t.PromptID),
 		nullableString(t.RequestClass),
+		nullableString(t.UpstreamLane),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertAPITurn: %w", err)
@@ -3303,6 +3370,14 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertAPITurn: last insert id: %w", err)
+	}
+	// Only once the proxy's row is in does it replace a lower-fidelity row
+	// for the same call (supersededByProxyInsert), so a failed insert never
+	// loses the other observation. A failed replace leaves both rows and is
+	// logged; the proxy row itself stands and the insert succeeds, so the
+	// proxy's follow-up work on the turn is unchanged.
+	if err := s.supersedeForProxyInsert(ctx, t, id); err != nil {
+		slog.Default().Warn("store: a proxy turn could not replace the span row for the same call; both rows remain", "request_id", t.RequestID, "err", err)
 	}
 	// Per-event compression detail (migration 009). Best-effort: if the
 	// table doesn't exist (pre-migration test DB) or insert fails for a

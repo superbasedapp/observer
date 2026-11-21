@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,22 +125,82 @@ var bundleTampers = []struct {
 // approveEverything is the developer's self-exception for every catalog
 // rule, written straight into the register the way an approval made before
 // the tamper (or by any path that bypasses the CLI gate) sits there.
+//
+// The register is the same on every node (global grants of every catalog
+// rule, nothing node-specific), so it is written once per process into a
+// migrated database (approvedOrgLockDB) and every node gets a copy of that
+// file in place of its own empty one. Writing the grants per node, one
+// transaction each, was a third of the time of the registry-wide chain
+// tests, which stage a node per binding and tamper shape.
 func (n orgLockNode) approveEverything(t *testing.T) {
 	t.Helper()
-	d, err := db.Open(context.Background(), db.Options{Path: n.dbPath})
+	image, err := approvedOrgLockDB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
-	st := store.New(d)
-	for _, info := range policy.Catalog() {
-		if _, err := st.InsertGuardApproval(context.Background(), store.GuardApprovalRow{
-			TS: time.Now().UTC(), RuleID: info.ID, Scope: "global", GrantedBy: "dev1",
-		}); err != nil {
+	// newOrgLockNode closed its handle on the empty database; the copy
+	// replaces it and any sidecar it left behind.
+	for _, p := range []string{n.dbPath, n.dbPath + "-wal", n.dbPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(n.dbPath, image, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
+
+// approvedOrgLockDB is a migrated database holding approveEverything's
+// grants, written through the store's one grant writer, as one
+// self-contained file image (the WAL folded back in), built once per
+// process.
+var approvedOrgLockDB = sync.OnceValues(func() ([]byte, error) {
+	ctx := context.Background()
+	dir, err := os.MkdirTemp("", "orglock-approved")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "observer.db")
+	d, err := dbtemplate.Open(ctx, db.Options{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	st := store.New(d)
+	rules := map[string]bool{}
+	for _, info := range policy.Catalog() {
+		rules[info.ID] = true
+		if _, err := st.InsertGuardApproval(ctx, store.GuardApprovalRow{
+			TS: time.Now().UTC(), RuleID: info.ID, Scope: "global", GrantedBy: "dev1",
+		}); err != nil {
+			_ = d.Close()
+			return nil, err
+		}
+	}
+	var grants int
+	if err := d.QueryRowContext(ctx, "SELECT COUNT(*) FROM guard_approvals").Scan(&grants); err != nil {
+		_ = d.Close()
+		return nil, fmt.Errorf("approvedOrgLockDB: count grants: %w", err)
+	}
+	if grants != len(rules) {
+		_ = d.Close()
+		return nil, fmt.Errorf("approvedOrgLockDB: %d grants for %d catalog rule ids", grants, len(rules))
+	}
+	_, ckptErr := d.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+	if err := d.Close(); err != nil {
+		return nil, err
+	}
+	if ckptErr != nil {
+		return nil, ckptErr
+	}
+	// SQLite deletes the sidecar on the last close only after a complete
+	// checkpoint, so a non-empty -wal here means the main file alone would
+	// lose grants.
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() > 0 {
+		return nil, fmt.Errorf("approvedOrgLockDB: %d bytes left in the WAL after close", fi.Size())
+	}
+	return os.ReadFile(path)
+})
 
 // TestA3bChainClaudeCodePreToolUse pins audit row a3b (and the re-test's b1,
 // T-864 gap 1) through the real Claude Code PreToolUse receiver: break or

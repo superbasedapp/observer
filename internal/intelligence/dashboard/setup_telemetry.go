@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/clientwire"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/telemetrywire"
 )
 
@@ -44,6 +45,9 @@ type telemetrySetupResponse struct {
 	// receiver's side (P3-20): Settings > OTel export, whose "More settings"
 	// card edits [ingest.otel] enabled / http_addr / allow_non_loopback.
 	SettingsLink string `json:"settings_link,omitempty"`
+	// Fields is the same place in the shape every "needs a setting" refusal
+	// carries (internal/settingslink), which the SPA's one renderer reads.
+	settingslink.Fields
 }
 
 // telemetryReceiverSettingsLink is where the node's OTLP receiver keys are
@@ -72,7 +76,7 @@ func (s *Server) handleSetupTelemetry(w http.ResponseWriter, r *http.Request) {
 		// Not a conflict with the user's file (there is nothing to force):
 		// a precondition on this node, with the place that fixes it.
 		writeJSONStatus(w, http.StatusPreconditionFailed, telemetrySetupResponse{
-			Tool: req.Tool, DryRun: req.DryRun, Summary: []string{}, SettingsLink: telemetryReceiverSettingsLink,
+			Tool: req.Tool, DryRun: req.DryRun, Summary: []string{}, SettingsLink: telemetryReceiverSettingsLink, Fields: otelExportFields(),
 			Error: "this node's OTLP receiver is off: turn it on in Settings > OTel export > More settings ([ingest.otel] enabled, with an HTTP address), restart the daemon, then come back here",
 		})
 		return
@@ -91,7 +95,7 @@ func (s *Server) handleSetupTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case errors.Is(res.Error, clientwire.ErrReceiverRequiresToken):
-		out.Error, out.SettingsLink = res.Error.Error(), telemetryReceiverSettingsLink
+		out.Error, out.SettingsLink, out.Fields = res.Error.Error(), telemetryReceiverSettingsLink, otelExportFields()
 		writeJSONStatus(w, http.StatusPreconditionFailed, out)
 		return
 	case res.Error != nil:
@@ -111,4 +115,11 @@ func (s *Server) handleSetupTelemetry(w http.ResponseWriter, r *http.Request) {
 		s.recordManageAudit(r, action, fmt.Sprintf("tool=%s", req.Tool))
 	}
 	writeJSON(w, out)
+}
+
+// otelExportFields is the receiver refusal's deep link from the one table
+// (Settings > OTel export, the same path as telemetryReceiverSettingsLink).
+func otelExportFields() settingslink.Fields {
+	l, _ := settingslink.For(settingslink.OTelExport)
+	return l.Fields()
 }

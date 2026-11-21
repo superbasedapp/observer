@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/marmutapp/superbased-observer/internal/agentlaunch"
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -127,6 +128,9 @@ func runAttachSession(ctx context.Context, in attachLaunch) error {
 		ExtraArgs:     in.extraArgs,
 		ResumeSession: resumeIDFromExtraArgs(in.extraArgs),
 	}
+	// The agent-session hint (lane cli-2): only the allowlisted session-id
+	// variable is read; the daemon judges this process's ancestry itself.
+	spawn.AgentEnv, spawn.AgentEnvSession = agentSessionEnv(os.Getenv)
 
 	// currentID retains the strongest correlated session id the daemon PUSHED
 	// across attempts. Seeded from a manual `--resume` so an initial-attempt
@@ -506,7 +510,7 @@ func splitAtDashDash(argv []string) (head, tail []string) {
 // the daemon's double-spawn guard + orphan validation key off (ResumeSession set,
 // AutoResume=true).
 func resumeSpawn(in attachLaunch, subcommand, cwd, sessionID string) attachsock.SpawnRequest {
-	return attachsock.SpawnRequest{
+	req := attachsock.SpawnRequest{
 		Tool:          in.tool,
 		Subcommand:    subcommand,
 		Dir:           cwd,
@@ -515,6 +519,8 @@ func resumeSpawn(in attachLaunch, subcommand, cwd, sessionID string) attachsock.
 		ResumeSession: sessionID,
 		AutoResume:    true,
 	}
+	req.AgentEnv, req.AgentEnvSession = agentSessionEnv(os.Getenv)
+	return req
 }
 
 // offerAutoResume implements the daemon-death reattach handshake (resilient-
@@ -773,6 +779,11 @@ func reportAttachResult(stderr io.Writer, subcommand string, capab integration.C
 		var se *attachsock.ServerError
 		if errors.As(aerr, &se) {
 			fmt.Fprintf(stderr, "\nobserver %s --attach: %s\n", subcommand, se.Message)
+			// An agent's launch held for a human (lane cli-2 fixes-1):
+			// the same exit code as `observer launch`.
+			if se.Code == agentlaunch.CodeConfirmRequired {
+				return exitErr(launchExitPending)
+			}
 			return exitErr(1)
 		}
 		fmt.Fprintf(stderr, "\nobserver %s --attach: %v\n", subcommand, aerr)

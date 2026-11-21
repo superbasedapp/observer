@@ -1,17 +1,6 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
-import {
-  Button,
-  EntityMultiPicker,
-  type EntityMultiPickerOption,
-  Input,
-  SegmentedControl,
-  Select,
-  SettingRow,
-  SinglePicker,
-  SlideOver,
-  Toggle,
-} from "@/components/primitives";
+import { Button, SegmentedControl, SettingRow, SinglePicker, SlideOver, Toggle } from "@/components/primitives";
 import { type OverrideEditorMode, overrideEditorView } from "@/lib/guardEditorMode";
 import { keepSelected } from "@/lib/pickerOptions";
 import { GUARD_RULE_OPTIONS, useMCPServerOptions } from "@/lib/usePickerSources";
@@ -19,20 +8,15 @@ import {
   type Decision,
   type GuardOverrideRow,
   type GuardRuleRow,
-  DECISIONS,
-  GUARD_CATEGORIES,
-  GUARD_EVENT_KINDS,
-  GUARD_SINKS,
-  GUARD_TAINT_SOURCES,
-  SEVERITIES,
-  emptyGuardCommandMatch,
-  emptyGuardEventMatch,
-  emptyGuardRuleRow,
   guardDecisionOptionsFor,
   guardRuleInfo,
-  guardRuleRowProblems,
   isGuardIntegrityRuleId,
 } from "@shared/lib/guardCatalog";
+import {
+  CustomRuleEditor as SharedCustomRuleEditor,
+  LOCAL_CUSTOM_RULE_VOCAB,
+} from "@shared/components/guard/CustomRuleEditor";
+import { withIntegrityEnforce } from "./integrityLock";
 
 // RuleEditor — the SlideOver form for authoring ONE `[[rule]]` (a brand-new
 // custom rule) or tuning ONE `[[override]]` (escalate/loosen a built-in).
@@ -44,12 +28,12 @@ import {
 // `allowWeaken` widens the override decision picker past the built-in's
 // escalate-only floor: true for the trusted-project layer (§2/§3) AND the
 // user/global layer (both may weaken or disable, at parity with the raw TOML
-// editor). guardDecisionOptionsFor still keeps integrity rules (R-160/R-161)
+// editor). guardDecisionOptionsFor still keeps the integrity rules (isGuardIntegrityRuleId)
 // escalate-only even when allowWeaken is true, and the org floor + integrity
 // backstop are enforced server-side at merge time. The org bundle itself is
-// authored escalate-only (it passes allowWeaken=false).
-
-const EVENT_KIND_OPTIONS: EntityMultiPickerOption[] = GUARD_EVENT_KINDS.map((k) => ({ id: k, label: k }));
+// authored escalate-only (it passes allowWeaken=false). The Enforce toggle is
+// locked on for an integrity rule in every layer (withIntegrityEnforce, audit
+// CF2-A1): `enforce = false` is a cap the engine refuses for these.
 
 export type RuleEditorProps =
   | {
@@ -85,8 +69,11 @@ function OverrideEditor({
   allowWeaken,
   onSave,
 }: Extract<RuleEditorProps, { kind: "override" }>) {
-  const [row, setRow] = useState<GuardOverrideRow>(initial ?? { rule: "", decision: "", enforce: true });
+  const [row, setRow] = useState<GuardOverrideRow>(() =>
+    withIntegrityEnforce(initial ?? { rule: "", decision: "", enforce: true }),
+  );
   const info = guardRuleInfo(row.rule);
+  const integrity = isGuardIntegrityRuleId(row.rule);
   const decisionOpts = guardDecisionOptionsFor(row.rule, allowWeaken);
   const view = overrideEditorView(mode, initial?.rule ?? row.rule);
 
@@ -105,7 +92,9 @@ function OverrideEditor({
             value={row.rule}
             onChange={(rule) => {
               const opts = guardDecisionOptionsFor(rule, allowWeaken);
-              setRow((r) => ({ ...r, rule, decision: r.decision && opts.includes(r.decision) ? r.decision : "" }));
+              setRow((r) =>
+                withIntegrityEnforce({ ...r, rule, decision: r.decision && opts.includes(r.decision) ? r.decision : "" }),
+              );
             }}
             allowFree
             freeLabel="Custom rule id"
@@ -136,8 +125,21 @@ function OverrideEditor({
           />
         </SettingRow>
 
-        <SettingRow label="Enforce" layout="stack" help="Block/hold even while the global mode stays observe.">
-          <Toggle on={row.enforce} onChange={(enforce) => setRow((r) => ({ ...r, enforce }))} label={row.enforce ? "on" : "off"} />
+        <SettingRow
+          label="Enforce"
+          layout="stack"
+          help={
+            integrity
+              ? "Locked on: this is a guard integrity rule, and the guard refuses to turn its enforcement off in any layer."
+              : "Block/hold even while the global mode stays observe."
+          }
+        >
+          <Toggle
+            on={row.enforce || integrity}
+            onChange={(enforce) => setRow((r) => withIntegrityEnforce({ ...r, enforce }))}
+            disabled={integrity}
+            label={row.enforce || integrity ? "on" : "off"}
+          />
         </SettingRow>
       </div>
       <div className="flex items-center gap-2 border-t border-line-1 px-5 py-3">
@@ -145,7 +147,7 @@ function OverrideEditor({
           variant="primary"
           iconLeft={view.isNew ? Plus : undefined}
           disabled={!row.rule.trim()}
-          onClick={() => onSave(row)}
+          onClick={() => onSave(withIntegrityEnforce(row))}
         >
           {view.saveLabel}
         </Button>
@@ -157,242 +159,19 @@ function OverrideEditor({
   );
 }
 
-function CustomRuleEditor({ open, onClose, initial, onSave }: Extract<RuleEditorProps, { kind: "rule" }>) {
-  const [row, setRow] = useState<GuardRuleRow>(initial ?? emptyGuardRuleRow());
-  const problems = guardRuleRowProblems(row);
-  const mcpServers = useMCPServerOptions(open && row.scope === "event");
-
+// CustomRuleEditor is the shared form (shared/components/guard/
+// CustomRuleEditor.tsx), promoted out of this file so the org guard form
+// authors rules with the same one; the node injects only what is its own: the
+// MCP servers it has seen, for the mcp_server suggestions.
+function CustomRuleEditor(props: Extract<RuleEditorProps, { kind: "rule" }>) {
   return (
-    <SlideOver
-      open={open}
-      onClose={onClose}
-      title={initial ? `Edit rule - ${initial.id}` : "New custom rule"}
-      subtitle="A [[rule]] definition (matcher-v1). Command-scoped and event-scoped matchers can't mix in one rule."
-      width={640}
-    >
-      <div className="space-y-4 p-5">
-        <div className="grid grid-cols-2 gap-3">
-          <SettingRow label="Id" layout="stack" help="Must not collide with a built-in id.">
-            <Input
-              value={row.id}
-              onChange={(e) => setRow((r) => ({ ...r, id: e.target.value }))}
-              placeholder="U-100"
-              mono
-              disabled={!!initial}
-            />
-          </SettingRow>
-          <SettingRow label="Category" layout="stack">
-            <Select
-              value={row.category}
-              onChange={(e) => setRow((r) => ({ ...r, category: e.target.value }))}
-              options={[...GUARD_CATEGORIES]}
-            />
-          </SettingRow>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <SettingRow label="Decision" layout="stack">
-            <SegmentedControl<Decision>
-              size="sm"
-              options={DECISIONS.map((d) => ({ value: d, label: d }))}
-              value={row.decision}
-              onChange={(decision) => setRow((r) => ({ ...r, decision }))}
-            />
-          </SettingRow>
-          <SettingRow label="Severity" layout="stack">
-            <Select
-              value={row.severity}
-              onChange={(e) => setRow((r) => ({ ...r, severity: e.target.value as GuardRuleRow["severity"] }))}
-              options={[...SEVERITIES]}
-            />
-          </SettingRow>
-        </div>
-
-        <SettingRow label="Enforce" layout="stack" help="Block/hold even while the global mode stays observe.">
-          <Toggle on={row.enforce} onChange={(enforce) => setRow((r) => ({ ...r, enforce }))} label={row.enforce ? "on" : "off"} />
-        </SettingRow>
-
-        <SettingRow
-          label="Applies to"
-          layout="stack"
-          help="Leave empty to let the matchers imply it. Required for a pure-condition rule (taint_source / cost / repeat only)."
-        >
-          <EntityMultiPicker
-            options={EVENT_KIND_OPTIONS}
-            value={row.applies_to}
-            onChange={(applies_to) => setRow((r) => ({ ...r, applies_to }))}
-            placeholder="Pick event kinds…"
-          />
-        </SettingRow>
-
-        <SettingRow label="Matcher scope" layout="stack" help="A rule may use only one scope - split into two rules to mix.">
-          <SegmentedControl<GuardRuleRow["scope"]>
-            options={[
-              { value: "command", label: "Command" },
-              { value: "event", label: "Event" },
-            ]}
-            value={row.scope}
-            onChange={(scope) =>
-              setRow((r) => ({
-                ...r,
-                scope,
-                command: scope === "command" ? r.command : emptyGuardCommandMatch(),
-                event: scope === "event" ? r.event : emptyGuardEventMatch(),
-              }))
-            }
-          />
-        </SettingRow>
-
-        {row.scope === "command" ? (
-          <div className="space-y-3 rounded-2 border border-line-1 bg-bg-1 p-3">
-            <SettingRow label="command_regex" layout="stack" help="RE2 over the raw command text.">
-              <Input
-                value={row.command.command_regex}
-                onChange={(e) => setRow((r) => ({ ...r, command: { ...r.command, command_regex: e.target.value } }))}
-                mono
-                placeholder='(?i)\bterraform\s+(apply|destroy)\b'
-              />
-            </SettingRow>
-            <SettingRow label="command_base" layout="stack" help='Exact base-command match, e.g. "git".'>
-              <Input
-                value={row.command.command_base}
-                onChange={(e) => setRow((r) => ({ ...r, command: { ...r.command, command_base: e.target.value } }))}
-                mono
-              />
-            </SettingRow>
-            <SettingRow label="arg_contains" layout="stack" help="Substring match over any argument.">
-              <Input
-                value={row.command.arg_contains}
-                onChange={(e) => setRow((r) => ({ ...r, command: { ...r.command, arg_contains: e.target.value } }))}
-                mono
-              />
-            </SettingRow>
-          </div>
-        ) : (
-          <div className="space-y-3 rounded-2 border border-line-1 bg-bg-1 p-3">
-            <SettingRow label="path_glob" layout="stack" help="Gitignore-style globs over the event path.">
-              <EntityMultiPicker
-                options={[]}
-                allowFreeId
-                value={row.event.path_glob}
-                onChange={(path_glob) => setRow((r) => ({ ...r, event: { ...r.event, path_glob } }))}
-                placeholder="Type a glob, press Enter…"
-              />
-            </SettingRow>
-            <SettingRow label="path_not" layout="stack" help="Exemption globs, checked first.">
-              <EntityMultiPicker
-                options={[]}
-                allowFreeId
-                value={row.event.path_not}
-                onChange={(path_not) => setRow((r) => ({ ...r, event: { ...r.event, path_not } }))}
-                placeholder="Type a glob, press Enter…"
-              />
-            </SettingRow>
-            <div className="grid grid-cols-2 gap-3">
-              <Toggle
-                on={row.event.path_outside_project}
-                onChange={(v) => setRow((r) => ({ ...r, event: { ...r.event, path_outside_project: v } }))}
-                label="path_outside_project"
-              />
-              <Toggle
-                on={row.event.path_sensitive}
-                onChange={(v) => setRow((r) => ({ ...r, event: { ...r.event, path_sensitive: v } }))}
-                label="path_sensitive"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <SettingRow label="url_domain" layout="stack">
-                <Input
-                  value={row.event.url_domain}
-                  onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, url_domain: e.target.value } }))}
-                  mono
-                />
-              </SettingRow>
-              <SettingRow label="sink" layout="stack">
-                <Select
-                  value={row.event.sink}
-                  onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, sink: e.target.value } }))}
-                  options={["", ...GUARD_SINKS]}
-                />
-              </SettingRow>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <SettingRow label="mcp_server" layout="stack">
-                <SinglePicker
-                  options={keepSelected(mcpServers.options, row.event.mcp_server ? [row.event.mcp_server] : [])}
-                  value={row.event.mcp_server}
-                  onChange={(mcp_server) => setRow((r) => ({ ...r, event: { ...r.event, mcp_server } }))}
-                  allowFree
-                  loading={mcpServers.loading}
-                  placeholder="Pick a server…"
-                  ariaLabel="mcp_server"
-                />
-              </SettingRow>
-              <SettingRow label="mcp_tool" layout="stack">
-                <Input
-                  value={row.event.mcp_tool}
-                  onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, mcp_tool: e.target.value } }))}
-                  mono
-                />
-              </SettingRow>
-            </div>
-            <SettingRow label="event_kind" layout="stack" help="The event's kind must be in this list.">
-              <EntityMultiPicker
-                options={EVENT_KIND_OPTIONS}
-                value={row.event.event_kind}
-                onChange={(event_kind) => setRow((r) => ({ ...r, event: { ...r.event, event_kind } }))}
-                placeholder="Pick event kinds…"
-              />
-            </SettingRow>
-            <SettingRow label="taint_source" layout="stack" help="Pure condition - session carries this taint mark.">
-              <Select
-                value={row.event.taint_source}
-                onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, taint_source: e.target.value } }))}
-                options={["", ...GUARD_TAINT_SOURCES]}
-              />
-            </SettingRow>
-            <div className="grid grid-cols-2 gap-3">
-              <SettingRow label="session_cost_usd_gt" layout="stack" help="Pure condition, float.">
-                <Input
-                  value={row.event.session_cost_usd_gt}
-                  onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, session_cost_usd_gt: e.target.value } }))}
-                  inputMode="decimal"
-                  placeholder="20.0"
-                />
-              </SettingRow>
-              <SettingRow label="repeat_count_gt" layout="stack" help="Pure condition, integer.">
-                <Input
-                  value={row.event.repeat_count_gt}
-                  onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, repeat_count_gt: e.target.value } }))}
-                  inputMode="numeric"
-                  placeholder="5"
-                />
-              </SettingRow>
-            </div>
-          </div>
-        )}
-
-        {problems.length > 0 && (
-          <div className="space-y-1 rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11px] text-warn">
-            {problems.map((p, i) => (
-              <div key={i}>{p}</div>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="flex items-center gap-2 border-t border-line-1 px-5 py-3">
-        <Button
-          variant="primary"
-          iconLeft={initial ? undefined : Plus}
-          disabled={!row.id.trim()}
-          onClick={() => onSave(row)}
-        >
-          {initial ? "Save rule" : "Add rule"}
-        </Button>
-        <Button variant="secondary" onClick={onClose}>
-          Cancel
-        </Button>
-      </div>
-    </SlideOver>
+    <SharedCustomRuleEditor
+      open={props.open}
+      onClose={props.onClose}
+      initial={props.initial}
+      onSave={props.onSave}
+      vocab={LOCAL_CUSTOM_RULE_VOCAB}
+      useMcpServerOptions={useMCPServerOptions}
+    />
   );
 }

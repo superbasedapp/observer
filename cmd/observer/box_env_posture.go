@@ -10,7 +10,7 @@ import (
 )
 
 // box_env_posture.go shows a box's environment in the run's posture (WINFIX2
-// audit finding 1, tracker R-167): every backend builds it from the
+// audit finding 1, ledger SBX-WIN-ENV-1): every backend builds it from the
 // allow-list of internal/sandboxenv, and the names the user added with
 // [terminal.sandbox].pass_env are said on the tool's terminal, by the
 // launcher inside the box, whatever the backend or entry point. The run's

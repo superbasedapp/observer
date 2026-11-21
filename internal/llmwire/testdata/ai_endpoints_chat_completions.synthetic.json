@@ -1,0 +1,25 @@
+{
+  "id": "chatcmpl-synthetic-0001",
+  "object": "chat.completion",
+  "created": 1760000000,
+  "model": "gpt-oss-20b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"title\":\"Fix flaky retry test\",\"summary\":\"Stabilised a retry test.\"}",
+        "reasoning_content": "synthetic reasoning text that decoders must ignore",
+        "tool_calls": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 812,
+    "completion_tokens": 143,
+    "total_tokens": 955,
+    "prompt_tokens_details": {"cached_tokens": 512},
+    "completion_tokens_details": {"reasoning_tokens": 97}
+  }
+}

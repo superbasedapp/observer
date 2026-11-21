@@ -20,4 +20,7 @@ func TestStubAnswersNotCompiled(t *testing.T) {
 	if _, err := Match(context.Background(), NewInventory(nil), MatchRequest{Ecosystem: "npm"}, MatchOptions{}); !errors.Is(err, ErrNotCompiled) {
 		t.Fatalf("Match: %v", err)
 	}
+	if _, err := UnreadFiles(context.Background(), t.TempDir(), ExtractOptions{}); !errors.Is(err, ErrNotCompiled) || Reads("package-lock.json") {
+		t.Fatalf("UnreadFiles: %v; nothing is read in this build", err)
+	}
 }

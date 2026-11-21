@@ -1,0 +1,56 @@
+rules:
+  - id: go.open-redirect
+    languages: [go]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; redirect only to a path on this site or a host on an allow-list.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: url.QueryEscape(...)
+      - pattern: url.PathEscape(...)
+      - pattern: strconv.Atoi(...)
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: fmt.Sprintf("$LIT", ...)
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^(https?://[^/?#%]+[/?#]|/[^/\\%])
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Redirect($W, $REQ, $U, $CODE)
+              - patterns:
+                  - pattern: $C.Redirect($CODE, $U)
+                  - metavariable-regex:
+                      metavariable: $C
+                      regex: ^(c|ctx|gc|ec)$
+              - pattern: $W.Header().Set("Location", $U)
+              - pattern: $W.Header().Add("Location", $U)
+          - focus-metavariable: $U

@@ -61,9 +61,14 @@ func (s UserPolicyStatus) Invalid() bool { return s.Present && !s.Valid }
 // does and reports whether it loads. readFile is injected (os.ReadFile
 // in production). The checks are the ones that make New drop the
 // layer: a read failure other than "not found", a parse/compile error
-// (parsePolicyFile), and an engine construction error with the file's
-// rules and overrides applied on their own. Merge issues that New
-// records but does not drop the layer for are not invalidity.
+// (parsePolicyFile), and an engine construction error over the layer as
+// the engine sees it (RC-4): the file folded with its applied recipe
+// sibling (readLayerWithRecipe's fold, recipe rows first, an unknown
+// recipe target dropped) under the config's [guard.rules] disable list.
+// A recipe file that does not parse is skipped, as New skips it (the own
+// file still loads). Merge issues that New records but does not drop the
+// layer for (a row dropped alone) are not invalidity. Path, Line and
+// ContentHash stay the own file's: it is the file the person edits.
 func CheckUserPolicy(cfg config.GuardConfig, home string, readFile func(string) ([]byte, error)) UserPolicyStatus {
 	st := UserPolicyStatus{Path: UserPolicyPath(cfg, home)}
 	if st.Path == "" {
@@ -87,9 +92,23 @@ func CheckUserPolicy(cfg config.GuardConfig, home string, readFile func(string) 
 		st.Line = problemLine(raw, perr)
 		return st
 	}
-	extra, overrides, _, _ := mergeLayers(nil, pf, nil, nil)
-	if _, eerr := policy.New(policy.Config{ExtraRules: extra, Overrides: overrides}); eerr != nil {
+	recipePath := recipeSibling(st.Path)
+	var recipe *policyFile
+	if rraw, rerr := readFile(recipePath); rerr == nil {
+		if rpf, perr := parsePolicyFile(rraw, layerUser); perr == nil {
+			recipe, _ = (&Guard{}).dropUnknownRecipeTargets(rpf, pf, recipePath)
+		}
+	}
+	builds := func(layer *policyFile) error {
+		extra, overrides, _, _ := mergeLayersWithDisable(nil, cfg.Rules.Disable, nil, layer, nil, nil)
+		_, err := policy.New(policy.Config{ExtraRules: extra, Overrides: overrides, Disabled: cfg.Rules.Disable})
+		return err
+	}
+	if eerr := builds(foldRecipeLayer(recipe, pf)); eerr != nil {
 		st.Error = eerr.Error()
+		if recipe != nil && builds(pf) == nil {
+			st.Error = "with the applied recipe " + recipePath + ": " + st.Error
+		}
 		st.Line = problemLine(raw, eerr)
 		return st
 	}

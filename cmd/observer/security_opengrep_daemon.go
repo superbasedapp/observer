@@ -333,14 +333,21 @@ func codeEngineInstalled(ctx context.Context, e *codeEnv) bool {
 // runCodeScanOnce runs one scan under the machine's lease without waiting,
 // and records it through the one findings writer.
 func runCodeScanOnce(ctx context.Context, e *codeEnv, t secscan.Target) error {
+	_, _, err := runCodeScanCounted(ctx, e, t)
+	return err
+}
+
+// runCodeScanCounted is runCodeScanOnce returning the run's result and the
+// findings it created (the dashboard's "Scan now" reports them).
+func runCodeScanCounted(ctx context.Context, e *codeEnv, t secscan.Target) (secscan.Result, int, error) {
 	// A root that is not rooted on this host is never scanned relative to
 	// the working directory (audit row 8).
 	if !git.HostRooted(t.ProjectRoot) {
-		return fmt.Errorf("security scan: project root %q is not a folder on this host", t.ProjectRoot)
+		return secscan.Result{}, 0, fmt.Errorf("security scan: project root %q is not a folder on this host", t.ProjectRoot)
 	}
 	release, ok, err := dblease.TryAcquire(e.secDir, codeScanLeaseName)
 	if err == nil && !ok {
-		return errCodeScanBusy
+		return secscan.Result{}, 0, errCodeScanBusy
 	}
 	defer release()
 	if checkout, ok := git.FindCheckoutRoot(t.ProjectRoot); ok && checkout != "" {
@@ -348,19 +355,19 @@ func runCodeScanOnce(ctx context.Context, e *codeEnv, t secscan.Target) error {
 	}
 	d, cleanup, err := e.driver(0)
 	if err != nil {
-		return err
+		return secscan.Result{}, 0, err
 	}
 	defer cleanup()
 	started := time.Now()
 	res, scanned, err := d.ScanFiles(ctx, t)
 	if err != nil {
-		return err
+		return res, 0, err
 	}
 	if e.st == nil {
-		return nil
+		return res, 0, nil
 	}
-	_, err = recordCodeScan(ctx, e.st, t, res, scanned, started, securityRT.notify)
-	return err
+	created, err := recordCodeScan(ctx, e.st, t, res, scanned, started, securityRT.notify)
+	return res, created, err
 }
 
 // codeGitOut runs one read-only git command in dir under the git

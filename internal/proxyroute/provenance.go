@@ -197,7 +197,7 @@ type LeaveRoute struct {
 // every route Observer's enrolment wrote that is still exactly what it wrote
 // (routeprov.Decide) and drops those records; the managed daemon's own
 // route maintenance writes (routeprov.WriterManaged) are organization-owned
-// too and leave with it. Routes you, `observer init`, Settings > Setup or a
+// too and leave with it. Routes you, `observer init`, Settings > Connected tools or a
 // launcher set are kept. The native Claude Code and Codex routes are always
 // reported when they point at an observer, so the dialog can say a route
 // will be kept, not just stay silent.
@@ -212,7 +212,7 @@ func (r *Registrar) LeaveRoutes(apply bool) ([]LeaveRoute, error) {
 // managed daemon, routeprov.WriterManaged) that is still exactly what it
 // wrote, puts back what each one replaced (the original provider host of a
 // lane route, Codex's prior provider), and drops those records. Routes you,
-// `observer init`, Settings > Setup or a launcher set are never touched, and
+// `observer init`, Settings > Connected tools or a launcher set are never touched, and
 // neither is an organization route you have changed since. With apply false
 // it only plans. Only organization records are reported.
 func (r *Registrar) ReleaseManagedRoutes(apply bool) ([]LeaveRoute, error) {

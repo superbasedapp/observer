@@ -1,6 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Button, ErrorState, InlineLoading, Pill, SegmentedControl, Spinner, Tooltip } from "@/components/primitives";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { Summary } from "@/components/Summary";
@@ -165,7 +165,7 @@ function CloudEnrichControls({ sessionId, submit, disabled, forcePreview, previe
   return <fieldset disabled={disabled} className="space-y-2">
     {quick ? <>
       <Button size="sm" variant="primary" onClick={() => void submit(cloudPurposeForLevel(policy.level) ?? "structural_activity_insights")}>Enrich now</Button>
-      <p className="text-[10.5px] text-fg-4">Uses your setting: {CLOUD_ENRICH_LEVEL_LABELS[policy.level] ?? policy.level}. <Link to="/settings?section=cloud" className="text-accent">Change enrichment settings</Link></p>
+      <p className="text-[10.5px] text-fg-4">Uses your setting: {CLOUD_ENRICH_LEVEL_LABELS[policy.level] ?? policy.level}. <GatedLink to="/settings?section=cloud" className="text-accent">Change enrichment settings</GatedLink></p>
       <details className="rounded-2 border border-line-2 p-2"><Summary className="text-caption text-fg-3">Preview or change data for this request</Summary><ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} /></details>
     </> : <ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} />}
   </fieldset>;
@@ -198,7 +198,7 @@ function ManualEnrichPanel({ sessionId, submit, signedIn, previewVersion }: { se
       <Button size="sm" onClick={() => void runPreview()} disabled={busy} loading={busy}>{busy ? "Previewing…" : "Preview session"}</Button>
       <Button size="sm" variant="primary" onClick={() => void submit(purpose, preview?.data.upload_digest)} disabled={!signedIn || !ready || busy} title={!signedIn ? "Sign in to submit this request" : !ready ? "Preview the session before confirming" : undefined}>Confirm and enrich</Button>
     </div>
-    {!signedIn && <Link to="/settings?section=cloud" className="text-[11px] text-accent">Sign in under Settings → Cloud Intelligence</Link>}
+    {!signedIn && <GatedLink to="/settings?section=cloud" className="text-[11px] text-accent">Sign in under Settings → Cloud Intelligence</GatedLink>}
     {shown && <details open className="rounded-2 border border-line-2 bg-bg-3">
       <Summary className="px-2 py-1 text-caption text-fg-3">Exactly what would leave this machine</Summary>
       <pre className="max-h-[20rem] overflow-auto whitespace-pre-wrap break-all border-t border-line-2 p-2 font-mono text-[10.5px] text-fg-2">{preview?.data.output || "(no output)"}</pre>

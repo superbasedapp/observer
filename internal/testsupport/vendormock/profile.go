@@ -108,6 +108,14 @@ var Profiles = []Profile{
 		Prefix: "cursor.", AuthHeader: "Authorization", Scheme: SchemeBasicUser, AfterParam: "after",
 		Source: "https://cursor.com/docs/api.md",
 	},
+	// Lane CA-A4 (cloud agents arc): the Cloud Agents API v1 pages with
+	// limit and cursor, answering nextCursor (omitted on the last page). The
+	// user or service-account key is accepted as Basic (the catalog auth
+	// kind) or Bearer.
+	{
+		Prefix: "cursor.cloudagent.", AuthHeader: "Authorization", Scheme: SchemeBasicUser, AfterParam: "cursor",
+		Source: "https://cursor.com/docs/cloud-agent/api/endpoints",
+	},
 	// Lane ENTAPI-L16 (T-619): the Phase 8 long tail.
 	{
 		Prefix: "cognition.devin_v3.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "after",
@@ -126,6 +134,13 @@ var Profiles = []Profile{
 	{
 		Prefix: "qoder.oapi.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "nextToken",
 		Source: "https://docs.qoder.com/account/teams/openapi/members.md",
+	},
+	// Lane CA-V2 (cloud agents arc): the Qoder Cloud Agents managed API (a
+	// personal access token as Bearer on api.qoder.com), paged with page and
+	// answering has_more plus next_page (null on the last page).
+	{
+		Prefix: "qoder.ca.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "page",
+		Source: "https://github.com/QoderAI/qoder-cloud-agents-sdk-python",
 	},
 	{
 		Prefix: "perplexity.ent.", AuthHeader: "Authorization", Scheme: SchemeBearer,
@@ -178,6 +193,20 @@ var Profiles = []Profile{
 		Prefix: "kilo.", AuthHeader: "Authorization", Scheme: SchemeBearer,
 		Source: "https://app.kilo.ai/api/openapi.json",
 	},
+	// Lane CA-A4 (cloud agents arc): OpenHands Cloud V1 app gateway (a Cloud
+	// API key as Bearer on app.all-hands.dev), paged with page_id and
+	// answering next_page_id (null on the last page).
+	{
+		Prefix: "openhands.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "page_id",
+		Source: "https://docs.openhands.dev/openhands/usage/cloud/cloud-api",
+	},
+	// Lane CA-V1 (cloud agents arc): the Warp Agent API (a Warp API key as
+	// Bearer on app.warp.dev/api/v1), the runs list paged with cursor and
+	// answering page_info.has_next_page / page_info.next_cursor.
+	{
+		Prefix: "warp.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "cursor",
+		Source: "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+	},
 	{ //nolint:gosec // G101: not a credential (fixed header names / wording)
 		Prefix: "microsoft.", AuthHeader: "Authorization", Scheme: SchemeBearer,
 		TokenScope: "https://graph.microsoft.com/.default",
@@ -196,6 +225,13 @@ var Profiles = []Profile{
 		Prefix: "google.", AuthHeader: "Authorization", Scheme: SchemeBearer, AfterParam: "pageToken",
 		TokenScope: "https://www.googleapis.com/auth/logging.read", TokenGrant: GrantJWTBearer,
 		Source: "https://developers.google.com/identity/protocols/oauth2/service-account",
+	},
+	// Lane CA-V6 (cloud agents arc): Cline Cloud sessions on api.cline.bot,
+	// the account token as Bearer (@cline/core 0.2.0 CloudSessionApi; an
+	// undocumented surface observed in the vendor client). Not paged.
+	{
+		Prefix: "cline.cloud.", AuthHeader: "Authorization", Scheme: SchemeBearer,
+		Source: "https://registry.npmjs.org/@cline/core/-/core-0.2.0.tgz",
 	},
 }
 
@@ -244,8 +280,9 @@ const (
 	// FamilyNextToken is a top-level page token, present and non-empty while
 	// more pages exist and omitted on the last, sent back as the profile's
 	// AfterParam (xAI Management API nextPageToken, Qoder Teams OpenAPI
-	// nextToken; lane ENTAPI-L16B). The spellings are the closed nextTokenKeys
-	// table.
+	// nextToken; lane ENTAPI-L16B; Cursor Cloud Agents nextCursor and
+	// OpenHands Cloud next_page_id, lane CA-A4). The spellings are the closed
+	// nextTokenKeys table.
 	FamilyNextToken PagingFamily = "next_token"
 	// FamilyOffset is a record offset plus a page size with the total in the
 	// body: the next page is asked with the profile's AfterParam set to the
@@ -306,7 +343,10 @@ func Classify(sf *SurfaceFixtures) PagingFamily {
 	if _, _, ok := nestedCursor(m); ok {
 		return FamilyNestedCursor
 	}
-	if _, ok := nextTokenKey(m); ok {
+	// A page token is a paging signal only when the first page hands one
+	// out: a first page whose token is null or empty is a single document
+	// (Cursor's grokbot computer operation answers nextCursor null).
+	if k, ok := nextTokenKey(m); ok && scalarString(m[k]) != "" {
 		return FamilyNextToken
 	}
 	if s, ok := offsetSpelled(m); ok && (s.Base == 0 || partialFirstPage(m, s)) {
@@ -359,6 +399,8 @@ var nextTokenKeys = []string{
 	"nextPageToken", // xAI Management API, Google Cloud Logging entries.list
 	"nextToken",     // Qoder Teams OpenAPI
 	"NextToken",     // AWS JSON protocol (CloudTrail LookupEvents)
+	"nextCursor",    // Cursor Cloud Agents API v1 (omitted on the last page; lane CA-A4)
+	"next_page_id",  // OpenHands Cloud V1 app-conversations and events search (null on the last page; lane CA-A4)
 }
 
 // nextTokenKey returns the page token member a page carries.
@@ -378,8 +420,9 @@ type nestedCursorSpelling struct{ Object, Flag, Cursor string }
 // nestedCursors is the closed table of nested cursor spellings, walked top
 // down.
 var nestedCursors = []nestedCursorSpelling{
-	{Object: "meta", Flag: "has_more", Cursor: "next_cursor"},     // Factory analytics /users
-	{Object: "pagination", Flag: "hasMore", Cursor: "nextCursor"}, // Factory Public API v0 lists
+	{Object: "meta", Flag: "has_more", Cursor: "next_cursor"},           // Factory analytics /users
+	{Object: "pagination", Flag: "hasMore", Cursor: "nextCursor"},       // Factory Public API v0 lists
+	{Object: "page_info", Flag: "has_next_page", Cursor: "next_cursor"}, // Warp Agent API runs list (lane CA-V1)
 }
 
 // nestedCursor returns a page's nested paging object and its spelling when

@@ -75,16 +75,30 @@ type hit struct {
 	RuleID     string `json:"rule_id"`
 	Path       string `json:"path,omitempty"`
 	Line       int    `json:"line,omitempty"`
+	// CWE is additive: an older peer ignores it, a newer one reads none.
+	CWE []string `json:"cwe,omitempty"`
 }
 
-// response is the wire response.
+// response is the wire response. Reason, BudgetMS, ElapsedMS and Files
+// say why an unknown answer is unknown (policy.QuickScanDetail); an older
+// peer leaves the numbers out and the reason reads as it always did.
 type response struct {
 	V            int    `json:"v"`
 	Verdict      string `json:"verdict"`
 	Findings     []hit  `json:"findings,omitempty"`
 	DirtyCovered uint64 `json:"dirty_covered"`
 	Reason       string `json:"reason,omitempty"`
+	BudgetMS     int64  `json:"budget_ms,omitempty"`
+	ElapsedMS    int64  `json:"elapsed_ms,omitempty"`
+	Files        int    `json:"files,omitempty"`
+	// Git names the git that read the change (policy.QuickScanDetail.Git);
+	// an older peer leaves it out, and a value outside the closed set is
+	// dropped.
+	Git string `json:"git,omitempty"`
 }
+
+// maxReasonBytes caps the reason a response carries (a closed code).
+const maxReasonBytes = 64
 
 func encodeRequest(r hookctx.QuickScanRequest, budget time.Duration) request {
 	ps := r.Form.Pathspecs
@@ -124,8 +138,17 @@ func (q request) decode() (hookctx.QuickScanRequest, time.Duration) {
 	}, b
 }
 
+// encodeResult encodes res; reason, when set, is the endpoint's own reason
+// and replaces the scanner's.
 func encodeResult(res hookctx.QuickScanResult, reason string) response {
-	out := response{V: Version, Verdict: string(res.Verdict), DirtyCovered: res.DirtyCovered, Reason: reason}
+	if reason == "" {
+		reason = res.Detail.Reason
+	}
+	out := response{
+		V: Version, Verdict: string(res.Verdict), DirtyCovered: res.DirtyCovered, Reason: reason,
+		BudgetMS: res.Detail.Budget.Milliseconds(), ElapsedMS: res.Detail.Elapsed.Milliseconds(), Files: res.Detail.Files,
+		Git: res.Detail.Git,
+	}
 	for i, h := range res.Findings {
 		if i >= MaxFindings {
 			break
@@ -148,9 +171,22 @@ var verdicts = map[string]policy.QuickScanVerdict{
 func (r response) decode() hookctx.QuickScanResult {
 	v, ok := verdicts[r.Verdict]
 	if !ok || r.V != Version {
-		return hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown}
+		return hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown, Detail: policy.QuickScanDetail{Reason: policy.QuickScanReasonBadRequest}}
 	}
 	out := hookctx.QuickScanResult{Verdict: v, DirtyCovered: r.DirtyCovered}
+	if v == policy.QuickScanUnknown {
+		reason := r.Reason
+		if len(reason) > maxReasonBytes {
+			reason = reason[:maxReasonBytes]
+		}
+		out.Detail = policy.QuickScanDetail{
+			Reason: reason, Budget: time.Duration(max(r.BudgetMS, 0)) * time.Millisecond,
+			Elapsed: time.Duration(max(r.ElapsedMS, 0)) * time.Millisecond, Files: max(r.Files, 0),
+		}
+		if policy.ValidQuickScanGit(r.Git) {
+			out.Detail.Git = r.Git
+		}
+	}
 	for i, h := range r.Findings {
 		if i >= MaxFindings {
 			break
@@ -183,6 +219,7 @@ func Ask(ctx context.Context, endpoint string, req hookctx.QuickScanRequest, bud
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
+	start := time.Now()
 	conn, err := localipc.DefaultTransport().Dial(ctx, endpoint, time.Until(deadline))
 	if err != nil {
 		return hookctx.QuickScanResult{}, fmt.Errorf("secipc.Ask: %w", err)
@@ -198,6 +235,12 @@ func Ask(ctx context.Context, endpoint string, req hookctx.QuickScanRequest, bud
 	}
 	raw, err := readLine(conn)
 	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			// The daemon took the request and did not answer within the
+			// budget: the unknown answer says the scan timed out.
+			return hookctx.QuickScanResult{}, &AskTimeout{Budget: budget, Waited: time.Since(start), Err: err}
+		}
 		return hookctx.QuickScanResult{}, fmt.Errorf("secipc.Ask: %w", err)
 	}
 	var resp response
@@ -205,6 +248,34 @@ func Ask(ctx context.Context, endpoint string, req hookctx.QuickScanRequest, bud
 		return hookctx.QuickScanResult{}, fmt.Errorf("secipc.Ask: %w", err)
 	}
 	return resp.decode(), nil
+}
+
+// AskTimeout is Ask's error when the daemon took the request and did not
+// answer within the budget. It names its reason (hookctx.QuickScanReasoner)
+// and its numbers (QuickScanDetail), so the hook's unknown answer says the
+// scan timed out rather than that nothing answered.
+type AskTimeout struct {
+	// Budget is the budget the request asked for; Waited how long Ask
+	// waited from its dial.
+	Budget, Waited time.Duration
+	// Err is the read error.
+	Err error
+}
+
+// Error implements error.
+func (e *AskTimeout) Error() string {
+	return fmt.Sprintf("secipc.Ask: no answer within the %s budget: %v", e.Budget, e.Err)
+}
+
+// Unwrap returns the read error.
+func (e *AskTimeout) Unwrap() error { return e.Err }
+
+// QuickScanReason implements hookctx.QuickScanReasoner.
+func (e *AskTimeout) QuickScanReason() string { return policy.QuickScanReasonOverBudget }
+
+// QuickScanDetail is the timeout's detail: the budget and the wait.
+func (e *AskTimeout) QuickScanDetail() policy.QuickScanDetail {
+	return policy.QuickScanDetail{Reason: policy.QuickScanReasonOverBudget, Budget: e.Budget, Elapsed: e.Waited}
 }
 
 func readLine(conn net.Conn) ([]byte, error) {
@@ -327,7 +398,7 @@ func replyBusy(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(busyReplyTimeout))
 	_, _ = readLine(conn)
-	line, err := json.Marshal(encodeResult(hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown}, "busy"))
+	line, err := json.Marshal(encodeResult(hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown}, policy.QuickScanReasonBusy))
 	if err != nil {
 		return
 	}
@@ -336,6 +407,12 @@ func replyBusy(conn net.Conn) {
 
 func serveConn(ctx context.Context, conn net.Conn, scan hookctx.QuickScanner, o Options) {
 	defer func() { _ = conn.Close() }()
+	// The request's budget runs from when the connection was taken: the
+	// hook waits the budget from its dial (plus a small allowance), so the
+	// time spent reading the request and checking its root comes out of the
+	// scan's budget, never on top of it (where the hook would stop waiting
+	// before the scan's own deadline and lose its answer).
+	accepted := time.Now()
 	_ = conn.SetDeadline(time.Now().Add(MaxBudget + time.Second))
 	raw, err := readLine(conn)
 	if err != nil {
@@ -349,7 +426,7 @@ func serveConn(ctx context.Context, conn net.Conn, scan hookctx.QuickScanner, o 
 		serveNudgeConn(conn, q, o)
 		return
 	}
-	resp := answer(ctx, raw, scan, o.AllowRoot)
+	resp := answerAt(ctx, raw, scan, o.AllowRoot, accepted)
 	line, err := json.Marshal(resp)
 	if err != nil {
 		return
@@ -357,25 +434,35 @@ func serveConn(ctx context.Context, conn net.Conn, scan hookctx.QuickScanner, o 
 	_, _ = conn.Write(append(line, '\n'))
 }
 
-// answer decodes one request and runs the scanner under its budget. A
-// scanner that fails, panics or overruns answers unknown, and so does a
-// request for a root allow refuses (its DirtySeen is never accepted).
-func answer(ctx context.Context, raw []byte, scan hookctx.QuickScanner, allow func(string) bool) (resp response) {
+// answer is answerAt with the budget running from now.
+func answer(ctx context.Context, raw []byte, scan hookctx.QuickScanner, allow func(string) bool) response {
+	return answerAt(ctx, raw, scan, allow, time.Now())
+}
+
+// answerAt decodes one request and runs the scanner under its budget,
+// counted from started (when the connection was taken). A scanner that
+// fails, panics or overruns answers unknown, and so does a request for a
+// root allow refuses (its DirtySeen is never accepted). Every unknown
+// answer names its reason and the budget it had.
+func answerAt(ctx context.Context, raw []byte, scan hookctx.QuickScanner, allow func(string) bool, started time.Time) (resp response) {
+	var budget time.Duration
 	unknown := func(reason string) response {
-		return encodeResult(hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown}, reason)
+		return encodeResult(hookctx.QuickScanResult{Verdict: policy.QuickScanUnknown, Detail: policy.QuickScanDetail{
+			Reason: reason, Budget: budget, Elapsed: time.Since(started),
+		}}, reason)
 	}
 	var q request
 	if err := json.Unmarshal(raw, &q); err != nil || q.V != Version || q.ProjectRoot == "" {
-		return unknown("bad_request")
+		return unknown(policy.QuickScanReasonBadRequest)
 	}
 	if scan == nil {
-		return unknown("quick_scan_not_available")
+		return unknown(policy.QuickScanReasonNotServing)
 	}
 	if !filepath.IsAbs(q.ProjectRoot) || (allow != nil && !allow(q.ProjectRoot)) {
-		return unknown("root_not_allowed")
+		return unknown(policy.QuickScanReasonRootNotAllowed)
 	}
 	req, budget := q.decode()
-	sctx, cancel := context.WithTimeout(ctx, budget)
+	sctx, cancel := context.WithDeadline(ctx, started.Add(budget))
 	defer cancel()
 	type out struct {
 		res hookctx.QuickScanResult
@@ -394,10 +481,15 @@ func answer(ctx context.Context, raw []byte, scan hookctx.QuickScanner, allow fu
 	select {
 	case o := <-ch:
 		if o.err != nil {
-			return unknown("scan_failed")
+			return unknown(policy.QuickScanReasonScanFailed)
+		}
+		if o.res.Verdict == policy.QuickScanUnknown {
+			// The budget the request asked for (the posture's), not the
+			// slightly smaller one the scanner was handed to answer in time.
+			o.res.Detail.Budget = budget
 		}
 		return encodeResult(o.res, "")
 	case <-sctx.Done():
-		return unknown("over_budget")
+		return unknown(policy.QuickScanReasonOverBudget)
 	}
 }

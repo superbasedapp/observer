@@ -188,7 +188,7 @@ func nativeRailLetters(n integration.NativeRails) []string {
 // renderContract writes the human summary: the MCP tier table followed by a
 // per-tier count and a pointer to the prose contract.
 func renderContract(w io.Writer, doc contractDoc) {
-	fmt.Fprintf(w, "SuperBased stability contract v%d\n", doc.ContractVersion)
+	fmt.Fprintf(w, "superbased stability contract v%d\n", doc.ContractVersion)
 	fmt.Fprintf(w, "MCP server name: %s   (tools are namespaced mcp__%s__*)\n\n", doc.MCP.ServerName, doc.MCP.ServerName)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

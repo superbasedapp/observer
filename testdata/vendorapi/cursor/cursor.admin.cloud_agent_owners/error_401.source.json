@@ -1,0 +1,22 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-07",
+  "field_ledger": {
+    "error": "VerifiedOfficial",
+    "message": "VerifiedOfficial"
+  },
+  "fixture_sha256": "357f1fbfb94715bc72665361225e46e802ef98baa7f7935c7be5c11d8c2be157",
+  "http": {
+    "method": "POST",
+    "path": "/teams/filtered-usage-events",
+    "status": 401
+  },
+  "notes": "Verbatim documented 401 body.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "Cursor API overview page, fetched 2026-10-07",
+  "source_kind": "api_reference_example",
+  "source_sha256": "ed3a3eb7e1f33dd6409f4c2ed283208cb6f952e16ff5ca73ed1ba7896e4fb033",
+  "source_url": "https://cursor.com/docs/api.md",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "cursor.admin.cloud_agent_owners"
+}

@@ -49,7 +49,7 @@ func TestWriteCloudLoginPage(t *testing.T) {
 				t.Fatalf("body is not the themed HTML page:\n%s", body)
 			}
 			// Theme anchors: brand base color, accent, footer wordmark.
-			for _, bit := range append(tc.wantBits, "#0D0D12", "SuperBased Observer") {
+			for _, bit := range append(tc.wantBits, "#0D0D12", "superbased Observer") {
 				if !strings.Contains(body, bit) {
 					t.Errorf("body missing %q", bit)
 				}

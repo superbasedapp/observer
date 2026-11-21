@@ -1,0 +1,29 @@
+{
+  "tasks": [
+    {
+      "id": "task_e_6720aa01b2c3d4e5f6a7b8c9d0e1f2a3",
+      "url": "https://chatgpt.com/codex/tasks/task_e_6720aa01b2c3d4e5f6a7b8c9d0e1f2a3",
+      "title": "Fix flaky retry test in the ingest worker",
+      "status": "pending",
+      "updated_at": "2026-10-31T09:40:00Z",
+      "environment_id": "env_01HZXA7Q3M8K2R6T",
+      "environment_label": "acme-dev/observer-demo",
+      "summary": {"files_changed": 0, "lines_added": 0, "lines_removed": 0},
+      "is_review": false,
+      "attempt_total": 1
+    },
+    {
+      "id": "task_e_6720aa02b2c3d4e5f6a7b8c9d0e1f2a4",
+      "url": "https://chatgpt.com/codex/tasks/task_e_6720aa02b2c3d4e5f6a7b8c9d0e1f2a4",
+      "title": "Add pagination to the export endpoint",
+      "status": "ready",
+      "updated_at": "2026-10-31T08:15:30Z",
+      "environment_id": "env_01HZXA7Q3M8K2R6T",
+      "environment_label": "acme-dev/observer-demo",
+      "summary": {"files_changed": 3, "lines_added": 87, "lines_removed": 12},
+      "is_review": false,
+      "attempt_total": 4
+    }
+  ],
+  "cursor": "eyJvZmZzZXQiOjJ9"
+}

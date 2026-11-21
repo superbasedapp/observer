@@ -30,9 +30,20 @@ import "fmt"
 // loopback with no route and no DNS, as root and as an unprivileged user,
 // including with Ubuntu 20.04's bwrap 0.4.0, and its pid namespace with
 // --die-with-parent containing every hostile driver case.
+//
+// Paths: every path of a one-shot request is checked by validateOneShotAbs,
+// which accepts a plain space where the terminal planner's validateAbs does
+// not (operator ruling 2026-11-06: projects such as "future calculator" were
+// never scanned, every run refused as isolation_refused). A one-shot argv
+// only ever reaches bwrap through exec (internal/isolation -> extrun), one
+// element per path, so a space cannot split a path or start a flag. Tab,
+// newline and every other control character stay refused. The terminal
+// planner keeps the strict rule: its paths also feed the host helper and the
+// other sandbox runtimes, which have not been audited for it.
 
 // OneShotRequest is the pure input to BuildOneShot. Every path is absolute
-// and already resolved by the caller.
+// and already resolved by the caller; a plain space is allowed in any of
+// them, other whitespace and control characters are not.
 type OneShotRequest struct {
 	// Home is the native home directory; it is tmpfs-blinded, so every
 	// other tool's credentials and repositories are out of reach.
@@ -94,14 +105,22 @@ func BuildOneShot(req OneShotRequest) (Plan, error) {
 
 	// 2. Blind the home, then ~/.observer itself when the home tmpfs does
 	//    not already cover it.
+	//    A home on a masked drive has its mask first, as for a terminal.
+	masksAbove, masksRest := splitMasksAboveHome(req.Home, req.MaskPaths)
+	for _, m := range masksAbove {
+		if err := validateOneShotAbs(m, false); err != nil {
+			return Plan{}, fmt.Errorf("sandbox.BuildOneShot: mask path: %w", err)
+		}
+		add(flagTmpfs, m)
+	}
 	add(flagTmpfs, req.Home)
 	if !isWithin(req.ObserverDir, req.Home) {
 		add(flagTmpfs, req.ObserverDir)
 	}
 
 	// 3. Foreign-OS masks and host sockets, as for a terminal.
-	for _, m := range req.MaskPaths {
-		if err := validateAbs(m, false); err != nil {
+	for _, m := range masksRest {
+		if err := validateOneShotAbs(m, false); err != nil {
 			return Plan{}, fmt.Errorf("sandbox.BuildOneShot: mask path: %w", err)
 		}
 		add(flagTmpfs, m)
@@ -140,17 +159,17 @@ func BuildOneShot(req OneShotRequest) (Plan, error) {
 // checkOneShot validates every path of a one-shot request and the four
 // shape rules.
 func checkOneShot(req OneShotRequest) error {
-	if err := validateAbs(req.Home, true); err != nil {
+	if err := validateOneShotAbs(req.Home, true); err != nil {
 		return fmt.Errorf("home: %w", err)
 	}
-	if err := validateAbs(req.ObserverDir, true); err != nil {
+	if err := validateOneShotAbs(req.ObserverDir, true); err != nil {
 		return fmt.Errorf("observer dir: %w", err)
 	}
-	if err := validateAbs(req.ProjectRoot, true); err != nil {
+	if err := validateOneShotAbs(req.ProjectRoot, true); err != nil {
 		return fmt.Errorf("project root: %w", err)
 	}
 	for name, p := range map[string]string{"output dir": req.OutputDir, "cache dir": req.CacheDir} {
-		if err := validateAbs(p, true); err != nil {
+		if err := validateOneShotAbs(p, true); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if overlaps(p, req.ProjectRoot) {
@@ -175,7 +194,7 @@ func checkOneShot(req OneShotRequest) error {
 		}
 	}
 	for _, d := range req.ProgramDirs {
-		if err := validateAbs(d, false); err != nil {
+		if err := validateOneShotAbs(d, false); err != nil {
 			return fmt.Errorf("program dir: %w", err)
 		}
 		if overlaps(d, req.ObserverDir) {

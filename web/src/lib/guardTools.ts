@@ -21,7 +21,7 @@ export type GuardTestResponse = {
   };
 };
 
-/** GET on /api/guard/jobs/{policy,mcp}. */
+/** GET on /api/guard/jobs/{policy,mcp,chain}. */
 export type GuardJobsView = {
   confirm_token: string;
   kinds: { kind: string; label: string; writes: boolean }[];
@@ -61,6 +61,13 @@ const JOB_LABELS: Record<string, string> = {
   compile: "Write native rules",
   "mcp-scan": "Scan MCP configs",
   "mcp-report": "MCP report",
+  // B-G8: the audit chain repairs (/api/guard/jobs/chain).
+  "repair-anchors": "Restore pruned action ids (dry run)",
+  "repair-anchors-apply": "Restore pruned action ids",
+  "dedup-events": "Remove repeated rows (dry run)",
+  "dedup-events-apply": "Remove repeated rows",
+  "relink-gaps": "Re-link over deleted rows (dry run)",
+  "relink-gaps-apply": "Re-link over deleted rows",
 };
 
 /** guardJobLabel names a job kind (or a "guard:<kind>" job mode). */

@@ -354,7 +354,7 @@ func (lr *liveRouter) ReloadOrgPolicy(ctx context.Context) error {
 		}
 		lr.handle.store(next)
 	}
-	lr.logger.Info("routing: org policy hot-reloaded",
+	lr.logger.Info("routing: team policy hot-reloaded",
 		"version", composedOrgVersion, "hash", policy.Hash(), "mode", effMode)
 	return nil
 }

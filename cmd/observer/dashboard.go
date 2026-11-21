@@ -98,9 +98,11 @@ func newDashboardCmd() *cobra.Command {
 				Tasks:                  cfg.Tasks,
 				Projects:               cfg.Projects,
 				Plans:                  newPlansService(cfg, database, slog.Default()),
+				CloudAgents:            newCloudAgentsService(cfg, database, slog.Default()),
 				CloudGradeAvailability: CommitAlignmentAvailability,
 				JudgeGrade:             projectsJudgeGrade,
 				JudgeGradeReason:       projectsJudgeGradeReason,
+				JudgeGradePlace:        projectsJudgeGradePlace(&cfg, projectsJudgeGrade != nil),
 				// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
 				// commit scanner, nil when [projects].commit_scan is off.
 				CommitRescan: commitRescanWithDelivery(cfg, database),
@@ -113,6 +115,13 @@ func newDashboardCmd() *cobra.Command {
 				// SARIF upload (security_sarifimport.go): one file the
 				// developer picked, through the CLI's own import (lane SEC-P4).
 				SARIFImport: sarifImportDash(database),
+				// Code security "Scan now" (security_scan_now.go): one manual run of a
+				// selected scanner on one project, the same run its CLI verb starts.
+				SecurityScanNow: securityScanNowDash(resolvedConfigPath, database),
+				// DAST card (security_dast_dashboard.go) and Projects tab SBOM
+				// export (security_sbom_dashboard.go), security coverage gaps plan.
+				SecurityDAST:        securityDASTDash(resolvedConfigPath, database),
+				SecurityProjectSBOM: securityProjectSBOMDash(resolvedConfigPath),
 				// Code rules card (security_opengrep_dash.go): the guided
 				// install with its size consent (lane SEC-G2).
 				Opengrep: opengrepDash(resolvedConfigPath, database),
@@ -135,7 +144,8 @@ func newDashboardCmd() *cobra.Command {
 				// review lists N2's initializeCommand row as the launch reads it.
 				RepoTrustPaths: repoTrustDashboardPaths(resolvedConfigPath),
 				// The Findings tab's Explain (security.feedback, lane sec-h).
-				SecurityExplain: securityExplainDash(resolvedConfigPath, database),
+				SecurityExplain:    securityExplainDash(resolvedConfigPath, database),
+				SecurityExplainFix: securityExplainFixDash(resolvedConfigPath, database),
 				// The affected-worker notice (security_orgnotice_dash.go, lane SEC-E3).
 				SecurityOrgShare: securityOrgShareDash(cfg.OrgClient.Share.Security),
 				// Delivery (delivery_wire.go, D-689): the [delivery] tunables and the
@@ -193,10 +203,22 @@ func newDashboardCmd() *cobra.Command {
 				// GET /api/terminal/sandbox + the fail-closed launch validation.
 				// Nil unless [terminal.sandbox].enabled → endpoint reports
 				// disabled and a sandbox request 501s (fail closed).
-				SandboxProber: surfaces.sandboxProber,
+				SandboxProber:      surfaces.sandboxProber,
+				LoopbackCallerGate: surfaces.loopbackCallerGate,
+				LaunchCaller:       surfaces.launchCaller,
+				PendingLaunches:    surfaces.pendingLaunches,
 				// The New Terminal "project policy" line (lane sec-p2b): reads the
 				// project match record; shown only when the node holds a project delivery.
 				ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
+				// Sandbox setup (sandbox installation lifecycle plan, P-249): nil in a
+				// build without the sandbox module, so the setup routes answer 501.
+				SandboxSetup: newSandboxSetup(sandboxSetupOptions{ConfigPath: resolvedConfigPath, Surface: "dashboard", Ledger: surfaces.toolInstalls, Logger: slog.Default(), Spawn: func(_ context.Context, argv []string, label string) (string, int, error) {
+					if surfaces.launchMgr == nil {
+						return "", -1, errors.New("the dashboard terminal is off ([handoff].allow_dashboard_launch)")
+					}
+					h, err := surfaces.launchMgr.CreateSetup(dashapi.SetupSpec{Argv: argv, Label: label})
+					return h, -1, err
+				}}),
 				// Tool-binary-resolution seams (tool-binary-resolution arc §5):
 				// pre-launch verdict + guided install. Defined as plain funcs so
 				// the dashboard package never imports internal/toolresolve.
@@ -217,9 +239,12 @@ func newDashboardCmd() *cobra.Command {
 				// Settings > Enrolment management; no push loop runs in this
 				// process, so an enrolment's outcome says a daemon start is needed.
 				EnrolManager: enrolManagerFor(resolvedConfigPath, false, ngov),
+				// Plan 07 M8.4: the front door's one sentence (connect.go).
+				ConnectStatus: connectStatusSeam(database),
 				// Settings > Components and the route guard (modular packaging
 				// P1, lane MP-DASH): the same service `observer start` wires.
 				Components:         dashboardComponents(resolvedConfigPath, database),
+				SetupExtras:        dashboardSetupExtras(resolvedConfigPath),        // cli-parity L2: status line, start at login, browser capture setup
 				ComponentArtifacts: dashboardComponentArtifacts(resolvedConfigPath), // artifact_states (T-707)
 				BinaryInstall:      dashboardBinaryInstall,                          // binary_install (U12)
 				// Settings > Cloud Intelligence (org plane): `observer intel` behind
@@ -238,6 +263,10 @@ func newDashboardCmd() *cobra.Command {
 				// session-link resolver from termsvc. Nil when the launch
 				// manager is absent → cockpit 404s.
 				SessionResolver: sessionResolver(launchMgr),
+				// The agent-run security assessments' relaxations read the guard's own
+				// lock and decision per rule and project (fail closed when unreadable).
+				RuleRelaxation:     dashboardRuleRelaxation(resolvedConfigPath, database),
+				SandboxGatewayPort: sandboxGatewayPortFunc(),
 				// Remote-access substrate (plan §4). Nil unless [remote] is
 				// enabled AND a pairing secret is provisioned — so a
 				// non-loopback bind stays fail-closed until Phase 2 exposure.
@@ -274,6 +303,15 @@ func newDashboardCmd() *cobra.Command {
 			// D-514 / D-516: never refuse; bind loopback and say why once.
 			listen = feasibleDashboardAddr(listen, remoteCtrl, cmd.ErrOrStderr())
 			noteDashboardListen(listen)
+			// A standalone dashboard records its address beside the
+			// database too (its own per-process file, never the daemon's),
+			// so a sandboxed CLI launch's Landlock plan denies its port
+			// (cli-1b fixes-4; terminal_sandbox_landlock.go).
+			if removeRecord, rerr := writeStandaloneDashboardListenRecord(cfg.Observer.DBPath, listen); rerr == nil {
+				defer removeRecord()
+			} else {
+				slog.Default().Warn("dashboard: could not record the listen address", "err", rerr)
+			}
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			// Same default-off, loopback-only profiling knob as `observer

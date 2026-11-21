@@ -57,7 +57,10 @@ func TestSandboxCLIRunEndsUnderTheFloor(t *testing.T) {
 	sigs := make(chan os.Signal, 4)
 	out := &cliEndBuf{}
 	runID := "termcli0000000001"
-	reason, stop := watchSandboxCLIEnd(obs, runID, sigs, out)
+	reason, stop, werr := watchSandboxCLIEnd(obs, runID, sigs, out)
+	if werr != nil {
+		t.Fatal(werr)
+	}
 	defer stop()
 	run := sandboxrelayd.RunRecord{RunID: "relay-cli-1", TerminalRunID: runID}
 	relayEndForFloor(run, drift, endRun, nil)

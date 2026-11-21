@@ -44,6 +44,40 @@ type PromptEvaluator interface {
 	EvaluatePrompt(ev policy.Event) guard.PromptVerdict
 }
 
+// OrgPromptJudge is the OPTIONAL capability of a PromptEvaluator that asks
+// the organization's coding-agent prompt judge (P-228 phase 2, lane adm-2).
+// HandlePromptSubmitGuarded consults it only after the guard's own verdict
+// lets the prompt through, so a prompt the guard already stops never leaves
+// the hook. The cmd layer implements it over the daemon's owner-only ask
+// channel; this package never dials anything.
+type OrgPromptJudge interface {
+	JudgeOrgPrompt(q OrgPromptQuery) OrgPromptJudgement
+}
+
+// OrgPromptQuery is one prompt the hook asks the organization's judge about.
+type OrgPromptQuery struct {
+	// Tool is the integration registry id of the tool.
+	Tool string
+	// SessionID is the tool's session id ("" when the payload had none).
+	SessionID string
+	// Prompt is the prompt text ("" when Partial and none could be read).
+	Prompt string
+	// Partial is true when the hook could not read the whole prompt (the
+	// payload or the guard's scan stopped at a size bound). The judge never
+	// evaluates a prefix: the daemon answers with the policy's not-evaluated
+	// outcome, which refuses under a strict enforce policy (adm-2 fixes-1,
+	// H2).
+	Partial bool
+}
+
+// OrgPromptJudgement is the judge's answer for one prompt.
+type OrgPromptJudgement struct {
+	// Block refuses the prompt with Reason (a refusal by the judge, or a
+	// strict policy whose judge could not answer).
+	Block  bool
+	Reason string
+}
+
 // promptReplyOutcome is what a dialect's reply builder needs to shape
 // one wire response — resolved AFTER guard.ResolveEmission, so the
 // dialect layer never touches policy.Decision or channel capabilities
@@ -1228,6 +1262,12 @@ func promptHouseMessage(pv guard.PromptVerdict, sessionID string) string {
 	}
 	switch pv.Outcome {
 	case guard.PromptOutcomeBlocked:
+		if pv.Verdict.RuleID == guard.OrgPromptJudgeRuleID {
+			// The organization's prompt judge (lane adm-2): the reason
+			// already says what the policy refused and why; no detector or
+			// resend story applies.
+			return "observer: " + reason
+		}
 		if guard.IsBudgetRule(pv.Verdict.RuleID) {
 			// A managed budget stop (T-519): the reason already names the
 			// budget, the spend and the request flow. Nothing in the prompt
@@ -1474,7 +1514,82 @@ func HandlePromptSubmitGuarded(
 		// writer on the persisted verdict.
 		pv.CaptureDigest = guard.PromptPreSendDigest(prompt, pv.RecordWorthy())
 	}
+	judged := prompt
+	if pv.Action == guard.PromptActionRedact && masked != "" {
+		// The model gets the masked prompt, so the judge reads that.
+		judged = masked
+	}
+	if jpv, ok := orgPromptJudgeBlock(ge, tool, sessionID, judged, !extractOK || scanTruncated || bodyTruncated, pv, seamCaps); ok {
+		// The organization's judge refused it: reply with the judge's
+		// block, and persist only the guard's OWN verdict (the daemon's
+		// node lane already wrote the judge's audit row).
+		own := pv
+		return finishPromptVerdict(tool, event, d, body, sessionID, jpv, "", func(_ guard.PromptVerdict, _ guard.Emission, sid string) {
+			if persist != nil && (own.RecordWorthy() || own.CaptureDigest != "") {
+				persist(own, guard.PromptEmission(own), sid)
+			}
+		}, stdout, stderr)
+	}
 	return finishPromptVerdict(tool, event, d, body, sessionID, pv, masked, persist, stdout, stderr)
+}
+
+// orgPromptJudgeBlock asks the organization's prompt judge (when ge has the
+// OrgPromptJudge capability) about a prompt the guard's own verdict lets
+// through, and returns the judge's block resolved on this seam. A prompt the
+// guard already stops is never sent; a prompt that could not be read whole
+// is asked about as Partial (never skipped, adm-2 fixes-1 H2); a blank whole
+// prompt is not sent. A seam that cannot block resolves the judge's deny to
+// what it can do (a warn), honestly.
+func orgPromptJudgeBlock(ge PromptEvaluator, tool, sessionID, prompt string, partial bool, pv guard.PromptVerdict, caps guard.PromptSeamCaps) (guard.PromptVerdict, bool) {
+	j, ok := ge.(OrgPromptJudge)
+	if !ok || pv.Action.Stops() {
+		return guard.PromptVerdict{}, false
+	}
+	return askOrgPromptJudge(j, tool, sessionID, prompt, partial, caps)
+}
+
+// askOrgPromptJudge is the one ask both prompt-gate paths share.
+func askOrgPromptJudge(j OrgPromptJudge, tool, sessionID, prompt string, partial bool, caps guard.PromptSeamCaps) (guard.PromptVerdict, bool) {
+	if !partial && strings.TrimSpace(prompt) == "" {
+		return guard.PromptVerdict{}, false
+	}
+	if partial {
+		prompt = ""
+	}
+	r := j.JudgeOrgPrompt(OrgPromptQuery{Tool: tool, SessionID: sessionID, Prompt: prompt, Partial: partial})
+	if !r.Block {
+		return guard.PromptVerdict{}, false
+	}
+	return guard.OrgPromptJudgeBlock(r.Reason).WithAction(caps, "hook"), true
+}
+
+// HandlePromptSubmitOrgJudge is the prompt gate's judge-only path: the local
+// guard is not evaluating this prompt (guard off or disabled, the prompt
+// guard or its hook lane switched off), but the organization's judge still
+// applies, because a local switch never turns an org-controlled judge off
+// (adm-2 fixes-1, H3). It asks j and, on a block, writes the dialect's block
+// reply. handled=false (no judge, nothing to ask, or not blocked) means the
+// caller writes its usual allow. Nothing is persisted here: the daemon's
+// node lane writes the judge's audit row.
+func HandlePromptSubmitOrgJudge(tool, dialect, event string, body []byte, bodyTruncated bool, j OrgPromptJudge, stdout, stderr io.Writer) (handled bool, recordAfterReply func(), exitCode int) {
+	if j == nil {
+		return false, nil, 0
+	}
+	d, ok := promptDialects[dialect]
+	if !ok {
+		return false, nil, 0
+	}
+	body = bytes.TrimPrefix(body, utf8BOM)
+	prompt, sessionID, extractOK, _ := d.extract(body)
+	if !extractOK && !bodyTruncated {
+		return false, nil, 0
+	}
+	d.caps = d.seamCapsFor()
+	jpv, blocked := askOrgPromptJudge(j, tool, sessionID, prompt, !extractOK || bodyTruncated, d.caps)
+	if !blocked {
+		return false, nil, 0
+	}
+	return finishPromptVerdict(tool, event, d, body, sessionID, jpv, "", nil, stdout, stderr)
 }
 
 // finishPromptVerdict writes the dialect's reply for a resolved prompt

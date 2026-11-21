@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -227,13 +228,22 @@ func TestNewPathRedactorDropsDegenerateRoots(t *testing.T) {
 	}
 
 	// Duplicate roots collapse, first placeholder wins, and a trailing
-	// separator does not create a second root.
+	// separator does not create a second root. The roots are OS-native; on
+	// Windows the forward-slash spelling of the same root is registered on
+	// purpose (TestNewPathRedactorSeparatorSpellings), and must carry the
+	// same first-wins placeholder.
 	r2 := newPathRedactor([]pathSub{
-		{"/home/dev/", redactHome},
-		{"/home/dev", redactDB},
+		{filepath.FromSlash("/home/dev/"), redactHome},
+		{filepath.FromSlash("/home/dev"), redactDB},
 	})
-	if len(r2.subs) != 1 || r2.subs[0].placeholder != redactHome {
-		t.Fatalf("dedupe: %+v", r2.subs)
+	wantRoots := map[string]bool{filepath.FromSlash("/home/dev"): true, "/home/dev": true}
+	if len(r2.subs) != len(wantRoots) {
+		t.Fatalf("dedupe: %+v, want one entry per spelling in %v", r2.subs, wantRoots)
+	}
+	for _, sub := range r2.subs {
+		if !wantRoots[sub.root] || sub.placeholder != redactHome {
+			t.Fatalf("dedupe: %+v, want roots %v all carrying %q", r2.subs, wantRoots, redactHome)
+		}
 	}
 
 	// A root given in un-cleaned form is registered BOTH ways, so text quoting
@@ -242,6 +252,52 @@ func TestNewPathRedactorDropsDegenerateRoots(t *testing.T) {
 	r3 := newPathRedactor([]pathSub{{"/home/dev/./sub/", redactHome}})
 	if got := r3.redact("a=/home/dev/sub/x b=/home/dev/./sub/x"); got != "a=~/x b=~/x" {
 		t.Errorf("uncleaned root: got %q", got)
+	}
+}
+
+// TestNewPathRedactorSeparatorSpellings pins that a root is redacted whichever
+// separator the text quotes it with on Windows, where filepath.Clean rewrites
+// "/" to `\` and text arrives both ways (a TOML value or a ToSlash'd path
+// versus a filepath.Join result). On POSIX a backslash is an ordinary
+// filename byte, so only the given spelling is a root there.
+func TestNewPathRedactorSeparatorSpellings(t *testing.T) {
+	windows := filepath.Separator == '\\'
+	tests := []struct {
+		name, root, in   string
+		wantWin, wantPSX string
+	}{
+		{
+			"backslash root, slash text", `C:\Users\dev`, "C:/Users/dev/.claude",
+			"~/.claude", "C:/Users/dev/.claude",
+		},
+		{
+			"backslash root, backslash text", `C:\Users\dev`, `C:\Users\dev\.claude`,
+			`~\.claude`, `~\.claude`,
+		},
+		{
+			"slash root, backslash text", "C:/Users/dev", `C:\Users\dev\.claude`,
+			`~\.claude`, `C:\Users\dev\.claude`,
+		},
+		{
+			"slash root, slash text", "C:/Users/dev", "C:/Users/dev/.claude",
+			"~/.claude", "~/.claude",
+		},
+		{
+			"posix root", "/home/dev", "/home/dev/.claude and /home/dev",
+			"~/.claude and ~", "~/.claude and ~",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.wantPSX
+			if windows {
+				want = tc.wantWin
+			}
+			r := newPathRedactor([]pathSub{{tc.root, redactHome}})
+			if got := r.redact(tc.in); got != want {
+				t.Errorf("redact(%q) with root %q = %q, want %q", tc.in, tc.root, got, want)
+			}
+		})
 	}
 }
 
@@ -266,7 +322,9 @@ func TestDoctorRedactorRootSources(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"home", "desktop: " + home + "/.gemini/x", "desktop: ~/.gemini/x"},
 		{"config", "config.toml at " + server.opts.ConfigPath + " unreadable", "config.toml at <config> unreadable"},
-		{"db from config, tilde-expanded", "stat db: " + home + "/.observer/observer.db missing", "stat db: <db> missing"},
+		// diag.checkDBSize expands the tilde with filepath.Join, so the
+		// quoted path carries the OS separator.
+		{"db from config, tilde-expanded", "stat db: " + filepath.Join(home, ".observer", "observer.db") + " missing", "stat db: <db> missing"},
 		{"exe", "running=" + exe, "running=<exe>"},
 		{"etw token file", "could not open /srv/etw/process-bridge-token (denied)", "could not open <token-file> (denied)"},
 	}
@@ -340,8 +398,15 @@ func seedDoctorPathEmitters(t *testing.T, home string) string {
 	if err := os.MkdirAll(filepath.Join(home, ".observer"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"` + missing + `":{"sha256":"deadbeef","registered":"x","binary_path":"/opt/other/observer"}}`
-	if err := os.WriteFile(filepath.Join(home, ".observer", "hook_checksums.json"), []byte(body), 0o644); err != nil {
+	// json.Marshal, not string splicing: a Windows path's backslashes are
+	// invalid JSON escapes when pasted into a literal.
+	body, err := json.Marshal(map[string]map[string]string{
+		missing: {"sha256": "deadbeef", "registered": "x", "binary_path": "/opt/other/observer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".observer", "hook_checksums.json"), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return missing
@@ -394,17 +459,19 @@ func TestHealthDoctorRemoteRedactsLocalPaths(t *testing.T) {
 	// Literal-path emitter: redacted but still readable.
 	anti := doctorCheckByName(t, rep, "antigravity.family")
 	joined := strings.Join(anti.Details, "\n")
-	if !strings.Contains(joined, "~/.gemini/antigravity/conversations") {
+	// The checks build paths with filepath.Join, so the redacted text keeps
+	// the OS separator after the "~" placeholder.
+	if !strings.Contains(joined, redactHome+string(filepath.Separator)+filepath.Join(".gemini", "antigravity", "conversations")) {
 		t.Errorf("antigravity detail lost its remediation meaning: %q", anti.Details)
 	}
 
 	// err.Error()-only emitter: the path inside the error is redacted too.
 	hooks := doctorCheckByName(t, rep, "hooks.checksums")
 	joined = hooks.Message + "\n" + strings.Join(hooks.Details, "\n")
-	if !strings.Contains(joined, "~/.claude/gone/settings.json") {
+	if !strings.Contains(joined, redactHome+string(filepath.Separator)+filepath.Join(".claude", "gone", "settings.json")) {
 		t.Errorf("hooks.checksums detail lost its remediation meaning: %q", joined)
 	}
-	if !strings.Contains(joined, "no such file or directory") {
+	if !strings.Contains(joined, notExistText(t)) {
 		t.Errorf("hooks.checksums lost the error text entirely: %q", joined)
 	}
 }
@@ -446,4 +513,18 @@ func TestHealthDoctorRemoteFlagIsUnconditional(t *testing.T) {
 		t.Error("expected at least one path-free check to survive byte-identical " +
 			"(the flag would then be indistinguishable from a did-we-drop-anything signal)")
 	}
+}
+
+// notExistText is this OS's wording for a missing file ("no such file or
+// directory" on POSIX, "The system cannot find the path specified." on
+// Windows), taken from a real failed stat so the assertion is not
+// POSIX-only.
+func notExistText(t *testing.T) string {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(t.TempDir(), "absent", "file"))
+	var pe *os.PathError
+	if !errors.As(err, &pe) {
+		t.Fatalf("stat of a missing file returned %v, want *os.PathError", err)
+	}
+	return pe.Err.Error()
 }

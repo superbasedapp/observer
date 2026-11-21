@@ -1,6 +1,6 @@
 // Package sandboxenv is the one table of environment variables a sandbox
 // box may receive from the environment that launched it (WINFIX2 audit
-// finding 1, tracker R-167, ledger SBX-WIN-ENV-1).
+// finding 1, ledger SBX-WIN-ENV-1).
 //
 // Before, every local backend built the box's environment from its parent's
 // minus a short deny-list, so a GITHUB_TOKEN, an AWS_* key or the launching

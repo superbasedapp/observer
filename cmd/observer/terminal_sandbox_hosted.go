@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,8 +22,11 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxkey"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
 	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
@@ -80,9 +85,30 @@ func recordHostedListed(cfg config.TerminalSandboxConfig) {
 // row's is the bound tool state (host_bound).
 func sandboxRequestCustody(cfg config.TerminalSandboxConfig, row sandboxbackend.Capability) vocab.KeyCustody {
 	if row.Iso.Location == vocab.LocationRemote {
-		return vocab.KeyCustody(cfg.Hosted.KeyCustody)
+		return hostedSelectionCustody(vocab.KeyCustody(cfg.Hosted.KeyCustody), row)
 	}
 	return vocab.CustodyHostBound
+}
+
+// hostedSelectionCustody is the custody a selection request with no tool
+// carries for a hosted row (decision SBXD-1): an explicit value as set; auto
+// is resolved per tool only at the launch, so here it reads as the custody
+// it can fall back to, the strictest for capture: in_box_api_key where the
+// row offers it, home_relay where the row keeps every key home.
+func hostedSelectionCustody(c vocab.KeyCustody, row sandboxbackend.Capability) vocab.KeyCustody {
+	if c != vocab.CustodyAuto {
+		return c
+	}
+	if hostedRowRefusesInBox(row) {
+		return vocab.CustodyHomeRelay
+	}
+	return vocab.CustodyInBoxAPIKey
+}
+
+// hostedRowRefusesInBox reports whether a hosted row keeps every model key
+// on this machine: its capability row offers no in-box custody.
+func hostedRowRefusesInBox(row sandboxbackend.Capability) bool {
+	return !slices.Contains(row.Net.KeyCustody, vocab.CustodyInBoxAPIKey)
 }
 
 // hostedCredentialInReach reports whether the agent in a hosted box holds a
@@ -507,9 +533,11 @@ func hostedConnectCredential(observerDir string, v sandboxremote.Vendor, fields 
 }
 
 // hostedDisconnectCredential removes the stored credential and the marker.
+// A keychain entry already gone still removes the marker, so a provider never
+// reads as connected with nothing behind it.
 func hostedDisconnectCredential(observerDir string, v sandboxremote.Vendor) error {
 	ks := hostedKeystoreOpen(v.KeystoreService, hostedCredDir(observerDir))
-	if err := ks.Delete(sandboxremote.KeystoreName); err != nil {
+	if err := ks.Delete(sandboxremote.KeystoreName); err != nil && !errors.Is(err, keystore.ErrNotFound) {
 		return err
 	}
 	err := os.Remove(hostedConnectedMarker(observerDir, v.ID))
@@ -530,6 +558,50 @@ type hostedVendorReg struct {
 	vendor    string
 	component string
 	newClient hostedClientFactory
+	// The optional hooks of a vendor whose row's capability flags ask for
+	// more than the shared core does (lane G4, the org-hosted row; nil for
+	// the three file-API vendors, which keep the core's own behaviour):
+	//   - mintSource builds the run's token source for a MintedCredential
+	//     vendor (the core then reads no keystore and no environment);
+	//   - localProbe adds the row's own local probe rows (no network call,
+	//     invariant I6), walked before the shared ladder's;
+	//   - endRun takes the run's end branch (hold, return and delete, or end
+	//     without a return) in place of the shared teardown, and reports
+	//     whether it did.
+	mintSource func(ctx context.Context, plan hostedPlanFile) (sandboxremote.CredentialSource, error)
+	localProbe func(d *hostedDriver) (verdict, reason string)
+	endRun     func(ctx context.Context, r *hostedRun) bool
+	//   - resumeBox names the held box a launch in this process takes over
+	//     ("" for a fresh box), and resumeArgs is the agent's native resume
+	//     tail for a session id (nil for a fresh session in the kept box).
+	resumeBox  func() string
+	resumeArgs func(tool, sessionID string) []string
+	//   - cloneSpec is the box-side clone of a remote_clone delivery: the
+	//     exact argv and environment and the token purpose it is sent
+	//     under (nil: the vendor has no box-side clone);
+	//   - runCap is the vendor's own lower cap of a box's run minutes (the
+	//     organization's max_run_minutes; 0 for none), applied as
+	//     min(local, vendor) at launch.
+	cloneSpec func(url string) (argv []string, env map[string]string, purpose string)
+	runCap    func(d *hostedDriver) int
+	//   - authVersion is the row's authenticated version source (FX1 item 1,
+	//     live finding F-L3-5): the version and true only when it was read
+	//     from an authenticated identity (for the org row, the org's signed
+	//     managed body); "" and false otherwise. A row that pins
+	//     RequireAuthenticatedVersion needs one, or selection rule S2b
+	//     refuses every launch. nil keeps the row's client contract version,
+	//     unauthenticated (E2B, Modal and Vercel do not pin the flag).
+	authVersion func(d *hostedDriver) (version string, ok bool)
+	//   - dailyQuota is the vendor's own per-member daily box-minutes quota
+	//     (for the org row, the organization's daily_box_minutes_per_member
+	//     from its verified body; 0 for none), shown on the consent screen
+	//     under the machine's own cap. nil: the vendor publishes none.
+	dailyQuota func(c config.TerminalSandboxHostedConfig) int
+	//   - cloneRepositories lists the repositories a clone-remote launch on
+	//     the row may name (for the org row, the organization's published
+	//     clone_repositories), for the clone consent's picker (FX3 item 3).
+	//     nil: the row offers no box-side clone list.
+	cloneRepositories func(c config.TerminalSandboxHostedConfig) []string
 }
 
 // hostedVendorRegs are the registered vendor drivers (vendor id ->
@@ -565,15 +637,36 @@ func hostedResolveRefusal(v sandboxremote.Vendor, pc config.TerminalSandboxHoste
 }
 
 func hostedVendorConfig(c config.TerminalSandboxHostedConfig, vendor string) config.TerminalSandboxHostedProviderConfig {
-	switch vendor {
-	case sandboxremote.VendorE2B:
-		return c.E2B
-	case sandboxremote.VendorModal:
-		return c.Modal
-	case sandboxremote.VendorVercel:
-		return c.Vercel
+	for _, row := range hostedVendorConfigTable {
+		if row.vendor == vendor {
+			return row.read(c)
+		}
 	}
 	return config.TerminalSandboxHostedProviderConfig{}
+}
+
+// hostedVendorConfigTable maps a vendor id to its provider table in
+// [terminal.sandbox.hosted] (a table, not a switch on the vendor id; lane
+// G4). A driver whose table is composed from the verified managed body
+// appends its own row from its file's init.
+var hostedVendorConfigTable = []hostedVendorConfigRow{
+	{sandboxremote.VendorE2B, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.E2B }},
+	{sandboxremote.VendorModal, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Modal }},
+	{sandboxremote.VendorVercel, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Vercel }},
+	{sandboxremote.VendorDockerSandboxes, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Docker }},
+	{sandboxremote.VendorInstaBox, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig {
+		return c.InstaBox
+	}},
+	{sandboxremote.VendorDaytona, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig {
+		return c.Daytona
+	}},
+}
+
+// hostedVendorConfigRow is one row of hostedVendorConfigTable; a driver
+// whose provider table is composed elsewhere appends its own from init.
+type hostedVendorConfigRow = struct {
+	vendor string
+	read   func(config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig
 }
 
 // ---- the probe (local only, invariant I6) -----------------------------------
@@ -598,6 +691,14 @@ type hostedProbeFacts struct {
 	// consentChange is the consent verdict of a recorded consent that no
 	// longer matches ("" when none is recorded or it matches).
 	consentChange string
+	// version and versionAuthenticated are the row's version as its driver
+	// read it ("" keeps the client contract version, unauthenticated).
+	version              string
+	versionAuthenticated bool
+	// homeKey is the node-wide answer to whether a run's model key can
+	// reach the agent under the configured custody (sandboxkey.HomeKey);
+	// nil when it can.
+	homeKey *sandboxkey.HomeKeyVerdict
 }
 
 // hostedProbeLadder decides a hosted row's probe verdict from local facts
@@ -605,6 +706,9 @@ type hostedProbeFacts struct {
 func hostedProbeLadder(v sandboxremote.Vendor, cfg config.TerminalSandboxHostedConfig, f hostedProbeFacts) sandboxselect.Probe {
 	row, _ := sandboxbackend.Get(v.ID)
 	p := sandboxselect.Probe{Compiled: true, Version: row.Control.Pins.RequiredMin, Sources: []string{"live"}}
+	if f.version != "" {
+		p.Version, p.VersionAuthenticated = f.version, f.versionAuthenticated
+	}
 	pc := hostedVendorConfig(cfg, v.ID)
 	_, _, regionOK := hostedResolve(v, pc)
 	rules := []struct {
@@ -626,6 +730,16 @@ func hostedProbeLadder(v sandboxremote.Vendor, cfg config.TerminalSandboxHostedC
 		}},
 		{verdictHostedCredentialMissing, func() (bool, string) {
 			return f.credential == "", "no " + v.Name + " credential: connect one in Terminals > Settings > Hosted sandboxes, or set " + strings.Join(v.EnvCredential, " and ")
+		}},
+		// The model key's custody, before Start (audit
+		// hosted-sandbox-key-custody-2026-11-18): a custody nothing on this
+		// node can serve refuses every launch, so the row is not offered as
+		// ready and the setup checklist's model key step reads missing.
+		{sandboxselect.VerdictCustodyUnsatisfiable, func() (bool, string) {
+			if f.homeKey == nil {
+				return false, ""
+			}
+			return true, f.homeKey.Message
 		}},
 		{verdictHostedBoxBinary, func() (bool, string) {
 			if f.boxBinaryErr == nil {
@@ -663,6 +777,9 @@ func hostedProbeLadder(v sandboxremote.Vendor, cfg config.TerminalSandboxHostedC
 // running binary when it is a Linux binary (the box architecture is checked
 // at launch, against what the box reports).
 func hostedBoxBinaryCheck(pc config.TerminalSandboxHostedProviderConfig, observerBin string) error {
+	if pc.BoxBinaryInImage {
+		return nil // the box image carries it; the box checks its version at launch
+	}
 	if b := strings.TrimSpace(pc.BoxBinary); b != "" {
 		fi, err := os.Stat(b)
 		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
@@ -687,12 +804,28 @@ type hostedDriver struct {
 	vendor sandboxremote.Vendor
 	reg    hostedVendorReg
 	now    func() time.Time
-	// homeRelayOK: a key the proxy adds itself is configured (a routing key
-	// pool or the org AI Gateway route), so home_relay custody can work.
+	// homeRelayOK: a key the proxy adds itself is configured (the org AI
+	// Gateway route, homeRelayServedAtHome) or credential injection is
+	// ready, so home_relay custody can work (the org row's probe reads it).
 	homeRelayOK bool
-	// homeRelayNote names why credential injection cannot serve home_relay
-	// on this node although it is selected (audit F10); "" otherwise.
-	homeRelayNote string
+	// homeKey are the node's facts about how a run's model key reaches the
+	// agent (hostedHomeKeyFacts); the probe judges them node-wide and
+	// Create per tool, through the one table (sandboxkey.HomeKey).
+	homeKey sandboxkey.HomeKeyFacts
+	// full is the config the driver was built from, so the key facts are
+	// read again on each question (a key stored after the build counts at
+	// once: the dialog's paste field re-reads the probe).
+	full *config.Config
+}
+
+// homeRelayServedAtHome reports whether the proxy itself puts a credential
+// on a request that carries none of the user's: the org AI Gateway route,
+// which strips every credential header and attaches the org's virtual key.
+// A routing key pool does not: it only rotates among keys a request already
+// presented (internal/proxy keypool.go's membership guard), so a box with no
+// key gets none from it (FX3 item 5, live finding F-L3P4-4).
+func homeRelayServedAtHome(full config.Config) bool {
+	return full.Proxy.OrgRoute.Mode != ""
 }
 
 // newHostedDriver builds a hosted driver; nothing is probed, read or dialled
@@ -700,11 +833,233 @@ type hostedDriver struct {
 func newHostedDriver(r *sandboxRuntime, full config.Config, reg hostedVendorReg) sandboxDriver {
 	v, _ := sandboxremote.VendorFor(reg.vendor)
 	recordHostedListed(full.Terminal.Sandbox)
+	hk := hostedHomeKeyFacts(full)
 	return &hostedDriver{
 		r: r, cfg: full.Terminal.Sandbox.Hosted, vendor: v, reg: reg, now: time.Now,
-		homeRelayOK:   len(full.Routing.KeyPool) > 0 || full.Proxy.OrgRoute.Mode != "" || hostedCredReadyFor(full),
-		homeRelayNote: hostedCredNotReadyFor(full),
+		homeRelayOK: hostedHomeRelayServed(hk),
+		homeKey:     hk,
+		full:        &full,
 	}
+}
+
+// homeKeyFacts are the node's key facts with the driver's own custody (the
+// one Create reads) and its row's capability: a row that keeps every key
+// on this machine resolves auto to home_relay (decision SBXD-1). The stored
+// key list is read again (ids only, never a key), so a key stored after
+// the driver was built counts at once.
+func (d *hostedDriver) homeKeyFacts() sandboxkey.HomeKeyFacts {
+	f := d.homeKey
+	if hostedCredFacts != nil && d.full != nil {
+		f.InjectionSelected, f.InjectionBuilt, f.StoredProviders = hostedCredFacts(*d.full)
+	}
+	f.Custody = d.cfg.KeyCustody
+	f.InBoxRefused = hostedRowRefusesInBox(hostedRow(d.vendor.ID))
+	return f
+}
+
+// hostedHomeKeyFacts are the node's facts about how a hosted run's model
+// key reaches the agent: the configured custody, the org AI Gateway route,
+// and what credential injection offers (read without opening a key).
+func hostedHomeKeyFacts(full config.Config) sandboxkey.HomeKeyFacts {
+	f := sandboxkey.HomeKeyFacts{
+		Custody: full.Terminal.Sandbox.Hosted.KeyCustody, OrgRoute: homeRelayServedAtHome(full),
+		InBoxEnvProviders: hostedInBoxEnvProviders(),
+	}
+	if hostedCredFacts != nil {
+		f.InjectionSelected, f.InjectionBuilt, f.StoredProviders = hostedCredFacts(full)
+	}
+	return f
+}
+
+// hostedInBoxEnvProviders are the providers whose in-box API-key variable
+// (sandboxkey.InBoxKeyEnv) is set in the daemon's environment (ids only;
+// no value leaves this function), read through hostedLookupEnv. The hosted
+// host helper inherits that environment, so this is what an in-box custody
+// forwards (agentEnv).
+func hostedInBoxEnvProviders() []string {
+	var ids []string
+	for _, n := range sandboxkey.InBoxKeyEnv() {
+		if v, ok := hostedLookupEnv(n); ok && v != "" {
+			ids = append(ids, sandboxkey.InBoxEnvProvider(n))
+		}
+	}
+	return sandboxkey.Known(ids)
+}
+
+// hostedToolRoute is what a tool's capability row says about the providers
+// its model requests use (sandboxkey.ToolRoute), read from the row, never
+// its name: the vendor-locked catalogue, whether it has a proxy route, and
+// the providers that route names (its covered built-in provider overrides,
+// and the provider whose model host a route lane addresses). With neither
+// named, RouteProviders stays nil: the registry says nothing about which
+// providers the route carries.
+func hostedToolRoute(tool string) sandboxkey.ToolRoute {
+	spec, _ := integration.For(tool)
+	t := sandboxkey.ToolRoute{
+		VendorLocked: spec.Model.Catalog.Kind == integration.ModelCatalogVendor,
+		Families:     spec.Model.Catalog.Providers,
+		Routed:       spec.Proxy != nil,
+	}
+	if spec.Proxy == nil {
+		return t
+	}
+	named := false
+	var ids []string
+	addHost := func(upstream string) {
+		named = true
+		if p, ok := sandboxkey.ProviderForHost(hostedUpstreamHost(upstream)); ok {
+			ids = append(ids, p.ID)
+		}
+	}
+	if l := spec.Proxy.Lane; l != nil && l.DefaultUpstream != "" {
+		addHost(l.DefaultUpstream)
+	}
+	if spec.Proxy.CarriesProviders != nil {
+		// The route sets one provider's base URL (opencode's
+		// OPENAI_BASE_URL): only that provider's requests reach the proxy.
+		named = true
+		ids = append(ids, spec.Proxy.CarriesProviders...)
+	}
+	for _, o := range spec.Proxy.ProviderOverrides {
+		if !o.Covered() {
+			continue
+		}
+		named = true
+		ids = append(ids, o.Provider)
+	}
+	if named {
+		// Named but none the table knows is an empty set, not "unknown".
+		t.RouteProviders = append([]string{}, sandboxkey.Known(ids)...)
+	}
+	return t
+}
+
+// hostedUpstreamHost is the host of an upstream root ("https://openrouter.ai"
+// -> "openrouter.ai"; "" when it does not parse).
+func hostedUpstreamHost(upstream string) string {
+	u, err := url.Parse(upstream)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// hostedHomeRelayServed reports whether home_relay custody is served on
+// the node whatever custody is configured (the org row's probe fact).
+func hostedHomeRelayServed(f sandboxkey.HomeKeyFacts) bool {
+	f.Custody, f.ForTool = string(vocab.CustodyHomeRelay), false
+	return sandboxkey.HomeKey(f).OK
+}
+
+// hostedHomeKeyForTool completes the node's facts for one tool: the
+// providers credential injection can bind for it and the providers whose
+// keys it can use at all, read from the tool's own capability row
+// (hostedToolRoute), never its name.
+func hostedHomeKeyForTool(f sandboxkey.HomeKeyFacts, tool string) sandboxkey.HomeKeyFacts {
+	r := hostedToolRoute(tool)
+	f.ForTool = true
+	f.ToolProviders = sandboxkey.InjectableProviders(r)
+	f.ToolUsable = sandboxkey.UsableProviders(r)
+	f.ToolName = integration.DisplayName(tool)
+	return f
+}
+
+// hostedToolKeyFacts are hostedHomeKeyForTool's facts completed with the
+// tool's own settings of [terminal.sandbox.hosted] (decisions SBXD-1 and
+// SBXD-4): its per-tool custody and its opt-in in-box key sources, each
+// only where the tool's registry row grounds it (never read from the
+// files here: that happens only when a run starts).
+func hostedToolKeyFacts(f sandboxkey.HomeKeyFacts, hc config.TerminalSandboxHostedConfig, tool string) sandboxkey.HomeKeyFacts {
+	f = hostedHomeKeyForTool(f, tool)
+	f.ToolCustody = hc.KeyCustodyByTool[tool]
+	if row, ok := integration.SandboxSavedKeysFor(tool); ok && hc.ToolKeys[tool] && row.FileFor(runtime.GOOS) != "" {
+		f.ToolSavedKeys, f.ToolSavedProviders = true, row.Providers()
+	}
+	if row, ok := integration.SandboxLoginSeedFor(tool); ok && hc.LoginSeed[tool] && !slices.Contains(row.KeychainOn, runtime.GOOS) {
+		f.LoginSeed = true
+	}
+	return f
+}
+
+// hostedKeyFactsOf returns the node's key facts as a listed hosted driver
+// among drivers holds them (every hosted driver reads the same config, so
+// any listed one answers); ok false when no hosted row is listed.
+func hostedKeyFactsOf(drivers map[string]sandboxDriver) (sandboxkey.HomeKeyFacts, bool) {
+	f, _, ok := hostedKeyNodeOf(drivers)
+	return f, ok
+}
+
+// hostedKeyNodeOf is hostedKeyFactsOf with the hosted block the per-tool
+// facts are completed from. A listed row that offers an in-box custody is
+// preferred, so the per-tool line describes the vendor rows; the org-hosted
+// row, which keeps every key home, says its own refusal in its probe (R2)
+// and at the launch.
+func hostedKeyNodeOf(drivers map[string]sandboxDriver) (sandboxkey.HomeKeyFacts, config.TerminalSandboxHostedConfig, bool) {
+	var found *hostedDriver
+	for _, id := range slices.Sorted(maps.Keys(drivers)) {
+		h, ok := drivers[id].(*hostedDriver)
+		if !ok || !h.listed() {
+			continue
+		}
+		if found == nil || (found.homeKeyFacts().InBoxRefused && !h.homeKeyFacts().InBoxRefused) {
+			found = h
+		}
+	}
+	if found == nil {
+		return sandboxkey.HomeKeyFacts{}, config.TerminalSandboxHostedConfig{}, false
+	}
+	return found.homeKeyFacts(), found.cfg, true
+}
+
+// hostedKeyNotice is the per-tool line of the sandbox probe, said before
+// Start: the refusal a hosted launch of tool would meet on its model key
+// (blocking), or a line that does not block it (which custody the launch
+// uses and why, which of the person's keys the agent gets, or that it
+// starts with none); nil when there is nothing to say.
+func hostedKeyNotice(f sandboxkey.HomeKeyFacts, tool string) *dashapi.SandboxKeyNotice {
+	return hostedKeyNoticeFor(f, config.TerminalSandboxHostedConfig{}, tool)
+}
+
+// hostedKeyNoticeFor is hostedKeyNotice with the tool's own settings
+// (hostedToolKeyFacts): the line also carries the resolved custody, the
+// providers whose stored key would keep the key home (the dialog's paste
+// field), and the tool's opt-in in-box sources when the key goes in the box.
+func hostedKeyNoticeFor(f sandboxkey.HomeKeyFacts, hc config.TerminalSandboxHostedConfig, tool string) *dashapi.SandboxKeyNotice {
+	tf := hostedToolKeyFacts(f, hc, tool)
+	v := sandboxkey.HomeKey(tf)
+	if v.OK && v.Message == "" {
+		return nil
+	}
+	sev := dashapi.SandboxKeyBlocking
+	if !v.Blocking() {
+		sev = dashapi.SandboxKeyAdvisory
+	}
+	n := &dashapi.SandboxKeyNotice{Code: v.Code, Message: v.Message, Technical: v.Technical, Severity: sev, Custody: v.Resolution.Custody}
+	for _, id := range sandboxkey.KeepHomeOffers(tf) {
+		p, _ := sandboxkey.ProviderFor(id)
+		n.KeepHome = append(n.KeepHome, dashapi.SandboxKeyProvider{ID: id, Label: p.KeyLabel})
+	}
+	if v.Resolution.Custody == string(vocab.CustodyInBoxAPIKey) {
+		if _, ok := integration.SandboxSavedKeysFor(tool); ok {
+			n.ToolKeys = &dashapi.SandboxKeySource{On: hc.ToolKeys[tool]}
+		}
+		if _, ok := integration.SandboxLoginSeedFor(tool); ok {
+			n.LoginSeed = &dashapi.SandboxKeySource{On: hc.LoginSeed[tool]}
+		}
+	}
+	return n
+}
+
+// hostedKeyCheck refuses a launch whose model key cannot reach the agent
+// (S7d, the one table sandboxkey.HomeKey): a typed refusal with the plain
+// sentence and the technical detail apart, so the dashboard shows the
+// sentence and a link and a terminal prints both.
+func hostedKeyCheck(f sandboxkey.HomeKeyFacts) error {
+	v := sandboxkey.HomeKey(f)
+	if v.OK {
+		return nil
+	}
+	return &dashapi.SandboxStepRefusal{Code: verdictHostedCustody, Message: v.Message, Technical: v.Code + ": " + v.Technical}
 }
 
 // listed reports whether the row is among the enabled backends.
@@ -719,11 +1074,60 @@ func (d *hostedDriver) consentFactsStatic() (sandboxremote.ConsentFacts, bool) {
 	if !ok {
 		return sandboxremote.ConsentFacts{}, false
 	}
-	return sandboxremote.ConsentFacts{
-		Provider: d.vendor.ID, Endpoint: endpoint, Region: region, Custody: d.cfg.KeyCustody,
+	f := sandboxremote.ConsentFacts{
+		Provider: d.vendor.ID, Endpoint: endpoint, Region: region, Custody: hostedConsentCustody(d.cfg),
 		BoxBinary: hostedBoxBinaryLabel(pc), MemoryImages: d.cfg.MemoryImages,
 		MaxRunMinutes: d.cfg.MaxRunMinutes, DailyBoxMinutes: d.cfg.DailyBoxMinutes,
-	}, true
+	}
+	hk := d.homeKeyFacts()
+	f.InBoxKeys, f.ToolKeys, f.LoginSeed = hostedConsentKeyFacts(d.cfg, hk.InjectionSelected, hk.StoredProviders, hk.InBoxRefused)
+	return f, true
+}
+
+// hostedConsentCustody is the consent's custody fact (decision SBXD-1): the
+// node's key_custody ("auto" states the rule, not a per-tool answer, so a
+// resolution that differs per tool needs no second consent), with every
+// per-tool value after it, sorted ("auto; droid=in_box_api_key"). With no
+// per-tool value it is exactly the node value, as every record had.
+func hostedConsentCustody(hc config.TerminalSandboxHostedConfig) string {
+	out := hc.KeyCustody
+	tools := slices.Sorted(maps.Keys(hc.KeyCustodyByTool))
+	if len(tools) == 0 {
+		return out
+	}
+	parts := make([]string, 0, len(tools))
+	for _, t := range tools {
+		parts = append(parts, t+"="+hc.KeyCustodyByTool[t])
+	}
+	return out + "; " + strings.Join(parts, ",")
+}
+
+// hostedConsentKeyFacts are the consent's in-box key facts (decisions
+// SBXD-3 and SBXD-4): the stored providers whose keys would enter the box
+// (read only while the credentials component is selected, as the host
+// helper reads them), and the tools opted in to their own saved keys and to
+// a login seed. Each is bound only while the custody settings can put a key
+// in the box (sandboxkey.MayPutKeyInBox), so under home_relay everywhere
+// all three are empty and a stored key never reopens the consent.
+func hostedConsentKeyFacts(hc config.TerminalSandboxHostedConfig, injectionSelected bool, stored []string, inBoxRefused bool) (inBoxKeys, toolKeys, loginSeed string) {
+	if !sandboxkey.MayPutKeyInBox(hc.KeyCustody, hc.KeyCustodyByTool, inBoxRefused) {
+		return "", "", ""
+	}
+	if injectionSelected {
+		inBoxKeys = strings.Join(sandboxkey.Known(stored), ",")
+	}
+	on := func(m map[string]bool, grounded func(string) bool) string {
+		var ids []string
+		for _, t := range slices.Sorted(maps.Keys(m)) {
+			if m[t] && grounded(t) {
+				ids = append(ids, t)
+			}
+		}
+		return strings.Join(ids, ",")
+	}
+	toolKeys = on(hc.ToolKeys, func(t string) bool { _, ok := integration.SandboxSavedKeysFor(t); return ok })
+	loginSeed = on(hc.LoginSeed, func(t string) bool { _, ok := integration.SandboxLoginSeedFor(t); return ok })
+	return inBoxKeys, toolKeys, loginSeed
 }
 
 // hostedBoxBinaryLabel names the in-box observer on the consent screen. A
@@ -732,6 +1136,9 @@ func (d *hostedDriver) consentFactsStatic() (sandboxremote.ConsentFacts, bool) {
 // the version the box must report, never this binary's version as that
 // file's (live run 2, finding N3).
 func hostedBoxBinaryLabel(pc config.TerminalSandboxHostedProviderConfig) string {
+	if pc.BoxBinaryInImage {
+		return "observer from the box image (nothing is uploaded; the box refuses it unless it reports " + version + ")"
+	}
 	if b := strings.TrimSpace(pc.BoxBinary); b != "" {
 		return "observer from box_binary " + b + " (its version is unchecked here; the box refuses it unless it reports " + version + ")"
 	}
@@ -742,15 +1149,31 @@ func hostedBoxBinaryLabel(pc config.TerminalSandboxHostedProviderConfig) string 
 // value).
 func (d *hostedDriver) probe(context.Context) sandboxselect.Probe {
 	f := hostedProbeFacts{listed: d.listed(), host: sandboxHostKind()}
+	f.version, f.versionAuthenticated = d.probeVersion()
+	if d.reg.localProbe != nil {
+		// The row's own local rows come first (the org-hosted row's R0: a
+		// node not offered the row says so before anything else).
+		if v, why := d.reg.localProbe(d); v != "" {
+			return sandboxselect.Probe{Compiled: true, Version: f.version, VersionAuthenticated: f.versionAuthenticated, Sources: []string{"live"}, Verdict: v, Reason: why}
+		}
+	}
 	if !f.listed {
 		return hostedProbeLadder(d.vendor, d.cfg, f)
 	}
 	f.credential = hostedCredentialSource(d.r.observerDir, d.vendor)
+	if d.vendor.MintedCredential {
+		// No stored credential: every call carries a token the org mints at
+		// launch (the local sign-in check is the row's own probe row R3).
+		f.credential = sandboxremote.SourceMinted
+	}
 	f.usedToday = hostedLedgerUsed(d.r.observerDir, d.vendor.ID, d.now(), d.cfg.DailyBoxMinutes)
 	f.boxBinaryErr = hostedBoxBinaryCheck(hostedVendorConfig(d.cfg, d.vendor.ID), d.r.observerBin)
+	if v := sandboxkey.HomeKey(d.homeKeyFacts()); !v.OK {
+		f.homeKey = &v
+	}
 	if static, ok := d.consentFactsStatic(); ok {
 		if rec := hostedLoadConsent(d.r.observerDir, d.vendor.ID); rec != nil {
-			if v := hostedStaticConsentVerdict(*rec, static); v == sandboxremote.ConsentOK {
+			if v := hostedStaticConsentVerdict(*rec, static, d.vendor, d.cfg); v == sandboxremote.ConsentOK {
 				f.consentFacts = &rec.Facts
 			} else {
 				f.consentChange = v
@@ -761,16 +1184,35 @@ func (d *hostedDriver) probe(context.Context) sandboxselect.Probe {
 }
 
 // hostedStaticConsentVerdict is the consent verdict against the
-// launch-independent facts: ConsentOK, or the one naming what changed.
-func hostedStaticConsentVerdict(rec sandboxremote.ConsentRecord, static sandboxremote.ConsentFacts) string {
+// launch-independent facts: ConsentOK, or the one naming what changed. The
+// private-range deny depends on the tier, so it is judged on the recorded
+// tier under the settings now (a changed allow_private_ranges reopens it).
+func hostedStaticConsentVerdict(rec sandboxremote.ConsentRecord, static sandboxremote.ConsentFacts, v sandboxremote.Vendor, cfg config.TerminalSandboxHostedConfig) string {
 	static.Tier, static.Capture, static.ScopeKey = rec.Facts.Tier, rec.Facts.Capture, rec.Facts.ScopeKey
+	static.PrivateRanges = hostedPrivateRangesFact(v, cfg, vocab.Tier(rec.Facts.Tier))
 	return sandboxremote.CheckConsent(&rec, static)
 }
 
-// version is the row's client contract version.
+// version is the row's version: the authenticated one its driver read, else
+// the client contract version.
 func (d *hostedDriver) version() string {
+	v, _ := d.probeVersion()
+	return v
+}
+
+// probeVersion is the version a probe reports and whether it is
+// authenticated (FX1 item 1, live finding F-L3-5): the row's own
+// authenticated source when it registers one and that source answers, else
+// the client contract version, unauthenticated. Only a source that read the
+// version from an authenticated identity may answer true.
+func (d *hostedDriver) probeVersion() (string, bool) {
+	if d.reg.authVersion != nil {
+		if v, ok := d.reg.authVersion(d); ok && v != "" {
+			return v, true
+		}
+	}
 	row, _ := sandboxbackend.Get(d.vendor.ID)
-	return row.Control.Pins.RequiredMin
+	return row.Control.Pins.RequiredMin, false
 }
 
 // sandboxRequestRegion is the region a selection request carries for a
@@ -782,4 +1224,23 @@ func sandboxRequestRegion(cfg config.TerminalSandboxConfig, backend string) stri
 	}
 	r, _, _ := hostedResolve(v, hostedVendorConfig(cfg.Hosted, backend))
 	return r
+}
+
+// hostedFillProbeRow adds to a hosted row's probe entry what the New
+// Terminal dialog must say before Start (lane UX): the workspace sources the
+// row takes and how each reaches the box (items H5 and H8), the tools that
+// cannot reach the box at the configured tier (H4), and the box's own
+// network on that tier (H10). A row that is not a hosted vendor's is left
+// as it is.
+func hostedFillProbeRow(e *dashapi.SandboxBackendAvail, row sandboxbackend.Capability, cfg config.TerminalSandboxConfig, tier vocab.Tier) {
+	v, ok := sandboxremote.VendorFor(row.ID)
+	if !ok || row.Iso.Location != vocab.LocationRemote {
+		return
+	}
+	e.WorkspaceSources, e.WorkspaceSourceNotes, _ = hostedAcceptedSources(row.ID, tier, cfg)
+	e.SourceDeliveries, _ = hostedSourceDeliveries(row.ID)
+	e.CloneWhere = hostedCloneWhereView(row.ID, tier, cfg)
+	e.ToolNotices = hostedToolNotices(row.ID, cfg, tier)
+	e.NetworkNotes = sandboxremote.TierNetworkNotes(v, tier, hostedPrivateRangesAllowed(v, cfg.Hosted))
+	hostedFillHookNotices(e, cfg)
 }

@@ -78,3 +78,42 @@ func MergeMethodFromCommit(parents int, subject string, prNumber int64) MergeMet
 	}
 	return t.method
 }
+
+// mergeHeadRE is the grounded GitHub merge-commit template with its "from"
+// part captured: "Merge pull request #14706 from owner/branch" (plan 12.1).
+var mergeHeadRE = regexp.MustCompile(`^Merge pull request #([0-9]+) from (\S+)`)
+
+// MergeSubjectHead reads the PR number and the head branch a GitHub
+// merge-commit subject names ("Merge pull request #N from owner/branch" ->
+// N, "branch"). The "from" part is "<head owner>/<branch>", and a branch may
+// itself hold slashes ("owner/cursor/fix-x" -> "cursor/fix-x"). ok is false
+// for any other subject, including a squash subject (it names no branch).
+// Cloud delivery credit (internal/projectroi cloudcredit.go, claim rule
+// branch_merge_subject) resolves a branch-only cloud claim to its PR through
+// this, at the store boundary.
+func MergeSubjectHead(subject string) (number int64, headRef string, ok bool) {
+	m := mergeHeadRE.FindStringSubmatch(strings.TrimSpace(subject))
+	if m == nil {
+		return 0, "", false
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, "", false
+	}
+	_, branch, found := strings.Cut(m[2], "/")
+	if !found || branch == "" {
+		return 0, "", false
+	}
+	return n, branch, true
+}
+
+// SquashSubjectPR returns the PR number a SQUASH commit subject names (the
+// grounded " (#N)" suffix), and only that template: a merge-commit subject
+// is not a squash. Cloud delivery credit rule cloud_pr_subject reads it.
+func SquashSubjectPR(subject string) (int64, bool) {
+	t, n, ok := matchSubject(subject)
+	if !ok || t.method != MergeSquash {
+		return 0, false
+	}
+	return n, true
+}

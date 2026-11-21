@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/mcpsec"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
+	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/mcp/locate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/policy"
@@ -33,6 +35,12 @@ type guardSummaryResponse struct {
 	Enabled bool   `json:"enabled"`
 	Mode    string `json:"mode"`
 	Strict  bool   `json:"strict"`
+
+	// PromptGuard is the prompt guard's own state beside the guard mode: it
+	// acts on its own mode when EnforceIndependent is set (the default), so
+	// "observe" does not mean a prompt is never stopped. Absent when the
+	// config does not load.
+	PromptGuard *guardPromptPostureJSON `json:"prompt_guard,omitempty"`
 
 	Counts24h guardCounts `json:"counts_24h"`
 	Counts7d  guardCounts `json:"counts_7d"`
@@ -56,6 +64,44 @@ type guardSummaryResponse struct {
 	// on THIS node and the channel it falls back to when not
 	// (guardtoolgates.go). Absent when the daemon wired no seam.
 	ToolGates []guardToolGateJSON `json:"tool_gates,omitempty"`
+
+	// Org is the organization's half of the posture (FU-235): which rules
+	// the org layer makes block or defer whatever the local mode, and how
+	// far its lock reaches here. Absent when no org layer is in force (an
+	// individual, un-enrolled node, where Mode is the whole story). Read
+	// off the same cached org-override posture the verdict timeline and
+	// the approvals POST use (orgOverrides), never derived here.
+	Org *guardOrgJSON `json:"org,omitempty"`
+}
+
+// guardOrgJSON is /api/guard/summary's org object.
+type guardOrgJSON struct {
+	// EnforcedRules are the rule ids the org layer makes block or defer in
+	// the running mode (guard.OrgOverridePosture.Enforced).
+	EnforcedRules []string `json:"enforced_rules"`
+	// LocksEveryRule: the org lock reaches every rule on this node (a
+	// managed node, or a tenancy this process could not resolve).
+	LocksEveryRule bool `json:"locks_every_rule"`
+	// Unverifiable: the org bundle does not verify and no verified copy
+	// stands in, so every rule is locked.
+	Unverifiable bool `json:"unverifiable,omitempty"`
+	// Line is the one rendered status line (guard.OrgOverridePosture
+	// ModeLine), the same words `observer guard status` prints.
+	Line string `json:"line"`
+}
+
+// orgSummary maps the org-override posture onto the summary's org object
+// (nil when the org layer does not reach this node).
+func orgSummary(p guard.OrgOverridePosture, mode string) *guardOrgJSON {
+	line := p.ModeLine(mode)
+	if line == "" {
+		return nil
+	}
+	enforced := p.Enforced
+	if enforced == nil {
+		enforced = []string{}
+	}
+	return &guardOrgJSON{EnforcedRules: enforced, LocksEveryRule: p.LocksEveryRule || p.Unverifiable, Unverifiable: p.Unverifiable, Line: line}
 }
 
 // guardUserPolicyJSON is the invalid-user-policy banner payload.
@@ -101,11 +147,14 @@ func (s *Server) userPolicyFailClosed() bool {
 
 // guardCounts mirrors store.GuardEventSummary for the wire.
 type guardCounts struct {
-	Total      int            `json:"total"`
-	Enforced   int            `json:"enforced"`
-	ByDecision map[string]int `json:"by_decision"`
-	BySeverity map[string]int `json:"by_severity"`
-	ByCategory map[string]int `json:"by_category"`
+	Total    int `json:"total"`
+	Enforced int `json:"enforced"`
+	// EnforcedByOrg is the part of Enforced the organization's policy
+	// layer produced (FU-235).
+	EnforcedByOrg int            `json:"enforced_by_org"`
+	ByDecision    map[string]int `json:"by_decision"`
+	BySeverity    map[string]int `json:"by_severity"`
+	ByCategory    map[string]int `json:"by_category"`
 }
 
 // guardChainStatus is the §10.4 verification result for the page
@@ -115,11 +164,20 @@ type guardChainStatus struct {
 	Checked      int    `json:"checked"`
 	DivergenceID int64  `json:"divergence_id,omitempty"`
 	Detail       string `json:"detail,omitempty"`
+	// Breaks counts failing rows by class (FU-236).
+	Breaks map[string]int `json:"breaks,omitempty"`
+	// ActionlessRewritten counts rows that fail as rewritten with no action
+	// id at all: the maintenance shape `observer guard repair-anchors`
+	// can prove (store.GuardChainReport).
+	ActionlessRewritten int `json:"actionless_rewritten,omitempty"`
+	// RepairHint is the documented repair path for what the walk found
+	// (store.GuardChainRepairHint), "" when none applies.
+	RepairHint string `json:"repair_hint,omitempty"`
 }
 
 func toGuardCounts(s store.GuardEventSummary) guardCounts {
 	return guardCounts{
-		Total: s.Total, Enforced: s.Enforced,
+		Total: s.Total, Enforced: s.Enforced, EnforcedByOrg: s.EnforcedByOrg,
 		ByDecision: s.ByDecision, BySeverity: s.BySeverity, ByCategory: s.ByCategory,
 	}
 }
@@ -152,11 +210,41 @@ func (s *Server) handleGuardSummary(w http.ResponseWriter, r *http.Request) {
 		Chain: guardChainStatus{
 			OK: report.OK, Checked: report.Checked,
 			DivergenceID: report.FirstDivergenceID, Detail: report.Detail,
+			Breaks: report.Breaks, ActionlessRewritten: report.ActionlessRewritten,
+			RepairHint: store.GuardChainRepairHint(report),
 		},
 		UserPolicy:  s.userPolicyProblem(),
 		HookFailure: s.hookFailure(),
 		ToolGates:   s.toolGates(),
+		Org:         orgSummary(s.orgOverrides(r.Context()), s.opts.GuardMode),
+		PromptGuard: s.promptGuardPosture(),
 	})
+}
+
+// guardPromptPostureJSON is the prompt guard's mode and whether it acts on
+// that mode independently of the guard mode ([guard.prompt]).
+type guardPromptPostureJSON struct {
+	Enabled            bool   `json:"enabled"`
+	Mode               string `json:"mode"`
+	EnforceIndependent bool   `json:"enforce_independent"`
+	// SetByOrg: the organization's posture decided EnforceIndependent (its
+	// guard.mode pin, config.governancePinFollowers), so the page says the
+	// stance is the organization's.
+	SetByOrg bool `json:"set_by_org,omitempty"`
+}
+
+// promptGuardPosture reads [guard.prompt] from the config file, governance
+// applied; nil when the config does not load.
+func (s *Server) promptGuardPosture() *guardPromptPostureJSON {
+	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
+	if err != nil {
+		return nil
+	}
+	p := cfg.Guard.Prompt
+	return &guardPromptPostureJSON{
+		Enabled: p.Enabled, Mode: p.Mode, EnforceIndependent: p.EnforceIndependent,
+		SetByOrg: governanceApplied(s.opts.ConfigPath, "guard.prompt.enforce_independent"),
+	}
 }
 
 // guardEventJSON is one verdict-timeline row. Reason/excerpt are
@@ -173,17 +261,23 @@ type guardEventJSON struct {
 	// /api/session/<id>/guard endpoint (sessionguard.go) so the Messages
 	// tab's merge can attempt exact placement; ActionID remains the only
 	// anchor that resolves against a rendered message row today.
-	APITurnID     *int64 `json:"api_turn_id,omitempty"`
-	Tool          string `json:"tool,omitempty"`
-	EventKind     string `json:"event_kind,omitempty"`
-	RuleID        string `json:"rule_id"`
-	Category      string `json:"category,omitempty"`
-	Severity      string `json:"severity,omitempty"`
-	Decision      string `json:"decision,omitempty"`
-	DegradedFrom  string `json:"degraded_from,omitempty"`
-	Enforced      bool   `json:"enforced"`
-	Source        string `json:"source,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	APITurnID    *int64 `json:"api_turn_id,omitempty"`
+	Tool         string `json:"tool,omitempty"`
+	EventKind    string `json:"event_kind,omitempty"`
+	RuleID       string `json:"rule_id"`
+	Category     string `json:"category,omitempty"`
+	Severity     string `json:"severity,omitempty"`
+	Decision     string `json:"decision,omitempty"`
+	DegradedFrom string `json:"degraded_from,omitempty"`
+	Enforced     bool   `json:"enforced"`
+	Source       string `json:"source,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	// StoredReason is the row's reason exactly as stored, set only when
+	// Reason differs from it: a row written before the org-lock note named
+	// its cause reads the cause its stored source establishes
+	// (guard.ExplainLegacyOrgLockedReason). The stored row is never
+	// rewritten (the audit chain hashes it).
+	StoredReason  string `json:"stored_reason,omitempty"`
 	TargetExcerpt string `json:"target_excerpt,omitempty"`
 	TaintOrigin   string `json:"taint_origin,omitempty"`
 	// Overridable / OrgLocked are the ORG-GRANTED OVERRIDE posture of
@@ -205,6 +299,28 @@ type guardEventJSON struct {
 	// uses for exact placement instead of guessing from timestamps.
 	MessageID string `json:"message_id,omitempty"`
 	TurnIndex *int64 `json:"turn_index,omitempty"`
+	// SubagentSessionID names the `<root>:agent:<agent>` session whose call
+	// this hook-path verdict judged when the row is stored under the root
+	// session (store.GuardEventAnchoredRow.SubagentSessionID). Session feed
+	// only.
+	SubagentSessionID string `json:"subagent_session_id,omitempty"`
+	// Layer / LayerLabel say which policy layer produced the verdict, read
+	// off Source (guardLayerOf): the org's bundle, the developer's own
+	// rules, the project's rules, a node pack (the commit gate S-791 to
+	// S-794 is the Code security pack), or the built-in table. Session feed
+	// only: on a managed node the Security page can be hidden, and this is
+	// then the developer's one place to see where a block came from.
+	Layer      string `json:"layer,omitempty"`
+	LayerLabel string `json:"layer_label,omitempty"`
+	// ProjectRootHash is the sha256 hex of the project the gate matched
+	// grants on for this verdict (guard_events.project_root_hash, agent
+	// migration 253, GRANT-20), else, for a row that recorded none, of the
+	// row's SESSION's project root (guard.HashProjectRoot of
+	// store.ProjectRootForSession). Never the raw path. The Security page
+	// compares it with the active approvals to say "covered by grant #N"
+	// and why an ask was not downgraded (P-232). Populated by
+	// /api/guard/events only; empty when neither is known.
+	ProjectRootHash string `json:"project_root_hash,omitempty"`
 }
 
 // toGuardEventJSON is the single row->wire mapper for guardEventJSON,
@@ -220,7 +336,7 @@ type guardEventJSON struct {
 // land in the same second, and second-truncation would silently discard
 // the sub-second ordering it needs to place them correctly.
 func toGuardEventJSON(row *store.GuardEventRow) guardEventJSON {
-	return guardEventJSON{
+	j := guardEventJSON{
 		ID: row.ID, Ts: row.TS.UTC().Format(time.RFC3339Nano),
 		SessionID: row.SessionID, ActionID: row.ActionID, APITurnID: row.APITurnID,
 		Tool: row.Tool, EventKind: row.EventKind,
@@ -230,6 +346,10 @@ func toGuardEventJSON(row *store.GuardEventRow) guardEventJSON {
 		Source: row.Source, Reason: row.Reason,
 		TargetExcerpt: row.TargetExcerpt, TaintOrigin: row.TaintOrigin,
 	}
+	if explained, changed := guard.ExplainLegacyOrgLockedReason(row.Reason, row.RuleID, row.Source); changed {
+		j.Reason, j.StoredReason = explained, row.Reason
+	}
+	return j
 }
 
 // toGuardEventJSONAnchored extends toGuardEventJSON with the
@@ -238,6 +358,8 @@ func toGuardEventJSONAnchored(row *store.GuardEventAnchoredRow) guardEventJSON {
 	j := toGuardEventJSON(&row.GuardEventRow)
 	j.MessageID = row.MessageID
 	j.TurnIndex = row.TurnIndex
+	j.SubagentSessionID = row.SubagentSessionID
+	j.Layer, j.LayerLabel = guardLayerOf(row.Source)
 	return j
 }
 
@@ -281,6 +403,20 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 	// One org-bundle read for the whole page (cached, TTL-bounded),
 	// never one per row.
 	orgOverride := s.orgOverrides(r.Context())
+	// One project lookup per distinct session on the page, never per row.
+	rootHash := map[string]string{}
+	projectHash := func(sessionID string) string {
+		if sessionID == "" {
+			return ""
+		}
+		h, ok := rootHash[sessionID]
+		if !ok {
+			root, _ := st.ProjectRootForSession(r.Context(), sessionID)
+			h = guard.HashProjectRoot(root)
+			rootHash[sessionID] = h
+		}
+		return h
+	}
 	out := make([]guardEventJSON, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
@@ -294,6 +430,10 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		ev := toGuardEventJSON(row)
 		ev.Overridable, ev.OrgLocked = orgOverride.For(row.RuleID)
+		ev.ProjectRootHash = row.ProjectRootHash
+		if ev.ProjectRootHash == "" {
+			ev.ProjectRootHash = projectHash(row.SessionID)
+		}
 		out = append(out, ev)
 		if len(out) >= limit {
 			break
@@ -333,45 +473,62 @@ func (s *Server) handleGuardConformance(w http.ResponseWriter, _ *http.Request) 
 
 // guardRuleJSON is one rule row on the wire. Multi-row IDs (e.g.
 // R-152's write + read rows) appear once per row; the client groups
-// by id. Source/Enforced ride only the effective view (G1.5).
+// by id. Source/Enforced ride only the effective view (G1.5); Project names
+// the org project a project-scoped org rule applies to. OrgLocked says the
+// organization sets the rule on this node (an org-layer rule the org did not
+// mark overridable, or a rule its lock reaches here): the dashboard offers
+// no local disable or override for it, and the policy save gates refuse one
+// (guardOrgLockedEdits).
 type guardRuleJSON struct {
-	ID       string `json:"id"`
-	Category string `json:"category"`
-	Severity string `json:"severity"`
-	Observe  string `json:"observe"`
-	Enforce  string `json:"enforce"`
-	Doc      string `json:"doc"`
-	Advice   string `json:"advice,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Enforced bool   `json:"enforced,omitempty"`
+	ID          string `json:"id"`
+	Category    string `json:"category"`
+	Severity    string `json:"severity"`
+	Observe     string `json:"observe"`
+	Enforce     string `json:"enforce"`
+	Doc         string `json:"doc"`
+	Advice      string `json:"advice,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Enforced    bool   `json:"enforced,omitempty"`
+	Project     string `json:"project,omitempty"`
+	Overridable bool   `json:"overridable,omitempty"`
+	OrgLocked   bool   `json:"org_locked,omitempty"`
+	// OrgNamed says the organization's bundle sets the rule itself (an
+	// override on it, or a rule the bundle defines). OrgLocked without
+	// OrgNamed is a rule at its own decision that the organization only
+	// locks (every rule on a managed node), which the dashboard labels as
+	// locked, not as set by the organization (2026-11-12 operator report).
+	OrgNamed bool `json:"org_named,omitempty"`
 }
 
-// handleGuardRules serves GET /api/guard/rules — the rule catalog the
-// Security page uses to resolve a verdict's bare rule_id into its
-// human definition.
+// handleGuardRules serves GET /api/guard/rules — the rule list the
+// Security page reads (the Rules tab, and resolving a verdict's bare
+// rule_id into its human definition).
 //
-// Default: the built-in catalog (policy.Catalog). With ?effective=1
-// (G1.5) it constructs a fresh guard from the ON-DISK config — the
-// same layers the daemon binds at start — and serves EffectiveRules:
-// built-ins with overrides applied, disabled rules removed, plus
-// user/project/org layer rules with their source attributed, so a
-// custom rule's verdict resolves in the UI instead of degrading to a
-// bare mono ID. Any construction failure degrades to the built-in
-// catalog (fail-open, like every guard surface).
+// Default: this install's effective listing (guard.Guard.RuleListing, the
+// one list `observer guard rules` prints too): a fresh guard built from the
+// ON-DISK config — the same layers the daemon binds at start — with
+// overrides applied, disabled rules removed, the user and org layers' rules
+// with their source, and the org's project-scoped rules labelled with their
+// project. ?catalog=1 serves the built-in catalog (policy.Catalog) instead;
+// ?effective=1, the pre-default spelling, is accepted. Any construction
+// failure degrades to the built-in catalog (fail-open, like every guard
+// surface).
 func (s *Server) handleGuardRules(w http.ResponseWriter, r *http.Request) {
 	infos := policy.Catalog()
-	if v := r.URL.Query().Get("effective"); v == "1" || strings.EqualFold(v, "true") {
-		if cfg, err := loadConfigForDashboard(s.opts.ConfigPath); err == nil {
-			home, _ := os.UserHomeDir()
-			roots, _ := store.New(s.opts.DB).ProjectRoots(r.Context())
-			if g, gerr := guard.New(guard.Options{Config: cfg.Guard, Home: home, KnownProjectRoots: roots}); gerr == nil {
-				infos = g.EffectiveRules()
-			}
+	effective := true
+	if v := r.URL.Query().Get("catalog"); v == "1" || strings.EqualFold(v, "true") {
+		effective = false
+	}
+	var posture guard.OrgOverridePosture
+	if effective {
+		if g := s.listingGuard(r.Context()); g != nil {
+			infos = g.RuleListing()
 		}
+		posture = s.orgOverrides(r.Context())
 	}
 	out := make([]guardRuleJSON, 0, len(infos))
 	for _, r := range infos {
-		out = append(out, guardRuleJSON{
+		row := guardRuleJSON{
 			ID:       r.ID,
 			Category: string(r.Category),
 			Severity: r.Severity.String(),
@@ -381,81 +538,105 @@ func (s *Server) handleGuardRules(w http.ResponseWriter, r *http.Request) {
 			Advice:   r.Advice,
 			Source:   r.Source,
 			Enforced: r.Enforced,
-		})
+			Project:  r.Project,
+		}
+		if effective {
+			row.Overridable, row.OrgLocked = guardRuleOrgLock(r, posture)
+			row.OrgNamed = r.Source == policy.SourceOrg || posture.Named[r.ID]
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, map[string]any{"rules": out})
 }
 
-// handleGuardSimulate serves GET /api/guard/simulate?hours=&enforce= —
-// the dashboard face of `observer guard simulate` (G1.2): replay
-// captured history against the CURRENT on-disk policy with a fresh
-// engine. Nothing persists; the live guard state is untouched. The
-// mode-control consent dialog calls it with enforce=1 to show "what
-// would last week have BLOCKED" before the operator promotes.
-//
-// Policy source: the config FILE (loadConfigForDashboard), not the
-// running daemon's bound config — deliberately, so a saved-but-not-
-// yet-restarted policy edit is what gets simulated (the dialog's
-// evidence matches what enforce would do after the restart).
-func (s *Server) handleGuardSimulate(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	hours := 168
-	if v, err := strconv.Atoi(q.Get("hours")); err == nil && v >= 1 && v <= 2160 {
-		hours = v
-	}
+// listingGuard builds the guard the rule listing reads from the on-disk
+// config (the G1.5 idiom); nil when the config or the guard cannot be built.
+func (s *Server) listingGuard(ctx context.Context) *guard.Guard {
 	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
 	if err != nil {
-		writeErr(w, fmt.Errorf("load config: %w", err))
-		return
+		return nil
 	}
-	mode := cfg.Guard.Mode
-	if q.Get("enforce") == "1" || strings.EqualFold(q.Get("enforce"), "true") {
-		mode = "enforce"
-		cfg.Guard.Mode = "enforce"
-	}
-	st := store.New(s.opts.DB)
 	home, _ := os.UserHomeDir()
-	roots, _ := st.ProjectRoots(r.Context())
-	g, err := guard.New(guard.Options{Config: cfg.Guard, Home: home, KnownProjectRoots: roots})
+	roots, _ := store.New(s.opts.DB).ProjectRoots(ctx)
+	g, err := guard.New(guard.Options{Config: cfg.Guard, Home: home, KnownProjectRoots: roots, ManagedTenancy: s.managedTenancy(ctx)})
 	if err != nil {
-		writeErr(w, fmt.Errorf("construct guard: %w", err))
-		return
+		return nil
 	}
-	const replayCap = 50000
-	inputs, err := st.LoadGuardReplayInputs(r.Context(), s.now().Add(-time.Duration(hours)*time.Hour), replayCap)
-	if err != nil {
-		writeErr(w, err)
-		return
+	return g
+}
+
+// guardRuleOrgLock is one listed rule's org posture: overridable when the
+// organization marked it so, orgLocked when the organization sets it here -
+// its lock reaches the rule on this node (OrgOverridePosture.For), or the
+// rule is the org layer's own (an org-wide or project-scoped org rule) and
+// the org did not mark it overridable.
+func guardRuleOrgLock(r policy.RuleInfo, posture guard.OrgOverridePosture) (overridable, orgLocked bool) {
+	overridable, orgLocked = posture.For(r.ID)
+	if overridable || r.Overridable {
+		return true, false
 	}
-	verdicts := g.EvaluateActions(inputs)
-	byRule := map[string]int{}
-	byRuleBlocking := map[string]int{}
-	byDecision := map[string]int{}
-	wouldBlock := 0
-	for _, v := range verdicts {
-		byRule[v.Verdict.RuleID]++
-		dec := v.Verdict.Decision.String()
-		byDecision[dec]++
-		if mode == "enforce" && (dec == "deny" || dec == "ask") {
-			wouldBlock++
-			byRuleBlocking[v.Verdict.RuleID]++
+	return false, orgLocked || r.Source == policy.SourceOrg
+}
+
+// guardSimulateSlot admits one guard simulation at a time in this process
+// (the daemon runs one dashboard): a run holds the slot's one token.
+var guardSimulateSlot = make(chan struct{}, 1)
+
+// guardSimulateChunk is how many captured actions a simulation evaluates
+// between context checks.
+const guardSimulateChunk = 2000
+
+// acquireGuardSimulateSlot waits for the simulation slot until ctx is
+// done. A request already gone never takes it.
+func acquireGuardSimulateSlot(ctx context.Context) (release func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case guardSimulateSlot <- struct{}{}:
+		return func() { <-guardSimulateSlot }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// evaluateCancellable runs eval over inputs in chunks of at most chunk,
+// checking ctx before each, and returns the verdicts in input order. The
+// guard's per-session state (taint, repeat runs, budget records) lives on
+// the Guard, so evaluating in chunks on one Guard gives the verdicts one
+// call over every input gives.
+func evaluateCancellable(ctx context.Context, inputs []guard.ActionInput, chunk int, eval func([]guard.ActionInput) []guard.ActionVerdict) ([]guard.ActionVerdict, error) {
+	return evaluateWithProgress(ctx, inputs, chunk, eval, nil)
+}
+
+// evaluateWithProgress is evaluateCancellable reporting each finished chunk's
+// size to onChunk (nil reports nothing): a simulation run's progress counter.
+func evaluateWithProgress(ctx context.Context, inputs []guard.ActionInput, chunk int, eval func([]guard.ActionInput) []guard.ActionVerdict, onChunk func(n int)) ([]guard.ActionVerdict, error) {
+	if chunk < 1 {
+		chunk = len(inputs)
+	}
+	var out []guard.ActionVerdict
+	for start := 0; start < len(inputs); start += chunk {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		end := min(start+chunk, len(inputs))
+		out = append(out, eval(inputs[start:end])...)
+		if onChunk != nil {
+			onChunk(end - start)
 		}
 	}
-	writeJSON(w, map[string]any{
-		"window_hours": hours,
-		"mode":         mode,
-		"scanned":      len(inputs),
-		"verdicts":     len(verdicts),
-		"would_block":  wouldBlock,
-		"capped":       len(inputs) == replayCap,
-		"by_rule":      byRule,
-		// by_rule_blocking splits would_block per rule (G2.1): only
-		// deny/ask-class verdicts under the enforce projection, so the
-		// readiness review ranks rules by what would actually block —
-		// by_rule alone conflates flag-only noise with blocking load.
-		"by_rule_blocking": byRuleBlocking,
-		"by_decision":      byDecision,
-	})
+	return out, ctx.Err()
+}
+
+// simulateGone answers a simulation whose request went away (a closed tab,
+// a superseded replay) and reports true; false while the request is live.
+func simulateGone(ctx context.Context, w http.ResponseWriter) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	http.Error(w, "the guard simulation stopped: its request was closed", http.StatusServiceUnavailable)
+	return true
 }
 
 // handleGuardBudget serves GET /api/guard/budget — the G2.4 budget
@@ -479,12 +660,7 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	weekStart := now.Add(-7 * 24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	spend, err := st.GuardBudgetSpend(r.Context(), "", now.Truncate(24*time.Hour), weekStart, monthStart)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	obs, err := st.GuardBudgetObservedStats(r.Context(), now.Add(-30*24*time.Hour))
+	spend, obs, unpriced, substrate, err := s.guardBudgetObservations(r.Context(), st, now, weekStart, monthStart)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -504,6 +680,10 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 		"weekly_usd":  cfg.Guard.Budget.WeeklyUSD,
 		"monthly_usd": cfg.Guard.Budget.MonthlyUSD,
 		"hard":        cfg.Guard.Budget.Hard,
+		// The guard's mode: hard only blocks in enforce mode, so a surface
+		// reading "hard" alone would claim a block an observe-mode machine
+		// never makes (budget-enforcement honesty, 2026-11-18).
+		"guard_mode": guardBudgetMode(cfg.Guard.Enabled, cfg.Guard.Mode),
 		// The token-denominated caps, one for one with the dollar caps above.
 		"session_tokens":     cfg.Guard.Budget.SessionTokens,
 		"daily_tokens":       cfg.Guard.Budget.DailyTokens,
@@ -520,6 +700,12 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 		"spend_today_usd": spend.DailyUSD,
 		"spend_week_usd":  spend.WeeklyUSD,
 		"spend_month_usd": spend.MonthlyUSD,
+		// Which spend the numbers measure (demo bug #6): "priced" is the
+		// guard budget rules' own read; "recorded" (no price table wired)
+		// sums only stored costs. unpriced_rows counts the window's rows
+		// that read counted as $0.
+		"spend_substrate": substrate,
+		"unpriced_rows":   unpriced,
 		"window_days":     30,
 		"sessions":        obs.Sessions,
 		"session_p95_usd": obs.SessionP95USD,
@@ -538,6 +724,70 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// guardBudgetMode is the guard mode a budget card reports: "off" when the
+// guard is disabled, else the configured mode.
+func guardBudgetMode(enabled bool, mode string) string {
+	if !enabled || mode == "" {
+		return "off"
+	}
+	return mode
+}
+
+// guardBudgetObservations measures the Budget guardrails card on the substrate
+// the guard's budget rules compare against (demo bug #6). The daemon's budget
+// lookup prices every counted row - a recorded cost when the source recorded
+// one, otherwise the price table (cmd/observer/guardwire.go, the advisory
+// GuardBudgetSpendPriced read) - but the card summed only the RECORDED cost
+// columns, so transcript rows (priced at read time, no recorded cost) were
+// invisible: "$0.00 today" and "p95 from n=3 days" on a node the Cost page
+// priced at ~$3,469 over 30 days. With a price table it now reads the same
+// priced substrate; without one it keeps the recorded read and says so.
+func (s *Server) guardBudgetObservations(ctx context.Context, st *store.Store, now, weekStart, monthStart time.Time) (store.GuardBudgetWindows, store.GuardBudgetObserved, int, string, error) {
+	day := now.Truncate(24 * time.Hour)
+	since := now.Add(-30 * 24 * time.Hour)
+	if pricer := guardBudgetCardPricer(s.opts.CostEngine); pricer != nil {
+		spend, err := st.GuardBudgetSpendPriced(ctx, "", day, weekStart, monthStart, pricer)
+		if err != nil {
+			return store.GuardBudgetWindows{}, store.GuardBudgetObserved{}, 0, "", err
+		}
+		obs, err := st.GuardBudgetObservedStatsPriced(ctx, since, pricer)
+		if err != nil {
+			return store.GuardBudgetWindows{}, store.GuardBudgetObserved{}, 0, "", err
+		}
+		return spend.GuardBudgetWindows, obs.GuardBudgetObserved, obs.UnpricedRows, "priced", nil
+	}
+	spend, err := st.GuardBudgetSpend(ctx, "", day, weekStart, monthStart)
+	if err != nil {
+		return store.GuardBudgetWindows{}, store.GuardBudgetObserved{}, 0, "", err
+	}
+	obs, err := st.GuardBudgetObservedStats(ctx, since)
+	if err != nil {
+		return store.GuardBudgetWindows{}, store.GuardBudgetObserved{}, 0, "", err
+	}
+	return spend, obs, 0, "recorded", nil
+}
+
+// guardBudgetCardPricer is the advisory guard budget pricer over the
+// dashboard's cost engine: the same table and the same cost.Table.PriceAt the
+// daemon's guard budget lookup prices with. nil without an engine.
+func guardBudgetCardPricer(engine *cost.Engine) store.GuardBudgetPricer {
+	if engine == nil {
+		return nil
+	}
+	table := engine.Table()
+	if table == nil {
+		return nil
+	}
+	return func(model string, at time.Time, sp store.PushTokenSplit) (float64, string, bool) {
+		usd, source, ok := table.PriceAt(model, at, cost.TokenBundle{
+			Input: sp.Input, Output: sp.Output, CacheRead: sp.CacheRead,
+			CacheCreation: sp.CacheCreation, CacheCreation1h: sp.CacheCreation1h,
+			Reasoning: sp.Reasoning, WebSearchRequests: sp.WebSearchRequests, Fast: sp.Fast,
+		})
+		return usd, string(source), ok
+	}
+}
+
 // guardApprovalJSON is one §6.3 exception-register row on the wire.
 type guardApprovalJSON struct {
 	ID              int64  `json:"id"`
@@ -548,6 +798,11 @@ type guardApprovalJSON struct {
 	ProjectRootHash string `json:"project_root_hash,omitempty"`
 	GrantedBy       string `json:"granted_by,omitempty"`
 	ExpiresAt       string `json:"expires_at,omitempty"`
+	// LastUsedAt is the latest verdict this grant's scope covers that an
+	// approval downgraded since the grant was made ("" = never used,
+	// P-232). Advisory: guard_events does not name the grant that
+	// downgraded a verdict, so overlapping grants share a use.
+	LastUsedAt string `json:"last_used_at,omitempty"`
 }
 
 // handleGuardApprovals serves the §6.3 approvals register (G1.3):
@@ -555,7 +810,10 @@ type guardApprovalJSON struct {
 //   - GET  → active (non-expired) grants, the `observer guard
 //     approvals` list.
 //   - POST → grant: {rule_id, scope: session|project|global,
-//     session_id?, ttl_hours?}. Project scope anchors to the SESSION's
+//     session_id?, ttl_hours?}. Idempotent: a grant for the same key
+//     (rule, scope, session, project hash) is kept and extended to the
+//     later expiry, and the reply carries existing=true (P-232). Project
+//     scope anchors to the SESSION's
 //     project root (resolved via the store, hashed at the guard layer
 //     — never the raw path in the row), so the UI can grant "for this
 //     project" straight from a verdict row. DB write, no restart.
@@ -572,6 +830,7 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out := make([]guardApprovalJSON, 0, len(rows))
+		uses := map[string][]store.GuardApprovalUse{}
 		for _, a := range rows {
 			j := guardApprovalJSON{
 				ID: a.ID, Ts: a.TS.UTC().Format(time.RFC3339),
@@ -581,6 +840,16 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 			}
 			if !a.ExpiresAt.IsZero() {
 				j.ExpiresAt = a.ExpiresAt.UTC().Format(time.RFC3339)
+			}
+			ru, ok := uses[a.RuleID]
+			if !ok {
+				// A failed read leaves "last used" empty; the register
+				// itself still lists.
+				ru, _ = st.GuardApprovalUses(r.Context(), a.RuleID)
+				uses[a.RuleID] = ru
+			}
+			if last := approvalLastUsed(a, ru); !last.IsZero() {
+				j.LastUsedAt = last.UTC().Format(time.RFC3339)
 			}
 			out = append(out, j)
 		}
@@ -598,6 +867,12 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RuleID == "" {
 			http.Error(w, "rule_id required", http.StatusBadRequest)
+			return
+		}
+		// Lane cli-2: a rule that asks on every use (R-168) takes no grant,
+		// so a grant here would be inert; refuse it instead of storing it.
+		if policy.AsksEveryUse(req.RuleID) {
+			http.Error(w, req.RuleID+" asks on every use and no approval covers it", http.StatusBadRequest)
 			return
 		}
 		// Org-lock gate (Track B): under an org policy bundle only a
@@ -618,7 +893,7 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 		}
 		now := s.now()
 		row := store.GuardApprovalRow{
-			TS: now, RuleID: req.RuleID, GrantedBy: "dashboard",
+			TS: now, RuleID: req.RuleID, GrantedBy: "dashboard", Channel: "dashboard",
 		}
 		switch req.Scope {
 		case "session":
@@ -653,12 +928,16 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 		if req.TTLHours > 0 {
 			row.ExpiresAt = now.Add(time.Duration(req.TTLHours * float64(time.Hour)))
 		}
-		id, err := st.InsertGuardApproval(r.Context(), row)
+		// Grant-or-extend (P-232): a second identical POST (approve pressed
+		// again on an old ask row, the Grant form resubmitted) names the
+		// existing grant, which keeps the later expiry, instead of adding a
+		// duplicate row. existing tells the page to say so.
+		id, existing, err := st.GrantGuardApproval(r.Context(), row)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		resp := map[string]any{"granted": true, "id": id, "rule_id": row.RuleID, "scope": row.Scope}
+		resp := map[string]any{"granted": true, "id": id, "rule_id": row.RuleID, "scope": row.Scope, "existing": existing}
 		if !row.ExpiresAt.IsZero() {
 			resp["expires_at"] = row.ExpiresAt.UTC().Format(time.RFC3339)
 		}
@@ -666,6 +945,29 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
 	}
+}
+
+// approvalLastUsed folds a rule's approved-verdict uses into grant a's
+// "last used": the latest use the grant's scope covers, at or after the
+// grant was made. Scope matching mirrors store.ApprovalActiveFor ('once'
+// rows never apply, so they are never used).
+func approvalLastUsed(a store.GuardApprovalRow, uses []store.GuardApprovalUse) time.Time {
+	var last time.Time
+	for _, u := range uses {
+		covered := false
+		switch a.Scope {
+		case "global":
+			covered = true
+		case "session":
+			covered = a.SessionID != "" && u.SessionID == a.SessionID
+		case "project":
+			covered = a.ProjectRootHash != "" && guard.HashProjectRoot(u.ProjectRoot) == a.ProjectRootHash
+		}
+		if covered && !u.LastTS.Before(a.TS) && u.LastTS.After(last) {
+			last = u.LastTS
+		}
+	}
+	return last
 }
 
 // guardMCPServerJSON is one MCP inventory row: a configured server

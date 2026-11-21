@@ -264,14 +264,14 @@ func (s *Server) computeWatcherHealth(ctx context.Context) (map[string]any, erro
 		}
 		// suspected_misrouted: cursor at EOF on a non-trivial file but
 		// zero actions emitted. The pre-v1.4.51 fingerprint — surface
-		// for operator-driven recovery via
-		// `observer scan --force --adapter <name>`. Only meaningful
+		// for operator-driven recovery via a Settings > Backfill rescan
+		// (`observer scan --force --adapter <name>`). Only meaningful
 		// where the adapter actually parses this file into actions.
 		if f.BehindBytes == 0 && !f.LagNotApplicable &&
 			f.FileSize >= suspectedMisroutedMinBytes && cr.actionCount == 0 {
 			if sem.ActionsExpected {
 				f.SuspectedMisrouted = true
-				f.MisrouteReason = "cursor at EOF on non-trivial file but 0 actions emitted; likely a v1.4.51 adapter misroute - run `observer scan --force --adapter <name>` to recover"
+				f.MisrouteReason = "cursor at EOF on non-trivial file but 0 actions emitted; likely a v1.4.51 adapter misroute - rescan from Settings > Backfill (or run `observer scan --force --adapter <name>`) to recover"
 				suspectedMisroutedCount++
 			} else {
 				f.ZeroActionsExpected = true

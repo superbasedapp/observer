@@ -32,9 +32,9 @@ export interface ConsentPurpose {
 export const CONSENT_COPY: Record<string, ConsentPurpose> = {
   account_device_operations: {
     id: "account_device_operations",
-    label: "Account and device operations",
+    label: "Account and machine operations",
     description:
-      "Your identity link, devices, signed-in sessions and security events. " +
+      "Your identity link, machines, signed-in sessions and security events. " +
       "Active once you sign in; it authorizes no upload of session data.",
   },
   structural_activity_insights: {

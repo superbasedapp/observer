@@ -33,7 +33,7 @@ func AuthorityPlainEnglish(tok string) string {
 	case govern.AuthorityEnforceRouting:
 		return "FORCE model-routing enforcement on this machine (managed tenancy only)"
 	case govern.AuthorityEnforceAdmission:
-		return "FORCE input-admission guardrail enforcement on this machine (managed tenancy only)"
+		return "FORCE input-admission guardrail enforcement on this machine, and let " + PromptJudgeDisclosure + " (managed tenancy only)"
 	case govern.AuthorityEnforceEgress:
 		return "FORCE egress-policy enforcement on this machine (managed tenancy only)"
 	case govern.AuthorityEnforceBudget:
@@ -63,7 +63,7 @@ func AuthorityPlainEnglish(tok string) string {
 	case govern.AuthorityExtractFolders:
 		return "let the organization RAISE extraction of this machine's raw project folder names, git remotes, and branches (managed tenancy only)"
 	case govern.AuthorityExtractTraces:
-		return "let the organization RAISE extraction of this machine's full hosted-app traces, including span content and eval/admission detail (managed tenancy only)"
+		return "let the organization RAISE extraction of this machine's full AI Apps traces (the apps and agents you build), including span content and eval/admission detail (managed tenancy only)"
 	case govern.AuthorityExtractCache:
 		return "let the organization RAISE extraction of this machine's prompt-cache activity as a content-free per-day model/kind aggregate (managed tenancy only)"
 	case govern.AuthorityExtractRouting:
@@ -77,13 +77,25 @@ func AuthorityPlainEnglish(tok string) string {
 	case govern.AuthorityExtractPolicyState:
 		return "let the organization RAISE extraction of this machine's effective-policy-state reports - which governance settings are actually applied here (managed tenancy only)"
 	case govern.AuthorityExtractObsEgress:
-		return "let the organization RAISE extraction of this machine's egress-routing decisions for its own hosted-app traffic - part of the same trace family as full traces (managed tenancy only)"
+		return "let the organization RAISE extraction of this machine's egress-routing decisions for the AI Apps traffic it carries - part of the same trace family as full traces (managed tenancy only)"
 	case govern.AuthorityExtractHookActivity:
 		return "let the organization RAISE extraction of which AI tool hooks fired in each session on this machine, as per-session counts, times and coarse route classes - the config-folder hash still needs full content (managed tenancy only)"
 	default:
 		return "UNKNOWN to this version of Observer - no description is available, though it is still recorded on this grant"
 	}
 }
+
+// PromptJudgeDisclosure is the ONE developer-facing sentence that says the
+// organization's coding-agent prompt judge (planeb.admission, P-228) reads
+// typed prompts on a managed machine (lane adm-p2). It is disclosure, not a
+// toggle: a managed node ships full content by operator ruling. The consent
+// screen (AuthorityPlainEnglish), `observer org status`, the daemon-start
+// family notice and the node Security page all render these words; it
+// completes "let ..." and "Your organization may let ...".
+const PromptJudgeDisclosure = "the organization's LLM judge read the prompts you type into coding agents on this machine, " +
+	"through each tool's prompt-gate hook and through this machine's proxy for proxy-routed tools " +
+	"(sent to the organization's own server; a prompt with a detected secret is never sent; a refused prompt never reaches the model; " +
+	"it runs only while the organization's signed policy turns its node lane on)"
 
 // TOMLStringList renders items as a TOML inline array of quoted strings, e.g.
 // ["admission.input", "node.governance"].
@@ -107,6 +119,10 @@ type GrantFacts struct {
 	Authority []string
 	// Managed is the enrolment's tenancy (organization-managed vs individual).
 	Managed bool
+	// OwnerManaged is true when the organization asking is the developer's
+	// own: its only admin and its only developer are the same person (a
+	// personal organization, managed by its owner).
+	OwnerManaged bool
 }
 
 // AuthorityLine is one "the organization may" row.
@@ -127,6 +143,9 @@ type Disclosure struct {
 	ServerURL  string `json:"server_url"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
 	Managed    bool   `json:"managed"`
+	// Owner is the plain-words paragraph shown when the organization asking
+	// is the developer's own (DisclosureOwnerManaged), else "".
+	Owner string `json:"owner,omitempty"`
 	// May lists what the organization may do, one row per authority token,
 	// in the grant's own order (unknown tokens included, honestly labelled).
 	May []AuthorityLine `json:"may"`
@@ -148,10 +167,19 @@ const (
 	DisclosureIntro = "This organization is asking to manage some of this machine's Observer settings."
 	// DisclosureConfigWritesNote follows the config lines.
 	DisclosureConfigWritesNote = "(the families the authority above governs). You can edit or remove this at any time - the organization cannot rewrite it remotely."
-	mayNotReadAnything         = "read anything beyond the lines above. This machine is organization-managed, so the extraction lines DO apply: some of them raise your tool inputs, outputs, and command text. The Privacy page always shows what is shared."
-	mayNotReadCode             = "read your code, your files, or your command output"
-	mayNotHide                 = "hide the Privacy page or the enrolment settings, so you can always see what is shared and who manages this machine"
-	mayNotStopLeaving          = "stop you leaving: Leave organization (Settings > Enrolment) or `observer unenroll` removes this at any time"
+	// DisclosureOwnerManaged is the consent screen's paragraph for an
+	// organization that is the developer's own (a personal organization,
+	// managed by its owner since 2026-11-19). It says in plain words that
+	// the person answering is both sides of this grant, and what accepting
+	// changes on this machine.
+	DisclosureOwnerManaged = "This is your own personal dashboard: you are its only admin and its only developer, so the settings below are ones you choose there yourself. " +
+		"Accepting lets them apply on this machine the same way a team's do: a budget you set to Enforce can block requests here " +
+		"(once guard mode on this machine is enforce), and settings you pin cannot be changed here. " +
+		"Your personal dashboard still gets a summary only: full detail is sent only if you turn it on in this machine's config."
+	mayNotReadAnything = "read anything beyond the lines above. This machine is organization-managed, so the extraction lines DO apply: some of them raise your tool inputs, outputs, and command text. The Privacy page always shows what is shared."
+	mayNotReadCode     = "read your code, your files, or your command output"
+	mayNotHide         = "hide the Privacy page or the enrolment settings, so you can always see what is shared and who manages this machine"
+	mayNotStopLeaving  = "stop you leaving: Leave organization (Settings > Enrolment) or `observer unenroll` removes this at any time"
 )
 
 // BuildDisclosure renders the consent screen for an offered grant.
@@ -170,6 +198,9 @@ func BuildDisclosure(f GrantFacts) Disclosure {
 		ServerURL:  f.ServerURL,
 		ExpiresAt:  f.ExpiresAt,
 		Managed:    f.Managed,
+	}
+	if f.OwnerManaged && f.Managed {
+		d.Owner = DisclosureOwnerManaged
 	}
 	for _, tok := range f.Authority {
 		d.May = append(d.May, AuthorityLine{Token: tok, Text: AuthorityPlainEnglish(tok)})

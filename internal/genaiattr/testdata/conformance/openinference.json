@@ -1,0 +1,116 @@
+{
+  "_source": {
+    "dialect": "openinference",
+    "grounding": "Keys as emitted by openinference-instrumentation-langchain 0.1.70 in the live captures testdata/connectors/langchain/otlp-export-00{1,2}.bin (llm.*, input.value/output.value, llm.input_messages/llm.output_messages incl. tool_calls, llm.finish_reason, llm.invocation_parameters) plus the OpenInference multi-part content shape (message.contents.<j>.message_content.*). Values here are synthetic; the real-capture test drives the binaries themselves.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "llm_span",
+      "attrs": {
+        "openinference.span.kind": "LLM",
+        "llm.provider": "openai",
+        "llm.system": "openai",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.token_count.prompt": 286,
+        "llm.token_count.completion": 163,
+        "llm.token_count.total": 449,
+        "llm.token_count.prompt_details.cache_read": 100,
+        "llm.token_count.completion_details.reasoning": 132,
+        "llm.finish_reason": "tool_calls",
+        "llm.invocation_parameters": "{\"model\": \"gpt-4o-mini\", \"temperature\": 0.1, \"messages\": [{\"role\": \"user\"}], \"tools\": [{}], \"stop\": [\"x\"]}",
+        "llm.input_messages.0.message.role": "user",
+        "llm.input_messages.0.message.content": "How many letters?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.input_messages.1.message.contents.0.message_content.type": "text",
+        "llm.input_messages.1.message.contents.0.message_content.text": "Look:",
+        "llm.input_messages.1.message.contents.1.message_content.type": "image",
+        "llm.input_messages.1.message.contents.1.message_content.image.image.url": "https://example.test/a.png",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call-1",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "get_word_length",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"word\": \"superbased\"}"
+      },
+      "want": {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "input_tokens": 286,
+        "output_tokens": 163,
+        "total_tokens": 449,
+        "total_derived": false,
+        "cache_read_tokens": 100,
+        "reasoning_tokens": 132,
+        "finish_reasons": ["tool_calls"],
+        "request_params": {"model": "gpt-4o-mini", "temperature": 0.1, "stop": ["x"]},
+        "input_messages": [
+          {"role": "user", "content": "How many letters?"},
+          {"role": "user", "parts": [{"type": "text", "text": "Look:"}, {"type": "image", "image": "https://example.test/a.png"}]}
+        ],
+        "output_messages": [
+          {"role": "assistant", "tool_calls": [{"id": "call-1", "name": "get_word_length", "arguments": "{\"word\": \"superbased\"}"}]}
+        ]
+      },
+      "note": "invocation_parameters content members (messages, tools) are never merged into request_params."
+    },
+    {
+      "name": "tool_span",
+      "attrs": {"openinference.span.kind": "TOOL", "tool.name": "get_word_length", "tool_call.id": "call-1", "input.value": "superbased", "output.value": "10"},
+      "want": {"tool_name": "get_word_length", "tool_call_id": "call-1", "tool_arguments": "superbased", "tool_result": "10"}
+    },
+    {
+      "name": "agent_span_io",
+      "attrs": {"openinference.span.kind": "AGENT", "agent.name": "researcher", "input.value": "{\"q\": 1}", "output.value": "{\"a\": 2}"},
+      "want": {"agent_name": "researcher", "input_value": {"q": 1}, "output_value": {"a": 2}}
+    },
+    {
+      "name": "reported_cost_breakdown",
+      "attrs": {"llm.cost.total": 0.01, "llm.cost.prompt_details.input": 0.004, "llm.cost.prompt_details.cache_read": 0.001, "llm.cost.completion_details.output": 0.005},
+      "want": {"cost_total": 0.01, "cost_input": 0.004, "cost_cache_read": 0.001, "cost_output": 0.005}
+    },
+    {
+      "name": "embedding_span_b2_b3_gaps",
+      "_note": "openinference-instrumentation-openai 0.1.75 CreateEmbeddings shape (sdk/contract/fixtures/instrument/openai.json): the model is embedding.model_name, the inputs embedding.embeddings.<i>.embedding.text (read only when input.value is absent), parameters embedding.invocation_parameters (content members dropped).",
+      "attrs": {
+        "openinference.span.kind": "EMBEDDING",
+        "embedding.model_name": "text-embedding-3-small",
+        "embedding.invocation_parameters": "{\"model\": \"text-embedding-3-small\", \"input\": [\"hello\"], \"encoding_format\": \"base64\"}",
+        "embedding.embeddings.0.embedding.text": "hello",
+        "embedding.embeddings.0.embedding.vector": [
+          0.1,
+          0.2
+        ],
+        "embedding.embeddings.1.embedding.text": "world",
+        "llm.token_count.prompt": 5,
+        "llm.token_count.total": 5
+      },
+      "want": {
+        "model": "text-embedding-3-small",
+        "input_tokens": 5,
+        "total_tokens": 5,
+        "total_derived": false,
+        "input_value": [
+          "hello",
+          "world"
+        ],
+        "request_params": {
+          "encoding_format": "base64",
+          "model": "text-embedding-3-small"
+        }
+      }
+    },
+    {
+      "name": "anthropic_request_response_model_name",
+      "_note": "openinference-instrumentation-anthropic 3.3.7 (sdk/contract/fixtures/instrument/anthropic.json) writes llm.request.model_name / llm.response.model_name.",
+      "attrs": {
+        "openinference.span.kind": "LLM",
+        "llm.request.model_name": "claude-sonnet-4-5",
+        "llm.response.model_name": "claude-sonnet-4-5-20250929"
+      },
+      "want": {
+        "model": "claude-sonnet-4-5-20250929",
+        "request_model": "claude-sonnet-4-5",
+        "response_model": "claude-sonnet-4-5-20250929"
+      }
+    }
+  ]
+}

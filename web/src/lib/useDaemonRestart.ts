@@ -1,22 +1,29 @@
 import { useEffect, useRef, useState } from "react";
-import { useApi } from "@/lib/useApi";
 import { ApiError, fetchJSON } from "@/lib/api";
 import type { StatusSnapshot } from "@/lib/types";
+import { confirmDialog } from "@shared/primitives/confirmDialogModel";
+import { probeUnsavedLive, restartConfirmBody, type RestartConfirm } from "@/lib/restartConfirm";
+import { isNewProcess, waitForNewProcess } from "@/lib/restartReconnect";
 
 // useDaemonRestart owns the on-demand daemon-restart flow shared by the
 // RestartPendingBanner and the Settings → Health control: POST
 // /api/admin/restart (the daemon runs its graceful shutdown + self re-exec),
-// then poll /api/status until the NEW process answers (started_at advances past
-// the click) and reload into it. The backend returns 501 when RestartFunc is
+// then poll /api/status until the NEW process answers and reload into it. The
+// poll is its own loop (restartReconnect.ts, UI review U-22), not the shared
+// query cache: every attempt has a timeout and every failure is retried on a
+// bounded backoff, so the overlay cannot outlive the old process. The new
+// process is told apart by its started_at differing from the one read just
+// before the restart (or, with no earlier read, being later than the click). The backend returns 501 when RestartFunc is
 // nil (standalone `observer dashboard`, not `observer start`) — surfaced as
 // `error` so callers can render honest copy.
 //
 // Proxy-route honesty (dashboard-config-management plan §3.3 item 3): before
-// the confirm dialog, GET /api/admin/restart reports how many proxied API
-// turns landed in the last minute. The daemon IS the proxy on its port, so a
+// the confirm dialog (the shared confirmDialog), GET /api/admin/restart
+// reports how many proxied API turns landed in the last minute. The daemon IS the proxy on its port, so a
 // restart drops in-flight proxy requests; the dialog says so with the number
-// instead of a vague warning. It never automates the route OFF/ON dance —
-// scripts/restart-daemon.sh stays the belt-and-braces path and is named.
+// instead of a vague warning. It never automates the route OFF/ON dance (see
+// restartConfirm.ts for why); the dialog names scripts/restart-daemon.sh with
+// the reason it is a shell step.
 //
 // Live sandboxed runs (sandbox plan v2 section 5.5, SBX-UPD-1): a restart
 // with a live sandboxed run answers 409 live_sandboxed_runs with the runs.
@@ -77,55 +84,66 @@ export function useDaemonRestart() {
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restartAtRef = useRef<number>(0);
+  // The running process's started_at, read just before the restart.
+  const beforeRef = useRef<string | null>(null);
 
-  // Poll status only while a restart is in flight; fast so the overlay clears
-  // promptly once the new process is up.
-  const status = useApi<StatusSnapshot>(
-    restarting ? "/api/status" : null,
-    undefined,
-    [restarting],
-    { refreshMs: 1500 },
-  );
-
+  // While a restart is in flight, wait for the new process and reload into it.
   useEffect(() => {
-    if (!restarting || !status.data?.started_at) return;
-    const startedAt = new Date(status.data.started_at).getTime();
-    if (Number.isFinite(startedAt) && startedAt > restartAtRef.current) {
-      window.location.reload();
-    }
-  }, [restarting, status.data?.started_at]);
+    if (!restarting) return;
+    const ac = new AbortController();
+    void waitForNewProcess((startedAt) => isNewProcess(startedAt, beforeRef.current, restartAtRef.current), {
+      signal: ac.signal,
+      sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+      probe: (signal) => fetchJSON<StatusSnapshot>("/api/status", undefined, { signal, cache: "no-store" }),
+    }).then((ok) => {
+      if (ok) window.location.reload();
+    });
+    return () => ac.abort();
+  }, [restarting]);
 
-  // restart optionally gates on a window.confirm message; returns nothing —
-  // observe `restarting`/`error`. The live-traffic line is appended to the
-  // confirm copy when the daemon reports proxied requests in the last minute.
-  async function restart(confirmMessage?: string) {
-    if (confirmMessage) {
-      let message = confirmMessage;
+  // markStart records what the reconnect wait compares against: the click
+  // time and, when the daemon answers, its current started_at.
+  async function markStart() {
+    restartAtRef.current = Date.now();
+    beforeRef.current = null;
+    try {
+      const st = await fetchJSON<StatusSnapshot>("/api/status", undefined, { cache: "no-store" });
+      beforeRef.current = st.started_at ?? null;
+    } catch {
+      // No status read: fall back to the click time.
+    }
+  }
+
+  // restart optionally asks first (the shared confirmDialog, never a native
+  // window.confirm); returns nothing - observe `restarting`/`error`. The
+  // dialog's proxy line comes from the live-traffic probe (restartConfirm.ts).
+  async function restart(confirm?: RestartConfirm) {
+    if (confirm) {
+      let st: RestartStatus | null = null;
       try {
-        const st = await fetchJSON<RestartStatus>("/api/admin/restart");
-        if (st.live_sandboxed_runs && st.live_sandboxed_runs.length > 0) {
-          // The live-run question replaces the plain confirm.
-          window.dispatchEvent(new CustomEvent(LIVE_RUNS_EVENT, { detail: st.live_sandboxed_runs }));
-          return;
-        }
-        const n = st.proxy_recent_requests ?? 0;
-        if (n > 0) {
-          message +=
-            `\n\nA coding session is routing through this daemon right now (${n} request${n === 1 ? "" : "s"} in the last minute). ` +
-            "Restarting drops in-flight proxy requests. The daemon re-execs in place, so the gap is typically under a second." +
-            "\n\nHaving trouble? scripts/restart-daemon.sh performs the route-off → restart → route-on sequence from a shell.";
-        } else {
-          message += "\n\nNo proxied requests in the last minute - no coding session should notice.";
-        }
+        st = await fetchJSON<RestartStatus>("/api/admin/restart");
       } catch {
         // Status probe unavailable (older daemon, read-only surface): fall
         // back to the generic warning rather than blocking the restart.
-        message += "\n\nAn active proxied coding session may drop one in-flight request.";
       }
-      if (!window.confirm(message)) return;
+      if (st?.live_sandboxed_runs && st.live_sandboxed_runs.length > 0) {
+        // The live-run question replaces the plain confirm.
+        window.dispatchEvent(new CustomEvent(LIVE_RUNS_EVENT, { detail: st.live_sandboxed_runs }));
+        return;
+      }
+      // What a restart would drop (U-27): an admission policy applied live
+      // that never reached config.
+      const unsaved = await probeUnsavedLive((path) => fetchJSON<unknown>(path));
+      const ok = await confirmDialog({
+        title: confirm.title,
+        body: restartConfirmBody(confirm.lead, st, unsaved),
+        confirmLabel: "Restart daemon",
+        tone: "danger",
+      });
+      if (!ok) return;
     }
     setError(null);
-    restartAtRef.current = Date.now();
+    await markStart();
     try {
       await fetchJSON("/api/admin/restart", undefined, { method: "POST" });
       setRestarting(true);
@@ -149,7 +167,7 @@ export function useDaemonRestart() {
   // whether the answer was accepted, with `error` set when not.
   async function answerLiveRuns(answer: LiveRunsAnswer): Promise<boolean> {
     setError(null);
-    if (answer === "end") restartAtRef.current = Date.now();
+    if (answer === "end") await markStart();
     try {
       await postLiveRunsAnswer(answer);
       if (answer === "end") setRestarting(true);

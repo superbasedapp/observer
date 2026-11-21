@@ -6,11 +6,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -92,5 +94,27 @@ func TestActionlintIsOptIn(t *testing.T) {
 	snap := componentstate.Resolve(config.ComponentsConfig{Add: []string{actionlintComponent, "security.code"}}, nil)
 	if !actionlintSelected(snap) {
 		t.Fatal("not selected although added")
+	}
+}
+
+// TestActionlintDoctorLinksTheScannersSwitch (lane L5): the not-selected
+// doctor row names the Code security > Scanners switch first and carries it
+// as a dashboard link; the [components] key stays for the file reader.
+func TestActionlintDoctorLinksTheScannersSwitch(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfg, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if actionlintSelected(componentSnapshotFor(cfg)) {
+		t.Skip("actionlint is offered by default here; the not-selected row does not apply")
+	}
+	c := securityActionlintDoctorCheck(context.Background(), cfg)
+	if !strings.Contains(c.Message, "Code security > Scanners") || !strings.Contains(c.Message, "[components]") {
+		t.Errorf("message = %q", c.Message)
+	}
+	if len(c.Remediations) != 1 || c.Remediations[0].Action != remedy.OpenScanners {
+		t.Errorf("remediations = %+v, want the Scanners link", c.Remediations)
 	}
 }

@@ -8,9 +8,26 @@ import (
 
 // ToolInstallRecord is the wire shape of one dashboard-install record.
 type ToolInstallRecord struct {
-	ID      int64  `json:"id"`
+	ID int64 `json:"id"`
+	// Tool is the AI tool's name, or the prerequisite id of a sandbox
+	// setup record (SubjectKind sandbox).
 	Tool    string `json:"tool"`
 	Channel string `json:"channel"`
+	// SubjectKind is whose record this is: "tool" (an AI tool's guided
+	// install, the default and what every tool route lists) or "sandbox" (a
+	// sandbox setup step, agent migration 222). "" reads as tool.
+	SubjectKind string `json:"subject_kind,omitempty"`
+	// Backend is the sandbox backend a sandbox record was set up for.
+	Backend string `json:"backend,omitempty"`
+	// Source is where a pinned download came from (vendor_release,
+	// org_mirror, from_file).
+	Source string `json:"source,omitempty"`
+	// Digest is the sha256 of a placed file.
+	Digest string `json:"digest,omitempty"`
+	// PlacedPath is the file Observer placed (a pinned download).
+	PlacedPath string `json:"placed_path,omitempty"`
+	// Elevated: the step ran under sudo or UAC.
+	Elevated bool `json:"elevated,omitempty"`
 	// Package is the identity the channel installed ("" for a vendor script).
 	Package string `json:"package,omitempty"`
 	// Command is the install command as it was shown to the operator.

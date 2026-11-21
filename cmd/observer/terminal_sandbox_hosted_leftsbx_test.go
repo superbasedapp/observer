@@ -284,7 +284,7 @@ func TestHostedRefusesInternetTierUnderEgressHostList(t *testing.T) {
 		{"org pin, none", pinned, vocab.TierNone, ""},
 		{"no list, internet", config.TerminalSandboxConfig{}, vocab.TierInternet, ""},
 	}
-	for _, vid := range []string{sandboxbackend.BackendE2B, sandboxbackend.BackendModal, sandboxbackend.BackendVercelSandbox} {
+	for _, vid := range []string{sandboxbackend.BackendE2B, sandboxbackend.BackendModal, sandboxbackend.BackendVercelSandbox, sandboxbackend.BackendDockerSandboxes, sandboxbackend.BackendInstaBox, sandboxbackend.BackendDaytona} {
 		v, ok := sandboxremote.VendorFor(vid)
 		if !ok {
 			t.Fatalf("no vendor %s", vid)

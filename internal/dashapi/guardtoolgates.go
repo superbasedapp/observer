@@ -12,4 +12,7 @@ type GuardToolGate struct {
 	Installed bool
 	// Reason says why the hook does or does not hold.
 	Reason string
+	// Fixable is true when the tool's setup wizard would make the hook hold
+	// (it is missing or stale), so the Security page links the row to it.
+	Fixable bool
 }

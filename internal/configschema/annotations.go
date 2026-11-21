@@ -71,6 +71,8 @@ type rule struct {
 	ownedBy    string
 	enum       []string
 	min, max   *float64
+	// keysAreIDs: see Leaf.KeysAreIDs.
+	keysAreIDs bool
 }
 
 func f(v float64) *float64 { return &v }
@@ -79,18 +81,32 @@ func f(v float64) *float64 { return &v }
 // the UI renders is consistent.
 const (
 	ownerConfigMigrate = "`observer config migrate` (schema-version stamp; never hand-set)"
-	ownerOrgEnroll     = "`observer enroll` / `observer unenroll` (enrolment identity)"
+	ownerOrgEnroll     = "the Settings → Enrolment section (join with an invite, Unenroll) / `observer enroll` / `observer unenroll` (enrolment identity)"
 	ownerPricingEditor = "the Settings → Pricing editor (PUT /api/config/pricing)"
-	ownerRoutingEditor = "the Settings → Routing rules editor / config.toml"
-	ownerExperiments   = "`observer experiment` (the [[experiments]] list)"
-	ownerGuardCloud    = "`observer guard cloud` / config.toml"
+	ownerRoutingEditor = "the Settings → Routing \"Custom rules\" card / config.toml"
+	ownerExperiments   = "the Compression → Experiments card (start, stop) / `observer experiment` (the [[experiments]] list)"
+	ownerProjectBudget = "the Cost page's Budget card (a monthly budget per project) / config.toml"
+	ownerOCIScriptPins = "the Terminals → Settings → Sandbox container panel (install script pins) / config.toml"
+	ownerGuardCloud    = "the Security → MCP tab, Network features card (PUT /api/guard/cloud: a consent you confirm, never an agent's) / config.toml"
 	ownerFileOnly      = "config.toml directly (a compound table the generic editor does not render)"
+	ownerBrowserSites  = "the Settings → Browser capture card, per-site list (POST /api/browser/sites); each captured turn reads it, so a change needs no restart"
 	ownerSSHProfiles   = "the Terminals > Settings > Remote systems editor (PUT /api/terminal/ssh/profiles) / config.toml [[terminal.ssh.profiles]]"
-	ownerLaunchTools   = "config.toml [launch.tools.<tool>] (per-tool launch overrides)"
+	ownerLaunchTools   = "the Settings → Terminal \"Launch binary paths\" card (PUT /api/launch/tool-paths) / config.toml [launch.tools.<tool>]"
+	ownerWorkspace     = "the Terminals → Settings \"Default workspace\" card (PUT /api/workspace/default: checks the folder and creates it) / config.toml"
 	ownerShellWrap     = "`observer shell-wrap enable|disable` / the Settings → Terminal \"Command wrapping\" card (writes these keys AND the shell files together)"
 	ownerOrgGovernance = "your organization's node governance policy (the admin dashboard pins it; the local value is not read)"
+	ownerAutoApply     = "the Settings → Health → Updates \"Update automatically\" switch (PUT /api/update/auto-apply: default, on or off) / config.toml"
 	ownerComponents    = "`observer components select|add|remove` / `observer init --components` / Settings > Components (writes these keys AND runs the teardown of a removed component)"
+	ownerStraceSeize   = "the Terminals > Settings sandbox card's strace switch (POST /api/terminal/sandbox/ptrace-seize: a choice you confirm on this machine, never an agent's or your organization's)"
 )
+
+// routingCardOwner names the Settings → Routing card that edits one of the
+// routing shapes (tier overrides, path classes, budget scopes, privacy rules,
+// local upstreams, model fallbacks). Key pools are secrets and stay in
+// config.toml (decision P-4).
+func routingCardOwner(card string) string {
+	return "the Settings → Routing \"" + card + "\" card / config.toml"
+}
 
 // rules is THE annotation table. Ordered for reading, not for precedence —
 // precedence is by specificity (see resolve). Add a config key by adding a
@@ -143,6 +159,25 @@ var rules = []rule{
 	{prefix: "observer.process.network.process_bytes", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "observer.process.filesystem.mode", exact: true, enum: []string{"sensitive", "writes", "all_attributed_writes"}},
 	{prefix: "observer.process.metrics", prominence: ProminenceAdvanced},
+	// Process capture budget (docs/plans/process-capture-budget-plan-2026-11-04.md
+	// §9.1). Plain tier: every key only bounds what the node keeps of its own
+	// capture. The master switch and the three budgets are primary; the
+	// service, fold, ring, bucket and unattributed knobs are advanced.
+	{prefix: "observer.process.capture.services", prominence: ProminenceAdvanced},
+	{prefix: "observer.process.capture.fold", prominence: ProminenceAdvanced},
+	{prefix: "observer.process.capture.metrics", prominence: ProminenceAdvanced},
+	{prefix: "observer.process.capture.rollups", prominence: ProminenceAdvanced},
+	{prefix: "observer.process.capture.unattributed", prominence: ProminenceAdvanced},
+	{prefix: "observer.process.capture.budget.per_tool_call", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.budget.per_session", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.budget.per_minute", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.services.detach_after_minutes", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.services.exemplars_per_service", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.services.tail_minutes", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.metrics.ring_min_lifetime_seconds", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.rollups.bucket_seconds", exact: true, min: f(1), max: f(3600)},
+	{prefix: "observer.process.capture.unattributed.pending_hours", exact: true, min: f(0)},
+	{prefix: "observer.process.capture.unattributed.mode", exact: true, enum: []string{"rollup", "drop"}},
 	// The ETW listener is a network exposure surface; its token is T2.
 	{prefix: "observer.process.etw.listen_addr", exact: true, tier: TierSensitive},
 	{prefix: "observer.process.etw.allow_non_loopback", exact: true, tier: TierSensitive},
@@ -180,6 +215,9 @@ var rules = []rule{
 	{prefix: "dashboard", tier: TierPlain, restart: RestartRequired, section: "dashboard"},
 	// Network exposure (§4.2).
 	{prefix: "dashboard.addr", exact: true, tier: TierSensitive},
+	// The live ribbon switch is read on every ribbon request (live, no
+	// restart) and is a plain display preference.
+	{prefix: "dashboard.live_ribbon", exact: true, restart: RestartLive},
 
 	// ------------------------------------------------------------- compression
 	{prefix: "compression", tier: TierPlain, restart: RestartRequired, section: "compression"},
@@ -199,7 +237,7 @@ var rules = []rule{
 	{prefix: "intelligence.pricing", restart: RestartLive, section: "pricing"},
 	{prefix: "intelligence.pricing.models", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerPricingEditor},
 	{prefix: "intelligence.pricing.dated", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerPricingEditor},
-	{prefix: "intelligence.project_budgets_usd", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
+	{prefix: "intelligence.project_budgets_usd", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerProjectBudget},
 	// Each AI session spawns a fresh `observer serve` that runs config.Load
 	// itself — a restart chip would lie (plan §3.2).
 	{prefix: "intelligence.mcp", restart: RestartNextSpawn, section: "mcp"},
@@ -288,6 +326,10 @@ var rules = []rule{
 	{prefix: "projects", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
 	{prefix: "projects.commit_scan", exact: true, prominence: ProminencePrimary},
 	{prefix: "projects.skill_history", exact: true, prominence: ProminencePrimary},
+	// quality_metrics: the Projects page Quality tab reads the live config,
+	// the daily-point loop and code intelligence's complexity counting at
+	// index time need the restart (section default).
+	{prefix: "projects.quality_metrics", exact: true, prominence: ProminencePrimary},
 	{prefix: "projects.alignment_judge", exact: true, tier: TierSensitive, prominence: ProminencePrimary, enum: []string{"off", "obs_judge"}},
 	{prefix: "projects.commit_scan_interval_seconds", exact: true, min: f(0)},
 	{prefix: "projects.commit_link_window_days", exact: true, min: f(0)},
@@ -320,7 +362,7 @@ var rules = []rule{
 	{prefix: "browser", tier: TierPlain, restart: RestartRequired, section: "browser"},
 	{prefix: "browser.listener", tier: TierSensitive},
 	{prefix: "browser.listener.token", exact: true, tier: TierSecret, secret: true},
-	{prefix: "browser.sites", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
+	{prefix: "browser.sites", exact: true, tier: TierOwnerElsewhere, restart: RestartNextSpawn, ownedBy: ownerBrowserSites},
 	{prefix: "browser.granularity_ceiling", exact: true, tier: TierSensitive, enum: []string{"", "usage_only", "redacted", "full"}},
 	{prefix: "browser.ingest_timeout_ms", exact: true, prominence: ProminenceAdvanced},
 
@@ -350,8 +392,14 @@ var rules = []rule{
 	{prefix: "terminal.attach.default_on", exact: true, restart: RestartNextSpawn},
 	{prefix: "terminal.attach.reclaim_on_input", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "terminal.attach.forward_auth_env", exact: true, tier: TierSensitive, prominence: ProminenceAdvanced},
-	// Sandbox binds (§4.2).
-	{prefix: "terminal.sandbox", tier: TierSensitive},
+	// Sandbox binds (§4.2). The daemon's sandbox holder rebuilds its whole
+	// runtime from the saved block on the next launch or probe, and the
+	// relay's gate re-reads it on every apply, so the block binds on the
+	// next launch (D-R4-1). The one key it cannot rebuild live is
+	// workspaces_dir: the managed workspaces root is resolved once at daemon
+	// start and the terminal service keeps its own copy.
+	{prefix: "terminal.sandbox", tier: TierSensitive, restart: RestartNextSpawn},
+	{prefix: "terminal.sandbox.workspaces_dir", exact: true, restart: RestartRequired},
 	{prefix: "terminal.sandbox.backend", exact: true, enum: []string{"", "bwrap"}},
 	{prefix: "terminal.sandbox.home_mode", exact: true, enum: []string{"", "tmpfs", "readonly"}},
 	{prefix: "terminal.sandbox.egress", exact: true, enum: []string{"", "host", "internet", "proxy_only", "none"}},
@@ -360,21 +408,54 @@ var rules = []rule{
 	{prefix: "terminal.sandbox.live_run_update_policy", exact: true, tier: TierPlain, enum: []string{"", "defer", "ask_immediately"}},
 	{prefix: "terminal.sandbox.seatbelt.driver", exact: true, enum: []string{"", "sandbox-exec", "mxc-exec-mac"}},
 	{prefix: "terminal.sandbox.workspace_retention_days", exact: true, tier: TierPlain},
+	// SBXD-2 (lane COPIES): the returned-copy age sweep, like its sibling.
+	{prefix: "terminal.sandbox.returned_copy_retention_days", exact: true, tier: TierPlain},
+	// egress_allow_hosts (lane LEFT-SBX): every gateway helper reads the
+	// list from the daemon config its run record names when the run starts
+	// (cmd/observer/terminal_sandbox_egresshosts.go), so a save applies to
+	// the next run with no daemon restart (lane FU10, F-049: the restart
+	// class used to say restart while the allow route said none).
+	{prefix: "terminal.sandbox.egress_allow_hosts", exact: true, restart: RestartNextSpawn},
 	// provider_direct (DEC-9, OBS-8a): org-pinned only; the local value is
 	// not read (config.sandboxProviderDirectInForce).
 	{prefix: "terminal.sandbox.provider_direct", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerOrgGovernance, enum: []string{"", "refuse_all", "capture_rule", "allow"}, prominence: ProminenceExpert},
+	// seccomp (lane N2): Observer's syscall filter on the bwrap and
+	// process_lite rows, default off (D7). Sensitive like its neighbours
+	// (it changes what a sandboxed launch runs under).
+	{prefix: "terminal.sandbox.seccomp", exact: true, tier: TierSensitive},
+	// seccomp_allow_seize (lane ptrace, PT-96): lifts PTRACE_SEIZE from that
+	// filter. Written only by its own dashboard route, so the generic editor,
+	// the keys route and `observer config set` read it and never write it.
+	{prefix: "terminal.sandbox.seccomp_allow_seize", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerStraceSeize, prominence: ProminenceExpert},
 	// vendor_forced_native (lane SBX-P3D): a closed choice.
 	{prefix: "terminal.sandbox.vendor_forced_native", exact: true, enum: []string{"", "nest_or_refuse", "refuse"}},
 	// The container driver (lane SBX-P3A): sensitive like the rest of the
 	// sandbox block; the user namespace is a closed choice.
 	{prefix: "terminal.sandbox.oci.podman_userns", exact: true, enum: []string{"", "keep-id", "default"}},
 	{prefix: "terminal.sandbox.oci.stop_grace_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
+	{prefix: "terminal.sandbox.oci.install_script_pins", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerOCIScriptPins},
 	// The Windows driver (lane SBX-P6).
 	{prefix: "terminal.sandbox.mxc.stop_grace_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	{prefix: "terminal.sandbox.mxc.probe_timeout_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	// The hosted rows (lane SBX-P7): two closed choices.
-	{prefix: "terminal.sandbox.hosted.key_custody", exact: true, enum: []string{"home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
+	{prefix: "terminal.sandbox.hosted.key_custody", exact: true, enum: []string{"auto", "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
 	{prefix: "terminal.sandbox.hosted.memory_images", exact: true, enum: []string{"avoid", "refuse"}},
+	// The diff against the box's baseline (lane COPIES); "" means baseline.
+	{prefix: "terminal.sandbox.hosted.diff_against", exact: true, enum: []string{"", "baseline", "head"}},
+	// Guard's hooks in a hosted box (lane HOOKS, SBXD-6): "" reads as auto.
+	{prefix: "terminal.sandbox.hosted.guard_hooks", exact: true, enum: []string{"", "auto", "on", "off"}},
+	// The clone location (decision SBXD-5).
+	{prefix: "terminal.sandbox.hosted.clone_where", exact: true, enum: []string{"auto", "box", "home"}},
+	// The OpenShell row (lane O1A): sensitive like the rest of the sandbox
+	// block (the endpoint names the gateway that builds the box); the
+	// gateway mode is a closed choice: "managed" is Observer's private
+	// gateway, the default since lane O2 (decision D2), and "" resolves to
+	// it unless an endpoint is set, which resolves to "external"
+	// (config EffectiveGatewayMode); "external" is your own gateway, the
+	// opt-in.
+	{prefix: "terminal.sandbox.openshell", tier: TierSensitive},
+	{prefix: "terminal.sandbox.openshell.gateway_mode", exact: true, enum: []string{"", "managed", "external"}},
+	{prefix: "terminal.sandbox.openshell.state_dir", exact: true, prominence: ProminenceAdvanced},
 	// Read per launch through the live terminal config holder (T-488), like
 	// terminal.launch: a profile or switch change binds on the next launch.
 	{prefix: "terminal.ssh", tier: TierSensitive, restart: RestartNextSpawn},
@@ -388,6 +469,12 @@ var rules = []rule{
 	// the shell start-up files; the dedicated card/CLI writes both together.
 	// next_spawn: a change reaches the next shell the operator opens.
 	{prefix: "shell_wrap", tier: TierOwnerElsewhere, restart: RestartNextSpawn, section: "terminal", ownedBy: ownerShellWrap, prominence: ProminenceAdvanced},
+	// [workspace] (internal/defaultworkspace): the default workspace folder.
+	// Owner-elsewhere because a key write alone would skip the folder rules
+	// (not the home folder, not in ~/.observer, not inside a git repository)
+	// and would not create the folder; the dedicated card does both. live:
+	// every reader resolves it from the file when it needs it.
+	{prefix: "workspace", tier: TierOwnerElsewhere, restart: RestartLive, section: "terminal", ownedBy: ownerWorkspace},
 
 	// [components] (modular packaging P1): the node's component selection.
 	// Owner-elsewhere because a key write alone would skip the teardown of a
@@ -420,6 +507,37 @@ var rules = []rule{
 	// while it waits, re-reads the file every 30 seconds, so a change
 	// takes effect with no restart (cmd/observer security_deps_daemon.go).
 	{prefix: "security.deps.index_download", exact: true, restart: RestartLive},
+	// The dependency scanners' database source (static feed mirroring plan
+	// section 7) is read at every refresh pass, so a change needs no
+	// restart.
+	{prefix: "security.deps.db_source", exact: true, restart: RestartLive},
+	{prefix: "security.deps.db_fallback_upstream", exact: true, restart: RestartLive},
+	// The package lookup posture (OS and CI vulnerability scanning plan
+	// section 13.10, lane RM-2): what leaves the machine at every dependency
+	// scan, so sensitive tier (a dashboard write carries the confirm token);
+	// every scan re-reads it, so a change needs no restart. Its own card on
+	// the Privacy page writes it through PUT /api/security/lookup together
+	// with the consent records; R-165 denies an agent each key.
+	{prefix: "security.deps.match", exact: true, tier: TierSensitive, restart: RestartLive, enum: []string{"", "local", "remote", "both"}},
+	{prefix: "security.deps.remote_via", exact: true, tier: TierSensitive, restart: RestartLive, enum: []string{"shards"}, prominence: ProminenceAdvanced},
+	{prefix: "security.deps.remote_kinds", exact: true, tier: TierSensitive, restart: RestartLive},
+	{prefix: "security.deps.remote_private", exact: true, tier: TierSensitive, restart: RestartLive, enum: []string{"withhold", "send"}},
+	// [security.scan.opengrep] intrafile taint pass (plan 14.3 item 1a, ruling 2026-11-05): read by every scan (the code loop re-loads the config each pass, the CLI per run), so live.
+	{prefix: "security.scan.opengrep.taint_pass", exact: true, restart: RestartLive, enum: []string{"", "auto", "off"}},
+	{prefix: "security.scan.opengrep.taint_pass_budget_seconds", exact: true, restart: RestartLive, min: f(0), max: f(3600), prominence: ProminenceAdvanced},
+	{prefix: "security.scan.opengrep.taint_pass_jobs", exact: true, restart: RestartLive, min: f(0), max: f(8), prominence: ProminenceAdvanced},
+	{prefix: "security.scan.opengrep.taint_pass_memory_mib", exact: true, restart: RestartLive, min: f(0), max: f(8192), prominence: ProminenceAdvanced},
+	// [security.reach.go] (plan 14.5 item 3b, 3b-src): the Go source check's caps, read by every run (the check is manual only), so live. The memory cap is the developer's call (it bounds a run of the project's own toolchain), an agent's never (R-165, the [security] section).
+	{prefix: "security.reach.go.source_memory_mib", exact: true, restart: RestartLive, min: f(0), max: f(65536), prominence: ProminenceAdvanced},
+	{prefix: "security.reach.go.source_timeout_seconds", exact: true, restart: RestartLive, min: f(0), max: f(7200), prominence: ProminenceAdvanced},
+	{prefix: "security.reach.go.source_max_modules", exact: true, restart: RestartLive, min: f(0), max: f(64), prominence: ProminenceAdvanced},
+	// The image driver (OS and CI vulnerability scanning plan section 6.7,
+	// lane OS-2 T) picks which engine runs on a scanned image (Trivy is a
+	// separately installed third-party process), so a dashboard write
+	// carries the confirm token like the Scanners card's accepts; `observer
+	// security scan image` reads it on every run, so a change needs no
+	// restart. "" is the build's default.
+	{prefix: "security.scan.image.driver", exact: true, tier: TierSensitive, restart: RestartLive, enum: []string{"", "scalibr", "trivy"}},
 
 	// ----------------------------------------------------------------- archive
 	{prefix: "archive", tier: TierPlain, restart: RestartRequired, section: "storage"},
@@ -436,15 +554,15 @@ var rules = []rule{
 	{prefix: "routing.mode", exact: true, tier: TierSensitive, enum: []string{"off", "advise", "enforce"}},
 	{prefix: "routing.enabled", exact: true, tier: TierSensitive},
 	{prefix: "routing.key_pool", tier: TierSecret, secret: true},
-	{prefix: "routing.tiers", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor, prominence: ProminenceAdvanced},
-	{prefix: "routing.path_classes", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor, prominence: ProminenceAdvanced},
+	{prefix: "routing.tiers", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Tier overrides"), prominence: ProminenceAdvanced},
+	{prefix: "routing.path_classes", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Path classes"), prominence: ProminenceAdvanced},
 	{prefix: "routing.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor},
-	{prefix: "routing.budget.scopes", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor},
-	{prefix: "routing.privacy.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor},
+	{prefix: "routing.budget.scopes", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Budget scopes")},
+	{prefix: "routing.privacy.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Privacy rules")},
 	{prefix: "routing.reliability", prominence: ProminenceAdvanced},
-	{prefix: "routing.reliability.fallbacks", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor},
+	{prefix: "routing.reliability.fallbacks", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Model fallbacks")},
 	// A local upstream re-points model traffic (§4.2 "Upstreams").
-	{prefix: "routing.local_upstreams", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerRoutingEditor},
+	{prefix: "routing.local_upstreams", exact: true, tier: TierOwnerElsewhere, ownedBy: routingCardOwner("Local upstreams")},
 	{prefix: "routing.stickiness", prominence: ProminenceAdvanced},
 	{prefix: "routing.rate_limit_window", prominence: ProminenceAdvanced},
 	{prefix: "routing.calibration", prominence: ProminenceAdvanced},
@@ -459,7 +577,9 @@ var rules = []rule{
 	// three keys that change WHICH BINARY RUNS are sensitive.
 	{prefix: "update", tier: TierPlain, restart: RestartRequired, section: "org"},
 	{prefix: "update.enabled", exact: true, tier: TierSensitive},
-	{prefix: "update.auto_apply", exact: true, tier: TierSensitive},
+	// A *bool (unset: the managed-fleet default decides), which the generic
+	// editor cannot express; its own switch writes it (dashboard CLI parity B-S7).
+	{prefix: "update.auto_apply", exact: true, tier: TierSensitive, ownedBy: ownerAutoApply},
 	{prefix: "update.allow_downgrade", exact: true, tier: TierSensitive},
 	{prefix: "update.channel", exact: true, enum: []string{"", "stable", "lts", "edge"}},
 	{prefix: "update.state_dir", exact: true, prominence: ProminenceExpert},
@@ -487,11 +607,18 @@ var rules = []rule{
 	{prefix: "guard.enabled", exact: true, tier: TierSensitive},
 	{prefix: "guard.mode", exact: true, tier: TierSensitive, enum: []string{"off", "observe", "enforce"}},
 	{prefix: "guard.strict", exact: true, tier: TierSensitive},
+	{prefix: "guard.level", exact: true, tier: TierSensitive},
+	{prefix: "guard.database", tier: TierSensitive},
+	{prefix: "guard.network", tier: TierSensitive},
 	{prefix: "guard.rules", tier: TierSensitive},
 	{prefix: "guard.boundary", tier: TierSensitive},
 	{prefix: "guard.proxy.egress_action", exact: true, tier: TierSensitive, enum: []string{"", "flag", "mask", "deny"}},
 	{prefix: "guard.proxy.egress_allow", exact: true, tier: TierSensitive},
 	{prefix: "guard.alerts.min_severity", exact: true, enum: []string{"", "info", "warn", "high", "critical"}},
+	// Detector ids (slack_token, bearer_token, aws_secret_key ...) name what
+	// a detector finds; the values are modes (off / warn / ask-once / block /
+	// redact), so a save of one is not a credential.
+	{prefix: "guard.prompt.detectors", exact: true, keysAreIDs: true},
 	{prefix: "guard.taint", prominence: ProminenceAdvanced},
 	{prefix: "guard.dialects", prominence: ProminenceAdvanced},
 	{prefix: "guard.export", prominence: ProminenceAdvanced},
@@ -539,6 +666,8 @@ var rules = []rule{
 	{prefix: "observability.admission.prefilter", prominence: ProminenceAdvanced},
 	{prefix: "observability.alerts.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.alerts.webhook_url", exact: true, tier: TierSensitive},
+	{prefix: "observability.alerts.slack_webhook_url", exact: true, tier: TierSecret, secret: true},
+	{prefix: "observability.alerts.pagerduty_routing_key", exact: true, tier: TierSecret, secret: true},
 	{prefix: "observability.alerts.email", exact: true, tier: TierSensitive},
 	{prefix: "observability.alerts.email_to", exact: true, tier: TierSensitive},
 	// Egress routing (§4.2).
@@ -546,6 +675,15 @@ var rules = []rule{
 	{prefix: "observability.egress.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.egress.targets", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.proxy_turn_traces", exact: true, prominence: ProminenceAdvanced},
+	// Node-local Plane A content capture (F07, D8): a capture/content key,
+	// so sensitive (D19: an agent's MCP write needs the user's approval).
+	{prefix: "observability.store_content", exact: true, tier: TierSensitive, prominence: ProminencePrimary},
+	// [observability.sdk] (D18): where the SDKs send an app's data. Both keys
+	// decide whether spans leave this machine, so both are sensitive (confirm
+	// on the dashboard, --yes on the CLI, an approval for an MCP agent). The
+	// discovery route reads the file on every request, so a save is live.
+	{prefix: "observability.sdk", tier: TierSensitive, restart: RestartLive, prominence: ProminencePrimary},
+	{prefix: "observability.sdk.destination", exact: true, enum: []string{"", "local", "online", "both"}},
 
 	// ----------------------------------------------------------------- selfobs
 	{prefix: "selfobs", tier: TierSensitive, restart: RestartRequired, section: "observability", prominence: ProminenceAdvanced},
@@ -643,6 +781,9 @@ func annotate(leaf *Leaf) {
 		}
 		if leaf.Enum == nil && r.enum != nil {
 			leaf.Enum = r.enum
+		}
+		if r.keysAreIDs {
+			leaf.KeysAreIDs = true
 		}
 		if leaf.Min == nil && r.min != nil {
 			leaf.Min = r.min

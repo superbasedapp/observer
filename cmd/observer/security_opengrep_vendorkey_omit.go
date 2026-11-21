@@ -8,3 +8,6 @@ import "crypto/ed25519"
 // so no rule pack or engine manifest verifies (fail closed) and the
 // embedded floor and compiled pins are what the driver uses.
 func codeVendorKeys() []ed25519.PublicKey { return nil }
+
+// codeFeedKeys: no content-feed key either in this build.
+func codeFeedKeys() []ed25519.PublicKey { return nil }

@@ -27,8 +27,12 @@ import (
 // developer's one-time accept, on both driver paths and on `observer
 // security scan db refresh`; before it nothing claims clean.
 
-// countingRemote counts the database requests and fails each one, so a
-// test proves whether the download ran without any network.
+// countingRemote counts the database requests to either source and fails
+// each one, so a test proves whether the download ran without any network.
+// It stands in for both network sides of the refresh: the OSV bucket
+// (osvdb.Remote) and SuperBased's signed mirror (osvFeedClient), which the
+// default db_source = auto tries first whenever this build carries a
+// content-feed key.
 type countingRemote struct{ calls atomic.Int64 }
 
 func (r *countingRemote) Head(context.Context, string) (osvdb.Meta, error) {
@@ -41,13 +45,27 @@ func (r *countingRemote) Get(context.Context, string) (osvdb.Meta, io.ReadCloser
 	return osvdb.Meta{}, nil, errors.New("test: no network")
 }
 
-// useRemote swaps the download's network side for the test.
+func (r *countingRemote) FetchFeedFile(context.Context, string, string, string) ([]byte, string, error) {
+	r.calls.Add(1)
+	return nil, "", errors.New("test: no network")
+}
+
+func (r *countingRemote) StreamFeedArtifact(context.Context, string, string, int64, io.Writer) error {
+	r.calls.Add(1)
+	return errors.New("test: no network")
+}
+
+// useRemote swaps the download's network sides for the test. Swapping the
+// bucket alone left the signed mirror on the real egress lane: on a host
+// with network the mirror served the refresh from superbased.app, the bucket
+// was never asked, and an accept read as "did not download".
 func useRemote(t *testing.T) *countingRemote {
 	t.Helper()
 	r := &countingRemote{}
-	old := depsOSVRemote
+	oldRemote, oldFeed := depsOSVRemote, depsOSVFeed
 	depsOSVRemote = func() osvdb.Remote { return r }
-	t.Cleanup(func() { depsOSVRemote = old })
+	depsOSVFeed = func() osvFeedClient { return r }
+	t.Cleanup(func() { depsOSVRemote, depsOSVFeed = oldRemote, oldFeed })
 	return r
 }
 
@@ -57,6 +75,7 @@ func scanConsentConfig(t *testing.T) (cfgPath, secDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath = filepath.Join(dir, "config.toml")
+	seedNodeDB(t, filepath.Join(dir, "observer.db"))
 	body := "[observer]\ndb_path = " + strconv.Quote(filepath.Join(dir, "observer.db")) +
 		"\n[components]\nadd = [\"security.deps\", \"security.scan.scalibr\", \"security.scan.osv\"]\n[security.deps]\nonline = false\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
@@ -121,7 +140,9 @@ func TestScanBeforeTheAcceptClaimsNothing(t *testing.T) {
 	if d.scans != 0 {
 		t.Fatal("a driver ran before the accept")
 	}
-	if res.Coverage.Outcome != secscan.OutcomeNotScanned || res.Coverage.Reason != depscan.ReasonDBNotAccepted {
+	// Lane RM-2 (ruling Q8 (a)): a fresh install that chose neither the
+	// download nor the lookup reads lookup_not_chosen.
+	if res.Coverage.Outcome != secscan.OutcomeNotScanned || res.Coverage.Reason != depscan.ReasonLookupNotChosen {
 		t.Fatalf("coverage %+v", res.Coverage)
 	}
 	if notes, err := e.st.SecLatestRunNotes(ctx, d.Row().ID); err != nil || len(notes) != 0 {
@@ -129,7 +150,7 @@ func TestScanBeforeTheAcceptClaimsNothing(t *testing.T) {
 	}
 	var b bytes.Buffer
 	writeScanReport(&b, depsScanReport{Driver: d.Row().ID, Result: res})
-	if !strings.Contains(b.String(), "not scanned") || !strings.Contains(b.String(), "accept to download about 300 MB") || strings.Contains(b.String(), "no known vulnerabilities") {
+	if !strings.Contains(b.String(), "not scanned") || !strings.Contains(b.String(), "download the OSV databases (about 300 MB") || strings.Contains(b.String(), "no known vulnerabilities") {
 		t.Fatalf("report:\n%s", b.String())
 	}
 }
@@ -165,7 +186,7 @@ func TestScanDBAcceptVerb(t *testing.T) {
 	e := open()
 	var status bytes.Buffer
 	writeDBDownloadState(&status, e)
-	if !strings.Contains(status.String(), "databases not downloaded: accept to download about 300 MB from osv-vulnerabilities.storage.googleapis.com") {
+	if !strings.Contains(status.String(), "databases not downloaded: accept to download about 300 MB from superbased.app (falling back to osv-vulnerabilities.storage.googleapis.com)") {
 		t.Fatalf("status before the accept:\n%s", status.String())
 	}
 	var refresh bytes.Buffer

@@ -336,3 +336,95 @@ func mustEnrolURL(t *testing.T, s *store.Store) string {
 	}
 	return enr.OrgServerURL
 }
+
+// TestClaimAccessGrantWhileTheDatabaseIsBusy pins the 2026-11-13 operator
+// report: a hook's grant question asked while the daemon held the write lock
+// read as "no grant" with nothing recorded, so a rule the developer held a
+// perpetual grant for still stopped them now and then, and they asked for
+// the same grant again. The decision is made from reads; only a use-limited
+// grant needs its write, and a question that cannot be answered says so.
+func TestClaimAccessGrantWhileTheDatabaseIsBusy(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxUses  int64
+		consume  bool
+		wantOK   bool
+		wantErr  bool
+		wantUsed int64
+	}{
+		{"unlimited grant, claim: applies, the local counter is skipped", 0, true, true, false, 0},
+		{"unlimited grant, peek: applies, writes nothing", 0, false, true, false, 0},
+		{"use-limited grant, peek: applies, writes nothing", 3, false, true, false, 0},
+		{"use-limited grant, claim: no grant, and the failure is reported", 3, true, false, true, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			g := exemptGrant(7, time.Now(), 2*time.Hour)
+			g.MaxUses = c.maxUses
+			f := newClaimFixture(t, g)
+			// The hook's own handle: a short busy wait, as cmd/observer opens it.
+			hook, err := sql.Open("sqlite", "file:"+f.path+"?_pragma=busy_timeout(50)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = hook.Close() }()
+			hook.SetMaxOpenConns(1)
+			// Another process (the daemon) holds the write lock throughout.
+			writer, err := f.raw.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = writer.Close() }()
+			if _, err := writer.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _, _ = writer.ExecContext(ctx, `ROLLBACK`) }()
+
+			qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			var cl GrantClaim
+			if c.consume {
+				cl = ClaimAccessGrant(qctx, store.New(hook), denyQuery(), time.Now())
+			} else {
+				cl = PeekAccessGrant(qctx, store.New(hook), denyQuery(), time.Now())
+			}
+			if cl.OK != c.wantOK || (cl.Err != nil) != c.wantErr {
+				t.Fatalf("claim = %+v, want ok=%v err=%v", cl, c.wantOK, c.wantErr)
+			}
+			if c.wantOK && cl.Hit.GrantID != 7 {
+				t.Fatalf("hit = %+v, want G-7", cl.Hit)
+			}
+			var used int64
+			if err := hook.QueryRow(`SELECT uses_used FROM org_access_grants WHERE grant_id = 7`).Scan(&used); err != nil || used != c.wantUsed {
+				t.Fatalf("uses_used = %d (%v), want %d", used, err, c.wantUsed)
+			}
+		})
+	}
+}
+
+// TestClaimAccessGrantNamesAScopeMiss: a grant for the rule that is pinned to
+// another project is reported, not silently skipped.
+func TestClaimAccessGrantNamesAScopeMiss(t *testing.T) {
+	ctx := context.Background()
+	g := exemptGrant(7, time.Now(), 2*time.Hour)
+	g.ProjectRootHash = "project-a"
+	f := newClaimFixture(t, g)
+	q := denyQuery()
+	for _, c := range []struct {
+		name, project string
+		ok            bool
+		miss          int64
+	}{
+		{"the granted project", "project-a", true, 0},
+		{"another project", "project-b", false, 7},
+		{"no project on the event", "", false, 7},
+	} {
+		q.ProjectRootHash = c.project
+		for _, cl := range []GrantClaim{PeekAccessGrant(ctx, f.s, q, time.Now()), ClaimAccessGrant(ctx, f.s, q, time.Now())} {
+			if cl.OK != c.ok || cl.ScopeMissID != c.miss || cl.Err != nil {
+				t.Errorf("%s: %+v, want ok=%v scope miss G-%d", c.name, cl, c.ok, c.miss)
+			}
+		}
+	}
+}

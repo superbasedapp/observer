@@ -222,6 +222,17 @@ type newSandboxV2 struct {
 	AllowInternetAccess bool              `json:"allow_internet_access"`
 	Metadata            map[string]string `json:"metadata,omitempty"`
 	EnvVars             map[string]string `json:"envVars,omitempty"`
+	// Network carries the private-range deny on the internet tier
+	// (SandboxNetworkConfig.denyOut, decision SBXD-7); nil sends none.
+	Network *sandboxNetwork `json:"network,omitempty"`
+}
+
+// sandboxNetwork is the part of SandboxNetworkConfig the create sends:
+// denyOut only ("List of denied CIDR blocks or IP addresses for egress
+// traffic"). No allowOut is sent, since an allowed entry "always take[s]
+// precedence over denied entries".
+type sandboxNetwork struct {
+	DenyOut []string `json:"denyOut"`
 }
 
 // sandboxResp is the create and get answer (Sandbox / SandboxDetail).
@@ -268,6 +279,14 @@ func (c *Client) Create(ctx context.Context, spec sandboxremote.BoxSpec) (sandbo
 		// denyOut 0.0.0.0/0); internet: E2B's default egress.
 		AllowInternetAccess: string(spec.Tier) == "internet",
 		Metadata:            spec.Labels, EnvVars: spec.Env,
+	}
+	// The private-range deny rides only the open tier: below it the box is
+	// already block-all.
+	if len(spec.DenyCIDRs) > 0 {
+		if !body.AllowInternetAccess {
+			return sandboxremote.BoxInfo{}, fmt.Errorf("e2b: a deny of address ranges is for the internet tier only: %w", sandboxremote.ErrDenyNotRenderable)
+		}
+		body.Network = &sandboxNetwork{DenyOut: append([]string(nil), spec.DenyCIDRs...)}
 	}
 	hdr := http.Header{"Idempotency-Key": []string{idempotencyKey(spec.Labels[sandboxremote.LabelKey])}}
 	resp, err := c.do(ctx, http.MethodPost, "/v2/sandboxes", body, hdr)

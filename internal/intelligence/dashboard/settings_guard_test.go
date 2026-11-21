@@ -23,9 +23,9 @@ import (
 //     dashboard must never be able to flip it.
 //  2. Rules.OrgBundle (org-client-owned) and Rules.CEL (v2 gate)
 //     survive likewise.
-//  3. Boundary lists: an empty list in the body preserves the prior
-//     value (nil = engine defaults; explicit "none" is config-file
-//     territory).
+//  3. Boundary lists land as sent: nil (JSON null) = engine
+//     defaults, [] = none (TestGuardBoundaryNoneRoundTrip walks the
+//     three choices).
 //  4. Closed enums (mode / egress_action / min_severity) are rejected
 //     with 400 at the PUT, not at the next daemon start.
 //  5. [guard.prompt] (§8.1, PHASE-3b-DASHBOARD) IS editable through
@@ -69,12 +69,13 @@ endpoint = "http://localhost:9999/v1/chat/completions"
 		t.Fatal(err)
 	}
 
-	// Body deliberately zeroes cloud + org_bundle + boundary (a real UI
-	// draft never carries them — a hostile/buggy one might send zeros;
-	// either way they must not land).
+	// Body deliberately zeroes cloud + org_bundle (a real UI draft never
+	// carries them — a hostile/buggy one might send zeros; either way they
+	// must not land). The boundary lists are the form's own: sent as the
+	// GET answered them.
 	body := `{"Enabled":true,"Mode":"enforce","Strict":false,"RetentionDays":180,` +
 		`"Rules":{"Disable":["R-151"],"UserPolicy":"","ProjectPolicy":"","OrgBundle":"","CEL":false},` +
-		`"Boundary":{"AllowPaths":[],"ProtectedBranches":[]},` +
+		`"Boundary":{"AllowPaths":["../sibling/**"],"ProtectedBranches":null},` +
 		`"Taint":{"Enabled":true,"DecayTurns":12},` +
 		`"Proxy":{"EgressScan":true,"EgressAction":"mask","EgressAllow":["TESTKEY-[0-9]+"],"ResponseScan":true,"InjectionHeuristics":true},` +
 		`"MCP":{"Pinning":true,"PoisoningHeuristics":false},` +
@@ -122,9 +123,9 @@ endpoint = "http://localhost:9999/v1/chat/completions"
 	if g.Rules.OrgBundle != "/custom/org-bundle.json" {
 		t.Errorf("org_bundle must survive: %q", g.Rules.OrgBundle)
 	}
-	// 3. Boundary allowlist survived the empty-list body.
-	if len(g.Boundary.AllowPaths) != 1 || g.Boundary.AllowPaths[0] != "../sibling/**" {
-		t.Errorf("boundary allow_paths must survive an empty-list save: %+v", g.Boundary.AllowPaths)
+	// 3. Boundary lists landed as sent.
+	if len(g.Boundary.AllowPaths) != 1 || g.Boundary.AllowPaths[0] != "../sibling/**" || g.Boundary.ProtectedBranches != nil {
+		t.Errorf("boundary lists must land as sent: allow=%+v branches=%+v", g.Boundary.AllowPaths, g.Boundary.ProtectedBranches)
 	}
 	// The knobs the section owns did land.
 	if g.Mode != "enforce" || g.RetentionDays != 180 {

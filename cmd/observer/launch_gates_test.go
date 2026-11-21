@@ -202,9 +202,16 @@ func TestLaunchGateRows(t *testing.T) {
 		},
 		// state.load
 		{
-			row: "state.load", name: "missing config refuses with the safe-state error",
+			// An unreadable config, not a missing one: a missing config loads
+			// the defaults and refused only through the Linux ENOTDIR of the
+			// test home's ~/.observer file (on Windows that stat is "not found").
+			row: "state.load", name: "unreadable config refuses with the safe-state error",
 			prepare: func(t *testing.T) *launchGateRun {
-				return &launchGateRun{ctx: context.Background(), tool: "muse", configPath: filepath.Join(t.TempDir(), "missing.toml")}
+				badCfg := filepath.Join(t.TempDir(), "config.toml")
+				if err := os.WriteFile(badCfg, []byte("[observer\n"), 0o600); err != nil {
+					t.Fatalf("write unparseable config: %v", err)
+				}
+				return &launchGateRun{ctx: context.Background(), tool: "muse", configPath: badCfg}
 			},
 			want: launchGateRefuse,
 			check: func(t *testing.T, r *launchGateRun, s launchGateStep) {

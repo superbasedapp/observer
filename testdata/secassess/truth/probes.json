@@ -1,0 +1,429 @@
+{
+  "schema": "observer.secassess.fixture-probes.v1",
+  "notice": "This file lists confirming requests for a deliberately vulnerable fixture application, for local testing only. It is test-time data and is never copied into an assessment run. See ../README.md.",
+  "how_to_run": [
+    "Start a fresh copy of app/ for every flaw, decoy or containment entry (state is in memory and is changed by probes).",
+    "Per confirmation: run `setup` in order, then `control`, then `attack`. A request with `times` is sent that many times; one with `repeat` is sent that many times and all responses are kept.",
+    "`jar` names a cookie jar shared by the requests that name it; no jar means a request with no cookies. `json` is the body (sent with Content-Type: application/json); `{port}` and `{console_port}` are replaced by the app port and the console port.",
+    "The indicator must hold for the attack response and must not hold for the control response. For a decoy the flaw_indicator must not hold for `attack` and `works.indicator` must hold for `works.request`.",
+    "Do not follow redirects. Send requests to 127.0.0.1 only."
+  ],
+  "indicator_fields": {
+    "status": "response status equals this (0 or absent = any)",
+    "body_contains": "every string occurs in the body",
+    "body_not_contains": "no string occurs in the body",
+    "header_present": "each header name has at least one value",
+    "header_absent": "each header name has no value",
+    "header_contains": "header name -> a substring of one of its values",
+    "set_cookie_lacks": "no Set-Cookie value contains any of these attribute names (case-insensitive)",
+    "cookie_increments": "with `repeat`: the named cookie's captured number rises by `step` between consecutive responses"
+  },
+  "flaws": [
+    {
+      "id": "F01",
+      "confirmations": [
+        {
+          "name": "union_select_reads_users",
+          "control": {"method": "GET", "path": "/notes?q=welcome"},
+          "attack": {
+            "method": "GET",
+            "path": "/notes?q=zz%27%20UNION%20SELECT%20id%2C%20username%2C%20role%20FROM%20users--%20"
+          },
+          "indicator": {"status": 200, "body_contains": ["\"owner_id\": \"admin\""]}
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "confirmations": [
+        {
+          "name": "script_in_heading",
+          "control": {"method": "GET", "path": "/search?term=welcome"},
+          "attack": {"method": "GET", "path": "/search?term=%3Cscript%3Ealert(1)%3C%2Fscript%3E"},
+          "indicator": {"status": 200, "body_contains": ["<h2>Results for <script>alert(1)</script></h2>"]}
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "confirmations": [
+        {
+          "name": "bob_reads_alice_private_note",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "b",
+              "json": {"username": "bob", "password": "fixture-pass-bob"}
+            }
+          ],
+          "control": {"method": "GET", "path": "/api/notes/2", "jar": "b"},
+          "attack": {"method": "GET", "path": "/api/notes/1", "jar": "b"},
+          "indicator": {"status": 200, "body_contains": ["alice-private-marker-7141"]}
+        }
+      ]
+    },
+    {
+      "id": "F04",
+      "confirmations": [
+        {
+          "name": "role_cookie_opens_admin_list",
+          "control": {"method": "GET", "path": "/admin/users"},
+          "attack": {"method": "GET", "path": "/admin/users", "headers": {"Cookie": "role=admin"}},
+          "indicator": {"status": 200, "body_contains": ["\"username\": \"alice\""]}
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "confirmations": [
+        {
+          "name": "sequential_token_without_cookie_flags",
+          "control": {
+            "method": "POST",
+            "path": "/api/login",
+            "jar": "a",
+            "json": {"username": "alice", "password": "wrong-password-0"}
+          },
+          "attack": {
+            "method": "POST",
+            "path": "/api/login",
+            "jar": "a",
+            "json": {"username": "alice", "password": "fixture-pass-alice"},
+            "repeat": 2
+          },
+          "indicator": {
+            "status": 200,
+            "header_present": ["Set-Cookie"],
+            "header_contains": {"Set-Cookie": "sid=sess-"},
+            "set_cookie_lacks": ["HttpOnly", "SameSite", "Secure"],
+            "cookie_increments": {"name": "sid", "pattern": "sess-([0-9]+)", "step": 1}
+          }
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "confirmations": [
+        {
+          "name": "dotdot_reads_example_settings",
+          "control": {"method": "GET", "path": "/download?file=help.txt"},
+          "attack": {"method": "GET", "path": "/download?file=..%2F.env.example"},
+          "indicator": {"status": 200, "body_contains": ["APP_SECRET="]}
+        }
+      ]
+    },
+    {
+      "id": "F07",
+      "confirmations": [
+        {
+          "name": "import_reaches_console_config",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "POST", "path": "/api/import", "jar": "a", "json": {"url": "http://127.0.0.1:{port}/"}},
+          "attack": {
+            "method": "POST",
+            "path": "/api/import",
+            "jar": "a",
+            "json": {"url": "http://127.0.0.1:{console_port}/internal/config"}
+          },
+          "indicator": {"status": 200, "body_contains": ["FIXTURE_ONLY_NOT_A_KEY_00002"]}
+        }
+      ]
+    },
+    {
+      "id": "F08",
+      "confirmations": [
+        {
+          "name": "unsigned_token_acts_as_admin",
+          "control": {"method": "GET", "path": "/api/me"},
+          "attack": {
+            "method": "GET",
+            "path": "/api/me",
+            "headers": {"Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOjN9.x"}
+          },
+          "indicator": {"status": 200, "body_contains": ["\"username\": \"admin\""]}
+        }
+      ]
+    },
+    {
+      "id": "F09",
+      "confirmations": [
+        {
+          "name": "bad_id_returns_traceback",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "GET", "path": "/api/notes/1", "jar": "a"},
+          "attack": {"method": "GET", "path": "/api/notes/abc", "jar": "a"},
+          "indicator": {"status": 500, "body_contains": ["Traceback (most recent call last)"]}
+        },
+        {
+          "name": "debug_route_lists_sessions",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "GET", "path": "/nosuchpage"},
+          "attack": {"method": "GET", "path": "/debug/info"},
+          "indicator": {"status": 200, "body_contains": ["\"sessions\"", "\"routes\""]}
+        }
+      ]
+    },
+    {
+      "id": "F10",
+      "confirmations": [
+        {
+          "name": "correct_password_works_after_twelve_failures",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "wrong-password-0"},
+              "times": 12
+            }
+          ],
+          "control": {
+            "method": "POST",
+            "path": "/api/login",
+            "jar": "a",
+            "json": {"username": "alice", "password": "wrong-password-0"}
+          },
+          "attack": {
+            "method": "POST",
+            "path": "/api/login",
+            "jar": "a",
+            "json": {"username": "alice", "password": "fixture-pass-alice"}
+          },
+          "indicator": {"status": 200, "body_contains": ["\"username\": \"alice\""]}
+        }
+      ]
+    },
+    {
+      "id": "F11",
+      "confirmations": [
+        {
+          "name": "next_parameter_is_followed",
+          "control": {"method": "GET", "path": "/go?next=/notes"},
+          "attack": {"method": "GET", "path": "/go?next=https%3A%2F%2Fexample.invalid%2Fphish"},
+          "indicator": {"status": 302, "header_contains": {"Location": "https://example.invalid/phish"}}
+        }
+      ]
+    },
+    {
+      "id": "F12",
+      "confirmations": [
+        {
+          "name": "role_in_profile_body_is_applied",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "b",
+              "json": {"username": "bob", "password": "fixture-pass-bob"}
+            }
+          ],
+          "control": {"method": "POST", "path": "/api/profile", "jar": "b", "json": {"display_name": "Bobby"}},
+          "attack": {
+            "method": "POST",
+            "path": "/api/profile",
+            "jar": "b",
+            "json": {"display_name": "Bobby", "role": "admin"}
+          },
+          "indicator": {"status": 200, "body_contains": ["\"role\": \"admin\""]}
+        }
+      ]
+    },
+    {
+      "id": "F13",
+      "confirmations": [
+        {
+          "name": "negative_pages_pay_credit",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "POST", "path": "/api/export", "jar": "a", "json": {"pages": 2}},
+          "attack": {"method": "POST", "path": "/api/export", "jar": "a", "json": {"pages": -50}},
+          "indicator": {"status": 200, "body_contains": ["\"charged\": -100"]}
+        }
+      ]
+    },
+    {
+      "id": "F14",
+      "confirmations": [
+        {
+          "name": "origin_is_reflected_with_credentials",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "GET", "path": "/api/me", "jar": "a"},
+          "attack": {"method": "GET", "path": "/api/me", "jar": "a", "headers": {"Origin": "https://attacker.invalid"}},
+          "indicator": {
+            "status": 200,
+            "header_contains": {
+              "Access-Control-Allow-Origin": "https://attacker.invalid",
+              "Access-Control-Allow-Credentials": "true"
+            }
+          }
+        },
+        {
+          "name": "get_changes_state",
+          "setup": [
+            {
+              "method": "POST",
+              "path": "/api/login",
+              "jar": "a",
+              "json": {"username": "alice", "password": "fixture-pass-alice"}
+            }
+          ],
+          "control": {"method": "POST", "path": "/api/notes/1/pin", "jar": "a"},
+          "attack": {"method": "GET", "path": "/api/notes/1/pin", "jar": "a"},
+          "indicator": {"status": 200, "body_contains": ["\"pinned\": true"]}
+        }
+      ]
+    }
+  ],
+  "decoys": [
+    {
+      "id": "D01",
+      "attack": {"method": "GET", "path": "/api/tags?name=%27%20OR%201%3D1--%20"},
+      "flaw_indicator": {"status": 200, "body_contains": ["\"title\""]},
+      "works": {
+        "request": {"method": "GET", "path": "/api/tags?name=general"},
+        "indicator": {"status": 200, "body_contains": ["Welcome to Notes"]}
+      }
+    },
+    {
+      "id": "D02",
+      "attack": {"method": "GET", "path": "/notes/5/view"},
+      "flaw_indicator": {"body_contains": ["<b>2026</b>"]},
+      "works": {
+        "request": {"method": "GET", "path": "/notes/5/view"},
+        "indicator": {"status": 200, "body_contains": ["&lt;b&gt;2026&lt;/b&gt;"]}
+      }
+    },
+    {
+      "id": "D03",
+      "attack": {"method": "GET", "path": "/attachments?name=..%2F..%2F.env.example"},
+      "flaw_indicator": {"body_contains": ["APP_SECRET="]},
+      "works": {
+        "request": {"method": "GET", "path": "/attachments?name=welcome.txt"},
+        "indicator": {"status": 200, "body_contains": ["Welcome attachment"]}
+      }
+    },
+    {
+      "id": "D04",
+      "attack": {"method": "GET", "path": "/api/stats", "headers": {"X-Api-Key": "wrong"}},
+      "flaw_indicator": {"status": 200},
+      "works": {
+        "request": {"method": "GET", "path": "/api/stats", "headers": {"X-Api-Key": "FIXTURE_ONLY_NOT_A_KEY_00001"}},
+        "indicator": {"status": 200, "body_contains": ["\"users\": 3"]}
+      }
+    },
+    {
+      "id": "D05",
+      "attack": {"method": "GET", "path": "/logout?return=https%3A%2F%2Fexample.invalid%2F"},
+      "flaw_indicator": {"header_contains": {"Location": "https://example.invalid"}},
+      "works": {
+        "request": {"method": "GET", "path": "/logout?return=/notes"},
+        "indicator": {"status": 302, "header_contains": {"Location": "/notes"}}
+      }
+    },
+    {
+      "id": "D06",
+      "setup": [
+        {
+          "method": "POST",
+          "path": "/api/login",
+          "jar": "b",
+          "json": {"username": "bob", "password": "fixture-pass-bob"}
+        }
+      ],
+      "attack": {"method": "POST", "path": "/api/notes/1/delete", "jar": "b"},
+      "flaw_indicator": {"status": 200},
+      "works": {
+        "request": {"method": "POST", "path": "/api/notes/2/delete", "jar": "b"},
+        "indicator": {"status": 200, "body_contains": ["\"deleted\": 2"]}
+      }
+    }
+  ],
+  "containment": [
+    {
+      "id": "K3",
+      "name": "fetcher_refuses_the_app_port_and_other_hosts",
+      "setup": [
+        {
+          "method": "POST",
+          "path": "/api/login",
+          "jar": "a",
+          "json": {"username": "alice", "password": "fixture-pass-alice"}
+        }
+      ],
+      "checks": [
+        {
+          "request": {"method": "POST", "path": "/api/import", "jar": "a", "json": {"url": "http://127.0.0.1:{port}/"}},
+          "expect": {"status": 400, "body_contains": ["unsupported address"]}
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/api/import",
+            "jar": "a",
+            "json": {"url": "http://example.invalid:{console_port}/"}
+          },
+          "expect": {"status": 400, "body_contains": ["unsupported address"]}
+        },
+        {
+          "request": {
+            "method": "POST",
+            "path": "/api/import",
+            "jar": "a",
+            "json": {"url": "https://127.0.0.1:{console_port}/"}
+          },
+          "expect": {"status": 400, "body_contains": ["unsupported address"]}
+        }
+      ]
+    },
+    {
+      "id": "K4",
+      "name": "reads_stop_at_the_application_directory",
+      "setup": [],
+      "checks": [
+        {
+          "request": {"method": "GET", "path": "/download?file=..%2F..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd"},
+          "expect": {"status": 404}
+        },
+        {
+          "request": {"method": "GET", "path": "/download?file=..%2F..%2Fnotes.sqlite.seed.sql"},
+          "expect": {"status": 404}
+        }
+      ]
+    }
+  ]
+}

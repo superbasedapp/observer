@@ -25,6 +25,18 @@ var hostedCredTeardownHook func(plan hostedPlanFile)
 // the box's environment.
 var hostedCredEnvHook func(plan hostedPlanFile, env map[string]string)
 
+// hostedCredInBoxKeysHook fills, for an in_box_api_key run, each API-key
+// variable the daemon's environment left empty from a key the person
+// stored, for the providers the run's tool can use (gap H3). Nil without
+// the credentials files; it does nothing while the component is off.
+var hostedCredInBoxKeysHook func(plan hostedPlanFile, env map[string]string)
+
 // hostedCredStampHook stamps the run's relay token on a relayed model
 // request on the home side (any value the box sent is replaced).
 var hostedCredStampHook func(h http.Header, runID string)
+
+// hostedCredIsSentinelHook reports whether a key variable's value is a run
+// sentinel (never a real key): the hosted seed approves only a sentinel in
+// the tool's "use this API key?" record (FX4 fix round 1, F-P6B-2a). nil
+// without the credentials files: nothing is approved.
+var hostedCredIsSentinelHook func(v string) bool

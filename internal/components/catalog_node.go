@@ -77,17 +77,56 @@ func nodeRows() []Component {
 				// internal/keystore (the keychain-first secret store the Plans & limits
 				// module and cloudcred share) is core.
 				"github.com/zalando/go-keyring",
+				// internal/termchart (the `observer chart` renderer, P-228
+				// phase 1a): colour per call and locale-independent widths.
+				"github.com/fatih/color", "github.com/mattn/go-runewidth",
 			},
 			Surface: Surface{
-				FilesWritten: []string{"~/.observer/observer.db", "~/.observer/config.toml", "~/.observer/plans-statusline-last.json"},
+				FilesWritten: []string{
+					"~/.observer/observer.db", "~/.observer/config.toml", "~/.observer/plans-statusline-last.json",
+					"~/.observer/cloud-session/ (cloud-session state beside the database: the in-sandbox receiver log and worker state)",
+				},
+				// Cloud sessions (docs/cloud-agents.md, lane cloud.session):
+				// `observer cloud-session init` writes the repository's
+				// committed hooks and setup script; `remove` takes them out.
+				VendorConfigs: []string{"the repository's agent hook files (.claude/settings.json and the other cloud agents' hook files) and .superbased/cloud-session/setup.sh, written only by `observer cloud-session init`"},
 				// Plans & limits (docs/plans-and-limits.md) runs a vendor tool or
 				// reads the keychain only for an account the user adds; its
-				// vendor egress is described there (core declares no egress).
-				Processes:   []string{"codex app-server, kiro-cli, amp, auggie, bl, coderabbit, arkcli, grok (only for a Plans & limits account using that tool)"},
-				Credentials: []string{"OS keychain service sbo-plans-v1 (Plans & limits keys)"},
+				// vendor egress is described there. Cloud agents
+				// (docs/cloud-agents.md, egress lanes cloud.agents and
+				// cloud.session in tests/invariant/egress_lanes_test.go) are
+				// core too and declare their hosts here: every one is opt-in
+				// or user-triggered, never default egress, which is the line
+				// TestComponentsEgressMatchesConfigDefaults holds for core.
+				Egress: []Egress{
+					{Host: "api.cursor.com", Purpose: "Cloud agents: Cursor Cloud Agents API (agents, runs, usage, run streams) for a linked account", Gate: "a linked cloud-agent account", Trigger: TriggerOptIn},
+					{Host: "api.devin.ai", Purpose: "Cloud agents: Devin API (organization sessions) for a linked account", Gate: "a linked cloud-agent account", Trigger: TriggerOptIn},
+					{Host: "app.all-hands.dev", Purpose: "Cloud agents: OpenHands Cloud API (conversations) for a linked account", Gate: "a linked cloud-agent account", Trigger: TriggerOptIn},
+					{Host: "app.warp.dev", Purpose: "Cloud agents: Warp cloud agent API for a linked account", Gate: "a linked cloud-agent account", Trigger: TriggerOptIn},
+					{Host: "api.cline.bot", Purpose: "Cloud agents: Cline cloud API for a linked account", Gate: "a linked cloud-agent account", Trigger: TriggerOptIn},
+					{Host: "api.qoder.com", Purpose: "Cloud agents: Qoder cloud API, global region, for a linked account", Gate: "a linked cloud-agent account in that region", Trigger: TriggerOptIn},
+					{Host: "api.qoder.com.cn", Purpose: "Cloud agents: Qoder cloud API, China region, for a linked account", Gate: "a linked cloud-agent account in that region", Trigger: TriggerOptIn},
+					{Host: "<the cloud-session flush destination: the enrolled org server or the user's own node>", Purpose: "Cloud sessions: a vendor cloud sandbox ships its push envelope with a ship token", Gate: "`observer cloud-session flush` run by a committed hook inside the vendor's cloud sandbox, with a ship token the owner minted", Trigger: TriggerUserTriggered},
+					{Host: "registry.npmjs.org", Purpose: "Cloud sessions: the Linux platform packages' version documents (integrity pin) for the setup script", Gate: "`observer cloud-session init` with the npm install source and no pin given", Trigger: TriggerUserTriggered},
+				},
+				Processes: []string{
+					"codex app-server, kiro-cli, amp, auggie, bl, coderabbit, arkcli, grok (only for a Plans & limits account using that tool)",
+					"codex, gh (fixed argv, only for a linked Codex Cloud or Copilot coding agent account; they reach OpenAI and GitHub under the user's own login)",
+					"the operator's own agent command line (`observer cloud-session worker run`, on compute the customer runs)",
+				},
+				Credentials: []string{
+					"OS keychain service sbo-plans-v1 (Plans & limits keys)",
+					"OS keychain service sbo-cloudagents-v1 (cloud-agent API connector keys)",
+				},
 			},
-			Tables:     []string{"sessions", "actions", "token_usage", "api_turns", "projects", "parse_cursors", "schema_meta", "session_pid_bridge"},
-			Verbs:      []string{"scan", "watch", "init", "uninstall", "doctor", "adapters", "status", "hook", "config", "db", "start"},
+			Tables: []string{
+				"sessions", "actions", "token_usage", "api_turns", "projects", "parse_cursors", "schema_meta", "session_pid_bridge",
+				"cloud_connector_accounts", "cloud_sync_checkpoints", "cloud_usage_ledger", "cloud_session_ship_tokens", "cloud_session_links",
+			},
+			// /api/cloud-session/ingest is the one CapabilityPublic route
+			// (ship-token authenticated, 404 while no token is active).
+			Routes:     []string{"/api/cloud-agents", "/api/cloud-session/ingest", "/api/cloud-session/tokens"},
+			Verbs:      []string{"scan", "watch", "init", "uninstall", "doctor", "adapters", "status", "hook", "config", "db", "start", "cloud-agents", "cloud-session"},
 			ConfigKeys: []string{"observer"},
 			Stability:  StabilityStable,
 			Distros:    dist(on, on, on, on),
@@ -233,10 +272,12 @@ func nodeRows() []Component {
 		},
 		{
 			ID: "guard", Class: ClassFeature, Binary: BinaryNode,
-			Title:         "Guard",
-			About:         "Policy decisions on the developer's own coding-agent tool calls: dangerous commands, MCP pins, prompt guard, budgets. Observe mode by default in minimal and developer. Making it inactive stops its background loops, its dashboard pages and `observer guard`, not its decisions: hook-time and proxy-time guard decisions keep running from [guard] (turn those off with [guard].enabled).",
-			Levels:        lv(onlyL3, l2l3, "P1"),
-			DirectModules: []string{"github.com/BurntSushi/toml"},
+			Title:  "Guard",
+			About:  "Policy decisions on the developer's own coding-agent tool calls: dangerous commands, MCP pins, prompt guard, budgets. Observe mode by default in minimal and developer. Making it inactive stops its background loops, its dashboard pages and `observer guard`, not its decisions: hook-time and proxy-time guard decisions keep running from [guard] (turn those off with Enabled in Settings > Guard).",
+			Levels: lv(onlyL3, l2l3, "P1"),
+			// x/net (idna) and x/text (NFKC) normalise network rule hosts
+			// and the deny/allow patterns (NET-8, 2026-11-08).
+			DirectModules: []string{"github.com/BurntSushi/toml", "golang.org/x/net", "golang.org/x/text"},
 			Packages: []string{
 				"internal/guard", "internal/guard/mcpsec", "internal/guard/compile", "internal/guard/export",
 				"internal/guard/notify", "internal/guardfallback", "internal/guardposture", "internal/policy",
@@ -333,7 +374,7 @@ func nodeRows() []Component {
 		{
 			ID: "integration.statusline", Class: ClassIntegration, Binary: BinaryNode,
 			Title:     "Claude Code statusline",
-			About:     "Installs Observer's statusLine command in Claude Code settings. Opt-in through `observer init --statusline`.",
+			About:     "Installs Observer's statusLine command in Claude Code settings. Opt-in: Settings > Connected tools, or `observer init --statusline`.",
 			Levels:    lv(onlyL3, l2l3, "P1"),
 			Packages:  []string{"internal/statusline"},
 			Surface:   Surface{VendorConfigs: []string{"~/.claude/settings.json statusLine"}},
@@ -415,7 +456,7 @@ func nodeRows() []Component {
 			Packages: []string{
 				"internal/termsession", "internal/termsvc", "internal/termrun", "internal/termfeed", "internal/termlease",
 				"internal/termoob", "internal/termscan", "internal/termstatus", "internal/attachsock",
-				"internal/workspace", "internal/guilaunch", "internal/launch",
+				"internal/workspace", "internal/guilaunch", "internal/launch", "internal/agentlaunch", "internal/callerid", "internal/peerproc",
 			},
 			HostedIn:      []string{"internal/intelligence/dashboard"},
 			DirectModules: []string{"github.com/creack/pty", "github.com/coder/websocket", "golang.org/x/sys"},
@@ -428,9 +469,9 @@ func nodeRows() []Component {
 			},
 			Tables:     []string{"terminal_run", "terminal_run_session", "terminal_commands", "tool_installs", "workspace_layouts", "launch_seeds"},
 			Routes:     []string{"/api/terminal", "/api/launch", "/api/attach", "/ws/terminal", "/ws/launch", "/api/tools/launch"},
-			Verbs:      []string{"workspaces", "ide"},
+			Verbs:      []string{"workspaces", "ide", "launch", "terminals"},
 			ConfigKeys: []string{"terminal", "launch"},
-			Ledger:     []string{"ATT-1"},
+			Ledger:     []string{"ATT-1", "LAUNCH-1"},
 			Stability:  StabilityStable,
 			Distros:    dist(out, on, off, on),
 		},
@@ -492,7 +533,8 @@ func nodeRows() []Component {
 			Packages:   []string{"internal/sandboxnet", "internal/sandboxbackend", "internal/sandboxselect", "internal/policyfam/terminalsisolation"},
 			Requires:   []string{"terminals", "isolation"},
 			Surface:    Surface{Processes: []string{"bwrap", "git (workspace clone and worktree preparation)", "observer (the sandbox-host and sandbox-guest network helpers, and the capture relay's host-side children: observer hook and the sandbox-gate launch-gate helper)"}, Listeners: []Listener{{Proto: "unix", Addr: "<sandbox forwarder socket>", Loopback: true, Auth: "owner-only", Trigger: TriggerOptIn}, {Proto: "unix", Addr: "<capture relay socket>", Loopback: true, Auth: "owner-only, peer uid checked, per-run keyed frames", Trigger: TriggerOptIn}, {Proto: "unix", Addr: "<observer dir>/sandbox-relay/attach/attach.sock", Loopback: true, Auth: "owner-only, peer uid checked, per-run link key", Trigger: TriggerAutomatic}}},
-			Routes:     []string{"/api/terminal/sandbox"},
+			Routes:     []string{"/api/terminal/sandbox", "/api/sandbox/refusals"},
+			Tables:     []string{"sandbox_egress_refusals", "sandbox_egress_refusal_drops"},
 			Verbs:      []string{"sandbox"},
 			ConfigKeys: []string{"terminal"},
 			Stability:  StabilityPreview,
@@ -661,7 +703,7 @@ func nodeRows() []Component {
 			Requires: []string{"terminals.sandbox"},
 			Surface: Surface{
 				Processes: []string{
-					"cloud-hypervisor (the user's own Cloud Hypervisor 54 binary, one per run, started by the sandbox-vm-host helper)",
+					"cloud-hypervisor (the user's own Cloud Hypervisor 54 binary, or the pinned one sandbox setup placed in sandbox-tools/, one per run, started by the sandbox-vm-host helper)",
 					"virtiofsd (one per shared folder, unprivileged; for a live workspace inside bwrap)",
 					"bwrap (the mount namespace around a live workspace's virtiofsd)",
 					"mkfs.ext4 (only for a disk_image workspace copy)",
@@ -672,7 +714,10 @@ func nodeRows() []Component {
 					{Proto: "unix", Addr: "<run socket dir>/api.sock (the VMM's REST API, peer pid checked; the socket dir is the run state dir, or /tmp/obvm-<uid>/<run> when that is too deep)", Loopback: true, Auth: "owner-only directory, peer credentials the recorded VMM pid", Trigger: TriggerOptIn},
 					{Proto: "unix", Addr: "<run socket dir>/vsock.sock (the VMM's hybrid vsock; the relay mux with per-run keyed frames)", Loopback: true, Auth: "owner-only directory, per-run keyed frames", Trigger: TriggerOptIn},
 				},
-				FilesWritten: []string{"~/.observer/sandbox-vm/ (the per-run 0700 state dirs: plan, sockets, serial log, process records, disk copies)", "~/.observer/sandbox-content/sandbox.rootfs and sandbox.guest_binary (only through `observer sandbox content import` or a user fetch)", "/tmp/obvm-<uid>/<run>/ (a run's sockets, only when its state dir is too deep for the 107-byte socket path limit)"},
+				Egress: []Egress{
+					{Host: "github.com (release downloads, redirected only to release-assets.githubusercontent.com or objects.githubusercontent.com)", Purpose: "sandbox setup's pinned download of the Cloud Hypervisor v54.0 static release binary (about 7 MB on amd64, 6 MB on arm64), checked against its compiled sha256 and size pin (lane sandbox.setup.net, internal/sandboxsetupnet)", Gate: "consent", Trigger: TriggerUserTriggered},
+				},
+				FilesWritten: []string{"~/.observer/sandbox-vm/ (the per-run 0700 state dirs: plan, sockets, serial log, process records, disk copies)", "~/.observer/sandbox-content/sandbox.rootfs and sandbox.guest_binary (only through `observer sandbox content import` or a user fetch)", "/tmp/obvm-<uid>/<run>/ (a run's sockets, only when its state dir is too deep for the 107-byte socket path limit)", "$XDG_DATA_HOME/superbased-observer/sandbox-tools/cloud-hypervisor/<version>/cloud-hypervisor (default ~/.local/share/...; 0700 dirs, the 0755 binary and its .download-* temporary file and sandbox-setup-download.lock in sandbox-tools/; only on a person's pinned download step or `observer sandbox setup run`, never under ~/.observer)"},
 			},
 			ConfigKeys: []string{"terminal"},
 			Ledger:     []string{"SBX-BE-4", "SBX-BE-5", "SBX-IMG-1"},
@@ -711,12 +756,12 @@ func nodeRows() []Component {
 			// hosted driver's home_relay rule is as before.
 			ID: "terminals.sandbox.credentials", Class: ClassFeature, Binary: BinaryNode,
 			Title:    "Credential injection for sandboxed runs (beta)",
-			About:    "Keeps your own provider API key on this machine (the OS keychain) for a hosted sandboxed run with key custody home_relay: the box gets only a per-run sentinel, and Observer's proxy swaps it for your key on requests to that provider's model host. The provider-injected custody (a vendor's own secret broker) is described but not offered yet.",
+			About:    "Keeps your own provider API key on this machine (the OS keychain) for a sandboxed run: the box gets only a per-run sentinel, and Observer's proxy swaps it for your key on requests to that provider's model host. It covers hosted runs with key custody home_relay, and local bubblewrap and container runs whose model traffic goes through Observer's proxy (the proxy_only tier, or the internet tier with the provider-host block on) when your launch environment holds that provider's key; a run signed in with a subscription keeps its login. The provider-injected custody (a vendor's own secret broker) is described but not offered yet. Other credential variables of the model providers are kept out of an injected run's box.",
 			Levels:   lv([]Level{L1, L3}, l1l2l3, "P2"),
 			Packages: []string{"internal/sandboxcred"},
 			Requires: []string{"terminals.sandbox"},
 			Surface: Surface{
-				FilesWritten: []string{"the OS keychain, service sbo-sandbox-cred-v1 (your provider keys; a 0600 file store under ~/.observer/sandbox-cred/keys only when no keychain is usable)", "~/.observer/sandbox-cred/runs/ (each hosted run's sentinel and relay token hashes, owner-only, removed at the end of the run)"},
+				FilesWritten: []string{"the OS keychain, service sbo-sandbox-cred-v1 (your provider keys; a 0600 file store under ~/.observer/sandbox-cred/keys only when no keychain is usable)", "~/.observer/sandbox-cred/runs/ (each run's sentinel and relay token hashes and, for a local run, the names of the credential variables its box did not get; owner-only; removed at the end of the run; a record left by a helper killed outright stays on disk, injects nothing while no helper holds the run, and is taken over by the run's re-adoption, if any)", "~/.observer/sandbox-cred/fresh/ (a run's fresh session ids only, owner-only, at most 32 per run, removed with the run's record)"},
 			},
 			ConfigKeys: []string{"terminal"},
 			Ledger:     []string{"SBX-NET-2"},
@@ -775,6 +820,54 @@ func nodeRows() []Component {
 			Stability:     StabilityPreview,
 			Distros:       dist(out, off, off, off),
 		},
+		{
+			// The OpenShell sandbox driver (OpenShell plan doc 04 R2.6 O1,
+			// build plan 05 section 2, lane O1A for the row, the planner and
+			// the omit twin; lane O1B for the driver itself): a container
+			// built by the user's own OpenShell gateway (external mode),
+			// beta, explicit-only, Linux only. Its own component, inactive in
+			// every distro and on an install with no [components] block
+			// (sandboxDriverSelected, cmd/observer). Nothing probes, runs the
+			// openshell CLI or starts a container while [terminal.sandbox] is
+			// off or "openshell" is not in [terminal.sandbox].backends.
+			ID: "terminals.sandbox.openshell", Class: ClassFeature, Binary: BinaryNode,
+			Title:  "OpenShell sandboxes (beta)",
+			About:  "Runs sandboxed terminal launches in an OpenShell container (v0.1.6, Docker driver, native Linux only). By default Observer starts a private OpenShell gateway of its own (its own loopback port, config and state, telemetry off, bind mounts allowed on that private gateway only; its keys are held in the OS keychain, or, where no keychain is usable, as unencrypted owner-only files under its state dir, no stronger against your own user account than your own OpenShell install); with gateway_mode = \"external\" it uses your own gateway instead, which you start and sign in to yourself and whose telemetry Observer cannot see. Observer never installs OpenShell. Beta: used only when chosen by name.",
+			Levels: lv([]Level{L1, L3}, l1l2l3, "P2"),
+			// The pure planner, linked by the driver (lane O1B);
+			// tests/invariant/openshell_boundary_test.go fences it to the
+			// driver files.
+			Packages: []string{"internal/sandboxopenshell"},
+			Requires: []string{"terminals.sandbox"},
+			Surface: Surface{
+				Processes: []string{
+					"openshell (your own OpenShell CLI, resolved on PATH with Observer's shims excluded: --version, status, gateway info, sandbox create, list, get and delete, every box command pinned to the gateway the run was created on)",
+					"docker (the runtime canary: one throwaway container under the runtime's default seccomp profile, which queries the Landlock ABI)",
+					"openshell-gateway (managed gateway mode: --version, generate-certs into a private RAM dir on the first start, config preflight, and the private gateway itself)",
+					"systemd-run (managed gateway mode: starts the private gateway as a transient systemd user unit, so a daemon restart never stops it)",
+					"systemctl (managed gateway mode: the user manager's state, and the private gateway unit's is-active, stop and reset-failed)",
+					"observer (the host helper on this machine; the guest helper and the agent's launcher inside the box)",
+				},
+				Listeners: []Listener{
+					{Proto: "unix", Addr: "<per-run socket dir> bound read-only into the box at the same path (the capture relay and the model proxy forward)", Loopback: true, Auth: "owner-only, peer uid checked, per-run keyed frames", Trigger: TriggerOptIn},
+					{Proto: "tcp", Addr: "127.0.0.1:17700-17955 (managed gateway mode: Observer's private OpenShell gateway, a transient user unit; no health or metrics port)", Loopback: true, Auth: "mTLS, the client certificate held by Observer only; operator authentication off", Trigger: TriggerOptIn},
+					{Proto: "tcp", Addr: "127.0.0.1:14317 (OTLP gRPC logs: the OCSF events your gateway's sandbox supervisors export; only a denied connection of a box one of this machine's runs created is kept, as a refusal audit row)", Loopback: true, Auth: "none (loopback only)", Trigger: TriggerOptIn},
+				},
+				FilesWritten: []string{
+					"~/.observer/sandbox-openshell/ (the install id, the recorded gateways, the OCSF receiver marker ocsf-receiver.json while the daemon holds the listener, and per run the policy file, the plan file, the host helper's lock, the egress file and the box id, owner-only)",
+					"~/.observer/sandbox-openshell/gateway/ (managed gateway mode: the private gateway's config, its database of sandboxes, its record, custody pin and lifecycle lock)",
+					"~/.observer/sandbox-openshell/gateway/keys/ (managed gateway mode, only where no OS keychain is usable: the private gateway's whole PKI, its CA key included, and its credential-store key, as unencrypted 0600 files in a 0700 dir beside the database that key protects)",
+					"$XDG_RUNTIME_DIR/observer-openshell-<install>/ (managed gateway mode: the private gateway's PKI copy, its credential-store key in an owner-only env file the user manager reads, and its CLI registry; in RAM, owner-only, removed when it stops)",
+					"the OS keychain, service sbo-openshell-gateway-v1 (managed gateway mode: the private gateway's PKI and credential-store key, where a keychain is usable)",
+					"<per-run socket dir>/copy (the run's staged single-file tool state, read-only seed copies and environment file, owner-only, removed when the run ends)",
+					"each copied tool-state file's host path (synced back from the box when the run ends, last writer wins)",
+				},
+			},
+			ConfigKeys: []string{"terminal"},
+			Ledger:     []string{"OSH-1", "OSH-2", "OSH-3", "OSH-4", "OSH-5"},
+			Stability:  StabilityPreview,
+			Distros:    dist(out, off, off, off),
+		},
 		// The hosted sandbox drivers (sandbox plan v2 section 13 P7, lane
 		// SBX-P7, operator ruling P-080): E2B, Modal and Vercel Sandbox,
 		// each its own component, inactive in every distro and opt-in on an
@@ -792,6 +885,56 @@ func nodeRows() []Component {
 		hostedDriverRow("terminals.sandbox.vercel", "Vercel hosted sandboxes (beta)",
 			"Runs sandboxed terminal launches in a Vercel Sandbox Firecracker microVM on Vercel's machines, through Vercel's REST API. Your workspace files are uploaded after you consent once; hooks reach this machine through the capture relay. Beta: built from Vercel's documentation, not yet run with a real account.",
 			"internal/sandboxremote/vercel", nil),
+		// Docker Sandboxes (lane SBX-DOCKER): Docker's cloud sandboxes
+		// through the Sandboxes API; its process streams ride the module's
+		// existing WebSocket library.
+		hostedDriverRow("terminals.sandbox.docker", "Docker hosted sandboxes (beta)",
+			"Runs sandboxed terminal launches in a Docker cloud sandbox (Docker Agentic Platform) on Docker's machines, through Docker's Sandboxes API. Your workspace files are uploaded after you consent once; hooks reach this machine through the capture relay. Beta: built from Docker's documentation and API reference; its wire client passed a live smoke on a real account (2026-11-11), the full live register is still owed.",
+			"internal/sandboxremote/dockersbx", []string{"github.com/coder/websocket"}),
+		// Daytona (a hosted vendor): REST plus Daytona's SSH access
+		// tokens through golang.org/x/crypto/ssh, never its AGPL Go SDK.
+		hostedDriverRow("terminals.sandbox.daytona", "Daytona hosted sandboxes (beta)",
+			"Runs sandboxed terminal launches in a Daytona sandbox (a container) on Daytona's machines, through Daytona's REST API and SSH access. Your workspace files are uploaded after you consent once; hooks reach this machine through the capture relay. Beta: built from Daytona's documentation; only a client-level smoke has run with a real account.",
+			"internal/sandboxremote/daytona", []string{"golang.org/x/crypto"}),
+		// The org-hosted OpenShell row (tracker F-019, g1-design.md section
+		// 11.4, lane G4): the fourth hosted driver, whose "vendor" is the
+		// organization's own OpenShell gateway behind its validating front.
+		// Inactive in every distro and opt-in on an install with no
+		// [components] block (the hosted drivers' rule); even when active it
+		// is offered only on a managed node whose verified sandbox body
+		// carries org_openshell. The probe reads local facts only; the org
+		// server and the front are called only from a launch or an explicit
+		// org-shell verb.
+		{
+			ID: "terminals.sandbox.openshell-org", Class: ClassFeature, Binary: BinaryNode,
+			Title:  "Org-hosted OpenShell sandboxes (beta)",
+			About:  "Runs sandboxed terminal launches in a box on your organization's own OpenShell gateway, through its validating front, when your organization publishes one to this managed machine. You sign in once per machine through your organization's dashboard; every launch uses a short-lived token your organization mints for this run. Model requests and hooks travel back through this laptop, which must stay online, and only after you opt in. Beta: used only when chosen by name.",
+			Levels: lv([]Level{L1, L3}, l1l2l3, "P2"),
+			// internal/openshellorg is the pure core this row shares with the
+			// org server (the proof message, the purposes, the transport and
+			// probe tables); it links the local row's pure planner for the
+			// node's spec preview, so the local row's code is required
+			// compiled (never active: the local row stays the user's choice).
+			Packages:         []string{"internal/sandboxremote/openshellorg", "internal/openshellorg"},
+			DirectModules:    []string{"github.com/NVIDIA/OpenShell/sdk/go", "google.golang.org/grpc"},
+			Requires:         []string{"terminals.sandbox"},
+			RequiresCompiled: []string{"terminals.sandbox.openshell"},
+			Surface: Surface{
+				Processes: []string{
+					"observer (the sandbox-hosted-host helper on this machine, the only process that holds a run token and calls the org's front, for one launched run)",
+					"observer (the in-box Linux observer: sandbox-guest --hold, --relay-stdio and the agent's launcher, inside the org's box)",
+				},
+				FilesWritten: []string{
+					"~/.observer/sandbox-hosted/ (the consent record, the per-run plan and teardown records with the gateway id and box name, the transcript quarantine and the saved returns)",
+					"~/.observer/sandbox-hosted/openshell-org/ (the cached result of the last explicit check, no token)",
+					"the OS keychain, service sbo-openshell-org-grant-v1 (the sign-in grant handle; the keystore's owner-only file fallback on a host with no keychain)",
+				},
+			},
+			ConfigKeys: []string{"terminal"},
+			Ledger:     []string{"SBX-BE-8", "SBX-BE-16"},
+			Stability:  StabilityPreview,
+			Distros:    dist(out, off, off, off),
+		},
 		{
 			// The security pillar's module root (security pillar plan
 			// docs/plans/security-pillar-plan-2026-10-19.md section 4.2,
@@ -806,6 +949,9 @@ func nodeRows() []Component {
 				"internal/secfinding", "internal/secfinding/sarif", "internal/secscan", "internal/secsvc",
 				"internal/secrules", "internal/secipc", "internal/secverify", "internal/secexcept", "internal/secmcp", "internal/secgithooks",
 				"internal/secchange", "internal/seccifetch", "internal/secchangeexport",
+				// The finding drawer's view-time dependency detail (pure; its
+				// OSV record read is security.deps's osvdb, injected).
+				"internal/secdepdetail",
 				// The scanner drivers' shared pure cores (lane GATES-SEC): the
 				// engine supply chain (pins, the offline signature pre-check,
 				// the companion tree record) Opengrep, Trivy and KICS share,
@@ -894,12 +1040,17 @@ func nodeRows() []Component {
 			// in the project's signed active pack set; its packages ship
 			// with the module root until a phase splits them for L1.
 			ID: "security.secrets", Class: ClassFeature, Binary: BinaryNode,
-			Title:        "Secret detection",
-			About:        "Finds typed secrets in what an agent writes (before the write, in the hook), in written files, and in the diff a commit or push records, so the commit gate can stop an unscanned secret.",
-			Levels:       lv([]Level{L2, L3}, l1l2l3, "P2"),
-			Requires:     []string{"security"},
-			ConfigKeys:   []string{"security"},
-			Ledger:       []string{"SECP-18", "SECP-25"},
+			Title:      "Secret detection",
+			About:      "Finds typed secrets in what an agent writes (before the write, in the hook), in written files, and in the diff a commit or push records, so the commit gate can stop an unscanned secret.",
+			Levels:     lv([]Level{L2, L3}, l1l2l3, "P2"),
+			Requires:   []string{"security"},
+			ConfigKeys: []string{"security"},
+			// The commit quick scan reads the diff through the core
+			// read-only git envelope (internal/gitview); on a WSL daemon
+			// reading a checkout on a Windows drive that git is the
+			// Windows git.exe through WSL interop (R3-86, SECP-54).
+			Surface:      Surface{Processes: []string{"git (read-only diff of what a commit or push records, through the read-only git envelope; for a checkout on a Windows drive read from WSL, the Windows git.exe through WSL interop)"}},
+			Ledger:       []string{"SECP-18", "SECP-25", "SECP-54"},
 			RestartClass: "restart",
 			Stability:    StabilityPreview,
 			Note:         "No package of its own yet: internal/secdetect, internal/secquickscan and internal/secpostwrite are compiled with the module root, so a build without the root drops them and this row is inactive (L2) otherwise.",
@@ -931,7 +1082,7 @@ func nodeRows() []Component {
 			// log P-036) after the operator's download rulings PT-19.
 			ID: "security.deps", Class: ClassFeature, Binary: BinaryNode,
 			Title:  "Package checks",
-			About:  "Checks packages an AI agent installs (and dependencies a manifest edit adds) against the signed malicious-packages list, popular names for typosquats, and, unless switched off, the OSV database and the public registry, before the install runs. Private package names never leave the machine.",
+			About:  "Checks packages an AI agent installs (and dependencies a manifest edit adds) against the signed malicious-packages list, popular names for typosquats, and, unless switched off, the OSV database and the public registry (including whether a version lost the build provenance earlier versions carried), before the install runs. Private package names never leave the machine. Also keeps each project's package inventory from its dependency scans, for a CycloneDX SBOM and a local licence check.",
 			Levels: lv(l1l2l3, l1l2l3, ""),
 			Packages: []string{
 				"internal/secfeed", "internal/secfeed/online", "internal/secask",
@@ -939,6 +1090,10 @@ func nodeRows() []Component {
 				// security.deps owns matching; its two driver children use them.
 				"internal/secscan/depscan", "internal/secscan/depdriver", "internal/secscan/scalibrchild",
 				"internal/secscan/osvdb", "internal/secscan/osvnet",
+				// Project SBOM and licences (security coverage gaps plan items
+				// 2 and 4): the inventory snapshot owner, the SBOM reader and
+				// the local licence check.
+				"internal/secinventory", "internal/secsbom", "internal/seclicense",
 			},
 			DirectModules: []string{"github.com/BurntSushi/toml", "golang.org/x/mod", "gopkg.in/yaml.v3"},
 			Requires:      []string{"security"},
@@ -950,13 +1105,13 @@ func nodeRows() []Component {
 				},
 				Egress: []Egress{
 					{Host: "api.osv.dev", Purpose: "Online package check: ecosystem, public package name and version", Gate: "default on where the component is active, disclosed at first run, off per node; never on a managed node", Trigger: TriggerAutomatic},
-					{Host: "<public package registries>", Purpose: "Online package check: whether a public package exists and when it was first published", Gate: "as api.osv.dev", Trigger: TriggerAutomatic},
+					{Host: "<public package registries>", Purpose: "Online package check: whether a public package exists, when it was first published and, for npm and PyPI, which versions carry build provenance (PyPI: one more request to pypi.org/simple/<name>/)", Gate: "as api.osv.dev; provenance also needs [security.deps].provenance (default flag)", Trigger: TriggerAutomatic},
 					{Host: "superbased.app", Purpose: "The signed malicious-packages and popular-names lists (signed content channel)", Gate: "where the component is active, with no consent (a plain download of public files, not a query about packages; operator ruling PT-19); [security.deps].index_download = false switches it off and the checks then use the index on disk; never on a managed node", Trigger: TriggerAutomatic},
 				},
-				FilesWritten: []string{"~/.observer/security/content/ (the signed index)", "~/.observer/security/pkgcache.json (online answers for the hook)", "~/.observer/security/deps-settings.json", "~/.observer/security/online-disclosure.json", "~/.observer/security/deps-index-verified.json (the index verified once per version)", "~/.observer/security/deps-notes/ (one marker per session that had the not-set-up note)", "~/.observer/security/deps-feed-etag.json (the feed envelopes' ETags)"},
+				FilesWritten: []string{"~/.observer/security/content/ (the signed index)", "~/.observer/security/pkgcache.json (online answers for the hook)", "~/.observer/security/deps-settings.json", "~/.observer/security/online-disclosure.json", "~/.observer/security/deps-index-verified.json (the index verified once per version)", "~/.observer/security/deps-notes/ (one marker per session that had the not-set-up note)", "~/.observer/security/deps-feed-etag.json (the feed envelopes' ETags)", "~/.observer/security/inventory/<project_root_hash>.json (each project's last dependency inventory: ecosystems, names, versions, dependency file paths; never file contents)"},
 			},
 			Tables:       []string{"sec_pkg_cache"},
-			Routes:       []string{"/api/security/deps"},
+			Routes:       []string{"/api/security/deps", "/api/security/sbom"},
 			Ledger:       []string{"SECP-7", "SECP-22", "SECP-26", "SHR-7"},
 			RestartClass: "restart",
 			Stability:    StabilityPreview,
@@ -1061,23 +1216,110 @@ func nodeRows() []Component {
 			// database waits for the developer's one-time accept (PT-19).
 			ID: "security.scan.scalibr", Class: ClassFeature, Binary: BinaryNode,
 			Title:         "Dependency scan (OSV-SCALIBR)",
-			About:         "Reads a project's lockfiles and manifests with the linked OSV-SCALIBR extractors, in a child process, and matches the packages against the local OSV database one ecosystem at a time. A missing database, a failed self-test or an unsupported platform shows as \"not scanned\", never clean. Beta on Windows and macOS.",
+			About:         "Reads a project's lockfiles and manifests with the linked OSV-SCALIBR extractors, the actions its GitHub Actions workflows use, and its build artifacts (Go build info and cargo auditable data in the executables under bin/, dist/, target/release/ and any --artifacts directory; Java archives; Python wheel metadata), in a child process, and matches the packages against the local OSV database one ecosystem at a time. A missing database, a failed self-test or an unsupported platform shows as \"not scanned\", never clean. Beta on Windows and macOS.",
 			Levels:        lv(l1l2l3, l1l2l3, ""),
 			HostedIn:      []string{"internal/secscan/scalibrfacade"},
 			DirectModules: []string{"github.com/google/osv-scalibr"},
 			Requires:      []string{"security.deps"},
 			Surface: Surface{
-				Processes: []string{"observer (the scan child, `observer security scan-child`, through the shared runner)"},
+				Processes: []string{"observer (the scan child, `observer security scan-child`, through the shared runner)", "git (`git ls-files --stage`, read only, for the git submodule pins on an online scan: the Code security scan dialog's \"Also check online\" or `observer security scan --online`)"},
 				Egress: []Egress{
-					{Host: "osv-vulnerabilities.storage.googleapis.com", Purpose: "The per-ecosystem OSV database exports (no project data sent)", Gate: "after the developer's one-time accept (the Scanners card's confirm dialog, or `observer security scan db accept`; about 300 MB; never an agent, R-165), then automatic; individual node only (operator ruling PT-19)", Trigger: TriggerAutomatic},
-					{Host: "api.osv.dev", Purpose: "Online matching: ecosystem, public package name and version", Gate: "`observer security scan --online` only, with security.deps online checks on and disclosed, individual node only", Trigger: TriggerOptIn},
+					{Host: "superbased.app", Purpose: "superbased's signed mirror of the OSV database exports (security.osv_export: a base and a cumulative delta per ecosystem; no project data sent)", Gate: "after the developer's one-time accept (the Scanners card's confirm dialog, or `observer security scan db accept`; about 300 MB; never an agent, R-165), then automatic; individual node only, [security.deps] db_source auto (default) or feed; no request while the build carries no content-feed key", Trigger: TriggerAutomatic},
+					{Host: "osv-vulnerabilities.storage.googleapis.com", Purpose: "The per-ecosystem OSV database exports, the fallback source (no project data sent)", Gate: "after the same accept; individual node only, when db_source = upstream, or db_source = auto with db_fallback_upstream on (default) and the signed mirror not published, not verifiable or unreachable (operator ruling PT-19, static feed mirroring plan section 7)", Trigger: TriggerAutomatic},
+					{Host: "api.osv.dev", Purpose: "Online matching: ecosystem, public package name and version; and git submodules by the commit ids they are pinned to, only those ids (never a submodule's URL, path or name)", Gate: "an online scan only (the Code security scan dialog's \"Also check online\" or `observer security scan --online`), with security.deps online checks on and disclosed, individual node only", Trigger: TriggerOptIn},
+					// Lane RM-2 (plan section 13): the SuperBased package lookup.
+					{Host: "superbased.app", Purpose: "The superbased lookup's signed shard manifest and set descriptors (security.osv_shards; the same files for everyone, no project data sent)", Gate: "lookup mode remote or both ([security.deps] match) with the developer's own remote-lookup consent (the Privacy page's Package lookup card or `observer security lookup mode`; never an agent, R-165); individual node only; no request while the build carries no content-feed key", Trigger: TriggerOptIn},
+					{Host: "shards.superbased.app", Purpose: "The superbased lookup's advisory shards: a short hash prefix per package name chooses which content-addressed shards are fetched; never a package name, version or code; private names withheld unless the developer separately chose to send them", Gate: "as the shard manifest: lookup mode remote or both with the remote-lookup consent, individual node only; only shards not already in the node-local cache", Trigger: TriggerOptIn},
 				},
 				FilesWritten: []string{
 					"~/.observer/security/osv/ (the local OSV databases and their epochs)",
 					"~/.observer/security/osv-db-consent.json (the developer's one-time accept of the database download: time, surface, account)",
+					"~/.observer/security/osv-remote-consent.json and osv-remote-private-consent.json (the superbased lookup's consents: time, surface, account)",
+					"~/.observer/security/osv-shards/ (the superbased lookup's verified shard cache, by digest, capped and evicted least recently used)",
+					"<user cache>/superbased-observer/scanners/deps/remote/ (a remote lookup's assembled per-ecosystem export, removed after each match)",
 					"~/.observer/security/deps-scan-last.json (each project's last scan per driver, by project hash)",
 					"~/.observer/security/deps-scan.lock (one dependency scan at a time per machine)",
 					"<user cache>/superbased-observer/scanners/deps/runs/ (the isolated scan child's run directory: links to the databases, removed after each run)",
+				},
+			},
+			Ledger:       []string{"SECP-8", "SECP-19", "SECP-53"},
+			RestartClass: "restart",
+			Stability:    StabilityPreview,
+			Distros:      dist(out, out, off, on),
+		},
+		{
+			// OS and CI vulnerability scanning plan section 14.5 item 3b
+			// (spike RG-0: GO reshaped, binary mode first): the Go
+			// symbol-level reachability check. internal/secreachgovuln is the
+			// only importer of golang.org/x/vuln (which brings x/tools and
+			// x/telemetry, BSD-3-Clause with the Go PATENTS grant) and keeps a
+			// stub API under the omit tag, so the row lists the module, not
+			// the package (the security.scan.scalibr pattern); its pure core
+			// internal/secreachgo and the tiers in internal/secreach are
+			// core. The check runs in the dependency scan child under its
+			// existing caps (binary mode, no toolchain, no network). Its
+			// dotted parent security.reach does not exist; it requires
+			// security.deps (the parent chain to security, as
+			// security.scan.os does), not security.scan.scalibr: a
+			// requirement stays active against a removal, so requiring
+			// SCALIBR would keep that driver on for every config that removed
+			// it. The check runs only inside the SCALIBR driver's child, so
+			// with that driver off nothing runs. Section 14.13: out of minimal and developer,
+			// off in managed, opt-in in full (dist(out, out, off, off) and
+			// securityOptIn).
+			ID: "security.reach.go", Class: ClassFeature, Binary: BinaryNode,
+			Title:         "Go function-level reachability (binary and source mode)",
+			About:         "Checks each Go binary the dependency scan reads (under bin/, dist/, target/release/ and any --artifacts directory) with govulncheck's binary mode, linked in, against the advisories the scan matched, and labels each finding called or not called for that binary. Only advisories that list functions get a function-level label; a stripped binary is not checked (\"unknown: stripped binary\"). Binary mode runs in the scan child: no network, no Go toolchain. Source mode (`observer security scan --reach go-source`, or the Scanners card) runs osv-scanner's Go call analysis once per go.mod, which runs this machine's Go toolchain on the project: only when you start it, only for a project you opted in, in the isolation component's no-network run (refused without it unless you allow it), under a memory cap you set (default 12 GiB). Ranks and labels only; it never closes or hides a finding.",
+			Levels:        lv(l1l2l3, l1l2l3, ""),
+			HostedIn:      []string{"internal/secreachgovuln"},
+			DirectModules: []string{"golang.org/x/vuln"},
+			Requires:      []string{"security.deps"},
+			Surface: Surface{
+				Processes: []string{
+					"observer (the scan child, `observer security scan-child`, through the shared runner; govulncheck runs in that process)",
+					"osv-scanner (separately installed; source mode only, one process per go.mod with --call-analysis=go --offline -L <go.mod>, through the shared runner inside the isolation component's one-shot run)",
+					"go, compile, asm, cgo, gcc and its children (the developer's own toolchain, started by osv-scanner's call analysis through `go list`; source mode only)",
+				},
+				FilesWritten: []string{
+					"~/.observer/security/reach/<project hash>.json (each project's latest symbol check per binary and per go.mod: advisory ids, module versions, called or not called, the listed function a trace reached, the Go release a source-mode stdlib row assumed)",
+					"~/.observer/security/reach-go-source-optin.json (the per-project source mode opt-in and its isolation override, signed under the posture key)",
+					"<user cache>/superbased-observer/scanners/deps/runs/ (the matched records as a flat <id>.json directory for govulncheck; for source mode the linked Go export, Observer's empty osv-scanner config and the run's own HOME, GOCACHE, GOPATH, TMPDIR and telemetry directory; removed after each run)",
+				},
+			},
+			ConfigKeys:   []string{"security"},
+			Ledger:       []string{"SECP-51", "SECP-8"},
+			RestartClass: "restart",
+			Stability:    StabilityPreview,
+			Distros:      dist(out, out, off, off),
+		},
+		{
+			// OS and CI vulnerability scanning plan phase OS-2 route A
+			// (sections 6.2, 6.3, 6.6.1 and 9.4): the OS package extractors
+			// (os/dpkg, os/apk, os/rpm and osrelease, never artifact/image)
+			// in the SCALIBR facade, and internal/secimage, the selective
+			// layer reader of a `docker save` or OCI-layout tar. Distros like
+			// security.scan.scalibr, whose facade and scan child it needs.
+			// Manual only in this lane (`observer security scan image`): no
+			// daemon loop.
+			ID: "security.scan.os", Class: ClassFeature, Binary: BinaryNode,
+			Title:         "Image OS packages (OSV-SCALIBR)",
+			About:         "Reads a container image's OS packages (Debian and Ubuntu dpkg, Alpine apk, Red Hat and Rocky rpm) from a `docker save` or OCI-layout tar or a root filesystem directory, without a daemon or a registry, and matches them in the scan child against the image's release database. A release with no database, no self-test or a failed self-test shows as \"not scanned\", never clean; kernel packages are left out and named. Red Hat family images are not scanned on Windows.",
+			Levels:        lv(l1l2l3, l1l2l3, ""),
+			Packages:      []string{"internal/secimage"},
+			HostedIn:      []string{"internal/secscan/scalibrfacade"},
+			DirectModules: []string{"github.com/klauspost/compress"},
+			// Requires security.deps (the parent chain to security, as
+			// security.scan.osv does), not security.scan.scalibr: a
+			// requirement stays active against a removal, and this row is
+			// new, so requiring SCALIBR would keep it on for every config
+			// that removed it. The image verb instead refuses unless
+			// security.scan.scalibr is selected too (requireImageScanSelected).
+			Requires: []string{"security.deps"},
+			Surface: Surface{
+				Processes: []string{"observer (the scan child, `observer security scan-child`, through the shared runner)"},
+				FilesWritten: []string{
+					"~/.observer/security/image-scan-inventory.json (each scanned image's OS package inventory by image digest, for a rescan on a new database)",
+					"<user cache>/superbased-observer/scanners/deps/runs/ (the image scan's run directory: the extracted allow-listed files and a link to the release database, removed after each run)",
 				},
 			},
 			Ledger:       []string{"SECP-8", "SECP-19"},
@@ -1104,7 +1346,8 @@ func nodeRows() []Component {
 				// driver reads (the same store as security.scan.scalibr), so
 				// the download is declared on every child that triggers it.
 				Egress: []Egress{
-					{Host: "osv-vulnerabilities.storage.googleapis.com", Purpose: "The per-ecosystem OSV database exports osv-scanner reads offline (no project data sent)", Gate: "as security.scan.scalibr: after the developer's one-time accept, then automatic; individual node only (operator ruling PT-19)", Trigger: TriggerAutomatic},
+					{Host: "superbased.app", Purpose: "superbased's signed mirror of the OSV database exports osv-scanner reads offline (no project data sent)", Gate: "as security.scan.scalibr: after the developer's one-time accept, then automatic; individual node only, db_source auto or feed", Trigger: TriggerAutomatic},
+					{Host: "osv-vulnerabilities.storage.googleapis.com", Purpose: "The per-ecosystem OSV database exports, the fallback source (no project data sent)", Gate: "as security.scan.scalibr: after the same accept; individual node only, db_source upstream, or auto with the fallback on when the signed mirror cannot serve", Trigger: TriggerAutomatic},
 				},
 				FilesWritten: []string{
 					"~/.observer/security/osv/ (the local OSV databases and their epochs)",
@@ -1252,6 +1495,86 @@ func nodeRows() []Component {
 			Distros:      dist(out, off, off, off),
 		},
 		{
+			// OS and CI vulnerability scanning plan section 6.7 (operator
+			// ruling Q6, lane OS-2 T): Trivy as the switchable alternative
+			// driver for a container image's OS packages ([security.scan.image]
+			// driver = "trivy"), beside the native route A (security.scan.os).
+			// The same separately installed, pinned and signature-checked
+			// Trivy binary as security.scan.trivy, run `image --input` or
+			// `rootfs` with the vulnerability scanner over OS packages only,
+			// offline and isolated; its database is Observer's download from
+			// ghcr.io (the security.scan.trivy.db lane, internal/secscan/
+			// trivydb) after a one-time accept. Off in every distro like the
+			// Trivy row and opt-in (securityOptIn). Requires names security.deps
+			// only (the parent chain to security): requiring security.scan.trivy
+			// would bring that row back into a config that removed it
+			// (TestIaCInertWithNoComponentsBlock). Like security.scan.os (lane N2) the image verb and
+			// the trivy-db verbs refuse instead unless this row,
+			// security.scan.trivy and security.deps are all selected.
+			ID: "security.scan.image.trivy", Class: ClassFeature, Binary: BinaryNode,
+			Title:    "Image OS packages (Trivy)",
+			About:    "Scans a container image's OS packages with a pinned and signature-checked Trivy, offline and isolated, against Trivy's own vulnerability database, which Observer downloads from ghcr.io after a one-time accept (about 140 MB, 1.7 GB on disk, checked every 6 hours). The alternative to the native OSV-SCALIBR image driver; choose it in the image engine picker on the Code security Scanners tab. A missing database, binary or isolation, or a failed self-test, shows as \"not scanned\", never clean.",
+			Levels:   lv(l1l2l3, l1l2l3, ""),
+			Packages: []string{"internal/secscan/trivyimage", "internal/secscan/trivydb"},
+			Requires: []string{"security.deps"},
+			// [security.scan.image] is security.deps' section
+			// (config.ComponentSections).
+			ConfigKeys: []string{"security"},
+			Surface: Surface{
+				Egress: []Egress{
+					{Host: "ghcr.io (redirected only to pkg-containers.githubusercontent.com for the layer)", Purpose: "Trivy's vulnerability database, the public OCI artifact ghcr.io/aquasecurity/trivy-db:2 (an anonymous pull token, the manifest by tag, the one database layer by digest, checked against the manifest's digest and size); nothing about a project or an image is sent", Gate: "after the developer's one-time accept (`observer security scan trivy-db accept` or the Scanners card's confirm dialog; never an agent, R-165), on an individual node only (a managed node's mirror does not serve it yet), on a Trivy image scan or `observer security scan trivy-db refresh`, at most every 6 hours and not before the database's own next update", Trigger: TriggerUserTriggered},
+				},
+				Processes: []string{
+					"trivy (separately installed, the security.scan.trivy binary, pinned by sha256, `image --input` or `rootfs` with --scanners vuln --pkg-types os, --skip-db-update, --skip-java-db-update, --skip-vex-repo-update, --offline-scan, --skip-version-check, --disable-telemetry and an in-memory cache)",
+					"bwrap (isolated runs, through the isolation component)",
+				},
+				FilesWritten: []string{
+					"~/.observer/security/trivy-db-consent.json (the developer's one-time accept of the database download, signed)",
+					"~/.observer/security/trivy-image.json (the binary digest whose --help listed every flag)",
+					"<user cache>/superbased-observer/scanners/trivy-image/db/ (the unpacked database: one generation of trivy.db and metadata.json, and state.json)",
+					"<user cache>/superbased-observer/scanners/trivy-image/runs/ (each run's cache, canary and report, removed after the run)",
+				},
+			},
+			Ledger:       []string{"SECP-34", "SECP-8"},
+			RestartClass: "restart",
+			Stability:    StabilityPreview,
+			Distros:      dist(out, off, off, off),
+		},
+		{
+			// OS and CI vulnerability scanning plan section 14.9 (item 7,
+			// phase M3L-5; operator go 2026-11-04): the native passive DAST
+			// checker. A few plain GETs to ONE dev server the developer names
+			// on this machine, checked by the pure table internal/secdast; the
+			// requests go only through internal/secdastnet (the security.dast
+			// egress lane, kind local: loopback after resolution, no redirect
+			// off the origin, bodies, requests and time capped). Its own signed
+			// accept (internal/secdast/dastconsent); every run starts from the
+			// developer (R-165 denies an agent the verb, the accept and the
+			// record). Out of minimal, opt-in elsewhere (section 14.13: the
+			// developer and full distros opt-in, managed off), so
+			// dist(out, off, off, off) and securityOptIn. Requires names
+			// security, its dotted parent. ZAP is a no-go and nuclei is not
+			// driven (section 14.9). No route yet: the dashboard card is a
+			// later step (R-165 reserves /api/security/dast).
+			ID: "security.dast", Class: ClassFeature, Binary: BinaryNode,
+			Title:    "Local passive DAST",
+			About:    "Checks a development server on this machine (localhost, 127.0.0.1 or ::1 with a port; nothing else is ever contacted) with a few plain GET requests: security headers, cookie flags, CORS, exposed .git and .env, directory listings, source maps, framework debug pages and version banners. Passive only: nothing is submitted or fuzzed. Runs only when you start it (command line or the Code security page), after a one-time accept; findings are flag only and stored against the project. Candidate servers come from the project's own files and, on Linux, the kernel's listen table; nothing is dialed to find them.",
+			Levels:   lv(l1l2l3, l1l2l3, ""),
+			Packages: []string{"internal/secdast", "internal/secdast/dastconsent", "internal/secdastnet"},
+			Requires: []string{"security"},
+			Surface: Surface{
+				Egress: []Egress{
+					{Host: "<the loopback dev server the developer names (localhost, 127.0.0.0/8 or ::1, with a port)>", Purpose: "at most 16 plain GET requests per run (the page with a canary Origin, /.git/HEAD, /.env, one missing page, up to 3 same-origin scripts and their source maps); no cookie, credential or body is sent; refused for any address that is not loopback after resolution, and no redirect off the origin is followed", Gate: "`observer security dast <url>` or the Code security DAST card's Run, started by the developer (never an agent: R-165), after the one-time accept", Trigger: TriggerUserTriggered},
+				},
+				FilesWritten: []string{"~/.observer/security/dast-consent.json (the developer's one-time accept, signed)", "~/.observer/security/dast/<project_root_hash>.json (each origin's last run: the finding keys it reported, its time and outcome)"},
+			},
+			Routes:       []string{"/api/security/dast"},
+			Ledger:       []string{"SHR-3"},
+			RestartClass: "hot",
+			Stability:    StabilityPreview,
+			Distros:      dist(out, off, off, off),
+		},
+		{
 			// Security lane GATES-SEC: the KICS process driver (plan 5.6 P2,
 			// gap G4). Off in every distro and opt-in (securityOptIn). KICS
 			// v2.2.0 publishes no release binaries and no signature, so there
@@ -1331,7 +1654,7 @@ func nodeRows() []Component {
 		{
 			ID: "integration.service", Class: ClassIntegration, Binary: BinaryNode,
 			Title:     "System service",
-			About:     "Writes a systemd unit and runs systemctl through `observer service` (Linux only). A launchd plist ships for manual install; Observer writes no service on macOS or Windows.",
+			About:     "Starts the daemon at login: a systemd user unit (Linux) or a launchd LaunchAgent (macOS) through `observer service`, or the sign-in Run value (Windows), installed from Start at login in Settings > Health or the CLI (`observer setup autostart` on Windows).",
 			Levels:    lv(onlyL3, l2l3, "P1"),
 			Packages:  []string{"internal/service"},
 			Surface:   Surface{FilesWritten: []string{"systemd unit file"}, Processes: []string{"systemctl", "journalctl (`observer service logs`)"}, OSIntegration: []string{"systemd unit (Linux)"}},
@@ -1353,6 +1676,13 @@ func nodeRows() []Component {
 				Listeners: []Listener{
 					loopback("127.0.0.1:4317", "token file", "ingest.otel.grpc_addr", TriggerOptIn),
 					loopback("127.0.0.1:4318", "token file", "ingest.otel.http_addr", TriggerOptIn),
+					// The in-sandbox receiver of `observer cloud-session
+					// otel-receiver serve` (docs/cloud-agents.md, lane CA-C7):
+					// started by a committed hook only inside a vendor's cloud
+					// sandbox, loopback only (any other bind is refused), bounded
+					// life; its port is the --addr flag, not a config key. Refused
+					// (exit 3) while this component is inactive.
+					loopback("127.0.0.1:4318", "none (loopback inside the vendor's cloud sandbox only)", "", TriggerOptIn),
 				},
 				VendorConfigs: []string{"AI tool OTel exporter settings (opt-in)"},
 			},
@@ -1362,7 +1692,7 @@ func nodeRows() []Component {
 			ConfigKeys: []string{"ingest"},
 			Stability:  StabilityPreview,
 			Distros:    dist(out, off, off, off),
-			Note:       "Ruling D-436: the generic OTLP receiver (internal/ingest/otlp) is core, because it also serves Plane A traces and the observer-edge; this component is the vendor mapping table (internal/otlpvendor), the logs handler and the exporter-config edit (internal/telemetrywire). Compiled out by -tags sbo_omit_ingest_otlp (P2, MP-L1C): the cmd/observer wiring pair (otlp_ingest.go, otlp_proxyroute.go, init_otlp.go, otlp_route_marker.go vs their _omit.go files), the clientwire writer (telemetry_wire.go vs telemetry_omit.go) and the dashboard setup route; [ingest.otel] is then reported at start, never obeyed, and `observer init --otlp-export` refuses. Such a build cannot remove exporter entries an earlier full build wrote: remove ingest.otlp in a build that has it first.",
+			Note:       "Ruling D-436: the generic OTLP receiver (internal/ingest/otlp) is core, because it also serves AI Apps traces and the observer-edge; this component is the vendor mapping table (internal/otlpvendor), the logs handler and the exporter-config edit (internal/telemetrywire). Compiled out by -tags sbo_omit_ingest_otlp (P2, MP-L1C): the cmd/observer wiring pair (otlp_ingest.go, otlp_proxyroute.go, init_otlp.go, otlp_route_marker.go vs their _omit.go files), the clientwire writer (telemetry_wire.go vs telemetry_omit.go) and the dashboard setup route; [ingest.otel] is then reported at start, never obeyed, and `observer init --otlp-export` refuses. Such a build cannot remove exporter entries an earlier full build wrote: remove ingest.otlp in a build that has it first.",
 		},
 		{
 			ID: "export.otel", Class: ClassFeature, Binary: BinaryNode,
@@ -1382,8 +1712,8 @@ func nodeRows() []Component {
 		},
 		{
 			ID: "obs", Class: ClassFeature, Binary: BinaryNode,
-			Title:  "Plane A observability",
-			About:  "General observability of a hosted LLM app: span ingest, input admission, evals, alerts and self-observability. The admin plane, never shown on the node dashboard.",
+			Title:  "AI Apps observability",
+			About:  "Observability of the AI apps and agents you build (SDK and OTLP spans): span ingest, input admission, evals, alerts and self-observability.",
 			Levels: lv([]Level{L1, L3}, l1l2l3, "P2"),
 			Packages: []string{
 				"internal/obs", "internal/obs/admission", "internal/obs/egress", "internal/obs/eval", "internal/obs/span",
@@ -1404,8 +1734,8 @@ func nodeRows() []Component {
 			Verbs:      []string{"obs", "eval"},
 			ConfigKeys: []string{"observability"},
 			Stability:  StabilityPreview,
-			Distros:    dist(out, out, out, off),
-			Note:       "Out of developer per D-389. Compiled out by -tags sbo_omit_obs (no_obs is a one-release alias) and by sbo_omit_judge_client, which obs requires; the binary then reports obs omitted. The self-observability model (internal/selfobs run, keys, shape, conformance, emit) is core and the [selfobs] key belongs to export.otel (D-436); with those packages no longer counted as obs, a -tags sbo_omit_obs build carries none of obs's packages, so obs claims L1 (MP-L1C).",
+			Distros:    dist(out, off, out, off),
+			Note:       "In developer since D7 (plan of record 2026-11-19, amended; supersedes D-389): compiled in, off until [observability].enabled is set from the dashboard or config, so an individual who is not signed in can run AI Apps on their own node. Stays out of minimal (a deliberately small build) and managed (which uses the org gateway); a build without it warns at start and in doctor (observability.build) when [observability] is enabled. Compiled out by -tags sbo_omit_obs (no_obs is a one-release alias) and by sbo_omit_judge_client, which obs requires; the binary then reports obs omitted. The self-observability model (internal/selfobs run, keys, shape, conformance, emit) is core and the [selfobs] key belongs to export.otel (D-436); with those packages no longer counted as obs, a -tags sbo_omit_obs build carries none of obs's packages, so obs claims L1 (MP-L1C).",
 		},
 		{
 			ID: "processobs", Class: ClassFeature, Binary: BinaryNode,
@@ -1424,7 +1754,7 @@ func nodeRows() []Component {
 				// Windows observer.exe the WSL bridge runs as its capturer.
 				Processes: []string{"schtasks (the read-only bridge task query)", "observer (the Windows observer.exe the WSL process bridge runs as its capturer)"},
 			},
-			Tables:     []string{"process_runs", "process_events", "process_network_bodies"},
+			Tables:     []string{"process_runs", "process_events", "process_network_bodies", "process_rollups", "process_capture_stats"},
 			Routes:     []string{"/api/process"},
 			Verbs:      []string{"process", "process-bridge"},
 			ConfigKeys: []string{"observer"},
@@ -1581,17 +1911,17 @@ func nodeRows() []Component {
 		{
 			ID: "projects", Class: ClassFeature, Binary: BinaryNode,
 			Title:  "Projects and lines of code",
-			About:  "Per-project spend and ROI, a read-only HEAD-only commit scanner, lines-of-code tracking with a loopback editor endpoint, and skills history.",
+			About:  "Per-project spend and ROI, a read-only HEAD-only commit scanner, lines-of-code tracking with a loopback editor endpoint, skills history, and quality metrics (line coverage from the project's own report files, duplication from the codeintel index, a daily trend).",
 			Levels: lv(onlyL3, l2l3, "P1"),
 			Packages: []string{
 				"internal/commitscan", "internal/commitlog", "internal/projectroi", "internal/loc",
-				"internal/skillhistory", "internal/skillscan",
+				"internal/skillhistory", "internal/skillscan", "internal/codequality", "internal/codequalitysvc",
 			},
 			Surface: Surface{
 				Processes:    []string{"git (read-only log)"},
 				FilesWritten: []string{"~/.observer/loc-editor-token"},
 			},
-			Tables:     []string{"file_changes", "project_commits", "project_commit_files", "project_commit_scan"},
+			Tables:     []string{"file_changes", "project_commits", "project_commit_files", "project_commit_scan", "project_quality_daily"},
 			Routes:     []string{"/api/projects", "/api/loc", "/api/project"},
 			Verbs:      []string{"project", "loc"},
 			ConfigKeys: []string{"projects", "loc"},
@@ -1683,6 +2013,14 @@ func nodeRows() []Component {
 			Stability:        StabilityStable,
 			Distros:          dist(out, on, out, on),
 		},
+		// The InstaBox hosted driver: the SBX-P7 hosted rows' rule (its own
+		// component, inactive in every distro, opt-in, beta until a live
+		// receipt; nothing calls InstaBox before a user launch or a
+		// leftover-box confirm). Its client links github.com/coder/websocket
+		// for the terminal WebSocket.
+		hostedDriverRow("terminals.sandbox.instabox", "InstaBox hosted sandboxes (beta)",
+			"Runs sandboxed terminal launches in an InstaBox Firecracker microVM on InstaBox's machines, through InstaBox's REST API and terminal WebSocket. Internet tier only: InstaBox documents no way to block a machine's network. Your workspace files are uploaded after you consent once; hooks reach this machine through the capture relay. Beta: built from InstaBox's documentation; its wire client passed an API-level live check, but no agent has run on the row yet.",
+			"internal/sandboxremote/instabox", []string{"github.com/coder/websocket"}),
 	}
 }
 

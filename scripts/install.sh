@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh: install a SuperBased Observer edition on Linux or macOS.
+# install.sh: install a superbased Observer edition on Linux or macOS.
 #
 #   sh install.sh [options]
 #
@@ -28,6 +28,28 @@
 #                          launchd agent that starts at sign-in)
 #   --no-service           do not offer the service (on an upgrade: leave
 #                          an existing service unit untouched)
+#   --connect [team]       one step to see this machine online: install,
+#                          run `observer connect [team]` (approve in your
+#                          browser, or enter the printed code on any device
+#                          when there is no browser), run Observer as a
+#                          background service that starts when you sign in
+#                          (the --service unit or agent), then open the
+#                          local dashboard. The team is a team's short name;
+#                          without one you choose on the approval page
+#                          (your personal dashboard by default). Also read
+#                          from SBO_CONNECT_TEAM. Needs the developer or
+#                          full edition (the default with --connect). It
+#                          carries no token: the approval happens in your
+#                          browser.
+#   --apps                 also turn on AI Apps (traces, cost and evals for
+#                          the AI apps you build) with `observer apps on`:
+#                          the receiver listens on 127.0.0.1:4318 once
+#                          Observer runs, and with --connect the local
+#                          dashboard opens on the AI apps track. Needs the
+#                          developer or full edition (the default with
+#                          --apps). Data stays on this machine unless it is
+#                          connected to an organization that turned an AI
+#                          Apps share on.
 #   --uninstall           stop the service unit if any, run `observer
 #                          uninstall --all` (hook, MCP and proxy-route
 #                          entries), then delete the binary; ~/.observer
@@ -83,6 +105,7 @@ LAUNCH_AGENT="$HOME/Library/LaunchAgents/app.superbased.observer.plist"
 
 edition="" version="latest" prefix="" from_dir="" base_url=""
 require_sig=0 service_choice="" uninstall=0 purge=0 force=0 dry_run=0 assume_yes=0
+connect=0 connect_team="" apps=0
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'install.sh: WARNING: %s\n' "$*" >&2; }
@@ -93,6 +116,7 @@ usage() {
   else
     say "usage: sh install.sh [--edition minimal|developer|managed|full] [--version vX.Y.Z] [--prefix DIR]"
     say "       [--from-dir DIR] [--base-url URL] [--require-signature] [--service|--no-service]"
+    say "       [--connect [TEAM]] [--apps]"
     say "       [--uninstall [--purge] [--force]] [--dry-run] [--yes]"
   fi
 }
@@ -114,6 +138,15 @@ while [ $# -gt 0 ]; do
     --require-signature) require_sig=1; shift ;;
     --service) service_choice=yes; shift ;;
     --no-service) service_choice=no; shift ;;
+    --connect)
+      connect=1; shift
+      # An optional team name follows; an option does not.
+      if [ $# -gt 0 ]; then
+        case "$1" in -*) ;; *) connect_team="$1"; shift ;; esac
+      fi
+      ;;
+    --connect=*) connect=1; connect_team="${1#*=}"; shift ;;
+    --apps) apps=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     --purge) purge=1; shift ;;
     --force) force=1; shift ;;
@@ -123,6 +156,20 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
+
+if [ "$apps" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
+  die "--apps does not go with --uninstall"
+fi
+if [ "$connect" -eq 1 ]; then
+  [ "$uninstall" -eq 0 ] || die "--connect does not go with --uninstall"
+  if [ -z "$connect_team" ]; then connect_team="${SBO_CONNECT_TEAM:-}"; fi
+  if [ -n "$connect_team" ] && ! printf '%s\n' "$connect_team" | grep -Eq '^[a-z0-9][a-z0-9-]{0,62}$'; then
+    die "--connect: '$connect_team' is not a team name (lowercase letters, digits and hyphens)"
+  fi
+  # A connected machine runs Observer as a background service, unless the
+  # service was declined explicitly.
+  if [ -z "$service_choice" ]; then service_choice=yes; fi
+fi
 
 # ---------------------------------------------------------------- helpers
 
@@ -154,7 +201,7 @@ yes_no() { # yes_no <prompt> <default y|n>: status 0 for yes
 edition_line() {
   case "$1" in
     minimal) say "capture only: hooks, transcript watcher and the local dashboard; no proxy, terminals or self-update" ;;
-    developer) say "a developer's own machine: proxy, dashboard, terminals, guard and every adapter (recommended)" ;;
+    developer) say "a developer's own machine: proxy, dashboard, terminals, guard, every adapter and app observability (off until you enable it) (recommended)" ;;
     managed) say "a machine enrolled in an organization: org client and self-update on, local extras off" ;;
     full) say "everything compiled in: the build npm, PyPI and the VS Code extension ship" ;;
     *) return 1 ;;
@@ -539,7 +586,7 @@ do_uninstall() {
   say "  - delete $bin"
   if [ -L "$target/superbased" ]; then say "  - delete the $target/superbased alias"; fi
   if [ -f "$target/antigravity-bridge.exe" ]; then say "  - delete $target/antigravity-bridge.exe"; fi
-  say "If this machine is enrolled in an organization, leave it first: observer unenroll"
+  say "If this machine is connected, disconnect it first: observer disconnect"
   say "Stop a running \`observer start\` first."
 
   # The binary's directory must be writable BEFORE anything changes: rc.2
@@ -775,6 +822,17 @@ gate_other_installs() {
 choose_edition() {
   if [ -n "$edition" ]; then
     valid_edition "$edition" || die "unknown edition '$edition' (minimal, developer, managed or full)"
+    connect_edition_ok
+    apps_edition_ok
+    return 0
+  fi
+  # --connect and --apps ask nothing here: an existing developer or full
+  # install keeps its edition, anything else gets developer.
+  if [ "$connect" -eq 1 ] || [ "$apps" -eq 1 ]; then
+    if [ -z "$other_edition" ] && [ -f "$prefix/observer" ] && [ ! -L "$prefix/observer" ]; then
+      other_edition=$(edition_of "$prefix/observer" archive)
+    fi
+    case "${other_edition:-}" in developer|full) edition="$other_edition" ;; *) edition=developer ;; esac
     return 0
   fi
   # U4: an existing install's edition is the default (npm and pip ship the
@@ -804,6 +862,285 @@ choose_edition() {
   else
     edition="$ce_default"
   fi
+}
+
+# connect_edition_ok: signing in lives in the developer and full editions
+# only (minimal and managed leave it out), so --connect refuses the others.
+connect_edition_ok() {
+  [ "$connect" -eq 1 ] || return 0
+  case "$edition" in
+    developer|full) ;;
+    *) die "--connect needs the developer or full edition (the $edition edition has no superbased sign-in); drop --edition or pass --edition developer" ;;
+  esac
+}
+
+# apps_edition_ok: AI Apps is compiled into the developer and full editions
+# only (minimal and managed leave it out), so --apps refuses the others
+# with the same reinstall line `observer apps on` gives.
+apps_edition_ok() {
+  [ "$apps" -eq 1 ] || return 0
+  case "$edition" in
+    developer|full) ;;
+    *) die "--apps needs the developer or full edition (the $edition edition does not include AI Apps); drop --edition or pass --edition developer" ;;
+  esac
+}
+
+# apps_on: `observer apps on` for --apps, before Observer is started, so a
+# daemon this installer starts comes up with AI Apps on (a daemon already
+# running turns it on at once, with no restart). --installer records the
+# installer as the arrival intent and opens and starts nothing. A failure (a
+# taken receiver port, an organization pin) is reported, never fatal: the
+# install stays.
+apps_on() {
+  [ "$apps" -eq 1 ] || return 0
+  say ""
+  if "$installed" apps on --yes --installer <"$(tty_in)"; then
+    apps_done=1
+    return 0
+  fi
+  warn "AI Apps is not on; Observer still works on this machine. Turn it on any time: observer apps on"
+  return 1
+}
+
+# tty_in: where a command run by this installer reads its input. Under
+# `curl ... | sh` standard input is this script, so a command must never
+# read it: the terminal when there is one, else nothing.
+tty_in() {
+  if ( : </dev/tty ) 2>/dev/null; then printf '/dev/tty'; else printf '/dev/null'; fi
+}
+
+# connect_machine: `observer connect [team]` for --connect. The browser
+# approval (or the printed code with no browser) is observer's own; the
+# installer only starts it. Hooks are wired by `observer start` (the service
+# or the background start below), so connect wires nothing itself. A failure
+# is reported, never fatal: the install stays.
+connect_machine() {
+  say ""
+  say "Connecting this machine. Nothing is sent before you approve it."
+  if [ -n "$connect_team" ]; then
+    "$installed" connect "$connect_team" --wire-clients=false <"$(tty_in)" && return 0
+  else
+    "$installed" connect --wire-clients=false <"$(tty_in)" && return 0
+  fi
+  warn "not connected; Observer still works on this machine. Connect any time: observer connect"
+  return 1
+}
+
+# connect_hooks: wire hooks into the detected AI tools the way `observer
+# start` does when nothing runs it (MCP and proxy routes stay opt-in).
+connect_hooks() {
+  "$installed" init --skip-mcp --skip-proxy-route <"$(tty_in)" >/dev/null 2>&1 \
+    || warn "could not register hooks for your AI tools; run: observer init"
+}
+
+# test_mode: the hermetic tests (with --from-dir only) never wait, open a
+# browser or probe a port.
+test_mode() { [ -n "${OBSERVER_INSTALL_TEST_NO_OPEN:-}" ] && [ -n "$from_dir" ]; }
+
+LOCAL_DASHBOARD="http://127.0.0.1:8081"
+
+# dashboard_answers: the local dashboard answers on its port now.
+dashboard_answers() {
+  test_mode && return 1
+  have curl && curl -fs -o /dev/null --max-time 1 "$LOCAL_DASHBOARD/" 2>/dev/null
+}
+
+# launch_background: the detached `observer start --no-open`, output appended
+# to $bg_log; its pid is left in bg_pid.
+launch_background() {
+  if have setsid; then
+    setsid "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  elif have nohup; then
+    nohup "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  else
+    "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  fi
+  bg_pid=$!
+}
+
+# pid_is_ours <pid>: the pid is still an `observer start` of this install.
+pid_is_ours() {
+  [ -n "${1:-}" ] || return 1
+  po_cmd=$(ps -p "$1" -o command= 2>/dev/null) || return 1
+  case "$po_cmd" in
+    *observer*" start"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# restart_after_connect: `observer connect` succeeded, and the daemon builds
+# its push loop only at start-up, so restart it once. Non-fatal.
+restart_after_connect() {
+  say ""
+  if [ -n "$connect_team" ]; then rc_to="team $connect_team"; else rc_to="your personal dashboard"; fi
+  say "Restarting Observer so it starts sending to $rc_to."
+  if [ "$service_done" -eq 1 ]; then
+    "$installed" service restart || warn "could not restart the service; run: observer service restart"
+    return 0
+  fi
+  [ "$bg_started" -eq 1 ] || return 0
+  # Tests (with --from-dir only): the stub has already exited; just start again.
+  if test_mode; then launch_background; return 0; fi
+  if ! pid_is_ours "$bg_pid"; then
+    warn "could not find the Observer started by this installer (pid ${bg_pid:-none}); restart it so it starts sending: observer start"
+    return 0
+  fi
+  kill -TERM "$bg_pid" 2>/dev/null || true
+  rc_i=0
+  while [ "$rc_i" -lt 20 ] && kill -0 "$bg_pid" 2>/dev/null; do
+    sleep 0.5 2>/dev/null || sleep 1
+    rc_i=$((rc_i + 1))
+  done
+  if kill -0 "$bg_pid" 2>/dev/null; then
+    warn "Observer (pid $bg_pid) did not stop; restart it so it starts sending: observer start"
+    return 0
+  fi
+  launch_background
+}
+
+# start_in_background: `observer start` for this session when no service
+# runs Observer: detached, no input, output in a log under ~/.observer/logs.
+# --no-open because the installer opens the page itself. `observer start`
+# registers the hooks. Status 0 when it was started.
+start_in_background() {
+  sb_dir="$HOME/.observer/logs"
+  ( umask 077; mkdir -p "$sb_dir" ) 2>/dev/null || sb_dir=""
+  sb_log=/dev/null
+  if [ -n "$sb_dir" ]; then sb_log="$sb_dir/observer-start.log"; fi
+  bg_log=$sb_log
+  launch_background
+  say ""
+  say "Observer is running in the background until you sign out or restart."
+  say "To keep it running: observer service install --now"
+  return 0
+}
+
+# can_open_browser: a browser can open on this machine from the installer.
+can_open_browser() {
+  case "$os" in
+    darwin) have open ;;
+    linux)
+      if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then return 0; fi
+      if [ -n "${WSL_DISTRO_NAME:-}" ] && { have wslview || have explorer.exe; }; then return 0; fi
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# show_local_dashboard: the local dashboard comes first. Wait up to 20 s for
+# it to answer, then open it (with ?connecting=1 so it tells the person to
+# approve this machine in the tab `observer connect` opens next), or print how
+# to reach it. Never opens a page that did not answer.
+show_local_dashboard() {
+  sd_url="$LOCAL_DASHBOARD/?connecting=1"
+  if [ -n "$connect_team" ]; then sd_url="$sd_url&team=$connect_team"; fi
+  # The connect hand-off carries the arrival intent (a closed value the
+  # daemon validates and stores): --apps is the AI apps track.
+  if [ "$apps" -eq 1 ]; then sd_url="$sd_url&intent=apps"; fi
+  sd_up=0
+  if test_mode; then
+    # The hermetic tests open nothing; they read the hand-off URL here.
+    say "(test: the local dashboard opens at $sd_url)"
+    sd_up=1
+  else
+    sd_i=0
+    while [ "$sd_i" -lt 40 ]; do
+      if ! have curl; then break; fi
+      if curl -fs -o /dev/null --max-time 1 "$LOCAL_DASHBOARD/" 2>/dev/null; then sd_up=1; break; fi
+      sleep 0.5 2>/dev/null || sleep 1
+      sd_i=$((sd_i + 1))
+    done
+  fi
+  say ""
+  if [ "$sd_up" -ne 1 ]; then
+    say "Observer is still starting. The local dashboard will be at $LOCAL_DASHBOARD"
+    return 0
+  fi
+  if can_open_browser; then
+    say "Opening the local dashboard: $LOCAL_DASHBOARD"
+    if ! test_mode; then
+      case "$os" in
+        darwin) open "$sd_url" >/dev/null 2>&1 || true ;;
+        linux)
+          if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then
+            xdg-open "$sd_url" >/dev/null 2>&1 || true
+          elif have wslview; then wslview "$sd_url" >/dev/null 2>&1 || true
+          elif have explorer.exe; then explorer.exe "$sd_url" >/dev/null 2>&1 || true
+          fi
+          ;;
+      esac
+    fi
+  else
+    say "Open $LOCAL_DASHBOARD in a browser on this machine,"
+    say "or from your own computer: ssh -L 8081:127.0.0.1:8081 $(hostname 2>/dev/null || echo this-host)"
+    say "then open $LOCAL_DASHBOARD there."
+  fi
+}
+
+# connect_finish: the end of a --connect install, after the binary is in
+# place. upgrading is 1 when an install was replaced. Order: make Observer
+# run, show the local dashboard, then connect (the approval tab opens on top).
+connect_finish() {
+  service_done=0
+  stale=""
+  if [ "${1:-0}" -eq 1 ]; then
+    upgrade_service || offer_service
+    stale=$(stale_daemons)
+    if [ -n "$stale" ]; then
+      say ""
+      say "\`observer start\` (pid ${stale% }) still runs the previous binary. The daemon is the proxy: restart it when no AI"
+      say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md)."
+    fi
+  else
+    offer_service
+  fi
+  bg_started=0 already_running=0
+  if [ "$service_done" -ne 1 ] && [ -z "$stale" ]; then
+    if dashboard_answers; then
+      already_running=1
+    else
+      start_in_background && bg_started=1
+    fi
+  fi
+  if [ "$service_done" -ne 1 ] && [ "$bg_started" -ne 1 ]; then
+    connect_hooks
+  fi
+  show_local_dashboard
+  connected=0
+  connect_machine && connected=1
+  if [ "$connected" -eq 1 ] && [ -z "$stale" ] && { [ "$service_done" -eq 1 ] || [ "$bg_started" -eq 1 ]; }; then
+    restart_after_connect
+  fi
+  if [ "$connected" -eq 1 ] && [ "$already_running" -eq 1 ]; then
+    say ""
+    say "Observer was already running here. Restart it so it starts sending: stop it, then run observer start"
+  fi
+  say ""
+  if [ "$connected" -eq 1 ]; then say "This machine is connected."; else say "This machine is not connected yet: observer connect"; fi
+  say "Local dashboard   $LOCAL_DASHBOARD"
+  say "  everything Observer records on this computer, in full; it stays here"
+  if [ "$apps_done" -eq 1 ]; then
+    say "AI Apps           $LOCAL_DASHBOARD/apps"
+    say "  traces from the AI apps you build, sent to 127.0.0.1:4318 (observer apps status)"
+  fi
+  if [ -n "$connect_team" ] && [ "$connected" -eq 1 ]; then
+    say "Team dashboard    https://cloud.superbased.app"
+    say "  full detail (prompts, responses, file paths); the team's admins can read it"
+  else
+    say "Online dashboard  https://cloud.superbased.app"
+    say "  a summary from each machine you connect"
+  fi
+  if [ "$service_done" -eq 1 ]; then
+    say "Observer runs in the background and starts when you sign in (observer service status)."
+  elif [ "$bg_started" -eq 1 ]; then
+    say "Observer runs in the background until you sign out or restart (observer service install --now keeps it running)."
+  elif [ "$already_running" -eq 1 ]; then
+    say "Observer is running (started before this install)."
+  else
+    say "Start Observer: observer start   (it opens the local dashboard)"
+  fi
+  if [ "$connected" -eq 1 ]; then say "Undo any time: observer disconnect"; fi
 }
 
 # sums_versions <SHA256SUMS>: the release versions its agent archives name.
@@ -1033,12 +1370,13 @@ do_install() {
   asset=$(asset_name)
   if [ -z "$prefix" ]; then prefix=$(default_prefix); fi
 
-  say "SuperBased Observer $version, $edition edition"
+  say "superbased Observer $version, $edition edition"
   say "  edition   $(edition_line "$edition")"
   say "  platform  $os-$arch"
   say "  archive   $asset"
   if [ -n "$from_dir" ]; then say "  source    $from_dir"; else say "  source    $asset_base"; fi
   say "  install   $prefix/observer"
+  if [ "$apps" -eq 1 ]; then say "  AI Apps   turned on after installing (observer apps on)"; fi
 
   get_asset SHA256SUMS "$work/SHA256SUMS" || die "could not get SHA256SUMS for $version"
   want=$(awk -v n="$asset" '{ f = $2; sub(/^\*/, "", f); if (f == n) print $1 }' "$work/SHA256SUMS" | head -n 1)
@@ -1125,6 +1463,16 @@ do_install() {
     fi
   fi
 
+  # --apps: AI Apps on before anything starts Observer.
+  apps_done=0
+  apps_on || true
+
+  # --connect: make Observer run, show the local dashboard, then connect.
+  if [ "$connect" -eq 1 ] && [ -z "$other_daemons" ]; then
+    if [ -n "$previous" ]; then connect_finish 1; else connect_finish 0; fi
+    return 0
+  fi
+
   service_done=0
   if [ -n "$previous" ]; then
     # An upgrade: a unit that already runs this install is refreshed (and
@@ -1150,6 +1498,7 @@ do_install() {
   # and no `observer start` in Next steps.
   if [ -n "$other_daemons" ]; then
     say ""
+    if [ "$connect" -eq 1 ]; then connect_machine || true; fi
     say "A daemon from another install is running ($(printf '%s\n' "$other_daemons" | awk '{ printf "%s%s", s, $1; s = ", " }' | sed 's/^/pid /')),"
     say "so no service was offered and nothing was started. To move to this copy: when no AI session uses the proxy, turn"
     say "the proxy route off, stop that daemon, then start this one (docs/daemon-restart-runbook.md)."
@@ -1163,7 +1512,7 @@ do_install() {
   say ""
   say "Next steps:"
   if [ "$edition" = managed ]; then
-    say "  observer enroll --link <enrolment link>  # join your organization"
+    say "  observer connect <server>              # connect to your company's server"
   fi
   # What `observer start` runs: the minimal edition compiles the proxy out
   # (T-744), so it never claims one there.
@@ -1173,6 +1522,12 @@ do_install() {
   else
     runs="proxy + watcher + dashboard"
     wires="hooks, MCP and the proxy route for your AI tools"
+  fi
+  if [ "$edition" != managed ]; then
+    say "  observer connect                       # sign in and see this machine online"
+  fi
+  if [ "$apps_done" -eq 1 ]; then
+    say "  observer apps status                   # AI Apps: the receiver and the latest trace"
   fi
   say "  observer init                          # $wires"
   if [ "$service_done" -eq 1 ]; then

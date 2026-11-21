@@ -157,6 +157,9 @@ func (g *Gateway) admitTunnel(ctx context.Context, client, upstream net.Conn, ta
 			logged = oneLine(name) + " via " + target
 		}
 		g.logger().Warn(LogEgressRefused, "host", logged, "port", port, "rules", rule)
+		// The tunnel is already established, so there is no 403 to write;
+		// the refusal is still recorded, under the CONNECT target.
+		g.report(stageTunnel, rule, target, port)
 		return false
 	}
 	if _, err := upstream.Write(raw); err != nil {

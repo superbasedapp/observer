@@ -424,3 +424,73 @@ func TestProcResolver_StaleRow_DeadPIDRejected(t *testing.T) {
 		t.Fatalf("dead pid attributed: sid=%q ok=%v err=%v, want clean miss", sid, ok, err)
 	}
 }
+
+// TestProcResolver_ResolveOwnTool (P-228 fix round 2, N2): the bridge
+// reports a tool as the connection's OWN process only when the socket
+// owner itself is that tool's binary. A script the developer starts from
+// the tool's shell still resolves the tool's session through the ancestor
+// walk (Resolve / ResolveTool unchanged), but ResolveOwnTool misses, so the
+// proxy lets that child's own-agent header claim its turns.
+func TestProcResolver_ResolveOwnTool(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		ownerComm  string
+		ownerArgv  string
+		ownerExe   string
+		ancestor   bool // the bridge row is on pid 100, the socket owner is pid 200
+		wantOwn    bool
+		wantShared bool // ResolveTool still names the tool
+	}{
+		// Claude Code's Node CLI sets process.title, so comm is "claude".
+		{"the tool's own process", "claude", "node\x00/opt/claude-code/cli.js\x00", "", false, true, true},
+		{"the tool's own worker under its main process", "claude", "node\x00/opt/claude-code/cli.js\x00--worker\x00", "", true, true, true},
+		{"a native tool binary by its exe", "claude", "/home/u/.local/bin/claude\x00", "/home/u/.local/share/claude/versions/2.1.0/claude", true, true, true},
+		// fixes-1 N1: a row registered for the socket owner's exact pid (a
+		// hook, adapter or terminal seed named it) is the tool's own
+		// process whatever its argv looks like.
+		{"a registered pid with a generic node argv", "node", "node\x00--max-old-space-size=8192\x00/opt/claude-code/cli.js\x00", "/usr/bin/node", false, true, true},
+		{"a child script under the tool", "python3", "python3\x00/home/u/agent.py\x00", "/usr/bin/python3.12", true, false, true},
+		// sdk-1f L4: a child whose path or arguments merely mention the
+		// tool id is not the tool (the old substring check said it was).
+		{"a child script whose path names the tool", "python3", "python3\x00/home/u/claude-code/agent.py\x00--as\x00claude-code\x00", "/usr/bin/python3.12", true, false, true},
+		{"a node script in a folder named for the tool", "node", "node\x00/home/u/claude-code-tools/run.js\x00", "/usr/bin/node", true, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newStore(t)
+			rowPID, ownerPID, ppid := 200, 200, 1
+			if tc.ancestor {
+				rowPID, ppid = 100, 100
+			}
+			if err := st.Write(ctx, Entry{PID: rowPID, SessionID: "cc-sess", Tool: "claude-code"}); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			procDir := writeProcSocket(t, ownerPID, 777, "0100007F:1F40", "0100007F:2274", ppid)
+			writeProc(t, procDir, ownerPID, tc.ownerComm, tc.ownerArgv)
+			if tc.ownerExe != "" {
+				if err := os.Symlink(tc.ownerExe, filepath.Join(procDir, strconv.Itoa(ownerPID), "exe")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.ancestor {
+				writeProc(t, procDir, 100, "claude", "node\x00/opt/claude-code/cli.js\x00")
+			}
+			r := NewProcResolver(st, procDir, time.Minute)
+			r.SetToolBinaries(func(tool string) []string {
+				if tool == "claude-code" {
+					return []string{"claude"}
+				}
+				return nil
+			})
+			tool, ok, err := r.ResolveTool(ctx, "127.0.0.1:8000")
+			if err != nil || ok != tc.wantShared || (ok && tool != "claude-code") {
+				t.Fatalf("ResolveTool = %q %v %v, want claude-code %v", tool, ok, err, tc.wantShared)
+			}
+			own, ok, err := r.ResolveOwnTool(ctx, "127.0.0.1:8000")
+			if err != nil || ok != tc.wantOwn {
+				t.Fatalf("ResolveOwnTool = %q %v %v, want own=%v", own, ok, err, tc.wantOwn)
+			}
+		})
+	}
+}

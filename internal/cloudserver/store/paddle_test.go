@@ -280,9 +280,9 @@ func TestPaddleNonceIsSingleUse(t *testing.T) {
 	}
 }
 
-// TestPaddleAdjustmentUnattributedWhenUnbound: a refund for a subscription we
-// have no binding for is recorded but never applied (no custom_data to forge).
-func TestPaddleAdjustmentUnattributedWhenUnbound(t *testing.T) {
+// FR-8: a full refund for a subscription not bound yet is kept for the
+// binding (paddle_pending_terminals), never dropped as unattributed.
+func TestPaddleAdjustmentKeptWhenUnbound(t *testing.T) {
 	s, _, now := paddleStore(t)
 	ctx := context.Background()
 	in, err := s.ProcessPaddleEvent(ctx, store.PaddleEvent{
@@ -290,8 +290,8 @@ func TestPaddleAdjustmentUnattributedWhenUnbound(t *testing.T) {
 		AdjustmentAction: "refund", AdjustmentType: "full", AdjustmentStatus: "approved",
 		OccurredAt: now, Now: now,
 	})
-	if err != nil || in.Applied || in.Outcome != "unattributed" {
-		t.Fatalf("orphan adjustment intake=%+v err=%v, want !Applied outcome=unattributed", in, err)
+	if err != nil || in.Applied || in.Outcome != "terminal_pending" {
+		t.Fatalf("orphan adjustment intake=%+v err=%v, want !Applied outcome=terminal_pending", in, err)
 	}
 }
 
@@ -796,14 +796,29 @@ const testPriceStarter = "pri_test_starter"
 // 10/200/3), mirroring migration 0012's INSERT shape, so a plus_beta→starter
 // move is unambiguously a downgrade and a starter→plus_beta move is
 // unambiguously an upgrade. Idempotent (ON CONFLICT DO NOTHING).
+//
+// A test-only row outside the entitlements catalog: it stands in for a
+// generated plan, so it marks its transaction as the generator does (cloud
+// 0084 refuses any other insert).
 func seedStarterPlan(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(),
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("seedStarterPlan: begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('sbci.plan_writer', 'generator', true)`); err != nil {
+		t.Fatalf("seedStarterPlan: mark the writer: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO plans (name, version, label, daily_cap, monthly_cap, concurrency_cap, budget_pool)
 		 VALUES ('starter_test', 1, 'Starter (test)', 10, 200, 3, 'plus_beta')
-		 ON CONFLICT (name, version) DO NOTHING`)
-	if err != nil {
+		 ON CONFLICT (name, version) DO NOTHING`); err != nil {
 		t.Fatalf("seedStarterPlan: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("seedStarterPlan: commit: %v", err)
 	}
 }
 
@@ -1513,13 +1528,13 @@ func TestResolveActivateStatus(t *testing.T) {
 func TestPaddleRealSandboxPayloadsPreserveTrialThroughZeroTotalTransaction(t *testing.T) {
 	s, acct, now := paddleStore(t)
 	ctx := context.Background()
-	nonce := mintNonce(t, s, acct, now)
 
 	files := []string{
 		"testdata/paddle_trial/subscription.created.json",
 		"testdata/paddle_trial/subscription.trialing.json",
 		"testdata/paddle_trial/transaction.completed.json",
 	}
+	events := make([]store.PaddleEvent, 0, len(files))
 	for _, f := range files {
 		body, err := os.ReadFile(f)
 		if err != nil {
@@ -1529,6 +1544,14 @@ func TestPaddleRealSandboxPayloadsPreserveTrialThroughZeroTotalTransaction(t *te
 		if err != nil {
 			t.Fatalf("decode %s: %v", f, err)
 		}
+		events = append(events, ev)
+	}
+	// FR-2 judges the bind window at the event's occurred_at (Paddle's clock
+	// in the signed body), so the server-minted nonce is minted just before
+	// the first real delivery occurred, as the portal's checkout would have.
+	nonce := mintNonce(t, s, acct, events[0].OccurredAt.Add(-time.Minute))
+	for i, ev := range events {
+		f := files[i]
 		ev.AccountID = acct
 		ev.CheckoutNonce = nonce
 		ev.PriceID = testPrice

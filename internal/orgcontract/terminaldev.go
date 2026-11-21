@@ -71,7 +71,7 @@ type TerminalRunRow struct {
 	ExitCode int64 `json:"exit_code,omitempty"`
 	// EndReason mirrors terminal_run.end_reason (migration 072): ""
 	// (still live / unknown) or one of internal/termrun/endreason.go's
-	// vocabulary ("child_exit", "console_closed", "dashboard_stop",
+	// vocabulary ("child_exit", "console_closed", "dashboard_stop", "cli_stop", "launch_refused",
 	// "stopped_outside", "process_gone", "daemon_shutdown", "resumed", the
 	// org floor's reason).
 	EndReason string `json:"end_reason,omitempty"`

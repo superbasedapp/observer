@@ -19,6 +19,11 @@ const (
 	EndConsoleClosed = "console_closed"
 	// EndDashboardStop: the dashboard's Stop & close ended the run.
 	EndDashboardStop = "dashboard_stop"
+	// EndCLIStop: `observer terminals stop` ended the run.
+	EndCLIStop = "cli_stop"
+	// EndLaunchRefused: a sandboxed CLI launch was refused after its row
+	// was written and before the tool started.
+	EndLaunchRefused = "launch_refused"
 	// EndStoppedOutside: something outside Observer stopped the process
 	// (exit code 0xFFFFFFFF, -1: Stop-Process, taskkill /F, or a POSIX
 	// signal such as kill).
@@ -40,6 +45,8 @@ var endLines = map[string]string{
 	EndChildExit:            "the tool exited",
 	EndConsoleClosed:        "the console window was closed",
 	EndDashboardStop:        "stopped from the dashboard (Stop & close)",
+	EndCLIStop:              "stopped with observer terminals stop",
+	EndLaunchRefused:        "the launch was refused before the tool started",
 	EndStoppedOutside:       "stopped from outside (for example Stop-Process, taskkill /F or a kill signal)",
 	EndProcessGone:          "the run's process is gone (ended outside Observer); its exit code is not known",
 	EndDaemonShutdown:       "the Observer daemon stopped",

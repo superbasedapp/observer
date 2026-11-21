@@ -85,7 +85,7 @@ func taintRules() []Rule {
 			SafePat: []SafeFn{safePathAllowlisted, safeClientConfigPath},
 			Observe: DecisionFlag, Enforce: DecisionAsk,
 			Doc:    "out-of-project write while the session carries untrusted content",
-			Advice: "Verify the write target was requested by you, not by fetched content; widen [guard.boundary].allow_paths if this location is routine.",
+			Advice: "Verify the write target was requested by you, not by fetched content; if this location is routine, add it to Allowed paths (Observer dashboard Settings > Guard, Boundary; [guard.boundary].allow_paths).",
 		},
 		{
 			ID: "T-503", Category: CategoryTaint, Severity: SeverityWarn,
@@ -109,7 +109,7 @@ func taintRules() []Rule {
 			Match:     matchTaintCrossServerMCP,
 			Observe:   DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "MCP call to a different server after consuming an unpinned server's result (cross-server toxic-flow shape)",
-			Advice: "Pin and approve your MCP servers (observer guard mcp approve) so cross-server flows between trusted servers stay quiet.",
+			Advice: "Pin and approve your MCP servers (Approve on the Observer dashboard Security > MCP, or `observer guard mcp approve`) so cross-server flows between trusted servers stay quiet.",
 		},
 	}
 }

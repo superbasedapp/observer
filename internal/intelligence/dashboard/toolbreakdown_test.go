@@ -3,6 +3,8 @@ package dashboard
 import (
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudagents"
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
@@ -352,5 +354,41 @@ func TestBreakdownSurfaceKeys(t *testing.T) {
 func TestSummarizeToolBreakdownEmpty(t *testing.T) {
 	if got := newBreakdownAccumulator().Rows(); len(got) != 0 {
 		t.Errorf("empty accumulator produced %v; want no rows", got)
+	}
+}
+
+// TestCloudAgentToolSurfaces pins the surface of tool calls a cloud-agent
+// connector wrote, one row per connector that lands tool calls: the native
+// name resolves under the vocabulary of the connector that wrote the row
+// (cloudagents.VocabularyForSource), so Cline Cloud's cline-cli names
+// (run_commands, editor) resolve under tool cline instead of reading as
+// unresolved, while the same name on a local cline row stays unresolved
+// (cline's own vocabulary does not hold it, and it is never guessed).
+func TestCloudAgentToolSurfaces(t *testing.T) {
+	builtin := string(tooltax.SurfaceBuiltin)
+	cases := []struct {
+		name, tool, sourceFile, raw, want string
+	}{
+		{"cline cloud run_commands", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "run_commands", builtin},
+		{"cline cloud editor", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "editor", builtin},
+		{"cline cloud read_files", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "read_files", builtin},
+		{"cline cloud spawn_agent", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "spawn_agent", string(tooltax.SurfaceOrchestration)},
+		{"cline cloud submit_and_exit", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "submit_and_exit", string(tooltax.SurfaceMeta)},
+		{"cline cloud unknown name", models.ToolCline, cloudagents.SourceFile(cloudagents.ConnectorClineCloud), "definitely_not_a_tool", SurfaceUnresolved},
+		{"local cline execute_command", models.ToolCline, "/home/u/task/api_conversation_history.json", "execute_command", builtin},
+		{"local cline run_commands", models.ToolCline, "/home/u/task/api_conversation_history.json", "run_commands", SurfaceUnresolved},
+		{"cursor cloud read_file", models.ToolCursor, cloudagents.SourceFile(cloudagents.ConnectorCursorCloud), "read_file", builtin},
+		{"qoder cloud Bash", models.ToolQoder, cloudagents.SourceFile(cloudagents.ConnectorQoderCloud), "Bash", builtin},
+		{"warp claude harness Read", models.ToolClaudeCode, cloudagents.SourceFile(cloudagents.ConnectorWarpCloud), "Read", builtin},
+		{"warp codex harness shell", models.ToolCodex, cloudagents.SourceFile(cloudagents.ConnectorWarpCloud), "shell", builtin},
+	}
+	for _, tc := range cases {
+		acc := newBreakdownAccumulator()
+		acc.AddNativeCountIn(tc.tool, cloudagents.VocabularyForSource(tc.tool, tc.sourceFile), tc.raw, 1)
+		acc.AddActionTypeCount(tc.tool, models.ActionRunCommand, 1)
+		row := rowByTool(acc.Rows(), tc.tool)
+		if row.BySurface[tc.want] != 1 {
+			t.Errorf("%s: by_surface = %v, want 1 in %q", tc.name, row.BySurface, tc.want)
+		}
 	}
 }

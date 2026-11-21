@@ -59,6 +59,29 @@ type HostRules struct {
 	exact    map[string]bool
 	suffixes []string
 	entries  []string
+	// key is the key a refusal by this list names ("" is the owner's
+	// list, KeyEgressAllowHosts).
+	key string
+}
+
+// WithKey returns a copy of h whose refusals name key instead of the
+// owner's host-list key: a list that is not the owner's (the first-start
+// install step's, KeyInstallHosts) says so in its refusals. Nil stays nil.
+func (h *HostRules) WithKey(key string) *HostRules {
+	if h == nil {
+		return nil
+	}
+	c := *h
+	c.key = key
+	return &c
+}
+
+// Key is the key a refusal by this list names.
+func (h *HostRules) Key() string {
+	if h == nil || h.key == "" {
+		return KeyEgressAllowHosts
+	}
+	return h.key
 }
 
 // ParseHostRules validates a host allow-list and returns it. An empty list

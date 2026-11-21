@@ -36,7 +36,7 @@ func TestAPIGuardSummaryToolGates(t *testing.T) {
 		s.opts.GuardToolGates = func() []GuardToolGate {
 			return []GuardToolGate{
 				{Tool: "claude-code", Channel: "hook_block", Current: true, Installed: true, Reason: "its PreToolUse hook is registered and current"},
-				{Tool: "codex", Channel: "sandbox_enforce", Installed: true, Reason: "its PreToolUse hook is missing or stale"},
+				{Tool: "codex", Channel: "sandbox_enforce", Installed: true, Reason: "its PreToolUse hook is missing or stale", Fixable: true},
 			}
 		}
 		rows, ok := get(t, s)["tool_gates"].([]any)
@@ -44,7 +44,7 @@ func TestAPIGuardSummaryToolGates(t *testing.T) {
 			t.Fatalf("tool_gates = %v, want 2 rows", rows)
 		}
 		r := rows[1].(map[string]any)
-		if r["tool"] != "codex" || r["channel"] != "sandbox_enforce" || r["current"] != false || r["installed"] != true || r["reason"] != "its PreToolUse hook is missing or stale" {
+		if r["tool"] != "codex" || r["channel"] != "sandbox_enforce" || r["current"] != false || r["installed"] != true || r["reason"] != "its PreToolUse hook is missing or stale" || r["fixable"] != true {
 			t.Errorf("row = %v", r)
 		}
 	})

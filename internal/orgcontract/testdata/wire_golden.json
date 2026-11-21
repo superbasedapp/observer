@@ -229,7 +229,9 @@
         "surface_host": "vscode",
         "tool_version": "1.2.3",
         "tool_version_last": "1.3.0",
-        "parent_thread_id": "sess-0"
+        "parent_thread_id": "sess-0",
+        "execution_location": "vendor_cloud",
+        "vendor_session_ref": "cse_01golden"
       }
     ],
     "actions": [

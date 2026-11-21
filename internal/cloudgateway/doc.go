@@ -25,7 +25,9 @@
 // # The two lanes
 //
 // BOOTSTRAP lane (methods prefixed Bootstrap*). The `account_device_operations`
-// purpose: the device-token exchange, logout/revocation, and account deletion.
+// purpose: the device-token exchange, logout/revocation, account deletion,
+// and organization discovery for `observer connect` with no address (listing
+// the account's orgs and ensuring its personal org; orgs.go).
 // These pass WITHOUT a grant check, and that is not a hole — per the R2
 // disposition (F10), "explicit consent" begins at the user's own sign-in ACTION
 // (a typed `observer cloud login`, a clicked portal sign-in). That action

@@ -61,6 +61,12 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	windowMin := intArg(r, "window_minutes", 15, 1, 240)
+	// view=ribbon is the live ribbon's lighter read (live_ribbon.go): its
+	// own response shape; the default and ids_only shapes are unchanged.
+	if r.URL.Query().Get("view") == "ribbon" {
+		s.handleLiveRibbon(w, r, windowMin)
+		return
+	}
 	now := time.Now().UTC()
 	since := now.Add(-time.Duration(windowMin) * time.Minute).Format(time.RFC3339Nano)
 	// The global Model filter, session grain: an active session counts
@@ -109,7 +115,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		// Active sessions, newest activity first. last_activity is the
 		// max timestamp across the three activity tables; all are
 		// RFC3339 UTC strings, so MAX() string comparison is correct.
-		rows, err := s.db().QueryContext(r.Context(),
+		rows, err := s.db().QueryContext(r.Context(), //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 			`SELECT s.id, s.tool, COALESCE(p.root_path, ''), s.started_at,
 			        MAX(COALESCE((SELECT MAX(a.timestamp) FROM actions a WHERE a.session_id = s.id), ''),
 			            COALESCE((SELECT MAX(t.timestamp) FROM api_turns t WHERE t.session_id = s.id), ''),

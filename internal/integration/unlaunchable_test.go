@@ -95,6 +95,8 @@ func TestUnlaunchablesToday(t *testing.T) {
 		"kimchi":          UnlaunchableCLINoLauncher,
 		"stakpak":         UnlaunchableCLINoLauncher,
 		"vtcode":          UnlaunchableCLINoLauncher,
+		// custom-agent (P-228): the developer's own program, no vendor CLI.
+		"custom-agent": UnlaunchableNoCLI,
 	}
 	got := map[string]UnlaunchableKind{}
 	for _, u := range Unlaunchables() {

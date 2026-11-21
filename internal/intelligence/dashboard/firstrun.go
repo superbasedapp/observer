@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/captureprogress"
 	"github.com/marmutapp/superbased-observer/internal/firstrunstate"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/planechoice"
 )
 
 // The first-run capture view (T-922): on the first dashboard visit after a
@@ -119,12 +120,49 @@ type firstRunResponse struct {
 	// Dismissed lists the dashboard notices the owner dismissed for good
 	// (uiDismissKeys), kept on the daemon (WINNODE2 16b).
 	Dismissed []string `json:"dismissed,omitempty"`
+	// Snoozed maps each notice the owner put away for a while
+	// (uiSnoozeKeys) to when, RFC3339 UTC, so the dashboard can bring it
+	// back after its return interval (the Get started panel, 7 days).
+	Snoozed map[string]string `json:"snoozed,omitempty"`
+	// Plane is the first-run product choice (first-run plan 2.2): the track
+	// the getting-started surface shows, decided in internal/planechoice
+	// from the stored Focus, the first arrival intent, the coding history
+	// and the AI Apps facts. Additive (lane F1).
+	Plane firstRunPlane `json:"plane"`
+	// Apps is the AI Apps state on this machine: availability, whether it
+	// serves, the receiver, the latest trace and the consent sentence.
+	Apps firstRunApps `json:"apps"`
 }
 
 // uiDismissKeys is the closed set of notices POST /api/firstrun/seen
-// {"dismiss": key} records: the first-visit product tour and the "Review
-// components" setup card. Anything else is refused.
-var uiDismissKeys = map[string]bool{"tour": true, "components_setup": true}
+// {"dismiss": key} records: the first-visit product tour, the "Review
+// components" setup card and the live ribbon's one-time first-prompt receipt
+// (ribbonReceiptKey, live_ribbon.go). Anything else is refused.
+var uiDismissKeys = map[string]bool{"tour": true, "components_setup": true, ribbonReceiptKey: true}
+
+// uiSnoozeKeys is the closed set of notices POST /api/firstrun/seen
+// {"snooze": key} records: the Overview "Get started" panel, which comes
+// back as a one-line strip a week after it is put away. Anything else is
+// refused.
+var uiSnoozeKeys = map[string]bool{"get_started": true}
+
+// snoozedOf renders the persisted snoozes for the wire, keeping only keys
+// the dashboard still knows.
+func snoozedOf(st firstrunstate.State) map[string]string {
+	if len(st.Snoozed) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(st.Snoozed))
+	for k, at := range st.Snoozed {
+		if uiSnoozeKeys[k] {
+			out[k] = at.UTC().Format(time.RFC3339)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // firstRunState returns this server's one seen-state store.
 func (s *Server) firstRunState() *firstrunstate.Store {
@@ -173,6 +211,7 @@ func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) {
 		supported = len(s.opts.ToolCatalog)
 	}
 
+	apps := s.appsBlock(ctx)
 	install := string(st.Install)
 	if install == "" {
 		install = "unknown"
@@ -192,6 +231,9 @@ func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:       s.now().UTC().Format(time.RFC3339),
 		ConfirmToken:      setConfirmCookie(w, r),
 		Dismissed:         st.DismissedKeys(),
+		Snoozed:           snoozedOf(st),
+		Plane:             planeBlock(st, totals.sessions, apps),
+		Apps:              apps,
 	})
 }
 
@@ -205,9 +247,70 @@ func (s *Server) handleFirstRunSeen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Seen    *bool  `json:"seen"`
 		Dismiss string `json:"dismiss"`
+		Snooze  string `json:"snooze"`
+		// Focus is the Settings / switch choice: coding | apps | both, or
+		// "" to clear it (back to the inferred track).
+		Focus *string `json:"focus"`
+		// Intent + IntentSource carry an arrival intent (the connect
+		// hand-off, a for= link), both from closed tables; the first one
+		// recorded wins.
+		Intent       string `json:"intent"`
+		IntentSource string `json:"intent_source"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Focus != nil {
+		c := planechoice.ChoiceNone
+		if v := strings.TrimSpace(*req.Focus); v != "" {
+			var ok bool
+			if c, ok = planechoice.ParseChoice(v); !ok {
+				http.Error(w, "unknown focus "+strconv.Quote(v), http.StatusBadRequest)
+				return
+			}
+		}
+		st, err := s.firstRunState().SetFocus(c)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		s.recordManageAudit(r, "firstrun_focus", "focus="+string(c))
+		writeJSON(w, map[string]any{"ok": true, "focus": st.Focus})
+		return
+	}
+	if req.Intent != "" || req.IntentSource != "" {
+		c, okC := planechoice.ParseChoice(req.Intent)
+		src, okS := planechoice.ParseIntentSource(req.IntentSource)
+		if !okC || !okS {
+			http.Error(w, "intent and intent_source must come from the closed tables", http.StatusBadRequest)
+			return
+		}
+		st, recorded, err := s.firstRunState().RecordIntent(c, src, s.now())
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if recorded {
+			s.recordManageAudit(r, "firstrun_intent", "intent="+string(c)+" source="+string(src))
+		}
+		writeJSON(w, map[string]any{"ok": true, "recorded": recorded, "intent": st.IntentChoice()})
+		return
+	}
+	if req.Snooze != "" {
+		// {"snooze": key}: a notice put away for a while (the Get
+		// started panel); each snooze restarts its return interval.
+		if !uiSnoozeKeys[req.Snooze] {
+			http.Error(w, "unknown notice "+strconv.Quote(req.Snooze), http.StatusBadRequest)
+			return
+		}
+		st, err := s.firstRunState().Snooze(req.Snooze, s.now())
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		s.recordManageAudit(r, "ui_notice_snoozed", "notice="+req.Snooze)
+		writeJSON(w, map[string]any{"ok": true, "snoozed": snoozedOf(st)})
 		return
 	}
 	if req.Dismiss != "" {

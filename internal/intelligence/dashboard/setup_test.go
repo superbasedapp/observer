@@ -148,8 +148,10 @@ base_url = "http://127.0.0.1:8820/v1"
 	if got.WouldRegister {
 		t.Errorf("would_register: got true want false")
 	}
-	if !strings.Contains(got.WouldRegisterError, "force=true") {
-		t.Errorf("would_register_error should mention force=true: %q", got.WouldRegisterError)
+	// The refusal names the dashboard control (Force overwrite), not the
+	// request field (lane L5).
+	if !strings.Contains(got.WouldRegisterError, "Force overwrite") {
+		t.Errorf("would_register_error should name Force overwrite: %q", got.WouldRegisterError)
 	}
 }
 

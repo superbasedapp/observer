@@ -401,6 +401,15 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			if _, err := sqlDB.Exec(`ALTER TABLE sessions ADD COLUMN tool_version_last TEXT`); err != nil {
 				t.Fatalf("add post-141 push column: %v", err)
 			}
+			// Same for sessions.execution_location / vendor_session_ref
+			// (agent migration 240, cloud-agents arc), and for
+			// authority_org_key (agent migration 250), which UpsertSession
+			// stamps and the push reads (D-43).
+			for _, col := range []string{"execution_location", "vendor_session_ref", "authority_org_key"} {
+				if _, err := sqlDB.Exec(`ALTER TABLE sessions ADD COLUMN ` + col + ` TEXT`); err != nil {
+					t.Fatalf("add post-141 push column: %v", err)
+				}
+			}
 			// Same for the delivery wire (agent migrations 165 to 172), read
 			// by the delivery push family: apply the real files here and
 			// remove them again before the upgrade below.
@@ -408,6 +417,9 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			// Same for the terminal_run isolation columns (agent migrations
 			// 179 and 181), read by the terminal runs push branch.
 			addTerminalIsolationForPush(t, sqlDB)
+			// Same for the process capture budget (agent migration 212), read
+			// by the session process and process capture push branches.
+			addProcessCaptureForPush(t, sqlDB)
 			err2, rev1 := runUpsertTriggerCase(t, c, s, sqlDB)
 			got, want := c.check(t, sqlDB)
 			switch c.at141 {
@@ -443,8 +455,14 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			if _, err := sqlDB.Exec(`ALTER TABLE sessions DROP COLUMN tool_version_last`); err != nil {
 				t.Fatalf("drop post-141 push column: %v", err)
 			}
+			for _, col := range []string{"execution_location", "vendor_session_ref", "authority_org_key"} {
+				if _, err := sqlDB.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
+					t.Fatalf("drop post-141 push column: %v", err)
+				}
+			}
 			dropDeliverySchemaForPush(t, sqlDB)
 			dropTerminalIsolationForPush(t, sqlDB)
+			dropProcessCaptureForPush(t, sqlDB)
 			if err := sqlDB.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -541,6 +559,37 @@ func dropTerminalIsolationForPush(t *testing.T, sqlDB *sql.DB) {
 	for _, c := range terminalIsolationColumns {
 		if _, err := sqlDB.Exec(`ALTER TABLE terminal_run DROP COLUMN ` + c); err != nil {
 			t.Fatalf("drop terminal_run.%s: %v", c, err)
+		}
+	}
+}
+
+// addProcessCaptureForPush applies agent migration 212 (the process capture
+// budget's two tables and three process_runs columns) to a database pinned
+// below it, for the session process and process capture push reads.
+func addProcessCaptureForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	body, err := fs.ReadFile(migrations.Files, "212_process_capture_budget.sql")
+	if err != nil {
+		t.Fatalf("read 212: %v", err)
+	}
+	if _, err := sqlDB.Exec(string(body)); err != nil {
+		t.Fatalf("apply 212: %v", err)
+	}
+}
+
+// dropProcessCaptureForPush removes what addProcessCaptureForPush added, so
+// the real runner's upgrade applies 212 cleanly.
+func dropProcessCaptureForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS process_rollups`,
+		`DROP TABLE IF EXISTS process_capture_stats`,
+		`ALTER TABLE process_runs DROP COLUMN capture_class`,
+		`ALTER TABLE process_runs DROP COLUMN service_root_key`,
+		`ALTER TABLE process_runs DROP COLUMN fold_count`,
+	} {
+		if _, err := sqlDB.Exec(stmt); err != nil {
+			t.Fatalf("drop process capture schema (%s): %v", stmt, err)
 		}
 	}
 }

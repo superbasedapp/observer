@@ -9,10 +9,11 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
-import { Callout, Icon, Pill } from "../../primitives";
+import { Icon, InfoDisclosure, Pill } from "../../primitives";
 import { fmtBytes, fmtClock, fmtDuration, fmtInt } from "../../lib/format";
 import type { MetricSampleLike, ProcessNodeLike } from "../../lib/types";
 import {
+  FOLD_TOTAL_THRESHOLD,
   captureGaps,
   chainOf,
   indexProcesses,
@@ -21,7 +22,16 @@ import {
 } from "../../lib/processLayout";
 import { ProcessFlame, processDomId, spawnLinkOf } from "./ProcessFlame";
 import { ProcessSpawnStack } from "./ProcessSpawnStack";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, MemoryStick, Timer } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  CornerDownRight,
+  MemoryStick,
+  Timer,
+  TriangleAlert,
+} from "lucide-react";
 
 // ProcessTree - the OS-level process view of the session-detail System tab,
 // in three ways over the same data: Tree (who started whom, nested), Table
@@ -899,38 +909,26 @@ export function ProcessTree({
 
       {view === "stack" ? (
         <div className="space-y-2">
-          {gapParts.length > 0 && (
-            <Callout tone="warn" title="Partial capture">
-              Of {fmtInt(flat.length)} processes: {gapParts.join(", ")}.
-            </Callout>
-          )}
-          {flat.length > 150 && (
-            <Callout tone="info" title={`${fmtInt(flat.length)} processes`}>
-              To keep this fast, the chart shows a window of the session, and identical processes that ran side by
-              side (test workers, a parallel build) share one bar. Move the window in the strip above the chart;
-              click a shared bar to open it.
-            </Callout>
-          )}
-          <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <ProcessFlame
-              index={index}
-              selectedKey={selectedKey}
-              onSelect={select}
-              onOpenMessage={onOpenMessage}
-              sessionLabel={sessionLabel}
-              nowMs={now}
-              idPrefix={`${idPrefix}-stack`}
-            />
-            <ProcessSpawnStack
-              index={index}
-              selectedKey={selectedKey}
-              onSelect={select}
-              onOpenMessage={onOpenMessage}
-              onOpenTimeline={onOpenTimeline}
-              onShowView={setView}
-              sessionLabel={sessionLabel}
-            />
-          </div>
+          <StackNotice total={flat.length} gapParts={gapParts} />
+          {/* The chart takes the full width; the spawn stack sits below it. */}
+          <ProcessFlame
+            index={index}
+            selectedKey={selectedKey}
+            onSelect={select}
+            onOpenMessage={onOpenMessage}
+            sessionLabel={sessionLabel}
+            nowMs={now}
+            idPrefix={`${idPrefix}-stack`}
+          />
+          <ProcessSpawnStack
+            index={index}
+            selectedKey={selectedKey}
+            onSelect={select}
+            onOpenMessage={onOpenMessage}
+            onOpenTimeline={onOpenTimeline}
+            onShowView={setView}
+            sessionLabel={sessionLabel}
+          />
         </div>
       ) : (
         <SelectionStrip
@@ -982,6 +980,42 @@ export function ProcessTree({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * StackNotice is the Call stack view's one compact line: what the capture
+ * missed (warn toned, only when it missed something) and, for a large
+ * session, that the chart opens on a window and folds identical parallel
+ * processes, with the longer explanation behind "Why?". Nothing to say,
+ * nothing rendered.
+ */
+export function StackNotice({ total, gapParts }: { total: number; gapParts: readonly string[] }) {
+  const large = total > FOLD_TOTAL_THRESHOLD;
+  if (!gapParts.length && !large) return null;
+  return (
+    <div role="note" className="text-[11px] leading-5 text-fg-3">
+      {gapParts.length > 0 && (
+        <span className="mr-2">
+          <Icon icon={TriangleAlert} size={12} className="mr-1 inline-block align-[-2px] text-warn" />
+          <span className="font-medium text-warn">Partial capture:</span>{" "}
+          <span className="text-fg-2">
+            of {fmtInt(total)} processes, {gapParts.join(", ")}.
+          </span>
+        </span>
+      )}
+      {large && (
+        <>
+          <span className="mr-1.5">Opens on a window of the session; identical processes share one bar.</span>
+          <InfoDisclosure summary="Why?" className="inline">
+            To keep the chart fast, a session with more than {fmtInt(FOLD_TOTAL_THRESHOLD)} processes opens on a
+            window of the session instead of the whole span, and identical processes that ran side by side (test
+            workers, a parallel build) share one bar. Zoom out or press Fit to see the whole session; click a shared
+            bar to show each process in it.
+          </InfoDisclosure>
+        </>
+      )}
+    </div>
   );
 }
 

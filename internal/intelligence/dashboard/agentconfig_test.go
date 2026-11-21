@@ -326,3 +326,115 @@ func TestAgentConfigOrgPolicy(t *testing.T) {
 		t.Fatalf("individual apply: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestAgentConfigOrgStatus pins the Organization tab's four states: an
+// enrolled machine whose org does not manage it must say so (naming the org)
+// rather than read as not enrolled (operator report 2026-11-02, a teams
+// enrolment shown "Not managed by an organization").
+func TestAgentConfigOrgStatus(t *testing.T) {
+	agentConfigHome(t)
+	type view struct {
+		Managed    bool   `json:"managed"`
+		Status     string `json:"status"`
+		Enrolled   bool   `json:"enrolled"`
+		OrgName    string `json:"org_name"`
+		Tenancy    string `json:"tenancy"`
+		GrantState string `json:"grant_state"`
+		HasPolicy  bool   `json:"has_policy"`
+	}
+	gov := func(e govern.Effective) func(context.Context) govern.Effective {
+		return func(context.Context) govern.Effective { return e }
+	}
+	cases := []struct {
+		name      string
+		gov       func(context.Context) govern.Effective
+		enrolment *store.Enrolment
+		want      view
+	}{
+		{
+			name: "not enrolled",
+			want: view{Status: "not_enrolled"},
+		},
+		{
+			name:      "individual enrolment, no grant",
+			gov:       gov(govern.Effective{State: govern.StateNoGrant}),
+			enrolment: &store.Enrolment{OrgID: "org-1", OrgName: "Acme", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "individual"},
+			want:      view{Status: "unmanaged", Enrolled: true, OrgName: "Acme", Tenancy: "individual"},
+		},
+		{
+			name:      "individual enrolment, no org name, named by the server host",
+			enrolment: &store.Enrolment{OrgID: "96a4a0d06d5b7800c2b55a0d12f6bd65", OrgServerURL: "http://localhost:8443", UserID: "u-1"},
+			want:      view{Status: "unmanaged", Enrolled: true, OrgName: "localhost:8443", Tenancy: "individual"},
+		},
+		{
+			name:      "managed enrolment awaiting its grant",
+			gov:       gov(govern.Effective{State: govern.StateNoGrant}),
+			enrolment: &store.Enrolment{OrgID: "org-1", OrgName: "Acme", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "managed"},
+			want:      view{Status: "managed_inactive", Enrolled: true, OrgName: "Acme", Tenancy: "managed", GrantState: "no_grant"},
+		},
+		{
+			name:      "managed grant expired",
+			gov:       gov(govern.Effective{Managed: true, State: govern.StateGrantExpired, OrgName: "Acme"}),
+			enrolment: &store.Enrolment{OrgID: "org-1", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "managed"},
+			want:      view{Status: "managed_inactive", Enrolled: true, OrgName: "Acme", Tenancy: "managed", GrantState: "grant_expired"},
+		},
+		{
+			name:      "managed and live, no policy yet",
+			gov:       gov(govern.Effective{Managed: true, State: govern.StateNoPolicy, OrgName: "Acme"}),
+			enrolment: &store.Enrolment{OrgID: "org-1", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "managed"},
+			want:      view{Managed: true, Status: "managed", Enrolled: true, OrgName: "Acme", Tenancy: "managed"},
+		},
+		{
+			name:      "individual enrolment its org switched to enterprise",
+			gov:       gov(govern.Effective{Managed: true, State: govern.StateApplied, OrgName: "Acme"}),
+			enrolment: &store.Enrolment{OrgID: "org-1", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "individual"},
+			want:      view{Managed: true, Status: "managed", Enrolled: true, OrgName: "Acme", Tenancy: "individual"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newRemoteTestServer(t, Options{Governance: tc.gov})
+			if tc.enrolment != nil {
+				if err := store.New(s.opts.DB).WriteEnrolment(context.Background(), *tc.enrolment); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rr := agentConfigDo(t, s, http.MethodGet, "/api/agent-config/org", "", "", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+			}
+			var got view
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOrgManagementTable has one case per row of orgManagementTable.
+func TestOrgManagementTable(t *testing.T) {
+	cases := []struct {
+		row  string
+		f    orgManagementFacts
+		want orgManagementStatus
+	}{
+		{"managed and live", orgManagementFacts{applies: true, claimsManaged: true}, orgStatusManaged},
+		{"not enrolled", orgManagementFacts{claimsManaged: true}, orgStatusNotEnrolled},
+		{"managed, grant not in force", orgManagementFacts{enrolled: true, claimsManaged: true}, orgStatusManagedInactive},
+		{"enrolled, not managed", orgManagementFacts{enrolled: true}, orgStatusUnmanaged},
+	}
+	if len(cases) != len(orgManagementTable) {
+		t.Fatalf("%d cases for %d rows", len(cases), len(orgManagementTable))
+	}
+	for i, tc := range cases {
+		if orgManagementTable[i].name != tc.row {
+			t.Fatalf("row %d is %q, case is %q", i, orgManagementTable[i].name, tc.row)
+		}
+		if got := resolveOrgManagement(tc.f); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.row, got, tc.want)
+		}
+	}
+}

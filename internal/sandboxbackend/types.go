@@ -3,7 +3,7 @@ package sandboxbackend
 import "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 
 // RegistryVersion moves with every enum or row-shape change.
-const RegistryVersion = 4
+const RegistryVersion = 12
 
 // Maturity says whether a row may be offered at all.
 type Maturity string
@@ -58,12 +58,55 @@ type Isolation struct {
 	Location    sandboxvocab.Location
 	Tenancy     Tenancy
 	Hosts       []HostKind
+	// HostRefusals is the reason a refusal names on a host the row does
+	// not run on, when the row knows why (the selector's platform rule S3
+	// reads it through HostRefusal). A host absent here gets S3's generic
+	// text. Keys are never in Hosts (registry test). Data, so no consumer
+	// branches on a backend id to explain a platform refusal.
+	HostRefusals map[HostKind]string
 	// CrossesKernel: some byte reaches another kernel or a user-space
 	// kernel; then the hook path must not be direct_db (invariant I5).
 	CrossesKernel bool
 	// HostMutation: the row changes the host (a persistent DACL, a firewall
 	// rule); such rows are disabled by default and disclose it.
 	HostMutation bool
+	// Seccomp is the syscall filter the layer can put on the agent (lane
+	// N2); SeccompSource says how it is known: measured when an end-to-end
+	// run of this row has loaded the filter and read it back from /proc (a
+	// test that ran here, or a live receipt); documented when the load and
+	// the read-back are wired but no such run has proven them on this row
+	// yet. The zero value means not grounded. For SeccompObserverProfile
+	// the filter is applied only while [terminal.sandbox].seccomp is on.
+	Seccomp       sandboxvocab.Seccomp
+	SeccompSource sandboxvocab.ClassSource
+	// OwnPIDNamespace: the layer runs the agent in a pid namespace of its
+	// own, so a process inside cannot name one outside it. Declared per row,
+	// never inferred; the zero value means not grounded. The strace opt-in
+	// ([terminal.sandbox].seccomp_allow_seize, lane ptrace) reads it as one
+	// of its two containment grounds.
+	OwnPIDNamespace bool
+	// MasksWorkspaceSecrets: the layer can hide the workspace's secret files
+	// (.env variants, key files, registry credentials) inside the box on
+	// request, through the pure planner's SecretMask option
+	// (internal/sandbox secretmask.go). Declared per row, never inferred;
+	// the zero value means the layer cannot, and a caller that wants the
+	// mask must fall back to a warning (a launch that asks a row without it
+	// is refused, never run unmasked in silence).
+	MasksWorkspaceSecrets bool
+}
+
+// CanMaskWorkspaceSecrets reports whether the layer can hide the workspace's
+// secret files on request: the one predicate a caller reads, never the
+// backend name.
+func (c Capability) CanMaskWorkspaceSecrets() bool {
+	return c.Iso.MasksWorkspaceSecrets
+}
+
+// FiltersWithObserverProfile reports whether the layer loads Observer's own
+// seccomp profile when [terminal.sandbox].seccomp asks for it: the one
+// predicate a driver reads, never its backend name.
+func (c Capability) FiltersWithObserverProfile() bool {
+	return c.Iso.Seccomp == sandboxvocab.SeccompObserverProfile
 }
 
 // Interface is the control surface the driver uses (section 4.8).
@@ -194,6 +237,11 @@ const (
 	// unix socket (Cloud Hypervisor's hybrid vsock: `CONNECT <port>\n`, then
 	// the relay mux's stream 2 with its resize control; lane SBX-P4).
 	TransportVsockUDS ByteTransport = "vsock_uds"
+	// TransportWebSocketStream: one vendor WebSocket per process carries the
+	// box PTY's output and, in the other direction, its input and resize
+	// frames, and re-attaches from a stream sequence (Docker Sandboxes'
+	// interact stream, subprotocol sandboxes.v1; lane SBX-DOCKER).
+	TransportWebSocketStream ByteTransport = "websocket_stream"
 )
 
 // RelayTransport is how the capture relay crosses the row's boundary
@@ -238,6 +286,12 @@ const (
 	EnforcerProvider        EgressEnforcer = "provider"
 	EnforcerK8sPolicy       EgressEnforcer = "k8s_networkpolicy"
 	EnforcerNone            EgressEnforcer = "none"
+	// EnforcerOpenShellProxy: the OpenShell supervisor's own egress proxy
+	// owns the row's network (rule W4 of the OpenShell plan: one egress
+	// owner per run, never Observer's gateway beside it). Model hosts are
+	// never listed in its rules, so model traffic leaves only through the
+	// capture relay to the Observer proxy.
+	EnforcerOpenShellProxy EgressEnforcer = "openshell_proxy"
 )
 
 // Network is a row's egress.
@@ -251,6 +305,29 @@ type Network struct {
 	// ProviderHostBlock: the row's network owner can refuse the
 	// model-provider hosts by name and every literal IP (section 7.3).
 	ProviderHostBlock bool
+	// RefusalAuditTiers are the egress tiers on which the row's launches
+	// leave the agent no way out that Observer does not see, so the floor
+	// require_refusal_audit (lane N4) may pick the row on that tier: a tier
+	// that runs Observer's own egress gateway hands each refusal it makes to
+	// the home daemon's refusal audit (the node-local
+	// sandbox_egress_refusals table, lane N1), and a private-namespace tier
+	// with no gateway (proxy_only, none) has no outbound path but the
+	// observer model proxy, so there is no refusal to make (a connection
+	// attempt fails in the kernel with no route and is not recorded). A tier
+	// that shares the host network (host) is never listed: nothing stands
+	// between the agent and the network. RefusalAuditSource names the file
+	// and the test. A provider-enforced row, a row with no enforcer and a row
+	// whose runs are refused list none (the zero value: not grounded). The
+	// audit itself records at most one row per run and host per minute and
+	// drops a refusal when its report queue is full (lane N1's limiter).
+	RefusalAuditTiers  []sandboxvocab.Tier
+	RefusalAuditSource string
+	// DeniesObserverPorts: the row's own enforcement refuses a connection
+	// to every one of Observer's own TCP listeners (the dashboard first),
+	// even on a tier that shares the host's network, so a box cannot reach
+	// the daemon's loopback control plane (the Landlock row's TCP deny
+	// list; security ledger LAUNCH-1, SBX-BE-17). Zero: not claimed.
+	DeniesObserverPorts bool
 }
 
 // HookPath is how a hook event reaches the home daemon.
@@ -302,7 +379,44 @@ const (
 	DisclosePaidTier         Disclosure = "paid_tier"
 	DiscloseRegionOutsideOrg Disclosure = "region_outside_org"
 	DiscloseHostMutation     Disclosure = "host_mutation"
+	// DiscloseGatewayBindMounts: the row needs a gateway-wide setting that
+	// lets every sandbox the gateway runs ask for host bind mounts, not only
+	// Observer's (OpenShell's allow_driver_config and enable_bind_mounts,
+	// decision D3, risk RK-05).
+	DiscloseGatewayBindMounts Disclosure = "gateway_wide_bind_mounts"
+	// DiscloseSharedHomeTmpfs: the box's home is a tmpfs owned by root with
+	// mode 1777 and the sticky bit, not a directory owned by the user, so a
+	// second user id inside the box could create files in it (it cannot
+	// delete or replace the user's own). OpenShell tracker F-017 A4.
+	DiscloseSharedHomeTmpfs Disclosure = "home_shared_tmpfs"
+	// DiscloseOrgCompute: the box runs on the organization's own machines,
+	// and its administrators can see into it (the org-hosted OpenShell row,
+	// tracker F-019, g1-design.md section 3.1).
+	DiscloseOrgCompute Disclosure = "org_compute"
+	// DiscloseOrgSharedGateway: several developers' boxes share one gateway
+	// and one kernel on the organization's machines.
+	DiscloseOrgSharedGateway Disclosure = "org_shared_gateway"
+	// DiscloseNoHookGating: no hook runs in the box unless the project
+	// itself commits one (the box's agent home is fresh, so this machine's
+	// hook registration is not there), so guard does not check or block the
+	// agent's actions in the box (every hosted row; lane UX, item H9). Since
+	// lane HOOKS (SBXD-6) Observer seeds its own hooks into the box for a
+	// covered tool while [terminal.sandbox.hosted].guard_hooks resolves on,
+	// so this one is PerLaunch: the probe serves it per tool, only where
+	// gating does not apply.
+	DiscloseNoHookGating Disclosure = "no_hook_gating"
 )
+
+// perLaunchDisclosures are the disclosures whose truth depends on the
+// launch (the tool, a setting, the machine's guard mode), not on the row
+// alone: a surface says them per launch, never row-wide.
+var perLaunchDisclosures = map[Disclosure]bool{
+	DiscloseNoHookGating: true,
+}
+
+// PerLaunch reports whether d is said per launch (the New Terminal
+// dialog's per-tool line) instead of with the row.
+func (d Disclosure) PerLaunch() bool { return perLaunchDisclosures[d] }
 
 // Capability is one backend row. Zero values mean "not grounded".
 type Capability struct {
@@ -332,6 +446,18 @@ type Capability struct {
 	// (nesting rule N11): an agent-native sandbox that mounts a fresh /proc
 	// cannot nest inside a layer whose /proc is ProcFreshCovered.
 	ProcView ProcView
+	// TreeContained: every process of a box this row builds stays a
+	// descendant of the box's host-side root (the PTY's child, or the CLI
+	// that built the box), declared per row, never inferred: bwrap runs the
+	// box in a PID namespace of its own with --die-with-parent, so an
+	// orphan is re-parented to the box's own init and the box dies with its
+	// root. False for every other row: the OCI rows' processes run under
+	// the container runtime's shim, not under the root, and the MXC rows
+	// have no PID namespace, so an orphan leaves the tree. The loopback
+	// caller check (security ledger LAUNCH-1) clears a caller by ancestry
+	// only for a row that declares it; an exposed box of any other row
+	// refuses every caller while it lives.
+	TreeContained bool
 	// DevNetTUN: /dev/net/tun is available inside the layer (N12).
 	DevNetTUN bool
 	// GuestUnprivUserns: the layer is a VM whose Linux guest allows
@@ -346,8 +472,33 @@ type Capability struct {
 	// LifetimeCapSeconds is a remote box's hard lifetime; 0 means none
 	// (S13).
 	LifetimeCapSeconds int
-	Discloses          []Disclosure
-	Note               string
+	// KeystoreServices are the OS keychain services the row's driver
+	// writes (custody=keychain). `observer uninstall --all` removes this
+	// home's entries in them through this field, whether or not the driver
+	// is compiled into the build, so no other file names the driver.
+	KeystoreServices []string
+	// Setup is the row's ordered prerequisite ids (sandbox installation
+	// lifecycle plan section 3.2): what this host needs before the row can
+	// run, each an id of internal/sandboxsetup's prerequisite table. Plain
+	// strings, so this package keeps importing only internal/sandboxvocab;
+	// internal/sandboxsetup's coverage test validates every id. The
+	// generic steps (select the row's component first, enable the row
+	// last) are not listed: the planner adds them. Nil on a planned row and
+	// on a row whose SetupUnavailable says why.
+	Setup []string
+	// SetupUnavailable is why setup is not offered for this offered row in
+	// this release (a probe-only row whose steps could never finish, plan
+	// rule 4); "" when Setup is offered. A row carries Setup or this, never
+	// both and never neither (coverage test).
+	SetupUnavailable string
+	// SetupBeta is a one-sentence reason the row's setup is beta (operator
+	// ruling P-256: the setup has not been checked on a live host in the
+	// sandbox installation lifecycle arc); "" when it is not beta. It is a
+	// label every setup surface shows beside the row, never a gate: no
+	// step is hidden or refused because of it.
+	SetupBeta string
+	Discloses []Disclosure
+	Note      string
 }
 
 // VerificationOn returns the row's grounding on host; ok is false when the
@@ -359,6 +510,12 @@ func (c Capability) VerificationOn(h HostKind) (Verified, bool) {
 		}
 	}
 	return Verified{}, false
+}
+
+// HostRefusal returns the row's own reason for not running on h, or ""
+// when the row declares none (then the caller words a generic refusal).
+func (c Capability) HostRefusal(h HostKind) string {
+	return c.Iso.HostRefusals[h]
 }
 
 // RunsOn reports whether h is one of the row's hosts.
@@ -380,6 +537,22 @@ func (c Capability) OffersTier(t sandboxvocab.Tier) bool {
 	}
 	return false
 }
+
+// AuditsRefusalsOn reports whether a launch on tier t is covered by the
+// refusal audit (Network.RefusalAuditTiers), the one test rule S7e and the
+// publish lint read.
+func (n Network) AuditsRefusalsOn(t sandboxvocab.Tier) bool {
+	for _, x := range n.RefusalAuditTiers {
+		if x == t {
+			return true
+		}
+	}
+	return false
+}
+
+// AuditsRefusals reports whether some tier of the row is covered by the
+// refusal audit.
+func (n Network) AuditsRefusals() bool { return len(n.RefusalAuditTiers) > 0 }
 
 // Offered reports whether the row may appear in a picker, a probe or the
 // selector at all.

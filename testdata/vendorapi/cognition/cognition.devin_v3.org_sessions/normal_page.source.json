@@ -1,0 +1,52 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "end_cursor": "VerifiedOfficial",
+    "has_next_page": "VerifiedOfficial",
+    "items": "VerifiedOfficial",
+    "items[]": "VerifiedOfficial",
+    "items[].acus_consumed": "Inferred",
+    "items[].automation_id": "Inferred",
+    "items[].child_session_ids": "Inferred",
+    "items[].child_session_ids[]": "Inferred",
+    "items[].created_at": "Inferred",
+    "items[].on_demand_usage": "Inferred",
+    "items[].org_id": "Inferred",
+    "items[].origin": "Inferred",
+    "items[].parent_session_id": "Inferred",
+    "items[].playbook_id": "Inferred",
+    "items[].pull_requests": "Inferred",
+    "items[].pull_requests[]": "Inferred",
+    "items[].pull_requests[].pr_state": "Inferred",
+    "items[].pull_requests[].pr_url": "Inferred",
+    "items[].service_user_id": "Inferred",
+    "items[].session_id": "Inferred",
+    "items[].status": "Inferred",
+    "items[].tags": "Inferred",
+    "items[].tags[]": "Inferred",
+    "items[].title": "Inferred",
+    "items[].updated_at": "Inferred",
+    "items[].url": "Inferred",
+    "items[].user_id": "Inferred"
+  },
+  "fixture_sha256": "9638d3316a852131403675aa0ebf32cfe7d30c7e6cc4fd067f5f69d54e241e6a",
+  "http": {
+    "method": "GET",
+    "path": "/v3/organizations/{org_id}/sessions",
+    "query": {
+      "first": "200",
+      "updated_after": "1793232000",
+      "updated_before": "1793404800"
+    },
+    "status": 200
+  },
+  "notes": "Synthesized for lane CA-A4. The PaginatedResponse envelope (items, has_next_page, end_cursor) is the v3 shape the corpus already verifies from v3-openapi.yaml. Session member names come from the reference (DV03: ids, status, timestamps, title and tags, acus_consumed, pull-request records, parent and child session ids, automation id, playbook, origin, creator user_id and service_user_id, Teams-only on_demand_usage in USD) and the research field list (session_id, org_id, pull_requests pr_url/pr_state, parent_session_id, child_session_ids, created_at, updated_at); every member is Inferred until a live response is observed. Integer Unix-second timestamps follow the corpus audit-log fixture (Inferred). Status values are synthetic.",
+  "scenario": "normal_page",
+  "sdk_or_spec_version_or_commit": "Devin API v3 reference as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids DV03 DV05 DV06 DV10) and the 2026-10-07 enterprise vendor API research; docs.devin.ai was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.devin.ai/api-reference/v3/sessions/organizations-sessions",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "cognition.devin_v3.org_sessions"
+}

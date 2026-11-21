@@ -1,0 +1,63 @@
+# policy.yaml
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only:
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/bin"
+    - "/sbin"
+    - "/etc"
+    - "/proc"
+    - "/dev"
+    - "/run"
+    - "/var"
+    - "/home/dev"
+    - "/tmp/observer-sbx-RUN"
+  read_write:
+    - "/tmp"
+    - "/dev/null"
+    - "/dev/pts"
+    - "/home/dev/.codex"
+    - "/home/dev/src/app"
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+# driver-config-json
+{"docker":{"mounts":[{"type":"bind","source":"/home/dev","target":"/home/dev","read_only":true},{"type":"bind","source":"/tmp/observer-sbx-RUN","target":"/tmp/observer-sbx-RUN","read_only":true},{"type":"bind","source":"/home/dev/.codex","target":"/home/dev/.codex","read_only":false},{"type":"bind","source":"/home/dev/src/app","target":"/home/dev/src/app","read_only":false}]}}
+# copy-sync
+# shared-home
+false
+# create-argv
+openshell
+-g
+openshell
+sandbox
+create
+--name
+sbo-ri6lvslpepzlnlq
+--policy
+/home/dev/.observer/sandbox-openshell/runs/RUN/policy.yaml
+--driver-config-json
+{"docker":{"mounts":[{"type":"bind","source":"/home/dev","target":"/home/dev","read_only":true},{"type":"bind","source":"/tmp/observer-sbx-RUN","target":"/tmp/observer-sbx-RUN","read_only":true},{"type":"bind","source":"/home/dev/.codex","target":"/home/dev/.codex","read_only":false},{"type":"bind","source":"/home/dev/src/app","target":"/home/dev/src/app","read_only":false}]}}
+--label
+observer.superbased.install=o0123456789abcdefo
+--label
+observer.superbased.run=o-RunSENTINEL0000_aao
+--no-auto-providers
+--no-keep
+--tty
+--env
+HOME=/home/dev
+--env
+ANTHROPIC_BASE_URL=http://127.0.0.1:8820
+--env
+TERM=xterm-256color
+--
+/home/dev/.observer/bin/observer
+sandbox-guest
+--
+claude

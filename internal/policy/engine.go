@@ -181,10 +181,34 @@ type Config struct {
 	// the directory; nil leaves the rows to aliases defined on the command
 	// line itself.
 	GitAliases func(dir string) (aliases map[string]string, ok bool)
+	// LaunchVerbs are the per-tool launcher verbs of the integration
+	// registry (`observer claude`, `observer codex`, ...): the R-168 CLI
+	// row asks before an agent runs one. The guard layer injects them from
+	// internal/integration, their one owner; nil leaves the row to
+	// `observer launch` alone, since this package never enumerates tools.
+	LaunchVerbs []string
 	// ProtectedPathClasses are the R-166 path classes an agent may not
 	// write ([guard.boundary].protected_path_classes; ProtectedPathClasses
 	// lists the vocabulary). Empty, the default, leaves R-166 inert.
 	ProtectedPathClasses []string
+	// DatabaseProdPatterns are [guard.database].prod_patterns: the
+	// production database hosts, connection strings, database names and
+	// profiles R-125 asks about (rules_database.go owns the matching).
+	// Empty leaves R-125 inert.
+	DatabaseProdPatterns []string
+	// ReadSQLFile reads a SQL script a database command runs from a file
+	// (`psql -f x.sql`, `mysql < x.sql`), bounded by the guard layer, so
+	// R-126 can judge its statements. It is I/O, injected like ReadFile;
+	// ok=false means unreadable, absent, not a regular file or too large.
+	// nil leaves R-126 inert.
+	ReadSQLFile func(path string) (content []byte, ok bool)
+	// NetworkAllowHosts / NetworkDenyHosts are [guard.network].allow_hosts
+	// and deny_hosts: the host patterns R-176 (the allow list) and R-174's
+	// deny-list row compare the hosts a network command names against
+	// (rules_network.go owns the matching). Empty deny hosts leave that row
+	// inert; R-176 is silent until a level or pack raises it.
+	NetworkAllowHosts []string
+	NetworkDenyHosts  []string
 	// Disabled lists rule IDs turned off entirely
 	// ([guard.rules].disable).
 	Disabled []string
@@ -409,10 +433,11 @@ func New(cfg Config) (*Engine, error) {
 		kept := rules[:0]
 		for i := range rules {
 			// protectedIntegrityRule is a HARD BACKSTOP alongside
-			// protectedBudgetRule: R-160/R-161 can never be disabled by
-			// any layer below the org, and every disable (config/user/
-			// trusted-project) funnels to cfg.Disabled, so keeping the row
-			// here closes the whole class even if a merge path missed it.
+			// protectedBudgetRule: the integrity rules (IsIntegrityRuleID)
+			// can never be disabled by any layer below the org, and every
+			// disable (config/user/trusted-project) funnels to
+			// cfg.Disabled, so keeping the row here closes the whole
+			// class even if a merge path missed it.
 			// The org floor is the third backstop (OSH-R-014): a rule the
 			// organization's layer defined or tuned is a strictness floor
 			// no below-org disable removes, the config-level
@@ -447,10 +472,65 @@ func New(cfg Config) (*Engine, error) {
 			return nil, fmt.Errorf("policy.New: override references unknown rule %q", ov.RuleID)
 		}
 	}
+	applyIntegrityFollow(rules)
 	if err := validateRules(rules); err != nil {
 		return nil, fmt.Errorf("policy.New: %w", err)
 	}
 	return &Engine{cfg: cfg, rules: rules, readsBudgetStamps: resolveReadsBudgetStamps(&cfg, rules)}, nil
+}
+
+// integrityFollowers are the integrity rules (IsIntegrityRuleID) that hold
+// in every mode as soon as any other row does (sweep finding CFG-1). In
+// observe mode a row that holds anyway (a recipe pack applied alone, a
+// hand-written `enforce = true`, an org row) blocks the agent only while
+// the agent cannot lower the guard first, and each follower is one way to
+// lower it. The `loose` level holds R-160, R-162 and R-165 itself; this
+// table extends that to every policy that enforces something, written
+// recipes and hand-written policy files alike. R-168 is not here: its rows
+// ask in both modes already, and it stays out of Guard.GateEnforcement.
+var integrityFollowers = []struct {
+	id, why string
+}{
+	{"R-160", "the agent could edit the policy, recipe or hook configuration that holds the row"},
+	{"R-161", "the agent could edit the in-repo project guard file"},
+	{"R-162", "the agent could turn the coding agent's hooks off, so nothing is judged"},
+	{"R-165", "the agent could remove the recipe, apply level none, disable the guard or grant itself the exception"},
+	{"R-167", "the agent could widen its own sandbox egress"},
+}
+
+// holdsInEveryMode reports whether row r blocks or asks even in observe
+// mode: per-rule enforced, not capped by `enforce = false`, and its
+// enforce decision at least ask (a held flag stops nothing, so it lowers
+// nothing worth protecting).
+func holdsInEveryMode(r *Rule) bool {
+	return r.Enforced && r.EnforceCappedBy == "" && r.Enforce >= DecisionAsk
+}
+
+// applyIntegrityFollow marks every integrityFollowers row per-rule enforced
+// when some other row holds in every mode. It only ever raises: a follower
+// that has no enforce decision above its observe one (R-165's request row
+// flags in both modes) is unchanged by the mark. The mark is not a layer's
+// pin (DecisionPinnedBy stays as it was).
+func applyIntegrityFollow(rules []Rule) {
+	followers := make(map[string]bool, len(integrityFollowers))
+	for _, f := range integrityFollowers {
+		followers[f.id] = true
+	}
+	held := false
+	for i := range rules {
+		if !followers[rules[i].ID] && holdsInEveryMode(&rules[i]) {
+			held = true
+			break
+		}
+	}
+	if !held {
+		return
+	}
+	for i := range rules {
+		if followers[rules[i].ID] && rules[i].EnforceCappedBy == "" {
+			rules[i].Enforced = true
+		}
+	}
 }
 
 // orgFloorIDs is the set of rule IDs the organization's policy layer
@@ -502,7 +582,7 @@ func applyOverride(cfg Config, r *Rule, ov Override) {
 		overrideWeakensProtected(cfg, r, ov) {
 		// A below-org override cannot WEAKEN a protected row: an
 		// organization-authoritative hard budget, or one of the
-		// guard's own integrity rules (R-160/R-161). An ESCALATION
+		// integrity rules (IsIntegrityRuleID). An ESCALATION
 		// still passes — a stricter decision is not < the current
 		// enforce stance. An explicit `enforce = false` is a weakening
 		// (Sol A2-06). This is a hard backstop; the guard merge layer
@@ -541,16 +621,21 @@ func applyOverride(cfg Config, r *Rule, ov Override) {
 }
 
 // builtinRules assembles the built-in rule tables in catalog order
-// (destructive §5.1, boundary §5.2, exfil §5.3, injection §8.4,
-// posture §5.4, mcp §5.5, taint §5.6, budget+anomaly §5.7 last — a
-// budget/anomaly hit must never out-rank a same-decision substantive
-// rule on the same event). Order matters only as the final tie-break
-// (earlier row wins among equal decision+severity hits); rules are
-// otherwise independent.
+// (destructive §5.1, boundary §5.2, database R-121..R-126, exfil §5.3,
+// injection §8.4, posture §5.4, mcp §5.5, taint §5.6, budget+anomaly §5.7
+// last — a budget/anomaly hit must never out-rank a same-decision
+// substantive rule on the same event). The database family follows the
+// boundary table for the same reason: an agent writing the guard's own
+// tables (`sqlite3 observer.db "UPDATE guard_approvals SET ..."`) is the
+// self-approval integrity rule R-165 even where R-121 also flags the
+// statement. Order matters only as the final tie-break (earlier row wins
+// among equal decision+severity hits); rules are otherwise independent.
 func builtinRules() []Rule {
 	rules := destructiveRules()
 	rules = append(rules, boundaryRules()...)
+	rules = append(rules, databaseRules()...)
 	rules = append(rules, exfilRules()...)
+	rules = append(rules, networkRules()...)
 	rules = append(rules, injectionRules()...)
 	rules = append(rules, postureRules()...)
 	rules = append(rules, mcpRules()...)
@@ -596,7 +681,8 @@ func (e *Engine) BudgetRuleProtected(ruleID string) bool {
 const SourceOrgBudget = "org_budget"
 
 // IsIntegrityRuleID reports whether id names one of the guard's own
-// INTEGRITY rules: R-160, R-161, R-162 and R-165. It is a small, closed set:
+// INTEGRITY rules: R-160, R-161, R-162, R-165, R-167 and R-168. It is a small,
+// closed set:
 //
 //   - R-160 denies an agent modifying observer/guard/hook configuration,
 //     which INCLUDES the ~/.observer trusted per-project policy dir. It is
@@ -619,6 +705,16 @@ const SourceOrgBudget = "org_budget"
 //     agent turn any block into a grant of its own, which removes every
 //     other rule one call at a time. Its request row only flags and stays
 //     a flag.
+//   - R-167 (OpenShell lane N5, operator ruling OB-029) denies an agent
+//     widening its own sandbox egress (adding a host to
+//     [terminal.sandbox].egress_allow_hosts through the refusal advisor, a
+//     settings route or `observer config set`). A sandboxed run that was
+//     refused a host is exactly the run that would like the refusal lifted,
+//     so a layer that relaxed R-167 would hand the agent its own way out.
+//   - R-168 (lane cli-2) asks the human before an agent launches another
+//     agent, on each launch. A layer that disabled it or capped it at a
+//     flag would let an agent fan out unasked, which the operator's ruling
+//     (agent-started launches are opt-in) rules out.
 //
 // None may be DISABLED or RELAXED by any layer BELOW the org (config,
 // user, trusted-project); the org may still define or escalate them (the
@@ -626,11 +722,11 @@ const SourceOrgBudget = "org_budget"
 // enforce this floor at every below-org layer by ID without importing the
 // rule rows. Widening this set is a deliberate edit, never an accident.
 func IsIntegrityRuleID(id string) bool {
-	return id == "R-160" || id == "R-161" || id == "R-162" || id == "R-165"
+	return id == "R-160" || id == "R-161" || id == "R-162" || id == "R-165" || id == "R-167" || id == "R-168" // R-168 is agentLaunchRuleID, written as a literal so the web2 mirror test reads it
 }
 
 // protectedIntegrityRule reports whether THIS ROW is an integrity rule
-// (R-160/R-161/R-162/R-165). It is the row-taking companion to IsIntegrityRuleID
+// (R-160/R-161/R-162/R-165/R-167/R-168). It is the row-taking companion to IsIntegrityRuleID
 // used by New's disable filter and override loop as a hard backstop: a
 // below-org layer may never disable or weaken these, mirroring protectedBudgetRule
 // but with no runtime provenance — the protection is intrinsic to the ID.
@@ -644,9 +740,9 @@ func protectedIntegrityRule(r *Rule) bool {
 // budget row (protectedBudgetRule — the internal org-budget soft-window
 // override, SourceOrgBudget, is the one exception, as it carries the admin's
 // own per-window mode) or one of the guard's own integrity rules
-// (protectedIntegrityRule, R-160/R-161, which have no such exception because
-// the org never weakens). Folding both weaken-backstops into one predicate
-// keeps New's override loop a single branch.
+// (protectedIntegrityRule over IsIntegrityRuleID, which have no such
+// exception because the org never weakens). Folding both weaken-backstops
+// into one predicate keeps New's override loop a single branch.
 func overrideWeakensProtected(cfg Config, r *Rule, ov Override) bool {
 	if protectedIntegrityRule(r) {
 		return true
@@ -894,13 +990,26 @@ func (e *Engine) buildContext(ev *Event) *MatchContext {
 	return ctx
 }
 
-// applyRule runs one rule row against the context. The
-// safe-pattern-first ordering is owned HERE, structurally (the dcg
-// lesson, spec §4.3): for command-unit rules every unit is checked
-// against the rule's safe patterns before its matcher, and a safe
-// unit is exempt from THIS rule only — other units and other rules
-// still evaluate. Event-scoped rules get one safe-pattern pass with a
-// nil unit.
+// applyRule runs one rule row against the context. The safe-pattern
+// exemption is owned HERE, structurally (the dcg lesson, spec §4.3): a
+// rule author cannot forget it, and a unit a safe pattern exempts never
+// reports a hit for THIS rule — other units and other rules still
+// evaluate. Event-scoped rules get one safe-pattern pass with a nil unit.
+//
+// The engine asks the MATCHER first and the safe patterns only for a unit
+// the matcher hits (demo bug #14, R3-5). Both are pure predicates over the
+// same context, so "safe exempts, else the matcher decides" is the same
+// conjunction in either order and no verdict changes: `rm -rf /tmp/x` is
+// still never reported. The order is a cost choice. The matchers start with
+// a cheap shape test (is this a recursive delete, a git push, ...), while
+// several safe patterns are the expensive half (R-101's resolves every
+// operand through the filesystem's symlinks), and asking them first made a
+// week's replay spend most of its time proving `ls` and `go test` safe.
+// TestApplyRuleMatcherFirstEqualsSafeFirst pins the equivalence over the
+// whole built-in table. A matcher that keeps per-evaluation state (the
+// R-126 SQL read budget, MatchContext.sqlEval) would be asked on units it
+// was not asked on before if its row carried a safe pattern, so such a row
+// carries none (TestStatefulMatcherRowsCarryNoSafePattern).
 func applyRule(r *Rule, ctx *MatchContext) (bool, string) {
 	hit, detail, _ := applyRuleCeiling(r, ctx)
 	return hit, detail
@@ -926,11 +1035,12 @@ func applyRuleCeiling(r *Rule, ctx *MatchContext) (hit bool, detail string, capp
 		for _, alt := range [2]bool{true, false} {
 			for i := range ctx.Cmds {
 				cmd := &ctx.Cmds[i]
-				if cmd.altReading != alt || anySafe(r.SafePat, ctx, cmd) {
+				if cmd.altReading != alt {
 					continue
 				}
+				// Matcher first, safe patterns only on a hit (applyRule).
 				ok, d := r.MatchCmd(ctx, cmd)
-				if !ok {
+				if !ok || anySafe(r.SafePat, ctx, cmd) {
 					continue
 				}
 				if cmd.uncalledDef == "" {
@@ -944,11 +1054,8 @@ func applyRuleCeiling(r *Rule, ctx *MatchContext) (hit bool, detail string, capp
 		}
 		return capHit, capDetail, capHit
 	}
-	if anySafe(r.SafePat, ctx, nil) {
-		return false, "", false
-	}
 	hit, detail = r.Match(ctx)
-	if !hit {
+	if !hit || anySafe(r.SafePat, ctx, nil) {
 		return false, "", false
 	}
 	// An event-scoped rule reads every unit at once, so it is asked again
@@ -1101,7 +1208,20 @@ func (e *Engine) RuleEnforceCapped(ruleID string) bool {
 // stricter reports whether verdict a should replace current winner b:
 // stricter decision wins; equal decisions resolve to higher severity;
 // full ties keep the earlier row (strict inequality).
+//
+// A verdict that resolves to allow AT ITS CATALOG DEFAULT never wins, even
+// over the allow baseline b: a row whose own table decision is allow/allow
+// (the network rows R-175/R-176) is silent until a recipe or override raises
+// it, so a higher-severity allow hit must not replace the baseline and stamp
+// its rule ID on a verdict the guard still treats as "proceed". The test is
+// DecisionPinnedBy == "": a layer that RELAXED a stricter rule to allow pins
+// the decision (applyOverride sets DecisionPinnedBy), and that allow verdict
+// still surfaces with its rule ID so the guard can tell "relaxed here" from
+// "rule absent" — the contract the trusted/user/org-layer tests depend on.
 func stricter(a, b Verdict) bool {
+	if a.Decision == DecisionAllow && a.DecisionPinnedBy == "" {
+		return false
+	}
 	if a.Decision != b.Decision {
 		return a.Decision > b.Decision
 	}

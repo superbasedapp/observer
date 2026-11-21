@@ -127,7 +127,7 @@ func ociHostToolVersion(bin, pkg string) string {
 // ociPackageVersion reads the version of p when it is the package.json of
 // pkg (a regular file, capped).
 func ociPackageVersion(p, pkg string) string {
-	fi, err := os.Lstat(p)
+	fi, err := os.Lstat(p) //nolint:gosec // G703: a metadata read of a package.json above the tool's own resolved binary; no privilege boundary is crossed
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 1<<20 {
 		return ""
 	}

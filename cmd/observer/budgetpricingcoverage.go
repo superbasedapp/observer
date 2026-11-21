@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,17 @@ type budgetPricingCoverage struct {
 	// UnpricedModels names the distinct models behind the true-miss rows (an
 	// invalid row names none), sorted and already bounded by the store read.
 	UnpricedModels []string
+	// InvalidReasons splits the invalid rows among UnpricedRows by reason
+	// (store.GuardBudgetInvalid*), and InvalidTools names the tools behind
+	// them: an invalid row names no model, so without these the status line
+	// could only say "none-named" (demo bug #5). Display only; never on the
+	// enum-only posture wire.
+	InvalidReasons map[string]int
+	InvalidTools   []string
+	// Read is "managed" or "advisory": which accounting produced this
+	// observation. A managed read refuses unverified token counts that an
+	// advisory read prices, so the same corpus reads differently under each.
+	Read string
 	// Coverage is the orgcontract.PricingCoverage* enum, or "" when nothing
 	// was measured.
 	Coverage string
@@ -95,6 +107,8 @@ func budgetPricingCoverageOf(spend store.GuardBudgetSpendResult) budgetPricingCo
 		FallbackModels: spend.FallbackModels,
 		UnpricedRows:   spend.UnpricedRows,
 		UnpricedModels: spend.UnpricedModels,
+		InvalidReasons: spend.InvalidReasons,
+		InvalidTools:   spend.InvalidTools,
 		Coverage:       orgcontract.PricingCoverageComplete,
 	}
 	switch {
@@ -191,17 +205,67 @@ func budgetPricingCoverageLine(cov budgetPricingCoverage) string {
 			line += " unpriced_rows=" + strconv.Itoa(cov.UnpricedRows)
 			if len(cov.UnpricedModels) > 0 {
 				line += " unpriced_models=" + strings.Join(cov.UnpricedModels, ",")
-			} else {
-				// WINNODE2 16d: never a bare count. Rows with no model name
-				// to show are the invalid ones (broken counters or a
-				// timestamp outside every window).
-				line += " unpriced_models=none-named(invalid-rows)"
 			}
+			// WINNODE2 16d: never a bare count. An invalid row names no model,
+			// so it is named by WHY it counts as $0 and by its tool (demo bug
+			// #5: "unpriced_models=none-named(invalid-rows)" for 17,777 Claude
+			// Code transcript rows a managed read does not count).
+			line += invalidRowsClause(cov)
+			if len(cov.UnpricedModels) == 0 && len(cov.InvalidReasons) == 0 {
+				// Neither a model nor a reason to name: say so rather than
+				// print the count alone.
+				line += " unpriced_models=none-named"
+			}
+		}
+		if cov.Read != "" {
+			line += " pricing_read=" + cov.Read
 		}
 		return line
 	default:
 		return ""
 	}
+}
+
+// invalidRowWords says, per invalid-row reason, what the row is - the words
+// the status line prints after the reason's count. One row per
+// store.GuardBudgetInvalid* reason; an unknown reason prints its token alone.
+var invalidRowWords = map[string]string{
+	store.GuardBudgetUnverifiedTokens:   "token counts the capture marks unverified (e.g. Claude Code transcripts); managed caps count only provider-verified usage, so route the tool through the proxy",
+	store.GuardBudgetIncompleteCounters: "a token counter is missing",
+	store.GuardBudgetInvalidCounters:    "a token counter is negative",
+	store.GuardBudgetInvalidStored:      "the stored cost is not a valid amount",
+	store.GuardBudgetInvalidTimestamp:   "the timestamp belongs to no window",
+	store.GuardBudgetStoredWithoutUsage: "a stored cost with no billable usage",
+}
+
+// invalidRowsClause renders the invalid rows: reason=count pairs (sorted, so
+// the line is stable), the tools behind them, and a plain sentence per
+// reason. "" when no row is invalid.
+func invalidRowsClause(cov budgetPricingCoverage) string {
+	if len(cov.InvalidReasons) == 0 {
+		return ""
+	}
+	reasons := make([]string, 0, len(cov.InvalidReasons))
+	for r := range cov.InvalidReasons {
+		reasons = append(reasons, r)
+	}
+	sort.Strings(reasons)
+	pairs := make([]string, 0, len(reasons))
+	words := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		pairs = append(pairs, r+":"+strconv.Itoa(cov.InvalidReasons[r]))
+		if w := invalidRowWords[r]; w != "" {
+			words = append(words, r+" = "+w)
+		}
+	}
+	out := " invalid_rows=" + strings.Join(pairs, ",")
+	if len(cov.InvalidTools) > 0 {
+		out += " invalid_tools=" + strings.Join(cov.InvalidTools, ",")
+	}
+	if len(words) > 0 {
+		out += " (invalid rows count as $0: " + strings.Join(words, "; ") + ")"
+	}
+	return out
 }
 
 // cliBudgetPricingCoverage measures coverage from the CLI process.
@@ -218,7 +282,15 @@ func budgetPricingCoverageLine(cov budgetPricingCoverage) string {
 // a non-UTC calendar can therefore straddle a boundary differently from the
 // daemon's own count. Every failure path returns the zero value, which prints
 // nothing - never a fabricated "complete".
-func cliBudgetPricingCoverage(ctx context.Context, cfg config.Config, database *sql.DB) budgetPricingCoverage {
+//
+// THE READ MATCHES THE DAEMON'S (demo bug #5). The daemon prices an org cap
+// with a MANAGED read only where it holds budget enforcement authority; every
+// other node's caps are evaluated by the ADVISORY read. This line used to
+// measure a managed read everywhere, so an individual node reported 17,777
+// "invalid" Claude Code transcript rows that no accounting it runs ever
+// refuses. managed is the same granted answer the posture line beside it
+// uses, and the line says which read it measured (pricing_read=).
+func cliBudgetPricingCoverage(ctx context.Context, cfg config.Config, database *sql.DB, managed bool) budgetPricingCoverage {
 	if database == nil {
 		return budgetPricingCoverage{}
 	}
@@ -237,10 +309,16 @@ func cliBudgetPricingCoverage(ctx context.Context, cfg config.Config, database *
 	}
 	now := time.Now().UTC()
 	dayStart, weekStart, monthStart := budgetWindowStarts(now, guard.BudgetCalendars{})
+	pricer, read := guardBudgetTablePricer(table), "advisory"
+	if managed {
+		pricer, read = managedBudgetTablePricer(table, binding), "managed"
+	}
 	spend, err := st.GuardBudgetSpendPriced(ctx, "", dayStart, weekStart, monthStart,
-		managedBudgetTablePricer(table, binding), store.GuardBudgetReadOptions{Managed: true})
+		pricer, store.GuardBudgetReadOptions{Managed: managed})
 	if err != nil {
 		return budgetPricingCoverage{}
 	}
-	return budgetPricingCoverageOf(spend)
+	cov := budgetPricingCoverageOf(spend)
+	cov.Read = read
+	return cov
 }

@@ -124,8 +124,10 @@ func (i NPMPackageInfo) Young() bool { return i.AgeDays < YoungPackageDays }
 
 // ErrReputationOff is the D1 double opt-in refusal: reputation lookups are a
 // cloud feature, off until both [guard.cloud] and [guard.cloud.reputation]
-// are enabled.
-var ErrReputationOff = errors.New("reputation lookups are a cloud feature and are OFF by default (D1): set [guard.cloud] enabled = true and [guard.cloud.reputation] enabled = true to opt in - a lookup makes ONE outbound HTTPS request to registry.npmjs.org")
+// are enabled. The CLI and the dashboard both show it, so it names the
+// dashboard's consent card first and the config keys second (plan
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md decision P-2).
+var ErrReputationOff = errors.New("reputation lookups are a cloud feature and are OFF by default (D1): opt in on the Observer dashboard (Security > MCP, Network features, Reputation lookups) or set [guard.cloud] enabled = true and [guard.cloud.reputation] enabled = true in config.toml - a lookup makes ONE outbound HTTPS request to registry.npmjs.org")
 
 // ErrPackageNotFound is a 404 from the registry.
 var ErrPackageNotFound = errors.New("package not found on the npm registry")

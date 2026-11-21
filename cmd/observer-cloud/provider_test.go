@@ -24,7 +24,7 @@ func clearProviderEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
 		envInferenceProvider, envAnthropicAPIKey, envAnthropicAPIKeyFile, envAnthropicEffort,
-		envAnthropicPromptCache, envFoundryAPIKey,
+		envAnthropicPromptCache, envFoundryAPIKey, envOpenAICompatibleAPIKey, envOpenAICompatibleAPIKeyFile,
 		"SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE", "SBCI_PROVIDER_RETENTION_POLICY_VERSION",
 		"SBCI_PROVIDER_RETENTION_DISCLOSED_BY", "SBCI_CONTENT_LOGGING_ATTESTED_RESOURCE",
 		"SBCI_CONTENT_LOGGING_ATTESTED_BY",
@@ -42,6 +42,7 @@ func TestChooseProviderFamily(t *testing.T) {
 		{"", inference.FamilyAnthropic, false},
 		{"anthropic", inference.FamilyAnthropic, false},
 		{" Foundry ", inference.FamilyFoundry, false},
+		{"openai_compatible", inference.FamilyOpenAICompatible, false},
 		{"azure", "", true},
 		{"openai", "", true},
 	}
@@ -149,9 +150,58 @@ func TestChooseInferenceProviderWiresOnlyTheFamily(t *testing.T) {
 	if r.Supports(inference.DialectAnthropicMessages) || !r.Supports(inference.DialectChatCompletions) || !r.Supports(inference.DialectResponsesStoreFalse) {
 		t.Fatal("foundry router must serve exactly the two foundry dialects")
 	}
+	r, err = chooseInferenceProvider(quietLog(), inference.FamilyOpenAICompatible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Supports(inference.DialectOpenAICompatible) || r.Supports(inference.DialectAnthropicMessages) || r.Supports(inference.DialectChatCompletions) {
+		t.Fatal("openai_compatible router must serve exactly the openai_compatible dialect")
+	}
 	t.Setenv(envAnthropicEffort, "max")
 	if _, err := chooseInferenceProvider(quietLog(), inference.FamilyAnthropic); err == nil {
 		t.Fatal("an unsupported effort must fail startup")
+	}
+}
+
+// TestChooseCredentialsOpenAICompatible pins the openai_compatible key source:
+// its own env var or _FILE form, handed only to openai_compatible routes, and
+// never another family's key.
+func TestChooseCredentialsOpenAICompatible(t *testing.T) {
+	ctx := context.Background()
+	ovhRoute := store.RouteInfo{RouteID: "o", Dialect: string(inference.DialectOpenAICompatible)}
+	anthropicRoute := store.RouteInfo{RouteID: "a", Dialect: string(inference.DialectAnthropicMessages)}
+	keyFile := filepath.Join(t.TempDir(), "ovh.key")
+	if err := os.WriteFile(keyFile, []byte("ovh-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		env    map[string]string
+		wantK  string
+		wantOK bool
+	}{
+		{"from env", map[string]string{envOpenAICompatibleAPIKey: "ovh-env", envAnthropicAPIKey: "sk-env"}, "ovh-env", true},
+		{"from file", map[string]string{envOpenAICompatibleAPIKeyFile: keyFile}, "ovh-from-file", true},
+		{"other families' keys are ignored", map[string]string{envAnthropicAPIKey: "sk-env", envFoundryAPIKey: "foundry-key"}, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearProviderEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			src, err := chooseCredentials(quietLog(), inference.FamilyOpenAICompatible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			k, ok, _ := src.ProviderKey(ctx, ovhRoute)
+			if k != c.wantK || ok != c.wantOK {
+				t.Errorf("openai_compatible route: %q %v, want %q %v", k, ok, c.wantK, c.wantOK)
+			}
+			if k, ok, _ := src.ProviderKey(ctx, anthropicRoute); ok || k != "" {
+				t.Errorf("anthropic route got a key from the openai_compatible wiring: %q", k)
+			}
+		})
 	}
 }
 
@@ -249,7 +299,7 @@ func TestPlanAnthropicBind(t *testing.T) {
 	}{
 		{name: "default endpoint", route: haiku, lookup: priced},
 		{name: "explicit https origin", route: haiku, endpoint: "https://gw.example.com/", lookup: priced},
-		{name: "foundry route refused", route: luna, lookup: priced, wantErr: "not an Anthropic dialect"},
+		{name: "foundry route refused", route: luna, lookup: priced, wantErr: "not in the anthropic family"},
 		{name: "unpriced model refused", route: haiku, lookup: unpriced, wantErr: "no row"},
 		{name: "zero price refused", route: haiku, lookup: zero, wantErr: "zero or negative"},
 		{name: "http refused", route: haiku, endpoint: "http://api.anthropic.com", lookup: priced, wantErr: "https origin"},
@@ -277,6 +327,57 @@ func TestPlanAnthropicBind(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPlanOpenAICompatibleBind(t *testing.T) {
+	spec := bindSpecFor(t, inference.FamilyOpenAICompatible)
+	priced := func(string) (cost.Pricing, bool) { return cost.Pricing{Input: 0.039, Output: 0.18}, true }
+	oss := store.RouteInfo{RouteID: defaultOpenAICompatibleRouteID, Deployment: "gpt-oss-120b", Dialect: "openai_compatible"}
+	haiku := store.RouteInfo{RouteID: "h", Deployment: "claude-haiku-5-5", Dialect: "anthropic_messages"}
+	cases := []struct {
+		name, endpoint, wantErr string
+		route                   store.RouteInfo
+	}{
+		{name: "default OVH base URL keeps its /v1 path", route: oss},
+		{name: "explicit base URL", route: oss, endpoint: "https://llm.example.com/api/v1/"},
+		{name: "anthropic route refused", route: haiku, wantErr: "not in the openai_compatible family"},
+		{name: "http refused", route: oss, endpoint: "http://oai.example.com/v1", wantErr: "https base URL"},
+		{name: "query refused", route: oss, endpoint: "https://oai.example.com/v1?x=1", wantErr: "https base URL"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := planBind(spec, c.route, c.endpoint, "", priced, "pricing-table:test")
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("err = %v, want %q", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := plan.Binding
+			if b.TenantID != "openai_compatible" || b.ARMResourceID != "openai_compatible:chat:gpt-oss-120b" || b.APIVersion != "" ||
+				b.Endpoint == "" || strings.HasSuffix(b.Endpoint, "/") || b.Endpoint != b.EndpointAudience {
+				t.Fatalf("binding = %+v", b)
+			}
+			if c.endpoint == "" && b.Endpoint != ovhAIEndpointsBaseURL {
+				t.Fatalf("default endpoint = %q", b.Endpoint)
+			}
+		})
+	}
+}
+
+// bindSpecFor returns the bind table's row for family.
+func bindSpecFor(t *testing.T, family inference.Family) bindSpec {
+	t.Helper()
+	for _, s := range bindSpecs {
+		if s.Family == family {
+			return s
+		}
+	}
+	t.Fatalf("no bind row for %s", family)
+	return bindSpec{}
 }
 
 func TestRoutesToRetire(t *testing.T) {

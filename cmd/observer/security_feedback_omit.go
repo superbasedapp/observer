@@ -31,3 +31,7 @@ func feedbackOptInRoute(_, _, _ string) bool { return false }
 // securityExplainDash is nil without the security module: the dashboard's
 // explain route answers 404.
 func securityExplainDash(string, *sql.DB) dashapi.SecurityExplain { return nil }
+
+// securityExplainFixDash is nil for the same reason: the drawer's "Suggest a
+// fix" answers compiled out.
+func securityExplainFixDash(string, *sql.DB) dashapi.SecurityExplain { return nil }

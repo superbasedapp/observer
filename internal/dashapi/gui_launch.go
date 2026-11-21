@@ -27,6 +27,10 @@ var (
 type GUILaunchSpec struct {
 	ID          string
 	ProjectRoot string
+	// Initiator and ParentSessionID: who started this launch (lane cli-2),
+	// as FreshLaunchSpec. Additive.
+	Initiator       string
+	ParentSessionID string
 }
 
 // GUILaunchResult is what a successful GUI launch returns. There is no handle:

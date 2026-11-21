@@ -131,6 +131,10 @@ func nodeLiveCapabilitiesFor(handle *obsAdmissionHandle, active func(id string) 
 	// Every linked family's own live tokens (roadmap F0-9), the node side of
 	// the tokens the org server derives from a body (LinkedFamily legs).
 	caps = append(caps, policyfam.LinkedLiveCapabilitiesActive(active)...)
+	// The node lane of the coding-agent prompt judge (P-228): advertised only
+	// when the engine is linked and the org relay is bound, so a node-lane
+	// body with judged criteria NACKs on a node that cannot honour it.
+	caps = append(caps, planeBNodeLiveCapabilities()...)
 	return caps
 }
 
@@ -823,6 +827,12 @@ func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHand
 			ngov.Apply(res)
 		case policyfam.FamilyNodeFeatures:
 			applyNodeFeatures(nf, res, logger)
+		case policyfam.FamilyPlaneBAdmission:
+			// P-228: the node lane of the coding-agent prompt judge. Recording
+			// is applying; the lane itself runs only when the body sets
+			// node_lane AND the node is managed and holds enforce.admission
+			// (managedEnforceFor, re-checked on the request path).
+			planeBAdmissionPublish(res, ngov)
 		case policyfam.FamilyMCPAccess:
 			// Agent Access P4 (mcprelay_wire.go): compile → swap → cache.
 			// A nil process handle ([mcp_relay].enabled=false) is a no-op.
@@ -929,6 +939,8 @@ func clearOrgLayer(handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov 
 		ngov.Clear()
 	case policyfam.FamilyNodeFeatures:
 		nf.Clear()
+	case policyfam.FamilyPlaneBAdmission:
+		planeBAdmissionClear()
 	case policyfam.FamilyMCPAccess:
 		mcpRelayClear()
 	case policyfam.FamilyTerminalsIsolation:
@@ -971,7 +983,14 @@ func logLinkedFamilyConflicts(logger *slog.Logger) []string {
 // dashboard. gw may be nil (gateway.providers not appliable on this node,
 // e.g. the no_obs build or a node with no proxy wired) — every downstream
 // call is nil-safe.
-func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclient.Client, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, sink policyResourceOutcomeSink, logger *slog.Logger) {
+//
+// configPath is the config.toml the lists were loaded from: every cycle
+// re-reads [org_client.policy] from it when it changed, and a watcher wakes
+// the poll when those lists or the enrolment identity change, so an
+// enrolment made while the daemon runs takes effect without a restart
+// (demo finding #23, policyresource_livelists.go). Empty keeps the lists cfg
+// carries for the poller's lifetime.
+func runPolicyResourcePoller(ctx context.Context, cfg config.Config, configPath string, oc *orgclient.Client, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, sink policyResourceOutcomeSink, logger *slog.Logger) {
 	if oc == nil || (handle == nil && gw == nil && ngov == nil && nf == nil) {
 		return
 	}
@@ -979,11 +998,14 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 		logger = slog.Default()
 	}
 	logLinkedFamilyConflicts(logger)
-	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive))
+	lists := newLivePolicyLists(cfg, configPath, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive), logger)
 	ident := orgIdentityGateFor(ctx, oc)
 	adopter := newPolicyLayerAdopter()
 	logger.Debug("policy resource poller: starting", "families", policyfam.SupportedFamilies)
-	_ = oc.PolicyResourcePollLoop(ctx, opts, func(pr orgclient.PolicyResourcePollResult) {
+	if configPath != "" {
+		go watchPolicyListsAndIdentity(ctx, lists, orgClientPolicyIdentity(oc), oc.KickPolicyResourcePoll, policyListsCheckInterval, logger)
+	}
+	_ = oc.PolicyResourcePollLoopLive(ctx, lists.options, func(pr orgclient.PolicyResourcePollResult) {
 		switch {
 		case errors.Is(pr.Err, orgclient.ErrNotEnrolled):
 			// Plan §6.9 + Codex SF4: clear Org layer AND let Classify emit
@@ -1228,16 +1250,18 @@ func policyResourceEnforceGate(family string, spec any, preauthorizeEnforce []st
 // bool travels onto OrgLayerMeta.ManagedEnforce so obs never imports govern.
 // A nil handle (no governance) or the individual plane both yield false, so an
 // unmanaged node's enforcement stays entirely node-owned ("never
-// server-forced"). Only admission.input and egress.routing_guardrail have a
-// managed-enforce lift here; routing is lifted separately (routing_live), and
-// gateway.providers/node.governance are not §R23-gated.
+// server-forced"). admission.input, planeb.admission (the coding-agent
+// prompt judge's node lane, P-228: the same enforce.admission authority) and
+// egress.routing_guardrail have a managed-enforce lift here; routing is
+// lifted separately (routing_live), and gateway.providers/node.governance are
+// not §R23-gated.
 func managedEnforceFor(ngov *nodeGovernanceHandle, family string) bool {
 	if ngov == nil {
 		return false
 	}
 	eff := ngov.Effective(context.Background())
 	switch family {
-	case policyfam.FamilyAdmissionInput:
+	case policyfam.FamilyAdmissionInput, policyfam.FamilyPlaneBAdmission:
 		return eff.GrantsAdmissionEnforcement()
 	case policyfam.FamilyEgressGuardrail:
 		return eff.GrantsEgressEnforcement()

@@ -1,0 +1,36 @@
+# Pack "baseline-guard": the organization's starter floor, as a local pack.
+#
+# The same four rows as the org dashboard's "Baseline guard" starter bundle
+# (internal/orgserver/setuptemplates/bundles.go; a test keeps the two in
+# step): the catastrophic actions deny in every mode, everything else stays
+# as the node has it.
+
+name = "baseline-guard"
+kind = "pack"
+title = "Baseline guard (org starter)"
+summary = "Denies the four catastrophic actions in every mode: root or home deletes, protected-branch force pushes, downloads piped into a shell, secrets on network commands."
+version = 1
+
+[[override]]
+rule = "R-101"
+decision = "deny"
+enforce = true
+note = "recursive delete of a filesystem root, home, or a path outside the project"
+
+[[override]]
+rule = "R-110"
+decision = "deny"
+enforce = true
+note = "force push to a protected branch"
+
+[[override]]
+rule = "R-170"
+decision = "deny"
+enforce = true
+note = "remote content piped straight into an interpreter"
+
+[[override]]
+rule = "R-172"
+decision = "deny"
+enforce = true
+note = "a secret-shaped value on a network command line or in an outbound request"

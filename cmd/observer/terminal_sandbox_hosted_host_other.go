@@ -13,3 +13,8 @@ var hostedHelperAlive = func(string) bool { return false }
 
 // hostedStopHelper: no helper runs on this platform.
 var hostedStopHelper = func(string) error { return nil }
+
+// hostedRun is the Linux host helper's run state; off Linux no run exists,
+// so the type is empty and only lets a vendor registration's end-branch
+// hook (hostedVendorReg.endRun) compile here.
+type hostedRun struct{}

@@ -4,7 +4,9 @@
 // THE BARE ROOT goes to the portal (operator ruling "Go to the portal",
 // D-830, T-946): "/" answers a same-origin 302 to /portal/ whenever this
 // server mounts the portal SPA, so a person who types cloud.superbased.app
-// lands on the sign-in page instead of the marketing site. Paddle's
+// lands on the sign-in page instead of the marketing site. A known
+// ?intent= (rootIntents: today "team") sends the visitor to the portal route
+// that serves it instead. Paddle's
 // checkout-domain review (live-observed 2026-09-13) fails a 404 at the root;
 // a 302 to a page that answers 200 passes it the same way the old redirect
 // to superbased.app did. A server built WITHOUT the portal SPA (tests, an
@@ -128,6 +130,38 @@ var rootTargets = []rootTarget{
 	},
 }
 
+// rootIntentParam is the query parameter an older marketing link put on "/"
+// to say why the visitor came ("Start a team" sent /?intent=team).
+const rootIntentParam = "intent"
+
+// rootIntents is the closed table of intents "/" honours while the portal SPA
+// is mounted, each mapped to the portal route that serves it (hosted sign-in
+// fix, lane A). The marketing site now links straight to the route; this
+// table keeps an already-published /?intent=team link landing on the
+// create-a-team flow instead of dropping the intent. A signed-out visitor to
+// the route is sent to sign-in (or sign-up) with return_to set back to it,
+// so the intent survives the sign-in through the validated return_to and no
+// intent parameter of its own.
+var rootIntents = map[string]string{
+	"team": portalCreateTeamPath,
+}
+
+// portalCreateTeamPath is the console's create-a-team page (webcloud
+// /orgs/new under the /portal basename).
+const portalCreateTeamPath = "/portal/orgs/new"
+
+// rootIntentTarget is the portal route for r's intent, or "" when r names
+// none, names one the table does not know, or repeats the parameter: an
+// unknown intent falls back to the plain portal root, never to a path built
+// from the query.
+func rootIntentTarget(r *http.Request) string {
+	vs := r.URL.Query()[rootIntentParam]
+	if len(vs) != 1 {
+		return ""
+	}
+	return rootIntents[vs[0]]
+}
+
 // rootRedirectTarget resolves where "/" redirects to from rootTargets, or ""
 // when no row applies (the route is then not registered at all).
 func (s *Server) rootRedirectTarget() string {
@@ -151,7 +185,13 @@ func (s *Server) rootRedirectTarget() string {
 func (s *Server) mountRootRedirect(mux *http.ServeMux) {
 	if target := s.rootRedirectTarget(); target != "" {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, target, http.StatusFound)
+			dst := target
+			if target == portalRootPath {
+				if intent := rootIntentTarget(r); intent != "" {
+					dst = intent
+				}
+			}
+			http.Redirect(w, r, dst, http.StatusFound)
 		})
 	}
 	if s.rootRedirectURL == "" {

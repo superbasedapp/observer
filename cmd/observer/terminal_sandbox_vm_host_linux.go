@@ -917,7 +917,7 @@ func vmPeerPID(c net.Conn) int {
 // host socket and interop variables, the trusted launcher channel and the
 // host-only paths, plus the sandbox marker (the Apple container row's rule).
 func vmRunEnv(environ []string) []string {
-	// The allow-list first (WINFIX2 R-167); the drops below stay.
+	// The allow-list first (WINFIX2, ledger SBX-WIN-ENV-1); the drops below stay.
 	environ = sandboxBoxEnv("linux", environ)
 	drop := map[string]bool{"XDG_RUNTIME_DIR": true, envOOBFD: true, envOOBAuth: true, sandboxEnvMarker: true}
 	for _, k := range sandbox.GuestUnsetEnv {

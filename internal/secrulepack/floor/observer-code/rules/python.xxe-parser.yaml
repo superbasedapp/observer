@@ -1,0 +1,23 @@
+rules:
+  - id: python.xxe-parser
+    languages: [python]
+    severity: ERROR
+    message: An XML parser is set to resolve external entities, so a document can read local files or reach internal hosts; leave entity resolution off, or parse untrusted XML with defusedxml.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    pattern-either:
+      - pattern: lxml.etree.XMLParser(..., resolve_entities=True, ...)
+      - pattern: etree.XMLParser(..., resolve_entities=True, ...)
+      - pattern: XMLParser(..., resolve_entities=True, ...)
+      - pattern: lxml.etree.XMLParser(..., no_network=False, ...)
+      - pattern: etree.XMLParser(..., no_network=False, ...)
+      - pattern: XMLParser(..., no_network=False, ...)
+      - pattern: $P.setFeature(xml.sax.handler.feature_external_ges, True)
+      - pattern: $P.setFeature(handler.feature_external_ges, True)
+      - pattern: $P.setFeature(feature_external_ges, True)
+      - pattern: $P.setFeature(xml.sax.handler.feature_external_pes, True)
+      - pattern: $P.setFeature(handler.feature_external_pes, True)
+      - pattern: $P.setFeature(feature_external_pes, True)
+      - pattern: $P.setFeature("http://xml.org/sax/features/external-general-entities", True)
+      - pattern: $P.setFeature("http://xml.org/sax/features/external-parameter-entities", True)

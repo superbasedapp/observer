@@ -177,26 +177,70 @@ func pathSame(a, b string, fold bool) bool {
 	return a == b
 }
 
-// foreignMountRoots returns the foreign-OS mount roots (`/mnt/<drive>`) derived
-// from crossmount's detected non-native homes, so A1 can `--tmpfs`-mask the
-// whole foreign drive `--ro-bind / /` would otherwise expose. Only homes whose
-// logical OS differs from the daemon's (e.g. Windows homes on a WSL host)
-// contribute; the native home is never masked. Deduped.
-func foreignMountRoots() []string {
-	seen := map[string]bool{}
-	var out []string
+// hostMountTablePaths are the host mount tables foreignMountRoots reads, in
+// the order tried: /proc/self/mountinfo first, /proc/mounts when it cannot
+// be read or is empty.
+var hostMountTablePaths = []string{"/proc/self/mountinfo", "/proc/mounts"}
+
+// readHostMountTable reads the host's mount table. It is a variable so a test
+// feeds a recorded table without a real /proc.
+var readHostMountTable = func() ([]byte, error) {
+	var errs []error
+	for _, p := range hostMountTablePaths {
+		b, err := os.ReadFile(p) //nolint:gosec // G304: a fixed procfs path from hostMountTablePaths
+		if err == nil && len(strings.TrimSpace(string(b))) > 0 {
+			return b, nil
+		}
+		if err == nil {
+			err = errors.New("empty")
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", p, err))
+	}
+	return nil, errors.Join(errs...)
+}
+
+// foreignMountRoots returns the foreign-OS mount roots every box must hide:
+// the Windows drives `--ro-bind / /` would otherwise leave readable. Two
+// sources are united (sandbox.BuildMaskRoots: de-duplicated, a root inside
+// another dropped, sorted so the argv is deterministic):
+//
+//   - the host's own mount table (sandbox.ForeignDriveRoots): every drvfs
+//     mount, wherever it is mounted, whether or not a foreign AI-tool home
+//     sits on it. The home-derived set alone left a drive with no detected
+//     home, and every drive when HOME is a scratch home (crossmount detects
+//     nothing there), unmasked (ledger SBX-BE-24);
+//   - the `/mnt/<drive>` prefix of each foreign AI-tool home crossmount
+//     detects (a non-native home, e.g. a Windows home on a WSL host; the
+//     native home is never masked).
+//
+// It fails closed: a Linux host whose mount table cannot be read, or whose
+// table cannot be understood (sandbox.ForeignDriveRoots), is an error and the
+// launch is refused, never a silently empty mask list. A host that is not
+// Linux has no such table and contributes the home-derived roots only (a
+// bwrap box exists on Linux alone). On a Linux host with no Windows drive and
+// no foreign home the result is empty, so its argv is unchanged.
+func foreignMountRoots() ([]string, error) {
+	var fromHomes []string
 	for _, h := range crossmount.ExtraHomes() {
 		if h.OS == crossmount.OSLinux && runtime.GOOS == "linux" {
 			continue // a same-OS extra home is not a foreign mount
 		}
-		root := mntDriveRoot(h.Path)
-		if root == "" || seen[root] {
-			continue
+		if root := mntDriveRoot(h.Path); root != "" {
+			fromHomes = append(fromHomes, root)
 		}
-		seen[root] = true
-		out = append(out, root)
 	}
-	return out
+	if runtime.GOOS != "linux" {
+		return sandbox.BuildMaskRoots(fromHomes), nil
+	}
+	table, err := readHostMountTable()
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: the host mount table could not be read, so the Windows drives to hide from the box cannot be found (%w); the launch is refused rather than run with a drive possibly showing", err)
+	}
+	roots, err := sandbox.ForeignDriveRoots(table, fromHomes)
+	if err != nil {
+		return nil, fmt.Errorf("%w; the launch is refused rather than run with a drive possibly showing", err)
+	}
+	return roots, nil
 }
 
 // mntDriveRoot extracts the `/mnt/<drive>` prefix of a WSL foreign-home path

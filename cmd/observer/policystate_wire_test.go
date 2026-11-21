@@ -289,6 +289,12 @@ func TestReporter_MultiplePokesCoalesceToOneFollowup(t *testing.T) {
 // TestStartupEmitsFourRows (which additionally needs the start.go g.Go launch).
 func TestBuildAndRunReporter(t *testing.T) {
 	pinToolHomes(t) // config.Default() puts the report_seq file and guard cache under the home (FU-20)
+	// The premise is an unbound node. A CLI-path test earlier in this binary
+	// (bindSecurityFloorsForCLI binds once per process) can leave the
+	// security floors' seam bound to its own, by now removed, config; the
+	// guard point reader then runs that stale loader under the seam's lock,
+	// up to its 5s bound, and the first snapshot misses the wait below.
+	unbindSecurityFloors(t)
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "agent.db")
 	conn, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})

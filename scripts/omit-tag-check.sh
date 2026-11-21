@@ -3,8 +3,10 @@
 # has, so an off file cannot rot unnoticed (modular packaging plan 5.9 and
 # risk R1, "stub rot"; lane MP-REL).
 #
-#   scripts/omit-tag-check.sh [--vet-only] [--run <regex>] [--list] [--only <set>]
-#                              [--scope distro] [--batch <i>/<n>]
+#   scripts/omit-tag-check.sh [--vet-only] [--run <regex>] [--list | --list-tests]
+#                              [--only <set>]
+#                              [--scope distro | --scope narrow --tags <a,b>]
+#                              [--batch <i>/<n>]
 #
 # The tag set is read from the tree, never from a list in this script: every
 # sbo_omit_* tag named in a //go:build line, the one-release alias no_obs,
@@ -13,43 +15,57 @@
 #
 #   go vet -tags <tags> ./...                 (every package, tests included:
 #                                              vet type-checks every test file)
-#   go test -tags <tags> <tagged packages>    (the packages holding a file
-#                                              whose build line names a tag
-#                                              in the set; --run narrows them)
+#   go test -tags <tags> <tagged packages>    (editions only: the packages
+#                                              holding a file whose build
+#                                              line names a tag in the set;
+#                                              --run narrows them)
 #
 # The four published editions (no_obs and the three distro sets) run the
 # full tests of every tagged package. Every other set (a single sbo_omit_*
-# tag, custom-build.yml only) runs the full tests of its tagged packages
-# except the five heavy ones (heavy_pkgs below); for a heavy package it runs
-# only the tests declared in that package's tagged test files, which still
-# compiles the whole test binary (-run '^$' when there are none). A set's
-# behaviour change is then seen by its own tagged tests, its owner (item 1
-# of the test-time plan: the heavy packages took 180 to 230 s per set, 65
-# sets, about 230 job-minutes of a full run).
+# tag, custom-build.yml only) runs go vet only, which still compiles and
+# type-checks every package and test file under the tag, so a stub that no
+# longer matches its counterpart fails (operator decision "Vet only",
+# 2026-11-01: the single sets' tests cost about 80 minutes of a full run
+# and the editions are what the release publishes).
 #
 # A tag no file names cannot change what compiles, so it is skipped: its
 # build is the default build, which the ordinary CI jobs already cover.
 # --scope distro keeps only the distro sets and no_obs (the editions
-# npm-release publishes); --batch i/n keeps every n-th set from i (0-based).
+# npm-release publishes); --scope narrow --tags <comma list> keeps those
+# plus the single sets named in the list (a P-222 narrowed release-gate run:
+# the tags `cipkgs narrow` found in the diff's dependency closure; a listed
+# tag that is no set of this tree is ignored); --batch i/n keeps batch i (0-based) of an n-way
+# split balanced by measured time (scripts/ci/omit-tag-weights.tsv, LPT).
 # Each set prints as a log group; a failing set is named and the run goes on.
 # ci.yml runs --scope distro per push and the full list in 6 batches on a
 # dispatched full run and a tag push (D-609). On a small host use --vet-only or --run.
+#
+# --list prints the sets. --list-tests prints the same sets, each on a line
+# of its own, and after each edition one line per package its tests run:
+# <set> TAB ./<dir>. tools/testrunner's gate reads it to run each set as
+# `--vet-only --only <set>` and each edition package's tests as a Go unit of
+# its own with -tags <set>: the same go vet and go test this script runs,
+# split so they spread over workers. Without either flag nothing changes.
 set -euo pipefail
 
-vet_only=0 run="" list=0 only="" scope="" batch=""
+vet_only=0 run="" list=0 list_tests=0 only="" scope="" batch="" tags=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vet-only) vet_only=1; shift ;;
     --run) run="$2"; shift 2 ;;
     --list) list=1; shift ;;
+    --list-tests) list_tests=1; shift ;;
     --only) only="$2"; shift 2 ;;
     # --scope distro: only the distro sets (sbo_distro_* stamp) and no_obs,
     # the editions npm-release publishes. ci.yml runs these on every push.
     --scope) scope="$2"; shift 2 ;;
-    # --batch <i>/<n>: every n-th set starting at i (0-based), so CI runs the
-    # full list in n jobs that each share one warm build cache (D-609).
+    # --tags <comma list>: the single sets --scope narrow adds to the editions.
+    --tags) tags="$2"; shift 2 ;;
+    # --batch <i>/<n>: batch i (0-based) of an n-way split balanced by the
+    # measured seconds per set, so CI runs the full list in n jobs that each
+    # share one warm build cache (D-609) and end at about the same time.
     --batch) batch="$2"; shift 2 ;;
-    *) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) sed -n '2,/^set -euo pipefail$/{/^set /d;p}' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
   esac
 done
 
@@ -83,7 +99,14 @@ case "$scope" in
     done
     sets=("${kept[@]}")
     ;;
-  *) echo "omit-tag-check: --scope must be distro" >&2; exit 2 ;;
+  narrow)
+    kept=()
+    for s in "${sets[@]}"; do
+      if [[ "$s" == "no_obs" || ",$s" == *",sbo_distro_"* || ",${tags}," == *",$s,"* ]]; then kept+=("$s"); fi
+    done
+    sets=("${kept[@]}")
+    ;;
+  *) echo "omit-tag-check: --scope must be distro or narrow" >&2; exit 2 ;;
 esac
 if [[ -n "$batch" ]]; then
   if [[ ! "$batch" =~ ^([0-9]+)/([0-9]+)$ ]] || (( BASH_REMATCH[2] < 1 || BASH_REMATCH[1] >= BASH_REMATCH[2] )); then
@@ -91,10 +114,29 @@ if [[ -n "$batch" ]]; then
     exit 2
   fi
   bi=${BASH_REMATCH[1]} bn=${BASH_REMATCH[2]}
-  kept=()
-  for k in "${!sets[@]}"; do
-    if (( k % bn == bi )); then kept+=("${sets[$k]}"); fi
-  done
+  # Longest-processing-time-first over the measured seconds per set
+  # (scripts/ci/omit-tag-weights.tsv; a distro set keyed by its
+  # sbo_distro_* stamp, an unlisted set 120 s): heaviest first, ties by
+  # name, each to the batch with the least so far (ties to the lowest
+  # index). Deterministic, so the n batch jobs agree, and a partition
+  # whatever the weights say: every set lands in exactly one batch.
+  mapfile -t kept < <(printf '%s\n' "${sets[@]}" | awk -v weights="scripts/ci/omit-tag-weights.tsv" '
+      BEGIN {
+        FS = "\t"
+        while ((getline line < weights) > 0) {
+          if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
+          split(line, f, "\t"); if (f[1] != "" && f[2] + 0 > 0) w[f[1]] = f[2] + 0
+        }
+      }
+      {
+        key = $0
+        if (match($0, /sbo_distro_[A-Za-z0-9_]+/)) key = substr($0, RSTART, RLENGTH)
+        printf "%d\t%s\n", ((key in w) ? w[key] : 120), $0
+      }' \
+    | LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 \
+    | awk -F '\t' -v n="$bn" -v want="$bi" '
+      { best = 0; for (i = 1; i < n; i++) if (tot[i] < tot[best]) best = i
+        tot[best] += $1; if (best == want) print $2 }')
   sets=("${kept[@]}")
 fi
 
@@ -139,43 +181,21 @@ tagged_pkgs() {
       done
 }
 
-# heavy_pkgs: the tagged packages whose full test run costs minutes
-# (job logs of run 39364803173, -race on every package: cmd/observer 1690 s,
-# cmd/observer-org 1087 s, internal/orgserver 965 s, internal/store 510 s,
-# internal/intelligence/dashboard 433 s). A non-edition set runs only their
-# tagged tests.
-heavy_pkgs=(./cmd/observer ./cmd/observer-org ./internal/orgserver ./internal/store ./internal/intelligence/dashboard)
-
 # is_edition <set>: true for the editions npm-release publishes (the same
 # rule as --scope distro).
 is_edition() {
   [[ "$1" == "no_obs" || ",$1" == *",sbo_distro_"* ]]
 }
 
-is_heavy() {
-  local h
-  for h in "${heavy_pkgs[@]}"; do [[ "$1" == "$h" ]] && return 0; done
-  return 1
-}
-
-# tagged_tests <comma tags> <./pkg>: the top-level Test functions declared
-# in the package's own test files that compile under the set and whose build
-# line names one of its tags, as one regex alternation (empty when there are
-# none). A file excluded by the set (a !tag line) does not count. Tagged test
-# files that declare no Test function make grep exit 1 (xargs 123), which is
-# "none", not an error: under set -e it would abort the whole batch.
-tagged_tests() {
-  local re dir
-  re="$(echo "$1" | tr ',' '|')"
-  dir="${2#./}"
-  comm -12 \
-    <(git grep -l -E "^//go:build .*(${re})([^A-Za-z0-9_]|$)" -- "${dir}/*_test.go" \
-        | while read -r f; do [[ "$(dirname "$f")" == "$dir" ]] && basename "$f"; done | sort -u) \
-    <(go list -tags "$1" -f '{{range .TestGoFiles}}{{println .}}{{end}}{{range .XTestGoFiles}}{{println .}}{{end}}' "$2" | grep . | sort -u) \
-    | sed "s#^#${dir}/#" \
-    | { xargs -r grep -h -oE '^func Test[A-Za-z0-9_]*\(' || true; } \
-    | sed -e 's/^func //' -e 's/($//' | sort -u | paste -sd'|' -
-}
+# --list-tests: the edition packages this run would test, per set.
+if [[ "$list_tests" -eq 1 ]]; then
+  for set in "${sets[@]}"; do
+    printf '%s\n' "$set"
+    is_edition "$set" || continue
+    tagged_pkgs "$set" | while read -r p; do printf '%s\t%s\n' "$set" "$p"; done
+  done
+  exit 0
+fi
 
 fail=0 failed=()
 # In GitHub Actions each set is a collapsible log group, so a batch job still
@@ -186,32 +206,15 @@ for set in "${sets[@]}"; do
   ok=1
   if ! go vet -tags "$set" ./...; then
     echo "FAIL vet -tags $set"; ok=0
-  elif [[ "$vet_only" -eq 0 ]]; then
+  elif [[ "$vet_only" -eq 0 ]] && is_edition "$set"; then
     mapfile -t pkgs < <(tagged_pkgs "$set")
-    full=() heavy=()
-    for p in "${pkgs[@]}"; do
-      if [[ -z "$run" ]] && ! is_edition "$set" && is_heavy "$p"; then heavy+=("$p"); else full+=("$p"); fi
-    done
-    if [[ ${#full[@]} -gt 0 ]]; then
-      args=(-count=1 -tags "$set")
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+      args=(-count=1 -timeout 90m -tags "$set")
       [[ -n "$run" ]] && args+=(-run "$run")
-      if ! go test "${args[@]}" "${full[@]}"; then
+      if ! go test "${args[@]}" "${pkgs[@]}"; then
         echo "FAIL test -tags $set"; ok=0
       fi
     fi
-    for p in "${heavy[@]}"; do
-      names="$(tagged_tests "$set" "$p")"
-      if [[ -n "$names" ]]; then
-        echo "heavy package $p: only its tagged tests (${names//|/ })"
-        hrun="^(${names})\$"
-      else
-        echo "heavy package $p: compile only (no tagged test)"
-        hrun='^$'
-      fi
-      if ! go test -count=1 -tags "$set" -run "$hrun" "$p"; then
-        echo "FAIL test -tags $set $p"; ok=0
-      fi
-    done
   fi
   [[ "$gh" -eq 1 ]] && echo "::endgroup::"
   if [[ "$ok" -eq 0 ]]; then

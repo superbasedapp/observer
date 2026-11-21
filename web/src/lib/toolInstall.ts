@@ -31,7 +31,7 @@ export {
 // (internal/intelligence/dashboard/launch.go::errTerminalUnavailable): the
 // embedded terminal is either switched off or has no PTY backend on this OS.
 export const INSTALL_UNAVAILABLE_MSG =
-  "The in-dashboard terminal is unavailable on this daemon, so there is nowhere to run the installer. Either [handoff].allow_dashboard_launch is false in ~/.observer/config.toml, or this OS has no PTY backend (Windows before 10 version 1809 has no ConPTY).";
+  "The in-dashboard terminal is unavailable on this daemon, so there is nowhere to run the installer. Either dashboard launch is turned off (handoff.allow_dashboard_launch, under More settings in Settings > Session attach; it applies after a daemon restart), or this OS has no PTY backend (Windows before 10 version 1809 has no ConPTY).";
 
 // INSTALL_DISABLED_MSG maps the install route's 403 — the guided-install kill
 // switch. Distinct from every other 403 in the dialog (the remote
@@ -194,26 +194,26 @@ const VERDICT_COPY: Record<
     tone: "info",
     blocking: false,
     headline: (tool, bin) =>
-      // Plain words: "SuperBased" (the product the user runs), never "the
+      // Plain words: "superbased" (the product the user runs), never "the
       // daemon". An empty bin is a launch target with no PATH spelling - in
-      // practice a Windows app a WSL SuperBased opens across the boundary.
+      // practice a Windows app a WSL superbased opens across the boundary.
       bin
-        ? `${tool}: not on PATH - SuperBased will use ${bin}.`
-        : `${tool}: found outside PATH - SuperBased will open it from where it's installed.`,
+        ? `${tool}: not on PATH - superbased will use ${bin}.`
+        : `${tool}: found outside PATH - superbased will open it from where it's installed.`,
   },
   shadowed: {
     tone: "info",
     blocking: false,
     headline: (tool, bin) =>
       bin
-        ? `${tool}: a Windows copy comes first on PATH - SuperBased will use the Linux install at ${bin} instead.`
-        : `${tool}: a Windows copy comes first on PATH - SuperBased will use the Linux install instead.`,
+        ? `${tool}: a Windows copy comes first on PATH - superbased will use the Linux install at ${bin} instead.`
+        : `${tool}: a Windows copy comes first on PATH - superbased will use the Linux install instead.`,
   },
   foreign_only: {
     tone: "warn",
     blocking: true,
     headline: (tool) =>
-      `${tool} is installed on Windows, not in WSL - SuperBased can't launch it from here.`,
+      `${tool} is installed on Windows, not in WSL - superbased can't launch it from here.`,
   },
   not_found: {
     tone: "warn",
@@ -249,7 +249,7 @@ export function preflightStripCopy(
       tone: "info",
       blocking: false,
       offerInstall: false,
-      headline: `${tool}: ${verdict || "no verdict"} - SuperBased doesn't recognise this availability verdict, so it is not blocking the launch. The launch itself stays the authority.`,
+      headline: `${tool}: ${verdict || "no verdict"} - superbased doesn't recognise this availability verdict, so it is not blocking the launch. The launch itself stays the authority.`,
       notes,
     };
   }
@@ -361,7 +361,7 @@ export function launchBlockedReason(
 // selection must stay open (the guided install is ungated by this allow-list on
 // purpose, so a deny-all fresh install must still be able to reach it).
 export const TOOL_NOT_ALLOWED_MSG =
-  "not in [terminal.launch].allowed_tools - enable it under Terminals › Fresh-agent launch policy";
+  "not in [terminal.launch].allowed_tools - allow it in Terminals > Settings > Fresh-agent launch policy";
 
 // toolNotAllowedReason is the Start-button / warn-line sentence for a tool the
 // launch allow-list refuses. It names the key, the fix, AND the fact that

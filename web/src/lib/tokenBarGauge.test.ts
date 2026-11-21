@@ -16,7 +16,7 @@ import {
   gaugeTone,
   gaugeVariant,
   knownRatio,
-} from "../../../shared/components/sessiondetail/gaugeStat.ts";
+} from "../../../shared/components/sessiondetail/gaugeBands.ts";
 import {
   HEARTBEAT_BANDS,
   HEARTBEAT_DOT,

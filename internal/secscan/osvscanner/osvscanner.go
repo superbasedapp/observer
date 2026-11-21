@@ -63,6 +63,12 @@ func Args(root, canaryDir, sep string) []string {
 // versionPattern reads `osv-scanner version: 2.6.0`.
 var versionPattern = regexp.MustCompile(`osv-scanner version:\s*v?(\d+\.\d+\.\d+)`)
 
+// VersionProbe is how a run asks osv-scanner its version (the driver and
+// the Go source check, source.go).
+func VersionProbe() extrun.VersionProbe {
+	return extrun.VersionProbe{Args: []string{"--version"}, Pattern: versionPattern}
+}
+
 // Env is what the driver needs from the caller.
 type Env struct {
 	Runner *extrun.Runner
@@ -77,6 +83,9 @@ type Env struct {
 	HomeDir string
 	// GOOS and GOARCH select the Platforms cells.
 	GOOS, GOARCH string
+	// InventorySink receives every parsed scan's package inventory (the
+	// project SBOM's source), with the driver id; nil keeps it nowhere.
+	InventorySink func(root, driver string, pkgs []depscan.Package)
 }
 
 // Driver is the subprocess driver.
@@ -101,10 +110,12 @@ func (d *Driver) resolve() (string, bool) {
 	return "", false
 }
 
-// missingDatabases lists the ecosystems without an installed database.
+// missingDatabases lists the ecosystems osv-scanner reads that have no
+// installed database (depscan.OSVScannerEcosystems: never an ecosystem it
+// does not read, such as GitHub Actions, whose absence must not stop it).
 func (d *Driver) missingDatabases() []string {
 	var out []string
-	for _, eco := range depscan.Ecosystems() {
+	for _, eco := range depscan.OSVScannerEcosystems() {
 		if d.env.Epochs[eco] == "" {
 			out = append(out, eco)
 		}
@@ -148,7 +159,7 @@ func (d *Driver) Scan(ctx context.Context, t secscan.Target) (secscan.Result, er
 		return depdriver.Result(in), nil
 	}
 	req := Request(bin, t.ProjectRoot, d.env.DBDir, d.env.CanaryDir, d.env.HomeDir, d.env.GOOS)
-	v, _ := d.env.Runner.ProbeVersion(ctx, req, extrun.VersionProbe{Args: []string{"--version"}, Pattern: versionPattern})
+	v, _ := d.env.Runner.ProbeVersion(ctx, req, VersionProbe())
 	in.Engine.Version, in.Engine.Digest = v.Version, v.Digest
 	switch Verdict(v.Version) {
 	case VersionRefused:
@@ -163,14 +174,17 @@ func (d *Driver) Scan(ctx context.Context, t secscan.Target) (secscan.Result, er
 	if run.Digests.Binary != "" {
 		in.Engine.Digest = run.Digests.Binary
 	}
+	facts := readStderr(run.Stderr, run.StderrTruncated, t.ProjectRoot, d.env.CanaryDir)
 	switch run.ExitMeaning {
 	case extrun.ExitClean, extrun.ExitFindings:
 	case extrun.ExitNoInput:
 		in.RunReason = "no_packages"
 		return depdriver.Result(in), nil
 	default:
-		in.Failed, in.RunReason = true, failReason(run)
-		return depdriver.Result(in), nil
+		if !completedDespiteMissing(run, facts) {
+			in.Failed, in.RunReason = true, failReason(run)
+			return depdriver.Result(in), nil
+		}
 	}
 	if run.StdoutTruncated {
 		in.Failed, in.RunReason = true, "budget_exceeded"
@@ -181,7 +195,11 @@ func (d *Driver) Scan(ctx context.Context, t secscan.Target) (secscan.Result, er
 		in.Failed, in.RunReason = true, depscan.ReasonEngineFailed
 		return depdriver.Result(in), nil
 	}
-	resp.Extractors = append(resp.Extractors, ExtractionFailures(run.Stderr, run.StderrTruncated, t.ProjectRoot, d.env.CanaryDir)...)
+	if d.env.InventorySink != nil && t.CheckoutRoot == "" {
+		d.env.InventorySink(t.ProjectRoot, depscan.OSVID, resp.Packages)
+	}
+	resp.Extractors = append(resp.Extractors, facts.failures()...)
+	resp.Gaps = append(resp.Gaps, MissingDatabaseGaps(facts.missing, resp.Packages)...)
 	in.Response = resp
 	return depdriver.Result(in), nil
 }
@@ -215,10 +233,32 @@ var lockfileEcosystems = []struct{ pattern, eco string }{
 	{"composer.lock", "Packagist"},
 	{"packages.lock.json", "NuGet"},
 	{"*.csproj", "NuGet"},
+	{"*.fsproj", "NuGet"},
+	{"*.vbproj", "NuGet"},
+	{"*.deps.json", "NuGet"},
+	{"Directory.Packages.props", "NuGet"},
+	{"Directory.Build.props", "NuGet"},
 	{"packages.config", "NuGet"},
 	{"pom.xml", "Maven"},
 	{"gradle.lockfile", "Maven"},
 	{"buildscript-gradle.lockfile", "Maven"},
+	{"verification-metadata.xml", "Maven"},
+	// The files of ecosystems beyond the original eight, so a failure on
+	// one is placed on its own ecosystem, not on every one. Pub, SwiftURL,
+	// Hex, Hackage and CRAN are in osv-scanner v2.6.0's lockfile preset and
+	// Observer downloads their databases (the 2026-11-06 coverage review);
+	// CocoaPods, Julia (SCALIBR only), Conan and vcpkg have no database
+	// osv-scanner is given, so their packages are MissingDatabaseGaps.
+	{"pubspec.lock", "Pub"},
+	{"Package.resolved", "SwiftURL"},
+	{"Podfile.lock", "CocoaPods"},
+	{"mix.lock", "Hex"},
+	{"cabal.project.freeze", "Hackage"},
+	{"stack.yaml.lock", "Hackage"},
+	{"Manifest.toml", "Julia"},
+	{"renv.lock", "CRAN"},
+	{"conan.lock", "ConanCenter"},
+	{"vcpkg.json", "vcpkg"},
 }
 
 // lockfileEcosystem returns the ecosystem a dependency file feeds, "" when
@@ -247,12 +287,46 @@ func lockfileEcosystem(name string) string {
 // a project path that contains the canary path), the longer directory
 // owns it, so a project's unreadable lockfile is never mistaken for a
 // canary file and hidden.
+//
+// A line naming the ecosystems osv-scanner found no local database for is
+// no extraction failure when Observer offers a database for none of them
+// (they are gaps, MissingDatabaseGaps); one that names an ecosystem whose
+// database Observer does offer is unplaced, since the driver refuses to
+// start without it.
 func ExtractionFailures(stderr []byte, truncated bool, root, canaryDir string) []depscan.ExtractorStatus {
-	byEco := map[string][]string{}
-	unplaced := truncated
+	return readStderr(stderr, truncated, root, canaryDir).failures()
+}
+
+// stderrFacts is what one run's stderr says (readStderr).
+type stderrFacts struct {
+	// byEco are the dependency files each ecosystem failed on.
+	byEco map[string][]string
+	// unplaced: a line (or a truncated stderr) that cannot be placed, which
+	// fails every ecosystem.
+	unplaced bool
+	// missing are the ecosystems osv-scanner found no local database for,
+	// none of them one Observer offers a database for; sorted, each once.
+	missing []string
+}
+
+// readStderr reads osv-scanner's stderr into facts (ExtractionFailures).
+func readStderr(stderr []byte, truncated bool, root, canaryDir string) stderrFacts {
+	f := stderrFacts{byEco: map[string][]string{}, unplaced: truncated}
 	for _, line := range strings.Split(string(stderr), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+		if ecos, ok := missingDatabaseEcosystems(line); ok {
+			if slices.ContainsFunc(ecos, depscan.OSVScannerReads) {
+				f.unplaced = true
+				continue
+			}
+			for _, eco := range ecos {
+				if !slices.Contains(f.missing, eco) {
+					f.missing = append(f.missing, eco)
+				}
+			}
 			continue
 		}
 		if p, ok := pathUnder(line, canaryDir); ok && p != "" && !moreSpecific(line, root, canaryDir) {
@@ -260,21 +334,32 @@ func ExtractionFailures(stderr []byte, truncated bool, root, canaryDir string) [
 		}
 		rel, ok := pathUnder(line, root)
 		if !ok || rel == "" || rel == "." {
-			unplaced = true
+			f.unplaced = true
 			continue
 		}
 		eco := lockfileEcosystem(path.Base(rel))
 		if eco == "" {
-			unplaced = true
+			f.unplaced = true
 			continue
 		}
-		if !slices.Contains(byEco[eco], rel) {
-			byEco[eco] = append(byEco[eco], rel)
+		if !slices.Contains(f.byEco[eco], rel) {
+			f.byEco[eco] = append(f.byEco[eco], rel)
 		}
 	}
-	var out []depscan.ExtractorStatus
-	if unplaced {
-		for _, eco := range depscan.Ecosystems() {
+	sort.Strings(f.missing)
+	return f
+}
+
+// failures returns the failed extractor rows: one per ecosystem a file
+// failed in, and every ecosystem osv-scanner reads when a line could not be
+// placed.
+func (f stderrFacts) failures() []depscan.ExtractorStatus {
+	byEco := map[string][]string{}
+	for eco, files := range f.byEco {
+		byEco[eco] = files
+	}
+	if f.unplaced {
+		for _, eco := range depscan.OSVScannerEcosystems() {
 			if _, ok := byEco[eco]; !ok {
 				byEco[eco] = nil
 			}
@@ -285,10 +370,76 @@ func ExtractionFailures(stderr []byte, truncated bool, root, canaryDir string) [
 		ecos = append(ecos, eco)
 	}
 	sort.Strings(ecos)
+	out := make([]depscan.ExtractorStatus, 0, len(ecos))
 	for _, eco := range ecos {
-		files := byEco[eco]
+		files := append([]string(nil), byEco[eco]...)
 		sort.Strings(files)
 		out = append(out, depscan.ExtractorStatus{Extractor: "osv-scanner", OK: false, Ecosystem: eco, Files: files})
+	}
+	return out
+}
+
+// missingDBLine is osv-scanner's line naming the ecosystems it found no
+// local database for. Its local matcher (v2) gives each such package an
+// empty result, keeps matching the rest and logs this once at the end; the
+// logged error then makes the run exit 127 unless vulnerabilities were
+// found (exit 1). Matched case-insensitively and with an optional plural;
+// a rewording it does not match stays an unplaced error, which fails every
+// ecosystem (the safe side). NOT verified against a live binary on the
+// lane's host (none installed there): read from osv-scanner v2's source.
+var missingDBLine = regexp.MustCompile(`(?i)could not find local databases? for ecosystems?:\s*(.+?)\s*$`)
+
+// missingDatabaseEcosystems returns the ecosystems a stderr line names as
+// having no local database, ok false when the line is not that message.
+func missingDatabaseEcosystems(line string) ([]string, bool) {
+	m := missingDBLine.FindStringSubmatch(line)
+	if m == nil {
+		return nil, false
+	}
+	var out []string
+	for _, e := range strings.Split(m[1], ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out, len(out) > 0
+}
+
+// completedDespiteMissing reports a run that exited 127 only because it
+// logged the ecosystems Observer offers no database for: its output is
+// still the whole scan, so it is read (the other ecosystems keep their
+// results) and each missing ecosystem becomes gaps. Any other error line,
+// or a truncated stderr, keeps the run failed.
+func completedDespiteMissing(run extrun.Result, f stderrFacts) bool {
+	return run.Outcome == extrun.OutcomeExitNonZero && run.ExitCode == 127 && len(f.missing) > 0 && !f.unplaced
+}
+
+// MissingDatabaseGaps turns the ecosystems osv-scanner found no local
+// database for, and Observer offers none for, into gaps: one per
+// dependency file that carried packages of the ecosystem (with their
+// count), or one naming no file when the output listed none. Their
+// packages were not matched, so the run is partial, never clean.
+func MissingDatabaseGaps(ecos []string, pkgs []depscan.Package) []depscan.Gap {
+	var out []depscan.Gap
+	for _, eco := range ecos {
+		count := map[string]int{}
+		for _, p := range pkgs {
+			if p.Ecosystem == eco {
+				count[p.Path]++
+			}
+		}
+		if len(count) == 0 {
+			out = append(out, depscan.Gap{Ecosystem: eco, Reason: depscan.ReasonNoDatabaseOffered})
+			continue
+		}
+		paths := make([]string, 0, len(count))
+		for p := range count {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			out = append(out, depscan.Gap{Ecosystem: eco, Path: p, Reason: depscan.ReasonNoDatabaseOffered, Packages: count[p]})
+		}
 	}
 	return out
 }
@@ -550,7 +701,9 @@ func Parse(stdout []byte, root, canaryDir string, epochs map[string]string) (dep
 	keep, dropped := depscan.Prepare(resp.Packages)
 	resp.Dropped = dropped
 	for _, eco := range depscan.SortedEcosystems(keep) {
-		_, hasCanary := depscan.CanaryFor(eco)
+		// Only an ecosystem osv-scanner reads has its canary in the canary
+		// project; any other has no self-test in this run.
+		hasCanary := depscan.OSVScannerReads(eco)
 		e := depscan.EcoResult{Ecosystem: eco, Packages: len(keep[eco])}
 		e.Outcome, e.Reason = depscan.DecideEcosystem(depscan.MatchFacts{
 			DatabaseInstalled: epochs[eco] != "", HasCanary: hasCanary, CanaryHit: canaryHit[eco],

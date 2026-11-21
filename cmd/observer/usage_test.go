@@ -211,7 +211,7 @@ func TestUsageCmd_TableAndZeroSideEffects(t *testing.T) {
 		t.Fatalf("usage: %v (stderr=%s)", err, errOut)
 	}
 	for _, want := range []string{
-		"SuperBased - observed agent spend, last 30 days",
+		"superbased - observed agent spend, last 30 days",
 		"one-shot · no daemon",
 		"TOOL", "MODEL", "CACHE_R", "CACHE_W", "TURNS", "USD",
 		"claude-code",
@@ -1140,10 +1140,10 @@ func TestBareRootFallthroughMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bare root: %v (stderr=%s)", err, errOut)
 		}
-		if !strings.Contains(out, "SuperBased - observed agent spend") || !strings.Contains(out, "claude-code") {
+		if !strings.Contains(out, "superbased - observed agent spend") || !strings.Contains(out, "claude-code") {
 			t.Errorf("bare root should print the usage table:\n%s", out)
 		}
-		if !strings.Contains(errOut, "no local SuperBased state found") {
+		if !strings.Contains(errOut, "no local superbased state found") {
 			t.Errorf("bare root should explain itself on stderr:\n%s", errOut)
 		}
 		assertNoObserverHome(t, env.home)
@@ -1162,7 +1162,7 @@ func TestBareRootFallthroughMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bare root: %v", err)
 		}
-		if !strings.Contains(out, "SuperBased Observer") || !strings.Contains(out, "observer usage") {
+		if !strings.Contains(out, "superbased Observer") || !strings.Contains(out, "observer usage") {
 			t.Errorf("expected the welcome screen (with the new usage hint):\n%s", out)
 		}
 		if strings.Contains(out, "observed agent spend") {
@@ -1178,7 +1178,7 @@ func TestBareRootFallthroughMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bare root: %v", err)
 		}
-		if !strings.Contains(out, "SuperBased Observer") {
+		if !strings.Contains(out, "superbased Observer") {
 			t.Errorf("expected the welcome screen:\n%s", out)
 		}
 		if strings.Contains(out, "observed agent spend") {

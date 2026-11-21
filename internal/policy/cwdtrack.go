@@ -867,10 +867,11 @@ type deleteAnchor struct {
 	failVia  string
 }
 
-// unitAnchors returns the distinct anchors a unit can run with. It is
-// the ONE entry the delete rules use; a unit in a line with no directory
-// change, link creation or chdir wrapper gets the single plain anchor.
-func unitAnchors(ctx *MatchContext, cmd *Command) []deleteAnchor {
+// deriveUnitAnchors returns the distinct anchors a unit can run with; a
+// unit in a line with no directory change, link creation or chdir wrapper
+// gets the single plain anchor. Rules call unitAnchors (evalmemo.go), the
+// ONE entry, which derives this once per unit of an evaluation.
+func deriveUnitAnchors(ctx *MatchContext, cmd *Command) []deleteAnchor {
 	ev := ctx.Event
 	base := ev.Cwd
 	if base == "" {

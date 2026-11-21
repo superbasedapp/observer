@@ -1,0 +1,231 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "python"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "1.45.2"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "2c4fbc5e-4509-4bda-abe7-3e95dd9272d2"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "fixture-agent"
+            }
+          },
+          {
+            "key": "sbo.agent",
+            "value": {
+              "stringValue": "fixture-bot"
+            }
+          },
+          {
+            "key": "session.id",
+            "value": {
+              "stringValue": "run-1"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "opentelemetry.instrumentation.openai_v2"
+          },
+          "spans": [
+            {
+              "traceId": "xmUkp6FhWcVhfI5wcMkQog==",
+              "spanId": "RfTlMwICRx0=",
+              "name": "chat gpt-5.5-mini",
+              "kind": "SPAN_KIND_CLIENT",
+              "startTimeUnixNano": "1793712795125671543",
+              "endTimeUnixNano": "1793712795142137527",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-5.5-mini"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-5.5-mini-2026-10-01"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "stop"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-mock-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "1234"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "56"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 256
+            },
+            {
+              "traceId": "X4PIdRDSpkLE1cbCP0EiaA==",
+              "spanId": "/mPBaogSKSo=",
+              "name": "chat gpt-5.5-mini",
+              "kind": "SPAN_KIND_CLIENT",
+              "startTimeUnixNano": "1793712795142474313",
+              "endTimeUnixNano": "1793712795145872984",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-5.5-mini"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-5.5-mini-2026-10-01"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "stop"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-mock-2"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "1234"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "56"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 256
+            }
+          ],
+          "schemaUrl": "https://opentelemetry.io/schemas/1.30.0"
+        },
+        {
+          "scope": {
+            "name": "fixture-agent"
+          },
+          "spans": [
+            {
+              "traceId": "phcwoSPqMsMOtQ+rgC1qqA==",
+              "spanId": "8b31E6nxjzk=",
+              "name": "execute_tool list_files",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1793712795142303877",
+              "endTimeUnixNano": "1793712795142327554",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "list_files"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_fixture_1"
+                  }
+                }
+              ],
+              "status": {},
+              "flags": 256
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

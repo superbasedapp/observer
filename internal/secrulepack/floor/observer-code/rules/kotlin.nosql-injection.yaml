@@ -1,0 +1,91 @@
+rules:
+  - id: kotlin.nosql-injection
+    languages: [kotlin]
+    severity: ERROR
+    message: Web request input is parsed as a MongoDB query document or run as a server-side JavaScript condition, so a caller can change the query; build the filter with Filters, Criteria or a typed query and pass the input as a value.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      # Spring and JAX-RS handler parameters that carry text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) = $E
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) = $E
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|List<String>|Set<String>|Collection<String>|Array<String>|CharSequence)\??$
+      # Servlet requests, by call or by Kotlin property.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.$GET(...)
+              - pattern: $REQ.$GET
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|getInputStream|getReader|parameterMap|queryString|cookies|pathInfo|requestURI|inputStream|reader)$
+      # Ktor.
+      - pattern: call.parameters
+      - pattern: call.request.queryParameters
+      - pattern: call.request.headers
+      - pattern: call.request.cookies
+      - pattern: call.request.uri
+      - pattern: call.receiveText()
+      - pattern: call.receiveParameters()
+      - pattern: call.receive<String>()
+    pattern-sanitizers:
+      - pattern: $X.toInt()
+      - pattern: $X?.toInt()
+      - pattern: $X.toLong()
+      - pattern: $X?.toLong()
+      - pattern: $X.toIntOrNull()
+      - pattern: $X?.toIntOrNull()
+      - pattern: $X.toLongOrNull()
+      - pattern: $X?.toLongOrNull()
+      - pattern: Integer.parseInt(...)
+      - pattern: java.lang.Long.parseLong(...)
+      - pattern: UUID.fromString(...)
+      - pattern: ObjectId(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: BasicQuery($Q, ...)
+              - pattern: Document.parse($Q)
+              - pattern: BasicDBObject.parse($Q)
+              - pattern: BsonDocument.parse($Q)
+              - pattern: Filters.where($Q)
+              - pattern: BasicDBObject("\$where", $Q)
+              - pattern: Document("\$where", $Q)
+              - pattern: $D.append("\$where", $Q)
+              - pattern: $D.put("\$where", $Q)
+          - focus-metavariable: $Q
+      # KMongo's JSON filter strings on a collection.
+      - patterns:
+          - pattern: $COLL.$F($Q, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(find|findOne|findOneAndUpdate|findOneAndDelete|updateOne|updateMany|deleteOne|deleteMany|countDocuments|aggregate)$
+          - metavariable-regex:
+              metavariable: $COLL
+              regex: (?i)^(this\.)?\w*(collection|coll)s?$
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^"
+          - focus-metavariable: $Q

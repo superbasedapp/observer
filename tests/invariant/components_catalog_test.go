@@ -183,11 +183,23 @@ func TestComponentsEgressMatchesConfigDefaults(t *testing.T) {
 			t.Errorf("%s: config default calls %s, catalog egress does not list it", tc.id, u.Hostname())
 		}
 	}
-	// A vendor-run host may appear only on a component whose job is that
-	// egress, never on core.
+	// DEFAULT (automatic) egress lives only in a removable component whose
+	// job is that egress, never on core. Core may disclose egress that only
+	// a user's own action opens (a linked cloud-agent account, a command the
+	// user runs): the cloud agents' lanes are core, and an honest catalog
+	// lists their hosts rather than hiding them (security review
+	// 2026-11-02, ledger MODPKG-4). Each such row must say what opens it.
 	for _, c := range components.ForBinary(components.BinaryNode) {
-		if c.Class == components.ClassCore && len(c.Surface.Egress) != 0 {
-			t.Errorf("core declares egress %v; default egress lives in a removable component", c.Surface.Egress)
+		if c.Class != components.ClassCore {
+			continue
+		}
+		for _, e := range c.Surface.Egress {
+			if e.Trigger != components.TriggerOptIn && e.Trigger != components.TriggerUserTriggered {
+				t.Errorf("core declares %s egress to %s; default egress lives in a removable component", e.Trigger, e.Host)
+			}
+			if strings.TrimSpace(e.Gate) == "" {
+				t.Errorf("core egress to %s names no gate", e.Host)
+			}
 		}
 	}
 }
@@ -372,4 +384,33 @@ func tomlLookup(v reflect.Value, key string) (reflect.Value, bool) {
 		}
 	}
 	return v, true
+}
+
+// TestComponentsCoreDisclosesCloudAgentHosts: every reviewed cloud-agent
+// API host (cloudAgentsAPIHosts, the one pinned table) is disclosed as core
+// egress, and the cloud-agent keychain service as a core credential store,
+// so Settings > Components cannot under-report the cloud.agents lane
+// (security review 2026-11-02, ledger MODPKG-4).
+func TestComponentsCoreDisclosesCloudAgentHosts(t *testing.T) {
+	core, ok := components.Get("core")
+	if !ok {
+		t.Fatal("core row missing")
+	}
+	hosts := map[string]bool{}
+	for _, e := range core.Surface.Egress {
+		hosts[e.Host] = true
+	}
+	for _, h := range cloudAgentsAPIHosts {
+		if !hosts[h] {
+			t.Errorf("cloud-agent API host %s is not disclosed on the core row", h)
+		}
+	}
+	if !strings.Contains(strings.Join(core.Surface.Credentials, "\n"), "sbo-cloudagents-v1") {
+		t.Error("core does not disclose the sbo-cloudagents-v1 keychain service")
+	}
+	for _, v := range []string{"cloud-agents", "cloud-session"} {
+		if !contains(core.Verbs, v) {
+			t.Errorf("core does not own verb %s", v)
+		}
+	}
 }

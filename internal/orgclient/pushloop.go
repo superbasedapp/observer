@@ -36,6 +36,22 @@ func (c *Client) NotePushActivity() {
 	}
 }
 
+// WakePushLoop is an operator's explicit "push now" (`observer org push-now`
+// or the dashboard's Push now, reaching the daemon over its loopback API): the
+// running PushLoop runs one cycle at once, even while a failed cycle's pause
+// (backoff, or the oversized-batch circuit) is pending. A pending wake
+// coalesces. Only an operator action calls it, never a cycle's own outcome, so
+// it cannot turn a persistent failure into a tight loop (D-704). Nil-safe.
+func (c *Client) WakePushLoop() {
+	if c == nil || c.pushWake == nil {
+		return
+	}
+	select {
+	case c.pushWake <- struct{}{}:
+	default:
+	}
+}
+
 // notePushMinInterval records the org's backpressure hint
 // (orgcontract.HeaderPushMinInterval, whole seconds) from an accepted push.
 // An absent or unparseable header clears it: the hint is per-response, so an
@@ -192,11 +208,15 @@ func (c *Client) runPushLoop(ctx context.Context, cycle func(ctx context.Context
 	retry := newLoopRetry()
 	var st pushsched.State
 	var notBefore time.Time
+	woken := false
 	for {
 		dec := pushsched.Next(c.pushSchedConfig(), st)
 		at := dec.At
 		if at.Before(notBefore) {
 			at = notBefore
+		}
+		if woken {
+			at, woken = time.Now(), false
 		}
 		timer := time.NewTimer(time.Until(at))
 		select {
@@ -210,6 +230,10 @@ func (c *Client) runPushLoop(ctx context.Context, cycle func(ctx context.Context
 				st.FirstPending = now
 			}
 			st.LastPending = now
+			continue
+		case <-c.pushWake:
+			timer.Stop()
+			notBefore, woken = time.Time{}, true
 			continue
 		case <-timer.C:
 		}

@@ -45,8 +45,9 @@ test("the registry parse found the adapter rows", () => {
 // docs/adapter-parity.md; the reasons are in design/brand-icons/NOTES.md
 // "Tools without a logo". Remove an id here when its logo lands (the second
 // test below fails until you do).
-//   (none right now: dirac and vtcode got logos 2026-10-22; see NOTES.md.)
-const LOGO_PENDING = new Set<string>();
+//   custom-agent (P-228) is a developer's own agent: there is no vendor and
+//   so no brand mark to draw; the monogram fallback is the intended look.
+const LOGO_PENDING = new Set<string>(["custom-agent"]);
 
 test("every registry tool id has a TOOL_LOGOS entry (or is a listed monogram-fallback gap)", () => {
   const logos = toolLogoKeys();

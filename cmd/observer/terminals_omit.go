@@ -124,6 +124,16 @@ func newWorkspacesCmd() *cobra.Command {
 	return compiledOutVerb("workspaces", "Sandbox workspaces (not in this build)", "terminals")
 }
 
+// newLaunchCmd registers `observer launch` as a compiled-out verb.
+func newLaunchCmd() *cobra.Command {
+	return compiledOutVerb("launch", "Launch an agent through the daemon (not in this build)", "terminals")
+}
+
+// newTerminalsCmd registers `observer terminals` as a compiled-out verb.
+func newTerminalsCmd() *cobra.Command {
+	return compiledOutVerb("terminals", "Terminal runs (not in this build)", "terminals")
+}
+
 // newIDECmd registers `observer ide` as a compiled-out verb.
 func newIDECmd() *cobra.Command {
 	return compiledOutVerb("ide", "Launch an IDE or desktop app (not in this build)", "terminals")
@@ -161,3 +171,11 @@ const attachInBuild = false
 
 // sandboxSignInForbiddenSeam is nil in a build without terminals.
 func sandboxSignInForbiddenSeam(string) func() bool { return nil }
+
+// sandboxSeizeHostSeam is nil: a build without terminals has no strace
+// switch rows.
+func sandboxSeizeHostSeam() func() dashapi.SandboxSeizeHost { return nil }
+
+// sandboxGatewayPortFunc answers nil in a build without terminals: there is no
+// in-box gateway whose port a target could collide with.
+func sandboxGatewayPortFunc() func(int) int { return nil }

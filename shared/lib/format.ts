@@ -337,6 +337,34 @@ export function fmtUSD(n: number | null | undefined, precise = false): string {
   return fmtCostAs(costDisplayMode, n, undefined, precise);
 }
 
+/** usdFine renders a dollar amount with adaptive precision, for spend that
+ *  is routinely sub-cent (an AI app's per-trace cost): whole dollars at
+ *  scale, two decimals from $1, four decimals below $1, "$0.00" for a true
+ *  zero, and "<$0.0001" for a real amount too small for four decimals. So a
+ *  real $0.0000202 never reads as "$0.00" or "$0.0000". The ONE owner of
+ *  this rule: web2's `usd()` delegates here, so both dashboards agree. */
+export function usdFine(n: number): string {
+  if (!Number.isFinite(n)) return "-";
+  const sign = n < 0 ? "-" : "";
+  const a = Math.abs(n);
+  if (a >= 1000) return `${sign}$${localeNumber(a, "en-US", { maximumFractionDigits: 0 })}`;
+  if (a >= 1) return `${sign}$${a.toFixed(2)}`;
+  if (a === 0) return "$0.00";
+  if (a < 0.00005) return `${sign}<$0.0001`;
+  return `${sign}$${a.toFixed(4)}`;
+}
+
+/** fmtCostFine is fmtCost with usdFine's adaptive precision: the token count
+ *  in tokens mode, else the sub-cent-aware dollar figure. The node's AI Apps
+ *  pages render every cost through it (the Plane A money slot default). */
+export function fmtCostFine(usd: number | null | undefined, tokens?: number | null): string {
+  if (costDisplayMode === "tokens") {
+    return tokens != null && Number.isFinite(tokens) ? fmtTok(tokens) : COST_HIDDEN;
+  }
+  if (usd == null || !Number.isFinite(usd)) return COST_HIDDEN;
+  return usdFine(usd);
+}
+
 // ---------------------------------------------------------------------------
 // The cost AFFORDANCES around a figure (labels, $ toggles, dollar-only
 // columns / tiles / charts) follow the same mode as the figures above. A
@@ -580,12 +608,22 @@ export function fmtYearMonth(value: string | null | undefined): string {
   return cachedDateTimeFormat("en-US", { year: "numeric", month: "long" }).format(d);
 }
 
+// SUBAGENT_ID_SEP separates a subagent session id from its parent's
+// (`<parent>:agent:<agent>`, internal/adapter/claudecode/subagent.go).
+const SUBAGENT_ID_SEP = ":agent:";
+
 // fmtShortId abbreviates an opaque identifier for a table cell or a caption:
 // the first `keep` characters plus an ellipsis. A short id is returned whole.
-// Pair it with the full id in a title/tooltip or a CopyOnClick so nothing is
-// lost, only hidden.
+// A subagent session id keeps both halves ("00392aa6… · subagent a0d28add…"):
+// its first characters are its parent's, so the plain cut showed every
+// subagent of one session as the same id. Pair it with the full id in a
+// title/tooltip or a CopyOnClick so nothing is lost, only hidden.
 export function fmtShortId(id: string | null | undefined, keep = 8): string {
   if (!id) return "—";
   const s = id.trim();
+  const i = s.indexOf(SUBAGENT_ID_SEP);
+  if (i > 0) {
+    return `${fmtShortId(s.slice(0, i), keep)} · subagent ${fmtShortId(s.slice(i + SUBAGENT_ID_SEP.length), keep)}`;
+  }
   return s.length <= keep + 1 ? s : s.slice(0, keep) + "…";
 }

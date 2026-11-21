@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -237,6 +238,89 @@ func TestStepUpAuthorizeURLForcesReauth(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestLoginReauthStartForcesFreshAuthKitSignIn pins the platform OIDC
+// issuer's fresh-sign-in demand (lane w9-issuer-authtime): a login start with
+// reauth=1 sends AuthKit prompt=login and max_age=0 exactly as a step-up does,
+// any other reauth spelling is a 400 before anything is minted, and only the
+// forced login mints a portal session with an authentication time (the
+// issuer's auth_time): dropping reauth=1 yields a session with none.
+func TestLoginReauthStartForcesFreshAuthKitSignIn(t *testing.T) {
+	h := newWorkOSHarness(t, true)
+	// In the canonical (sorted) encoding safeReturnPath stores and redirects to.
+	resume := "/oauth2/authorize?" + url.Values{
+		"client_id": {"org:0b5c3f1e-2d4a-4c6b-9e8f-1a2b3c4d5e6f"}, "state": {"s"}, "sb_reauth_at": {"1794000000"},
+	}.Encode()
+	cases := []struct {
+		name   string
+		query  string
+		status int
+		forced bool
+	}{
+		{"no reauth: an ordinary sign-in", "", http.StatusFound, false},
+		{"reauth=1", "?reauth=1", http.StatusFound, true},
+		{"reauth=1 resuming the issuer's authorize request", "?reauth=1&return_to=" + url.QueryEscape(resume), http.StatusFound, true},
+		{"reauth=0", "?reauth=0", http.StatusBadRequest, false},
+		{"reauth=true", "?reauth=true", http.StatusBadRequest, false},
+		{"reauth=11", "?reauth=11", http.StatusBadRequest, false},
+		{"reauth empty", "?reauth=", http.StatusBadRequest, false},
+		{"reauth repeated", "?reauth=1&reauth=1", http.StatusBadRequest, false},
+		{"reauth repeated, disagreeing", "?reauth=1&reauth=0", http.StatusBadRequest, false},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hc := newBrowser(t)
+			state, resp := h.startFlow(t, hc, tc.query)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("start%s status=%d body=%s, want %d", tc.query, resp.StatusCode, readAll(resp), tc.status)
+			}
+			if tc.status != http.StatusFound {
+				assertCode(t, resp, "invalid_reauth")
+				if state != "" {
+					t.Fatal("a refused start minted a transaction")
+				}
+				return
+			}
+			q := authorizeQuery(t, resp)
+			gotForced := q.Get("prompt") == "login" && q.Get("max_age") == "0"
+			if gotForced != tc.forced || (!tc.forced && (q.Get("prompt") != "" || q.Get("max_age") != "")) {
+				t.Fatalf("start%s: prompt=%q max_age=%q, want forced=%v", tc.query, q.Get("prompt"), q.Get("max_age"), tc.forced)
+			}
+			if q.Get("code_challenge_method") != "S256" || q.Get("state") != state {
+				t.Fatalf("start%s: authorize URL malformed: %v", tc.query, q)
+			}
+
+			// The callback: only the forced leg's session records when the
+			// person authenticated.
+			cb := h.callback(t, hc, newCode(fmt.Sprintf("reauth-rita-%d", i)), state)
+			if cb.StatusCode != http.StatusSeeOther {
+				t.Fatalf("callback status=%d body=%s", cb.StatusCode, readAll(cb))
+			}
+			c := cookieNamed(cb, devCookieName)
+			if c == nil {
+				t.Fatal("callback set no session cookie")
+			}
+			ctx := context.Background()
+			bp, err := h.store.IntrospectBrowserSession(ctx, c.Value, time.Now())
+			if err != nil || !bp.Valid {
+				t.Fatalf("introspect: valid=%v err=%v", bp.Valid, err)
+			}
+			at, err := h.store.BrowserSessionAuthTime(ctx, bp.AccountID, bp.SessionID)
+			if err != nil {
+				t.Fatalf("BrowserSessionAuthTime: %v", err)
+			}
+			if tc.forced && (at.IsZero() || time.Since(at) > time.Minute) {
+				t.Fatalf("forced sign-in recorded authentication time %v, want about now", at)
+			}
+			if !tc.forced && !at.IsZero() {
+				t.Fatalf("ordinary sign-in recorded authentication time %v; AuthKit may have answered it from its own session", at)
+			}
+			if loc := cb.Header.Get("Location"); tc.query != "" && strings.Contains(tc.query, "return_to") && loc != resume {
+				t.Fatalf("callback Location=%q, want the issuer's authorize request %q", loc, resume)
+			}
+		})
+	}
 }
 
 func authorizeQuery(t *testing.T, resp *http.Response) url.Values {
@@ -581,4 +665,59 @@ func (h *workosHarness) exchangeRaw(t *testing.T, brokerToken string) *http.Resp
 		t.Fatalf("exchange: %v", err)
 	}
 	return resp
+}
+
+// --- hosted sign-in fix: the sign-up start ---------------------------------
+
+// TestSignUpStartOpensAuthKitSignUpScreen pins the console's "Create an
+// account" start (lane A): screen_hint=sign-up reaches AuthKit as
+// screen_hint=sign-up beside provider=authkit, a sign-in or absent hint sends
+// no screen_hint, an unknown or repeated value is a 400 before any
+// transaction is minted, and a step-up refuses a sign-up hint.
+func TestSignUpStartOpensAuthKitSignUpScreen(t *testing.T) {
+	h := newWorkOSHarness(t, true)
+	cases := []struct {
+		name     string
+		query    string
+		status   int
+		wantHint string
+	}{
+		{"no hint", "", http.StatusFound, ""},
+		{"sign-in hint", "?screen_hint=sign-in", http.StatusFound, ""},
+		{"sign-up hint", "?screen_hint=sign-up", http.StatusFound, "sign-up"},
+		{"sign-up with a return path", "?screen_hint=sign-up&return_to=%2Fportal%2Forgs%2Fnew", http.StatusFound, "sign-up"},
+		{"unknown hint", "?screen_hint=register", http.StatusBadRequest, ""},
+		{"repeated hint", "?screen_hint=sign-up&screen_hint=sign-in", http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hc := newBrowser(t)
+			_, resp := h.startFlow(t, hc, tc.query)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("start%s status=%d, want %d body=%s", tc.query, resp.StatusCode, tc.status, readAll(resp))
+			}
+			if tc.status != http.StatusFound {
+				if cookieNamed(resp, devTxnCookieName) != nil {
+					t.Fatal("a refused start minted a transaction")
+				}
+				return
+			}
+			q := authorizeQuery(t, resp)
+			_, has := q["screen_hint"]
+			if q.Get("screen_hint") != tc.wantHint || has != (tc.wantHint != "") {
+				t.Fatalf("screen_hint=%q present=%v, want %q", q.Get("screen_hint"), has, tc.wantHint)
+			}
+			if q.Get("provider") != "authkit" {
+				t.Fatalf("provider=%q, want authkit", q.Get("provider"))
+			}
+		})
+	}
+
+	t.Run("step-up refuses a sign-up hint", func(t *testing.T) {
+		hc, _, _ := h.signIn(t, "signup-sam")
+		_, resp := h.startFlow(t, hc, "?purpose=step_up&action=deletion&screen_hint=sign-up")
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("step-up with screen_hint status=%d, want 400", resp.StatusCode)
+		}
+	})
 }

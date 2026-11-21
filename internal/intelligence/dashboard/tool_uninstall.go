@@ -58,11 +58,19 @@ func (s *Server) dashboardInstallFor(ctx context.Context, tool string) *ToolInst
 		s.opts.Logger.Warn("dashboard: tool install record lookup failed", slog.String("tool", tool), slog.Any("err", err))
 		return nil
 	}
-	if !ok {
+	if !ok || !toolSubject(rec) {
 		return nil
 	}
 	rec = s.withKillSwitch(rec)
 	return &rec
+}
+
+// toolSubject reports whether rec is an AI tool's record. The tool routes
+// list and act on subject_kind tool only (sandbox installation lifecycle plan
+// section 3.6): a sandbox setup record (subject_kind sandbox, agent migration
+// 222) belongs to the sandbox setup routes and never shows here.
+func toolSubject(rec ToolInstallRecord) bool {
+	return rec.SubjectKind == "" || rec.SubjectKind == "tool"
 }
 
 // recordInstall records a just-spawned guided install. Fail-soft: the
@@ -96,6 +104,9 @@ func (s *Server) handleTerminalInstalls(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]ToolInstallRecord, 0, len(recs))
 	for _, rec := range recs {
+		if !toolSubject(rec) {
+			continue
+		}
 		out = append(out, s.withKillSwitch(rec))
 	}
 	writeJSON(w, map[string]any{
@@ -150,11 +161,11 @@ func (s *Server) handleTerminalUninstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	if !s.installKillSwitchOn() {
-		writeErrStatus(w, errors.New("guided install and uninstall are disabled; set [terminal.launch].allow_install = true to enable them"), http.StatusForbidden)
+		writeGuidedUninstallOff(w)
 		return
 	}
 	if s.opts.ToolInstalls == nil {

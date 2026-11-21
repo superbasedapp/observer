@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/freshness"
@@ -306,14 +307,18 @@ func plainProjectMover(table, countQ, moveQ string) projectRowMover {
 }
 
 // projectRowMovers is every project-keyed table the worktree-roots
-// backfill moves, in move order. sessions, actions, api_turns and
-// failure_context are this package's; file_changes is loc.go's,
-// project_commits commits.go's (its files follow by commit id) and
-// file_state internal/freshness's. compaction_events is moved by the
-// mover its owner internal/intelligence/compaction gives the caller (that
-// package's tests import this one). Tables not listed (project_patterns,
-// project_commit_scan, the codeintel and guard tables) stay on the old
-// row: they are per-root caches or keyed state the next scan rebuilds.
+// backfill moves, in move order. sessions, actions, api_turns,
+// failure_context, process_runs and process_events are this package's;
+// file_changes is loc.go's, project_commits commits.go's (its files follow
+// by commit id) and file_state internal/freshness's. compaction_events is
+// moved by the mover its owner internal/intelligence/compaction gives the
+// caller (that package's tests import this one). A process run takes its
+// session's project when it is attributed, so a run attributed while its
+// session sat on the old row moves with the session (live 2026-11-07: 85K
+// runs were left on folded worktree rows). Tables not listed
+// (project_patterns, project_commit_scan, the codeintel and guard tables)
+// stay on the old row: they are per-root caches or keyed state the next
+// scan rebuilds. Rows in the cold archive (archive.db) are not moved.
 var projectRowMovers = []projectRowMover{
 	plainProjectMover("sessions",
 		`SELECT COUNT(*) FROM sessions WHERE project_id = ?`,
@@ -327,6 +332,12 @@ var projectRowMovers = []projectRowMover{
 	plainProjectMover("failure_context",
 		`SELECT COUNT(*) FROM failure_context WHERE project_id = ?`,
 		`UPDATE failure_context SET project_id = ? WHERE project_id = ?`),
+	plainProjectMover("process_runs",
+		`SELECT COUNT(*) FROM process_runs WHERE project_id = ?`,
+		`UPDATE process_runs SET project_id = ? WHERE project_id = ?`),
+	plainProjectMover("process_events",
+		`SELECT COUNT(*) FROM process_events WHERE project_id = ?`,
+		`UPDATE process_events SET project_id = ? WHERE project_id = ?`),
 	{table: "file_state", move: func(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error) {
 		fm, err := freshness.MoveProjectFileState(ctx, tx, fromID, toID)
 		return TableMove{Table: "file_state", Moved: fm.Moved, KeptOnOld: fm.KeptOnOld, Swapped: fm.Swapped}, err
@@ -336,6 +347,36 @@ var projectRowMovers = []projectRowMover{
 		return TableMove{Table: "file_changes", Moved: n}, err
 	}},
 	{table: "project_commits", move: moveProjectCommitsTx},
+}
+
+// worktreeRootMovedPrefix begins the name WorktreeRootMovedMark gives a
+// folded row; FoldedProjectSQL matches on it.
+const worktreeRootMovedPrefix = "worktree root moved to project "
+
+// WorktreeRootMovedMark is the name the worktree-roots backfill gives an
+// old projects row once its rows moved onto project toID (the mark
+// MoveProjectRows writes).
+func WorktreeRootMovedMark(toID int64) string {
+	return fmt.Sprintf("%s%d (observer backfill --worktree-roots)", worktreeRootMovedPrefix, toID)
+}
+
+// IsWorktreeRootMovedMark reports whether name is a WorktreeRootMovedMark:
+// the row was already folded into another project.
+func IsWorktreeRootMovedMark(name string) bool {
+	return strings.HasPrefix(name, worktreeRootMovedPrefix)
+}
+
+// FoldedProjectSQL is an SQL predicate over the projects row aliased alias
+// (a fixed identifier, never user input) that holds for a row the
+// worktree-roots backfill folded into another project and that no session
+// or action has been filed under since: a row with nothing of its own to
+// show. The project list and the project count leave such rows out, so a
+// folded worktree does not reappear as an empty project. It is never NULL
+// (most rows have no name), so NOT (...) of it is safe in a WHERE.
+func FoldedProjectSQL(alias string) string {
+	return "COALESCE(" + alias + ".name, '') LIKE '" + worktreeRootMovedPrefix + "%'" +
+		" AND NOT EXISTS (SELECT 1 FROM sessions fold_s WHERE fold_s.project_id = " + alias + ".id)" +
+		" AND NOT EXISTS (SELECT 1 FROM actions fold_a WHERE fold_a.project_id = " + alias + ".id)"
 }
 
 // MoveProjectRows moves every row of project fromID in the tables of

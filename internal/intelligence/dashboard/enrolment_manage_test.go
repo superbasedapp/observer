@@ -28,6 +28,11 @@ type fakeEnrolManager struct {
 	resyncs []bool
 	// enrolled makes Overview report an existing enrolment.
 	enrolled bool
+	// leaveOpts / idpOpts record the switch options each call carried;
+	// leaveErr makes Leave fail.
+	leaveOpts []SwitchOptions
+	idpOpts   []SwitchOptions
+	leaveErr  error
 }
 
 func (f *fakeEnrolManager) Overview(context.Context) (EnrolmentOverview, error) {
@@ -60,7 +65,8 @@ func (f *fakeEnrolManager) DecideGrant(_ context.Context, id string, accept bool
 	return GrantDecision{Status: "declined"}, nil
 }
 
-func (f *fakeEnrolManager) StartIdP(context.Context, string) (IdPStart, error) {
+func (f *fakeEnrolManager) StartIdP(_ context.Context, _ string, opts SwitchOptions) (IdPStart, error) {
+	f.idpOpts = append(f.idpOpts, opts)
 	return IdPStart{FlowID: "f1", UserCode: "BCDF-2345"}, nil
 }
 
@@ -92,8 +98,12 @@ func (f *fakeEnrolManager) Resync(_ context.Context, confirm bool) (ResyncReport
 	return ResyncReport{WindowDays: 30, Limit: 20000, Tables: []ResyncTable{{Table: "sessions", Queued: 7}}, Queued: 7, Manifests: 2, Confirmed: confirm}, nil
 }
 
-func (f *fakeEnrolManager) Leave(context.Context) (LeaveReport, error) {
+func (f *fakeEnrolManager) Leave(_ context.Context, opts SwitchOptions) (LeaveReport, error) {
 	f.leaves++
+	f.leaveOpts = append(f.leaveOpts, opts)
+	if f.leaveErr != nil {
+		return LeaveReport{}, f.leaveErr
+	}
 	return LeaveReport{WasEnrolled: true, OrgName: "Acme"}, nil
 }
 
@@ -508,5 +518,66 @@ func TestEnrolmentResync(t *testing.T) {
 	}
 	if rr := enrolPost(s, "/api/enrolment/resync", `not json`, tok, ck); rr.Code != http.StatusBadRequest {
 		t.Fatalf("bad JSON = %d, want 400", rr.Code)
+	}
+}
+
+// TestEnrolmentUnsentRowsConfirmPath pins the R3-78 confirm step's wire: a
+// switch refused because rows for the current organization could not be sent
+// answers 409 {error: unsent_rows, message}, and the explicit "Switch anyway"
+// / "Leave anyway" reach the manager as drop_unsent on enrol, sign-in start
+// and leave (whose body stays optional for the older unenroll alias).
+func TestEnrolmentUnsentRowsConfirmPath(t *testing.T) {
+	m := &fakeEnrolManager{enrolErr: orgenrol.Fail(orgenrol.CodeUnsentRows, "Not switched: 6 rows captured for Acme have not been sent to it yet")}
+	s := enrolServer(t, m)
+	tok, ck := enrolToken(t, s)
+
+	rr := enrolPost(s, "/api/enrolment/enrol", `{"method":"code","org_url":"https://org.example","token":"id.secret"}`, tok, ck)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("refused switch = %d, want 409 (%s)", rr.Code, rr.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "unsent_rows" || !strings.Contains(body["message"], "6 rows") {
+		t.Fatalf("refusal body = %+v", body)
+	}
+	m.enrolErr = nil
+	if rr := enrolPost(s, "/api/enrolment/enrol", `{"method":"code","org_url":"https://org.example","token":"id.secret","drop_unsent":true}`, tok, ck); rr.Code != http.StatusOK {
+		t.Fatalf("switch anyway = %d %s", rr.Code, rr.Body.String())
+	}
+	if n := len(m.enrolReqs); n != 2 || m.enrolReqs[0].DropUnsent || !m.enrolReqs[1].DropUnsent {
+		t.Fatalf("enrol requests = %+v, want refused then drop_unsent", m.enrolReqs)
+	}
+
+	if rr := enrolPost(s, "/api/enrolment/idp/start", `{"org_url":"https://org.example","drop_unsent":true}`, tok, ck); rr.Code != http.StatusOK {
+		t.Fatalf("idp start = %d %s", rr.Code, rr.Body.String())
+	}
+	if len(m.idpOpts) != 1 || !m.idpOpts[0].DropUnsent {
+		t.Fatalf("idp start options = %+v", m.idpOpts)
+	}
+
+	m.leaveErr = orgenrol.Fail(orgenrol.CodeUnsentRows, "Did not leave: 4 rows")
+	if rr := enrolPost(s, "/api/enrolment/leave", `{}`, tok, ck); rr.Code != http.StatusConflict {
+		t.Fatalf("refused leave = %d, want 409", rr.Code)
+	}
+	m.leaveErr = nil
+	if rr := enrolPost(s, "/api/enrolment/leave", `{"drop_unsent":true}`, tok, ck); rr.Code != http.StatusOK {
+		t.Fatalf("leave anyway = %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := enrolPost(s, "/api/enrolment/unenroll", ``, tok, ck); rr.Code != http.StatusOK {
+		t.Fatalf("legacy unenroll with no body = %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := enrolPost(s, "/api/enrolment/leave", `not json`, tok, ck); rr.Code != http.StatusBadRequest {
+		t.Fatalf("leave with a bad body = %d, want 400", rr.Code)
+	}
+	want := []bool{false, true, false}
+	if len(m.leaveOpts) != len(want) {
+		t.Fatalf("leave options = %+v, want %d calls", m.leaveOpts, len(want))
+	}
+	for i, w := range want {
+		if m.leaveOpts[i].DropUnsent != w {
+			t.Errorf("leave call %d drop_unsent = %v, want %v", i, m.leaveOpts[i].DropUnsent, w)
+		}
 	}
 }

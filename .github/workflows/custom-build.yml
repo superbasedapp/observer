@@ -1,7 +1,8 @@
 # Custom build from a component manifest (modular packaging plan 5.3 and
 # phase P7, lane MP-CUST): the shape of the vendor build service (Q4,
-# docs/custom-builds.md). DRY RUN ONLY, exactly like distro-staging.yml:
-# it resolves one `sbo-distro.v1` manifest through the catalog, builds the
+# docs/custom-builds.md). DRY RUN ONLY, unlike npm-release.yml's edition
+# jobs, which build the stock editions with the real vendor key on every
+# tag: it resolves one `sbo-distro.v1` manifest through the catalog, builds the
 # custom binary for the five release platforms with its evidence set, packs
 # the custom archives with the canonical manifest beside them, signs them
 # and a release index with an EPHEMERAL key generated on the runner and

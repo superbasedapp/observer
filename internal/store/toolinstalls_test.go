@@ -155,3 +155,131 @@ func TestToolInstallClaimAndForgetRefuseASupersededRecord(t *testing.T) {
 		t.Fatalf("claim of the latest record again: ok=%v err=%v, want claimed", ok, err)
 	}
 }
+
+// TestToolInstallSubjects: a sandbox record and a tool record under the same
+// name never see each other. Reads are scoped, the latest-record guard is
+// per subject, every compare-and-set refuses the other subject's id, and the
+// sandbox fields round-trip.
+func TestToolInstallSubjects(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+
+	toolID, err := s.InsertToolInstall(ctx, ToolInstallRow{
+		Tool: "bwrap", Channel: "npm", Argv: []string{"npm", "install", "-g", "bwrap"}, Display: "npm install -g bwrap", Status: "installed", StartedAt: t0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"sudo", "apt-get", "install", "-y", "bubblewrap"}
+	sbxID, err := s.InsertToolInstall(ctx, ToolInstallRow{
+		SubjectKind: SubjectSandbox, Tool: "bwrap", Channel: "apt", Package: "bubblewrap", Argv: argv,
+		Display: "sudo apt-get install -y bubblewrap", Status: "installing", StartedAt: t0.Add(time.Minute),
+		Backend: "bwrap", Elevated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertToolInstall(ctx, ToolInstallRow{SubjectKind: "other", Tool: "x", Channel: "apt", Argv: argv, Status: "installing"}); err == nil {
+		t.Error("an unknown subject_kind was accepted")
+	}
+
+	// Reads are scoped: the tool scope sees the older tool row, the sandbox
+	// scope the newer sandbox row.
+	tool, ok, err := s.LatestToolInstall(ctx, "bwrap")
+	if err != nil || !ok || tool.ID != toolID || tool.SubjectKind != SubjectTool {
+		t.Fatalf("LatestToolInstall = %+v ok=%v err=%v", tool, ok, err)
+	}
+	sbx, ok, err := s.LatestInstallRecord(ctx, SubjectSandbox, "bwrap")
+	if err != nil || !ok || sbx.ID != sbxID {
+		t.Fatalf("LatestInstallRecord(sandbox) = %+v ok=%v err=%v", sbx, ok, err)
+	}
+	if sbx.SubjectKind != SubjectSandbox || sbx.Backend != "bwrap" || !sbx.Elevated || !reflect.DeepEqual(sbx.Argv, argv) {
+		t.Errorf("sandbox row = %+v", sbx)
+	}
+	if list, _ := s.ListLatestToolInstalls(ctx); len(list) != 1 || list[0].ID != toolID {
+		t.Errorf("ListLatestToolInstalls = %+v", list)
+	}
+	if list, _ := s.ListLatestInstallRecords(ctx, SubjectSandbox); len(list) != 1 || list[0].ID != sbxID {
+		t.Errorf("ListLatestInstallRecords(sandbox) = %+v", list)
+	}
+	if _, ok, _ := s.GetToolInstall(ctx, sbxID); ok {
+		t.Error("GetToolInstall returned a sandbox record")
+	}
+	if _, ok, _ := s.GetInstallRecord(ctx, SubjectSandbox, sbxID); !ok {
+		t.Error("GetInstallRecord(sandbox) missed its record")
+	}
+
+	// Every compare-and-set refuses the other subject's id.
+	if ok, _ := s.FinishToolInstall(ctx, sbxID, "installing", ToolInstallFinish{Status: "installed", At: t0}); ok {
+		t.Error("FinishToolInstall settled a sandbox record")
+	}
+	if ok, _ := s.SetToolInstallStatus(ctx, sbxID, "installing", "install_interrupted"); ok {
+		t.Error("SetToolInstallStatus moved a sandbox record")
+	}
+	if ok, _ := s.SetInstallRecordStatus(ctx, SubjectSandbox, toolID, "installed", "uninstalling"); ok {
+		t.Error("SetInstallRecordStatus(sandbox) moved a tool record")
+	}
+
+	// The sandbox scope settles its own, stamping the placed file.
+	ok, err = s.FinishInstallRecord(ctx, SubjectSandbox, sbxID, "installing", ToolInstallFinish{
+		Status: "installed", At: t0.Add(2 * time.Minute), ResolvedBin: "/usr/bin/bwrap", Digest: "abc", PlacedPath: "/p",
+	})
+	if err != nil || !ok {
+		t.Fatalf("FinishInstallRecord: ok=%v err=%v", ok, err)
+	}
+	sbx, _, _ = s.GetInstallRecord(ctx, SubjectSandbox, sbxID)
+	if sbx.Status != "installed" || sbx.Digest != "abc" || sbx.PlacedPath != "/p" || sbx.ResolvedBin != "/usr/bin/bwrap" {
+		t.Errorf("settled sandbox row = %+v", sbx)
+	}
+	// An empty digest keeps the stamped one.
+	if ok, _ := s.FinishInstallRecord(ctx, SubjectSandbox, sbxID, "installed", ToolInstallFinish{Status: "installed", At: t0}); !ok {
+		t.Fatal("re-finish refused")
+	}
+	if sbx, _, _ = s.GetInstallRecord(ctx, SubjectSandbox, sbxID); sbx.Digest != "abc" || sbx.PlacedPath != "/p" {
+		t.Errorf("an empty finish cleared digest/placed_path: %+v", sbx)
+	}
+
+	// The latest-record guard is per subject: the newer sandbox row does not
+	// supersede the tool row, so the tool's uninstall claim and forget still
+	// pass, and the tool scope cannot claim the sandbox row.
+	if _, ok, _ := s.ClaimToolUninstall(ctx, sbxID, []string{"installed"}, "uninstalling", []string{"x"}, "x", t0); ok {
+		t.Error("ClaimToolUninstall claimed a sandbox record")
+	}
+	prev, ok, err := s.ClaimToolUninstall(ctx, toolID, []string{"installed"}, "uninstalling", []string{"npm", "uninstall", "--global", "bwrap"}, "npm uninstall --global bwrap", t0)
+	if err != nil || !ok || prev != "installed" {
+		t.Fatalf("ClaimToolUninstall(tool) = %q ok=%v err=%v", prev, ok, err)
+	}
+	if ok, _ := s.RevertUninstallRecord(ctx, SubjectSandbox, toolID, "uninstalling", "installed"); ok {
+		t.Error("RevertUninstallRecord(sandbox) reverted a tool record")
+	}
+	if ok, _ := s.FinishUninstallRecord(ctx, SubjectSandbox, toolID, "uninstalling", ToolInstallFinish{Status: "uninstalled", At: t0}); ok {
+		t.Error("FinishUninstallRecord(sandbox) settled a tool record")
+	}
+	if ok, _ := s.FinishToolUninstall(ctx, toolID, "uninstalling", ToolInstallFinish{Status: "uninstalled", At: t0}); !ok {
+		t.Error("FinishToolUninstall refused its own record")
+	}
+	prev, ok, err = s.ClaimUninstallRecord(ctx, SubjectSandbox, sbxID, []string{"installed"}, "uninstalling", []string{"sudo", "apt-get", "remove", "-y", "bubblewrap"}, "sudo apt-get remove -y bubblewrap", t0)
+	if err != nil || !ok || prev != "installed" {
+		t.Fatalf("ClaimUninstallRecord(sandbox) = %q ok=%v err=%v", prev, ok, err)
+	}
+	if ok, _ := s.ForgetToolInstall(ctx, sbxID, []string{"uninstalling"}, t0); ok {
+		t.Error("ForgetToolInstall forgot a sandbox record")
+	}
+	if ok, _ := s.ForgetToolInstall(ctx, toolID, []string{"uninstalled"}, t0); !ok {
+		t.Error("ForgetToolInstall refused the tool record (a sandbox row must not supersede it)")
+	}
+
+	// A newer sandbox record supersedes the older sandbox record only.
+	newer, err := s.InsertToolInstall(ctx, ToolInstallRow{SubjectKind: SubjectSandbox, Tool: "bwrap", Channel: "apt", Argv: argv, Display: "d", Status: "installed", StartedAt: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.ForgetInstallRecord(ctx, SubjectSandbox, sbxID, []string{"uninstalling"}, t0); ok {
+		t.Error("ForgetInstallRecord forgot a superseded sandbox record")
+	}
+	if ok, _ := s.ForgetInstallRecord(ctx, SubjectSandbox, newer, []string{"installed"}, t0); !ok {
+		t.Error("ForgetInstallRecord refused the newest sandbox record")
+	}
+}

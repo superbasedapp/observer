@@ -229,7 +229,7 @@ func TestOCIInstallSkippedWhenTheCacheIsComplete(t *testing.T) {
 // gateway (before any resolution), and says so in one plain line.
 func TestOCIInstallGatewayReachesOnlyTheInstallHosts(t *testing.T) {
 	tt := newOCITestTerm()
-	stop, dir, err := ociStartInstallGateway(&ociInstallStep{Hosts: []string{"registry.npmjs.org"}}, tt.term)
+	stop, dir, err := ociStartInstallGateway(context.Background(), &ociInstallStep{Hosts: []string{"registry.npmjs.org"}}, tt.term, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

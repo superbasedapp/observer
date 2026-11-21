@@ -1,9 +1,9 @@
 {
-  "date": "2026-10-23",
+  "date": "2026-11-04",
   "engine": "opengrep 1.30.1",
   "engine_digest": "d3195b9d8d5ae93179f6aa5f5daaba6a920a5a09d38c5d5ae5e60924050210c4",
-  "pack_version": "1.3.0",
-  "pack_digest": "057bf357ea0c305f4132df6fd1aead28ba21d76ffa7dece227d775715d00a2ca",
+  "pack_version": "1.5.0",
+  "pack_digest": "e943b5a4f5056c27f358db6d0f39ceba88b3f828b588569cce0be23f9ab2fcd6",
   "platform": "linux/amd64",
   "repos": [
     {
@@ -11,37 +11,37 @@
       "commit": "5dc9490bb35f9729ef2c95d00a19ccd30c26339c",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 163,
+      "files_scanned": 166,
       "partially_parsed": 1,
-      "seconds": 8
+      "seconds": 16
     },
     {
       "repo": "https://github.com/BurntSushi/ripgrep",
       "commit": "3fce3b5bb0236da2df6d99672afb8a719642eca7",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 2,
-      "seconds": 5
+      "files_scanned": 3,
+      "seconds": 9
     },
     {
       "repo": "https://github.com/Kilo-Org/kilocode",
       "commit": "5cc65d1212b00609f9bba7bd25780aa5e64f516d",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 6241,
-      "partially_parsed": 117,
+      "files_scanned": 7299,
+      "partially_parsed": 121,
       "findings": 1,
-      "seconds": 59
+      "seconds": 145
     },
     {
       "repo": "https://github.com/QwenLM/qwen-code",
       "commit": "e7fa410a1d12f8446c40e1a679baf7c53de6fb15",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 8731,
+      "files_scanned": 8760,
       "partially_parsed": 68,
       "findings": 4,
-      "seconds": 193
+      "seconds": 401
     },
     {
       "repo": "https://github.com/RooCodeInc/Roo-Code",
@@ -51,7 +51,7 @@
       "files_scanned": 1580,
       "partially_parsed": 1,
       "findings": 1,
-      "seconds": 13
+      "seconds": 26
     },
     {
       "repo": "https://github.com/anthropics/anthropic-sdk-python",
@@ -59,7 +59,7 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 2603,
-      "seconds": 10
+      "seconds": 19
     },
     {
       "repo": "https://github.com/anthropics/claude-code",
@@ -68,7 +68,7 @@
       "outcome": "clean",
       "files_scanned": 1387,
       "partially_parsed": 2,
-      "seconds": 7
+      "seconds": 13
     },
     {
       "repo": "https://github.com/anthropics/claude-code-action",
@@ -76,7 +76,7 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 126,
-      "seconds": 6
+      "seconds": 11
     },
     {
       "repo": "https://github.com/astral-sh/ruff",
@@ -85,7 +85,7 @@
       "outcome": "clean",
       "files_scanned": 3916,
       "partially_parsed": 4,
-      "seconds": 9
+      "seconds": 17
     },
     {
       "repo": "https://github.com/astral-sh/uv",
@@ -93,25 +93,26 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 101,
-      "seconds": 5
+      "seconds": 10
     },
     {
       "repo": "https://github.com/block/goose",
       "commit": "9920efa16d078777a4d9715b2f00d8800a4da188",
       "cloned": true,
-      "outcome": "clean",
-      "files_scanned": 686,
+      "outcome": "findings",
+      "files_scanned": 697,
       "partially_parsed": 1,
-      "seconds": 22
+      "findings": 1,
+      "seconds": 32
     },
     {
       "repo": "https://github.com/charmbracelet/crush",
       "commit": "8fa35a0f10e675aae222fe8626d2d13c2dcb49f5",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 748,
+      "files_scanned": 764,
       "partially_parsed": 3,
-      "seconds": 8
+      "seconds": 15
     },
     {
       "repo": "https://github.com/cline/cline",
@@ -120,16 +121,16 @@
       "outcome": "clean",
       "files_scanned": 3434,
       "partially_parsed": 11,
-      "seconds": 27
+      "seconds": 50
     },
     {
       "repo": "https://github.com/continuedev/continue",
       "commit": "5522c6f44ca0ac3528b37244818fbfa39b5af470",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 1901,
+      "files_scanned": 1992,
       "partially_parsed": 6,
-      "seconds": 11
+      "seconds": 23
     },
     {
       "repo": "https://github.com/denoland/deno",
@@ -138,16 +139,17 @@
       "outcome": "clean",
       "files_scanned": 5152,
       "partially_parsed": 38,
-      "seconds": 20
+      "seconds": 35
     },
     {
       "repo": "https://github.com/django/django",
       "commit": "9b83f7513c06aef91a20669450809ddd944e0792",
       "cloned": true,
-      "outcome": "clean",
-      "files_scanned": 3047,
+      "outcome": "findings",
+      "files_scanned": 3051,
       "partially_parsed": 2,
-      "seconds": 15
+      "findings": 21,
+      "seconds": 28
     },
     {
       "repo": "https://github.com/excalidraw/excalidraw",
@@ -156,24 +158,25 @@
       "outcome": "clean",
       "files_scanned": 710,
       "partially_parsed": 1,
-      "seconds": 12
+      "seconds": 24
     },
     {
       "repo": "https://github.com/expressjs/express",
       "commit": "0dee2c52c7c873498f8ed7d8ee4ddd0a04d3ada8",
       "cloned": true,
-      "outcome": "clean",
+      "outcome": "findings",
       "files_scanned": 141,
-      "seconds": 6
+      "findings": 2,
+      "seconds": 11
     },
     {
       "repo": "https://github.com/facebook/react",
       "commit": "a679270829ac5786fe7cd3b65acd289d5338dbc7",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 4421,
-      "partially_parsed": 45,
-      "seconds": 23
+      "files_scanned": 4419,
+      "partially_parsed": 47,
+      "seconds": 50
     },
     {
       "repo": "https://github.com/fastapi/fastapi",
@@ -181,24 +184,26 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 1180,
-      "seconds": 6
+      "seconds": 12
     },
     {
       "repo": "https://github.com/getsentry/sentry-python",
       "commit": "0f7acd5e8968b6b8b92154669112c647ec88abe3",
       "cloned": true,
-      "outcome": "clean",
+      "outcome": "findings",
       "files_scanned": 518,
-      "seconds": 8
+      "findings": 2,
+      "seconds": 14
     },
     {
       "repo": "https://github.com/github/github-mcp-server",
       "commit": "e3809fe91c7546633241006bf0b91f23b2595e28",
       "cloned": true,
-      "outcome": "clean",
+      "outcome": "findings",
       "files_scanned": 309,
       "partially_parsed": 4,
-      "seconds": 10
+      "findings": 1,
+      "seconds": 18
     },
     {
       "repo": "https://github.com/google-gemini/gemini-cli",
@@ -207,7 +212,7 @@
       "outcome": "clean",
       "files_scanned": 2301,
       "partially_parsed": 6,
-      "seconds": 23
+      "seconds": 41
     },
     {
       "repo": "https://github.com/grafana/k6",
@@ -217,7 +222,7 @@
       "files_scanned": 3551,
       "partially_parsed": 2,
       "findings": 1,
-      "seconds": 26
+      "seconds": 48
     },
     {
       "repo": "https://github.com/hashicorp/terraform",
@@ -225,15 +230,15 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 2043,
-      "seconds": 18
+      "seconds": 29
     },
     {
       "repo": "https://github.com/junegunn/fzf",
       "commit": "55c122f1a0e1340546c8709682bea5561fe0e8fd",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 91,
-      "seconds": 7
+      "files_scanned": 102,
+      "seconds": 11
     },
     {
       "repo": "https://github.com/langchain-ai/langchain",
@@ -241,15 +246,17 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 2640,
-      "seconds": 10
+      "seconds": 18
     },
     {
       "repo": "https://github.com/laravel/framework",
       "commit": "d794ce96ed2f08906e88619de1ae4b22746f2a0e",
       "cloned": true,
-      "outcome": "clean",
-      "files_scanned": 4,
-      "seconds": 9
+      "outcome": "findings",
+      "files_scanned": 3175,
+      "partially_parsed": 1,
+      "findings": 1,
+      "seconds": 47
     },
     {
       "repo": "https://github.com/microsoft/playwright",
@@ -258,27 +265,27 @@
       "outcome": "clean",
       "files_scanned": 1587,
       "partially_parsed": 12,
-      "seconds": 34
+      "seconds": 64
     },
     {
       "repo": "https://github.com/microsoft/vscode",
       "commit": "8c00dcbe4de257039c8c507753e6813cd31c584b",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 15275,
+      "files_scanned": 15283,
       "partially_parsed": 51,
       "findings": 1,
-      "seconds": 140
+      "seconds": 295
     },
     {
       "repo": "https://github.com/microsoft/vscode-copilot-chat",
       "commit": "5863f5a7088958050792b5dccbe8b46c6e13eccc",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 2844,
+      "files_scanned": 2848,
       "partially_parsed": 3,
       "findings": 1,
-      "seconds": 20
+      "seconds": 37
     },
     {
       "repo": "https://github.com/modelcontextprotocol/servers",
@@ -287,16 +294,17 @@
       "outcome": "clean",
       "files_scanned": 224,
       "partially_parsed": 1,
-      "seconds": 7
+      "seconds": 13
     },
     {
       "repo": "https://github.com/modelcontextprotocol/typescript-sdk",
       "commit": "9bc40e903fde15534ec06ff4c1347d47000dbe16",
       "cloned": true,
-      "outcome": "clean",
+      "outcome": "findings",
       "files_scanned": 693,
       "partially_parsed": 16,
-      "seconds": 13
+      "findings": 3,
+      "seconds": 26
     },
     {
       "repo": "https://github.com/nodejs/undici",
@@ -306,15 +314,15 @@
       "files_scanned": 732,
       "partially_parsed": 5,
       "findings": 6,
-      "seconds": 11
+      "seconds": 21
     },
     {
       "repo": "https://github.com/openai/codex",
       "commit": "014489466a1739c2c563cdfe57880c2c7c8680e3",
       "cloned": true,
       "outcome": "clean",
-      "files_scanned": 978,
-      "seconds": 8
+      "files_scanned": 980,
+      "seconds": 14
     },
     {
       "repo": "https://github.com/openai/openai-agents-python",
@@ -322,7 +330,7 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 1025,
-      "seconds": 13
+      "seconds": 23
     },
     {
       "repo": "https://github.com/pallets/flask",
@@ -330,7 +338,7 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 83,
-      "seconds": 5
+      "seconds": 9
     },
     {
       "repo": "https://github.com/prometheus/prometheus",
@@ -340,7 +348,7 @@
       "files_scanned": 1012,
       "partially_parsed": 2,
       "findings": 2,
-      "seconds": 17
+      "seconds": 28
     },
     {
       "repo": "https://github.com/psf/requests",
@@ -348,7 +356,7 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 37,
-      "seconds": 6
+      "seconds": 10
     },
     {
       "repo": "https://github.com/pydantic/pydantic-ai",
@@ -357,16 +365,17 @@
       "outcome": "clean",
       "files_scanned": 2029,
       "partially_parsed": 2,
-      "seconds": 26
+      "seconds": 46
     },
     {
       "repo": "https://github.com/rails/rails",
       "commit": "8ff98114566311ab204df79bf85e935912310910",
       "cloned": true,
-      "outcome": "clean",
-      "files_scanned": 59,
+      "outcome": "findings",
+      "files_scanned": 3571,
       "partially_parsed": 2,
-      "seconds": 12
+      "findings": 14,
+      "seconds": 44
     },
     {
       "repo": "https://github.com/shadcn-ui/ui",
@@ -375,7 +384,7 @@
       "outcome": "clean",
       "files_scanned": 4426,
       "partially_parsed": 1,
-      "seconds": 11
+      "seconds": 20
     },
     {
       "repo": "https://github.com/spring-projects/spring-petclinic",
@@ -383,17 +392,17 @@
       "cloned": true,
       "outcome": "clean",
       "files_scanned": 50,
-      "seconds": 5
+      "seconds": 10
     },
     {
       "repo": "https://github.com/sst/opencode",
       "commit": "d30e990c69efd8a954413a724b35c5a27462f320",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 5089,
-      "partially_parsed": 51,
+      "files_scanned": 5088,
+      "partially_parsed": 52,
       "findings": 1,
-      "seconds": 47
+      "seconds": 95
     },
     {
       "repo": "https://github.com/sveltejs/svelte",
@@ -402,7 +411,7 @@
       "outcome": "clean",
       "files_scanned": 3573,
       "partially_parsed": 4,
-      "seconds": 11
+      "seconds": 20
     },
     {
       "repo": "https://github.com/tailwindlabs/tailwindcss",
@@ -411,14 +420,14 @@
       "outcome": "clean",
       "files_scanned": 325,
       "partially_parsed": 4,
-      "seconds": 7
+      "seconds": 14
     },
     {
       "repo": "https://github.com/tokio-rs/tokio",
       "commit": "ce685ee6916549ed7e52dbfd5430858bbdc734d3",
       "cloned": true,
       "outcome": "clean",
-      "seconds": 5
+      "seconds": 8
     },
     {
       "repo": "https://github.com/vercel/ai",
@@ -427,8 +436,8 @@
       "outcome": "findings",
       "files_scanned": 7500,
       "partially_parsed": 2,
-      "findings": 2,
-      "seconds": 30
+      "findings": 3,
+      "seconds": 59
     },
     {
       "repo": "https://github.com/vuejs/core",
@@ -437,26 +446,27 @@
       "outcome": "clean",
       "files_scanned": 525,
       "partially_parsed": 1,
-      "seconds": 8
+      "seconds": 15
     },
     {
       "repo": "https://github.com/zed-industries/zed",
       "commit": "c4a82ab1ab958aa43b0c0b15c0bad4fb77a7ca7f",
       "cloned": true,
-      "outcome": "clean",
+      "outcome": "findings",
       "files_scanned": 71,
-      "seconds": 8
+      "findings": 1,
+      "seconds": 15
     },
     {
       "repo": "https://github.com/marmutapp/superbased-observer-private",
       "commit": "1909234af291a2130cacfbb46b9c3819d991efba",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 13227,
+      "files_scanned": 13228,
       "partially_parsed": 14,
-      "private_only_dropped": 2,
-      "findings": 21,
-      "seconds": 115
+      "private_only_dropped": 7,
+      "findings": 27,
+      "seconds": 216
     },
     {
       "repo": "https://github.com/macrozheng/mall",
@@ -464,8 +474,8 @@
       "cloned": true,
       "outcome": "findings",
       "files_scanned": 524,
-      "findings": 24,
-      "seconds": 6
+      "findings": 4,
+      "seconds": 12
     },
     {
       "repo": "https://github.com/elunez/eladmin",
@@ -473,27 +483,26 @@
       "cloned": true,
       "outcome": "findings",
       "files_scanned": 274,
-      "findings": 20,
-      "seconds": 5
+      "findings": 5,
+      "seconds": 10
     },
     {
       "repo": "https://github.com/halo-dev/halo",
       "commit": "35d441a1907ebe99e725b154e7a89c6312de44b4",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 2287,
+      "files_scanned": 2288,
       "findings": 6,
-      "seconds": 14
+      "seconds": 28
     },
     {
       "repo": "https://github.com/linlinjava/litemall",
       "commit": "a1ef964a718b7277925b19ea26afe78ea3a1d325",
       "cloned": true,
-      "outcome": "findings",
+      "outcome": "clean",
       "files_scanned": 678,
       "partially_parsed": 1,
-      "findings": 5,
-      "seconds": 20
+      "seconds": 27
     },
     {
       "repo": "https://github.com/apache/shenyu",
@@ -501,8 +510,8 @@
       "cloned": true,
       "outcome": "findings",
       "files_scanned": 3563,
-      "findings": 10,
-      "seconds": 18
+      "findings": 4,
+      "seconds": 40
     },
     {
       "repo": "https://github.com/dotnet/eShop",
@@ -511,7 +520,7 @@
       "outcome": "clean",
       "files_scanned": 565,
       "partially_parsed": 2,
-      "seconds": 6
+      "seconds": 11
     },
     {
       "repo": "https://github.com/jasontaylordev/CleanArchitecture",
@@ -520,17 +529,16 @@
       "outcome": "clean",
       "files_scanned": 149,
       "partially_parsed": 2,
-      "seconds": 5
+      "seconds": 9
     },
     {
       "repo": "https://github.com/bitwarden/server",
       "commit": "6fd6ce88d176372ee1404ba6fbda5de3be299394",
       "cloned": true,
-      "outcome": "findings",
+      "outcome": "clean",
       "files_scanned": 5921,
       "partially_parsed": 83,
-      "findings": 12,
-      "seconds": 94
+      "seconds": 175
     },
     {
       "repo": "https://github.com/jellyfin/jellyfin",
@@ -539,21 +547,114 @@
       "outcome": "findings",
       "files_scanned": 2246,
       "partially_parsed": 5,
-      "findings": 12,
-      "seconds": 21
+      "findings": 3,
+      "seconds": 39
     },
     {
       "repo": "https://github.com/nopSolutions/nopCommerce",
       "commit": "f9e883bc9586b9a2138f8580fc1cbbdc6ec561c6",
       "cloned": true,
       "outcome": "findings",
-      "files_scanned": 4007,
-      "partially_parsed": 115,
-      "findings": 9,
-      "seconds": 73
+      "files_scanned": 4006,
+      "partially_parsed": 116,
+      "findings": 1,
+      "seconds": 110
+    },
+    {
+      "repo": "https://github.com/mastodon/mastodon",
+      "commit": "ca2f092f4f580b1993bae3ac4f4742b748f18ad1",
+      "cloned": true,
+      "outcome": "clean",
+      "files_scanned": 4309,
+      "seconds": 26
+    },
+    {
+      "repo": "https://github.com/chatwoot/chatwoot",
+      "commit": "a8364f9c4385b12b4f217649c1dad23755459215",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 4254,
+      "findings": 2,
+      "seconds": 38
+    },
+    {
+      "repo": "https://github.com/forem/forem",
+      "commit": "5f0276dce15e3859f7bf4d39c5460efbdc398288",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 4966,
+      "partially_parsed": 1,
+      "findings": 13,
+      "seconds": 43
+    },
+    {
+      "repo": "https://github.com/BookStackApp/BookStack",
+      "commit": "0b6b667e0d84ebb3406de6de9fadbf4230c29c0b",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 2228,
+      "partially_parsed": 4,
+      "findings": 1,
+      "seconds": 43
+    },
+    {
+      "repo": "https://github.com/FreshRSS/FreshRSS",
+      "commit": "4e8a258b011aad190597d7953b7122fc43f4658f",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 724,
+      "partially_parsed": 1,
+      "findings": 11,
+      "seconds": 22
+    },
+    {
+      "repo": "https://github.com/phpmyadmin/phpmyadmin",
+      "commit": "6f240a8f64d0a4c62a02b0ef484568fe39017480",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 1346,
+      "partially_parsed": 5,
+      "findings": 8,
+      "seconds": 30
+    },
+    {
+      "repo": "https://github.com/gotson/komga",
+      "commit": "ff800c21253793d4d3fd855651b82d4924915950",
+      "cloned": true,
+      "outcome": "clean",
+      "files_scanned": 1087,
+      "seconds": 23
+    },
+    {
+      "repo": "https://github.com/ktorio/ktor-samples",
+      "commit": "e9763d69954723094da05c3d57b34755b9a1359a",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 207,
+      "partially_parsed": 1,
+      "findings": 1,
+      "seconds": 40
+    },
+    {
+      "repo": "https://github.com/spring-petclinic/spring-petclinic-kotlin",
+      "commit": "817dba3b02261e4291f138d5d8bb8c85c7d49758",
+      "cloned": true,
+      "outcome": "clean",
+      "files_scanned": 40,
+      "seconds": 9
+    },
+    {
+      "repo": "https://github.com/thunderbird/thunderbird-android",
+      "commit": "1d8a4caf60e372b25eb791de216f9409d441a7ca",
+      "cloned": true,
+      "outcome": "findings",
+      "files_scanned": 3951,
+      "partially_parsed": 6,
+      "findings": 2,
+      "seconds": 52
     }
   ],
-  "candidates": 121,
+  "candidates": 132,
   "excluded": {
     "self.rule-fixtures": 15
   },

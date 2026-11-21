@@ -404,8 +404,12 @@ func TestAnalysisHeadline_CacheEfficacy(t *testing.T) {
 }
 
 // TestAnalysisHeadline_BudgetTile pins MTD + projection + budget %
-// computation when MonthlyBudgetUSD is set on the server options.
+// computation when MonthlyBudgetUSD is set on the server options. The
+// handler's clock and the fixtures share one pinned mid-month instant:
+// with the wall clock, the monthStart+1h turn sat in the future (and was
+// excluded from MTD) for the first hour of every month (FU-231).
 func TestAnalysisHeadline_BudgetTile(t *testing.T) {
+	now := midMonthTestNow
 	path := filepath.Join(t.TempDir(), "d.db")
 	database, err := openTestDB(context.Background(), db.Options{Path: path})
 	if err != nil {
@@ -416,14 +420,13 @@ func TestAnalysisHeadline_BudgetTile(t *testing.T) {
 	root := t.TempDir()
 	if _, err := st.Ingest(context.Background(), []models.ToolEvent{{
 		SourceFile: "f", SourceEventID: "e1", SessionID: "sB",
-		ProjectRoot: root, Timestamp: time.Now().UTC().Add(-time.Hour),
+		ProjectRoot: root, Timestamp: now.Add(-time.Hour),
 		Tool: models.ToolClaudeCode, ActionType: models.ActionReadFile,
 		Target: "a.go", Success: true,
 	}}, nil, store.IngestOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
-	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	if _, err := st.InsertAPITurn(context.Background(), models.APITurn{
 		SessionID: "sB", Provider: models.ProviderAnthropic,
@@ -437,6 +440,7 @@ func TestAnalysisHeadline_BudgetTile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pinServerClock(server, now)
 	got := openHeadline(t, server, 30)
 	// MTD cost: 100K × $3 + 20K × $15 / 1M = 0.30 + 0.30 = 0.60
 	if !approx(got.Month.ToDateUSD, 0.60) {

@@ -98,12 +98,28 @@ type depsRuntime struct {
 	confirmed *depsConfirmed
 }
 
-// publicClient returns a public client.
-func (rt *depsRuntime) publicClient() *online.Client {
+// publicClient returns a public client. provenanceOn, when set, says per
+// lookup whether the install gate reads build provenance ([security.deps]
+// provenance, read live; security coverage gaps plan item 3).
+func (rt *depsRuntime) publicClient(provenanceOn ...func() bool) *online.Client {
 	if rt.client != nil {
 		return rt.client()
 	}
-	return online.New(online.Options{})
+	o := online.Options{}
+	if len(provenanceOn) > 0 {
+		o.ProvenanceOn = provenanceOn[0]
+	}
+	return online.New(o)
+}
+
+// depsProvenanceOn reads [security.deps] provenance from the live reader
+// when the env has one, else from the config loaded at start.
+func (env *depsEnv) depsProvenanceOn() bool {
+	deps := env.cfg.Security.Deps
+	if env.live != nil {
+		deps = env.live.get()
+	}
+	return deps.Provenance != "off"
 }
 
 // depsEnv is what both loops open.
@@ -136,7 +152,7 @@ func (rt *depsRuntime) open(ctx context.Context) (*depsEnv, error) {
 	env := &depsEnv{cfg: cfg, st: st, dir: secposture.LayoutFor(resolved).Dir, cleanup: cleanup, logger: newLogger(cfg.Observer.LogLevel)}
 	env.tenancy = depsTenancyOf(st)
 	env.managed = env.tenancy(ctx) == depsManaged
-	env.lookup = depsLookupFor(env.tenancy, func() secfeed.Lookup { return publicDepsLookup(rt.publicClient()) }, func() secfeed.Lookup { return relayDepsLookup(ctx, rt.configPath) })
+	env.lookup = depsLookupFor(env.tenancy, func() secfeed.Lookup { return publicDepsLookup(rt.publicClient(env.depsProvenanceOn)) }, func() secfeed.Lookup { return relayDepsLookup(ctx, rt.configPath) })
 	env.disclose = readDepsDisclosure(env.dir)
 	return env, nil
 }
@@ -869,7 +885,7 @@ func firstExisting(paths ...string) string {
 		if p == "" {
 			continue
 		}
-		if _, err := os.Lstat(p); err == nil {
+		if _, err := os.Lstat(p); err == nil { //nolint:gosec // G703: p is one of the fixed per-ecosystem config locations the deps scope names (under the project, HOME, XDG, CARGO_HOME, APPDATA or NPM_CONFIG_GLOBALCONFIG); only Lstat-ed here, and the reader caps what it reads.
 			return p
 		}
 	}

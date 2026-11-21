@@ -434,6 +434,7 @@ func TestReceiver_HTTPOutcomeHook(t *testing.T) {
 		{"gzip", outcomeEvent{sigLogs, OutcomeRejected, ReasonGzip}, func() {
 			zreq, _ := http.NewRequest(http.MethodPost, base, bytes.NewReader([]byte("not-gzip-bytes")))
 			zreq.Header.Set("Content-Encoding", "gzip")
+			zreq.Header.Set("Content-Type", "application/x-protobuf")
 			if zr, err := http.DefaultClient.Do(zreq); err == nil {
 				_ = zr.Body.Close()
 			}
@@ -1078,6 +1079,7 @@ func TestReceiver_HTTPGzipBoundedRead(t *testing.T) {
 			spy := &countingReader{r: bytes.NewReader(compressed)}
 			req := httptest.NewRequest(http.MethodPost, path, spy)
 			req.Header.Set("Content-Encoding", "gzip")
+			req.Header.Set("Content-Type", "application/x-protobuf")
 			// httptest.NewRequest defaults Host to "example.com", which the
 			// NODE-OTLP-1 loopback Host guard now refuses. This test is about
 			// the decompressed cap, so give it a Host the guard admits.
@@ -1223,6 +1225,7 @@ func TestReceiver_HTTPHostGuard(t *testing.T) {
 			spy := &readCountingBody{data: body}
 			req := httptest.NewRequest(http.MethodPost, "/v1/logs", spy)
 			req.Host = tc.host
+			req.Header.Set("Content-Type", "application/x-protobuf")
 			rw := httptest.NewRecorder()
 			r.httpServer.Handler.ServeHTTP(rw, req)
 
@@ -1482,7 +1485,7 @@ func TestTokenGateInterceptor_Direct(t *testing.T) {
 // equal ""), closing the gRPC analog of the empty-token fail-open.
 func TestTokenAuthorized_EmptyMetadataValue(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(metadataEdgeTokenKey, ""))
-	if tokenAuthorized(ctx, edgeSecret) {
+	if tokenAuthorized(ctx, edgeSecret, nil) {
 		t.Fatal("tokenAuthorized returned true for an explicitly-empty metadata token value, want false")
 	}
 }
@@ -1593,5 +1596,88 @@ func TestReceiver_EdgeShapeServesServiceAliasHost(t *testing.T) {
 				t.Fatal("the edge shape rejected on ReasonHost — HostGuardOff was not honored")
 			}
 		})
+	}
+}
+
+// TestReceiver_AcceptTokenAdmitsASecondCredential pins CLOUDTEL-1 (cloud-
+// agents decision CA-D18): with AcceptToken set, a request whose token is not
+// the shared receiver token is admitted when AcceptToken says so (a cloud
+// environment's per-environment ship token), on BOTH transports; a value
+// AcceptToken refuses and a missing token stay 401 / Unauthenticated; the
+// shared token still works; an empty token is never offered to AcceptToken.
+func TestReceiver_AcceptTokenAdmitsASecondCredential(t *testing.T) {
+	const shipSecret = "sbocs_environment-scoped-secret"
+	var offered []string
+	var mu sync.Mutex
+	accept := func(tok string) bool {
+		mu.Lock()
+		offered = append(offered, tok)
+		mu.Unlock()
+		return tok == shipSecret
+	}
+	g := &grpcMetricCounter{}
+	r, err := New(Options{
+		GRPCAddr:      "127.0.0.1:0",
+		HTTPAddr:      "127.0.0.1:0",
+		MetricHandler: g.handler,
+		Handler:       func(context.Context, *collogspb.ExportLogsServiceRequest) error { return nil },
+		RequireToken:  true,
+		ReceiverToken: edgeSecret,
+		AcceptToken:   accept,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.Start()
+	defer func() { _ = r.Shutdown(context.Background()) }()
+
+	post := func(tok string) int {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+r.HTTPAddr()+"/v1/logs", bytes.NewReader(mustMarshal(t, sample("x"))))
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		if tok != "" {
+			req.Header.Set(HeaderEdgeToken, tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("http post: %v", err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, tc := range []struct {
+		name string
+		tok  string
+		want int
+	}{
+		{"shared receiver token", edgeSecret, http.StatusOK},
+		{"per-environment ship token", shipSecret, http.StatusOK},
+		{"a token AcceptToken refuses", "sbocs_revoked", http.StatusUnauthorized},
+		{"no token", "", http.StatusUnauthorized},
+	} {
+		if got := post(tc.tok); got != tc.want {
+			t.Errorf("http %s: status %d, want %d", tc.name, got, tc.want)
+		}
+	}
+
+	conn, err := grpc.NewClient(r.GRPCAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	client := colmetricspb.NewMetricsServiceClient(conn)
+	shipCtx := metadata.AppendToOutgoingContext(context.Background(), metadataEdgeTokenKey, shipSecret)
+	if _, err := client.Export(shipCtx, sampleMetric("x")); err != nil {
+		t.Fatalf("grpc with the ship token: %v", err)
+	}
+	badCtx := metadata.AppendToOutgoingContext(context.Background(), metadataEdgeTokenKey, "sbocs_revoked")
+	if _, err := client.Export(badCtx, sampleMetric("x")); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("grpc with a refused token: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, o := range offered {
+		if o == "" || o == edgeSecret {
+			t.Fatalf("AcceptToken was offered %q; only non-empty, non-shared values may reach it", o)
+		}
 	}
 }

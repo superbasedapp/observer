@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/keystore"
+	"github.com/marmutapp/superbased-observer/internal/planlimits"
+	"github.com/marmutapp/superbased-observer/internal/planlimitssvc"
 )
 
 func plansTestConfig(t *testing.T) string {
@@ -75,6 +77,9 @@ func TestPlansCLI_ManualLifecycle(t *testing.T) {
 	}
 	if len(v.Accounts) != 1 || v.Accounts[0].ID != id || v.Keychain != "not opened" {
 		t.Fatalf("status --json = %+v", v)
+	}
+	if out, err := runPlans(t, "", "usage", id, "--config", cfg); err != nil || !strings.Contains(out, "does not report daily usage") {
+		t.Fatalf("usage of a manual account: %v %s", err, out)
 	}
 	if out, err := runPlans(t, "", "remove", id, "--config", cfg); err != nil || !strings.Contains(out, "Removed") {
 		t.Fatalf("remove: %v %s", err, out)
@@ -196,4 +201,39 @@ func TestForwardPlanStatusLine_ChangeOnlyAndNumbersOnly(t *testing.T) {
 func plansItoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestPrintPlanUsage(t *testing.T) {
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	r := planlimits.Reconcile(
+		[]planlimits.UsageDay{{Day: "2026-10-30", Tokens: 136533390}, {Day: "2026-10-08", Tokens: 23252828}},
+		map[string]int64{"2026-10-08": 21921453, "2026-10-09": 5},
+		"2026-10-03", "2026-11-01")
+	var out bytes.Buffer
+	printPlanUsage(&out, planlimitssvc.UsageView{
+		AccountID: "a1", Provider: planlimits.ProviderChatGPT, Available: true, Days: 30,
+		FetchedAt: &at, Tools: []string{"codex"}, Reconciliation: &r,
+	})
+	s := out.String()
+	for _, want := range []string{
+		"ChatGPT and Codex usage by day, 2026-10-03 to 2026-11-01",
+		"136,533,390", "21,921,453", "1,331,375", "94%", "none reported",
+		"Not captured here: Codex cloud chats, other devices or sessions Observer did not run on.",
+		"account-wide", "codex sessions for any login",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "$") || strings.Contains(s, "USD") {
+		t.Errorf("usage is tokens only, never dollars:\n%s", s)
+	}
+	out.Reset()
+	printPlanUsage(&out, planlimitssvc.UsageView{AccountID: "a1", Provider: planlimits.ProviderChatGPT, Available: true})
+	if !strings.Contains(out.String(), "no daily usage read yet") {
+		t.Errorf("before a reading: %s", out.String())
+	}
+	if got := planTokens(1234567); got != "1,234,567" {
+		t.Errorf("planTokens = %s", got)
+	}
 }

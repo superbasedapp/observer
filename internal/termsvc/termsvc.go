@@ -242,7 +242,7 @@ type LaunchRequest struct {
 	// repository trust check honours the source repository's accepts.
 	SourceDir string
 	// SandboxEnvAllow and SandboxEnvPassed are PrepareResult.EnvAllow and
-	// EnvPassed for a sandboxed launch (WINFIX2 R-167): variable NAMES the
+	// EnvPassed for a sandboxed launch (WINFIX2, ledger SBX-WIN-ENV-1): variable NAMES the
 	// Launcher hands the box helper. Empty for every other launch.
 	SandboxEnvAllow  []string
 	SandboxEnvPassed []string
@@ -313,6 +313,10 @@ type PrepareRequest struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote" source. Ignored
 	// otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's own choice of where a hosted
+	// row clones a "clone-remote" URL (auto, box or home; decision SBXD-5);
+	// "" takes [terminal.sandbox.hosted].clone_where. Ignored otherwise.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
@@ -337,6 +341,11 @@ type PrepareRequest struct {
 	// caller can ask. Additive.
 	SignInSeed *bool
 	SignInAsk  bool
+	// MaskWorkspaceSecrets asks the sandbox to hide the workspace's secret
+	// files (.env variants, key files, registry credentials) inside the box
+	// (FreshRequest.MaskWorkspaceSecrets). A backend that cannot refuses the
+	// launch; check the backend's CanMaskWorkspaceSecrets first. Additive.
+	MaskWorkspaceSecrets bool
 }
 
 // PrepareResult is what a successful Sandboxer.Prepare returns.
@@ -358,7 +367,7 @@ type PrepareResult struct {
 	Isolation termrun.Isolation
 	// EnvAllow names (never values) the variables the box may receive from
 	// the launching environment beyond its OS table: the tool's provider
-	// variables and the user's pass_env (WINFIX2 R-167). EnvPassed is the
+	// variables and the user's pass_env (WINFIX2, ledger SBX-WIN-ENV-1). EnvPassed is the
 	// pass_env part alone, for the run's posture. Additive.
 	EnvAllow  []string
 	EnvPassed []string
@@ -369,6 +378,9 @@ type PrepareResult struct {
 	// SignInShared is CreateResult.SignInShared (operator ruling P-183).
 	// Additive.
 	SignInShared string
+	// SecretMask is AttachResult.SecretMask: what the workspace secret mask
+	// covered, nil when the launch did not ask for it. Additive.
+	SecretMask *SecretMaskOutcome
 }
 
 // Launcher spawns a PTY-backed launcher and returns its opaque handle. It is
@@ -435,6 +447,10 @@ type runMeta struct {
 	// (MarkEnding), else set from the exit code at EndRunByHandle; retained
 	// past exit so the dashboard's exit frame can name it (endreason.go).
 	endReason string
+	// origin is who started the run, as recorded (lane cli-2): read by
+	// Origin for the live rows of `observer terminals ls` and the
+	// dashboard's Terminals list, with no store read.
+	origin termrun.Origin
 }
 
 // endedHandleGrace is how long a run's retained classification metadata (byMeta)
@@ -696,6 +712,9 @@ type FreshRequest struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote" WorkspaceSource.
 	// Ignored otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's choice of where a hosted row
+	// clones a "clone-remote" URL (decision SBXD-5); "" takes the config.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
@@ -716,6 +735,24 @@ type FreshRequest struct {
 	// starting unseeded. Ignored when Sandbox is false. Additive.
 	SignInSeed *bool
 	SignInAsk  bool
+	// MaskWorkspaceSecrets asks the sandbox to hide the workspace's secret
+	// files (WorkspaceSecretRules in internal/sandbox: .env variants, key
+	// files, registry credentials) inside the box. Opt-in, default false (the
+	// launch is exactly as before). The mask is bounded and reports what it
+	// could not cover; files created after the launch are not masked. A
+	// backend whose registry row has no CanMaskWorkspaceSecrets refuses the
+	// launch, so a caller checks it first and falls back to a warning.
+	// Ignored when Sandbox is false. Additive.
+	MaskWorkspaceSecrets bool
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
+	// TaskPrompt is a server-built first prompt (dashapi.FreshLaunchSpec
+	// .TaskPrompt). LaunchFresh places it LAST on the tool's argv by
+	// integration.TaskSeedFor and fails closed (integration.ErrTaskSeed)
+	// when the tool has no seed or the prompt cannot be passed. Ignored when
+	// Shell. Additive.
+	TaskPrompt string
 }
 
 // SignInConsentError re-exports termcore's consent question (lane
@@ -726,6 +763,18 @@ type SignInConsentError = termcore.SignInConsentError
 type LaunchResult struct {
 	Handle string
 	RunID  string
+	// SecretMask says what the workspace secret mask covered; nil unless the
+	// launch asked for it (FreshRequest.MaskWorkspaceSecrets) and the
+	// backend built it. Additive.
+	SecretMask *SecretMaskOutcome
+	// Backend is the sandbox backend that built the box: the outermost layer
+	// of the isolation the Sandboxer reported (its id, the same word the
+	// request's backend choice and the run's isolation stack use). "" for a
+	// launch that was not sandboxed or a Sandboxer that named none. It is what
+	// ran, not what was asked for: an Automatic choice is resolved by the
+	// Sandboxer, and a caller that records "in a sandbox" reads it from here.
+	// Additive.
+	Backend string
 }
 
 // ShellTool is the reserved pseudo-tool name a plain-shell fresh launch is
@@ -771,6 +820,13 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 	if req.Shell {
 		tool = ShellTool
 	}
+	// A task prompt the tool cannot take refuses the launch before any
+	// workspace is prepared (it is placed on argv below).
+	if req.TaskPrompt != "" && !req.Shell {
+		if _, serr := integration.TaskSeedArgs(integration.TaskSeedFor(tool), nil, req.TaskPrompt); serr != nil {
+			return LaunchResult{}, serr
+		}
+	}
 
 	// B9 sandbox seam — AFTER ValidateProjectRoot, BEFORE the run is minted
 	// (plan §1/§5): a failed or unavailable sandbox request never orphans a
@@ -809,6 +865,7 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		Kind:            termrun.KindFresh,
 		ProjectRootHash: termrun.HashProjectRoot(dir),
 		LaunchedAt:      s.now(),
+		Origin:          req.Origin,
 		Isolation:       iso,
 	}
 	var extraArgs, extraEnv []string
@@ -827,7 +884,16 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		}
 		extraArgs = integration.AppendNativeArgs(extraArgs, switchArgs)
 	}
-	return s.launch(ctx, run, LaunchRequest{
+	// A task prompt goes LAST, after the model and native-switch args, so a
+	// trailing seed stays trailing.
+	if req.TaskPrompt != "" && !req.Shell {
+		seeded, serr := integration.TaskSeedArgs(integration.TaskSeedFor(tool), extraArgs, req.TaskPrompt)
+		if serr != nil {
+			return LaunchResult{}, serr
+		}
+		extraArgs = seeded
+	}
+	res, err := s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
 		Kind:       termrun.KindFresh,
 		Dir:        dir,
@@ -845,6 +911,23 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		SandboxAllowOSC52:   prepared.AllowOSC52Clipboard,
 		SandboxSignInShared: prepared.SignInShared,
 	})
+	if err == nil {
+		// What the workspace secret mask covered, when the launch asked for it.
+		res.SecretMask = prepared.SecretMask
+		// The backend that built the box (the evidence the run records).
+		res.Backend = isolationBackend(sandboxed, iso)
+	}
+	return res, err
+}
+
+// isolationBackend is the backend id of a launch's box: the outermost layer of
+// the isolation stack, "" when the launch was not sandboxed or the stack names
+// none.
+func isolationBackend(sandboxed bool, iso termrun.Isolation) string {
+	if !sandboxed || len(iso.Stack) == 0 {
+		return ""
+	}
+	return iso.Stack[0]
 }
 
 // prepareSandbox resolves a sandboxed fresh launch's workspace + wrap argv
@@ -875,6 +958,10 @@ func (s *Service) prepareSandbox(ctx context.Context, req FreshRequest, tool, va
 		DeferSlowPrep:   true,
 		SignInSeed:      req.SignInSeed,
 		SignInAsk:       req.SignInAsk,
+		// The per-launch workspace secret mask (bwrap only; others refuse).
+		MaskWorkspaceSecrets: req.MaskWorkspaceSecrets,
+		// SBXD-5: where a hosted row clones a clone-remote URL.
+		WorkspaceCloneWhere: req.WorkspaceCloneWhere,
 	})
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("%w: %w", ErrWorkspacePrepFailed, err)
@@ -927,6 +1014,9 @@ type SSHRequest struct {
 	// Rows / Cols are the initial PTY size (0 = OS default).
 	Rows uint16
 	Cols uint16
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
 }
 
 // LaunchSSH authorizes and starts an outbound SSH shell to an operator-
@@ -969,6 +1059,7 @@ func (s *Service) LaunchSSH(ctx context.Context, req SSHRequest) (LaunchResult, 
 		Tool:       SSHTool,
 		Kind:       termrun.KindSSH,
 		LaunchedAt: s.now(),
+		Origin:     req.Origin,
 	}
 	return s.launch(ctx, run, LaunchRequest{
 		Kind:    termrun.KindSSH,
@@ -1010,6 +1101,9 @@ type HandoffRequest struct {
 	FromMessage int
 	Rows        uint16
 	Cols        uint16
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
 }
 
 // LaunchHandoff mints a run + starts a --continue-from launch. The source
@@ -1027,6 +1121,7 @@ func (s *Service) LaunchHandoff(ctx context.Context, req HandoffRequest) (Launch
 		Kind:            termrun.KindHandoff,
 		SourceSessionID: req.SessionID,
 		LaunchedAt:      s.now(),
+		Origin:          req.Origin,
 	}
 	return s.launch(ctx, run, LaunchRequest{
 		Subcommand:  req.Subcommand,
@@ -1062,6 +1157,9 @@ type AttachRequest struct {
 	// hatch + `--` tool remainder). Explicit + allow-listed, never a blind argv
 	// copy (B2/B3).
 	ExtraArgs []string
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
 }
 
 // LaunchAttachable mints a KindAttach run and spawns a daemon-owned PTY on
@@ -1103,6 +1201,7 @@ func (s *Service) LaunchAttachable(ctx context.Context, req AttachRequest) (Laun
 		Kind:            termrun.KindAttach,
 		ProjectRootHash: termrun.HashProjectRoot(req.Dir),
 		LaunchedAt:      s.now(),
+		Origin:          req.Origin,
 	}
 	return s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
@@ -1133,6 +1232,9 @@ type ResumeRequest struct {
 	ExtraArgs       []string
 	Rows            uint16
 	Cols            uint16
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
 }
 
 // LaunchResume authorizes and starts a NATIVE resume of a closed session. It
@@ -1173,6 +1275,7 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 		SourceSessionID: req.SourceSessionID,
 		ProjectRootHash: termrun.HashProjectRoot(dir),
 		LaunchedAt:      s.now(),
+		Origin:          req.Origin,
 	}
 	res, err := s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
@@ -1282,6 +1385,7 @@ func (s *Service) launch(ctx context.Context, run termrun.Run, lr LaunchRequest)
 		sandboxed: lr.Sandboxed,
 		isolation: run.Isolation,
 		startedAt: s.now(),
+		origin:    run.Origin.Normalized(),
 	}
 	s.mu.Unlock()
 
@@ -1466,6 +1570,16 @@ func (s *Service) Sandboxed(handle string) (sandboxed bool, ok bool) {
 	defer s.mu.Unlock()
 	m, ok := s.byMeta[handle]
 	return m.sandboxed, ok
+}
+
+// Origin returns who started a live-or-lingering handle's run, as its
+// row recorded it (lane cli-2, migration 220). ok=false for an unknown
+// handle; a zero Origin means not recorded.
+func (s *Service) Origin(handle string) (termrun.Origin, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byMeta[handle]
+	return m.origin, ok
 }
 
 // Isolation returns the G19 evidence a live-or-lingering handle's run

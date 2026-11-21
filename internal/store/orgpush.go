@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/ownagent"
 )
 
 // schema_meta keys holding the per-table push cursor (the highest table id /
@@ -238,6 +239,16 @@ type PushBatch struct {
 	SessionCacheSummaries     []orgcontract.SessionCacheRow
 	SessionProcesses          []orgcontract.SessionProcessRow
 	SessionNetworkEvents      []orgcontract.SessionNetworkEventRow
+	// SessionProcessRollups / SessionProcessCaptureStats are the process
+	// capture budget's org wire (layer O1): the rollup groups of the runs the
+	// node counted but did not keep, and one counters row per session.
+	// Composed by store.SelectSessionProcessRollupRows /
+	// SelectSessionProcessCaptureStatsRows (processrolluporgrows.go), which
+	// own the node-local reads; this file names neither table (the privacy
+	// sentinel forbids it). Same shipsRawContent() tier as SessionProcesses;
+	// windowed-recompute + server-upsert-replace; no cursor effect.
+	SessionProcessRollups      []orgcontract.SessionProcessRollupRow
+	SessionProcessCaptureStats []orgcontract.SessionProcessCaptureStatsRow
 	// SessionCacheEvents is the PER-EVENT cache timeline (operator directive
 	// item 6) — the same shipsRawContent() posture as SessionCacheSummaries
 	// beside it, and deliberately NOT the teams-tier CacheDetail flag.
@@ -354,6 +365,11 @@ type PushBatch struct {
 	// tier and only while the sandbox module binds its capability seam.
 	SandboxPosture    []orgcontract.SandboxPostureRow
 	SandboxCapability *orgcontract.SandboxCapabilityRow
+	// SandboxEgressRefusals is the per-day egress refusal count by tier and
+	// closed rule (audit CG-15, decision D-11), composed by
+	// composeSandboxEgressCounts in sandboxegress_org.go ONLY on a managed
+	// node (ShareOptions.Managed).
+	SandboxEgressRefusals []orgcontract.SandboxEgressRefusalDayRow
 	// SecurityPosture / SecurityFindings / AIChangeRecords are the OPTIONAL
 	// security pillar wire (security plan 7.4), composed by composeSecurity
 	// in secorgrows.go through the SecurityOrgProviders seam: only while the
@@ -532,6 +548,7 @@ func (b PushBatch) hasAggregates() bool {
 // hasAggregates under the complexity bar.
 func (b PushBatch) hasModuleAggregates() bool {
 	return len(b.MCPRelayActivity) > 0 || len(b.MCPInventory) > 0 || len(b.SandboxPosture) > 0 ||
+		len(b.SandboxEgressRefusals) > 0 ||
 		len(b.SecurityPosture) > 0 || len(b.SecurityFindings) > 0 || len(b.AIChangeRecords) > 0
 }
 
@@ -577,6 +594,7 @@ func (b PushBatch) hasSessionAggregates() bool {
 	return len(b.SessionVerbositySummaries) > 0 || len(b.SessionCacheSummaries) > 0 ||
 		len(b.SessionCacheEvents) > 0 ||
 		len(b.SessionProcesses) > 0 || len(b.SessionNetworkEvents) > 0 ||
+		len(b.SessionProcessRollups) > 0 || len(b.SessionProcessCaptureStats) > 0 ||
 		len(b.SessionTaskItems) > 0 || len(b.SessionTaskTransitions) > 0 ||
 		len(b.SessionToolAccounts) > 0 || len(b.SessionHookActivity) > 0 ||
 		len(b.SessionQuality) > 0 ||
@@ -748,7 +766,10 @@ func (s *Store) SavePushCursorIfUnchanged(ctx context.Context, expected, next Pu
 // PushEligibleCounts returns, for the five cursor tables a status report
 // shows (sessions, actions, api_turns, token_usage, guard_events), how many
 // rows sit ABOVE cur: exactly the rows the next push would read for that
-// table, before scope and budget.
+// table, before scope and budget. On an enrolled node only the rows the
+// enrolled org may receive are counted (agent migration 250, D-43): a row
+// whose session belongs to another org, or to no org, is never sent to it,
+// so `observer org backfill` and the switch drain count what really ships.
 //
 // IT IS A ROW COUNT, NOT MAX-ID MINUS CURSOR (T-373). Ids have gaps (a
 // deleted or retention-pruned row leaves one), and sessions has no INTEGER
@@ -757,19 +778,34 @@ func (s *Store) SavePushCursorIfUnchanged(ctx context.Context, expected, next Pu
 // subtraction then over-stated the count or went negative. A count over the rowid range is an index seek bounded by what
 // is actually waiting. Pass the zero cursor for every row in each table.
 func (s *Store) PushEligibleCounts(ctx context.Context, cur PushCursor) (PushCursor, error) {
+	dest, err := s.orgDestinationFor(ctx, "")
+	if err != nil {
+		return PushCursor{}, fmt.Errorf("store.PushEligibleCounts: %w", err)
+	}
+	// sessionPred / rowPred narrow each count to the destination org; both
+	// are empty on a node that is not enrolled.
+	sessionPred, rowPred := "", ""
+	if !dest.open {
+		sessionPred = ` AND COALESCE(authority_org_key, '') = ?`
+		rowPred = attributedCountPredicate
+	}
 	var c PushCursor
 	for _, q := range []struct {
 		sql   string
 		after int64
 		dst   *int64
 	}{
-		{`SELECT COUNT(*) FROM sessions WHERE rowid > ?`, cur.Sessions, &c.Sessions},
-		{`SELECT COUNT(*) FROM actions WHERE id > ?`, cur.Actions, &c.Actions},
-		{`SELECT COUNT(*) FROM api_turns WHERE id > ?`, cur.APITurns, &c.APITurns},
-		{`SELECT COUNT(*) FROM token_usage WHERE id > ?`, cur.TokenUsage, &c.TokenUsage},
-		{`SELECT COUNT(*) FROM guard_events WHERE id > ?`, cur.GuardEvents, &c.GuardEvents},
+		{`SELECT COUNT(*) FROM sessions WHERE rowid > ?` + sessionPred, cur.Sessions, &c.Sessions},
+		{`SELECT COUNT(*) FROM actions t WHERE t.id > ?` + rowPred, cur.Actions, &c.Actions},
+		{`SELECT COUNT(*) FROM api_turns t WHERE t.id > ? AND ` + apiTurnPlaneBOnly + rowPred, cur.APITurns, &c.APITurns},
+		{`SELECT COUNT(*) FROM token_usage t WHERE t.id > ?` + rowPred, cur.TokenUsage, &c.TokenUsage},
+		{`SELECT COUNT(*) FROM guard_events t WHERE t.id > ?` + rowPred, cur.GuardEvents, &c.GuardEvents},
 	} {
-		if err := s.db.QueryRowContext(ctx, q.sql, q.after).Scan(q.dst); err != nil {
+		args := []any{q.after}
+		if !dest.open {
+			args = append(args, dest.key)
+		}
+		if err := s.db.QueryRowContext(ctx, q.sql, args...).Scan(q.dst); err != nil {
 			return PushCursor{}, fmt.Errorf("store.PushEligibleCounts: %w", err)
 		}
 	}
@@ -1070,10 +1106,37 @@ func (s *Store) ClearLastPushState(ctx context.Context) error {
 type ScopeOptions struct {
 	ProjectRootAllowlist []string
 	ProjectRootDenylist  []string
+	// GuardEventsUnscoped exempts guard_events from the two lists: the
+	// organization governs this node's scope (a managed enrolment), so a
+	// verdict the org's policy enforced reaches the org whatever project
+	// the node narrowed itself to (control-coverage audit CG-13). Zero
+	// value: the lists narrow guard events like every other table, except
+	// session-less verdicts, which always ship (guardEventScope).
+	GuardEventsUnscoped bool
 	// Settle is the token_usage settle holdback (pushsettle.go): which
 	// rows are not yet ELIGIBLE this tick because their generation timing
 	// may still be stamped. Zero value = no holdback.
 	Settle PushSettle
+}
+
+// guardEventScope is the guard_events lane's scope rule (CG-13), as the SQL
+// clause appended to its query and whether a session-less row it ships must
+// drop its content-bearing fields. Rows, top-down:
+//
+//	no local scope, or the org governs it  -> every row, content per share
+//	scope matched no project               -> session-less rows only, stripped
+//	scope matched projects                 -> in-scope rows, plus session-less rows stripped
+//
+// filter is resolveScopeFilter's project-id list (formatted int64s).
+func guardEventScope(scope ScopeOptions, filter string, noMatch bool) (clause string, stripSessionless bool) {
+	switch {
+	case scope.GuardEventsUnscoped || !scope.IsScoped():
+		return "", false
+	case noMatch || filter == "":
+		return ` AND COALESCE(ge.session_id,'') = ''`, true
+	default:
+		return ` AND (COALESCE(ge.session_id,'') = '' OR s.project_id IN (` + filter + `))`, true //nolint:gosec // G202: filter is the resolved integer project-id list
+	}
 }
 
 // IsScoped reports whether either list is non-empty (the query path
@@ -1281,6 +1344,15 @@ type ShareOptions struct {
 	// store.SelectMCPRelayActivity, which owns the read; this file never
 	// names the relay tables.
 	MCPActivity bool
+	// Managed is true when this node enrolled under Enterprise-Managed
+	// Tenancy: govern.Effective.Managed, the single predicate every
+	// managed-only authority is gated on, copied in by the ONE construction
+	// site that reads the live governance (cmd/observer lowerShareOptions),
+	// never from the node's config. It gates the managed-only wires: today
+	// the sandbox egress refusal counts (audit CG-15, decision D-11). Not a
+	// content tier and not a share key: it does not touch shipsRawContent(),
+	// and the zero value (individual or unenrolled node) ships none of them.
+	Managed bool
 	// Security is [org_client.share].security, the INDIVIDUAL node's security
 	// share level (security plan 7.4, Q7: default off, never remote). It is
 	// read only by the SecurityOrgProviders Level func the cmd layer binds,
@@ -1386,6 +1458,16 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
 	}
 	cur.Sessions = sessionCursor
+	// Org attribution (agent migration 250, operator ruling D-43): the org
+	// this batch may serve, from the LIVE enrolment. Every session-linked row
+	// of another org (or personal, or unknown) is dropped from the composed
+	// batch by applyOrgAttribution below, after the cursor and re-send lanes
+	// have moved past it. Composing for an org the node has just left is
+	// refused outright.
+	dest, err := s.orgDestinationFor(ctx, orgID)
+	if err != nil {
+		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
+	}
 	batch := PushBatch{Cursor: cur}
 	// One budget spine for the whole envelope: cursor wires bound against
 	// budget.max (unchanged semantics), snapshot wires against
@@ -1424,10 +1506,103 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	if err != nil {
 		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: resolve scope: %w", err)
 	}
+
+	// --- guard_events (guard spec §10.2 / §14.3) ---
+	// Unlike the NODE-LOCAL cache_* / advisor_* tables, guard events DO
+	// push — they are the fleet-visibility surface the org rollups (G14)
+	// consume. The content-bearing columns (reason, target_excerpt,
+	// taint_origin) are stripped here in Go, per row, unless the node
+	// opted in to full-content sharing — exactly the actions.target
+	// gating. target_hash and the chain links always ship (content-free
+	// sha256 hex). Local row-id anchors (action_id / api_turn_id) are
+	// never selected — meaningless off-node.
+	//
+	// Scope (control-coverage audit CG-13): the local [org_client.scope]
+	// lists narrow guard events through the owning session's project, but
+	// never (a) on a node whose scope the organization governs
+	// (ScopeOptions.GuardEventsUnscoped: a managed node, where enforcement
+	// the org cannot see is the defect), nor (b) for a SESSION-LESS
+	// verdict (R-205, posture, hook-disabled, user-policy-invalid), which
+	// has no project to be in or out of scope. Under a local scope such a
+	// row ships metadata only (guardEventScope), so a reason naming a path
+	// never leaves under a project restriction. noMatch is a scope that
+	// matched no project: only the exempt rows can ship.
+	composeGuardEvents := func(filter string, noMatch bool) error {
+		q := `SELECT ge.id, COALESCE(ge.session_id,''), ge.ts,
+		             COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), ge.rule_id,
+		             COALESCE(ge.category,''), COALESCE(ge.severity,''), COALESCE(ge.decision,''),
+		             COALESCE(ge.degraded_from,''), COALESCE(ge.enforced,0), COALESCE(ge.source,''),
+		             COALESCE(ge.target_hash,''),
+		             COALESCE(ge.reason,''), COALESCE(ge.target_excerpt,''), COALESCE(ge.taint_origin,''),
+		             ge.chain_prev, ge.chain_hash, COALESCE(ge.grant_id, 0)
+		        FROM guard_events ge
+		        LEFT JOIN sessions s ON ge.session_id = s.id
+		       WHERE ge.id > ?`
+		clause, stripSessionless := guardEventScope(scope, filter, noMatch)
+		q += clause + ` ORDER BY ge.id ASC` //nolint:gosec // G202: clause is guardEventScope's fixed text plus the resolved integer project-id list
+		rows, err := s.db.QueryContext(ctx, q, cur.GuardEvents)
+		if err != nil {
+			return fmt.Errorf("store.SelectUnpushedSince: guard_events: %w", err)
+		}
+		for rows.Next() {
+			var id, enforced int64
+			var r orgcontract.GuardEventRow
+			if err := rows.Scan(&id, &r.SessionID, &r.Timestamp,
+				&r.Tool, &r.EventKind, &r.RuleID,
+				&r.Category, &r.Severity, &r.Decision,
+				&r.DegradedFrom, &enforced, &r.Source,
+				&r.TargetHash,
+				&r.Reason, &r.TargetExcerpt, &r.TaintOrigin,
+				&r.ChainPrev, &r.ChainHash, &r.GrantID); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("store.SelectUnpushedSince: scan guard_event: %w", err)
+			}
+			r.Enforced = enforced != 0
+			// Privacy seam: strip the content-bearing verdict fields
+			// when not opted into full-content sharing (or for a
+			// session-less row shipped past a local scope). The hash
+			// counterpart (already scanned) carries the dedup /
+			// cardinality signal the server needs.
+			if !share.shipsRawContent() || (stripSessionless && r.SessionID == "") {
+				r.Reason = ""
+				r.TargetExcerpt = ""
+				r.TaintOrigin = ""
+			}
+			r.OrgID, r.UserEmail = orgID, userEmail
+			sz := jsonSize(r)
+			if !fits(sz) {
+				break
+			}
+			batch.GuardEvents = append(batch.GuardEvents, r)
+			batch.Cursor.GuardEvents = id
+			budget.est += sz
+		}
+		if err := closeRows(rows); err != nil {
+			return fmt.Errorf("store.SelectUnpushedSince: guard_events rows: %w", err)
+		}
+		return nil
+	}
+
 	if scopeNoMatch {
-		batch.EstBytes = 0
+		// Nothing project-scoped is eligible; the CG-13 exempt guard
+		// events still are.
+		if err := composeGuardEvents("", true); err != nil {
+			return PushBatch{}, err
+		}
+		if err := s.applyOrgAttribution(ctx, &batch, dest); err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
+		}
+		batch.EstBytes = budget.est
 		return batch, nil
 	}
+
+	// --- envelope sections ---
+	// Composed FIRST and charged to the budget, bounded to a share of the
+	// envelope, so a large section (a managed node's AI tool configuration
+	// inventory) can never push the serialized envelope over maxBytes after
+	// the cursor lanes have filled it (the 2026-11-10 "push batch too large"
+	// wedge). See orgpushsections.go.
+	s.composeEnvelopeSections(ctx, &batch, budget, share)
 
 	// --- change tracking (agent migration 140, lane R2-RESEND) ---
 	// rev is the node's change-sequence snapshot, read ONCE before any row:
@@ -1524,6 +1699,15 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan action: %w", err)
 			}
 			sz := jsonSize(r)
+			if batch.RowCount() == 0 {
+				// A lone row larger than the whole envelope would wedge the
+				// queue (every envelope oversized, forever): cut its bodies.
+				var keep bool
+				if r, sz, keep = fitLoneCursorRow(s, budget, snapFamCursorPrefix+"actions", r, sz, shrinkActionRow); !keep {
+					batch.Cursor.Actions = id
+					continue
+				}
+			}
 			if !fits(sz) {
 				budgetHit = true
 				break
@@ -1539,7 +1723,7 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	// --- api_turns ---
 	if !budgetHit {
-		q := apiTurnPushSelect + ` WHERE t.id > ?`
+		q := apiTurnPushSelect + ` WHERE t.id > ? AND ` + apiTurnPlaneBOnly //nolint:gosec // G202: two package constants; values bind as args
 		if scopeFilter != "" {
 			q += ` AND t.project_id IN (` + scopeFilter + `)` //nolint:gosec // G202: the fragment is formatted int64 project ids or a fixed table name; values bind as args
 		}
@@ -1642,73 +1826,12 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	batch.Acks.recordMain(cur, batch.Cursor)
 
 	// --- guard_events (guard spec §10.2 / §14.3) ---
-	// Unlike the NODE-LOCAL cache_* / advisor_* tables, guard events DO
-	// push — they are the fleet-visibility surface the org rollups (G14)
-	// consume. The content-bearing columns (reason, target_excerpt,
-	// taint_origin) are stripped here in Go, per row, unless the node
-	// opted in to full-content sharing — exactly the actions.target
-	// gating. target_hash and the chain links always ship (content-free
-	// sha256 hex). Local row-id anchors (action_id / api_turn_id) are
-	// never selected — meaningless off-node.
+	// Composed by composeGuardEvents (defined above, beside the scope
+	// resolution, because a scope that matches no project still ships the
+	// verdicts CG-13 exempts from it).
 	if !budgetHit {
-		q := `SELECT ge.id, COALESCE(ge.session_id,''), ge.ts,
-		             COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), ge.rule_id,
-		             COALESCE(ge.category,''), COALESCE(ge.severity,''), COALESCE(ge.decision,''),
-		             COALESCE(ge.degraded_from,''), COALESCE(ge.enforced,0), COALESCE(ge.source,''),
-		             COALESCE(ge.target_hash,''),
-		             COALESCE(ge.reason,''), COALESCE(ge.target_excerpt,''), COALESCE(ge.taint_origin,''),
-		             ge.chain_prev, ge.chain_hash, COALESCE(ge.grant_id, 0)
-		        FROM guard_events ge
-		        LEFT JOIN sessions s ON ge.session_id = s.id
-		       WHERE ge.id > ?`
-		if scopeFilter != "" {
-			// Scope resolves through the owning session's project. A
-			// guard event with no session row (e.g. a config-change
-			// posture event) is conservatively EXCLUDED under a scoped
-			// push — when the operator restricts by project, unattributable
-			// rows don't ship.
-			q += ` AND s.project_id IN (` + scopeFilter + `)` //nolint:gosec // G202: the fragment is formatted int64 project ids or a fixed table name; values bind as args
-		}
-		q += ` ORDER BY ge.id ASC`
-		rows, err := s.db.QueryContext(ctx, q, cur.GuardEvents)
-		if err != nil {
-			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: guard_events: %w", err)
-		}
-		for rows.Next() {
-			var id, enforced int64
-			var r orgcontract.GuardEventRow
-			if err := rows.Scan(&id, &r.SessionID, &r.Timestamp,
-				&r.Tool, &r.EventKind, &r.RuleID,
-				&r.Category, &r.Severity, &r.Decision,
-				&r.DegradedFrom, &enforced, &r.Source,
-				&r.TargetHash,
-				&r.Reason, &r.TargetExcerpt, &r.TaintOrigin,
-				&r.ChainPrev, &r.ChainHash, &r.GrantID); err != nil {
-				_ = rows.Close()
-				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan guard_event: %w", err)
-			}
-			r.Enforced = enforced != 0
-			// Privacy seam: strip the content-bearing verdict fields
-			// when not opted into full-content sharing. The hash
-			// counterpart (already scanned) carries the dedup /
-			// cardinality signal the server needs.
-			if !share.shipsRawContent() {
-				r.Reason = ""
-				r.TargetExcerpt = ""
-				r.TaintOrigin = ""
-			}
-			r.OrgID, r.UserEmail = orgID, userEmail
-			sz := jsonSize(r)
-			if !fits(sz) {
-				// guard_events is the last table; no need to set budgetHit.
-				break
-			}
-			batch.GuardEvents = append(batch.GuardEvents, r)
-			batch.Cursor.GuardEvents = id
-			budget.est += sz
-		}
-		if err := closeRows(rows); err != nil {
-			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: guard_events rows: %w", err)
+		if err := composeGuardEvents(scopeFilter, false); err != nil {
+			return PushBatch{}, err
 		}
 	}
 
@@ -1751,6 +1874,13 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			}
 			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
+			if batch.RowCount() == 0 {
+				var keep bool
+				if r, sz, keep = fitLoneCursorRow(s, budget, snapFamCursorPrefix+"otel_content", r, sz, shrinkOTelContentRow); !keep {
+					batch.Cursor.OTelContent = id
+					continue
+				}
+			}
 			if !fits(sz) {
 				break
 			}
@@ -1782,6 +1912,13 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			r := evs[i]
 			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
+			if batch.RowCount() == 0 {
+				var keep bool
+				if r, sz, keep = fitLoneCursorRow[orgcontract.MCPRelayEventRow](s, budget, snapFamCursorPrefix+"mcp_relay_events", r, sz, nil); !keep {
+					batch.Cursor.MCPRelay = r.LocalRecordSeq
+					continue
+				}
+			}
 			if !fits(sz) {
 				break
 			}
@@ -1887,32 +2024,9 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		batch.MCPInventory = fitSnapshot(s, budget, snapFamMCPInventory, inv)
 	}
 
-	// Org BUDGET posture (org-budget plan §3.3d) — one enum-only envelope-level
-	// row saying whether the org's budget is actually holding on this node.
-	// Composed through the func seam in budgetposture.go, exactly like the
-	// routing summaries above, so this file names nothing the posture is
-	// derived from. It is tiny and unconditional in size terms, so it is
-	// attached before the size-bounded snapshot wires rather than competing
-	// with them: a posture the admin cannot see is the failure the row exists
-	// to prevent. nil = nothing to report; the envelope stays byte-identical.
-	batch.BudgetPosture = s.composeBudgetPosture()
-	// The component posture (modular packaging plan 6.4): composed through
-	// the func seam in componentposture.go; metadata about the binary, so it
-	// ships in every share mode. A change forces a push until delivered.
-	batch.ComponentPosture, batch.componentPostureChanged = s.composeComponentPosture(ctx)
-
-	// The org AI tool policy state (adapter config P7): a managed node's
-	// applied state, composed through the func seam in agentconfigorg.go so
-	// this file names no node table. Observed values ride only under
-	// shipsRawContent(). A changed report forces a push (an admin must see
-	// drift without waiting for unrelated telemetry); an unchanged one only
-	// rides along.
-	batch.AgentConfigState = s.composeAgentConfigState(ctx, share.shipsRawContent())
-	batch.agentConfigChanged = s.noteAgentConfigDigest(batch.AgentConfigState)
-	// The AI tool configuration inventory (D-112, T-427): same func-seam
-	// posture, value-bearing, so raw content only; attached only when it
-	// changed since the last accepted push (a change forces a push).
-	batch.AgentConfigInventory = s.composeAgentConfigInventory(ctx, share.shipsRawContent())
+	// The envelope-level sections (budget/component posture, the org AI tool
+	// policy state and the AI tool configuration inventory) were composed and
+	// charged to the budget before the cursor lanes: see composeEnvelopeSections.
 
 	// Cache-detail aggregate (Arc 4 P5c) — attached only under the
 	// cache_detail tier. Computed by store.SelectCacheSummaries (which owns
@@ -2087,6 +2201,9 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	// that cannot describe its updater must still deliver its telemetry.
 	if posture, err := s.SelectUpdatePosture(ctx); err == nil {
 		batch.UpdatePosture = posture
+		if posture != nil {
+			budget.est += jsonSize(posture)
+		}
 	}
 
 	// Session-scoped enterprise wires (org-parity W3.1 verbosity / W2.1
@@ -2153,6 +2270,31 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			// truncated off the tail by fitSnapshot to make room for sparklines.
 			dropProcessMetricSamplesIfOverBudget(budget, sp)
 			batch.SessionProcesses = fitSnapshot(s, budget, snapFamSessionProcess, sp)
+		}
+
+		// The process capture budget's rollups + per-session counters (layer
+		// O1): ONE gated recompute feeding two slices, like the benchmark
+		// pair. The stats rows go first: they are small, never capped, and
+		// they are what keeps the org's totals exact when the rollup rows are
+		// truncated by the budget. The rollup Select re-applies the
+		// shipsRawContent() gate to its one content column itself.
+		if s.snapChanged(ctx, snapFamSessionProcessCapture) {
+			cs, err := s.SelectSessionProcessCaptureStatsRows(ctx)
+			if err != nil {
+				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session process capture stats: %w", err)
+			}
+			ru, err := s.SelectSessionProcessRollupRows(ctx, share)
+			if err != nil {
+				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session process rollups: %w", err)
+			}
+			for i := range cs {
+				cs[i].OrgID, cs[i].UserEmail = orgID, userEmail
+			}
+			for i := range ru {
+				ru[i].OrgID, ru[i].UserEmail = orgID, userEmail
+			}
+			batch.SessionProcessCaptureStats = fitSnapshot(s, budget, snapFamSessionProcessCapture, cs)
+			batch.SessionProcessRollups = fitSnapshot(s, budget, snapFamSessionProcessCapture, ru)
 		}
 
 		// Wave-3 per-developer enterprise wires (advisor / patterns /
@@ -2273,6 +2415,18 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			batch.RemoteAudit = fitSnapshot(s, budget, snapFamRemoteAuditRows, ra)
 		}
 
+	}
+
+	// The guard pin and approval registers (W5.2): what a developer's node
+	// trusts and the exceptions in force against the guard policy. They ship
+	// whole under raw content and on every MANAGED node, whatever its content
+	// posture (managed policy visibility G2, and the 2026-11-12 ruling that a
+	// managed node ships full content: the organization has absolute
+	// visibility there). Nothing is blanked on either path, so a pin row's
+	// Name always agrees with its PinKey (kind:name:client), the server's
+	// upsert key (review finding 3, 2026-11-12: a blanked name used to land
+	// under a key that still carried it).
+	if share.shipsRawContent() || share.Managed {
 		if s.snapChanged(ctx, snapFamGuardPins) {
 			gp, err := s.SelectGuardPinRows(ctx)
 			if err != nil {
@@ -2369,6 +2523,22 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: sandbox posture: %w", err)
 		}
 		batch.SandboxPosture, batch.SandboxCapability = days, capRow
+		if capRow != nil {
+			budget.est += jsonSize(capRow)
+		}
+	}
+
+	// The sandbox egress refusal counts (audit CG-15, decision D-11): per
+	// day x tier x closed rule, counts only, from a MANAGED node only (the
+	// org's signed sandbox body decides the tier and the allowed ranges
+	// there). composeSandboxEgressCounts owns the node-local read; this file
+	// never names the refusal tables (decision D6, privacy sentinel).
+	if share.Managed {
+		erows, err := s.composeSandboxEgressCounts(ctx, budget, orgID, userEmail)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: sandbox egress counts: %w", err)
+		}
+		batch.SandboxEgressRefusals = erows
 	}
 
 	// The security pillar wire (security plan 7.4): composeSecurity owns the
@@ -2455,6 +2625,11 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	// The oversized-row report (orgsnapoversize.go), for org status/doctor.
 	s.persistOrgPushOversized(ctx)
 
+	// D-43: only the destination org's sessions leave (authorityorgkey.go).
+	if err := s.applyOrgAttribution(ctx, &batch, dest); err != nil {
+		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
+	}
+
 	batch.EstBytes = budget.est
 	return batch, nil
 }
@@ -2481,6 +2656,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 		table, head, idExpr, scopeExpr string
 		ceil                           int64
 		add                            addFn
+		extra                          string // an additional AND predicate, or ""
 	}{
 		{"sessions", sessionPushSelect, "s.rowid", "p.id", cur.Sessions, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanSessionPushRow(rows, share, orgID, userEmail, rev)
@@ -2494,7 +2670,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.Sessions = append(batch.Sessions, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 		{"token_usage", tokenUsagePushSelect("0"), "tu.id", "s.project_id", cur.TokenUsage, func(rows *sql.Rows) (int64, bool, error) {
 			id, _, r, err := s.scanTokenUsagePushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
@@ -2507,7 +2683,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.TokenUsage = append(batch.TokenUsage, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 		{"api_turns", apiTurnPushSelect, "t.id", "t.project_id", cur.APITurns, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanAPITurnPushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
@@ -2520,20 +2696,28 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.APITurns = append(batch.APITurns, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, apiTurnPlaneBOnly},
 		{"actions", actionPushSelect, "a.id", "a.project_id", cur.Actions, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanActionPushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
 				return 0, false, err
 			}
 			sz := jsonSize(r)
+			if batch.RowCount() == 0 {
+				// The lone-row rule of the cursor lane: a re-sent row larger
+				// than the envelope ships with its bodies cut, never wedges.
+				var keep bool
+				if r, sz, keep = fitLoneCursorRow(s, budget, snapFamCursorPrefix+"actions", r, sz, shrinkActionRow); !keep {
+					return id, true, nil
+				}
+			}
 			if !fits(sz) {
 				return 0, false, nil
 			}
 			batch.Actions = append(batch.Actions, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 	}
 	for _, l := range lanes {
 		floor, tracked := tr.floor[l.table]
@@ -2541,6 +2725,9 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			continue
 		}
 		q := l.head + pushChangesFilter(l.table, l.idExpr) //nolint:gosec // G202: the fragment is formatted int64 project ids or a fixed table name; values bind as args
+		if l.extra != "" {
+			q += ` AND ` + l.extra
+		}
 		if scopeFilter != "" {
 			q += ` AND ` + l.scopeExpr + ` IN (` + scopeFilter + `)`
 		}
@@ -2590,7 +2777,8 @@ const sessionPushSelect = `SELECT s.rowid, s.id,
 		             COALESCE(p.content_fingerprint_hash,''), COALESCE(p.git_upstream_remote,''),
 		             COALESCE(s.workspace_hash,''), COALESCE(s.workspace,''), COALESCE(s.is_worktree,0),
 		             COALESCE(s.surface,''), COALESCE(s.surface_host,''), COALESCE(s.tool_version,''),
-		             COALESCE(s.parent_thread_id,''), COALESCE(s.tool_version_last,'')
+		             COALESCE(s.parent_thread_id,''), COALESCE(s.tool_version_last,''),
+		             COALESCE(s.execution_location,''), COALESCE(s.vendor_session_ref,'')
 		        FROM sessions s JOIN projects p ON s.project_id = p.id`
 
 const actionPushSelect = `SELECT a.id, a.session_id,
@@ -2606,6 +2794,18 @@ const actionPushSelect = `SELECT a.id, a.session_id,
 		             COALESCE(json_extract(a.metadata,'$.stop_reason'),''),
 		             COALESCE(a.message_id,'')
 		        FROM actions a`
+
+// apiTurnPlaneBOnly is the Plane A source discriminator on the api_turns push
+// (D6, F10): a row a Plane A (hosted-app observability) source wrote is a
+// hosted app's spend, not the developer's coding spend, so it never ships on
+// the Plane B wire in any share mode. Plane A data reaches the org only
+// through its own opt-in obs tiers (ObsOrgProviders). Since the merge-only
+// rule no writer creates such a row and agent migration 256 relocated the
+// legacy ones to api_turns_planea_legacy, so this is defence in depth. The
+// cursor lane, the re-send lane, the eligible count and the change-queue
+// garbage sweep (orgpushresend.go) all apply it, so a queued change to such a
+// row is swept rather than wedging the re-send head.
+var apiTurnPlaneBOnly = `NOT ` + PlaneATurnSourceSQL("t")
 
 const apiTurnPushSelect = `SELECT t.id, COALESCE(t.session_id,''),
 		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
@@ -2661,7 +2861,8 @@ func scanSessionPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail str
 		&r.ContentFingerprintHash, &r.GitUpstreamRemote,
 		&r.WorkspaceHash, &r.Workspace, &isWorktree,
 		&r.Surface, &r.SurfaceHost, &r.ToolVersion,
-		&r.ParentThreadID, &r.ToolVersionLast); err != nil {
+		&r.ParentThreadID, &r.ToolVersionLast,
+		&r.ExecutionLocation, &r.VendorSessionRef); err != nil {
 		return 0, r, err
 	}
 	r.IsWorktree = isWorktree != 0
@@ -2671,7 +2872,16 @@ func scanSessionPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail str
 	// makes that true rather than merely conventional. Unrecognized ⇒
 	// "other"; empty stays empty (unstamped, not unknown-host). See
 	// knownSurfaceHosts at the bottom of this file.
-	r.SurfaceHost = surfaceHostForWire(r.SurfaceHost)
+	//
+	// The one OPEN host is an own agent's name (P-228, internal/ownagent):
+	// a developer-chosen string that can encode a client or a project, so
+	// it ships raw only under shipsRawContent() and as a stable hash
+	// otherwise. Decided by the value's own prefix, never by the tool.
+	if wire, ok := ownagent.WireSurfaceHost(r.SurfaceHost, share.shipsRawContent()); ok {
+		r.SurfaceHost = wire
+	} else {
+		r.SurfaceHost = surfaceHostForWire(r.SurfaceHost)
+	}
 	// Privacy seam: strip raw paths when not opted into full-content
 	// sharing. The hash counterparts (already scanned) carry the
 	// signal the server needs. git_branch is stripped outright — it has
@@ -2709,6 +2919,13 @@ func scanSessionPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail str
 	// shipping the pointer adds structure (fan-out), not content.
 	// forked_from_id / thread_source (the fact/kind of a fork) stay
 	// NODE-LOCAL and are deliberately not selected above.
+	// execution_location / vendor_session_ref (cloud-agents arc, agent 240
+	// / server 300 / pg 0170) join the unconditional bucket too: the
+	// location is a closed vocabulary (models.KnownExecutionLocation, the
+	// surface reasoning) and the reference an opaque vendor-minted session
+	// id bounded by orgcontract.ValidVendorSessionRef (the parent_thread_id
+	// reasoning). Both are validated on write by SetSessionExecution; empty
+	// stays empty, an unstamped session reaches the org as UNKNOWN.
 	if !share.shipsRawContent() {
 		r.ProjectRoot = ""
 		r.GitRemote = ""
@@ -2933,11 +3150,10 @@ func (s *Store) composeObsSpans(ctx context.Context, batch *PushBatch, budget *e
 		return fmt.Errorf("store.SelectUnpushedSince: obs spans: %w", err)
 	}
 	for i := range sb.Traces {
-		sb.Traces[i].OrgID, sb.Traces[i].UserEmail = orgID, userEmail
-		// project_root raw value rides only under shipsRawContent().
-		if !share.shipsRawContent() {
-			sb.Traces[i].ProjectRoot = ""
-		}
+		// Attribution + the T2 gate in one owner (orgcontract): project_root,
+		// end user, tenant, tags and metadata ride raw only under
+		// shipsRawContent(), and so do the end-user / tenant hashes (D23).
+		sb.Traces[i].PrepareForWire(orgID, userEmail, share.shipsRawContent())
 	}
 	for i := range sb.Spans {
 		sb.Spans[i].OrgID, sb.Spans[i].UserEmail = orgID, userEmail
@@ -3328,10 +3544,19 @@ var knownSurfaceHosts = map[string]bool{
 	// token, not a path or free text.
 	"claude":         true,
 	"claude-desktop": true,
-	"sdk":            true,
-	"ts":             true,
-	"py":             true,
-	"cli":            true,
+	// Claude Code cloud sessions started through the API / MCP (entrypoint
+	// "remote", cloud-agents lane CA-B4, grounded 2026-10-31): surface web,
+	// host "claude-remote". A fixed vendor-derived token, never a path or
+	// free text. ("remote_desktop" reuses "claude-desktop" above.)
+	"claude-remote": true,
+	// Claude Code cloud sessions started from the Claude mobile app
+	// (entrypoint "remote_mobile", grounded live 2026-10-31 for CA-D20):
+	// surface mobile, host "claude-mobile". A fixed vendor-derived token.
+	"claude-mobile": true,
+	"sdk":           true,
+	"ts":            true,
+	"py":            true,
+	"cli":           true,
 	// Codex + its Open Interpreter rebadge (internal/adapter/codex).
 	"codex-cli":        true,
 	"codex-exec":       true,
@@ -3348,21 +3573,37 @@ var knownSurfaceHosts = map[string]bool{
 	"cline-kanban":     true,
 	"cline-subagent":   true,
 	"cline-web":        true,
-	"copilot-cli":      true,
-	"cursor-agent":     true,
-	"devin-desktop":    true,
-	"factory-desktop":  true,
-	"freebuff":         true,
-	"freebuff-desktop": true,
-	"junie-cli":        true,
-	"kiro-cli":         true,
-	"kiro-crew":        true,
-	"poolside-cli":     true,
-	"qoder-work":       true,
-	"vibe":             true,
+	// Cline Cloud Agents (cloud-agents lane CA-V6, 2026-11-01): a session
+	// the cline-cloud connector pulls keeps tool "cline" and is told apart
+	// by this fixed product token (CA-D15).
+	"cline-cloud": true,
+	"copilot-cli": true,
+	// The GitHub Copilot coding agent (cloud-agents decision CA-D15,
+	// 2026-10-31): a cloud task pulled by the copilot-agent connector keeps
+	// tool "copilot" and is told apart by this fixed product token.
+	"copilot-coding-agent": true,
+	"cursor-agent":         true,
+	"devin-desktop":        true,
+	"factory-desktop":      true,
+	"freebuff":             true,
+	"freebuff-desktop":     true,
+	"junie-cli":            true,
+	"kiro-cli":             true,
+	"kiro-crew":            true,
+	"poolside-cli":         true,
+	"qoder-work":           true,
+	"vibe":                 true,
 	// vtcode full-auto `auto-task-<n>` sessions (internal/adapter/vtcode,
 	// 2026-10-21): surface cli, host vtcode-auto. A fixed vendor token.
 	"vtcode-auto": true,
+	// A Warp cloud agent run pulled by the warp-cloud connector (cloud-agents
+	// lane CA-V1, the CA-D15 pattern): a Claude Code or Codex harness run
+	// keeps its tool and is told apart by this fixed product token.
+	"warp-cloud": true,
+	// A Qoder Cloud Agents session pulled by the qoder-cloud connector
+	// (cloud-agents lane CA-V2, decision CA-D15): it keeps tool "qoder"
+	// and is told apart by this fixed product token.
+	"qoder-cloud": true,
 }
 
 // surfaceHostForWire applies the closed vocabulary to one stored

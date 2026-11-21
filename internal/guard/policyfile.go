@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -147,6 +148,12 @@ type tomlRule struct {
 	Enforce   bool         `toml:"enforce"`
 	AppliesTo []string     `toml:"applies_to"`
 	Match     tomlMatchers `toml:"match"`
+	// Doc is the rule's one-liner, the verdict reason's prefix (the agent
+	// reads it). Optional: empty keeps "<layer> rule <id>".
+	Doc string `toml:"doc"`
+	// Advice is the one sentence a verdict carries on what to do instead.
+	// Optional.
+	Advice string `toml:"advice"`
 }
 
 // tomlOverride is one [[override]] entry (§4.4).
@@ -170,17 +177,21 @@ type tomlMatchers struct {
 	PathNot            []string `toml:"path_not"`
 	PathOutsideProject bool     `toml:"path_outside_project"`
 	PathSensitive      bool     `toml:"path_sensitive"`
-	CommandRegex       string   `toml:"command_regex"`
-	CommandBase        string   `toml:"command_base"`
-	ArgContains        string   `toml:"arg_contains"`
-	URLDomain          string   `toml:"url_domain"`
-	MCPServer          string   `toml:"mcp_server"`
-	MCPTool            string   `toml:"mcp_tool"`
-	EventKind          []string `toml:"event_kind"`
-	TaintSource        string   `toml:"taint_source"`
-	Sink               string   `toml:"sink"`
-	SessionCostUSDGt   float64  `toml:"session_cost_usd_gt"`
-	RepeatCountGt      int      `toml:"repeat_count_gt"`
+	// Access narrows a file rule to reads ("read") or writes ("write": a
+	// write or edit, or any config change), the classification R-150 uses.
+	// Empty matches both.
+	Access           string   `toml:"access"`
+	CommandRegex     string   `toml:"command_regex"`
+	CommandBase      string   `toml:"command_base"`
+	ArgContains      string   `toml:"arg_contains"`
+	URLDomain        string   `toml:"url_domain"`
+	MCPServer        string   `toml:"mcp_server"`
+	MCPTool          string   `toml:"mcp_tool"`
+	EventKind        []string `toml:"event_kind"`
+	TaintSource      string   `toml:"taint_source"`
+	Sink             string   `toml:"sink"`
+	SessionCostUSDGt float64  `toml:"session_cost_usd_gt"`
+	RepeatCountGt    int      `toml:"repeat_count_gt"`
 }
 
 // validEventKinds is the user-facing event_kind vocabulary.
@@ -293,8 +304,16 @@ func AcceptOrgBundleTOML(raw []byte) (problems, notes []string) {
 // shared by the strict parse error and Lint so the two can never
 // disagree about how an unknown key reads.
 func unknownKeysProblem(keys []string) string {
+	// A file can carry thousands of unknown keys; the problem names the
+	// first maxReportedKeys so a load issue stays one bounded line (RC-10).
+	if len(keys) > maxReportedKeys {
+		return fmt.Sprintf("unknown keys: %s and %d more", strings.Join(keys[:maxReportedKeys], ", "), len(keys)-maxReportedKeys)
+	}
 	return fmt.Sprintf("unknown keys: %s", strings.Join(keys, ", "))
 }
+
+// maxReportedKeys bounds the unknown keys one problem names.
+const maxReportedKeys = 20
 
 // lintParsed runs the post-parse half of the checks — the §4.6 merge
 // pass for the layer plus a throwaway engine construction so override
@@ -321,8 +340,14 @@ func lintParsed(pf *policyFile, layer string) []string {
 		extra, overrides, _, mergeIssues = mergeLayers(nil, nil, nil, pf)
 		problems = append(problems, mergeIssues...)
 	case layerOrg:
+		// An org bundle is authored for every node, not for this host: it
+		// is linted against the FULL security pillar pack (orgLintPack), so
+		// an override on any S-7xx rule some node can evaluate gets the
+		// built-in one-way checks instead of the "not loaded" refusal the
+		// host's own (usually empty) pack would give it (audit CG-1). The
+		// same pass runs at the server's publish and at a node's accept.
 		var mergeIssues []string
-		extra, overrides, _, mergeIssues = mergeLayers(pf, nil, nil, nil)
+		extra, overrides, _, mergeIssues = mergeLayersWithPack(orgLintPack(), pf, nil, nil, nil)
 		problems = append(problems, mergeIssues...)
 	default:
 		// The user layer has no relaxation check to fail in isolation
@@ -449,7 +474,7 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 	for i := range f.Rule {
 		r, err := compileRule(&f.Rule[i], layer)
 		if err != nil {
-			return nil, fmt.Errorf("rule %d (%s): %w", i+1, f.Rule[i].ID, err)
+			return nil, fmt.Errorf("rule %d (%s): %w", i+1, printableID(f.Rule[i].ID), err)
 		}
 		if seen[r.ID] {
 			return nil, fmt.Errorf("rule %d: duplicate id %q", i+1, r.ID)
@@ -461,6 +486,10 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 		if ov.Rule == "" {
 			return nil, fmt.Errorf("override %d: missing rule id", i+1)
 		}
+		if strings.IndexFunc(ov.Rule, isControlRune) >= 0 {
+			// The id reaches load issues and verdicts (RC-6).
+			return nil, fmt.Errorf("override %d: rule id must not contain control characters", i+1)
+		}
 		ro := rawOverride{
 			RuleID:      ov.Rule,
 			Enforced:    ov.Enforce != nil && *ov.Enforce,
@@ -471,7 +500,7 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 		if ov.Decision != "" {
 			d, err := policy.ParseDecision(ov.Decision)
 			if err != nil {
-				return nil, fmt.Errorf("override %d (%s): %w", i+1, ov.Rule, err)
+				return nil, fmt.Errorf("override %d (%s): %w", i+1, printableID(ov.Rule), err)
 			}
 			ro.Decision, ro.HasDec = d, true
 		}
@@ -516,6 +545,164 @@ func PolicyRuleRefs(raw []byte) (overrides, declared, disabled []string, err err
 	return overrides, declared, disabled, nil
 }
 
+// maxRuleDocLen bounds a [[rule]]'s doc and advice text.
+const maxRuleDocLen = 300
+
+// checkRuleText validates one doc or advice value: at most maxRuleDocLen
+// characters and no control character (RC-6). The text reaches the agent
+// and the developer as the verdict's reason (terminal, hook reply,
+// dashboard), so a C0 or C1 control (an ANSI escape that hides or rewrites
+// the rest of the line, a line break that forges a second line) is refused
+// on every layer, like the line breaks always were.
+func checkRuleText(field, s string) error {
+	if len(s) > maxRuleDocLen {
+		return fmt.Errorf("%s must be one line of at most %d characters", field, maxRuleDocLen)
+	}
+	for _, r := range s {
+		if isControlRune(r) {
+			return fmt.Errorf("%s must be one line of at most %d characters with no control characters (found U+%04X)", field, maxRuleDocLen, r)
+		}
+	}
+	return nil
+}
+
+// checkEchoedRuleStrings refuses a control character in the rule's other
+// strings that reach a verdict (RC-6): its id (the verdict's rule id, and
+// the default doc) and the matcher values a hit's detail quotes ("command
+// matches <regex>", "argument contains <text>", ...), which the reason
+// appends after the doc. A matcher still matches a control character
+// through its own escapes (a regex's \x1b), never through a raw one.
+func checkEchoedRuleStrings(tr *tomlRule) error {
+	m := &tr.Match
+	fields := []struct {
+		name string
+		vals []string
+	}{
+		{"id", []string{tr.ID}},
+		{"match.command_regex", []string{m.CommandRegex}},
+		{"match.command_base", []string{m.CommandBase}},
+		{"match.arg_contains", []string{m.ArgContains}},
+		{"match.url_domain", []string{m.URLDomain}},
+		{"match.mcp_server", []string{m.MCPServer}},
+		{"match.mcp_tool", []string{m.MCPTool}},
+		{"match.taint_source", []string{m.TaintSource}},
+		{"match.path_glob", m.PathGlob},
+		{"match.path_not", m.PathNot},
+	}
+	for _, f := range fields {
+		for _, v := range f.vals {
+			if i := strings.IndexFunc(v, isControlRune); i >= 0 {
+				return fmt.Errorf("%s must not contain control characters (found U+%04X)", f.name, []rune(v[i:])[0])
+			}
+		}
+	}
+	return nil
+}
+
+// printableID is a rule id as a parse error names it: quoted when it holds a
+// control character, so the error (a load issue) never carries one raw.
+func printableID(id string) string {
+	if strings.IndexFunc(id, isControlRune) >= 0 {
+		return strconv.Quote(id)
+	}
+	return id
+}
+
+// isControlRune reports a C0 control (U+0000-U+001F, tab and line breaks
+// included), DEL (U+007F) or a C1 control (U+0080-U+009F).
+func isControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// inRepoRuleVoice is the prefix every repository-file rule's doc and advice
+// carry (RC-6): the reason a verdict gives is the rule's doc, so without it
+// a repository file could write a reason in the guard's own voice ("Observer
+// guard: pre-approved by your administrator"). The prefix names the rule
+// and where it comes from, ahead of anything the file says.
+func inRepoRuleVoice(id string) string {
+	return layerProject + " rule " + id + " (repository file)"
+}
+
+// tomlNesting measures the two shapes that make a TOML decode superlinear
+// (RC-10), outside strings and comments: depth, the deepest nesting of
+// arrays and inline tables (each open bracket or brace; a [[table]] header
+// counts two while it is open), and lineDots, the most dots on one line (a
+// dotted key or a table header nests one table per segment, and the decoder
+// copies the key path per segment: one 128 KiB header of single-letter
+// segments exhausts memory). It is a cheap pre-decode bound, not a
+// validator: a malformed text gets some count and then fails to decode.
+func tomlNesting(raw []byte) (depth, lineDots int) {
+	cur, dots := 0, 0
+	n := len(raw)
+	for i := 0; i < n; i++ {
+		switch raw[i] {
+		case '\n':
+			dots = 0
+		case '#':
+			for i+1 < n && raw[i+1] != '\n' {
+				i++
+			}
+		case '"', '\'':
+			i = skipTOMLString(raw, i)
+			if raw[i] == '\n' {
+				dots = 0
+			}
+		case '.':
+			dots++
+			if dots > lineDots {
+				lineDots = dots
+			}
+		case '[', '{':
+			cur++
+			if cur > depth {
+				depth = cur
+			}
+		case ']', '}':
+			if cur > 0 {
+				cur--
+			}
+		}
+	}
+	return depth, lineDots
+}
+
+// skipTOMLString returns the index of the last byte of the string that
+// starts at raw[i] (a quote): a basic string (double quotes, backslash
+// escapes), a literal string (single quotes), and the multi-line form of
+// each (three quotes of its kind, which may close with up to two extra
+// quotes). A single-line string ends at a line break too, the decoder's own
+// error.
+func skipTOMLString(raw []byte, i int) int {
+	q := raw[i]
+	n := len(raw)
+	basic := q == '"'
+	if i+2 < n && raw[i+1] == q && raw[i+2] == q {
+		for j := i + 3; j < n; j++ {
+			if basic && raw[j] == '\\' {
+				j++
+				continue
+			}
+			if raw[j] == q && j+2 < n && raw[j+1] == q && raw[j+2] == q {
+				end := j + 2
+				for k := 0; k < 2 && end+1 < n && raw[end+1] == q; k++ {
+					end++
+				}
+				return end
+			}
+		}
+		return n - 1
+	}
+	for j := i + 1; j < n; j++ {
+		switch {
+		case basic && raw[j] == '\\':
+			j++
+		case raw[j] == q, raw[j] == '\n':
+			return j
+		}
+	}
+	return n - 1
+}
+
 // compileRule turns one [[rule]] entry into a policy.Rule row.
 func compileRule(tr *tomlRule, layer string) (policy.Rule, error) {
 	var zero policy.Rule
@@ -540,6 +727,9 @@ func compileRule(tr *tomlRule, layer string) (policy.Rule, error) {
 		if sev, err = policy.ParseSeverity(tr.Severity); err != nil {
 			return zero, err
 		}
+	}
+	if err := checkEchoedRuleStrings(tr); err != nil {
+		return zero, err
 	}
 	cmdScoped, evScoped, kinds, safe, err := compileMatchers(&tr.Match)
 	if err != nil {
@@ -574,6 +764,30 @@ func compileRule(tr *tomlRule, layer string) (policy.Rule, error) {
 	if observe > policy.DecisionFlag {
 		observe = policy.DecisionFlag
 	}
+	doc := layer + " rule " + tr.ID
+	d := strings.TrimSpace(tr.Doc)
+	if err := checkRuleText("doc", d); err != nil {
+		return zero, err
+	}
+	if d != "" {
+		doc = d
+	}
+	advice := strings.TrimSpace(tr.Advice)
+	if err := checkRuleText("advice", advice); err != nil {
+		return zero, err
+	}
+	if layer == layerProject {
+		// A repository file's text never speaks in the guard's voice
+		// (RC-6): its doc and advice open with the rule and its source.
+		voice := inRepoRuleVoice(tr.ID)
+		doc = voice
+		if d != "" {
+			doc = voice + ": " + d
+		}
+		if advice != "" {
+			advice = voice + ": " + advice
+		}
+	}
 	r := policy.Rule{
 		ID:        tr.ID,
 		Category:  policy.Category(tr.Category),
@@ -582,7 +796,8 @@ func compileRule(tr *tomlRule, layer string) (policy.Rule, error) {
 		Observe:   observe,
 		Enforce:   dec,
 		SafePat:   safe,
-		Doc:       layer + " rule " + tr.ID,
+		Doc:       doc,
+		Advice:    advice,
 		Source:    layer,
 		Enforced:  tr.Enforce,
 		// A spend matcher reads the guard's budget stamp, so the engine must
@@ -710,6 +925,20 @@ func compileEvConds(m *tomlMatchers) (conds []evCond, kinds []policy.EventKind, 
 			}
 			return false, ""
 		}, policy.KindFileAccess, policy.KindConfigChange)
+	}
+	switch m.Access {
+	case "":
+	case "read", "write":
+		wantWrite := m.Access == "write"
+		detail := "a " + m.Access
+		addEv(func(ctx *policy.MatchContext) (bool, string) {
+			if policy.IsWriteEvent(ctx.Event) == wantWrite {
+				return true, detail
+			}
+			return false, ""
+		}, policy.KindFileAccess, policy.KindConfigChange)
+	default:
+		return nil, nil, fmt.Errorf("access %q not in {read, write}", m.Access)
 	}
 	if m.URLDomain != "" {
 		dom := strings.ToLower(m.URLDomain)

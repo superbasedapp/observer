@@ -2,24 +2,76 @@ rules:
   - id: csharp.sql-string-concat
     languages: [csharp]
     severity: ERROR
-    message: SQL text is built from a string with values pasted in; use parameters (SqlParameter, FromSqlInterpolated or ExecuteSqlInterpolated) instead.
+    message: Web request input is pasted into SQL text; use parameters (SqlParameter, FromSqlInterpolated or ExecuteSqlInterpolated) instead.
     metadata:
       category: code_vuln
       cwe: CWE-89
-    patterns:
-      - pattern-either:
-          - patterns:
-              - pattern-either:
-                  - pattern: new $CMD($Q, ...)
-                  - pattern: $CMD.CommandText = $Q
-              - metavariable-regex:
-                  metavariable: $CMD
-                  regex: ^(SqlCommand|SqliteCommand|SQLiteCommand|NpgsqlCommand|MySqlCommand|OracleCommand|OleDbCommand|OdbcCommand|\w*[Cc]md|\w*[Cc]ommand)$
-          - patterns:
-              - pattern: $DB.$M($Q, ...)
-              - metavariable-regex:
-                  metavariable: $M
-                  regex: ^(ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw|Query|QueryAsync|QueryFirst|QueryFirstOrDefault|QuerySingle|QueryFirstAsync|QueryFirstOrDefaultAsync|Execute|ExecuteAsync|ExecuteScalar|ExecuteScalarAsync)$
-      - metavariable-regex:
-          metavariable: $Q
-          regex: (?is)^(\$@?"\s*(select|insert|update|delete|with|replace|merge)\b.*\{.*|@?"\s*(select|insert|update|delete|with|replace|merge)\b.*\+\s*[^"\s+@$].*|string\.Format\(\s*@?"\s*(select|insert|update|delete|with|replace|merge)\b.*)$
+    # Pack 1.4.0: taint from web request input (the G4 rewrite the other
+    # languages' SQL rules had), replacing the 1.3.1 search rule whose four
+    # corpus results were all the program's own values.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      # A bound action parameter that is text; a number, a Guid or a DTO is
+      # not SQL text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: int.Parse(...)
+      - pattern: long.Parse(...)
+      - pattern: Guid.Parse(...)
+      - pattern: Convert.ToInt32(...)
+      - pattern: Convert.ToInt64(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern-either:
+                      - pattern: new $CMD($Q, ...)
+                      - pattern: $CMD.CommandText = $Q
+                  - metavariable-regex:
+                      metavariable: $CMD
+                      regex: ^(SqlCommand|SqliteCommand|SQLiteCommand|NpgsqlCommand|MySqlCommand|OracleCommand|OleDbCommand|OdbcCommand|\w*[Cc]md|\w*[Cc]ommand)$
+              # Entity Framework's raw-SQL calls, on any receiver.
+              - patterns:
+                  - pattern-either:
+                      - pattern: $DB.$M($Q, ...)
+                      - pattern: $DB.$M<$TY>($Q, ...)
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw)$
+              # Dapper's calls, on a connection or a context by its name.
+              - patterns:
+                  - pattern-either:
+                      - pattern: $DB.$M($Q, ...)
+                      - pattern: $DB.$M<$TY>($Q, ...)
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(Query|QueryAsync|QueryFirst|QueryFirstOrDefault|QuerySingle|QuerySingleOrDefault|QueryFirstAsync|QueryFirstOrDefaultAsync|QueryMultiple|QueryMultipleAsync|Execute|ExecuteAsync|ExecuteScalar|ExecuteScalarAsync|ExecuteReader|ExecuteReaderAsync)$
+                  - metavariable-regex:
+                      metavariable: $DB
+                      regex: ^(this\.)?_?(db|conn|connection|con|cnn|sqlConnection|dbConnection|database|\w*Connection|\w*Conn)$
+          - focus-metavariable: $Q

@@ -1,0 +1,24 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-01",
+  "field_ledger": {
+    "age_seconds": "VerifiedOfficial",
+    "available": "VerifiedOfficial",
+    "conversation_id": "VerifiedOfficial",
+    "run_id": "VerifiedOfficial"
+  },
+  "fixture_sha256": "113eb548976c2b033c70eb5b42b8f50ab212ecf168d8fd970461bb8410e0c89c",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/agent/runs/{runId}/harness-usage",
+    "status": 200
+  },
+  "notes": "Built for lane CA-V1 from the Warp Agent API OpenAPI at the pinned docs commit (getRunHarnessUsage (GET /agent/runs/{runId}/harness-usage), GetRunHarnessUsageResponse with the Claude Code and Codex envelopes). The unavailable result: available false, age_seconds null, no usage envelope. Ids, names and amounts are synthetic; every member name is the schema's own.",
+  "scenario": "nulls_and_absent",
+  "sdk_or_spec_version_or_commit": "github.com/warpdotdev/docs at 4aa3f1207664a44ab3c4c5626ae0999ef03bbf14 (2026-10-30), developers/agent-api-openapi.yaml, server https://app.warp.dev/api/v1",
+  "source_kind": "openapi_spec",
+  "source_sha256": "ee4c2e0e8fdc711951b9936cc5bcdfc6102555a70d62512b8ecfb5a4238fa3ec",
+  "source_url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "warp.agent_api.run_harness_usage"
+}

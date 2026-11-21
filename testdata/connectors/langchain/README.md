@@ -10,7 +10,8 @@ protobuf bodies, byte-identical to what the instrumentor POSTed.
   (mechanism A).
 - Emitter: `openinference-instrumentation-langchain 0.1.70` (scope name
   `openinference.instrumentation.langchain`, empty schema_url), driven by
-  `superbased-observer-sdk` (`superbased.init(service_name, user,
+  the Python SDK under its old name `superbased-observer-sdk` (now `superbased-sdk`,
+  import `superbased_sdk`) (`superbased.init(service_name, user,
   session_id)`) + `langchain-openai` + `langgraph` (`create_react_agent`).
 - `otlp-export-001.bin` — the plain `llm.invoke` path: `ChatOpenAI` (LLM)
   + `Prompt` (CHAIN).

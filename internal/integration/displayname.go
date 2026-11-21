@@ -64,6 +64,7 @@ var displayNames = map[string]string{
 	"kimchi":           "Kimchi",
 	"stakpak":          "Stakpak",
 	"vtcode":           "VT Code",
+	"custom-agent":     "Own agent",
 	"chatgpt-web":      "ChatGPT (web)",
 	"claude-web":       "Claude (web)",
 	"perplexity-web":   "Perplexity (web)",

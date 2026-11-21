@@ -140,15 +140,29 @@ type rowExpect struct {
 var claudeCodeExpect = map[string]rowExpect{
 	"R-101": {entries: 2}, "R-102": {entries: 2}, "R-103": {}, "R-104": {entries: 2},
 	"R-110": {entries: 2}, "R-111": {entries: 2}, "R-120": {}, "R-130": {entries: 3},
+	"R-121": {}, "R-122": {}, "R-123": {}, "R-124": {}, "R-125": {}, "R-126": {},
 	"R-140": {entries: 4}, "R-141": {entries: 1}, "R-142": {entries: 2, deny: 2},
 	"R-150": {}, "R-151": {}, "R-152": {entries: 15, deny: 10}, "R-153": {entries: 5},
 	"R-154": {entries: 12, deny: 12}, "R-155": {entries: 5, deny: 4}, "R-156": {entries: 2},
 	"R-157": {},
 	"R-160": {entries: 4, deny: 4}, "R-161": {}, "R-162": {}, "R-163": {},
 	// The core agent-behaviour rules (D-761).
-	"R-112": {entries: 8, deny: 8}, "R-113": {}, "R-114": {entries: 17, deny: 11}, "R-165": {entries: 4, deny: 4},
+	"R-112": {entries: 8, deny: 8}, "R-113": {}, "R-114": {entries: 17, deny: 11},
+	// R-165: the four grant verbs deny; the four guard recipe writes (CFG-7)
+	// ask for apply and remove (a prefix cannot exempt --dry-run) and deny for
+	// save and delete.
+	"R-165": {entries: 8, deny: 6},
+	// The sandbox host allow-list (OpenShell lane N5).
+	"R-167": {entries: 1, deny: 1},
+	// R-168 (lane cli-2): `observer launch` and `observer terminals confirm` ask natively; launcher verbs stay hook-enforced.
+	"R-168": {entries: 2},
 	"R-170": {}, "R-171": {}, "R-172": {},
-	"R-173": {}, "R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
+	"R-173": {},
+	// Network rules R-174..R-179: R-174/R-177 shapes sit mid-command; R-175/R-176
+	// are allow/allow (silent until raised); R-178/R-179 map their tunnel/scanner
+	// bases to ask-prefix entries.
+	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 18},
+	"R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {entries: 8, deny: 8}, "R-305": {}, "R-306": {}, "R-307": {},
 	"B-603": {}, "B-604": {}, "B-610": {}, "B-611": {}, "B-612": {}, "B-613": {},
 	// Token-denominated budget rows (org-budget plan §3.3c): runtime state
@@ -169,14 +183,24 @@ var claudeCodeExpect = map[string]rowExpect{
 var openCodeExpect = map[string]rowExpect{
 	"R-101": {entries: 2}, "R-102": {entries: 2}, "R-103": {}, "R-104": {entries: 2},
 	"R-110": {entries: 2}, "R-111": {entries: 2}, "R-120": {}, "R-130": {entries: 3},
+	"R-121": {}, "R-122": {}, "R-123": {}, "R-124": {}, "R-125": {}, "R-126": {},
 	"R-140": {entries: 4}, "R-141": {entries: 1}, "R-142": {entries: 2, deny: 2},
 	"R-150": {}, "R-151": {}, "R-152": {}, "R-153": {},
 	"R-154": {}, "R-155": {entries: 1}, "R-156": {}, "R-157": {},
 	"R-160": {}, "R-161": {}, "R-162": {}, "R-163": {},
 	// The core agent-behaviour rules (D-761).
-	"R-112": {entries: 8, deny: 8}, "R-113": {}, "R-114": {entries: 3, deny: 3}, "R-165": {entries: 4, deny: 4},
+	"R-112": {entries: 8, deny: 8}, "R-113": {}, "R-114": {entries: 3, deny: 3},
+	// R-165: the same split as the claude-code table (CFG-7).
+	"R-165": {entries: 8, deny: 6},
+	// The sandbox host allow-list (OpenShell lane N5).
+	"R-167": {entries: 1, deny: 1},
+	// R-168 (lane cli-2): `observer launch` and `observer terminals confirm` ask natively; launcher verbs stay hook-enforced.
+	"R-168": {entries: 2},
 	"R-170": {}, "R-171": {}, "R-172": {},
-	"R-173": {}, "R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
+	"R-173": {},
+	// Network rules R-174..R-179 (same shape as the claude-code table above).
+	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 18},
+	"R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {}, "R-305": {}, "R-306": {}, "R-307": {},
 	"T-501": {}, "T-502": {}, "T-503": {}, "T-504": {}, "T-505": {},
 	"B-601": {}, "B-602": {}, "A-610": {},

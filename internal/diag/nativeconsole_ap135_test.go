@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 func writeFile(t *testing.T, path, body string, mode os.FileMode) {
@@ -149,6 +150,16 @@ func TestIBMBobTeamsEnforcedHooks(t *testing.T) {
 			c := checkIBMBobTeamsPolicy(config.Config{}, tc.pol, hook.IBMBobPolicyDomains{}, tc.home)
 			if c.Status != tc.status || !strings.Contains(joined(c), tc.want) {
 				t.Fatalf("%+v", c)
+			}
+			// Leftover per-node entries link to the tool's Remove panel;
+			// no other outcome carries a fix.
+			if tc.name == "leftover_entries" {
+				assertSpelled(t, c, remedy.UninstallTool)
+				if c.Remediations[0].Tool != "ibm-bob" {
+					t.Errorf("remediation %+v, want ibm-bob", c.Remediations)
+				}
+			} else if len(c.Remediations) != 0 {
+				t.Errorf("%s: unexpected remediations %+v", tc.name, c.Remediations)
 			}
 		})
 	}

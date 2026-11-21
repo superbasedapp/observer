@@ -25,8 +25,8 @@ function tourDialog(page: import("@playwright/test").Page) {
 test("auto-starts on a fresh context (no sb_tour_completed)", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   // Auto-start fires ~600ms after mount; the first step is the centered
-  // "Welcome to SuperBased" card.
-  await expect(page.getByText("Welcome to SuperBased")).toBeVisible({
+  // "Welcome to superbased" card.
+  await expect(page.getByText("Welcome to superbased")).toBeVisible({
     timeout: 5000,
   });
   const dlg = tourDialog(page);
@@ -42,7 +42,7 @@ test("Next advances steps and anchors coach-marks to visible nav elements", asyn
 }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const dlg = tourDialog(page);
-  await expect(page.getByText("Welcome to SuperBased")).toBeVisible({
+  await expect(page.getByText("Welcome to superbased")).toBeVisible({
     timeout: 5000,
   });
 
@@ -68,7 +68,7 @@ test("Next advances steps and anchors coach-marks to visible nav elements", asyn
 test("Finish sets sb_tour_completed and no tour on reload", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const dlg = tourDialog(page);
-  await expect(page.getByText("Welcome to SuperBased")).toBeVisible({
+  await expect(page.getByText("Welcome to superbased")).toBeVisible({
     timeout: 5000,
   });
 
@@ -92,14 +92,14 @@ test("Finish sets sb_tour_completed and no tour on reload", async ({ page }) => 
   // auto-start delay, then assert the tour never appeared.
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForTimeout(1500);
-  await expect(page.getByText("Welcome to SuperBased")).toHaveCount(0);
+  await expect(page.getByText("Welcome to superbased")).toHaveCount(0);
   await expect(tourDialog(page)).toHaveCount(0);
 });
 
 test("Skip tour persists completion (no re-auto-start)", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const dlg = tourDialog(page);
-  await expect(page.getByText("Welcome to SuperBased")).toBeVisible({
+  await expect(page.getByText("Welcome to superbased")).toBeVisible({
     timeout: 5000,
   });
   await dlg.getByRole("button", { name: "Skip tour" }).click();
@@ -132,7 +132,7 @@ test("replay from the Help drawer relaunches the tour", async ({ page }) => {
   await replay.click();
 
   // The tour opens at step 1 even though completion was already recorded.
-  await expect(page.getByText("Welcome to SuperBased")).toBeVisible({
+  await expect(page.getByText("Welcome to superbased")).toBeVisible({
     timeout: 5000,
   });
   await expect(tourDialog(page).getByText("1 / 10")).toBeVisible();

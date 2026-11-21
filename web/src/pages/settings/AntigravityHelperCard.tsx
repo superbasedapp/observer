@@ -124,12 +124,9 @@ export function AntigravityHelperCard() {
             Set the field above to{" "}
             <code className="rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
               local
-            </code>{" "}
-            and restart{" "}
-            <code className="rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
-              observer serve
             </code>
-            .
+            , save, and restart the daemon (Restart now in the banner after the save, or Restart
+            daemon in Settings &gt; Health).
           </li>
         </ol>
       </details>

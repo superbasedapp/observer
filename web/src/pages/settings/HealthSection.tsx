@@ -12,11 +12,12 @@ import {
   ChartShell,
   Icon,
   Pill,
+  SegmentedControl,
   Table,
   Tooltip,
   TruncatedPath,
 } from "@/components/primitives";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { ChartState } from "@/components/ChartState";
 import { Summary } from "@/components/Summary";
 import { RestartOverlay } from "@/components/RestartOverlay";
@@ -30,6 +31,26 @@ import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
 import { npmUpdateCommand } from "@/lib/npmCommand";
 import { useHostOS } from "@/lib/keyPlatform";
 import { fmtDateTime } from "@/lib/format";
+import { fetchJSON, localConfirmHeaders } from "@/lib/api";
+import type { Status as LaunchTerminalStatus } from "@/lib/launchStatus";
+// Settings is in every distro; the terminal is not (lib/components.gen.ts).
+import { LAUNCH_TERMINAL as LaunchTerminal } from "@/lib/components.gen";
+import {
+  UPDATE_AUTO_APPLY_PATH,
+  autoApplyBody,
+  autoApplyChoice,
+  autoApplyOptions,
+  autoApplyWords,
+  type AutoApplyChoice,
+  type UpdateAutoApplyView,
+} from "@/lib/updateAutoApply";
+import { markRestartPending } from "@/lib/restartPending";
+import {
+  UPDATE_TERMINAL_PATH,
+  UPDATE_TERMINAL_RESTART_NOTE,
+  updateTerminalView,
+  type UpdateTerminalPlan,
+} from "@/lib/updateTerminal";
 import type {
   DoctorReport,
   HealthFailuresResponse,
@@ -92,9 +113,10 @@ function DaemonCard() {
         <Button
           variant="soft"
           onClick={() =>
-            restart(
-              "Restart the daemon now?\n\nReconnecting takes ~1s; an active proxied coding session may drop one in-flight request.",
-            )
+            void restart({
+              title: "Restart the daemon now?",
+              lead: "This loads a freshly built binary and applies saved config.",
+            })
           }
         >
           Restart daemon
@@ -201,9 +223,113 @@ function UpdateCard() {
           )}
         </p>
       )}
+      {!error && latest && updateAvailable && <UpdateInTerminal />}
       {showOrgUpdate && <OrgUpdatePosture />}
       {showOrgUpdate && <UpdateHistory />}
     </ChartShell>
+  );
+}
+
+// UpdateInTerminal is "Update in a terminal" (dashboard-cli-parity L5, B-S5):
+// it runs this install's own update command (npm or pipx, a fixed argv the
+// daemon picks from the install method) in an in-dashboard setup terminal.
+// Read only once a check found a newer version; when the daemon has no
+// command for this install it shows its reason, which names what to run.
+function UpdateInTerminal() {
+  const plan = useApi<UpdateTerminalPlan>(UPDATE_TERMINAL_PATH);
+  const view = updateTerminalView(plan.data, true);
+  const [handle, setHandle] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [finished, setFinished] = useState(false);
+
+  async function start() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    setFinished(false);
+    try {
+      const res = await fetchJSON<{ handle?: string; error?: string }>(UPDATE_TERMINAL_PATH, undefined, {
+        method: "POST",
+        headers: await localConfirmHeaders(),
+        body: "{}",
+      });
+      if (res.handle) setHandle(res.handle);
+      else setErr(res.error ?? "could not start the update terminal");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onStatus(s: LaunchTerminalStatus) {
+    if (s === "exited") {
+      setHandle(null);
+      setFinished(true);
+    }
+  }
+
+  // cancel TERMINATES the setup PTY: the daemon keeps a setup child alive for
+  // reconnect, so dropping React state alone would leave npm running unseen.
+  async function cancel() {
+    const h = handle;
+    setHandle(null);
+    if (!h) return;
+    try {
+      await fetchJSON(`/api/launch/${encodeURIComponent(h)}`, undefined, { method: "DELETE" });
+    } catch {
+      /* the idle sweep reaps it as a fallback */
+    }
+  }
+
+  if (view.kind === "none") return null;
+  if (view.kind === "note") {
+    return <p className="mt-2 text-[11px] text-fg-3">{view.text}</p>;
+  }
+  if (!LaunchTerminal) {
+    // No terminal to show it in: never spawn an update nobody can watch.
+    return (
+      <p className="mt-2 text-[11px] text-fg-3">
+        This build does not include dashboard terminals. Run <kbd>{view.command}</kbd> in a terminal to
+        update this copy.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-2 space-y-2 text-[11.5px]">
+      {!handle && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => void start()} loading={busy}>
+            Update in a terminal
+          </Button>
+          <span className="text-[11px] text-fg-3">
+            runs <kbd>{view.command}</kbd> here
+          </span>
+        </div>
+      )}
+      {err && <p className="text-[11px] text-danger">{err}</p>}
+      {handle && (
+        <>
+          <p className="text-[11px] text-fg-3">{UPDATE_TERMINAL_RESTART_NOTE}</p>
+          <div className="h-[240px] overflow-hidden rounded-2 border border-line-2">
+            <Suspense fallback={null}>
+              <LaunchTerminal
+                token={handle}
+                tool="observer update"
+                expanded
+                onStatus={onStatus}
+                onClose={() => void cancel()}
+                onMinimize={() => void cancel()}
+              />
+            </Suspense>
+          </div>
+        </>
+      )}
+      {finished && !handle && (
+        <p className="text-[11px] text-fg-3">The update terminal closed. {UPDATE_TERMINAL_RESTART_NOTE}</p>
+      )}
+    </div>
   );
 }
 
@@ -274,6 +400,119 @@ function UpdateHistory() {
   );
 }
 
+// AutoApplySwitch is "Update automatically" (dashboard CLI parity B-S7): the
+// three-state [update].auto_apply (follow the managed-fleet default, on, off)
+// through PUT /api/update/auto-apply, a dry run when a choice is picked and the
+// write on Save, then the restart banner ([update] binds at daemon start).
+// Before it the card printed the daemon's reason, which tells the reader to
+// edit config.toml. When the route is not there (an older daemon, a remote
+// viewer) the daemon's own reason stays.
+function AutoApplySwitch({ effective, fallback }: { effective: boolean; fallback?: string }) {
+  const v = useApi<UpdateAutoApplyView>(UPDATE_AUTO_APPLY_PATH);
+  const [pending, setPending] = useState<AutoApplyChoice | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+  if (!v.data) {
+    return fallback ? <p className="mt-1 text-fg-4">{fallback}</p> : null;
+  }
+  const view = v.data;
+  const current = autoApplyChoice(view.auto_apply);
+
+  async function put(choice: AutoApplyChoice, dryRun: boolean) {
+    const q = dryRun ? "?dry_run=1" : `?base_etag=${encodeURIComponent(view.config_etag ?? "")}`;
+    const res = await fetch(UPDATE_AUTO_APPLY_PATH + q, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        ...(view.confirm_token ? { "X-Observer-Confirm": view.confirm_token } : {}),
+      },
+      body: JSON.stringify(autoApplyBody(choice)),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = text;
+      try {
+        msg = (JSON.parse(text) as { message?: string }).message ?? text;
+      } catch {
+        // plain-text refusal
+      }
+      throw new Error(msg.trim() || `HTTP ${res.status}`);
+    }
+  }
+
+  async function pick(c: AutoApplyChoice) {
+    setErr("");
+    setSaved(false);
+    if (c === current) {
+      setPending(null);
+      return;
+    }
+    setBusy(true);
+    try {
+      // The daemon validates the change and writes nothing.
+      await put(c, true);
+      setPending(c);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    if (!pending) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await put(pending, false);
+      markRestartPending("org", ["update.auto_apply"]);
+      setPending(null);
+      setSaved(true);
+      v.reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-1.5" data-testid="update-auto-apply">
+      <div className="flex flex-wrap items-center gap-2">
+        <span id="update-auto-apply-label" className="text-fg-2">
+          Update automatically
+        </span>
+        <SegmentedControl<AutoApplyChoice>
+          size="sm"
+          value={pending ?? current}
+          onChange={(c) => void pick(c)}
+          options={autoApplyOptions(view.auto_apply, effective).map((o) => ({
+            value: o.id,
+            label: o.label,
+            disabled: busy,
+            disabledReason: busy ? "Checking the change" : undefined,
+          }))}
+        />
+      </div>
+      <p className="text-fg-3">{autoApplyWords(view.auto_apply, effective)}</p>
+      {pending && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-fg-2">Saving writes this node's config.toml; it takes effect after a daemon restart.</span>
+          <Button size="sm" variant="primary" disabled={busy} onClick={() => void save()}>
+            Save
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setPending(null)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {saved && <p className="text-fg-2">Saved. Restart the daemon to apply it.</p>}
+      {err && <p className="text-danger">{err}</p>}
+    </div>
+  );
+}
+
 // OrgUpdatePosture renders the ORG-SERVED half of the update answer, beside
 // the click-gated npm probe above (enterprise update management §3.10, W5).
 //
@@ -291,9 +530,13 @@ function OrgUpdatePosture() {
   if (!d.enabled) {
     return (
       <p className="mt-3 border-t border-line-1 pt-3 text-[11.5px] text-fg-3">
-        Org-managed updates are turned off on this node ([update].enabled =
-        false), so nothing here is checked against an org server. The npm check
-        above is the only update signal.
+        Org-managed updates are turned off on this node, so nothing here is
+        checked against an org server. The npm check above is the only update
+        signal. Turn them on under{" "}
+        <Link to="/settings?section=org" className="text-accent hover:underline">
+          Settings &gt; Org
+        </Link>{" "}
+        (Advanced, [update] enabled).
       </p>
     );
   }
@@ -340,9 +583,7 @@ function OrgUpdatePosture() {
         <span>auto-apply {d.auto_apply ? "on" : "off"}</span>
         {d.window && <span>window {d.window}</span>}
       </div>
-      {d.auto_apply_reason && (
-        <p className="mt-1 text-fg-4">{d.auto_apply_reason}</p>
-      )}
+      <AutoApplySwitch effective={d.auto_apply} fallback={d.auto_apply_reason} />
       {!d.self_apply && d.advice && (
         <p className="mt-1 text-warn">
           This node cannot replace its own binary. {d.advice}

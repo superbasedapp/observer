@@ -101,6 +101,39 @@ export type PlanAccount = {
   enabled: boolean;
   state: PlanRunState;
   created_at: string;
+  /** The source reports the account's daily usage (GET .../usage has something to show). */
+  daily_usage?: boolean;
+};
+
+/** PlanUsageDay mirrors planlimits.ReconcileDay (internal/planlimits/usage.go). */
+export type PlanUsageDay = {
+  day: string;
+  vendor_reported: boolean;
+  vendor_tokens: number;
+  captured_tokens: number;
+  uncaptured_tokens: number;
+  ratio?: number;
+};
+
+/** PlanUsageView mirrors planlimitssvc.UsageView: GET /api/plans/accounts/{id}/usage. */
+export type PlanUsageView = {
+  account_id: string;
+  provider: string;
+  available: boolean;
+  days: number;
+  fetched_at?: string;
+  tools: string[];
+  reconciliation?: {
+    from: string;
+    to: string;
+    days: PlanUsageDay[];
+    totals: {
+      vendor_tokens: number;
+      captured_tokens: number;
+      uncaptured_tokens: number;
+      ratio?: number;
+    };
+  };
 };
 
 export type CatalogSecret = { key: string; required: boolean };

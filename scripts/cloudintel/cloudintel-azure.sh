@@ -14,8 +14,12 @@
 #   scripts/cloudintel/cloudintel-azure.sh db-bootstrap        sbci_svc login role + DSN rotate
 #   scripts/cloudintel/cloudintel-azure.sh status               read-only show/list
 #   scripts/cloudintel/cloudintel-azure.sh edge-check           dual-host public-vs-origin boundary probes
-#   scripts/cloudintel/cloudintel-azure.sh patch-worker-scale   fix an EXISTING worker's degenerate KEDA rule (gap 4.4)
+#   scripts/cloudintel/cloudintel-azure.sh patch-worker-scale   REMOVED 2026-11-11 (R3-82): its patch file is gone
 #   scripts/cloudintel/cloudintel-azure.sh down                 delete the RG (typed confirm)
+#
+# HISTORICAL since the Azure exit (2026-10-19, D-775 / D-777): no Azure estate
+# exists and the hosted service runs from deploy/cloud-box on Hetzner
+# (D-838, D-843, D-864; docs/cloud-intelligence.md). Kept as the dated record.
 #
 # To UPDATE the image after a code change (roll sbci-api + sbci-worker onto a
 # new tag), use scripts/roll-cloud.sh — this script provisions, it does not
@@ -296,8 +300,8 @@ API_MAX_REPLICAS="${API_MAX_REPLICAS:-3}"
 # today, so the rule's type/metadata/auth never resolved). A no-ingress
 # pg-mode worker doesn't scale on queue depth at all — it long-polls Postgres
 # — so the correct shape is min=max=1 and NO scale rule whatsoever (see
-# ensure_containerapp_worker below and the patch-worker-scale verb for an
-# ALREADY-provisioned app).
+# ensure_containerapp_worker below; the patch-worker-scale verb that fixed an
+# ALREADY-provisioned app was removed 2026-11-11, R3-82).
 WORKER_MIN_REPLICAS="${WORKER_MIN_REPLICAS:-1}"
 WORKER_MAX_REPLICAS="${WORKER_MAX_REPLICAS:-1}"
 
@@ -1221,8 +1225,9 @@ ensure_containerapp_worker() {
     # (ContainerAppScaleRuleMissingAuth, runbook §7/§11). The correct shape for
     # a no-ingress, always-on pg-mode worker is simply min=max=1 (both default
     # to 1 above) with NO scale rule at all. An ALREADY-provisioned worker
-    # (staging today) still carries the old degenerate rule — fix it in place
-    # with `patch-worker-scale`, not by re-running `up` (idempotent create-or-
+    # (staging, before the Azure exit) still carried the old degenerate rule;
+    # `patch-worker-scale` fixed it in place (that verb's patch file was
+    # removed 2026-11-11, R3-82), not re-running `up` (idempotent create-or-
     # skip never touches an existing app's scale config).
     run "create container app sbci-worker (no ingress, fixed ${WORKER_MIN_REPLICAS}/${WORKER_MAX_REPLICAS} replicas, no KEDA scale rule)" \
         containerapp create -g "$RG" -n sbci-worker --environment "$CAE_ID" \
@@ -1884,24 +1889,18 @@ do_plan() {
 }
 
 do_patch_worker_scale() {
-    local patch_file="${SCRIPT_DIR}/../../deploy/cloudintel/worker-scale-patch.yaml"
-    echo "== cloudintel-azure.sh patch-worker-scale  (DRY_RUN=$DRY_RUN CLOUDINTEL_APPLY=$CLOUDINTEL_APPLY) =="
-    echo
-    echo "Fixes the degenerate KEDA queue-depth scale rule on an ALREADY-PROVISIONED"
-    echo "sbci-worker (gap 4.4 — staging today; any env where 'up' created the worker"
-    echo "before this fix landed). A fresh 'up' now creates the worker correctly (no scale"
-    echo "rule, fixed replicas) — this verb is for an existing app only."
-    echo
-    if [ ! -f "$patch_file" ]; then
-        echo "patch-worker-scale: patch file not found at $patch_file" >&2
-        return 1
-    fi
-    run "patch sbci-worker scale (min=max=${WORKER_MIN_REPLICAS}, no KEDA rule) from $patch_file" \
-        containerapp update -g "$RG" -n sbci-worker --yaml "$patch_file"
-    echo
-    echo "NEXT: the worker's Foundry/evidence Key Vault secretrefs (deferred in runbook §7"
-    echo "because ContainerAppScaleRuleMissingAuth blocked any secrets-touching update while"
-    echo "the degenerate rule stood) can now be wired without hitting that validation."
+    # REMOVED 2026-11-11 (R3-82, operator decision D-24): the YAML patch this
+    # verb applied (deploy/cloudintel/worker-scale-patch.yaml) was deleted as a
+    # dead Azure asset after the Azure exit (D-775 / D-777). A fresh `up`
+    # never needed it (it creates the worker with fixed replicas and no scale
+    # rule). The file is in git history at 0853db8553.
+    echo "patch-worker-scale was removed on 2026-11-11 (R3-82): Azure is gone (D-775, D-777)" >&2
+    echo "and its patch file deploy/cloudintel/worker-scale-patch.yaml was deleted." >&2
+    echo "To use it anyway, restore the file first:" >&2
+    echo "  git checkout 0853db8553 -- deploy/cloudintel/worker-scale-patch.yaml" >&2
+    echo "then apply it by hand:" >&2
+    echo "  az containerapp update -g <rg> -n sbci-worker --yaml deploy/cloudintel/worker-scale-patch.yaml" >&2
+    return 1
 }
 
 do_down() {
@@ -1947,7 +1946,7 @@ down) do_down ;;
     echo "  status              read-only show/list" >&2
     echo "  edge-check          infrastructure-read-only dual-host boundary probes (HTTP state note in README)" >&2
     echo "  plan                print the resolved names/region/SKUs for SBCI_ENV with NO az calls" >&2
-    echo "  patch-worker-scale  fix an EXISTING worker's degenerate KEDA scale rule (gap 4.4)" >&2
+    echo "  patch-worker-scale  removed 2026-11-11 (R3-82); prints how to restore its patch file" >&2
     echo "  down                delete the RG (typed confirm)" >&2
     echo "  SBCI_ENV selects staging (default) or prod — see the header comment and README." >&2
     echo "  DRY_RUN defaults to 1 (print-only). Set CLOUDINTEL_APPLY=1 to allow real az calls." >&2

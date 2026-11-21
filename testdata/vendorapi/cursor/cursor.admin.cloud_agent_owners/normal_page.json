@@ -1,0 +1,86 @@
+{
+  "totalUsageEventsCount": 5,
+  "pagination": {
+    "numPages": 2,
+    "currentPage": 1,
+    "pageSize": 4,
+    "hasNextPage": true,
+    "hasPreviousPage": false
+  },
+  "usageEvents": [
+    {
+      "timestamp": "1761991200000",
+      "userEmail": "Developer@company.com",
+      "cloudAgentId": "bc-00000000-0000-4000-8000-000000000001",
+      "conversationId": "8f2e4a1b-6c3d-4e5f-9a7b-2d1c8e6f4a3b",
+      "model": "claude-4.5-sonnet",
+      "kind": "Usage-based",
+      "maxMode": false,
+      "requestsCosts": 1,
+      "isTokenBasedCall": true,
+      "isChargeable": true,
+      "isHeadless": true,
+      "tokenUsage": {
+        "inputTokens": 126,
+        "outputTokens": 450,
+        "cacheWriteTokens": 6112,
+        "cacheReadTokens": 11964,
+        "totalCents": 20.18232
+      },
+      "chargedCents": 21.36232
+    },
+    {
+      "timestamp": "1761991260000",
+      "userEmail": "developer@company.com",
+      "cloudAgentId": "bc-00000000-0000-4000-8000-000000000001",
+      "conversationId": "8f2e4a1b-6c3d-4e5f-9a7b-2d1c8e6f4a3b",
+      "model": "claude-4.5-sonnet",
+      "kind": "Usage-based",
+      "maxMode": false,
+      "requestsCosts": 1,
+      "isTokenBasedCall": true,
+      "isChargeable": true,
+      "isHeadless": true,
+      "tokenUsage": {
+        "inputTokens": 80,
+        "outputTokens": 120,
+        "cacheWriteTokens": 0,
+        "cacheReadTokens": 18076,
+        "totalCents": 2.5
+      },
+      "chargedCents": 2.6
+    },
+    {
+      "timestamp": "1761994800000",
+      "userEmail": "admin@company.com",
+      "cloudAgentId": "run-00000000-0000-4000-8000-0000000000aa",
+      "model": "gpt-5",
+      "kind": "Included in Business",
+      "maxMode": false,
+      "requestsCosts": 1,
+      "isTokenBasedCall": false,
+      "isChargeable": false,
+      "isHeadless": true,
+      "chargedCents": 0
+    },
+    {
+      "timestamp": "1761998400000",
+      "userEmail": "agent-runner@company.com",
+      "serviceAccountId": "sa_abc123",
+      "serviceAccountName": "Nightly CI Agent",
+      "cloudAgentId": "bc-00000000-0000-4000-8000-000000000002",
+      "model": "claude-4.5-sonnet",
+      "kind": "Usage-based",
+      "maxMode": false,
+      "requestsCosts": 1,
+      "isTokenBasedCall": true,
+      "isChargeable": true,
+      "isHeadless": true,
+      "chargedCents": 4
+    }
+  ],
+  "period": {
+    "startDate": 1761955200000,
+    "endDate": 1762041599999
+  }
+}

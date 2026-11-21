@@ -161,6 +161,10 @@ func TestDecideFixTable(t *testing.T) {
 		{"test ran before the edit only", FixEvidence{LastEditAt: t0, Commands: []SessionCommand{{At: t0.Add(-time.Minute), Command: "go test ./...", ExitKnown: true}}}, FixNoTestCommand, false},
 		{"not a test command", FixEvidence{LastEditAt: t0, Commands: []SessionCommand{{At: after, Command: "go build ./...", ExitKnown: true}}}, FixNoTestCommand, false},
 		{"exit unknown", FixEvidence{LastEditAt: t0, Commands: []SessionCommand{{At: after, Command: "npm test"}}}, FixExitUnknown, false},
+		{"a new test file only added to", FixEvidence{LastEditAt: t0, EditedPaths: []string{"pkg/a.go", "pkg/a_fuzz_test.go"}, AdditiveOnly: []string{"pkg/a_fuzz_test.go"}, Commands: []SessionCommand{{At: after, Command: "go test -fuzz=FuzzA -fuzztime=10s ./pkg", ExitKnown: true}}}, FixVerified, true},
+		{"one additive test, one modified test", FixEvidence{LastEditAt: t0, EditedPaths: []string{"pkg/a.go", "pkg/new_test.go", "pkg/old_test.go"}, AdditiveOnly: []string{"pkg/new_test.go"}, Commands: []SessionCommand{{At: after, Command: "go test ./...", ExitKnown: true}}}, FixTestFileEdited, false},
+		{"additive fact for a non-test path changes nothing", FixEvidence{LastEditAt: t0, EditedPaths: []string{"pkg/a.go"}, AdditiveOnly: []string{"pkg/a.go"}, Commands: []SessionCommand{{At: after, Command: "go test ./...", ExitKnown: true}}}, FixVerified, true},
+		{"tampering observed in the session", FixEvidence{LastEditAt: t0, TamperingObserved: true, EditedPaths: []string{"pkg/a.go", "pkg/a_test.go"}, AdditiveOnly: []string{"pkg/a_test.go"}, Commands: []SessionCommand{{At: after, Command: "go test ./...", ExitKnown: true}}}, FixTamperingObserved, false},
 		{"last test failed", FixEvidence{LastEditAt: t0, Commands: []SessionCommand{{At: after, Command: "go test ./...", ExitKnown: true}, {At: after.Add(time.Minute), Command: "go test ./...", ExitKnown: true, ExitCode: 1}}}, FixTestCommandFailed, false},
 	}
 	for _, tc := range cases {
@@ -201,6 +205,10 @@ func TestTestCommandClass(t *testing.T) {
 		"go test -race ./...": "go_test", "pytest -x": "pytest", "pnpm run test": "js_test", "npx vitest run": "js_test",
 		"cargo nextest run": "cargo_test", "dotnet test": "dotnet_test", "./gradlew test": "jvm_test", "make check": "make_test",
 		"go vet ./...": "", "echo pytest": "", "cat test.txt": "", "cd svc && CGO_ENABLED=0 go test ./...": "go_test",
+		// Fuzz runs are their own class (plan item 6).
+		"go test -fuzz=FuzzParse -fuzztime=30s ./pkg/parse": "go_fuzz", "go test -run=x -fuzz FuzzX .": "go_fuzz",
+		"go test -fuzztime=10s ./...": "go_test", "cargo fuzz run parse": "cargo_fuzz", "cargo +nightly fuzz run p": "cargo_fuzz",
+		"./jazzer --cp=a.jar --target_class=X": "jazzer", "python fuzz_parse.py -atheris_runs=1000": "atheris",
 	} {
 		if got := TestCommandClass(cmd); got != want {
 			t.Errorf("%q: %q, want %q", cmd, got, want)
@@ -221,5 +229,21 @@ func TestFixDetailSaysWhatTheHostReported(t *testing.T) {
 	code := DecideFix(FixEvidence{LastEditAt: t0, Commands: []SessionCommand{{At: t0.Add(time.Minute), Command: "go test ./...", ExitKnown: true}}})
 	if !code.Verified || code.HostReportedSuccess || !contains(code.Detail(), "exit code 0") {
 		t.Errorf("exit code: %+v %q", code, code.Detail())
+	}
+}
+
+// TestFixDetailNamesAddedTests: a verification after the session added
+// tests says so, and only then.
+func TestFixDetailNamesAddedTests(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	cmd := []SessionCommand{{At: t0.Add(time.Minute), Command: "go test -fuzz=FuzzA ./pkg", ExitKnown: true}}
+	v := DecideFix(FixEvidence{LastEditAt: t0, EditedPaths: []string{"pkg/a_test.go"}, AdditiveOnly: []string{"pkg/a_test.go"}, Commands: cmd})
+	if !v.Verified || !v.AddedTests || v.Class != "go_fuzz" || !contains(v.Detail(), "after the session added tests") {
+		t.Errorf("added tests: %+v %q", v, v.Detail())
+	}
+	v = DecideFix(FixEvidence{LastEditAt: t0, EditedPaths: []string{"pkg/a.go"}, Commands: cmd})
+	if !v.Verified || v.AddedTests || contains(v.Detail(), "added tests") {
+		t.Errorf("no added tests: %+v %q", v, v.Detail())
 	}
 }

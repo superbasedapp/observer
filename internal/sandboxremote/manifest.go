@@ -20,9 +20,12 @@ import (
 //
 // The rules, in order:
 //   - the root is never the home directory, never above it, and never empty;
-//   - a workspace that is not a git repository is never uploaded (no
-//     surface let a user name one, so that dead path was removed at the
-//     SBX-P7 merge, audit finding 8);
+//   - a workspace that is not a git repository is uploaded only when the
+//     cmd layer listed it through the non-repository listing (decision
+//     SBXD-8, [terminal.sandbox.hosted].upload_non_git, default on: git's
+//     ignore machinery over a temporary git directory outside the folder,
+//     the folder's .gitignore files plus DefaultUploadIgnore); its scope
+//     key then also names every listed path (NonRepositoryScopeKey);
 //   - a candidate outside the root (absolute, "..") is excluded;
 //   - anything under .git is excluded (history never leaves the machine;
 //     the box gets a fresh baseline repository of the uploaded tree);
@@ -80,8 +83,15 @@ type ManifestInput struct {
 	// Repository: the root is a git working tree; its candidates come from
 	// git's index and untracked-not-ignored listing.
 	Repository bool
-	Candidates []Candidate
-	Limits     ManifestLimits
+	// NonRepository: the root is not a git repository and its candidates
+	// come from the non-repository listing (SBXD-8); without it a root
+	// that is not a repository is refused. Ignore is that listing's extra
+	// patterns ([terminal.sandbox.hosted].upload_ignore), part of the scope
+	// key.
+	NonRepository bool
+	Ignore        []string
+	Candidates    []Candidate
+	Limits        ManifestLimits
 }
 
 // ManifestFile is one file the box receives.
@@ -115,8 +125,13 @@ type Manifest struct {
 	Bytes    int64
 	// ScopeKey names the rules and the root (not the contents): consent is
 	// bound to it, so editing a file never re-asks, a different root or a
-	// rule change does.
+	// rule change does. For a folder that is not a repository it names the
+	// listed paths too (NonRepositoryScopeKey), so a file added or removed
+	// re-asks.
 	ScopeKey string
+	// NonRepository: the root is not a git repository; its files were
+	// chosen by the non-repository listing (the consent screen says so).
+	NonRepository bool
 }
 
 // The manifest refusal codes.
@@ -140,10 +155,10 @@ func PlanManifest(in ManifestInput) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("%w: the workspace root %q is not an absolute directory below /", ErrScopeRoot, in.Root)
 	case in.Home != "" && (root == home || within(home, root)):
 		return Manifest{}, fmt.Errorf("%w: the workspace root %s is the home directory or holds it; the home directory is never uploaded", ErrScopeHome, root)
-	case !in.Repository:
+	case !in.Repository && !in.NonRepository:
 		return Manifest{}, fmt.Errorf("%w: %s is not a git repository; only a repository's tracked and untracked-not-ignored files are uploaded", ErrScopeNotRepository, root)
 	}
-	m := Manifest{Root: root, ScopeKey: ScopeKey(root, in.Repository, lim)}
+	m := Manifest{Root: root, ScopeKey: ScopeKey(root, in.Repository, lim), NonRepository: !in.Repository}
 	seen := map[string]bool{}
 	for _, c := range in.Candidates {
 		p, reason := classify(c, lim)
@@ -161,6 +176,9 @@ func PlanManifest(in ManifestInput) (Manifest, error) {
 	}
 	sort.Slice(m.Files, func(i, j int) bool { return m.Files[i].Path < m.Files[j].Path })
 	sort.Slice(m.Excluded, func(i, j int) bool { return m.Excluded[i].Path < m.Excluded[j].Path })
+	if m.NonRepository {
+		m.ScopeKey = NonRepositoryScopeKey(root, lim, in.Ignore, m.Files)
+	}
 	if m.Count > lim.MaxFiles || m.Bytes > lim.MaxBytes {
 		return m, fmt.Errorf("%w: %d files and %d bytes, over the caps of %d files and %d bytes; narrow the workspace", ErrScopeTooLarge, m.Count, m.Bytes, lim.MaxFiles, lim.MaxBytes)
 	}

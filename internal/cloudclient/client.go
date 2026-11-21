@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -124,6 +125,10 @@ type Client struct {
 	// per process instead of once per item (never a retry storm).
 	healMu     sync.Mutex
 	healFailed error
+
+	// skew is how far the server's clock is from this machine's, in
+	// nanoseconds, learned from response Date headers (clockskew.go).
+	skew atomic.Int64
 }
 
 // New constructs a Client. It loads (or creates and persists) the device key via
@@ -558,6 +563,26 @@ type UsageView struct {
 	// DigestsThisWeek is the count of project-digest results created in the
 	// account's current ISO week, present only when DigestWeekly is true.
 	DigestsThisWeek int `json:"digests_this_week,omitempty"`
+
+	// BudgetUnit is how enrichment is budgeted: "count" (DailyCap /
+	// MonthlyCap) or "tokens" (ruling R-AI1: the token budgets below, and
+	// DailyCap / MonthlyCap read 0). Empty on a server that predates it.
+	BudgetUnit string `json:"budget_unit,omitempty"`
+	// EnrichmentTier / EnrichmentTierVersion name the tier in force on a
+	// token-budgeted plan (empty / 0 on a count plan).
+	EnrichmentTier        string `json:"enrichment_tier,omitempty"`
+	EnrichmentTierVersion int    `json:"enrichment_tier_version,omitempty"`
+	// EvidenceTokenBudget is the most evidence tokens one envelope may carry
+	// (cloudcontract.EstimateEvidenceTokens). A node fits its envelope to it
+	// with cloudevidence.FitToBudget; the server refuses one that does not
+	// fit (413 evidence_over_budget). 0 = no evidence budget.
+	EvidenceTokenBudget int `json:"evidence_token_budget,omitempty"`
+	// The token budgets and what the current UTC day and month have used.
+	SessionTokenBudget int64 `json:"session_token_budget,omitempty"`
+	DailyTokensUsed    int64 `json:"daily_tokens_used,omitempty"`
+	DailyTokenBudget   int64 `json:"daily_token_budget,omitempty"`
+	MonthlyTokensUsed  int64 `json:"monthly_tokens_used,omitempty"`
+	MonthlyTokenBudget int64 `json:"monthly_token_budget,omitempty"`
 }
 
 // Usage fetches the authenticated account's current plan and allowances
@@ -723,7 +748,7 @@ func (c *Client) buildAuthed(ctx context.Context, method, path string, body []by
 		Method:      method,
 		URL:         fullURL,
 		AccessToken: token,
-		IssuedAt:    c.clock(),
+		IssuedAt:    c.proofTime(),
 		Body:        body,
 	})
 	if err != nil {
@@ -877,7 +902,9 @@ type DispatchGuard func(ctx context.Context) (expiresAt time.Time, release func(
 // (guard), bound the request by the lease's expiry, dispatch, release.
 func (c *Client) sendGuarded(ctx context.Context, preAttempt func() error, guard DispatchGuard, build func(attempt int) (*http.Request, error)) ([]byte, error) {
 	var lastErr error
+	resentForClock := false
 	for attempt := 0; ; attempt++ {
+		skewBefore := c.skew.Load()
 		req, err := build(attempt)
 		if err != nil {
 			return nil, err // build errors (e.g. not authenticated) are not retryable
@@ -893,6 +920,14 @@ func (c *Client) sendGuarded(ctx context.Context, preAttempt func() error, guard
 		}
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
+			// The one exception: a proof refused by a server whose own
+			// response just corrected this machine's clock is re-sent ONCE,
+			// signed on the corrected clock. The refusal happens before any
+			// handler runs, so the first attempt had no effect.
+			if !resentForClock && IsProofRejected(err) && c.skew.Load() != skewBefore {
+				resentForClock = true
+				continue
+			}
 			return nil, err // HTTP status errors are never retried (incl. 4xx)
 		}
 		lastErr = err // transport error
@@ -939,6 +974,7 @@ func (c *Client) sendOnce(req *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	c.learnSkew(resp.Header.Get("Date"), c.clock())
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, err

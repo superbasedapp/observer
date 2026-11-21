@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/secciwf"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
@@ -212,7 +213,8 @@ func securityActionlintSubcommands() []*cobra.Command {
 func securityActionlintDoctorCheck(_ context.Context, configPath string) diag.Check {
 	c := diag.Check{Name: actionlintComponent, Status: diag.StatusOK}
 	if !actionlintSelected(componentSnapshotFor(configPath)) {
-		c.Message = "actionlint: not selected (opt-in; add security.scan.actionlint and security.code under [components])"
+		c.Message = "actionlint: not selected (opt-in; turn it on in Code security > Scanners, or add security.scan.actionlint and security.code under [components])"
+		c.Remediations = []remedy.Remediation{remedy.Of(remedy.OpenScanners, "")}
 		return c
 	}
 	c.Message = "actionlint " + actionlint.PinnedVersion + ": selected, linked; shellcheck and pyflakes off, starts no process (observer security actionlint)"

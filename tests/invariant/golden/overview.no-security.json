@@ -1,0 +1,47 @@
+{
+  "counts": {
+    "action_excerpts": 0,
+    "actions": 7,
+    "active_sessions_24h": 3,
+    "api_turns": 2,
+    "benchmark_runs": 0,
+    "cache_events": 0,
+    "failure_context": 0,
+    "file_state": 0,
+    "guard_events": 0,
+    "live_sessions": 0,
+    "plan_accounts": 0,
+    "project_patterns": 0,
+    "projects": 2,
+    "router_decisions": 0,
+    "sessions": 3,
+    "suggestions": 0,
+    "token_usage": 3
+  },
+  "db_path": "/inv/observer.db",
+  "db_size_bytes": 0,
+  "host_name": "\u003cHOSTNAME\u003e",
+  "host_os": "\u003cGOOS\u003e",
+  "last_action_at": "\u003cTS\u003e",
+  "last_action_tool": "codex",
+  "per_tool_last_seen": [
+    {
+      "action_count": 3,
+      "last_seen_at": "\u003cTS\u003e",
+      "tool": "claude-code"
+    },
+    {
+      "action_count": 2,
+      "last_seen_at": "\u003cTS\u003e",
+      "tool": "codex"
+    },
+    {
+      "action_count": 2,
+      "last_seen_at": "\u003cTS\u003e",
+      "tool": "cursor"
+    }
+  ],
+  "recent_failures_24h": 0,
+  "schema_version": "\u003cSCHEMA_VERSION\u003e",
+  "started_at": "\u003cTS\u003e"
+}

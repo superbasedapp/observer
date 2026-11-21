@@ -197,17 +197,27 @@ func (p *Proxy) admit(ctx context.Context, provider string, body []byte, userID,
 	}
 	text := extractLastUserText(provider, body)
 	if text == "" {
-		// Nothing to judge (a tool-result-only turn, or an unparseable
-		// body — e.g. an undecoded gzip payload, §3.5) — never gate.
+		// Nothing to judge: NO user message in the body carries text (an
+		// image/audio-only conversation, a request with no user turn), or
+		// an unparseable body (e.g. an undecoded gzip payload, §3.5):
+		// never gate. NOTE a tool-result-only turn does NOT land here:
+		// extractLastUserText walks back past a text-less user message to
+		// the newest one WITH text, so on a hosted app's tool loop this
+		// Plane A seam re-judges the prompt that started the loop on every
+		// request (the admission service's verdict cache absorbs the
+		// repeat). The Plane-B coding-agent judge deliberately does not
+		// reuse this extractor; it classifies through internal/promptturn,
+		// which reports such a turn as a continuation (P-228).
 		//
 		// G1 visibility fix (docs/audits/multimodal-tracking-audit-2026-08-26.md):
-		// this branch also covers an image/audio-only turn, which the judge
-		// then silently never evaluates. Judging non-text content is a
+		// this branch also covers an image/audio-only conversation (no user
+		// message with text at all), which the judge then silently never
+		// evaluates. Judging non-text content is a
 		// separate design arc (out of scope here — we must NOT synthesize
 		// marker text and feed it to the judge, that would fake coverage).
 		// What we CAN do cheaply and safely is tell an admin "there was
 		// non-text content here that nothing judged" apart from the
-		// routine "truly nothing to judge" case (a tool-result-only turn),
+		// routine "truly nothing to judge" case (no user content at all),
 		// by logging a distinct, greppable line — read-only, no Admitter
 		// call, so this cannot change gating behavior.
 		if types := nonTextBlockTypes(provider, body); len(types) > 0 {
@@ -311,6 +321,14 @@ func (p *Proxy) admissionUser(r *http.Request) string {
 // lets the calling app's SDK surface it as a normal API error rather than a
 // malformed response.
 func writeAdmissionRefusal(w http.ResponseWriter, provider, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write(admissionRefusalBody(provider, reason))
+}
+
+// admissionRefusalBody builds the provider-shaped 403 body both admission
+// seams (Plane A's hosted-app admitter and Plane B's prompt admitter) return.
+func admissionRefusalBody(provider, reason string) []byte {
 	if reason == "" {
 		reason = "Request blocked by admission policy."
 	}
@@ -333,9 +351,7 @@ func writeAdmissionRefusal(w http.ResponseWriter, provider, reason string) {
 			},
 		})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write(body)
+	return body
 }
 
 // sessionIDForProvider resolves the session id from a request body using the
@@ -347,11 +363,14 @@ func sessionIDForProvider(provider string, body []byte) string {
 	return extractAnthropicSessionID(body)
 }
 
-// extractLastUserText returns the text of the LAST user message in a provider
-// request body — the "incoming user request" admission gates. Empty when no
-// user text is present (a tool-result-only turn or an unparseable body);
-// admission treats empty as nothing to judge. Anthropic + OpenAI (chat and
-// Responses) shapes are handled; other providers return "" (best-effort).
+// extractLastUserText returns the text of the newest user message that
+// CARRIES text in a provider request body: the "incoming user request"
+// Plane A admission gates. A user message with no text (a tool-result-only
+// turn, an image-only turn) is skipped and the walk continues to an earlier
+// user message, so a tool loop yields the prompt that started it. Empty only
+// when no user message has text, or the body is unparseable; admission
+// treats empty as nothing to judge. Anthropic + OpenAI (chat and Responses)
+// shapes are handled; other providers return "" (best-effort).
 func extractLastUserText(provider string, body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -480,7 +499,7 @@ func decodeMessageText(raw json.RawMessage) string {
 // extractLastUserText, used ONLY for the G1 admission-visibility log line
 // (docs/audits/multimodal-tracking-audit-2026-08-26.md): telling "an
 // image/audio-only turn the judge never saw" apart from "truly nothing here"
-// (a tool-result-only turn) without ever invoking the judge. Best-effort and
+// (protocol plumbing only) without ever invoking the judge. Best-effort and
 // read-only, matching extractLastUserText's own fail-open shape: an
 // unparseable or provider-unhandled body, or a message with no array-shaped
 // content, yields nil.
@@ -566,8 +585,8 @@ func nonTextBlockTypesOpenAI(body []byte) []string {
 // decodeMessageText.
 //
 // Two categories are deliberately excluded, both to avoid miscounting the
-// EXISTING "nothing to judge" case (extractLastUserText's own doc comment:
-// "a tool-result-only turn... never gate") as the NEW "non-text content
+// EXISTING "nothing to judge" case (protocol plumbing such as a tool
+// result, which carries no user content) as the NEW "non-text content
 // existed but was never judged" case this function exists to surface:
 //   - text-shaped types (text, input_text, output_text) — decodeMessageText
 //     already covers these; this function only runs when that came up empty

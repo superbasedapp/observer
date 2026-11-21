@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgenrol"
 	"github.com/marmutapp/superbased-observer/internal/policyfam"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -393,5 +394,28 @@ func reconcileManagedPolicyAtStart(ctx context.Context, configPath string, errOu
 		fmt.Fprintf(errOut, "managed enrolment: added %s to [org_client.policy] (accept_families and preauthorize_enforce, or their _module_ twins for a module family) in %s "+
 			"(families your accepted managed grant governs that this machine had not been offered yet)\n",
 			quotedTomlStringList(res.Added), cfgPath)
+		for _, line := range managedFamilyNotices(res.Added) {
+			fmt.Fprintln(errOut, line)
+		}
 	}
+}
+
+// managedFamilyNotice is what a backfilled family lets the organization do
+// that a developer would not guess from its name. A family with no row needs
+// no extra sentence.
+var managedFamilyNotice = map[string]string{
+	"planeb.admission": "  planeb.admission: your organization may let " + orgenrol.PromptJudgeDisclosure +
+		" (see `observer org status` and `observer guard status`)",
+}
+
+// managedFamilyNotices returns the notice lines for the added families, in
+// their order.
+func managedFamilyNotices(added []string) []string {
+	var out []string
+	for _, f := range added {
+		if n, ok := managedFamilyNotice[f]; ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }

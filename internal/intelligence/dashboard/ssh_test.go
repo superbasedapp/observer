@@ -140,7 +140,9 @@ func TestSSHLaunch_IgnoresClientSuppliedConnectionFields(t *testing.T) {
 	}
 	// SSHLaunchSpec has no connection fields at all, so there is nothing an
 	// extra JSON key could land in. Assert the spec is exactly what we expect.
-	if lm.lastSpec != (SSHLaunchSpec{Profile: "demo-box"}) {
+	// (The initiator is server-resolved: unknown with no resolver wired,
+	// lane cli-2 fixes-1.)
+	if lm.lastSpec != (SSHLaunchSpec{Profile: "demo-box", Initiator: "unknown"}) {
 		t.Fatalf("client-supplied connection data reached the spec: %+v", lm.lastSpec)
 	}
 }

@@ -50,7 +50,7 @@ type gitAliasCache struct {
 // an unchanged project is not asked again. "" when the root is not a
 // directory.
 func gitConfigStamp(root, home string) string {
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() { //nolint:gosec // G703: false positive; a stat of a recorded project root, nothing is read or written
 		return ""
 	}
 	var b bytes.Buffer
@@ -59,7 +59,7 @@ func gitConfigStamp(root, home string) string {
 		filepath.Join(home, ".gitconfig"),
 		filepath.Join(home, ".config", "git", "config"),
 	} {
-		if fi, err := os.Stat(p); err == nil {
+		if fi, err := os.Stat(p); err == nil { //nolint:gosec // G703: false positive; a stat of a fixed git config name under a recorded project root or the user home, nothing is read or written
 			b.WriteString(fi.ModTime().UTC().Format(time.RFC3339Nano))
 		}
 		b.WriteByte('|')

@@ -1,4 +1,4 @@
-/* SuperBased Observer — Design Tokens
+/* superbased Observer — Design Tokens
  *
  * Ported from design/tokens.css (the Claude-Design mockup).
  * Tailwind reads these via tailwind.config.ts theme.extend.
@@ -165,6 +165,8 @@
   --tool-kimchi: #f55547;
   --tool-stakpak: #9eca72;
   --tool-vtcode: #6447f5;
+  /* custom-agent (P-228): a developer's own agent, no vendor brand hue. */
+  --tool-custom-agent: #c7cfd9;
   --tool-other: #64748b;
 
   /* Action-type category colors. One var per canonical category in
@@ -401,6 +403,7 @@
   --tool-kimchi: #602924;
   --tool-stakpak: #426024;
   --tool-vtcode: #6d3b9b;
+  --tool-custom-agent: #3b4654;
   --tool-other: #475569;
 
   --act-file: #2563eb;

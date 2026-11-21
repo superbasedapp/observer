@@ -155,19 +155,25 @@ type Remote struct {
 // PullRequest is one provider PR, normalised (deliverynet maps raw GitHub
 // JSON into this through MapGitHubPR).
 type PullRequest struct {
-	ID             int64 // store row id; 0 before insert
-	LinkID         int64 // provider_links.id
-	Provider       Provider
-	Host           string
-	RepoSlug       string
-	Number         int64
-	Title          string
-	URL            string
-	State          PRState
-	Readiness      Readiness // "" unless State == PROpen
-	Facets         Facets
-	RawState       string // provider's own strings, for a tooltip ("open/unstable")
-	HeadSHA        string
+	ID        int64 // store row id; 0 before insert
+	LinkID    int64 // provider_links.id
+	Provider  Provider
+	Host      string
+	RepoSlug  string
+	Number    int64
+	Title     string
+	URL       string
+	State     PRState
+	Readiness Readiness // "" unless State == PROpen
+	Facets    Facets
+	RawState  string // provider's own strings, for a tooltip ("open/unstable")
+	HeadSHA   string
+	// HeadRef is the PR's head branch name ("" when the provider did not
+	// say). NODE-LOCAL: it stays in pull_requests (agent migration 246) and
+	// never rides the org wire (branch names encode ticket ids, the M2
+	// precedent). Cloud delivery credit resolves a branch-only cloud claim
+	// (a Cursor run's git.branches) to its PR through it.
+	HeadRef        string
 	BaseRef        string
 	MergeCommitSHA string // only meaningful when State == PRMerged
 	MergeMethod    MergeMethod
@@ -340,4 +346,14 @@ type ProjectSettings struct {
 	MirrorEnabled   bool
 	ScheduleMinutes int
 	UpdatedAt       time.Time
+}
+
+// CloudPRClaim is one pull request or branch a cloud coding agent's vendor
+// said a cloud session produced on a repository (cloud_session_links, agent
+// migration 246; lane CA-C5). The provider service fetches the PR it names
+// (by number, or by head branch) so cloud delivery credit has provider
+// evidence. PRNumber 0 means only Branch was stated.
+type CloudPRClaim struct {
+	PRNumber int64
+	Branch   string
 }

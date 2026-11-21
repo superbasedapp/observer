@@ -33,6 +33,17 @@ type BodyV1 struct {
 	ProviderKeyInjection string    `json:"provider_key_injection,omitempty"`
 	ProviderMemoryImages string    `json:"provider_memory_images,omitempty"`
 	MinEgress            string    `json:"min_egress,omitempty"`
+	// RequireRefusalAudit (lane N4) is the newest key: a node built before
+	// it refuses the body as an unknown field, and one that knows it but
+	// does not advertise its token NACKs (capability_mismatch), so no node
+	// ever reads the floor as absent.
+	RequireRefusalAudit *bool `json:"require_refusal_audit,omitempty"`
+	// GatewayModes (OpenShell lane O4) lists the sandbox gateway modes a
+	// row run through a gateway may use (managed_local, external): a
+	// newer key like require_refusal_audit, so a node built before it
+	// refuses the body as an unknown field and one that does not advertise
+	// its token NACKs, never reading the floor as absent.
+	GatewayModes *[]string `json:"gateway_modes,omitempty"`
 }
 
 // PolicySpec is the compiled floors. A zero field is no floor.
@@ -49,6 +60,14 @@ type PolicySpec struct {
 	ForbidProviderKeyInjection bool
 	ForbidProviderMemoryImages bool
 	MinEgress                  vocab.Tier
+	// RequireRefusalAudit: only a launch on a tier whose refusals the row
+	// hands to the node's refusal audit may run (sandboxbackend
+	// Net.RefusalAuditTiers).
+	RequireRefusalAudit bool
+	// GatewayModes nil means any gateway mode; otherwise a row run through
+	// a gateway may run only under one of these (sandboxselect rule S7g).
+	// A row with no gateway is not judged by it.
+	GatewayModes []string
 	// Keys lists the floor keys the body set, in FloorKeys order.
 	Keys []string
 	Hash string
@@ -99,6 +118,21 @@ var FloorKeys = []FloorKey{
 	{
 		Key: "require_full_capture", Label: "Require full capture", Enforced: true,
 		present: func(s PolicySpec) bool { return s.RequireFullCapture },
+	},
+	// Lane N4: a qualifying floor (it narrows which backend may run, like
+	// require_full_capture, and implies no sandbox on its own).
+	{
+		Key: "require_refusal_audit", Label: "Require refusal audit", Enforced: true,
+		present: func(s PolicySpec) bool { return s.RequireRefusalAudit },
+	},
+	// OpenShell lane O4: a qualifying floor too. Rule S7g judges only the
+	// gateway mode a row's driver reports, but like every floor its
+	// presence puts the body in force: managed nodes are projected
+	// "Require a sandboxed terminal", and beta rows drop without
+	// floor_accepts_beta (S4b).
+	{
+		Key: "gateway_modes", Label: "Allowed sandbox gateway modes", Enforced: true,
+		present: func(s PolicySpec) bool { return s.GatewayModes != nil },
 	},
 	{
 		Key: "allowed_regions", Label: "Allowed hosted regions", Enforced: true,
@@ -185,6 +219,18 @@ func Compile(b BodyV1) (PolicySpec, error) {
 	if b.RequireFullCapture != nil {
 		s.RequireFullCapture = *b.RequireFullCapture
 	}
+	if b.RequireRefusalAudit != nil {
+		// false is no floor, as for require_full_capture: a floor only
+		// tightens, so there is nothing to widen.
+		s.RequireRefusalAudit = *b.RequireRefusalAudit
+	}
+	if b.GatewayModes != nil {
+		l, err := closedList("gateway_modes", *b.GatewayModes, func(v string) bool { return vocab.GatewayMode(v).Valid() })
+		if err != nil {
+			return PolicySpec{}, err
+		}
+		s.GatewayModes = l
+	}
 	if b.AllowedRegions != nil {
 		l, err := closedList("allowed_regions", *b.AllowedRegions, func(v string) bool { return !strings.ContainsAny(v, " \t\r\n") })
 		if err != nil {
@@ -256,8 +302,17 @@ func forbiddenOnly(name, v string) (bool, error) {
 // CanonicalJSON re-encodes a body deterministically, so the signed body hash
 // never depends on the publisher's whitespace or key order. Lists are sorted
 // first.
+//
+// An explicit "require_refusal_audit": false is dropped (tracker F-012,
+// audit finding N4-A6): false is no floor, the same as an absent key, and
+// dropping it keeps the published body one a node built before the key
+// accepts (it refuses the key as unknown whatever its value). The compiled
+// spec and its hash are the same either way.
 func CanonicalJSON(b BodyV1) ([]byte, error) {
 	cp := b
+	if b.RequireRefusalAudit != nil && !*b.RequireRefusalAudit {
+		cp.RequireRefusalAudit = nil
+	}
 	if b.AllowedBackends != nil {
 		l := append([]string(nil), *b.AllowedBackends...)
 		sort.Strings(l)
@@ -267,6 +322,11 @@ func CanonicalJSON(b BodyV1) ([]byte, error) {
 		l := append([]string(nil), *b.AllowedRegions...)
 		sort.Strings(l)
 		cp.AllowedRegions = &l
+	}
+	if b.GatewayModes != nil {
+		l := append([]string(nil), *b.GatewayModes...)
+		sort.Strings(l)
+		cp.GatewayModes = &l
 	}
 	out, err := json.Marshal(cp)
 	if err != nil {
@@ -347,5 +407,13 @@ func hashSpec(s PolicySpec) string {
 		"full_capture", fmt.Sprint(s.RequireFullCapture), "regions", strings.Join(s.AllowedRegions, ","),
 		"key_injection", fmt.Sprint(s.ForbidProviderKeyInjection), "memory_images", fmt.Sprint(s.ForbidProviderMemoryImages),
 		"min_egress", string(s.MinEgress))
+	// Written only when set, so the hash of every body published before
+	// the key existed is unchanged.
+	if s.RequireRefusalAudit {
+		write("refusal_audit", "true")
+	}
+	if s.GatewayModes != nil {
+		write("gateway_modes", strings.Join(s.GatewayModes, ","))
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -1,0 +1,21 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-01",
+  "field_ledger": {
+    "error": "Inferred"
+  },
+  "fixture_sha256": "d7ba41c771d7a7b9a0974e31fd1b8f631b992f1ac78db9b0145168a27578a132",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/session/ses-synth0001/history",
+    "status": 401
+  },
+  "notes": "The client maps HTTP 401 to authentication_required and reads an optional string member error from the body (dist/cloud/index.js); the exact body is Inferred. Observed in vendor client, undocumented: api.cline.bot's session API has no published reference; the shape is read from the vendor's own client and can change without notice.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "npm @cline/shared 0.2.0 (tarball sha256 87c2bf7a09a255b61e6e615993d8c5e7194bcae54f8f119e9d3056b6475d3321; dist/llms/messages.d.ts sha256 d74693d371274bf430f1cd5fbba9ec2d335375f3ad1f36319d259b89a7c9462e) for the message shape, and npm @cline/core 0.2.0 dist/cloud/index.js CloudSessionApi.history for the archive envelope; cline/cline main at a6507a62a147db4a35e27f4294589742ccac5060",
+  "source_kind": "sdk_type",
+  "source_sha256": "d74693d371274bf430f1cd5fbba9ec2d335375f3ad1f36319d259b89a7c9462e",
+  "source_url": "https://registry.npmjs.org/@cline/shared/-/shared-0.2.0.tgz",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "cline.cloud.session_history"
+}

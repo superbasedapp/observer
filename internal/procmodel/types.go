@@ -278,6 +278,51 @@ type ProcessRun struct {
 	// IsBoundary marks init/systemd/WSL-relay processes (§9.2.6): they are
 	// attribution boundaries and never propagate inheritance to children.
 	IsBoundary bool
+
+	// ServiceRootKey is the process key of the service root this run is under
+	// (its own key when it IS one): a service or GUI app the agent started
+	// (process capture budget, docs/process-observability.md §11 "Capture
+	// budget"). Propagated down the tree by the Attributor; an env-token hit
+	// never clears it. Persisted to process_runs.service_root_key. Empty when
+	// the capture budget is off.
+	ServiceRootKey string
+	// CaptureClass is process_runs.capture_class: "exemplar", "service_root"
+	// or "service" (proccapture.CaptureClass values). Empty when the capture
+	// budget is off, and NULL on legacy rows.
+	CaptureClass string
+	// Capture is the capture budget's per-snapshot instruction to the flusher
+	// (runtime only, never persisted or encoded). Nil means "persist as a
+	// plain row", the pre-budget behaviour.
+	Capture *CaptureTag `json:"-"`
+}
+
+// CaptureTag is what the capture budget decided for one snapshot of a run,
+// carried from the Observer's drain to its flusher beside the run (plain
+// fields: this neutral package does not import proccapture). The flusher
+// persists the run only when Persist is set, and accumulates the rest into
+// the rollup / stats / fold delta it writes in the same transaction.
+type CaptureTag struct {
+	// Persist writes (or rewrites) the process_runs row.
+	Persist bool
+	// Count is the stats counter to add one to (proccapture.Counter value);
+	// empty for a re-persist of an already-counted run. Observed is
+	// incremented with it.
+	Count string
+	// MoveFrom, when set, re-counts an already-counted run from this counter
+	// to Count without touching observed (a kept run that became a service
+	// root).
+	MoveFrom string
+	// BudgetHit marks a run an exemplar budget turned away.
+	BudgetHit bool
+	// GroupKind (proccapture.GroupKind value) is set when the run is added to
+	// a rollup group; the remaining group fields complete its key.
+	GroupKind        string
+	BucketStart      time.Time
+	AnchorKey        string
+	ServiceRootKey   string
+	ArgvTemplateHash string
+	// FoldInto is the anchor process key whose fold_count is incremented.
+	FoldInto string
 }
 
 // ProcessEvent is one high-signal event emitted by the process/network

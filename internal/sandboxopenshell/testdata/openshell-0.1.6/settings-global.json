@@ -1,0 +1,10 @@
+{
+  "scope": "global",
+  "settings": {
+    "agent_policy_proposals_enabled": "<unset>",
+    "ocsf_json_enabled": "<unset>",
+    "ocsf_schema_version": "<unset>",
+    "proposal_approval_mode": "<unset>"
+  },
+  "settings_revision": 2
+}

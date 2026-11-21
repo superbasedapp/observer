@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
 )
@@ -34,7 +35,7 @@ func (c *testClock) advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// metaLen reads the retained per-handle classification count under the lock —
+// metaLen reads the retained per-handle classification count under the lock â€”
 // the in-package view the R2-7 bound test asserts on.
 func metaLen(s *Service) int {
 	s.mu.Lock()
@@ -122,7 +123,7 @@ func (f *fakeLauncher) Spawn(req LaunchRequest) (string, error) {
 	return f.handle, nil
 }
 
-// seqLauncher mints a distinct handle per Spawn ("h-1", "h-2", …) so a test can
+// seqLauncher mints a distinct handle per Spawn ("h-1", "h-2", â€¦) so a test can
 // drive many runs through the one Service (the R2-7 bound test).
 type seqLauncher struct{ n int }
 
@@ -249,7 +250,7 @@ func TestLaunchFreshSuccessMintsRun(t *testing.T) {
 // TestLaunchFreshModelComposition pins the B5 New Terminal model picker's
 // composition seam inside LaunchFresh: given a non-empty FreshRequest.Model,
 // the tool's capability-registry ModelSpec decides whether it lands on
-// LaunchRequest.ExtraArgs, ExtraEnv, both, or neither — dispatch on
+// LaunchRequest.ExtraArgs, ExtraEnv, both, or neither â€” dispatch on
 // capability SHAPE (ModelSpec.Kind), never tool name.
 func TestLaunchFreshModelComposition(t *testing.T) {
 	tests := []struct {
@@ -281,7 +282,7 @@ func TestLaunchFreshModelComposition(t *testing.T) {
 			wantExtraArgs: []string{"chat", "--model", "claude-3.7"},
 		},
 		{
-			// openclaw: ModelSpec{Kind: ModelNone} — explicit no-op.
+			// openclaw: ModelSpec{Kind: ModelNone} â€” explicit no-op.
 			name:  "ModelNone tool drops the model, launch still succeeds",
 			tool:  "openclaw",
 			model: "some-model",
@@ -335,7 +336,7 @@ func stringSlicesEqual(a, b []string) bool {
 func TestLaunchShellSuccessMintsRun(t *testing.T) {
 	rec := newFakeRecorder()
 	l := &fakeLauncher{handle: "SHELLHANDLE"}
-	// AllowFresh is deliberately FALSE — shell authorization must be
+	// AllowFresh is deliberately FALSE â€” shell authorization must be
 	// independent of the AI-tool fresh-launch gate.
 	svc := newService(t, Policy{AllowShell: true}, rec, l, nil)
 
@@ -402,7 +403,7 @@ func TestLaunchAttachableMintsAttachRun(t *testing.T) {
 	sub := feed.Subscribe()
 	defer feed.Unsubscribe(sub)
 	l := &fakeLauncher{handle: "ATTACH"}
-	// A policy that DENIES every fresh launch — attach must bypass it.
+	// A policy that DENIES every fresh launch â€” attach must bypass it.
 	svc := newService(t, Policy{}, rec, l, feed)
 
 	res, err := svc.LaunchAttachable(context.Background(), AttachRequest{
@@ -465,8 +466,8 @@ func TestLaunchAttachableMintsAttachRun(t *testing.T) {
 func TestLaunchAttachableBypassesFreshAllowLists(t *testing.T) {
 	// The exact policy that TestLaunchFreshAuthorizationGate proves denies a
 	// fresh claude-code launch (AllowFresh:false) must STILL permit an attach
-	// launch of the same tool — the attach socket's 0600 owner-only perms are
-	// the authorization, not the dashboard allow-lists (§3.3).
+	// launch of the same tool â€” the attach socket's 0600 owner-only perms are
+	// the authorization, not the dashboard allow-lists (Â§3.3).
 	rec := newFakeRecorder()
 	l := &fakeLauncher{handle: "H"}
 	denyAll := Policy{} // AllowFresh false, empty AllowedTools
@@ -529,12 +530,12 @@ func TestEndRunByHandle(t *testing.T) {
 }
 
 // TestLaunchReconcilesPreRegistrationExit is finding-1(a): a child that exits in
-// the window between Spawn returning and the handle→run mapping being installed
-// leaves the Manager's OnExit → EndRunByHandle with NO mapping (a silent no-op),
+// the window between Spawn returning and the handleâ†’run mapping being installed
+// leaves the Manager's OnExit â†’ EndRunByHandle with NO mapping (a silent no-op),
 // so the exit would otherwise never be recorded and neither term:exit nor the
 // direct OnRunExit seam would fire. launch() must reconcile against the
 // authoritative ExitStatus the instant it installs the mapping and run the SAME
-// end path — recording child_exit AND firing OnRunExit — exactly once. This is
+// end path â€” recording child_exit AND firing OnRunExit â€” exactly once. This is
 // the missing-producer case the round-3 tests assumed away.
 func TestLaunchReconcilesPreRegistrationExit(t *testing.T) {
 	rec := newFakeRecorder()
@@ -546,7 +547,7 @@ func TestLaunchReconcilesPreRegistrationExit(t *testing.T) {
 		Recorder: rec,
 		Launcher: l,
 		Now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
-		// The child has ALREADY exited by the time the mapping is installed —
+		// The child has ALREADY exited by the time the mapping is installed â€”
 		// modelling the pre-registration race deterministically.
 		ExitStatus: func(handle string) (bool, int, bool) {
 			if handle == "H" {
@@ -584,7 +585,7 @@ func TestLaunchReconcilesPreRegistrationExit(t *testing.T) {
 		t.Fatalf("OnRunExit fired %v, want exactly [%s]", exitedRuns, res.RunID)
 	}
 	// The live mappings are gone, so a later real OnExit for the same handle is
-	// the idempotent no-op — it must NOT fire OnRunExit a second time.
+	// the idempotent no-op â€” it must NOT fire OnRunExit a second time.
 	if _, ok := svc.RunIDForHandle("H"); ok {
 		t.Fatal("handle mapping must be cleared after the reconcile end")
 	}
@@ -593,7 +594,7 @@ func TestLaunchReconcilesPreRegistrationExit(t *testing.T) {
 	n2 := len(exitedRuns)
 	mu.Unlock()
 	if n2 != 1 {
-		t.Fatalf("a second EndRunByHandle fired OnRunExit again (total %d) — must be idempotent", n2)
+		t.Fatalf("a second EndRunByHandle fired OnRunExit again (total %d) â€” must be idempotent", n2)
 	}
 	if rec.endCalls != 1 {
 		t.Fatalf("EndRun called %d times, want exactly 1 (idempotent)", rec.endCalls)
@@ -651,7 +652,7 @@ func TestKindForHandleLifecycle(t *testing.T) {
 		t.Fatalf("KindForHandle = (%q,%q,%v), want (attach, claude-code, true)", kind, tool, ok)
 	}
 
-	// F1: KindForHandle is RETAINED after EndRunByHandle — the daemon-observed
+	// F1: KindForHandle is RETAINED after EndRunByHandle â€” the daemon-observed
 	// exit only starts termsession's ExitLinger, during which the PTY is still
 	// subscribable and the remote sensitivity gates MUST keep classifying the
 	// handle. The live-run maps (RunIDForHandle) are gone, but byMeta survives.
@@ -660,7 +661,7 @@ func TestKindForHandleLifecycle(t *testing.T) {
 		t.Fatal("RunIDForHandle should be forgotten after EndRunByHandle (live-run map)")
 	}
 	if kind, tool, ok := svc.KindForHandle("AH"); !ok || kind != termrun.KindAttach || tool != "claude-code" {
-		t.Fatalf("KindForHandle after exit = (%q,%q,%v), want (attach, claude-code, true) — classification must survive linger", kind, tool, ok)
+		t.Fatalf("KindForHandle after exit = (%q,%q,%v), want (attach, claude-code, true) â€” classification must survive linger", kind, tool, ok)
 	}
 
 	// PruneEndedHandles WITH the handle still in the Manager's live set keeps it.
@@ -671,7 +672,7 @@ func TestKindForHandleLifecycle(t *testing.T) {
 
 	// The Manager reaped the handle (absent from the live set), but the entry is
 	// still WITHIN the grace, so a prune does NOT drop it yet (R2-2: grace, not
-	// mere set-absence, is the aging clock — this is what keeps a just-ended
+	// mere set-absence, is the aging clock â€” this is what keeps a just-ended
 	// handle classified against a stale live set).
 	svc.PruneEndedHandles(map[string]struct{}{})
 	if _, _, ok := svc.KindForHandle("AH"); !ok {
@@ -701,7 +702,7 @@ func TestPruneEndedHandlesStaleSetSurvives(t *testing.T) {
 	clk := newTestClock()
 	svc := New(Options{Recorder: rec, Launcher: l, Now: clk.now})
 
-	// (1) A snapshot captured BEFORE H registers — the empty set (H doesn't exist).
+	// (1) A snapshot captured BEFORE H registers â€” the empty set (H doesn't exist).
 	staleSet := map[string]struct{}{}
 
 	// (2) H registers and is classified sensitive.
@@ -717,7 +718,7 @@ func TestPruneEndedHandlesStaleSetSurvives(t *testing.T) {
 	svc.EndRunByHandle(context.Background(), "H", 0)
 
 	// (4) The OLD, STALE set (which never saw H) prunes. H's endedAt is far
-	// younger than the grace, so it must be RETAINED — classification survives.
+	// younger than the grace, so it must be RETAINED â€” classification survives.
 	svc.PruneEndedHandles(staleSet)
 	if kind, _, ok := svc.KindForHandle("H"); !ok || !termrun.IsRemoteSensitiveKind(kind) {
 		t.Fatal("R2-2: a just-ended handle must survive a stale-set prune through its linger")
@@ -726,8 +727,8 @@ func TestPruneEndedHandlesStaleSetSurvives(t *testing.T) {
 }
 
 // TestEndedMetaBoundedWithoutPrune pins R2-7: on a daemon driven ONLY through
-// repeated attach sessions — no dashboard Snapshot ever calls PruneEndedHandles
-// — the opportunistic GC in EndRunByHandle keeps byMeta bounded rather than
+// repeated attach sessions â€” no dashboard Snapshot ever calls PruneEndedHandles
+// â€” the opportunistic GC in EndRunByHandle keeps byMeta bounded rather than
 // leaking one entry per ended run until restart.
 func TestEndedMetaBoundedWithoutPrune(t *testing.T) {
 	rec := newFakeRecorder()
@@ -751,9 +752,9 @@ func TestEndedMetaBoundedWithoutPrune(t *testing.T) {
 	}
 
 	// Never called PruneEndedHandles, yet byMeta stayed bounded near the GC
-	// high-water mark — NOT ~runs (which would be the unbounded leak).
+	// high-water mark â€” NOT ~runs (which would be the unbounded leak).
 	if n := metaLen(svc); n > endedHandleGCBound+1 {
-		t.Fatalf("byMeta grew to %d entries without a Prune call — GC did not bound it (want <= %d)", n, endedHandleGCBound+1)
+		t.Fatalf("byMeta grew to %d entries without a Prune call â€” GC did not bound it (want <= %d)", n, endedHandleGCBound+1)
 	}
 }
 
@@ -761,7 +762,7 @@ func TestEndedMetaBoundedWithoutPrune(t *testing.T) {
 // all END within one grace window leaves every entry too young for the
 // EndRunByHandle-time GC (it skips every entry as too young). If activity then
 // stops and no dashboard Snapshot ever calls PruneEndedHandles, nothing
-// re-triggers the GC once the grace lapses — UNTIL the next read-path call. This
+// re-triggers the GC once the grace lapses â€” UNTIL the next read-path call. This
 // test ends the WHOLE burst within one grace window (so the exit-time GC sheds
 // nothing), advances the clock past the grace, then makes a SINGLE KindForHandle
 // call and asserts the aged burst was reclaimed there (the opportunistic
@@ -786,7 +787,7 @@ func TestEndedMetaGCTriggeredByReadAfterBurst(t *testing.T) {
 	}
 	// End the WHOLE burst within one grace window (NO clock advance between ends),
 	// so every EndRunByHandle-time GC sees every ended entry as too young and
-	// sheds nothing — byMeta holds the full burst.
+	// sheds nothing â€” byMeta holds the full burst.
 	for _, h := range handles {
 		svc.EndRunByHandle(context.Background(), h, 0)
 	}
@@ -830,13 +831,13 @@ func TestSessionForRunAfterCorrelate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LaunchAttachable: %v", err)
 	}
-	// No established link yet — an attach run carries no source session at spawn.
+	// No established link yet â€” an attach run carries no source session at spawn.
 	if _, ok := svc.SessionForRun(res.RunID); ok {
 		t.Fatal("SessionForRun should be empty before any correlation")
 	}
 
 	// A WEAK (heuristic, 0.40 < MinLinkConfidence) observation does NOT surface
-	// a session id — links attach only once established.
+	// a session id â€” links attach only once established.
 	at := time.Unix(1_700_000_200, 0).UTC()
 	if err := svc.Correlate(context.Background(), res.RunID, "sess-weak", termrun.SourceHeuristic, at); err != nil {
 		t.Fatalf("Correlate heuristic: %v", err)
@@ -845,7 +846,7 @@ func TestSessionForRunAfterCorrelate(t *testing.T) {
 		t.Fatal("a sub-threshold heuristic correlation must not fill a session id")
 	}
 
-	// An OOB (0.95) observation IS established → SessionForRun surfaces it.
+	// An OOB (0.95) observation IS established â†’ SessionForRun surfaces it.
 	if err := svc.Correlate(context.Background(), res.RunID, "sess-strong", termrun.SourceOOB, at); err != nil {
 		t.Fatalf("Correlate oob: %v", err)
 	}
@@ -905,7 +906,7 @@ func TestSessionLinkForRun(t *testing.T) {
 		})
 	}
 
-	// Unknown run: never launched → ok=false, zeroed.
+	// Unknown run: never launched â†’ ok=false, zeroed.
 	if sid, conf, ok := svc.SessionLinkForRun("ghost-run"); ok || sid != "" || conf != 0 {
 		t.Fatalf("SessionLinkForRun(unknown) = (%q, %v, %v), want (\"\", 0, false)", sid, conf, ok)
 	}
@@ -925,7 +926,7 @@ func TestResolveHandleLink(t *testing.T) {
 	rec := newFakeRecorder()
 	svc := newService(t, Policy{}, rec, &fakeLauncher{handle: "SH"}, nil)
 
-	// Unknown handle: never launched → ok=false, everything zeroed.
+	// Unknown handle: never launched â†’ ok=false, everything zeroed.
 	if runID, kind, tool, sid, conf, ok := svc.ResolveHandleLink("ghost"); ok || runID != "" || kind != "" || tool != "" || sid != "" || conf != 0 {
 		t.Fatalf("ResolveHandleLink(unknown) = (%q,%q,%q,%q,%v,%v), want all-zero+false", runID, kind, tool, sid, conf, ok)
 	}
@@ -946,7 +947,7 @@ func TestResolveHandleLink(t *testing.T) {
 	}
 
 	// After an established (OOB) correlation the same call carries the session id
-	// + confidence — identical to chaining RunIDForHandle→KindForHandle→
+	// + confidence â€” identical to chaining RunIDForHandleâ†’KindForHandleâ†’
 	// SessionLinkForRun, but under one lock.
 	at := time.Unix(1_700_000_200, 0).UTC()
 	if err := svc.Correlate(context.Background(), res.RunID, "sess-strong", termrun.SourceOOB, at); err != nil {
@@ -962,7 +963,7 @@ func TestResolveHandleLink(t *testing.T) {
 		t.Fatalf("ResolveHandleLink vs SessionLinkForRun mismatch: (%q,%v,%v) vs (%q,%v,%v)", sid, conf, ok, wantSID, wantConf, wantOK)
 	}
 
-	// Exited handle: forgotten by the live maps → ok=false.
+	// Exited handle: forgotten by the live maps â†’ ok=false.
 	svc.EndRunByHandle(context.Background(), res.Handle, 0)
 	if _, _, _, _, _, ok := svc.ResolveHandleLink(res.Handle); ok {
 		t.Fatal("ResolveHandleLink should report ok=false after EndRunByHandle")
@@ -991,8 +992,8 @@ func TestCorrelateUnknownRunNoCacheEntry(t *testing.T) {
 }
 
 // TestCorrelateEndedDuringCorrelationNoResurrection pins P2-3 (a): once a run
-// has ended (EndRunByHandle deleted its maps), a late Correlate for that run —
-// e.g. a store write that was in flight when the run exited — must NOT recreate
+// has ended (EndRunByHandle deleted its maps), a late Correlate for that run â€”
+// e.g. a store write that was in flight when the run exited â€” must NOT recreate
 // its bySession entry. RecordCorrelation runs without the lock, so this models
 // the end landing between the store write and the cache update.
 func TestCorrelateEndedDuringCorrelationNoResurrection(t *testing.T) {
@@ -1015,7 +1016,7 @@ func TestCorrelateEndedDuringCorrelationNoResurrection(t *testing.T) {
 }
 
 // TestCorrelateMaxUpgradeNoDowngrade pins P2-3 (b): a strong OOB link is not
-// clobbered in memory by a later weaker (marker) observation — the in-memory
+// clobbered in memory by a later weaker (marker) observation â€” the in-memory
 // cache honors the same MAX-upgrade contract as the store. It also checks the
 // upgrade direction (a stronger observation DOES replace a weaker established
 // link).
@@ -1050,14 +1051,14 @@ func TestCorrelateMaxUpgradeNoDowngrade(t *testing.T) {
 		t.Fatalf("Correlate weaker marker: %v", err)
 	}
 	if sid, ok := svc.SessionForRun(res.RunID); !ok || sid != "sess-oob" {
-		t.Fatalf("after weaker marker: SessionForRun = (%q,%v), want (sess-oob,true) — a weaker observation must not overwrite a stronger link", sid, ok)
+		t.Fatalf("after weaker marker: SessionForRun = (%q,%v), want (sess-oob,true) â€” a weaker observation must not overwrite a stronger link", sid, ok)
 	}
 }
 
 // TestCorrelateDiscoveredLinksThenOOBUpgrades pins the distinct-confidence-source
 // intent for a HEURISTICALLY-DISCOVERED codex session id: a SourceDiscovered
 // observation (0.75) is above MinLinkConfidence, so it establishes a link on its
-// own — but a later SourceOOB (0.95) observation carrying a DIFFERENT id strictly
+// own â€” but a later SourceOOB (0.95) observation carrying a DIFFERENT id strictly
 // upgrades it (the stronger-evidence MAX-upgrade rule, P2-3 (b)). This is the
 // termsvc-level counterpart of the codex discovery path recording at discovered
 // confidence and a subsequent known-id echo overriding it.
@@ -1071,12 +1072,12 @@ func TestCorrelateDiscoveredLinksThenOOBUpgrades(t *testing.T) {
 	}
 	at := time.Unix(1_700_000_100, 0).UTC()
 
-	// A DISCOVERED id (0.75) establishes the link — it clears MinLinkConfidence.
+	// A DISCOVERED id (0.75) establishes the link â€” it clears MinLinkConfidence.
 	if err := svc.Correlate(context.Background(), res.RunID, "sess-discovered", termrun.SourceDiscovered, at); err != nil {
 		t.Fatalf("Correlate discovered: %v", err)
 	}
 	if sid, ok := svc.SessionForRun(res.RunID); !ok || sid != "sess-discovered" {
-		t.Fatalf("after discovered: SessionForRun = (%q,%v), want (sess-discovered,true) — a discovered id must link", sid, ok)
+		t.Fatalf("after discovered: SessionForRun = (%q,%v), want (sess-discovered,true) â€” a discovered id must link", sid, ok)
 	}
 	// The durable store row records it at the discovered source/confidence.
 	if last := rec.corr[len(rec.corr)-1]; last.Source != termrun.SourceDiscovered || !last.Linkable() {
@@ -1088,7 +1089,7 @@ func TestCorrelateDiscoveredLinksThenOOBUpgrades(t *testing.T) {
 		t.Fatalf("Correlate oob: %v", err)
 	}
 	if sid, ok := svc.SessionForRun(res.RunID); !ok || sid != "sess-known" {
-		t.Fatalf("after oob upgrade: SessionForRun = (%q,%v), want (sess-known,true) — a stronger OOB echo must override a discovered link", sid, ok)
+		t.Fatalf("after oob upgrade: SessionForRun = (%q,%v), want (sess-known,true) â€” a stronger OOB echo must override a discovered link", sid, ok)
 	}
 
 	// A later DISCOVERED observation must NOT downgrade the established OOB link.
@@ -1096,14 +1097,14 @@ func TestCorrelateDiscoveredLinksThenOOBUpgrades(t *testing.T) {
 		t.Fatalf("Correlate late discovered: %v", err)
 	}
 	if sid, ok := svc.SessionForRun(res.RunID); !ok || sid != "sess-known" {
-		t.Fatalf("after late discovered: SessionForRun = (%q,%v), want (sess-known,true) — a weaker discovered observation must not overwrite a stronger OOB link", sid, ok)
+		t.Fatalf("after late discovered: SessionForRun = (%q,%v), want (sess-known,true) â€” a weaker discovered observation must not overwrite a stronger OOB link", sid, ok)
 	}
 }
 
 // correlatingLauncher models the PRODUCTION launcher's ordering exactly: the
 // real ptyLauncher.Spawn starts the OOB drain goroutine BEFORE it returns
 // (cmd/observer/terminal_launch.go), so a trusted session frame can reach
-// Correlate while launch() is still inside Spawn — before byHandle/byRun are
+// Correlate while launch() is still inside Spawn â€” before byHandle/byRun are
 // installed. Calling Correlate synchronously from Spawn makes that interleave
 // DETERMINISTIC (no sleep, no timing dependence): the correlation provably
 // happens in the pre-registration window on every run.
@@ -1150,7 +1151,7 @@ func sessionLen(s *Service) int {
 // Spawn, so a one-shot trusted session frame can reach Correlate before
 // launch() installs byHandle/byRun. Before the launch reservation, Correlate's
 // liveness guard (which exists to stop an ENDED run being resurrected) found an
-// empty byRun and silently DISCARDED the link — and because the frame is
+// empty byRun and silently DISCARDED the link â€” and because the frame is
 // one-shot, that run's "Jump in" stayed blank forever. The correlation must now
 // survive: the run is reserved in launching before Spawn, and the reservation is
 // consumed in the same critical section that registers the handle.
@@ -1162,7 +1163,7 @@ func TestCorrelateBeforeRegistrationIsKept(t *testing.T) {
 	l.onSpawn = func(req LaunchRequest) {
 		// Inside the pre-registration window, deterministically.
 		if _, live := svc.HandleForRun(req.RunID); live {
-			t.Errorf("run %q already registered inside Spawn — the test no longer exercises the pre-registration window", req.RunID)
+			t.Errorf("run %q already registered inside Spawn â€” the test no longer exercises the pre-registration window", req.RunID)
 		}
 		if err := svc.Correlate(context.Background(), req.RunID, "sess-early", termrun.SourceOOB, at); err != nil {
 			t.Errorf("Correlate inside Spawn: %v", err)
@@ -1176,7 +1177,7 @@ func TestCorrelateBeforeRegistrationIsKept(t *testing.T) {
 	}
 	sid, ok := svc.SessionForRun(res.RunID)
 	if !ok || sid != "sess-early" {
-		t.Fatalf("SessionForRun(%q) = (%q,%v), want (sess-early,true) — a correlation that arrived before the handle was registered was dropped", res.RunID, sid, ok)
+		t.Fatalf("SessionForRun(%q) = (%q,%v), want (sess-early,true) â€” a correlation that arrived before the handle was registered was dropped", res.RunID, sid, ok)
 	}
 	// The reservation is consumed by registration, not left behind.
 	if n := launchingLen(svc); n != 0 {
@@ -1191,7 +1192,7 @@ func TestCorrelateBeforeRegistrationIsKept(t *testing.T) {
 
 // TestCorrelateBeforeRegistrationSpawnFailureNoOrphan pins the other half of the
 // reservation contract. If Correlate writes bySession while the run is only
-// RESERVED and Spawn then FAILS, no handle is ever produced — and bySession is
+// RESERVED and Spawn then FAILS, no handle is ever produced â€” and bySession is
 // only ever deleted by EndRunByHandle, which is keyed by handle. Such an entry
 // would be permanently unreachable garbage: precisely the resurrection leak the
 // liveness guard exists to prevent. The Spawn-error path must therefore release
@@ -1218,7 +1219,7 @@ func TestCorrelateBeforeRegistrationSpawnFailureNoOrphan(t *testing.T) {
 		t.Fatal("Spawn was never called")
 	}
 	if sid, ok := svc.SessionForRun(runID); ok {
-		t.Fatalf("SessionForRun(%q) = %q after a FAILED spawn — the link is unreachable garbage (no handle exists, so EndRunByHandle can never delete it)", runID, sid)
+		t.Fatalf("SessionForRun(%q) = %q after a FAILED spawn â€” the link is unreachable garbage (no handle exists, so EndRunByHandle can never delete it)", runID, sid)
 	}
 	if n := sessionLen(svc); n != 0 {
 		t.Fatalf("bySession entries after a failed spawn = %d, want 0", n)
@@ -1226,7 +1227,7 @@ func TestCorrelateBeforeRegistrationSpawnFailureNoOrphan(t *testing.T) {
 	if n := launchingLen(svc); n != 0 {
 		t.Fatalf("launching reservations after a failed spawn = %d, want 0", n)
 	}
-	// The durable store row is still written — only the in-memory cache is
+	// The durable store row is still written â€” only the in-memory cache is
 	// released (the run itself is closed out as ended).
 	if len(rec.corr) != 1 {
 		t.Fatalf("store correlations = %d, want 1 (the durable write is unconditional)", len(rec.corr))
@@ -1319,8 +1320,8 @@ func TestCorrelate(t *testing.T) {
 
 // TestLaunchResumePolicyEnforced pins the deliberate policy CONTRAST between the
 // dashboard-initiated native resume and the CLI attach bypass (session-attach
-// design §3.3): a resume is an Execute the launch Policy MUST gate, so a
-// deny-all policy REFUSES it — whereas LaunchAttachable (authorized by the
+// design Â§3.3): a resume is an Execute the launch Policy MUST gate, so a
+// deny-all policy REFUSES it â€” whereas LaunchAttachable (authorized by the
 // owner-only socket's filesystem permissions) succeeds under the SAME policy.
 func TestLaunchResumePolicyEnforced(t *testing.T) {
 	tests := []struct {
@@ -1366,7 +1367,7 @@ func TestLaunchResumePolicyEnforced(t *testing.T) {
 	}
 
 	// The CONTRAST leg: under the SAME deny-all policy that refused resume,
-	// LaunchAttachable succeeds — the socket's filesystem permissions are the
+	// LaunchAttachable succeeds â€” the socket's filesystem permissions are the
 	// authorization, not the launch Policy.
 	rec := newFakeRecorder()
 	l := &fakeLauncher{handle: "H-attach"}
@@ -1580,16 +1581,16 @@ func TestLaunchResumeCorrelationFailureKeepsSpawnResult(t *testing.T) {
 }
 
 // TestLaunchRecordsSpawnDirSeparatelyFromProjectRoot pins the two-answer
-// contract that run→session correlation depends on: ProjectRoot is the
-// AUTHORIZED root (empty for a launch with no requested project root — the
+// contract that runâ†’session correlation depends on: ProjectRoot is the
+// AUTHORIZED root (empty for a launch with no requested project root â€” the
 // shape every dashboard "New Terminal" takes on a node with no
 // [terminal.launch].allowed_project_roots) while SpawnDir is the FACTUAL cwd
 // the child inherits from the daemon.
 //
 // The regression it guards is a real one, reproduced on a remote node: with the
 // two answers conflated, the discovery sweep asked ProjectRoot for the run's
-// directory, got "no authorized root", and skipped the run forever — an
-// opencode terminal sat at "linking…" while its session (started in that very
+// directory, got "no authorized root", and skipped the run forever â€” an
+// opencode terminal sat at "linkingâ€¦" while its session (started in that very
 // directory, /home/azureuser) was ingested normally.
 func TestLaunchRecordsSpawnDirSeparatelyFromProjectRoot(t *testing.T) {
 	root := t.TempDir()
@@ -1690,5 +1691,53 @@ func TestSpawnDirUnknownHandle(t *testing.T) {
 	})
 	if dir, ok := svc.SpawnDir("nope"); ok || dir != "" {
 		t.Fatalf("SpawnDir(unknown) = (%q, %v), want (\"\", false)", dir, ok)
+	}
+}
+
+// TestLaunchFreshTaskPrompt pins the task-prompt seam (Fix with an agent):
+// the prompt lands LAST on ExtraArgs by the tool's registry task seed, after
+// any model args; a tool with no seed, or a prompt that cannot be passed,
+// refuses the launch before the launcher runs.
+func TestLaunchFreshTaskPrompt(t *testing.T) {
+	tests := []struct {
+		name    string
+		tool    string
+		model   string
+		prompt  string
+		want    []string
+		wantErr bool
+	}{
+		{name: "leading positional", tool: "claude-code", model: "opus", prompt: "Fix it", want: []string{"Fix it", "--model", "opus"}},
+		{name: "trailing positional after model args", tool: "kiro-cli", model: "claude-3.7", prompt: "Fix it", want: []string{"chat", "--model", "claude-3.7", "Fix it"}},
+		{name: "flag value", tool: "gemini-cli", prompt: "Fix it", want: []string{"-i", "Fix it"}},
+		{name: "doc-assisted tool refuses", tool: "hermes", prompt: "Fix it", wantErr: true},
+		{name: "noted tool refuses", tool: "devin", prompt: "Fix it", wantErr: true},
+		{name: "dash prompt refuses", tool: "claude-code", prompt: "--dangerously-skip-permissions", wantErr: true},
+		{name: "no prompt unchanged", tool: "claude-code"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newFakeRecorder()
+			l := &fakeLauncher{handle: "H-TASK"}
+			svc := newService(t, Policy{AllowFresh: true, AllowedTools: []string{tc.tool}}, rec, l, nil)
+			_, err := svc.LaunchFresh(context.Background(), FreshRequest{
+				Tool: tc.tool, Subcommand: tc.tool, Model: tc.model, TaskPrompt: tc.prompt,
+			})
+			if tc.wantErr {
+				if !errors.Is(err, integration.ErrTaskSeed) {
+					t.Fatalf("err = %v, want ErrTaskSeed", err)
+				}
+				if l.lastReq.Subcommand != "" {
+					t.Fatalf("launcher ran: %+v", l.lastReq)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LaunchFresh: %v", err)
+			}
+			if !stringSlicesEqual(l.lastReq.ExtraArgs, tc.want) {
+				t.Errorf("ExtraArgs = %q, want %q", l.lastReq.ExtraArgs, tc.want)
+			}
+		})
 	}
 }

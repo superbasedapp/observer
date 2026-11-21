@@ -175,12 +175,13 @@ function errorCopy(code: ProjectPanelErrorCode): { title: string; detail: string
     case "remote_view_disabled":
       return {
         title: "Viewing disabled",
-        detail: "The owner hasn't enabled remote terminal/file viewing for this device.",
+        detail:
+          "The machine's owner has turned off terminal and file viewing for paired devices. Only they can turn it back on, on that machine: Remote > Pairing > Configuration > Allow terminal view.",
       };
     case "git_unavailable":
       return {
         title: "Git unavailable",
-        detail: "The git binary isn't available on the host serving this terminal.",
+        detail: "git is not installed (or not on PATH) on the machine serving this terminal. Install git there; nothing here can change it.",
       };
     case "bad_path":
       return { title: "Invalid path", detail: "That path is outside the project root." };

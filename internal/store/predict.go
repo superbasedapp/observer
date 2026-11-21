@@ -446,6 +446,73 @@ func (s *Store) loadPriorScoped(ctx context.Context, tool string, projectID int6
 	return out, nil
 }
 
+// LoadUsageRows returns the usage this node captured in [since, until), one
+// row per (session, model), for the run-out projection of a usage limit or a
+// budget (internal/predict ProjectLimit / ProjectBudget). It reads the same
+// deduplicated substrate the guard's budget windows and the Plans & limits
+// daily reconciliation read: every token_usage and api_turns row the stored
+// sessionmsg verdicts count, so a turn both the proxy and a transcript
+// captured counts once, and a session that never routed through the proxy
+// still counts through its transcript rows. tools narrows to sessions of
+// those tools; empty means every tool. Proxy turns attributed to no session
+// are not included (they belong to no session to count). Read-only.
+func (s *Store) LoadUsageRows(ctx context.Context, tools []string, since, until time.Time) ([]predict.UsageRow, error) {
+	if !until.After(since) {
+		return nil, nil
+	}
+	s.refreshSpendVerdictsBounded(ctx)
+	lo, hi := timestamp(since), timestamp(until)
+	args := []any{lo, hi, lo, hi}
+	toolFilter := ""
+	if len(tools) > 0 {
+		toolFilter = ` WHERE s.tool IN (` + placeholders(len(tools)) + `)`
+		for _, t := range tools {
+			args = append(args, t)
+		}
+	}
+	//nolint:gosec // G202: the SQL is closed constant fragments and the IN list is placeholders; values bind via args.
+	q := `SELECT u.sid, u.model, COALESCE(p.root_path, ''),
+	       SUM(u.i), SUM(u.cr), SUM(u.cw), SUM(u.o), SUM(u.r), SUM(u.c),
+	       SUM(CASE WHEN u.i + u.cr + u.cw + u.o > 0 THEN 1 ELSE 0 END)
+	  FROM (
+		SELECT tu.session_id sid, COALESCE(tu.model, '') model,
+		       COALESCE(tu.input_tokens, 0) i, COALESCE(tu.cache_read_tokens, 0) cr,
+		       COALESCE(tu.cache_creation_tokens, 0) cw, COALESCE(tu.output_tokens, 0) o,
+		       COALESCE(tu.reasoning_tokens, 0) r, COALESCE(tu.estimated_cost_usd, 0) c
+		  FROM token_usage tu
+		 WHERE tu.timestamp >= ? AND tu.timestamp < ? AND ` + spendverdict.CountedTokenRow("tu") + `
+		UNION ALL
+		SELECT a.session_id sid, COALESCE(a.model, '') model,
+		       COALESCE(a.input_tokens, 0) i, COALESCE(a.cache_read_tokens, 0) cr,
+		       COALESCE(a.cache_creation_tokens, 0) cw, ` + spendverdict.ProxyOutput("a") + ` o,
+		       ` + spendverdict.ProxyReasoning() + ` r, COALESCE(a.cost_usd, 0) c
+		  FROM api_turns a` + spendverdict.ProxyVerdictJoin("a") + `
+		 WHERE a.timestamp >= ? AND a.timestamp < ? AND a.session_id IS NOT NULL AND ` + spendverdict.CountedProxyRow() + `
+	  ) u
+	  JOIN sessions s ON s.id = u.sid
+	  LEFT JOIN projects p ON p.id = s.project_id` + toolFilter + `
+	 GROUP BY u.sid, u.model
+	 ORDER BY u.sid, u.model`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadUsageRows: %w", err)
+	}
+	defer rows.Close()
+	var out []predict.UsageRow
+	for rows.Next() {
+		var r predict.UsageRow
+		if err := rows.Scan(&r.SessionID, &r.Model, &r.Project,
+			&r.Input, &r.CacheRead, &r.CacheWrite, &r.Output, &r.Reasoning, &r.CostUSD, &r.Turns); err != nil {
+			return nil, fmt.Errorf("store.LoadUsageRows: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.LoadUsageRows: %w", err)
+	}
+	return out, nil
+}
+
 // InsertLimitSnapshot persists one rate-limit observation (migration 049,
 // NODE-LOCAL). The only writer of limit_snapshots — per the one-owner
 // rule. Nil optional fields become NULL columns.

@@ -31,6 +31,6 @@ export function savedMilestoneCopy(savedUSD: number): SavedMilestoneCopy | null 
     // no-bare-usd:allow (reached only after dollarsShown() returned true above)
     chip: `★ $${Math.floor(savedUSD).toLocaleString()} SAVED ★`,
     text: `Compression has paid for its config: ${fmtUSD(savedUSD)} saved so far.`,
-    share: `SuperBased has saved me ${fmtUSD(savedUSD)} in AI coding costs so far - superbased.app`,
+    share: `superbased has saved me ${fmtUSD(savedUSD)} in AI coding costs so far - superbased.app`,
   };
 }

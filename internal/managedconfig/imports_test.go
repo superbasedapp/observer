@@ -13,7 +13,7 @@ import (
 // rev N2): the decision files are pure, and nothing in the package can be
 // redirected by a flag, an environment variable or the config loader.
 func TestImportsAndNoRedirection(t *testing.T) {
-	pureFiles := map[string]bool{"ceiling.go": true, "acl.go": true, "load.go": true, "doc.go": true}
+	pureFiles := map[string]bool{"ceiling.go": true, "attach.go": true, "acl.go": true, "load.go": true, "doc.go": true}
 	pureForbidden := []string{"os", "os/exec", "syscall", "golang.org/x/sys", "unsafe"}
 	execAllowed := map[string]bool{"source_darwin.go": true}
 

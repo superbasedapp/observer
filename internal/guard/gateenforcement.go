@@ -1,6 +1,12 @@
 package guard
 
 import (
+	"errors"
+	"io/fs"
+	"path/filepath"
+	"strings"
+	"syscall"
+
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -17,7 +23,9 @@ import (
 // close the prompt gate without closing the tool gate.
 type GateEnforcement struct {
 	// Tool is true when tool-call verdicts can block: the global mode is
-	// enforce, or at least one effective rule is per-rule enforced.
+	// enforce, or at least one effective rule is per-rule enforced (in the
+	// base engine, or in any trusted per-project file or applied project
+	// recipe: a node-wide answer, RC-5).
 	Tool bool
 	// Prompt is true when a prompt-submit hook can stop a prompt: the
 	// prompt lane evaluates on hooks, some configured prompt mode is
@@ -58,16 +66,30 @@ func ConfigGateEnforcement(c config.GuardConfig) GateEnforcement {
 // D-150): ConfigGateEnforcement, except that a family a policy FILE could
 // enforce counts as enforced while that file exists, because only the full
 // derivation can read it. The org bundle can enforce both families (an org
-// floor, or an unverifiable bundle on a managed node); the user policy can
-// enforce the tool family (per-rule enforce). A node with neither file and
-// no enforcing mode is not enforcing, so a slow derivation there never
-// closes a gate. exists reports whether a path exists (injected I/O).
+// floor, or an unverifiable bundle on a managed node); the user policy, its
+// applied recipe and the trusted per-project directory (its files and
+// applied project recipes) can enforce the tool family (per-rule enforce). A
+// node with none of them and no enforcing mode is not enforcing, so a slow
+// derivation there never closes a gate. exists reports whether a path exists
+// (injected I/O).
 func PreliminaryGateEnforcement(c config.GuardConfig, home string, exists func(string) bool) GateEnforcement {
 	e := ConfigGateEnforcement(c)
 	if !c.Enabled || c.Mode == "off" || exists == nil {
 		return e
 	}
 	if p := UserPolicyPath(c, home); p != "" && exists(p) {
+		e.Tool = true
+	}
+	// An applied global recipe can enforce per rule like the user file.
+	if p := UserRecipePolicyPath(c, home); p != "" && exists(p) {
+		e.Tool = true
+	}
+	// So can a trusted per-project file or an applied project recipe
+	// (RC-5): a project held at a level by explicit enforce rows. The
+	// directory existing is the file-existence analog (the dashboard and
+	// the recipe service create it on their first write); only the full
+	// derivation reads the files in it.
+	if d := expandUserPath(c.Rules.TrustedProjectDir, home); d != "" && exists(d) {
 		e.Tool = true
 	}
 	if p := OrgBundlePath(c, home); p != "" && exists(p) {
@@ -77,10 +99,77 @@ func PreliminaryGateEnforcement(c config.GuardConfig, home string, exists func(s
 	return e
 }
 
+// maxTrustedScanFiles bounds the trusted-directory scan GateEnforcement
+// runs; a directory holding more files counts as enforcing without
+// reading the rest.
+const maxTrustedScanFiles = 1000
+
+// trustedLayerEnforces reports whether some trusted per-project policy file
+// or applied project recipe in [guard.rules] trusted_project_dir carries a
+// per-rule enforced row (`enforce = true` on a [[rule]] or an [[override]]):
+// a project held at a level by explicit rows (a project recipe applied while
+// the machine mode is observe holds the level's enforce decisions that way,
+// docs/guard-recipes.md "A level in one project"). The posture the hooks read
+// is per node, not per project, so one such project closes the tool gate
+// node-wide (RC-5). A file that does not parse cannot enforce (its project
+// engine drops it). A directory that exists but cannot be listed counts as
+// enforcing: what it holds is unknown, not absent.
+func (g *Guard) trustedLayerEnforces() bool {
+	dir := expandUserPath(g.cfg.Rules.TrustedProjectDir, g.home)
+	if dir == "" {
+		return false
+	}
+	entries, err := g.readDir(dir)
+	if err != nil {
+		// Absent is absent: a missing directory, or a path with a file where
+		// a parent directory would be (ENOTDIR, which Windows reports as not
+		// found), holds no policy. Anything else is unknown, so enforcing.
+		return !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
+	}
+	scanned := 0
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".toml") {
+			continue
+		}
+		if scanned++; scanned > maxTrustedScanFiles {
+			return true
+		}
+		raw, err := g.readFile(filepath.Join(dir, ent.Name()))
+		if err != nil {
+			continue
+		}
+		pf, err := parsePolicyFile(raw, layerTrustedProject)
+		if err != nil {
+			continue
+		}
+		if policyFileEnforces(pf) {
+			return true
+		}
+	}
+	return false
+}
+
+// policyFileEnforces reports whether pf carries a per-rule enforced row.
+func policyFileEnforces(pf *policyFile) bool {
+	for i := range pf.rules {
+		if pf.rules[i].Enforced {
+			return true
+		}
+	}
+	for _, ov := range pf.overrides {
+		if ov.Enforced {
+			return true
+		}
+	}
+	return false
+}
+
 // GateEnforcement is the live guard's answer: ConfigGateEnforcement plus
 // what only the composed policy knows (per-rule enforcement on the tool
-// family, an org cap that makes every prompt rule warn only, an org bundle
-// that is present but unverifiable on a managed node). It is the ONE
+// family, in the base engine or in a trusted per-project file read off disk
+// now, so a project recipe applied since the guard was built counts; an org
+// cap that makes every prompt rule warn only; an org bundle that is present
+// but unverifiable on a managed node). It is the ONE
 // enforcement derivation behind the hook failure posture: the daemon's
 // posture writer and the hook's config fallback both build a guard from
 // the same inputs and call it (cmd/observer guardGateEnforcement).
@@ -100,6 +189,9 @@ func (g *Guard) GateEnforcement() GateEnforcement {
 				break
 			}
 		}
+	}
+	if !e.Tool {
+		e.Tool = g.trustedLayerEnforces()
 	}
 	if e.Prompt {
 		capped := true

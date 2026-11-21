@@ -3,6 +3,8 @@ package seciac
 import (
 	"path"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/secdockerfile"
 )
 
 // PathClass is one IaC path class of the post_write trigger (lane
@@ -33,10 +35,8 @@ func yamlFile(rel string) bool {
 // pathClasses is the table, walked top-down; the first match names the
 // class (forward-slash, project-relative paths).
 var pathClasses = []PathClass{
-	{"dockerfile", func(rel string) bool {
-		b := base(rel)
-		return b == "Dockerfile" || strings.HasPrefix(b, "Dockerfile.") || strings.HasSuffix(b, ".dockerfile") || b == "Containerfile"
-	}},
+	// The Dockerfile class has one owner, the native Dockerfile rules.
+	{"dockerfile", secdockerfile.IsDockerfilePath},
 	{"terraform", func(rel string) bool {
 		return strings.HasSuffix(rel, ".tf") || strings.HasSuffix(rel, ".tf.json") || strings.HasSuffix(rel, ".tfvars")
 	}},

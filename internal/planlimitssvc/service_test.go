@@ -2,6 +2,7 @@ package planlimitssvc
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"strconv"
@@ -68,6 +69,14 @@ func (f fakeLocal) Read(_ context.Context, specs []planlimits.LocalSpec) (map[st
 
 func newTestService(t *testing.T, net *fakeNet, local LocalReader, now time.Time) (*Service, *store.Store, *keystore.MemStore) {
 	t.Helper()
+	s, st, keys, _ := newTestServiceDB(t, net, local, now)
+	return s, st, keys
+}
+
+// newTestServiceDB is newTestService that also returns the database, for a
+// test that seeds capture rows the service only reads.
+func newTestServiceDB(t *testing.T, net *fakeNet, local LocalReader, now time.Time) (*Service, *store.Store, *keystore.MemStore, *sql.DB) {
+	t.Helper()
 	database, err := dbtemplate.Open(context.Background(), db.Options{Path: t.TempDir() + "/p.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +85,7 @@ func newTestService(t *testing.T, net *fakeNet, local LocalReader, now time.Time
 	st := store.New(database)
 	keys := &keystore.MemStore{}
 	net.t = t
-	return New(Options{Store: st, Keys: keys, Net: net, Local: local, Now: func() time.Time { return now }}), st, keys
+	return New(Options{Store: st, Keys: keys, Net: net, Local: local, Now: func() time.Time { return now }}), st, keys, database
 }
 
 var t0 = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -323,4 +332,84 @@ func itoa(n int) string { return strconv.Itoa(n) }
 func jwt(claims string) string {
 	enc := base64.RawURLEncoding.EncodeToString
 	return enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(claims)) + ".sig"
+}
+
+// TestDailyUsageReconciliation covers the app-server account's daily usage:
+// nothing before a reading, the reading's totals stored beside the snapshot,
+// reconciled against this node's captured codex rows, and gone with the
+// account.
+func TestDailyUsageReconciliation(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	usage := &planlimits.UsageReport{Days: []planlimits.UsageDay{{Day: "2026-10-08", Tokens: 1000}, {Day: "2026-10-09", Tokens: 500}}}
+	net := &fakeNet{converse: func(in planlimits.PlanInput) (planlimits.Snapshot, error) {
+		snap, err := planlimits.MapAppServer(planlimits.AppServerRateLimits{RateLimits: &planlimits.AppServerBucket{
+			LimitID: "codex", Primary: &planlimits.AppServerWindow{UsedPercent: 10},
+		}}, "plus", in.Now)
+		snap.Usage = usage
+		return snap, err
+	}}
+	s, st, _, database := newTestServiceDB(t, net, fakeLocal{}, now)
+	ctx := context.Background()
+	a, err := s.AddAccount(ctx, AddRequest{Provider: planlimits.ProviderChatGPT, Source: planlimits.SourceCodexAppServer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.DailyUsage {
+		t.Fatal("the app-server account must declare daily usage")
+	}
+	v, err := s.Usage(ctx, a.ID, 0)
+	if err != nil || !v.Available || v.Reconciliation != nil || v.FetchedAt != nil || v.Days != DefaultUsageDays {
+		t.Fatalf("before a reading: %+v %v", v, err)
+	}
+	if res, err := s.Refresh(ctx, a.ID); err != nil || res.Outcome != planlimits.StatusOK {
+		t.Fatalf("refresh %+v %v", res, err)
+	}
+	// Captured on this node: a codex session on the 8th.
+	pid, err := st.UpsertProject(ctx, "/tmp/usage-proj", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO sessions (id, project_id, tool, started_at) VALUES ('cx', ?, 'codex', ?)`, pid, now.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, cache_read_tokens, output_tokens, source, reliability)
+		VALUES ('cx', '2026-10-08T10:00:00Z', 'codex', 'gpt-x', 100, 800, 40, 'jsonl', 'accurate')`); err != nil {
+		t.Fatal(err)
+	}
+	v, err = s.Usage(ctx, a.ID, 7)
+	if err != nil || v.Reconciliation == nil || v.FetchedAt == nil {
+		t.Fatalf("after a reading: %+v %v", v, err)
+	}
+	r := v.Reconciliation
+	if r.From != "2026-10-03" || r.To != "2026-10-09" || len(r.Days) != 2 {
+		t.Fatalf("window %+v", r)
+	}
+	if d := r.Days[1]; d.Day != "2026-10-08" || d.VendorTokens != 1000 || d.CapturedTokens != 940 || d.UncapturedTokens != 60 {
+		t.Fatalf("day %+v", d)
+	}
+	if r.Totals.UncapturedTokens != 560 || strings.Join(v.Tools, ",") != "codex" {
+		t.Fatalf("totals %+v tools %v", r.Totals, v.Tools)
+	}
+	// The snapshot body never carries the usage.
+	hist, _, _ := s.History(ctx, a.ID, 1)
+	if len(hist) != 1 || hist[0].Usage != nil {
+		t.Fatalf("history %+v", hist)
+	}
+	if err := s.RemoveAccount(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if days, last, _ := st.PlanUsageDaily(ctx, a.ID, "2026-01-01", "2026-12-31"); len(days) != 0 || !last.IsZero() {
+		t.Fatalf("rows left after remove: %+v", days)
+	}
+	// A source without the capability reports Available=false.
+	b, err := s.AddAccount(ctx, AddRequest{Provider: planlimits.ProviderDeepSeek, Source: planlimits.SourceDeepSeek, Secrets: map[string]string{"key": "k"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Usage(ctx, b.ID, 30); err != nil || v.Available || v.Reconciliation != nil {
+		t.Fatalf("no capability: %+v %v", v, err)
+	}
+	if _, err := s.Usage(ctx, "missing", 30); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown account: %v", err)
+	}
 }

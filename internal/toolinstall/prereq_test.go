@@ -119,3 +119,74 @@ func TestPrereqRemedy(t *testing.T) {
 		})
 	}
 }
+
+// TestInstallArgvFor is one row per builder case: each channel with a
+// program, and every refusal.
+func TestInstallArgvFor(t *testing.T) {
+	t.Parallel()
+	pm := func(name string) PackageManager {
+		p, _ := PackageManagerByName(name)
+		return p
+	}
+	cases := []struct {
+		name     string
+		pm       PackageManager
+		packages []string
+		channel  string
+		argv     []string
+		ok       bool
+	}{
+		{"apt", pm("apt"), []string{"bubblewrap"}, "apt", []string{"sudo", "apt-get", "install", "-y", "bubblewrap"}, true},
+		{"dnf", pm("dnf"), []string{"bubblewrap"}, "dnf", []string{"sudo", "dnf", "install", "-y", "bubblewrap"}, true},
+		{"pacman", pm("pacman"), []string{"bubblewrap"}, "pacman", []string{"sudo", "pacman", "-S", "--needed", "--noconfirm", "bubblewrap"}, true},
+		{"zypper", pm("zypper"), []string{"bubblewrap"}, "zypper", []string{"sudo", "zypper", "install", "-y", "bubblewrap"}, true},
+		{"apk", pm("apk"), []string{"bubblewrap"}, "apk", []string{"sudo", "apk", "add", "bubblewrap"}, true},
+		{"brew runs as the user", pm("brew"), []string{"coreutils"}, "brew", []string{"brew", "install", "coreutils"}, true},
+		{"apt two packages", pm("apt"), []string{"virtiofsd", "e2fsprogs"}, "apt", []string{"sudo", "apt-get", "install", "-y", "virtiofsd", "e2fsprogs"}, true},
+		{"brew takes one package", pm("brew"), []string{"a", "b"}, "", nil, false},
+		{"unknown family", PackageManager{}, []string{"bubblewrap"}, "", nil, false},
+		{"no packages", pm("apt"), nil, "", nil, false},
+		{"flag as package", pm("apt"), []string{"--allow-unauthenticated"}, "", nil, false},
+		{"empty package", pm("dnf"), []string{""}, "", nil, false},
+		{"whitespace", pm("apt"), []string{"bubble wrap"}, "", nil, false},
+		{"shell metacharacter", pm("apt"), []string{"x;rm"}, "", nil, false},
+		{"npm has no builder", PackageManager{Name: "npm"}, []string{"x"}, "", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch, argv, ok := InstallArgvFor(tc.pm, tc.packages)
+			if ok != tc.ok || ch != tc.channel || !reflect.DeepEqual(argv, tc.argv) {
+				t.Errorf("InstallArgvFor = (%q, %q, %v), want (%q, %q, %v)", ch, argv, ok, tc.channel, tc.argv, tc.ok)
+			}
+		})
+	}
+}
+
+// TestPackageManagerByName: every row PackageManagerFor can answer is
+// reachable by its name, and nothing else is.
+func TestPackageManagerByName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"apt", "dnf", "apk", "pacman", "zypper", "brew"} {
+		pm, ok := PackageManagerByName(name)
+		if !ok || pm.Name != name || pm.Install == "" || pm.Family == "" {
+			t.Errorf("PackageManagerByName(%q) = %+v, %v", name, pm, ok)
+		}
+	}
+	if got := PackageManagerFor("darwin", nil); got != mustPM(t, "brew") {
+		t.Errorf("darwin = %+v", got)
+	}
+	for _, name := range []string{"", "npm", "winget", "choco"} {
+		if _, ok := PackageManagerByName(name); ok {
+			t.Errorf("PackageManagerByName(%q) found", name)
+		}
+	}
+}
+
+func mustPM(t *testing.T, name string) PackageManager {
+	t.Helper()
+	pm, ok := PackageManagerByName(name)
+	if !ok {
+		t.Fatalf("no %s", name)
+	}
+	return pm
+}

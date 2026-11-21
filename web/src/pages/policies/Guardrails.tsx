@@ -1,21 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import {
+  Button,
+  Callout,
   ChartShell,
+  EmptyState,
   EntityMultiPicker,
+  ErrorState,
   HostMark,
+  Input,
   InlineLoading,
   Pill,
   SegmentedControl,
   SinglePicker,
   Toggle,
 } from "@/components/primitives";
+import { judgeHostingLabel } from "@shared/lib/obsVocab";
 import { keepSelected, uniqueSorted } from "@/lib/pickerOptions";
 import { useModelOptions } from "@/lib/usePickerSources";
 import { TEMPLATE_CATALOG } from "./templates-catalog";
 import { useApi } from "@/lib/useApi";
-import { saveConfigSection } from "@/lib/configSectionSave";
+import { ConfigSaveCancelled, saveConfigSection } from "@/lib/configSectionSave";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
+import { useDaemonRestart } from "@/lib/useDaemonRestart";
+import { RestartOverlay } from "@/components/RestartOverlay";
+import { AdmissionOffNote, restartErrorText } from "./AdmissionOff";
 import {
   type AdmissionCriterion,
   type AdmissionPolicy,
@@ -27,59 +37,94 @@ import {
   type JudgeConfig,
   type LintIssue,
   type Severity,
+  applyAdmissionPolicy,
   isJudged,
   judgeHosting,
   newCriterionId,
-  postPolicy,
+  policyErrorText,
+  policyStatusText,
 } from "./types";
-import {
-  IssueList,
-  Labeled,
-  Muted,
-  NumberInput,
-  Select,
-  TextArea,
-  btnGhost,
-  btnGhostDanger,
-  btnPrimary,
-  btnSecondary,
-  inputClass,
-  splitLines,
-} from "./ui";
+import { IssueList, Labeled, NumberInput, Select, TextArea, TextInput, splitLines } from "./ui";
 
-// Guardrails tab — the admission (input-guardrail) authoring surface. It edits
+// Guardrails tab - the admission (input-guardrail) authoring surface. It edits
 // three things with TWO distinct apply semantics, kept visually separate
 // because the backend applies them by different paths:
 //
 //   • The POLICY (mode/strict/scope/secret-remote-judge, the deterministic
-//     pre-filter, and the criterion table) is hot-swappable — "Apply live"
-//     POSTs it and the dashboard's admission front-door reflects it at once;
-//     "Save & restart" also persists it to config.toml.
+//     pre-filter, and the criterion table) is hot-swappable: "Apply" POSTs it
+//     live AND saved (UI review U-27: a live-only apply was silently lost on
+//     the next restart), on the front door and the proxy check at once.
 //   • The JUDGE binding and the per-user BUDGET are read at daemon start and
-//     are NOT hot-swappable, so they only have "Save & restart" (a
-//     config-section PUT + a restart-pending banner) — the honest truth.
+//     are NOT hot-swappable, so they have "Save and restart": a config-section
+//     PUT, then the daemon restart with its usual confirm (U-29: the button
+//     used to only save). A declined restart leaves the restart-pending
+//     banner.
 
 const CRITERION_TYPES: { value: CriterionType; label: string; hint: string }[] = [
   { value: "valid_use_case", label: "Valid use case", hint: "LLM-judged - allow only requests that fit the app's purpose (needs a definition)." },
-  { value: "denied_topics", label: "Denied topics", hint: "Deterministic - match against a topic list." },
+  { value: "denied_topics", label: "Denied topics", hint: "Deterministic - match whole words from a topic list (end a topic with * to match words that start with it)." },
   { value: "jailbreak", label: "Jailbreak", hint: "Deterministic - detect prompt-injection / jailbreak attempts." },
   { value: "custom", label: "Custom (judged)", hint: "LLM-judged against a free-form definition you write." },
 ];
 const DECISIONS: Decision[] = ["allow", "flag", "ask", "deny"];
 const SEVERITIES: Severity[] = ["info", "warn", "high", "critical"];
 
-export function GuardrailsTab({ onApplied }: { onApplied?: () => void }) {
-  const policyApi = useApi<AdmissionPolicyGet>("/api/obs/admission/policy");
+export function GuardrailsTab({ onApplied, admissionOff }: { onApplied?: () => void; admissionOff?: boolean }) {
+  // With admission checks off the policy route answers 404: offer to turn
+  // them on instead (U-13). The judge and budget are config and stay.
+  const policyApi = useApi<AdmissionPolicyGet>(admissionOff ? null : "/api/obs/admission/policy");
   const configApi = useApi<ConfigResponse>("/api/config");
+  const { restarting, error: restartError, restart } = useDaemonRestart();
+
+  if (restarting) {
+    return (
+      <RestartOverlay
+        title="Restarting the daemon…"
+        body="Applying your changes and reconnecting. This page reloads automatically when the new process is up."
+      />
+    );
+  }
+  // saveAndRestart saves one config section, marks it pending, then asks to
+  // restart (U-29). The pending banner stays if the restart is declined.
+  async function saveAndRestart(what: string, body: unknown): Promise<boolean> {
+    try {
+      const res = await saveConfigSection("observability", body);
+      if (!res.saved) {
+        pushToast(`${what} was not saved. Try again.`, "danger");
+        return false;
+      }
+      configApi.reload();
+      if (!res.restart_required) {
+        pushToast(`${what} saved.`, "success");
+        return true;
+      }
+      markRestartPending("observability", res.restart_required_keys);
+      await restart({ title: `Restart the daemon to apply the ${what.toLowerCase()}?`, lead: `The ${what.toLowerCase()} is saved and applies when the daemon starts again.` });
+      return true;
+    } catch (e) {
+      if (e instanceof ConfigSaveCancelled) return false;
+      pushToast(`${what} not saved. ${policyErrorText(e)}`, "danger");
+      return false;
+    }
+  }
 
   return (
     <div className="space-y-4">
-      <PolicyEditor policyApi={policyApi} onApplied={onApplied} />
-      <JudgeEditor configApi={configApi} />
-      <BudgetEditor configApi={configApi} />
+      {admissionOff ? <AdmissionOffNote what="edit the admission policy" /> : <PolicyEditor policyApi={policyApi} onApplied={onApplied} />}
+      {restartError && (
+        <Callout tone="warn" title="The daemon did not restart">
+          {restartErrorText(restartError)}
+        </Callout>
+      )}
+      <JudgeEditor configApi={configApi} saveAndRestart={saveAndRestart} />
+      <BudgetEditor configApi={configApi} saveAndRestart={saveAndRestart} />
     </div>
   );
 }
+
+// SaveAndRestart is GuardrailsTab's save-then-restart flow for a config-read
+// editor; it resolves whether the section was saved.
+type SaveAndRestart = (what: string, body: unknown) => Promise<boolean>;
 
 // ---------------- Policy (criteria + prefilter + mode) ----------------
 
@@ -91,15 +136,15 @@ function PolicyEditor({
   onApplied?: () => void;
 }) {
   const [draft, setDraft] = useState<AdmissionPolicy | null>(null);
-  const [busy, setBusy] = useState<"" | "apply" | "save">("");
+  const [busy, setBusy] = useState(false);
   const [issues, setIssues] = useState<LintIssue[]>([]);
   const [err, setErr] = useState("");
 
   // Hydrate the draft once the live policy loads. A structuredClone keeps the
-  // edits local until the operator applies — a reload won't clobber in-progress
+  // edits local until the operator applies - a reload won't clobber in-progress
   // work unless it changes the loaded reference. The backend marshals empty
   // string slices as JSON null (regexpSources returns nil, criterion.Topics is
-  // nil for non-topic types), so coerce every list to [] here — the form binds
+  // nil for non-topic types), so coerce every list to [] here - the form binds
   // to `.join`/`.map` and a null would crash the render.
   useEffect(() => {
     if (!policyApi.data) return;
@@ -114,7 +159,13 @@ function PolicyEditor({
   const globalIssues = useMemo(() => issues.filter((i) => !i.criterion_id), [issues]);
 
   if (policyApi.loading && !draft) return <ChartShell title="Admission policy"><InlineLoading label="Loading admission policy" /></ChartShell>;
-  if (!draft) return <ChartShell title="Admission policy"><Muted>No policy loaded.</Muted></ChartShell>;
+  if (!draft) {
+    return (
+      <ChartShell title="Admission policy">
+        <ErrorState title="Couldn't load the admission policy" error={policyApi.error ?? "No policy came back."} onRetry={policyApi.reload} />
+      </ChartShell>
+    );
+  }
 
   const patch = (p: Partial<AdmissionPolicy>) => setDraft({ ...draft, ...p });
   const patchCriterion = (idx: number, c: Partial<AdmissionCriterion>) => {
@@ -131,40 +182,44 @@ function PolicyEditor({
     });
   const removeCriterion = (idx: number) => setDraft({ ...draft, criteria: draft.criteria.filter((_, i) => i !== idx) });
 
-  async function submit(persist: boolean) {
-    setBusy(persist ? "save" : "apply");
+  // submit applies the draft live and saves it (applyAdmissionPolicy, U-27).
+  async function submit() {
+    if (!draft) return;
+    setBusy(true);
     setErr("");
     setIssues([]);
     try {
-      const { status, data } = await postPolicy("/api/obs/admission/policy", draft, persist);
+      const { status, data } = await applyAdmissionPolicy(draft);
       setIssues(data.issues ?? []);
-      if (status === 422 || !data.applied) {
-        setErr(data.error || "Policy rejected - fix the issues below.");
-        pushToast("Policy not applied - see issues", "danger");
+      if (status === 409) {
+        setErr(policyStatusText(409));
         return;
       }
-      if (persist && !data.persisted) {
-        pushToast(`Applied live, but not saved: ${data.persist_error || "persist failed"}`, "warn");
-      } else if (persist) {
-        markRestartPending("admission policy");
-        pushToast("Saved. Live on the front-door now; restart to update the proxy backstop.", "success");
+      if (status === 422 || !data.applied) {
+        setErr(data.error || "Fix the issues below, then apply again.");
+        pushToast("Policy not applied. See the issues.", "danger");
+        return;
+      }
+      if (!data.persisted) {
+        // The live policy reads as unsaved on Policies until a save works.
+        pushToast("Applied, but not saved: a daemon restart drops this policy.", "warn");
       } else {
-        pushToast("Applied live to the admission front-door.", "success");
+        pushToast("Policy applied and saved.", "success");
       }
       policyApi.reload();
       onApplied?.();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      pushToast("Apply failed", "danger");
+      setErr(policyErrorText(e));
+      pushToast("Policy not applied.", "danger");
     } finally {
-      setBusy("");
+      setBusy(false);
     }
   }
 
   return (
     <ChartShell
       title="Admission policy"
-      sub="The guardrail table plus its mode and deterministic pre-filter. Applying live affects the SDK front-door immediately; saving also writes config.toml (the proxy backstop needs a restart)."
+      sub="The criteria, their mode and the deterministic pre-filter. Apply changes your app's front door and the proxy check now, and saves the policy."
     >
       {/* Policy-level controls */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -182,42 +237,48 @@ function PolicyEditor({
         <Labeled label="Scope">
           <SegmentedControl<AdmissionPolicy["scope"]>
             options={[
-              { value: "last_user", label: "Last user msg" },
+              { value: "last_user", label: "Last user message" },
               { value: "conversation", label: "Conversation" },
             ]}
             value={draft.scope}
             onChange={(scope) => patch({ scope })}
           />
         </Labeled>
-        <Toggle on={draft.strict} onChange={(strict) => patch({ strict })} label="Strict (fail-closed on judge error)" />
-        <Labeled label="Secret + remote judge">
+        <Toggle on={draft.strict} onChange={(strict) => patch({ strict })} label="Block when the judge fails" />
+        <Labeled label="Secret with a remote judge">
           <Select
             value={draft.secret_remote_judge}
             onChange={(v) => patch({ secret_remote_judge: v as AdmissionPolicy["secret_remote_judge"] })}
             options={[
-              { value: "", label: "Off (scrub + send)" },
-              { value: "allow", label: "allow" },
-              { value: "flag", label: "flag" },
-              { value: "ask", label: "ask" },
-              { value: "deny", label: "deny locally" },
+              { value: "", label: "Scrub and send" },
+              { value: "allow", label: "Allow" },
+              { value: "flag", label: "Flag" },
+              { value: "ask", label: "Ask" },
+              { value: "deny", label: "Deny on this machine" },
             ]}
           />
         </Labeled>
       </div>
 
       {draft.mode === "enforce" && (
-        <div className="mt-3 rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11px] text-warn">
-          Enforce actively blocks or holds end-user requests. Confirm the observe-mode shadow verdicts looked right first.
-        </div>
+        <Callout tone="warn" title="Enforce blocks end-user requests" className="mt-3">
+          Check that the observe-only verdicts on Activity looked right first.
+        </Callout>
       )}
 
       {/* Criteria */}
       <div className="mt-5 flex items-center justify-between">
-        <h4 className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">Criteria ({draft.criteria.length})</h4>
-        <button type="button" onClick={addCriterion} className={btnGhost}>+ Add criterion</button>
+        <h4 className="text-[12px] font-semibold text-fg-1">Criteria ({draft.criteria.length})</h4>
+        <Button size="sm" iconLeft={Plus} onClick={addCriterion}>Add criterion</Button>
       </div>
       <div className="mt-2 space-y-3">
-        {draft.criteria.length === 0 && <Muted>No criteria - the policy allows everything. Add one, or apply a Template.</Muted>}
+        {draft.criteria.length === 0 && (
+          <EmptyState
+            variant="inline"
+            title="No criteria"
+            body="The policy allows every request. Add a criterion, or apply a template."
+          />
+        )}
         {draft.criteria.map((c, idx) => (
           <CriterionRow
             key={idx}
@@ -231,7 +292,7 @@ function PolicyEditor({
 
       {/* Prefilter */}
       <div className="mt-5">
-        <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">Deterministic pre-filter</h4>
+        <h4 className="mb-2 text-[12px] font-semibold text-fg-1">Deterministic pre-filter</h4>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <Labeled label="Allow patterns (regex, one per line)" stacked>
             <TextArea
@@ -250,22 +311,18 @@ function PolicyEditor({
             />
           </Labeled>
         </div>
-        <Labeled label="Max message bytes (0 = no cap)" className="mt-3">
-          <NumberInput value={draft.prefilter.max_message_bytes} onChange={(n) => patch({ prefilter: { ...draft.prefilter, max_message_bytes: n } })} />
+        <Labeled label="Longest message in bytes (0 for no limit)" className="mt-3">
+          <NumberInput className="w-32" min={0} value={draft.prefilter.max_message_bytes} onChange={(n) => patch({ prefilter: { ...draft.prefilter, max_message_bytes: n } })} />
         </Labeled>
       </div>
 
       {globalIssues.length > 0 && <IssueList issues={globalIssues} />}
-      {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}
+      {err && <Callout tone="danger" title="Policy not applied" className="mt-3">{err}</Callout>}
 
-      <div className="mt-4 flex items-center gap-2">
-        <button type="button" disabled={busy !== ""} onClick={() => submit(false)} className={btnPrimary}>
-          {busy === "apply" ? "Applying…" : "Apply live"}
-        </button>
-        <button type="button" disabled={busy !== ""} onClick={() => submit(true)} className={btnSecondary}>
-          {busy === "save" ? "Saving…" : "Save & restart"}
-        </button>
-        <span className="text-[11px] text-fg-3">Apply live = front-door now · Save = durable + proxy on restart</span>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button variant="primary" disabled={busy} loading={busy} onClick={() => void submit()}>
+          {busy ? "Applying" : "Apply"}
+        </Button>
       </div>
     </ChartShell>
   );
@@ -290,38 +347,42 @@ function CriterionRow({
           value={c.type}
           onChange={(v) => onChange({ type: v as CriterionType })}
           options={CRITERION_TYPES.map((t) => ({ value: t.value, label: t.label }))}
+          ariaLabel="Criterion type"
         />
         {judged ? (
-          <Pill variant="info" title="Calls the LLM judge - adds latency + judge tokens per request.">LLM-judged</Pill>
+          <Pill variant="info" title="Calls the LLM judge: adds latency and judge tokens per request.">LLM-judged</Pill>
         ) : (
-          <Pill variant="neutral" title="Deterministic - runs offline, no judge call.">deterministic</Pill>
+          <Pill variant="neutral" title="Runs on this machine with no judge call.">deterministic</Pill>
         )}
-        <input
+        <TextInput
           value={c.name}
-          onChange={(e) => onChange({ name: e.target.value })}
-          placeholder="name (e.g. on-scope)"
-          className={inputClass + " min-w-[10rem] flex-1"}
+          onChange={(name) => onChange({ name })}
+          placeholder="Name, e.g. on-scope"
+          ariaLabel="Criterion name"
+          className="w-auto min-w-[10rem] flex-1"
         />
-        <button type="button" onClick={onRemove} className={btnGhostDanger} aria-label="Remove criterion">Remove</button>
+        <Button size="sm" variant="ghost" iconLeft={Trash2} onClick={onRemove} aria-label={`Remove criterion ${c.name || c.id}`}>
+          Remove
+        </Button>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
         <Labeled label="Decision">
           <SegmentedControl<Decision>
             size="sm"
-            options={DECISIONS.map((d) => ({ value: d, label: d }))}
+            options={DECISIONS.map((d) => ({ value: d, label: d[0].toUpperCase() + d.slice(1) }))}
             value={c.decision}
             onChange={(decision) => onChange({ decision })}
           />
         </Labeled>
         <Labeled label="Severity">
-          <Select value={c.severity} onChange={(v) => onChange({ severity: v as Severity })} options={SEVERITIES.map((s) => ({ value: s, label: s }))} />
+          <Select value={c.severity} onChange={(v) => onChange({ severity: v as Severity })} options={SEVERITIES.map((s) => ({ value: s, label: s[0].toUpperCase() + s.slice(1) }))} />
         </Labeled>
       </div>
 
       {judged && (
         <Labeled label="Definition (what the judge should decide)" stacked className="mt-2">
-          <TextArea value={c.definition} onChange={(v) => onChange({ definition: v })} rows={2} placeholder="Allow only questions about using the Acme product…" />
+          <TextArea value={c.definition} onChange={(v) => onChange({ definition: v })} rows={2} placeholder="Allow only questions about using the Acme product" />
         </Labeled>
       )}
       {c.type === "denied_topics" && (
@@ -335,6 +396,12 @@ function CriterionRow({
             placeholder="Pick a topic, or type one and press Enter…"
             ariaLabel="Topics"
           />
+          <p className="mt-1 text-[11px] text-fg-3">
+            Each topic matches whole words in any letter case, and a plural or possessive form counts:
+            "competitor" also catches "competitors" and "competitor's", but "hack" does not catch "hacking". End a
+            topic with * to match every word that starts with it: "hack*" catches "hacking" and "hacker". A phrase
+            matches only with its words in order. A topic needs at least one letter or digit.
+          </p>
         </Labeled>
       )}
 
@@ -351,46 +418,45 @@ const TEMPLATE_TOPIC_OPTIONS = uniqueSorted(
   TEMPLATE_CATALOG.flatMap((t) => (t.criteria ?? []).flatMap((c) => c.topics ?? [])),
 ).map((t) => ({ id: t, label: t, group: "From the templates" }));
 
-function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<ConfigResponse>> }) {
+function JudgeEditor({ configApi, saveAndRestart }: { configApi: ReturnType<typeof useApi<ConfigResponse>>; saveAndRestart: SaveAndRestart }) {
   const [draft, setDraft] = useState<JudgeConfig | null>(null);
   const models = useModelOptions();
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
 
   useEffect(() => {
     const j = configApi.data?.config.Observability.Judge;
     if (j) setDraft({ ...j });
   }, [configApi.data]);
 
-  if (!draft) return <ChartShell title="Judge"><InlineLoading label="Loading judge settings" /></ChartShell>;
+  if (!draft) {
+    return (
+      <ChartShell title="Judge">
+        {configApi.error ? (
+          <ErrorState title="Couldn't load the judge settings" error={configApi.error} onRetry={configApi.reload} />
+        ) : (
+          <InlineLoading label="Loading judge settings" />
+        )}
+      </ChartShell>
+    );
+  }
   const hosting = judgeHosting(draft.BaseURL);
   const patch = (p: Partial<JudgeConfig>) => setDraft({ ...draft, ...p });
 
   async function save() {
     setBusy(true);
-    setErr("");
-    try {
-      const res = await saveConfigSection("observability", { Judge: draft });
-      if (!res.saved) throw new Error("server did not confirm save");
-      if (res.restart_required) markRestartPending("observability");
-      pushToast("Judge saved · restart daemon to apply", "success");
-      configApi.reload();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      pushToast("Judge save failed", "danger");
-    } finally {
-      setBusy(false);
-    }
+    await saveAndRestart("Judge", { Judge: draft });
+    setBusy(false);
   }
 
   return (
     <ChartShell
       title={
         <span className="inline-flex items-center gap-2">
-          Judge <HostMark host={draft.BaseURL} size={12} /> <Pill variant="info">{hosting}</Pill>
+          Judge <HostMark host={draft.BaseURL} size={12} />{" "}
+          <Pill variant="info" case="none">{hosting === "none" ? "Not set up" : judgeHostingLabel(hosting)}</Pill>
         </span>
       }
-      sub="The LLM that evaluates judged criteria. Hosting is derived from the base URL - a loopback URL keeps requests local with no key egress. Read at daemon start, so this always needs a restart."
+      sub="The model that decides judged criteria. A local address keeps requests on this machine. Needs a restart."
     >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Model" stacked group>
@@ -405,25 +471,24 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
           />
         </Labeled>
         <Labeled label="Base URL" stacked>
-          <input value={draft.BaseURL} onChange={(e) => patch({ BaseURL: e.target.value })} placeholder="http://127.0.0.1:11434/v1" className={inputClass + " w-full"} />
+          <Input value={draft.BaseURL} onChange={(e) => patch({ BaseURL: e.target.value })} placeholder="http://127.0.0.1:11434/v1" />
         </Labeled>
-        <Labeled label="API key env var" stacked>
-          <input value={draft.APIKeyEnv} onChange={(e) => patch({ APIKeyEnv: e.target.value })} placeholder="OLLAMA_API_KEY" className={inputClass + " w-full"} />
+        <Labeled label="API key environment variable" stacked>
+          <Input mono value={draft.APIKeyEnv} onChange={(e) => patch({ APIKeyEnv: e.target.value })} placeholder="OLLAMA_API_KEY" />
         </Labeled>
         <div className="grid grid-cols-3 gap-2">
-          <Labeled label="Timeout ms" stacked><NumberInput value={draft.TimeoutMS} onChange={(n) => patch({ TimeoutMS: n })} /></Labeled>
-          <Labeled label="Max tokens" stacked><NumberInput value={draft.MaxTokens} onChange={(n) => patch({ MaxTokens: n })} /></Labeled>
-          <Labeled label="Num ctx" stacked><NumberInput value={draft.NumCtx} onChange={(n) => patch({ NumCtx: n })} /></Labeled>
+          <Labeled label="Timeout (ms)" stacked><NumberInput min={0} value={draft.TimeoutMS} onChange={(n) => patch({ TimeoutMS: n })} /></Labeled>
+          <Labeled label="Max tokens" stacked><NumberInput min={0} value={draft.MaxTokens} onChange={(n) => patch({ MaxTokens: n })} /></Labeled>
+          <Labeled label="Context size" stacked><NumberInput min={0} value={draft.NumCtx} onChange={(n) => patch({ NumCtx: n })} /></Labeled>
         </div>
       </div>
       {hosting !== "local" && hosting !== "none" && (
-        <div className="mt-3 rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11px] text-warn">
-          This judge is remote - requests egress off-box (secret-scrubbed first). The API key comes from the named env var, never stored here.
-        </div>
+        <Callout title="This judge runs off this machine" className="mt-3">
+          Requests leave the machine with secrets scrubbed first. The key is read from the named variable, never stored here.
+        </Callout>
       )}
-      {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}
       <div className="mt-4">
-        <button type="button" disabled={busy} onClick={save} className={btnSecondary}>{busy ? "Saving…" : "Save & restart"}</button>
+        <Button variant="primary" loading={busy} disabled={busy} onClick={() => void save()}>{busy ? "Saving" : "Save and restart"}</Button>
       </div>
     </ChartShell>
   );
@@ -431,53 +496,50 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
 
 // ---------------- Budget ----------------
 
-function BudgetEditor({ configApi }: { configApi: ReturnType<typeof useApi<ConfigResponse>> }) {
+function BudgetEditor({ configApi, saveAndRestart }: { configApi: ReturnType<typeof useApi<ConfigResponse>>; saveAndRestart: SaveAndRestart }) {
   const [draft, setDraft] = useState<BudgetConfig | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
 
   useEffect(() => {
     const b = configApi.data?.config.Observability.Admission.Budget;
     if (b) setDraft({ ...b });
   }, [configApi.data]);
 
-  if (!draft) return <ChartShell title="Per-user budget"><InlineLoading label="Loading budget" /></ChartShell>;
+  if (!draft) {
+    return (
+      <ChartShell title="Per-user budget">
+        {configApi.error ? (
+          <ErrorState title="Couldn't load the budget" error={configApi.error} onRetry={configApi.reload} />
+        ) : (
+          <InlineLoading label="Loading budget" />
+        )}
+      </ChartShell>
+    );
+  }
   const patch = (p: Partial<BudgetConfig>) => setDraft({ ...draft, ...p });
 
   async function save() {
     setBusy(true);
-    setErr("");
-    try {
-      const res = await saveConfigSection("observability", { Admission: { Budget: draft } });
-      if (!res.saved) throw new Error("server did not confirm save");
-      if (res.restart_required) markRestartPending("observability");
-      pushToast("Budget saved · restart daemon to apply", "success");
-      configApi.reload();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      pushToast("Budget save failed", "danger");
-    } finally {
-      setBusy(false);
-    }
+    await saveAndRestart("Budget", { Admission: { Budget: draft } });
+    setBusy(false);
   }
 
   return (
     <ChartShell
       title="Per-user budget"
-      sub="A per-end-user spend cap evaluated at the admission chokepoint. A breach yields a Deny (shadow in observe, blocking in enforce). Needs the app to share the end-user identity; anonymous requests are inert."
+      sub="A spend cap for each end user. A breach is a deny, enforced only in enforce mode. Needs your app to name the end user."
     >
       <Toggle on={draft.Enabled} onChange={(Enabled) => patch({ Enabled })} label="Enforce per-user caps" />
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Labeled label="5-hour cap (USD)" stacked><NumberInput value={draft.PerUser5hUSD} onChange={(n) => patch({ PerUser5hUSD: n })} step={0.5} /></Labeled>
-        <Labeled label="Weekly cap (USD)" stacked><NumberInput value={draft.PerUserWeeklyUSD} onChange={(n) => patch({ PerUserWeeklyUSD: n })} step={1} /></Labeled>
-        <Labeled label="Monthly cap (USD)" stacked><NumberInput value={draft.PerUserMonthlyUSD} onChange={(n) => patch({ PerUserMonthlyUSD: n })} step={1} /></Labeled>
+        <Labeled label="5-hour cap (USD)" stacked><NumberInput min={0} value={draft.PerUser5hUSD} onChange={(n) => patch({ PerUser5hUSD: n })} step={0.5} /></Labeled>
+        <Labeled label="Weekly cap (USD)" stacked><NumberInput min={0} value={draft.PerUserWeeklyUSD} onChange={(n) => patch({ PerUserWeeklyUSD: n })} step={1} /></Labeled>
+        <Labeled label="Monthly cap (USD)" stacked><NumberInput min={0} value={draft.PerUserMonthlyUSD} onChange={(n) => patch({ PerUserMonthlyUSD: n })} step={1} /></Labeled>
       </div>
-      <Labeled label="User header (proxy path; the SDK passes user directly)" stacked className="mt-3">
-        <input value={draft.UserHeader} onChange={(e) => patch({ UserHeader: e.target.value })} placeholder="X-Superbased-User" className={inputClass + " w-full max-w-sm"} />
+      <Labeled label="End-user header on proxied requests" stacked className="mt-3">
+        <Input mono value={draft.UserHeader} onChange={(e) => patch({ UserHeader: e.target.value })} placeholder="X-Superbased-User" className="w-full max-w-sm" />
       </Labeled>
-      {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}
       <div className="mt-4">
-        <button type="button" disabled={busy} onClick={save} className={btnSecondary}>{busy ? "Saving…" : "Save & restart"}</button>
+        <Button variant="primary" loading={busy} disabled={busy} onClick={() => void save()}>{busy ? "Saving" : "Save and restart"}</Button>
       </div>
     </ChartShell>
   );

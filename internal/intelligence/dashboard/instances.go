@@ -161,7 +161,7 @@ func (s *Server) handleInstanceVerb(w http.ResponseWriter, r *http.Request) {
 func writeInstanceErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrInstancesDisabled):
-		http.Error(w, err.Error(), http.StatusForbidden)
+		writeSettingRefusal(w, err, http.StatusForbidden)
 	case errors.Is(err, ErrInstanceUnknown):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrInstanceInvalid):

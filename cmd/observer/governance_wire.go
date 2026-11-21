@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -126,6 +127,36 @@ func governanceShareProvider(cfg config.OrgClientConfig, ngov *nodeGovernanceHan
 	}
 }
 
+// cliGovernanceShareProvider is governanceShareProvider for a client built
+// outside the daemon (buildOrgBundleWith): `observer org push-now`, the
+// dashboard's push-now and every other org CLI verb. Without it such a client
+// shipped the raw [org_client.share] block, so a one-shot push ignored an
+// organization's lowering and missed a managed node's signed extraction
+// raise, and disagreed with the daemon's own pushes.
+//
+// The governance handle is built and its last-known-good body loaded on the
+// FIRST resolve, not when the bundle is built: buildOrgClient runs on the
+// daemon's readiness path on every node, and the daemon replaces this
+// provider with the one over its live handle (start.go).
+func cliGovernanceShareProvider(cfg config.Config, st *store.Store, logger *slog.Logger) func() store.ShareOptions {
+	var (
+		once    sync.Once
+		resolve func() store.ShareOptions
+	)
+	return func() store.ShareOptions {
+		once.Do(func() {
+			if logger == nil {
+				logger = slog.Default()
+			}
+			ctx := context.Background()
+			ngov := newNodeGovernanceHandle(governanceIdentityLoader(st), logger)
+			loadNodeGovernanceLKG(ctx, cfg, st, ngov, logger)
+			resolve = governanceShareProvider(cfg.OrgClient, ngov)
+		})
+		return resolve()
+	}
+}
+
 // lowerShareOptions applies the lowering merge, one row per share key, then —
 // for a MANAGED node only — the Enterprise-Managed extraction RAISE.
 //
@@ -222,6 +253,19 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 	// (govern.Effective), never cached, so a grant lapsing takes effect on
 	// the very next push — same posture as every other raise here.
 	out.EnterpriseGranted = eff.EnterpriseContentInForce()
+	// The managed policy tiers (govern/managedpolicytiers.go, 2026-11-12
+	// ruling): on a managed node the policy and enforcement tiers ship
+	// whatever the node's own share switch or the grant's tokens say.
+	for _, f := range shareRaiseFields {
+		if eff.ManagedPolicyTier(f.Key) {
+			f.Set(&out, true)
+		}
+	}
+	// The managed-only wires (the sandbox egress refusal counts, audit CG-15,
+	// decision D-11) ride the one managed predicate, read fresh every push
+	// like the grant above: never a config value, so an individual node
+	// cannot claim it and an unenrolment stops them on the next push.
+	out.Managed = eff.Managed
 	return out
 }
 

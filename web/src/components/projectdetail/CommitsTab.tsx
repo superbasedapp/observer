@@ -190,6 +190,13 @@ function OwnerCell({
       <IdLink onClick={() => onOpenSession(sessionId)} title={`${sessionId} - owner: ${meta.tip}`}>
         {fmtShortId(sessionId, 8)}
       </IdLink>
+      {meta.cloud && (
+        <Tooltip content={meta.tip}>
+          <span tabIndex={0} className="focus:outline-none">
+            <Pill variant="neutral">cloud agent</Pill>
+          </span>
+        </Tooltip>
+      )}
       {owner.contributors.length > 1 && (
         <span className="text-[10.5px] text-fg-4">+{owner.contributors.length - 1}</span>
       )}
@@ -238,10 +245,19 @@ function CommitOwnershipDetail({
                   {fmtPct(k.share, 0)} share
                 </span>
               </Tooltip>
-              <span className="text-fg-3">
-                {fmtInt(k.files)} file{k.files === 1 ? "" : "s"} · {fmtInt(k.prompts)} prompt{k.prompts === 1 ? "" : "s"}
-              </span>
-              <CodeCommentSplit split={k.split} compact />
+              {meta.cloud ? (
+                <span className="text-fg-3">
+                  {fmtInt(k.files)} file{k.files === 1 ? "" : "s"} in the commit · lines not measured
+                </span>
+              ) : (
+                <>
+                  <span className="text-fg-3">
+                    {fmtInt(k.files)} file{k.files === 1 ? "" : "s"} · {fmtInt(k.prompts)} prompt
+                    {k.prompts === 1 ? "" : "s"}
+                  </span>
+                  <CodeCommentSplit split={k.split} compact />
+                </>
+              )}
             </li>
           ))}
         </ul>

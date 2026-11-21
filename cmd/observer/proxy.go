@@ -23,6 +23,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/identity"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/compaction"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/messagesummary"
@@ -120,7 +121,7 @@ func newProxyStartCmd() *cobra.Command {
 					// both nil-check to "allowed").
 					loadPolicyResourceLKG(ctx, pcfg, oc, store.New(pdb), admissionHandle, gw, nil, nil, newLogger(pcfg.Observer.LogLevel))
 					pcleanup()
-					go runPolicyResourcePoller(ctx, pcfg, oc, admissionHandle, gw, nil, nil, nil, newLogger(pcfg.Observer.LogLevel))
+					go runPolicyResourcePoller(ctx, pcfg, resolvedPolicyConfigPath(configPath), oc, admissionHandle, gw, nil, nil, nil, newLogger(pcfg.Observer.LogLevel))
 				} else {
 					fmt.Fprintf(cmd.ErrOrStderr(), "policy resource: LKG/poller skipped - db open failed: %v\n", perr)
 				}
@@ -211,10 +212,7 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	}
 	s := store.New(database)
 
-	port := cfg.Proxy.Port
-	if portOverride > 0 {
-		port = portOverride
-	}
+	port := effectiveProxyPort(cfg.Proxy.Port, portOverride)
 	if port <= 0 || port > 65535 {
 		// D-516: the port only matters when the proxy listens. With
 		// capture.proxy inactive (or compiled out) nothing binds it, so a bad
@@ -248,6 +246,10 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 		logger.Warn("pidbridge prune", "err", err)
 	}
 	resolver := pidbridge.NewProcResolver(bridge, "", 30*time.Second)
+	// Own-agent capture asks whether a connection's own process IS a coding
+	// tool (not just its child); the bridge matches the executable identity
+	// against the registry's Binary names (sdk-1f L4).
+	resolver.SetToolBinaries(registryToolBinaries)
 
 	opts := proxy.Options{
 		// Node activity + soft-budget warning seams (nodeactivity.go,
@@ -284,6 +286,13 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	// Proxy-side tool-version capture (T-784): the User-Agent build of a
 	// session-bound request, written through the one tool-version seam.
 	opts.ToolVersionSink = proxyToolVersionSink{s: s}
+	// Own-agent capture (P-228, docs/own-agents.md): a default-lane request
+	// carrying X-Superbased-Agent lands on a custom-agent session. On while
+	// the custom-agent adapter is enabled (enabled_adapters + component
+	// gate); off, the header is ignored and still stripped upstream.
+	if ownAgentCaptureOn(cfg, componentSnapshotFor(configPath).AdapterActive) {
+		opts.OwnAgentSessions = s
+	}
 	if cfg.Observer.Process.Enabled && cfg.Observer.Process.Network.Enabled {
 		opts.NetworkSink = s
 		opts.NetworkCapture = proxy.NetworkCaptureOptions{
@@ -389,6 +398,10 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	if obsProxyBinder != nil {
 		obsProxyBinder(ctx, cfg, database, admissionHandle, &opts, logger)
 	}
+	// Plane-B coding-agent prompt admission (P-228): the org judge on a
+	// managed node's default lanes, inert until a signed planeb.admission
+	// body with node_lane is installed on a node holding enforce.admission.
+	bindPlaneBNodeLane(&opts, relay, s, logger)
 
 	// Plane B AI Gateway virtual-key source (P5a Sol S2). Lazy: no keychain
 	// probe until a gateway-routed request first needs the key, so solo
@@ -646,4 +659,27 @@ func (a codeintelPipelineAdapter) SymbolsInFile(ctx context.Context, absPath str
 		})
 	}
 	return out, nil
+}
+
+// ownAgentCaptureOn reports whether own-agent header capture is wired: the
+// custom-agent adapter is in the watch allow-list (an empty list allows all)
+// and its component is active in this build and config.
+func ownAgentCaptureOn(cfg config.Config, adapterActive func(string) bool) bool {
+	if adapterActive != nil && !adapterActive(models.ToolCustomAgent) {
+		return false
+	}
+	return adapterAllowed(cfg.Observer.Watch.EnabledAdapters)(models.ToolCustomAgent)
+}
+
+// registryToolBinaries returns a tool's executable names from its
+// integration registry Binary row (Unix and Windows spellings), for the pid
+// bridge's own-process check. Data from the registry, never a tool-name
+// list; nil for a row with no Binary.
+func registryToolBinaries(tool string) []string {
+	c, ok := integration.For(tool)
+	if !ok || c.Binary == nil {
+		return nil
+	}
+	out := append([]string(nil), c.Binary.Names.Unix...)
+	return append(out, c.Binary.Names.Windows...)
 }

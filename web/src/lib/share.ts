@@ -21,7 +21,7 @@ export async function shareOrCopy(
   const url = opts?.url ?? SHARE_SITE_URL;
   try {
     if (typeof navigator !== "undefined" && navigator.share) {
-      await navigator.share({ title: opts?.title ?? "SuperBased", text, url });
+      await navigator.share({ title: opts?.title ?? "superbased", text, url });
       return "shared";
     }
   } catch {

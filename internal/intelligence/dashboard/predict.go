@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/predict"
+	"github.com/marmutapp/superbased-observer/internal/predictsvc"
 	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -37,6 +38,10 @@ type PredictResponse struct {
 
 	// Limit is the proxy-gated half. See LimitGauge.
 	Limit LimitGauge `json:"limit"`
+
+	// Projection is the run-out projection of the limit windows and of any
+	// budget in force (predict_projection.go). Additive.
+	Projection PredictProjection `json:"projection"`
 }
 
 // LimitGauge is the rate-limit / subscription-window half of the
@@ -85,6 +90,7 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 	if shape.Model == "" {
 		resp.Estimate = predict.EstimateResult{PrefixTokens: shape.PrefixTokens, Warnings: []predict.Warning{predict.WarnNoSessionHistory}}
 		resp.Reason = predictReasonNoModel
+		resp.Projection = s.buildPredictProjection(ctx, st, shape.Tool, sessionID, resp.Limit, resp.Estimate)
 		writeJSON(w, resp)
 		return
 	}
@@ -100,7 +106,7 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 	// "big-pickle" have no pricing row).
 	ctRates, priced := lookupRates(s.opts.CostEngine, shape.Model)
 	if !priced {
-		resp.Reason = predictReasonUnpriced(shape.Model)
+		resp.Reason = predictReasonUnpriced(shape.Model, s.pricingManagedByOrg(ctx))
 	}
 
 	young := s.opts.Predict.YoungSessionMessages
@@ -147,10 +153,12 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 		DefaultTurns:         defaultTurns,
 	}
 	resp.Estimate = predict.Estimate(in)
+	resp.Projection = s.buildPredictProjection(ctx, st, shape.Tool, sessionID, resp.Limit, resp.Estimate)
 	writeJSON(w, resp)
 }
 
-// loadLimitGauge resolves the limit gauge for a session: it loads the two
+// loadLimitGauge resolves the limit gauge for a session through
+// predictsvc.LoadLimitGauge (shared with `observer predict`): it loads the two
 // observations the shared ladder reads and hands them to sessiongauge.Limit,
 // which owns the ladder (audited no-source finding -> proxy window ->
 // transcript window -> no_window / needs_proxy).
@@ -165,22 +173,7 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 //
 // A load error degrades to "no observation", never an error page.
 func loadLimitGauge(ctx context.Context, st *store.Store, tool, sessionID string) LimitGauge {
-	in := sessiongauge.LimitInput{Tool: tool, Now: time.Now()}
-	if snap, ok, err := st.LatestLimitSnapshotForTool(ctx, sessiongauge.ProviderForTool(tool), tool); err == nil && ok {
-		in.Proxy = &sessiongauge.Window{
-			ObservedAt:   snap.ObservedAt,
-			Window5hUtil: snap.Window5hUtil, Window5hReset: snap.Window5hReset,
-			Window7dUtil: snap.Window7dUtil, Window7dReset: snap.Window7dReset,
-		}
-	}
-	if w, found, err := st.LatestRateLimitWindows(ctx, tool, sessionID); err == nil && found {
-		in.Transcript = &sessiongauge.Window{
-			ObservedAt:   w.ObservedAt,
-			Window5hUtil: w.Window5hUtil, Window5hReset: w.Window5hReset,
-			Window7dUtil: w.Window7dUtil, Window7dReset: w.Window7dReset,
-		}
-	}
-	return sessiongauge.Limit(in)
+	return predictsvc.LoadLimitGauge(ctx, st, tool, sessionID, time.Now())
 }
 
 // loadSessionFastNow reports whether the session is in the provider's
@@ -210,6 +203,26 @@ const predictReasonNoModel = "No model has been observed for this session yet."
 
 // predictReasonUnpriced is the reason for a model the cost engine cannot
 // price: the estimate keeps its token facts, only the dollars drop out.
-func predictReasonUnpriced(model string) string {
-	return fmt.Sprintf("Model %q has no pricing entry, so no dollar estimate is possible. Add a price for it in Settings > Pricing.", model)
+//
+// It names only what the developer can actually do (CG-22). The Settings >
+// Pricing card overrides models it already lists and has no free-text model,
+// so on a node that owns its pricing the way in is a config.toml entry; on a
+// node whose organization governs the Pricing section (read-only or hidden,
+// the managed default) the only way is the organization's own price list.
+func predictReasonUnpriced(model string, orgManaged bool) string {
+	if orgManaged {
+		return fmt.Sprintf("Model %q has no pricing entry, so no dollar estimate is possible. Pricing on this machine is set by your organization, so ask your admin to add a price for it.", model)
+	}
+	return fmt.Sprintf("Model %q has no pricing entry, so no dollar estimate is possible. The Settings > Pricing card only overrides models it already lists, so add an [intelligence.pricing.models.%q] entry for it in config.toml.", model, model)
+}
+
+// pricingManagedByOrg reports whether the organization governs this node's
+// Settings > Pricing section (read-only or hidden), so a local price cannot
+// be added from here. False with no governance wired (an individual node).
+func (s *Server) pricingManagedByOrg(ctx context.Context) bool {
+	if s.opts.Governance == nil {
+		return false
+	}
+	eff := s.opts.Governance(ctx)
+	return eff.IsSettingsSectionReadOnly("pricing") || eff.IsSettingsSectionHidden("pricing")
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -54,6 +55,42 @@ func init() {
 	liveRunsReadoptCount = readoptLiveCount
 	sandboxSubcommands = append(sandboxSubcommands, newSandboxRunsCmd, newSandboxReadoptCmd, newSandboxCheckpointCmd, newSandboxRestoreCmd)
 	gatesSandboxRouteFuncs = append(gatesSandboxRouteFuncs, readoptDashboardRoutes)
+	// Every prune of a dead helper's record asks this first (F-045), so the
+	// sweep below decides a re-adoptable run whichever sweep runs first.
+	sandboxrelayd.SetDeadRunHold(readoptHoldDeadRecord)
+}
+
+// readoptHoldDeadRecord is the dead-run hold (sandboxrelayd.SetDeadRunHold):
+// a run whose helper is gone keeps its relay record and lock file while
+// sandboxadopt.HoldDeadRecord says the re-adoption sweep decides it. Before
+// it, the relay's start prune (a daemon restart) or its own sweep (a killed
+// helper) removed them first; the sweep then read a run with no lock and no
+// offer, decided nothing, and the orphan rule removed the container (the
+// N1-L1 live pass of 2026-11-03, tracker F-045). The settings are read only
+// for a run that has a kept entry. A kept entry the hold lets go (rows
+// component and cli-run) gets the same decision log line as a decision of
+// the sweep (fix round 1, audit FU10-A4), and nothing else: the hold runs
+// in every process and goroutine that prunes, so it never writes
+// readoptEndedFile, whose one writer is the oci reaper's sweep (fix round
+// 2, audit FU10-R1).
+func readoptHoldDeadRecord(observerDir, runID string) bool {
+	if !sandboxoci.ValidToken(runID) {
+		return false
+	}
+	if _, err := os.Lstat(readoptRunDir(observerDir, runID)); err != nil {
+		return false
+	}
+	e := readoptRead(observerDir, runID)
+	f := sandboxadopt.HoldFacts{Kept: e.keptOK && e.planOK}
+	if f.Kept {
+		f.Active = readoptLoadSettings(context.Background()).active
+		f.CLIRun = readoptCLIRun(observerDir, e)
+	}
+	hold, d := sandboxadopt.HoldDeadRecord(f)
+	if !hold && f.Kept {
+		readoptLogDecision(runID, d)
+	}
+	return hold
 }
 
 // readoptDirName is the re-adoption directory under the observer dir.
@@ -214,8 +251,10 @@ type readoptOffer struct {
 	OfferedAt   time.Time         `json:"offered_at"`
 	Expires     time.Time         `json:"expires"`
 	Code        sandboxadopt.Code `json:"code"`
-	Reason      string            `json:"reason"`
-	Declined    bool              `json:"declined,omitempty"`
+	// Row is the sandboxadopt table row that decided (F-046).
+	Row      string `json:"row,omitempty"`
+	Reason   string `json:"reason"`
+	Declined bool   `json:"declined,omitempty"`
 	// ReadoptedAt and GapFrom record a re-adoption: the run's capture has a
 	// gap from GapFrom (the helper found gone) to ReadoptedAt.
 	ReadoptedAt time.Time `json:"readopted_at,omitzero"`
@@ -408,7 +447,7 @@ func readoptHelper(observerDir, runID string) readoptHelperState {
 
 // readoptRecordExists reports whether the run's relay record file exists.
 func readoptRecordExists(observerDir, runID string) bool {
-	_, err := os.Lstat(filepath.Join(sandboxrelayd.RunsDir(observerDir), runID+".json"))
+	_, err := os.Lstat(filepath.Join(sandboxrelayd.RunsDir(observerDir), runID+".json")) //nolint:gosec // G703: false positive; an existence check of a run record under the relay runs dir, nothing is read or written
 	return err == nil
 }
 
@@ -417,11 +456,22 @@ func readoptRecordExists(observerDir, runID string) bool {
 // Facts.CLIRun, and the daemon-exit mark skips such a run (LEFT2 audit S2):
 // the daemon does not route a CLI run, so a user closing their own CLI
 // terminal while the daemon is down must stop the container.
+//
+// The terminal run is resolved through readoptTerminalRun (audit FU11-A1):
+// the compose keeps the facts before the launcher binds the terminal run,
+// so the kept id alone is always empty and a CLI run was never seen; the
+// run's relay record still exists at every caller (the live helper's
+// daemon-exit mark, the dead-run hold before the prune, and the sweep after
+// the hold kept it) and names it.
 func readoptCLIRun(observerDir string, e readoptEntry) bool {
-	if !e.keptOK || e.kept.Facts.TerminalRunID == "" {
+	if !e.keptOK {
 		return false
 	}
-	watch, _ := sandboxCLIEndPaths(observerDir, e.kept.Facts.TerminalRunID)
+	terminalRun := readoptTerminalRun(observerDir, e.kept.RunID, e.kept.Facts.TerminalRunID)
+	if terminalRun == "" {
+		return false
+	}
+	watch, _ := sandboxCLIEndPaths(observerDir, terminalRun)
 	fi, err := os.Lstat(watch)
 	return err == nil && fi.Mode().IsRegular()
 }
@@ -567,7 +617,14 @@ func readoptDecideOne(ctx context.Context, c *sandboxengine.Client, installID, o
 			// Waits for its restore until its retention runs out; then the
 			// next row ends it (record and export) like any offer (audit F9).
 		case e.hasOffer:
+			readoptDecided(observerDir, runID, e, readoptContainerGone, now)
 			readoptEnd(observerDir, runID)
+		case helper == readoptHelperGone:
+			// The helper died with no container left (or before it made
+			// one): nothing to re-adopt, and the entry goes now so the
+			// dead-run hold lets the prune end the run (F-045).
+			readoptDecided(observerDir, runID, e, readoptContainerGone, now)
+			_ = os.RemoveAll(readoptRunDir(observerDir, runID))
 		case !readoptRecordExists(observerDir, runID) || now.Sub(e.kept.KeptAt) > readoptStaleKept:
 			_ = os.RemoveAll(readoptRunDir(observerDir, runID))
 		}
@@ -581,6 +638,7 @@ func readoptDecideOne(ctx context.Context, c *sandboxengine.Client, installID, o
 		*eng = &re
 	}
 	d := sandboxadopt.Decide(readoptFactsFor(ctx, c, observerDir, e, ct, installID, **eng, set, now))
+	readoptDecided(observerDir, runID, e, d, now)
 	if d.Action == sandboxadopt.ActionReap {
 		if e.hasOffer {
 			readoptEnd(observerDir, runID)
@@ -608,16 +666,125 @@ func readoptClaim(observerDir string, e readoptEntry, ct sandboxoci.ContainerFac
 	if !e.hasOffer {
 		offer = readoptOffer{V: readoptVersion, RunID: runID, OfferedAt: now, GapFrom: now}
 	}
-	offer.ContainerID, offer.Code, offer.Reason, offer.Expires = ct.ID, d.Code, d.Reason, d.Expires
+	offer.ContainerID, offer.Code, offer.Row, offer.Reason, offer.Expires = ct.ID, d.Code, d.Row, d.Reason, d.Expires
 	return readoptWriteFile(readoptRunDir(observerDir, runID), readoptOfferFile, offer)
+}
+
+// readoptContainerGone is the decision for an entry whose container the
+// engine no longer lists: the run ends (its offer, if any, with it).
+var readoptContainerGone = sandboxadopt.Decision{
+	Action: sandboxadopt.ActionReap, Code: sandboxadopt.CodeNotRunning, Row: sandboxadopt.RowContainerGone,
+	Reason: "the engine no longer lists the run's container", Summary: "the engine no longer lists the run's container",
+}
+
+// readoptEndedFile keeps the last decisions that ended a run (F-046), so
+// `observer sandbox runs` and `readopt` can say which row ended a run that
+// is no longer offered. It sits beside the run entries, never inside one
+// (an entry is removed with its run).
+const readoptEndedFile = "ended.json"
+
+// readoptEndedCap bounds the kept decisions (newest first).
+const readoptEndedCap = 20
+
+// readoptEnded is one kept decision that ended a run. It holds the run id,
+// the row, the code and the row's fact-free line (Decision.Summary: no
+// socket dir path, no engine error text; audit FU10-A2), never a secret.
+type readoptEnded struct {
+	RunID  string            `json:"run_id"`
+	Tool   string            `json:"tool,omitempty"`
+	Row    string            `json:"row"`
+	Code   sandboxadopt.Code `json:"code"`
+	Reason string            `json:"reason"`
+	At     time.Time         `json:"at"`
+}
+
+// readoptLogger is the daemon's logger for the decisions (nil outside the
+// daemon or before the reaper started: nothing is logged).
+func readoptLogger() *slog.Logger { return processOCIReaper.logger.Load() }
+
+// readoptDecided logs one decision as one structured line naming the run
+// and the row (F-046) with the fact-free line (Decision.Summary; the full
+// reason stays for the terminal that runs readopt), once per change: a
+// sweep that gives an offered or held run the same answer as the last one
+// logs nothing. A decision that ends the run is also kept in
+// readoptEndedFile. Only the oci reaper's sweep calls it (one goroutine of
+// the daemon), so readoptEndedFile has that one writer (fix round 2, audit
+// FU10-R1); the dead-run hold, which runs wherever a prune does, calls
+// readoptLogDecision only.
+func readoptDecided(observerDir, runID string, e readoptEntry, d sandboxadopt.Decision, now time.Time) {
+	if d.Action != sandboxadopt.ActionReap && e.hasOffer && e.offer.Code == d.Code && e.offer.Row == d.Row {
+		return
+	}
+	readoptLogDecision(runID, d)
+	if d.Action == sandboxadopt.ActionReap {
+		readoptRecordEnded(observerDir, readoptEnded{RunID: runID, Tool: e.kept.Facts.Tool, Row: d.Row, Code: d.Code, Reason: d.Summary, At: now})
+	}
+}
+
+// readoptLogDecision writes one decision's structured log line (run, row,
+// action, code, fact-free line); nothing when no daemon logger is set.
+func readoptLogDecision(runID string, d sandboxadopt.Decision) {
+	if l := readoptLogger(); l != nil {
+		l.Info("terminal_sandbox: re-adoption decision", "run", runID, "row", d.Row, "action", string(d.Action), "code", string(d.Code), "reason", d.Summary)
+	}
+}
+
+// readoptEndedList reads the kept decisions (newest first; none when the
+// file is missing or unreadable).
+func readoptEndedList(observerDir string) []readoptEnded {
+	b, err := readOwnedNoFollow(filepath.Join(readoptDir(observerDir), readoptEndedFile), readoptMaxFile)
+	if err != nil {
+		return nil
+	}
+	var out []readoptEnded
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// readoptRecordEnded puts rec first in readoptEndedFile, replacing an
+// earlier decision for the same run, within readoptEndedCap. Best-effort.
+func readoptRecordEnded(observerDir string, rec readoptEnded) {
+	list := []readoptEnded{rec}
+	for _, x := range readoptEndedList(observerDir) {
+		if x.RunID != rec.RunID && len(list) < readoptEndedCap {
+			list = append(list, x)
+		}
+	}
+	_ = readoptWriteFile(readoptDir(observerDir), readoptEndedFile, list)
+}
+
+// readoptNotOffered is the refusal for a run that holds no offer: when the
+// re-adoption step ended it, the refusal names the row that did (F-046).
+func readoptNotOffered(observerDir, runID string) error {
+	if x, ok := readoptEndedFor(observerDir, runID); ok {
+		return fmt.Errorf("run %s is not offered for re-adoption: it was ended at %s by row %s (%s): %s", runID, x.At.Local().Format(time.RFC3339), x.Row, x.Code, x.Reason)
+	}
+	return fmt.Errorf("run %s is not offered for re-adoption (the offers are listed in Terminals > Settings > Sandbox isolation; see observer sandbox runs)", runID)
+}
+
+// readoptEndedFor is the kept decision that ended runID, if any.
+func readoptEndedFor(observerDir, runID string) (readoptEnded, bool) {
+	for _, x := range readoptEndedList(observerDir) {
+		if x.RunID == runID {
+			return x, true
+		}
+	}
+	return readoptEnded{}, false
 }
 
 // readoptRekey writes a fresh relay record for the run from its kept facts.
 func readoptRekey(observerDir string, kept readoptKept) error {
 	f := kept.Facts
+	// The record carries the run's own terminal run, the same as before the
+	// re-adoption, so its refusal rows keep the run's id, backend and tier
+	// (tracker F-053).
+	terminalRun := readoptTerminalRun(observerDir, kept.RunID, f.TerminalRunID)
 	fresh, err := sandboxrelayd.NewRunRecord(sandboxrelayd.RunRecord{
 		RunID: kept.RunID, Tool: f.Tool, ProjectRoot: f.ProjectRoot, WorkspaceDir: f.WorkspaceDir, Roots: f.Roots,
-		Delivery: f.Delivery, CopyHostPath: f.CopyHostPath, ConfigPath: f.ConfigPath, TerminalRunID: f.TerminalRunID,
+		Delivery: f.Delivery, CopyHostPath: f.CopyHostPath, ConfigPath: f.ConfigPath, TerminalRunID: terminalRun,
+		RefusalAuditRequired: sandboxOrgFloors().RequireRefusalAudit,
 	})
 	if err != nil {
 		return err

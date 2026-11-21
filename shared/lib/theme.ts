@@ -23,6 +23,14 @@ export type ThemeAppRow = {
   fallback: ThemeMode;
   /** `?theme=light|dark` previews and persists a theme (portal links). */
   queryOverride: boolean;
+  /**
+   * How "system" is remembered: "value" stores the word "system"; "absent"
+   * removes the key instead, for a key shared with a page that understands
+   * only light / dark and follows the OS when the key is missing (the
+   * marketing site's sb_theme). An absent key reads back as the fallback,
+   * which such a row sets to "system".
+   */
+  systemStorage: "value" | "absent";
 };
 
 /**
@@ -31,13 +39,15 @@ export type ThemeAppRow = {
  * - web2: the org dashboard; its own key so a browser that opens both on one
  *   origin keeps two preferences.
  * - webcloud: the portal is served from the superbased.app domain family,
- *   where the marketing site and arcade already use "sb_theme"; it offers
- *   light / dark only (dark default) and honours ?theme=.
+ *   where the marketing site and arcade already use "sb_theme" and read only
+ *   "light" / "dark" (anything else follows the OS). It offers light / dark /
+ *   system with system the default, remembers "system" by REMOVING the key
+ *   (never a value the site does not understand), and honours ?theme=.
  */
 export const THEME_APPS: Readonly<Record<ThemeApp, ThemeAppRow>> = {
-  web: { storageKey: "superbased.theme", modes: ["light", "dark", "system"], fallback: "system", queryOverride: false },
-  web2: { storageKey: "superbased.org.theme", modes: ["light", "dark", "system"], fallback: "system", queryOverride: false },
-  webcloud: { storageKey: "sb_theme", modes: ["light", "dark"], fallback: "dark", queryOverride: true },
+  web: { storageKey: "superbased.theme", modes: ["light", "dark", "system"], fallback: "system", queryOverride: false, systemStorage: "value" },
+  web2: { storageKey: "superbased.org.theme", modes: ["light", "dark", "system"], fallback: "system", queryOverride: false, systemStorage: "value" },
+  webcloud: { storageKey: "sb_theme", modes: ["light", "dark", "system"], fallback: "system", queryOverride: true, systemStorage: "absent" },
 };
 
 /** THEME_MODE_LABEL: the toggle's title for each mode. */
@@ -52,7 +62,9 @@ export function parseThemeMode(v: unknown, row: ThemeAppRow): ThemeMode | null {
   return typeof v === "string" && (row.modes as readonly string[]).includes(v) ? (v as ThemeMode) : null;
 }
 
-export type ThemeStorage = Pick<Storage, "getItem" | "setItem">;
+/** ThemeStorage is the slice of Storage the theme needs; removeItem is used
+ * only by a row whose systemStorage is "absent". */
+export type ThemeStorage = Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem">>;
 
 /** readThemeMode: the stored mode, or the app's fallback (storage may throw). */
 export function readThemeMode(storage: ThemeStorage | null, row: ThemeAppRow): ThemeMode {
@@ -63,9 +75,17 @@ export function readThemeMode(storage: ThemeStorage | null, row: ThemeAppRow): T
   }
 }
 
-/** writeThemeMode persists a mode; a storage failure keeps it for this load only. */
+/**
+ * writeThemeMode persists a mode; a storage failure keeps it for this load
+ * only. "system" on a row whose systemStorage is "absent" removes the key
+ * (it then reads back as the row's "system" fallback).
+ */
 export function writeThemeMode(storage: ThemeStorage | null, row: ThemeAppRow, mode: ThemeMode): void {
   try {
+    if (mode === "system" && row.systemStorage === "absent") {
+      storage?.removeItem?.(row.storageKey);
+      return;
+    }
     storage?.setItem(row.storageKey, mode);
   } catch {
     // Storage unavailable (private mode / quota): not remembered.

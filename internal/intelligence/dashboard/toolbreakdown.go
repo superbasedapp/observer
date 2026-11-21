@@ -179,10 +179,22 @@ func (b *breakdownAccumulator) AddActionTypeCount(tool, actionType string, n int
 
 // AddNativeCount folds one (tool, raw_tool_name) group — the capped pass
 // that owns BySurface. Anything it never sees becomes the remainder that
-// Rows() parks in SurfaceUnresolved.
+// Rows() parks in SurfaceUnresolved. The native name is resolved under the
+// tool's own vocabulary; AddNativeCountIn is the form for a group whose
+// names belong to another tool's vocabulary.
 func (b *breakdownAccumulator) AddNativeCount(tool, rawToolName string, n int) {
+	b.AddNativeCountIn(tool, tool, rawToolName, n)
+}
+
+// AddNativeCountIn folds one (tool, raw_tool_name) group whose native name
+// is classified under vocabulary rather than under tool: a cloud-agent
+// connector whose sessions land under one tool while its tool calls carry
+// another tool's names (Cline Cloud lands under cline, its calls carry
+// cline-cli's names; cloudagents.VocabularyForSource). The counts still go
+// to tool's row.
+func (b *breakdownAccumulator) AddNativeCountIn(tool, vocabulary, rawToolName string, n int) {
 	a := b.ensure(tool, false)
-	a.row.BySurface[surfaceFor(tool, rawToolName)] += n
+	a.row.BySurface[surfaceFor(vocabulary, rawToolName)] += n
 	a.surfaceAttributed += n
 }
 
@@ -237,12 +249,13 @@ func countBeyondDeclared(tool string, observed map[string]struct{}) int {
 }
 
 // surfaceFor resolves where a native tool lives, falling back to
-// SurfaceUnresolved rather than guessing.
-func surfaceFor(tool, rawToolName string) string {
+// SurfaceUnresolved rather than guessing. vocabulary is the tool id whose
+// native names rawToolName belongs to (normally the row's own tool).
+func surfaceFor(vocabulary, rawToolName string) string {
 	if rawToolName == "" {
 		return SurfaceUnresolved
 	}
-	e, ok := tooltax.Resolve(tool, rawToolName)
+	e, ok := tooltax.Resolve(vocabulary, rawToolName)
 	if !ok || e.Surface == "" {
 		return SurfaceUnresolved
 	}

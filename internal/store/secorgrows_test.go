@@ -21,11 +21,13 @@ func TestResolveSecurityShare(t *testing.T) {
 		in   ResolveSecurityShareFacts
 		want SecurityShare
 	}{
-		{"individual default off", ResolveSecurityShareFacts{}, SecurityShare{Level: "off"}},
+		{"individual default posture (ruling R1)", ResolveSecurityShareFacts{}, SecurityShare{Level: "posture"}},
+		{"individual explicit off", ResolveSecurityShareFacts{LocalLevel: "off"}, SecurityShare{Level: "off"}},
 		{"individual posture", ResolveSecurityShareFacts{LocalLevel: "posture"}, SecurityShare{Level: "posture"}},
 		{"individual findings", ResolveSecurityShareFacts{LocalLevel: "findings"}, SecurityShare{Level: "findings"}},
 		{"individual unknown fails closed", ResolveSecurityShareFacts{LocalLevel: "everything"}, SecurityShare{Level: "off"}},
-		{"individual ignores a pull (never remote)", ResolveSecurityShareFacts{PullLevel: "findings", PullOrgKey: true}, SecurityShare{Level: "off"}},
+		{"individual ignores a pull (never remote)", ResolveSecurityShareFacts{LocalLevel: "off", PullLevel: "findings", PullOrgKey: true}, SecurityShare{Level: "off"}},
+		{"individual default ignores a pull", ResolveSecurityShareFacts{PullLevel: "findings", PullOrgKey: true}, SecurityShare{Level: "posture"}},
 		{"individual never holds the org key", ResolveSecurityShareFacts{LocalLevel: "findings", PullOrgKey: true}, SecurityShare{Level: "findings"}},
 		{"managed default posture", ResolveSecurityShareFacts{Managed: true, LocalLevel: "findings"}, SecurityShare{Level: "posture"}},
 		{"managed pull findings", ResolveSecurityShareFacts{Managed: true, PullLevel: "findings"}, SecurityShare{Level: "findings"}},

@@ -210,6 +210,9 @@ var shapeFixturePathByAdapter = map[string]string{
 	"stakpak": "/tmp/foreign/.stakpak/data/local.db",
 	// vtcode — the per-workspace .vtcode/sessions/session-*/events.jsonl.
 	"vtcode": "/tmp/foreign/proj/.vtcode/sessions/session-abc/events.jsonl",
+	// custom-agent: proxy-only (no watch paths, IsSessionFile always
+	// false), the chatgpt-web shape: the fixture only satisfies the map.
+	"custom-agent": "/tmp/foreign/custom-agent/turn.json",
 }
 
 // TestAllAdapters_IsSessionFile_RequiresUnderWatchRoots is the

@@ -43,8 +43,9 @@ const (
 	cloudSweepBatch = 200
 	// judgeApprovalTTL bounds a judge-granted session approval
 	// (§15.2 ask resolution) — short by design; a human grant via
-	// `observer guard approve` is the durable path.
-	judgeApprovalTTL = time.Hour
+	// `observer guard approve` is the durable path. One owner with the
+	// dashboard consent card's disclosure (notify.JudgeApprovalTTL).
+	judgeApprovalTTL = notify.JudgeApprovalTTL
 	// judgeSource is the guard_events source attribution for
 	// judge-recorded rows (§15.2).
 	judgeSource = "llm_judge"
@@ -343,7 +344,7 @@ func (d *cloudDispatcher) recordJudge(ev store.GuardEventRow, v notify.JudgeVerd
 		ev.Decision == "ask" && ev.SessionID != "" {
 		if _, err := d.st.InsertGuardApproval(ctx, store.GuardApprovalRow{
 			TS: now, RuleID: ev.RuleID, Scope: "session", SessionID: ev.SessionID,
-			GrantedBy: judgeSource, ExpiresAt: now.Add(judgeApprovalTTL),
+			GrantedBy: judgeSource, ExpiresAt: now.Add(judgeApprovalTTL), Channel: "judge",
 		}); err != nil {
 			d.logger.Warn("guard cloud: judge approval write failed", "event", ev.ID, "err", err)
 		} else {

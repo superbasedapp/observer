@@ -14,7 +14,7 @@ import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { isRemoteView } from "@/lib/remote";
-import { foldAgentExits, isLiveStatus, policyStopMessage } from "@/lib/launchStatus";
+import { foldAgentExits, foldSessionExit, installResume, isLiveStatus, policyStopMessage } from "@/lib/launchStatus";
 import type { Status, PolicyStopInfo } from "@/lib/launchStatus";
 import type { LaunchIsolation } from "@/lib/types";
 // The terminal itself comes from the component registry: a lazy component in
@@ -23,6 +23,7 @@ import type { LaunchIsolation } from "@/lib/types";
 import { LAUNCH_TERMINAL as LaunchTerminal } from "@/lib/components.gen";
 import { NewTerminalDialog } from "@/components/NewTerminalDialog";
 import type { NewTerminalDraft } from "@/components/NewTerminalDialog";
+import type { NewTerminalTask } from "@/lib/terminalTask";
 import {
   useTerminalStatuses,
   AgentStatusBadge,
@@ -40,6 +41,7 @@ import { CompanionProvider } from "@/components/primitives/companion";
 import { ConfirmButton, Icon, LiveDot, Tooltip, TooltipSpan } from "@/components/primitives";
 import { TRANSPORT_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
 import { ChevronUp, GripVertical, Plus, SquareTerminal, X } from "lucide-react";
+import { splitForLaunch, type SplitKind } from "@/lib/launchpad";
 
 // Lazy so the per-terminal project panel (file tree + git graph) stays out of
 // the critical chunk — it loads only when a terminal's Files/Git button fires.
@@ -55,6 +57,9 @@ const SessionCockpitPanel = lazy(() => import("@/components/cockpit/SessionCockp
 const TerminalSessionModal = lazy(
   () => import("@/components/cockpit/TerminalSessionModal"),
 );
+// Lazy for the same reason: the launchpad's docked split (terminal + live
+// usage meter) pulls in the cockpit, and only a launchpad launch opens it.
+const LaunchpadSplit = lazy(() => import("@/components/launchpad/LaunchpadSplit"));
 
 // Project panels live in a BOUNDED z-band ABOVE the expanded-terminal backdrop
 // (z-80) and the dock (z-25, below every modal, drawer and the phone nav
@@ -169,6 +174,12 @@ type LaunchDockCtx = {
    * picker does not list falls back to the dialog's usual default.
    */
   openNewTerminalFor: (tool: string) => void;
+  /**
+   * Open the same dialog in task mode (lib/terminalTask.ts, fix findings
+   * with an agent): the folder is fixed to the task's project, the picker
+   * lists terminal agents only, and Start posts to the task's route.
+   */
+  openNewTerminalWithTask: (task: NewTerminalTask) => void;
   /** The dock-owned live sessions (the Terminal Workspace reads these). */
   sessions: DockSession[];
   /** Per-token connection status. */
@@ -279,11 +290,22 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   // it exits so the operator does not have to choose tool/root/model/sandbox
   // all over again.
   const [newTerminalDraft, setNewTerminalDraft] = useState<NewTerminalDraft>();
+  // The open dialog's task (task mode), kept across a guided install's
+  // resume and cleared when the dialog closes or a plain open replaces it.
+  const [newTerminalTask, setNewTerminalTask] = useState<NewTerminalTask>();
   const [resumedAfterInstall, setResumedAfterInstall] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{
     token: string;
     draft: NewTerminalDraft;
   } | null>(null);
+  // The launchpad (door A, lib/launchpad.ts): the dialog was opened by
+  // openNewTerminalFor ("Start a coding agent"), so its launches open in the
+  // docked split (terminal left, live usage meter right) instead of the
+  // floating window, and a guided install's resume starts the agent by
+  // itself. A plain or task open clears it.
+  const [launchpadMode, setLaunchpadMode] = useState(false);
+  const [split, setSplit] = useState<{ token: string; kind: SplitKind; tool: string } | null>(null);
+  const [autoStartNext, setAutoStartNext] = useState(false);
   // The per-terminal floating panels — project panels (file tree + git) AND
   // session cockpit panels. ONE shared array for both kinds: multi-panel, one
   // entry per terminal token × kind, all simultaneously open, rendered at
@@ -396,18 +418,43 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // A setup terminal's socket can keep reading live after its command exited
+  // (it is not an agent run, so the status stream never names it): while a
+  // resume waits on it, read the daemon's session list, which says exited.
   useEffect(() => {
     if (!pendingInstall) return;
-    const status = statuses[pendingInstall.token];
-    if (status !== "exited" && status !== "error") return;
-    setNewTerminalDraft(pendingInstall.draft);
+    const token = pendingInstall.token;
+    let stopped = false;
+    const t = window.setInterval(() => {
+      fetch("/api/launch/sessions")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: { sessions?: LaunchInfoWire[] } | null) => {
+          if (stopped || !data) return;
+          setStatuses((prev) => foldSessionExit(prev, token, data.sessions ?? null));
+        })
+        .catch(() => {
+          /* the daemon did not answer: keep the socket's status */
+        });
+    }, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+  }, [pendingInstall]);
+
+  useEffect(() => {
+    if (!pendingInstall) return;
+    const draft = installResume(pendingInstall, statuses);
+    if (draft === null) return;
+    setNewTerminalDraft(draft);
     setPendingInstall(null);
     setResumedAfterInstall(true);
+    setAutoStartNext(launchpadMode);
     setActiveToken((current) =>
       current === pendingInstall.token ? null : current,
     );
     setNewOpen(true);
-  }, [pendingInstall, statuses]);
+  }, [pendingInstall, statuses, launchpadMode]);
 
   const registerWorkspaceCell = useCallback(
     (token: string, el: HTMLElement | null) => {
@@ -430,12 +477,28 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     // keeps the saved draft so an impatient operator still resumes in place.
     setPendingInstall(null);
     setResumedAfterInstall(false);
+    setLaunchpadMode(false);
+    setAutoStartNext(false);
+    setNewTerminalTask(undefined);
+    setNewOpen(true);
+  }, []);
+
+  const openNewTerminalWithTask = useCallback((task: NewTerminalTask) => {
+    setPendingInstall(null);
+    setResumedAfterInstall(false);
+    setLaunchpadMode(false);
+    setAutoStartNext(false);
+    setNewTerminalDraft(undefined);
+    setNewTerminalTask(task);
     setNewOpen(true);
   }, []);
 
   const openNewTerminalFor = useCallback((tool: string) => {
     setPendingInstall(null);
     setResumedAfterInstall(false);
+    setLaunchpadMode(true);
+    setAutoStartNext(false);
+    setNewTerminalTask(undefined);
     setNewTerminalDraft({
       tool,
       sshProfile: "",
@@ -648,6 +711,12 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     });
   }, [sessions, statuses]);
 
+  // The launchpad split follows its terminal: Stop & close (or a reap that
+  // drops the session) closes the split too.
+  useEffect(() => {
+    if (split && !sessions.some((s) => s.token === split.token)) setSplit(null);
+  }, [split, sessions]);
+
   // Warn before a tab-close/refresh silently kills a still-running session.
   useEffect(() => {
     const anyLive = sessions.some((s) => {
@@ -674,6 +743,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       launch,
       openNewTerminal,
       openNewTerminalFor,
+      openNewTerminalWithTask,
       sessions,
       statuses,
       closeSession,
@@ -696,6 +766,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       launch,
       openNewTerminal,
       openNewTerminalFor,
+      openNewTerminalWithTask,
       sessions,
       statuses,
       closeSession,
@@ -728,7 +799,10 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
           cellEl={cells[s.token] ?? null}
           status={statuses[s.token]}
           onRequestDock={remoteViewer ? undefined : () => requestDock(s.token)}
-          onMinimize={minimize}
+          onMinimize={() => {
+            setSplit((cur) => (cur?.token === s.token ? null : cur));
+            minimize();
+          }}
           onClose={() => closeSession(s.token)}
           onStatus={(st) => setStatus(s.token, st)}
           onPolicyStop={(info) => setPolicyStop(s.token, info)}
@@ -753,23 +827,60 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
         <NewTerminalDialog
           initialDraft={newTerminalDraft}
           resumedAfterInstall={resumedAfterInstall}
+          autoStart={autoStartNext && resumedAfterInstall}
+          task={newTerminalTask}
+          onTaskStarted={(handle, tool, hasProjectRoot) =>
+            launch({ token: handle, tool, sessionId: "", hasProjectRoot: hasProjectRoot ?? false })
+          }
           onClose={() => {
             setNewOpen(false);
             setResumedAfterInstall(false);
+            setAutoStartNext(false);
+            setNewTerminalTask(undefined);
           }}
           onLaunched={(handle, tool, hasProjectRoot, resumeDraft) => {
             setNewOpen(false);
             setResumedAfterInstall(false);
+            setAutoStartNext(false);
             if (resumeDraft) {
               setNewTerminalDraft(resumeDraft);
               setPendingInstall({ token: handle, draft: resumeDraft });
             } else {
               setNewTerminalDraft(undefined);
               setPendingInstall(null);
+              setNewTerminalTask(undefined);
             }
             launch({ token: handle, tool, sessionId: "", hasProjectRoot: hasProjectRoot ?? false });
+            // A launchpad launch docks in the split: park the floating view
+            // (no flash) until the split's left pane takes the terminal.
+            const kind = splitForLaunch({ launchpad: launchpadMode, label: tool, resumes: !!resumeDraft });
+            if (kind) {
+              setSplit({ token: handle, kind, tool });
+              setActiveToken(null);
+            }
           }}
         />
+      )}
+      {split && (
+        <Suspense key={`split:${split.token}`} fallback={null}>
+          <LaunchpadSplit
+            token={split.token}
+            kind={split.kind}
+            tool={split.tool}
+            status={statuses[split.token]}
+            registerCell={registerWorkspaceCell}
+            onUndock={() => {
+              const tok = split.token;
+              setSplit(null);
+              restore(tok);
+            }}
+            onMinimize={() => {
+              setSplit(null);
+              minimize();
+            }}
+            onOpenDetail={() => openSessionDetail(split.token)}
+          />
+        </Suspense>
       )}
       {/* ONE ordered pass over the shared panels array, switching on kind per
           entry (P2-E). Array order = raise recency (renormalizeZ stores panels
@@ -826,6 +937,13 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       </CompanionProvider>
     </Ctx.Provider>
   );
+}
+
+/** useOptionalLaunchDock is the dock, or null outside LaunchDockProvider
+ *  (a component test, an embed without the dock): a caller then hides or
+ *  disables what needs the dock instead of throwing. */
+export function useOptionalLaunchDock(): LaunchDockCtx | null {
+  return useContext(Ctx);
 }
 
 export function useLaunchDock(): LaunchDockCtx {

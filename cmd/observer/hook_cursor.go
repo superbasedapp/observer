@@ -132,7 +132,26 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 	// additional_context (lane sec-h, security_feedback.go); unchanged
 	// unless security.feedback is selected.
 	cursorOut = securityPostFeedbackWriter(ctx, cursorOut, models.ToolCursor, event, body, configPath)
-	if g != nil {
+	judgedOnly := false
+	if event == cursoradapter.EventBeforeSubmitPrompt && (g == nil || !promptGuardEnabled(cfg)) {
+		// The local prompt guard does not evaluate this prompt, but the
+		// organization's judge still runs (adm-2 fixes-1, H3). On its block
+		// the reply is out; the capture still runs (a refused prompt is an
+		// attempt worth recording).
+		handled, after, _ := hook.HandlePromptSubmitOrgJudge(models.ToolCursor, hook.PromptDialectCursor, event, body, truncated, newOrgPromptJudge(configPath, cfg), cursorOut, os.Stderr)
+		if handled {
+			judgedOnly = true
+			markHookReplied()
+			hook.CaptureCursorEvent(event, body, hookCaptureStore(database, cfg.Compression.Indexing), sc, os.Stderr, cfg.Observer.Hooks.HookTimeout())
+			if after != nil {
+				after()
+			}
+		}
+		if !handled && judgeOnlyUndecodableRefused(hook.PromptDialectCursor, body, truncated) {
+			return
+		}
+	}
+	if !judgedOnly && g != nil {
 		st := hookCaptureStore(database, cfg.Compression.Indexing)
 		persist := func(v guard.ActionVerdict) {
 			pctx, cancel := context.WithTimeout(context.Background(), cfg.Observer.Hooks.HookTimeout())
@@ -151,7 +170,12 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 		// (shell/MCP/file) don't consult at all, so it must not affect
 		// their gd.
 		var gd hook.CursorEvaluator
-		if event != cursoradapter.EventBeforeSubmitPrompt || promptGuardEnabled(cfg) {
+		switch {
+		case event == cursoradapter.EventBeforeSubmitPrompt && promptGuardEnabled(cfg):
+			// The prompt gate also asks the organization's prompt judge
+			// (lane adm-2), an optional capability of the evaluator.
+			gd = withOrgPromptJudge(g, configPath, cfg)
+		case event != cursoradapter.EventBeforeSubmitPrompt:
 			gd = g
 		}
 		// A payload Cursor's gate cannot decode where it reads it was not
@@ -163,7 +187,7 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 		// The allow seam writes an allowed agent commit's trailer marker
 		// before the reply (lane SEC-F2B, P-078 ruling 3).
 		hook.HandleCursorEventGated(event, gd, persist, enrich, provenanceAgentCommitAllowed, st, sc, bytes.NewReader(body), truncated, cursorOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
-	} else {
+	} else if !judgedOnly {
 		hook.HandleCursorEvent(event, hookCaptureStore(database, cfg.Compression.Indexing), sc, bytes.NewReader(body), cursorOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
 	}
 	// P2-1: both branches above reply on stdout FIRST internally -

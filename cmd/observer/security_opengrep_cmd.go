@@ -27,6 +27,7 @@ import (
 	extrunhost "github.com/marmutapp/superbased-observer/internal/extrun/host"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/secengine"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
 	"github.com/marmutapp/superbased-observer/internal/secrulepack"
@@ -299,6 +300,8 @@ func (e *codeEnv) driver(jobs int) (*opengrep.Driver, func(), error) {
 		State: codeStateStore{path: filepath.Join(e.secDir, codeStateFile)}, ListTree: listEngineTree,
 		ReadFile: readCappedFile, Jobs: jobs, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Installed: codeInstalledPath(),
 		LinkedCommonDir: codeLinkedCommonDir,
+		Taint:           codeTaintConfig(e.cfg.Security.Scan.Opengrep), Stat: codeLstat,
+		TaintCache: codeTaintCacheStore{path: filepath.Join(root, codeTaintCacheFile)},
 	}
 	if factory := isolationFactoryFor(e.snap, filepath.Dir(e.resolved), nil); factory != nil {
 		env.Isolate = func(d extrun.OneShotDirs) (extrun.IsolationProvider, error) {
@@ -484,6 +487,9 @@ func codeExtraLines(ctx context.Context, e *codeEnv) []string {
 		if r, ok, err := e.st.SecLatestRun(ctx, opengrep.DriverID); err == nil && ok {
 			out = append(out, fmt.Sprintf("last run: %s %s at %s", r.Scope, r.Outcome, r.StartedAt.UTC().Format(time.RFC3339)))
 		}
+		if words, at, ok := codeLastTaintPass(ctx, e.st); ok {
+			out = append(out, fmt.Sprintf("intrafile taint pass (full scan at %s): %s", at.UTC().Format(time.RFC3339), words))
+		}
 	}
 	return out
 }
@@ -626,6 +632,9 @@ func runCodeScanCmd(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s scan: %s; %d findings (%d new), %d files read\n", mode, outcome, len(res.Findings), created, res.Coverage.FilesScanned)
 	for _, f := range rep.Findings {
 		fmt.Fprintf(w, "  %-8s %s:%d %s\n", f.Severity, f.Path, f.Line, f.Rule)
+	}
+	if p, ok := opengrep.TaintPassOf(res.Coverage); ok {
+		fmt.Fprintln(w, "intrafile taint pass:", opengrep.TaintStatusWords(p))
 	}
 	for _, n := range res.Coverage.Notes {
 		fmt.Fprintln(w, "note:", n)
@@ -806,7 +815,8 @@ func newCodeInstallCmd() *cobra.Command {
 func securityCodeDoctorCheck(ctx context.Context, configPath string) diag.Check {
 	c := diag.Check{Name: opengrepComponent, Status: diag.StatusOK}
 	if !codeScanSelected(componentSnapshotFor(configPath)) {
-		c.Message = "Code rules (Opengrep): not selected (opt-in under [components])"
+		c.Message = "Code rules (Opengrep): not selected (opt-in; turn it on in Code security > Scanners, or add security.scan.opengrep under [components])"
+		c.Remediations = []remedy.Remediation{remedy.Of(remedy.OpenScanners, "")}
 		return c
 	}
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})

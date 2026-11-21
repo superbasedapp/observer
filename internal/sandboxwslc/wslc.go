@@ -66,6 +66,11 @@ func Flags(help string) map[string]bool {
 
 var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$`)
 
+// ValidImage reports whether s is an image the row accepts: a name pinned
+// by its digest (name@sha256:<64 lowercase hex>). The settings editor checks
+// a typed value with it before saving.
+func ValidImage(s string) bool { return imageRE.MatchString(s) }
+
 type rule struct {
 	code  string
 	fails func(Facts) (bool, string)
@@ -80,7 +85,7 @@ var rules = []rule{
 	{VerdictBackendMissing, func(f Facts) (bool, string) { return !f.WSL, "WSL is not installed (wsl --version did not answer)" }},
 	{VerdictBackendMissing, func(f Facts) (bool, string) { return f.Path == "", "wslc was not found" }},
 	{VerdictImageMissing, func(f Facts) (bool, string) {
-		return !imageRE.MatchString(f.Image), "[terminal.sandbox.wslc].image is not set to a digest-pinned image"
+		return !imageRE.MatchString(f.Image), "the WSL container image is not set to a digest-pinned image (set it under More Windows sandboxes in Terminals > Settings > Sandbox isolation; [terminal.sandbox.wslc].image)"
 	}},
 	{VerdictVersionUntested, func(f Facts) (bool, string) {
 		missing := MissingFlags(Flags(f.Help))

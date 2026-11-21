@@ -2,6 +2,8 @@
 
 You've got SuperBased wired into VS Code end-to-end:
 
+- ✅ Signed in and connected (or skipped for now; the status bar keeps
+  the button)
 - ✅ Binary verified via `SuperBased: Doctor`
 - ✅ Daemon mode chosen
 - ✅ Dashboard accessible inside the editor
@@ -33,6 +35,8 @@ You've got SuperBased wired into VS Code end-to-end:
 ### Local-first
 
 Your session content stays on your machine unless you consent to
-sending it. Today the extension itself makes no outbound network calls
-except a first-install binary download from GitHub Releases when no
-`observer` is found locally.
+sending it. The extension itself makes no outbound network calls except
+a first-install binary download from GitHub Releases when no `observer`
+is found locally. **Sign in and connect** runs `observer connect`, which
+sends this machine's name, OS and Observer version to start the request;
+nothing about your AI sessions is sent until you approve in your browser.

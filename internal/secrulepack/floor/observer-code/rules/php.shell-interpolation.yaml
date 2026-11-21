@@ -1,0 +1,72 @@
+rules:
+  - id: php.shell-interpolation
+    languages: [php]
+    severity: ERROR
+    message: Web request input reaches a shell command line; quote each argument with escapeshellarg, or run the program with an argument array (proc_open with an array, Symfony Process with an array).
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: escapeshellarg(...)
+      - pattern: escapeshellcmd(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec($X, ...)
+              - pattern: system($X, ...)
+              - pattern: shell_exec($X)
+              - pattern: passthru($X, ...)
+              - pattern: popen($X, ...)
+              - pattern: proc_open($X, ...)
+              - pattern: Process::fromShellCommandline($X, ...)
+          # proc_open given an array runs no shell.
+          - metavariable-pattern:
+              metavariable: $X
+              patterns:
+                - pattern-not: '[...]'
+          - focus-metavariable: $X
+      # Backticks always go through the shell.
+      - patterns:
+          - pattern-inside: '`...`'
+          - pattern: $X

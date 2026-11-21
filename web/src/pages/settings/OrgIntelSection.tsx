@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Check, LogOut, ShieldCheck, Undo2, type LucideIcon } from "lucide-react";
 import { Button, ChartShell, ConfirmButton, Pill } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
@@ -11,6 +12,8 @@ import {
   ORG_INTEL_RECEIPT_LABELS,
   orgIntelBackgroundLine,
   orgIntelLevelLabel,
+  orgIntelFix,
+  orgIntelIsPersonal,
   orgIntelOrgName,
   orgIntelPhase,
   orgIntelPurposeLabel,
@@ -21,6 +24,7 @@ import {
   type OrgIntelStatus,
   type OrgIntelStatusResponse,
 } from "@/lib/orgIntel";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 
 // OrgIntelSection is Settings > Org enrichment: the ORG-PLANE Cloud
 // Intelligence of the organization this machine is enrolled with (design
@@ -85,14 +89,14 @@ export function OrgIntelSection({ icon, readOnly = false }: { icon?: LucideIcon;
   const unavailable = st.error != null && !st.data;
   return (
     <ChartShell
-      title="Org enrichment"
+      title="Team AI summaries"
       icon={icon}
-      sub="Cloud Intelligence run by the organization this machine is enrolled with, on the organization's own server and model. Personal Cloud Intelligence for sessions captured while not enrolled is the Cloud Intelligence section."
+      sub="AI summaries run by the team this machine is connected to, on the team's own server and model. Personal AI summaries, for sessions captured while not connected, are in the AI summaries section."
     >
       <ChartState loading={st.loading && !st.data} error={null} denied={false} empty={false} height={160}>
         {unavailable ? (
           <div className={`${BOX} border-line-1 bg-bg-2 text-fg-2`}>
-            Org enrichment status is not available here: {intelError(st.error)}. On the machine itself, `observer intel
+            Team AI summaries status is not available here: {intelError(st.error)}. On the machine itself, `observer intel
             status` shows the same.
           </div>
         ) : st.data ? (
@@ -124,24 +128,33 @@ function OrgIntelBody({
 }) {
   const phase = orgIntelPhase(s);
   const org = orgIntelOrgName(s);
+  const fix = orgIntelFix(s);
   if (phase === "unenrolled") {
     return (
+      <div className="space-y-2">
+      <NeedsSettingNotice
+        tone="info"
+        text="This machine is not connected to a team, so there are no team AI summaries here. Connect it to a team in Settings > Account."
+        link={fix.settings}
+      />
       <p className="text-[12px] leading-relaxed text-fg-2">
-        This machine is not enrolled in an organization, so there is no organization session enrichment here. Personal
-        Cloud Intelligence is under{" "}
-        <Link to="/settings?section=cloud" className="font-medium text-accent hover:text-accent-strong">
-          Cloud Intelligence
-        </Link>
+        Personal AI summaries are
+        under{" "}
+        <GatedLink to="/settings?section=cloud" managed="AI summaries (managed by your team)" className="font-medium text-accent hover:text-accent-strong">
+          AI summaries
+        </GatedLink>
         .
       </p>
+      </div>
     );
   }
   if (phase === "no_terms") {
     return (
-      <p className="text-[12px] leading-relaxed text-fg-2">
-        {org} has not sent its Cloud Intelligence terms yet. Its server may predate this feature, or the next sync has
-        not run. Nothing is sent for enrichment from this machine.
-      </p>
+      <NeedsSettingNotice
+        tone="info"
+        text={`${orgIntelIsPersonal(s) ? "Your personal dashboard" : org} has not sent its AI summaries terms yet. Its server may predate this feature, or the next sync has not run. Nothing is sent for enrichment from this machine.`}
+        org={fix.org}
+      />
     );
   }
   return (
@@ -155,13 +168,25 @@ function OrgIntelBody({
           {s.managed_rail && (
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Pill variant={s.managed_rail.on ? "success" : "neutral"}>{s.managed_rail.on ? "running" : "not running"}</Pill>
-              <span>{s.managed_rail.message}</span>
+              {s.managed_rail.on || !fix.org ? (
+                <span>{s.managed_rail.message}</span>
+              ) : (
+                <NeedsSettingNotice variant="inline" className="min-w-0 flex-1" text={s.managed_rail.message} org={fix.org} />
+              )}
             </div>
           )}
         </div>
       )}
       {phase === "org_off" && (
-        <p className="text-[12px] text-fg-2">{org} has not turned on session enrichment. Nothing is sent.</p>
+        <NeedsSettingNotice
+          tone="info"
+          text={
+            orgIntelIsPersonal(s)
+              ? "Your personal dashboard has session enrichment off. Nothing is sent."
+              : `${org} has not turned on session enrichment. Nothing is sent.`
+          }
+          org={fix.org}
+        />
       )}
       {(phase === "pending_required" || phase === "terms_changed" || phase === "not_opted_in" || phase === "accepted") && (
         <ConsentCard s={s} phase={phase} readOnly={readOnly} busy={busy} onRun={onRun} />
@@ -243,7 +268,7 @@ function ConsentCard({
   const org = orgIntelOrgName(s);
   const accepted = phase === "accepted";
   const headline: Record<typeof phase, string> = {
-    pending_required: `${org} requires Cloud Intelligence. Accept, or leave the organization.`,
+    pending_required: `${org} requires AI summaries. Accept, or leave the team.`,
     terms_changed: "The terms widened since you accepted. Enrichment continues under the terms you accepted until you review these.",
     not_opted_in: "Not turned on. Nothing is sent for enrichment until you accept these terms.",
     accepted: `Accepted (terms version ${s.active?.requirement_version ?? 0}). Your sessions are enriched by ${org}.`,
@@ -374,7 +399,7 @@ function LedgerCard() {
       {rows.length === 0 ? (
         <p className="text-[11.5px] text-fg-3">
           Nothing has been submitted for enrichment from this machine. Sessions are submitted in the background once your
-          organization's terms allow it, or from a session's Org enrichment card.
+          team's terms allow it, or from a session's Team AI summaries card.
         </p>
       ) : (
         <ul className="space-y-1.5 text-[11.5px] text-fg-2">

@@ -1,6 +1,6 @@
 // Package sandbox is the PURE bwrap sandbox planner for B9 sandboxed
 // terminals. It owns the bubblewrap (bwrap) vocabulary — the exact 0.4.0-floor
-// flag set and its load-bearing order — and produces two things from injected
+// flag set and its load-bearing order — and produces three things from injected
 // probes and grounded DATA, never from ambient I/O:
 //
 //   - Probe(Env) Availability — the platform/backend readiness ladder
@@ -19,6 +19,12 @@
 //     the protective overlays last, including placeholders for protected
 //     paths that do not exist yet, which Plan.HostArgv hands to the host
 //     helper to create before bwrap runs (security ledger SR27-SBX-2).
+//   - ForeignDriveRoots(table, extra) ([]string, error) — the foreign-OS
+//     drive mounts (WSL2 Windows drives) a host's mount-table text names,
+//     united with caller-supplied roots, as the sorted, de-duplicated
+//     Request.MaskPaths every box masks. It parses and classifies text the
+//     cmd seam read; it fails closed on a table it cannot understand
+//     (foreignmounts.go; security ledger SBX-BE-24).
 //
 // The package is PURE (CLAUDE.md "Module Boundaries" #1): all I/O — bwrap
 // lookup, version read, and the canary smoke run — is injected through the Env

@@ -146,7 +146,32 @@ func converseAppServer(w io.Writer, r io.Reader, in PlanInput) (Snapshot, error)
 	if acct.Account != nil && acct.Account.PlanType != nil {
 		plan = *acct.Account.PlanType
 	}
-	return MapAppServer(rl, plan, in.Now)
+	snap, err := MapAppServer(rl, plan, in.Now)
+	if err != nil {
+		return snap, err
+	}
+	snap.Usage = readAppServerUsage(s)
+	return snap, nil
+}
+
+// readAppServerUsage asks the same session for the account's daily token
+// totals (account/usage/read, params null). It runs only after the rate-limit
+// reading is in hand and is fail-soft by construction: an error, a closed
+// pipe, a timeout or an unknown shape yields nil and never touches the
+// reading, so the snapshot is exactly what it would be without this call.
+// No thread id is sent: only the account-wide daily buckets are wanted.
+func readAppServerUsage(s *rpcSession) *UsageReport {
+	// An explicit JSON null, as the live probe sent it (a nil params member
+	// would be omitted from the wire).
+	raw, err := s.call("account/usage/read", json.RawMessage("null"))
+	if err != nil {
+		return nil
+	}
+	u, ok := ParseAppServerUsage(raw)
+	if !ok {
+		return nil
+	}
+	return &u
 }
 
 // MapAppServer converts a rateLimits result onto the model. The default

@@ -172,7 +172,7 @@ func TestT519HookBudgetStopIsNotSoftenedByApprovals(t *testing.T) {
 	cfg := guardCfg()
 	cfg.Mode = "enforce"
 	g := newTestGuard(t, cfg, nil)
-	g.SetApprovalLookup(func(string, string, string) bool { return true })
+	g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 	g.SetHookBudgetLookup(stopFor("", "B-602", "daily spend $0.42 exceeds the $0.30 budget"))
 	av, _ := g.EvaluateHook(policy.Event{
 		Kind: policy.KindShellExec, Tool: "cursor", SessionID: "s",

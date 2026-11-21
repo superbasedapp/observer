@@ -87,15 +87,23 @@ func (l *Ledger) Reserve(provider, day, runID string, minutes int) {
 	l.Entries = append(l.Entries, LedgerEntry{Provider: provider, Day: day, RunID: runID, Minutes: minutes})
 }
 
+// RanMinutes is a box's run time in whole minutes, rounded up (a 30 s box
+// is 1): the unit Settle charges, and the one a report of the run's
+// minutes to another ledger must use so both settle the same (FX3 item 8,
+// F-L3P4-3). A negative duration is 0.
+func RanMinutes(ran time.Duration) int {
+	if ran < 0 {
+		ran = 0
+	}
+	return int((ran + time.Minute - 1) / time.Minute)
+}
+
 // Settle replaces a reservation with what the box really ran (rounded up to
 // whole minutes), never more than reserved: the vendor timeout stopped it
 // there. It returns the minutes charged and whether an open reservation of
 // the run was found.
 func (l *Ledger) Settle(runID string, ran time.Duration) (int, bool) {
-	if ran < 0 {
-		ran = 0
-	}
-	m := int((ran + time.Minute - 1) / time.Minute)
+	m := RanMinutes(ran)
 	charged, found := 0, false
 	for i, e := range l.Entries {
 		if e.RunID != runID || e.Settled {

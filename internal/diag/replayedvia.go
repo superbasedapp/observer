@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/routeattest"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -101,14 +102,16 @@ func replayedViaChecks(p replayedViaProbe) []Check {
 				Details: []string{"error: " + err.Error()},
 			})
 		case !ok:
+			fix := remedy.Of(remedy.InitTool, g.host)
 			out = append(out, Check{
 				Name: name, Status: StatusWarn,
 				Message: fmt.Sprintf("%s is in use, but Observer's %s hooks are not registered, so %s's gates (%s) do not run", display, hostDisplay, display, gates),
 				Details: []string{
 					fmt.Sprintf("%s runs the hooks in %s's config; Observer writes no %s config of its own for these gates.", display, hostDisplay, display),
-					fmt.Sprintf("Fix: run `observer init --%s` (or let `observer start` auto-register it) so the %s hooks exist.", g.host, hostDisplay),
+					fmt.Sprintf("Fix: set up %s in Settings > Connected tools, or run %s (or let `observer start` auto-register it) so the %s hooks exist.", hostDisplay, remedy.Quote(fix), hostDisplay),
 					"Looked at: " + dash(cfg),
 				},
+				Remediations: []remedy.Remediation{fix},
 			})
 		default:
 			out = append(out, Check{

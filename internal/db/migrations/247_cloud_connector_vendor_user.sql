@@ -1,0 +1,32 @@
+-- 247_cloud_connector_vendor_user.sql - the vendor user a member-scoped
+-- cloud-agent account names (cloud-agents arc, security ledger
+-- CLOUDAGENTS-6; operator decision 2026-11-02 "Devin own sessions only";
+-- docs/cloud-agents.md "Devin (`devin`)" and "Accounts").
+--
+-- A Devin v3 key is scoped to an ORGANIZATION: its session list returns
+-- every member's sessions and Devin documents no call naming the key's
+-- owner. The node therefore learns "me" from the developer, who picks their
+-- Devin user from the users the list reports; only that user's sessions
+-- land.
+--
+--   vendor_user_id     - the chosen vendor user id (Devin user-<32 hex),
+--                        '' while none is chosen (a pass then pulls
+--                        nothing). Validated by the connector's grammar
+--                        before it is written.
+--   vendor_user_purged - the vendor user id for which the "remove the other
+--                        members' sessions already landed" pass last
+--                        COMPLETED. While it differs from vendor_user_id the
+--                        next pass re-lists the window and purges the
+--                        sessions of this account the list says another
+--                        member (or a service user) started.
+--
+-- Both columns are written only by internal/store/cloudagentstate.go (the
+-- table's one owner). UpsertCloudConnectorAccount never touches them, so a
+-- re-connect with a new key keeps the choice. NODE-LOCAL: the table is in
+-- the privacy sentinel's forbidden set (tests/invariant/privacy_test.go)
+-- and has no server pair.
+--
+-- Numbered 247, inside the cloud-agents reservation (node 240-249, CA-D14).
+-- The plans line may renumber it at fold.
+ALTER TABLE cloud_connector_accounts ADD COLUMN vendor_user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE cloud_connector_accounts ADD COLUMN vendor_user_purged TEXT NOT NULL DEFAULT '';

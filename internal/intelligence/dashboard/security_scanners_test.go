@@ -101,11 +101,18 @@ func TestHandleSecurityScanners(t *testing.T) {
 		t.Fatalf("drivers %+v", resp.Drivers)
 	}
 	// The code rules' driver is listed too (lane SEC-G2): opt-in, so a node
-	// that did not select it reads "not selected".
-	if og := resp.Drivers[2]; og.Component != "security.scan.opengrep" || og.Selected || !strings.HasPrefix(og.Note, "Not selected") {
+	// that did not select it reads "off", with the switch that turns it on.
+	if og := resp.Drivers[2]; og.Component != "security.scan.opengrep" || og.Selected || !strings.HasPrefix(og.Note, "Off:") || !strings.Contains(og.Note, "Scanners tab") {
 		t.Fatalf("opengrep row %+v", og)
 	}
-	if len(resp.Databases) != 8 {
+	// Every store ecosystem has a row, in the store's sorted order, GitHub
+	// Actions (S-779) and the six of the 2026-11-06 coverage review among
+	// them.
+	var dbEcos []string
+	for _, d := range resp.Databases {
+		dbEcos = append(dbEcos, d.Ecosystem)
+	}
+	if !slices.Equal(dbEcos, depscan.Ecosystems()) || len(dbEcos) != 15 || !slices.Contains(dbEcos, "GitHub Actions") || !slices.Contains(dbEcos, "Pub") {
 		t.Fatalf("databases %+v", resp.Databases)
 	}
 	for _, d := range resp.Databases {
@@ -115,6 +122,19 @@ func TestHandleSecurityScanners(t *testing.T) {
 	}
 	if resp.Attribution == "" {
 		t.Fatal("the attribution text must be served")
+	}
+	// The osv-scanner row points at its own "How to install" (dashboard CLI
+	// parity plan, B-CS3), never at a terminal command, and the offer is the
+	// one the CLI prints, carrying the reviewed pin.
+	if osv := resp.Drivers[1]; strings.Contains(osv.Note, "observer ") {
+		t.Fatalf("the osv-scanner row sends the user to a terminal: %q", osv.Note)
+	}
+	switch {
+	case osvDriverCompiled && (resp.OSVInstall == nil || len(resp.OSVInstall.Ways) == 0 ||
+		!strings.Contains(resp.OSVInstall.Text(), depscan.OSVScannerLinuxAMD64) || !strings.Contains(resp.Drivers[1].Note, "How to install")):
+		t.Fatalf("osv install offer %+v, note %q", resp.OSVInstall, resp.Drivers[1].Note)
+	case !osvDriverCompiled && resp.OSVInstall != nil:
+		t.Fatalf("a build without security.scan.osv offers its install: %+v", resp.OSVInstall)
 	}
 }
 

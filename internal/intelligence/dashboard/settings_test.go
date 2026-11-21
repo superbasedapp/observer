@@ -1399,7 +1399,7 @@ func TestHandleConfigSection_ConcurrentSectionSavesBothPersist(t *testing.T) {
 			defer wg.Done()
 			<-start
 			// observer: flip LogLevel, keep DBPath non-empty (Validate requires it).
-			codeObserver = put("observer", `{"DBPath":"`+dbPath+`","LogLevel":"error"}`)
+			codeObserver = put("observer", observerSectionBody(t, dbPath))
 		}()
 		go func() {
 			defer wg.Done()
@@ -1525,7 +1525,7 @@ func TestConfigWrite_RemoteManageRaceSectionSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			codeSection = putSection("observer", `{"DBPath":"`+dbPath+`","LogLevel":"error"}`)
+			codeSection = putSection("observer", observerSectionBody(t, dbPath))
 		}()
 		go func() {
 			defer wg.Done()
@@ -1645,4 +1645,17 @@ handshake_timeout_ms = 7000
 	if reloaded.Observer.Process.ETW.ListenAddr != "127.0.0.1:9999" {
 		t.Errorf("a refused save still wrote: %+v", reloaded.Observer.Process.ETW)
 	}
+}
+
+// observerSectionBody is the observer-section PUT body the concurrent-save
+// tests send: LogLevel flipped, DBPath kept non-empty (Validate requires it).
+// json.Marshal, not string splicing, so a Windows path's backslashes stay
+// valid JSON rather than turning the PUT into a 400.
+func observerSectionBody(t *testing.T, dbPath string) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"DBPath": dbPath, "LogLevel": "error"})
+	if err != nil {
+		t.Fatalf("observerSectionBody: %v", err)
+	}
+	return string(b)
 }

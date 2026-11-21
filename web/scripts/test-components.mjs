@@ -1,5 +1,6 @@
-// test-components.mjs runs the component tests (src/components/*.test.tsx
-// and src/components/security/*.test.tsx)
+// test-components.mjs runs the component tests (src/components/*.test.tsx,
+// src/components/security/*.test.tsx, src/components/secassess/*.test.tsx,
+// src/components/sandboxHosted/*.test.tsx and src/pages/security/*.test.tsx)
 // under node's own test runner (lane sbx-p2b: the dialog's web tests). Node
 // strips TypeScript types but does not transform JSX, so each test file is
 // bundled first with esbuild (the copy vite itself depends on) into
@@ -20,7 +21,7 @@ const src = path.join(web, "src", "components");
 const out = path.join(web, "node_modules", ".cache", "component-tests");
 
 // The component directories holding tests (one level, no recursion).
-const testDirs = [src, path.join(src, "security")];
+const testDirs = [src, path.join(src, "security"), path.join(src, "secassess"), path.join(src, "sandboxHosted"), path.join(web, "src", "pages", "security")];
 const entries = testDirs.flatMap((d) =>
   readdirSync(d)
     .filter((f) => f.endsWith(".test.tsx"))
@@ -36,8 +37,10 @@ const exts = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
 
 // exactCase resolves relative imports with exact-case file checks.
 // esbuild's resolver folds case in its directory cache, so a directory
-// holding both GaugeStat.tsx and gaugeStat.ts (shared/components/
-// sessiondetail) resolves "./gaugeStat" to the wrong file; vite does not.
+// holding two modules that differ only by case (shared/components/
+// sessiondetail once held GaugeStat.tsx and gaugeStat.ts) resolves to the
+// wrong file. On a case-insensitive file system Vite does too, so such
+// pairs are now refused by tests/invariant/web_case_collision_test.go.
 const exactCase = {
   name: "exact-case",
   setup(b) {

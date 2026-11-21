@@ -108,7 +108,7 @@ func alignmentJudgeFor(cfg *config.Config) (j alignment.Judge, model string, hos
 
 	hosting = judgeHostingLabel(baseURL, jc.Model)
 	client := secureJudgeEgress(
-		newChatCompletionsJudge(baseURL, os.Getenv(keyEnv)).WithTuning(jc.MaxTokens, jc.NumCtx),
+		newConfiguredJudge(baseURL, os.Getenv(keyEnv), jc),
 		hosting,
 	)
 	return alignmentJudgeAdapter{client: client, model: jc.Model, baseURL: baseURL}, jc.Model, hosting, ""

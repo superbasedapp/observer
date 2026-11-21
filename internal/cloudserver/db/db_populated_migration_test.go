@@ -98,6 +98,9 @@ func migratePrefixOnce(ctx context.Context, pool *pgxpool.Pool, target int) erro
 
 func TestPopulatedMigration26ToHead(t *testing.T) {
 	dsn := os.Getenv("SBCI_TEST_PG_DSN")
+	if dsn == "" && os.Getenv("SBCI_TEST_PG_REQUIRED") == "1" {
+		t.Fatalf("SBCI_TEST_PG_REQUIRED=1 but SBCI_TEST_PG_DSN is empty: this run provides PostgreSQL, so the suite must not skip")
+	}
 	if dsn == "" {
 		t.Skipf("SKIP (no Postgres): set SBCI_TEST_PG_DSN to run this suite. This test did NOT run.")
 	}

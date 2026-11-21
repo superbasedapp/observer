@@ -12,8 +12,12 @@ import (
 // when the named request header carries the given case-insensitive
 // prefix, the connection is attributed to the normalized tool
 // identity. Evidence is client-controlled (a local process talking to
-// its own local proxy), so a row only ever selects which compression
-// profile applies — never any other proxy behavior.
+// its own local proxy), so a row only ever selects behaviour where a
+// spoofed match costs the spoofer nothing it could not already choose:
+// which compression profile applies, the tool-version stamp, and whether
+// an X-Superbased-Agent header may claim the request as an own agent (a
+// recognised coding tool keeps its identity, internal/proxy/ownagent.go
+// existingToolIdentity). Never an authorization decision.
 type toolSignature struct {
 	header string // canonical header name, looked up via http.Header.Get
 	prefix string // case-insensitive prefix the header value must carry
@@ -26,9 +30,11 @@ type toolSignature struct {
 }
 
 // toolSignatures is the L1 tool-resolution fallback table for the
-// compression profile router's per-tool tier (R2). The pidbridge has
-// exactly one feeder (claude-code's SessionStart hook), so every
-// hookless client used to resolve tool="" and silently skip
+// compression profile router's per-tool tier (R2). The pidbridge is fed
+// only for tools a hook, an adapter session seed, a dashboard terminal or
+// launch seed or an Arena binding registered (the SessionStart hook's
+// ancestor walk being the main feeder), so a hookless client launched
+// outside the dashboard used to resolve tool="" and silently skip
 // [profiles.by_tool] / tool: experiment classes (deviation D20,
 // docs/plans/usability-review-2026-06-10.md §10.2). Rows below are the
 // signals each client was VERIFIED to send (installed-bundle string
@@ -99,10 +105,12 @@ func toolVersionFromHeaders(h http.Header) (tool, version string, ok bool) {
 }
 
 // toolFromHeaders resolves a request's owning AI tool from the
-// signature table. It is consulted by requestClass ONLY after the
-// pidbridge resolver missed — hook-fed bridge identity always wins —
-// and a miss here ("", false) leaves the class degrading to the
-// per-provider assignment tier, exactly like a bridge miss today.
+// signature table. requestClass consults it ONLY after the pidbridge
+// resolver missed (hook-fed bridge identity always wins there), and a
+// miss ("", false) leaves the class degrading to the per-provider
+// assignment tier, exactly like a bridge miss. existingToolIdentity also
+// consults it, after an own-process bridge miss OR a bridge error, to
+// decide whether an own-agent header may claim the request.
 func toolFromHeaders(h http.Header) (string, bool) {
 	for _, sig := range toolSignatures {
 		v := h.Get(sig.header)

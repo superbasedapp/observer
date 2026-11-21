@@ -78,11 +78,21 @@ type Daemon struct {
 	// returned, so state kept beside the handler for the run (the run
 	// pill's live health) can go with it; nil: nothing.
 	OnRunEnd func(run RunRecord)
+	// OnEgressRefusal receives each egress refusal the run's host helper
+	// reports (egress.go, lane N1), already validated, with the run taken
+	// from the channel; nil drops them. It is called on the link's
+	// goroutine before the answer, so it must not block (queue and
+	// return).
+	OnEgressRefusal func(run RunRecord, rep sandboxrelay.EgressRefusalReport)
 	// OnPruned is called with each run record the sweep removed because its
 	// helper died (PruneDeadRunRecords), as the record was, whether or not
 	// the daemon held state for the run, so the stored run it belongs to
 	// can be ended (live check 2026-10-22, D7); nil: nothing.
 	OnPruned func(run RunRecord)
+	// OnSweep is called at the end of every Sweep, after the dead helpers'
+	// records were pruned, so what those runs left elsewhere can be swept
+	// with them (their credential files, tracker F-055); nil: nothing.
+	OnSweep func()
 	// LegacyRefusal renders a refusal for a box that sent a version 1
 	// request (its decoder refuses the Refused field): the exit code and
 	// output that box would itself have produced for the refusal. nil
@@ -99,9 +109,16 @@ type Daemon struct {
 	// Drift compares each run's transcript with the gate events it sent
 	// (gatedrift.go); nil: no comparison.
 	Drift *GateDrift
+	// FreshStore keeps, per run, the sessions the run claimed fresh, so a
+	// re-claim after the run's claims were dropped (a re-adoption of the
+	// same run, a daemon restart) is fresh again (audit FU3-R1); nil keeps
+	// freshness in memory only.
+	FreshStore FreshSessions
 	// Log receives one line for each connection the daemon closes without
-	// an answer and each request it refuses, with the run id the connection
-	// named ("" before a handshake named one), so a refusal is never silent
+	// an answer and each request it refuses, with the run id the handshake
+	// proved ("" when no handshake did, a failed one included: the id a
+	// peer claims is not its until the secret check passes, fold audit
+	// N4), so a refusal is never silent
 	// in the daemon's log (Windows 11 Pro run 3, 2026-10-22); nil: nothing.
 	Log func(runID, reason string)
 
@@ -109,6 +126,10 @@ type Daemon struct {
 	runs map[string]*RunState
 	// sessions maps a session id to the run that first spoke for it.
 	sessions map[string]string
+	// fresh holds the claimed session ids the node did not record when
+	// their run first claimed them (a session the run itself started, not
+	// one it resumed; F-003 audit FU3-A1). Cleared with the claim.
+	fresh map[string]bool
 	// inflight counts health deliveries in flight (FlushHealth). A
 	// WaitGroup does not fit: a delivery may start (Add from zero) while
 	// FlushHealth waits, which the WaitGroup contract forbids.
@@ -164,6 +185,9 @@ type RunState struct {
 	run  RunRecord
 	sem  chan struct{}
 	rate *bucket
+	// refusalSem is the one-slot budget of egress refusal reports, apart
+	// from sem (serveEgressRefusal).
+	refusalSem chan struct{}
 	// sessionCount is the number of session ids this run claimed (guarded
 	// by Daemon.mu).
 	sessionCount int
@@ -177,6 +201,10 @@ type RunState struct {
 	// Replayed counts capture-only events the box spooled while the relay
 	// was down; a nonzero count means the run was capture_degraded.
 	Replayed atomic.Int64
+	// FreshSkipped counts fresh session ids the run claimed that the daemon
+	// did not persist for being longer than MaxFreshSessionID (tracker
+	// F-039); never fatal to the request.
+	FreshSkipped atomic.Int64
 	// health is what lowered the run's capture (Health).
 	health runHealth
 	// drift is the run's transcript-versus-gate comparison; noDrift is set
@@ -212,7 +240,7 @@ func (d *Daemon) state(rec RunRecord) *RunState {
 		if n <= 0 {
 			n = 4
 		}
-		st = &RunState{sem: make(chan struct{}, n), rate: &bucket{rate: d.Rate.withDefaults()}}
+		st = &RunState{sem: make(chan struct{}, n), refusalSem: make(chan struct{}, 1), rate: &bucket{rate: d.Rate.withDefaults()}}
 		d.runs[rec.RunID] = st
 	}
 	st.run = rec
@@ -251,9 +279,7 @@ func params(p sandboxrelay.Purpose, c sandboxrelay.ConnLimits) sandboxrelay.Para
 func (d *Daemon) ServeConn(ctx context.Context, c net.Conn) error {
 	defer func() { _ = c.Close() }()
 	var rec RunRecord
-	named := ""
 	s, err := sandboxrelay.Accept(c, params(sandboxrelay.PurposeLink, d.conn()), func(id string) ([]byte, error) {
-		named = id
 		r, err := ReadRun(d.ObserverDir, id)
 		if err != nil {
 			return nil, err
@@ -265,9 +291,13 @@ func (d *Daemon) ServeConn(ctx context.Context, c net.Conn) error {
 		// A link that closed before its hello carried no request (a
 		// readiness check dials and hangs up), so it is not a warning; any
 		// other handshake failure is (Windows 11 Pro run 4, where the CLI's
-		// relay gate logged one per launch with no run id).
+		// relay gate logged one per launch with no run id). The line names
+		// no run: the id the peer claimed is not proven until a frame from
+		// it verifies under the run's secret, and a run's id routes the line into that run's kept
+		// relay log, which one box could otherwise fill for another run
+		// (fold audit N4), so it goes to the daemon's own log only.
 		if !errors.Is(err, sandboxrelay.ErrNoHello) {
-			d.log(named, "closed a helper's link whose handshake failed: %v", err)
+			d.log("", "closed a helper's link whose handshake failed: %v", err)
 		}
 		return fmt.Errorf("sandboxrelayd.ServeConn: %w", err)
 	}
@@ -276,8 +306,22 @@ func (d *Daemon) ServeConn(ctx context.Context, c net.Conn) error {
 	err = d.serveRequest(ctx, s, rec, st)
 	if err != nil {
 		// The run's channel was identified, so a request that did not
-		// complete is an event the run lost.
-		d.lower(rec, st, 0, CauseDropped)
+		// complete is an event the run lost; a refusal report is no hook
+		// event, so its failure lowers nothing.
+		if !errors.Is(err, errEgressRefusalReport) {
+			d.lower(rec, st, 0, CauseDropped)
+		}
+		// Accept checks no secret: the handshake is complete only once a
+		// frame from the peer verifies under the run's secret. A link that
+		// failed before then (a peer with the wrong secret hangs up when the
+		// daemon's open frame does not verify on its side) proved no run,
+		// so its line, like a failed hello's, names none (fold audit N4).
+		// Residual, named in the fold's marker: the lowering above still
+		// counts against the claimed run.
+		if !s.PeerProven() {
+			d.log("", "closed a helper's link whose handshake failed (no frame verified under the run's secret): %v", err)
+			return err
+		}
 		d.log(rec.RunID, "closed the link without an answer: %v", err)
 	}
 	return err
@@ -300,6 +344,17 @@ func (d *Daemon) serveRequest(ctx context.Context, s *sandboxrelay.Session, rec 
 		st.Refused.Add(1)
 		return fmt.Errorf("sandboxrelayd.ServeConn: %w", err)
 	}
+	req, err := sandboxrelay.DecodeHookRequest(msg, d.Rules)
+	if err != nil {
+		st.Refused.Add(1)
+		return fmt.Errorf("sandboxrelayd.ServeConn: %w", err)
+	}
+	// A refusal report never takes one of the run's hook slots: it has its
+	// own one-slot budget (serveEgressRefusal), so a box provoking refusals
+	// can neither push a hook request into busy nor lower the run's capture.
+	if req.Kind == sandboxrelay.KindEgressRefusal {
+		return d.serveEgressRefusal(s, rec, st, req)
+	}
 	select {
 	case st.sem <- struct{}{}:
 	default:
@@ -307,19 +362,32 @@ func (d *Daemon) serveRequest(ctx context.Context, s *sandboxrelay.Session, rec 
 		return ErrBusy
 	}
 	defer func() { <-st.sem }()
-	req, err := sandboxrelay.DecodeHookRequest(msg, d.Rules)
-	if err != nil {
-		st.Refused.Add(1)
-		return fmt.Errorf("sandboxrelayd.ServeConn: %w", err)
-	}
 	if req.Kind == sandboxrelay.KindRunHealth {
 		return d.serveHealthReport(s, rec, st, req)
 	}
-	facts := readPayloadFacts(req.Stdin, d.Rules.Syntax())
+	// A box that works in a fixed path of its own names it; the run's
+	// map rewrites it to the host's directory before the binding and the
+	// confined reads see it (pathmap.go).
+	req.Stdin = mapPayloadPaths(req.Stdin, rec.PathMap)
+	// The request header's working directory is a box path too (G4-R7):
+	// mapped the same way, so a hook run from a subdirectory of the box's
+	// workspace runs in that subdirectory of the run's directory. A cwd
+	// under no prefix is left as written (the executor then falls back to
+	// the run's workspace, as for any cwd outside the roots).
+	if mapped, ok := MapBoxPath(rec.PathMap, req.Cwd); ok {
+		req.Cwd = mapped
+	}
+	facts := readRunPayloadFacts(req.Stdin, d.Rules.Syntax(), rec.HomeIsThisMachines())
 	refusal, row := d.bind(ctx, st, rec, req, facts)
 	d.observeDrift(st, rec, req, facts, refusal == "")
 	if refusal != "" {
-		d.log(rec.RunID, "refused a %s request: %s (%s)", req.Kind, refusal, row)
+		// The class, the payload key and the run, never a value or the body
+		// (lane FX6, F-P7-5: a path refusal named no key anywhere).
+		key := ""
+		if refusal == sandboxrelay.RefusedPath {
+			key = " key=" + pathRefusalKey(bindInput{run: rec, facts: facts})
+		}
+		d.log(rec.RunID, "refused a %s request: %s (%s)%s", req.Kind, refusal, row, key)
 		st.Bound.Add(1)
 		cause := CauseRefused
 		if refusal == sandboxrelay.RefusedRate {

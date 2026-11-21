@@ -10,7 +10,8 @@
 //
 // What it owns:
 //
-//   - the format: a pack.json manifest (id, version, licence, the canary,
+//   - the format: a pack.json manifest (id, version, licence, an optional
+//     taint_intrafile switch, the canary,
 //     and per rule its id, languages, category, severity, CWE and an
 //     optional precision figure with its Wilson lower bound, denominator,
 //     corpus and method) beside one YAML file per rule;
@@ -32,6 +33,12 @@
 //     (operator_spotcheck). The figures and the corpus method live in
 //     internal/seccorpus and docs/code-rules-precision.md; a rule under
 //     NoisyFloor is listed as noisy and stays flag-only;
+//   - the engine flags a pack asks for (Pack.EngineFlags): today only
+//     --taint-intrafile, declared by taint_intrafile in the manifest and
+//     passed by the driver when, and only when, the running pack declares
+//     it, so a pack measured without the flag never runs with it. The
+//     validator refuses the switch on a pack with no taint-mode rule, and
+//     the switch is part of the pack digest;
 //   - RulePrefix, the dotted rules directory Opengrep embeds in a rule id
 //     (secscan.AdaptOptions.RulePrefix strips it).
 //

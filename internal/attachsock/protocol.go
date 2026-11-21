@@ -161,6 +161,13 @@ type spawnMsg struct {
 	// closed session must NOT be gated on that set. Meaningful only when
 	// ResumeSession is set.
 	AutoResume bool `json:"auto_resume,omitempty"`
+	// AgentEnv and AgentEnvSession are the client's agent-session hint
+	// (lane cli-2): the client found an agent session's environment marker
+	// (procmodel.SessionTokenEnvKeys) in its own environment, and the
+	// session id it named. A hint can only make the launch an agent's, never
+	// a human's; the daemon judges the caller's ancestry itself. Additive.
+	AgentEnv        bool   `json:"agent_env,omitempty"`
+	AgentEnvSession string `json:"agent_env_session,omitempty"`
 }
 
 // correlatedMsg is the frameCorrelated payload: the run's correlated agent

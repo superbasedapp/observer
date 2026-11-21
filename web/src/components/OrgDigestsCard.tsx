@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import type { LucideIcon } from "lucide-react";
 import { Button, ChartShell, Pill } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
@@ -41,7 +43,15 @@ export function OrgDigestsCard({ icon }: { icon?: LucideIcon }) {
         {res.error && !data ? (
           <p className="text-[12px] text-fg-2">The digests are not available here: {apiReason(res.error)}.</p>
         ) : notice ? (
-          <p className={`text-[12px] leading-relaxed ${notice.tone === "warn" ? "text-warn" : "text-fg-2"}`}>{notice.text}</p>
+          <p className={`text-[12px] leading-relaxed ${notice.tone === "warn" ? "text-warn" : "text-fg-2"}`}>
+            {notice.text}
+            {notice.place && (
+              <>
+                {" "}
+                <NeedsSettingLink link={placeLink(notice.place)} />
+              </>
+            )}
+          </p>
         ) : (
           <div className="space-y-3">
             {projects.map((p) => (

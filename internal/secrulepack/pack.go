@@ -302,8 +302,16 @@ type Manifest struct {
 	Version string `json:"version"`
 	// Licence is the SPDX expression the rules are published under.
 	Licence string `json:"licence"`
-	Canary  Canary `json:"canary"`
-	Rules   []Rule `json:"rules"`
+	// TaintIntrafile says the pack was measured with the engine's
+	// intra-file inter-procedural taint analysis (--taint-intrafile) and
+	// must be run with it: the driver passes the flag when, and only when,
+	// the running pack declares it (Pack.EngineFlags), so a pack measured
+	// without it is never run with it and an older pack keeps the flags it
+	// always had. The validator refuses it on a pack with no taint-mode
+	// rule. Omitted means false.
+	TaintIntrafile bool   `json:"taint_intrafile,omitempty"`
+	Canary         Canary `json:"canary"`
+	Rules          []Rule `json:"rules"`
 }
 
 // Pack is a validated pack: its manifest, its files and its digest.
@@ -312,6 +320,9 @@ type Pack struct {
 	files    map[string][]byte
 	digest   string
 	byID     map[string]Rule
+	// taint holds the ids of the taint-mode rules (read from each rule
+	// file by Parse; the manifest does not say).
+	taint map[string]bool
 }
 
 // Digest is the pack's canonical digest (CanonicalDigest of its files).
@@ -324,6 +335,58 @@ func (p *Pack) Version() string { return p.Manifest.Version }
 func (p *Pack) Rule(id string) (Rule, bool) {
 	r, ok := p.byID[id]
 	return r, ok
+}
+
+// TaintRules returns the pack's taint-mode rules (mode: taint in the rule
+// file), in manifest order: the rules the driver's intrafile taint pass
+// runs (security.scan.opengrep, plan section 14.3 item 1a). Nil for a pack
+// with none.
+func (p *Pack) TaintRules() []Rule {
+	if p == nil {
+		return nil
+	}
+	var out []Rule
+	for _, r := range p.Manifest.Rules {
+		if p.taint[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// IsTaintRule reports whether id is one of the pack's taint-mode rules.
+func (p *Pack) IsTaintRule(id string) bool { return p != nil && p.taint[id] }
+
+// FlagTaintIntrafile is the engine's switch for intra-file inter-procedural
+// taint analysis (Opengrep v1.30.1 `scan --help`: "Enable intra-file
+// inter-procedural taint analysis"). A pack gates it on its manifest
+// (Manifest.TaintIntrafile).
+const FlagTaintIntrafile = "--taint-intrafile"
+
+// engineFlagRules is the table of the engine flags a manifest may ask for,
+// walked in order by EngineFlags. A flag is here only when a pack was
+// measured with it, so a pack that does not declare it never runs with it.
+var engineFlagRules = []struct {
+	flag string
+	on   func(Manifest) bool
+}{
+	{FlagTaintIntrafile, func(m Manifest) bool { return m.TaintIntrafile }},
+}
+
+// EngineFlags returns the engine flags beyond the driver's fixed set that
+// this pack declares it was measured with, in a fixed order; nil for a pack
+// that declares none (an older pack keeps today's flags exactly).
+func (p *Pack) EngineFlags() []string {
+	if p == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range engineFlagRules {
+		if r.on(p.Manifest) {
+			out = append(out, r.flag)
+		}
+	}
+	return out
 }
 
 // TestExcluded reports whether a result of rule ruleID at rel (a
@@ -361,9 +424,10 @@ var semgrepSeverity = map[string]string{
 	string(policy.FindingSeverityLow):    "INFO",
 }
 
-// Languages are the Semgrep language names a pack may target (G1 ships
-// Python, JavaScript, TypeScript and Go; Java and C# are planned).
-var Languages = []string{"go", "javascript", "typescript", "python", "java", "csharp"}
+// Languages are the Semgrep language names a pack may target (G1 shipped
+// Python, JavaScript, TypeScript and Go; Java and C# came with SEC-G4;
+// Ruby, PHP and Kotlin with lane M3L-2 1c, pack 1.5.0).
+var Languages = []string{"go", "javascript", "typescript", "python", "java", "csharp", "ruby", "php", "kotlin"}
 
 // Parse validates a pack given as its files (path to bytes, forward
 // slashes, relative to the pack root) and returns it.
@@ -397,27 +461,36 @@ func Parse(files map[string][]byte) (*Pack, error) {
 	if err := validateManifest(m); err != nil {
 		return nil, err
 	}
-	p := &Pack{Manifest: m, files: map[string][]byte{}, byID: map[string]Rule{}}
+	p := &Pack{Manifest: m, files: map[string][]byte{}, byID: map[string]Rule{}, taint: map[string]bool{}}
 	for k, v := range files {
 		p.files[k] = append([]byte(nil), v...)
 	}
 	listed := map[string]bool{ManifestFile: true, m.Canary.RuleFile: true, m.Canary.Target: true}
+	taintRules := 0
 	for _, r := range m.Rules {
 		b, ok := files[r.File]
 		if !ok {
 			return nil, invalid("rule %s: file %s is missing", r.ID, r.File)
 		}
-		if err := checkRuleFile(b, r.ID, r.Languages, semgrepSeverity[r.Severity], r.CWE); err != nil {
+		taint, err := checkRuleFile(b, r.ID, r.Languages, semgrepSeverity[r.Severity], r.CWE)
+		if err != nil {
 			return nil, invalid("rule %s (%s): %v", r.ID, r.File, err)
+		}
+		if taint {
+			taintRules++
+			p.taint[r.ID] = true
 		}
 		listed[r.File] = true
 		p.byID[r.ID] = r
+	}
+	if m.TaintIntrafile && taintRules == 0 {
+		return nil, invalid("taint_intrafile is set but no rule is taint mode, so the flag could only change what was never measured")
 	}
 	cb, ok := files[m.Canary.RuleFile]
 	if !ok {
 		return nil, invalid("canary rule file %s is missing", m.Canary.RuleFile)
 	}
-	if err := checkRuleFile(cb, m.Canary.Rule, nil, "INFO", ""); err != nil {
+	if _, err := checkRuleFile(cb, m.Canary.Rule, nil, "INFO", ""); err != nil {
 		return nil, invalid("canary rule: %v", err)
 	}
 	if _, ok := files[m.Canary.Target]; !ok {

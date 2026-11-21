@@ -25,6 +25,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/ownagent"
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
 	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
@@ -311,6 +312,12 @@ type Options struct {
 	// (admission spec §6.2). nil ⇒ disabled. Bound at the obs wiring
 	// point so internal/proxy never imports internal/obs. See [Admitter].
 	Admitter Admitter
+	// PromptAdmitter is the optional Plane-B coding-agent prompt admission
+	// judge (P-228): consulted on the default provider lanes only, in the
+	// prompt phase on the pre-compression body. nil ⇒ disabled. Bound in
+	// cmd/observer only on a managed node holding enforce.admission whose
+	// signed planeb.admission body sets node_lane. See [PromptAdmitter].
+	PromptAdmitter PromptAdmitter
 	// EgressReporter is the optional proxy→obs realized-outcome callback for
 	// Plane-A egress routes (G22 wave 2). nil ⇒ no callback. Bound at the obs
 	// wiring point so internal/proxy never imports internal/obs. See
@@ -349,6 +356,12 @@ type Options struct {
 	// SessionResolver, when non-nil, is consulted to fill in session_id
 	// on requests that don't send an X-Session-Id header. Optional.
 	SessionResolver SessionResolver
+	// OwnAgentSessions, when non-nil, turns on own-agent capture (P-228,
+	// docs/own-agents.md): a default-lane request carrying
+	// X-Superbased-Agent lands on a custom-agent capture session made
+	// through this sink. nil (the custom-agent adapter not enabled) leaves
+	// every request exactly as before. In production this is the store.
+	OwnAgentSessions OwnAgentSessionSink
 	// Logger receives operational messages. Defaults to a discard logger.
 	Logger *slog.Logger
 	// Client overrides the upstream HTTP client. Defaults to a client with
@@ -612,18 +625,28 @@ type Proxy struct {
 	sink                Sink
 	compressor          Compressor
 	admitter            Admitter
+	promptAdmitter      PromptAdmitter
 	egressReporter      EgressReporter
 	egressBreaker       *egressBreaker
 	admissionUserHeader string
 	cost                CostComputer
 	obsLog              ObserverLogSink
 	sessions            SessionResolver
-	logger              *slog.Logger
-	client              *http.Client
-	now                 func() time.Time
-	postCompact         PostCompactInjector
-	authCache           AuthCache
-	prewarmTargets      []string
+	// ownAgentSink / ownAgents: own-agent capture (ownagent.go). Both nil
+	// when Options.OwnAgentSessions is nil.
+	ownAgentSink OwnAgentSessionSink
+	ownAgents    *ownagent.Tracker
+	// maxRequestBody overrides the request body cap for this instance;
+	// zero (the value in New and in any &Proxy{} literal) means
+	// maxRequestBodyBytes (requestBodyCap). Per instance so a test can
+	// exercise the 413 path without a 512 MiB body or a mutable global.
+	maxRequestBody int64
+	logger         *slog.Logger
+	client         *http.Client
+	now            func() time.Time
+	postCompact    PostCompactInjector
+	authCache      AuthCache
+	prewarmTargets []string
 	// cacheEngine, when non-nil, drives Tier-1 cache observation
 	// per spec §8 (C8). buildTurn / buildStreamTurn call
 	// cacheEngine.ObserveTurn after upstream usage is known and
@@ -728,6 +751,16 @@ const codexVariantWarnedCap = 10_000
 // the dashboard/watcher in the same process), not a functional limit — 512 MiB
 // is far above any real prompt/image/conversation payload.
 const maxRequestBodyBytes = 512 << 20
+
+// requestBodyCap is the body cap serve enforces: the instance override
+// when set, else maxRequestBodyBytes. A zero or negative override (an
+// &Proxy{} literal, or New) means the default, never "no body at all".
+func (p *Proxy) requestBodyCap() int64 {
+	if p.maxRequestBody > 0 {
+		return p.maxRequestBody
+	}
+	return maxRequestBodyBytes
+}
 
 // maybeWarnCodexVariantModel emits at most one stderr warning per
 // session_id when an OpenAI-shape request's model matches a
@@ -890,6 +923,7 @@ func New(opts Options) (*Proxy, error) {
 		sink:                opts.Sink,
 		compressor:          opts.Compressor,
 		admitter:            opts.Admitter,
+		promptAdmitter:      opts.PromptAdmitter,
 		egressReporter:      opts.EgressReporter,
 		virtualKeySource:    opts.VirtualKeySource,
 		gatewayAlerter:      opts.GatewayFleetAlerter,
@@ -898,6 +932,7 @@ func New(opts Options) (*Proxy, error) {
 		cost:                opts.CostComputer,
 		obsLog:              opts.ObserverLog,
 		sessions:            opts.SessionResolver,
+		ownAgentSink:        opts.OwnAgentSessions,
 		logger:              logger,
 		client:              client,
 		now:                 now,
@@ -926,6 +961,9 @@ func New(opts Options) (*Proxy, error) {
 		drainGate:           opts.DrainGate,
 	}
 	p.clientAuth.init(opts.ClientToken, opts.RequireClientAuth)
+	if p.ownAgentSink != nil {
+		p.ownAgents = ownagent.NewTracker(0)
+	}
 	// atomic.Pointer has no struct-literal form (unexported internal
 	// state) — publish the initial lane table via Store, same call path
 	// SetUpstreams/SetLaneTable/SetOrgGatewayRoute use for a later hot
@@ -1504,6 +1542,15 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// synthesizeObsTrace call site (including serveGuardDeny) sees it.
 		r = r.WithContext(context.WithValue(r.Context(), obsLaneCtxKey{}, upstreamLaneID))
 	}
+	// Own-agent identity (P-228, ownagent.go): resolved ONCE here, after the
+	// lane is known, into a claim on the context. Only the DEFAULT provider
+	// lanes take it: any /up/<id> prefix (a hosted-app lane, the virtual
+	// "auto" lane, a coding-agent lane or a node-local route lane) names an
+	// integration that already owns the traffic. Headerless requests are
+	// returned unchanged.
+	if prefix.id == "" {
+		r = p.withOwnAgentClaim(r)
+	}
 
 	provider := providerForPath(r.URL.Path)
 	// Codex 0.128.0+ with `requires_openai_auth = true` on a custom
@@ -1630,11 +1677,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// ceiling, not a functional limit — a single client POSTing a multi-GB
 	// body would otherwise OOM the daemon (which also serves the dashboard
 	// and watcher). 512 MiB is far above any real conversation/image payload.
-	reqBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	reqBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, p.requestBodyCap()))
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			p.logger.Warn("proxy: request body exceeds cap", "max_bytes", maxRequestBodyBytes)
+			p.logger.Warn("proxy: request body exceeds cap", "max_bytes", p.requestBodyCap())
 			http.Error(w, "proxy: request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -1814,6 +1861,30 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 				reqShapeBody = pr.Body
 				bodyMutated = true
 			}
+		}
+	}
+
+	// Plane-B coding-agent prompt admission (P-228): the org's judge on a
+	// managed node, default provider lanes only (a /up/<id> lane is a hosted
+	// app's, judged by Plane A above). Runs after the deterministic prompt
+	// guard (which may already have refused or masked the turn) and before
+	// compression, so the judge reads the developer's turn as sent. The
+	// gate itself decides scope, skip and verdict; this seam only refuses.
+	if p.promptAdmitter != nil && obsUpstreamLane(r) == "" && p.promptAdmitter.PromptAdmissionActive() {
+		if promptAPISessionID == "" {
+			promptAPISessionID = p.resolveAPITurnSessionID(r, provider, reqShapeBody)
+		}
+		par := p.promptAdmitter.AdmitPrompt(r.Context(), PromptAdmitInput{
+			Provider:  provider,
+			Body:      reqShapeBody,
+			SessionID: promptAPISessionID,
+			Tool:      p.requestClass(r, provider).Tool,
+			RequestID: proxyRequestID,
+			Model:     topModel,
+		})
+		if par.Block {
+			p.servePromptAdmissionDeny(w, r, provider, par, reqShapeBody, promptAPISessionID)
+			return
 		}
 	}
 
@@ -2483,7 +2554,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			turn := buildErrorTurn(provider, reqShape, errBody, resp.Header, resp.StatusCode, start, sessionID)
 			stampTurn(&turn)
 			p.applyCost(&turn)
-			errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn (stream)")
+			errTurnID := p.insertTurnDetached(r, turn, routerToken, "proxy: insert error api_turn (stream)")
 			p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, errBody)
 			captureNetwork(resp.StatusCode, captured, true, 0, turn.RequestID, "", nil, resp.Header)
 			return
@@ -2510,7 +2581,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		default:
 			applyCompressionMeta(&turn, compression)
 			p.applyCost(&turn)
-			apiTurnID = p.insertTurnAndCacheDetached(turn, reqShape, provider, routerToken, "proxy: insert api_turn (stream)")
+			apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn (stream)")
 			p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, captured)
 		}
 		captureNetwork(resp.StatusCode, captured, true, apiTurnID, turn.RequestID, "", nil, resp.Header)
@@ -2557,7 +2628,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			default:
 				applyCompressionMeta(&turn, compression)
 				p.applyCost(&turn)
-				apiTurnID = p.insertTurnAndCacheDetached(turn, reqShape, provider, routerToken, "proxy: insert api_turn (sniffed SSE)")
+				apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn (sniffed SSE)")
 				p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, respBody)
 			}
 			captureNetwork(resp.StatusCode, respBody, true, apiTurnID, turn.RequestID, "", nil, resp.Header)
@@ -2575,7 +2646,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		turn := buildErrorTurn(provider, reqShape, respBody, resp.Header, resp.StatusCode, start, sessionID)
 		stampTurn(&turn)
 		p.applyCost(&turn)
-		errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn")
+		errTurnID := p.insertTurnDetached(r, turn, routerToken, "proxy: insert error api_turn")
 		p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, respBody)
 		captureNetwork(resp.StatusCode, respBody, false, 0, turn.RequestID, "", nil, resp.Header)
 		return
@@ -2592,7 +2663,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		applyCompressionMeta(&turn, compression)
 		p.applyCost(&turn)
-		apiTurnID = p.insertTurnAndCacheDetached(turn, reqShape, provider, routerToken, "proxy: insert api_turn")
+		apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn")
 		p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, respBody)
 	}
 	captureNetwork(resp.StatusCode, respBody, false, apiTurnID, turn.RequestID, "", nil, resp.Header)
@@ -2660,7 +2731,7 @@ func (p *Proxy) writeGuardErrorTurn(w http.ResponseWriter, r *http.Request, prov
 	p.applyCost(&turn)
 	// routerToken 0: a guard-denied request is refused before the
 	// routing seam runs, so there is no decision row to anchor.
-	denyTurnID := p.insertTurnDetached(turn, 0, insertErrLog)
+	denyTurnID := p.insertTurnDetached(r, turn, 0, insertErrLog)
 	p.synthesizeObsTrace(turn, denyTurnID, r, reqShapeBody, body)
 }
 
@@ -2712,7 +2783,15 @@ func (p *Proxy) inspectResponseGuard(provider, sessionID string, body []byte, is
 //
 // Returns the inserted api_turn id (0 on failure) so a caller can anchor
 // downstream records (e.g. the response-inspection guard verdict) to it.
-func (p *Proxy) insertTurnDetached(turn models.APITurn, routerToken int64, label string) int64 {
+//
+// r is the request the turn belongs to: an own-agent claim on it makes the
+// claim's session row first (ownagent.go), so a session exists exactly when
+// it has a turn.
+func (p *Proxy) insertTurnDetached(r *http.Request, turn models.APITurn, routerToken int64, label string) int64 {
+	p.ensureOwnAgentSession(r, turn)
+	// The gateway rail (review E-23): only a turn on an /up/<id> lane may
+	// later be enriched by an app's SDK span (store.MergeTurnByRequestID).
+	turn.UpstreamLane = obsUpstreamLane(r)
 	insertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	id, err := p.sink.InsertAPITurn(insertCtx, turn)
@@ -2749,7 +2828,11 @@ func (p *Proxy) insertTurnDetached(turn models.APITurn, routerToken int64, label
 //
 // Returns the inserted api_turn id (0 on failure), so the success path can
 // anchor the response-inspection guard verdict to the same turn.
-func (p *Proxy) insertTurnAndCacheDetached(turn models.APITurn, reqShape requestShape, provider string, routerToken int64, label string) int64 {
+func (p *Proxy) insertTurnAndCacheDetached(r *http.Request, turn models.APITurn, reqShape requestShape, provider string, routerToken int64, label string) int64 {
+	p.ensureOwnAgentSession(r, turn)
+	// The gateway rail (review E-23): only a turn on an /up/<id> lane may
+	// later be enriched by an app's SDK span (store.MergeTurnByRequestID).
+	turn.UpstreamLane = obsUpstreamLane(r)
 	insertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	apiTurnID, err := p.sink.InsertAPITurn(insertCtx, turn)
@@ -3150,6 +3233,17 @@ func (p *Proxy) applyCost(t *models.APITurn) {
 // hyphenated form. Listed in codex's apparent precedence; first
 // non-empty hit wins.
 func (p *Proxy) resolveAPITurnSessionID(r *http.Request, provider string, reqBody []byte) string {
+	// An own agent's explicit claim (X-Superbased-Agent, ownagent.go) wins
+	// over every source below, the pid resolver included. It never exists
+	// when an existing identity names a registered coding tool
+	// (withOwnAgentClaim / existingToolIdentity: the bridge, counting only
+	// the tool's OWN process, then the client identification table). A
+	// child process of a coding tool CAN hold a claim even though the
+	// resolver's ancestor walk below would attribute it to that tool's
+	// session: it is an own agent, by ruling (OWNAGENT-1).
+	if c, ok := ownAgentClaim(r); ok {
+		return c.SessionID
+	}
 	var sid string
 	switch provider {
 	case models.ProviderAnthropic:
@@ -3184,7 +3278,13 @@ func (p *Proxy) resolveAPITurnSessionID(r *http.Request, provider string, reqBod
 	// relay names the run; the box cannot): the turn lands on the run's
 	// re-keyed session, the namespace its pulled transcripts land in, and
 	// never on a process the session resolver would find on this machine.
+	// An injected local run's turn folds onto the session its own relayed
+	// hooks speak for (runfold.go; F-003, OSH-R-150), the id that keys guard
+	// and budget state too; a hosted run keeps the run namespace.
 	if run := r.Header.Get(sandboxvocab.RelayRunHeader); run != "" {
+		if fs := foldRunSession(r, run, sid); fs != "" {
+			return fs
+		}
 		if rs := sandboxvocab.RelaySessionID(run, sid); rs != "" {
 			return rs
 		}
@@ -3399,7 +3499,16 @@ func explicitHostedSessionID(r *http.Request) string {
 // calls here add at most one /proc walk per addr per TTL window.
 func (p *Proxy) requestClass(r *http.Request, provider string) RequestClass {
 	class := RequestClass{Provider: provider}
-	if tr, ok := p.sessions.(ToolResolver); ok {
+	// An own-agent claim names the client tool. A claim exists only when
+	// neither the bridge (the tool's own process) nor the client
+	// identification table named a registered coding tool
+	// (existingToolIdentity). A child of a coding tool that claims is
+	// classed custom-agent even though the bridge's ancestor walk below
+	// would name the tool; the claim check skips that walk.
+	if _, ok := ownAgentClaim(r); ok {
+		class.Tool = models.ToolCustomAgent
+	}
+	if tr, ok := p.sessions.(ToolResolver); ok && class.Tool == "" {
 		tool, ok, err := tr.ResolveTool(r.Context(), r.RemoteAddr)
 		switch {
 		case err != nil:

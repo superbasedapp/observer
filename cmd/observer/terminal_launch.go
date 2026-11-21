@@ -43,6 +43,9 @@ func (r termRunRecorder) RecordRun(ctx context.Context, run termrun.Run) error {
 		CorrelationTokenHash: run.CorrelationTokenHash,
 		LaunchedAt:           run.LaunchedAt,
 		Isolation:            runIsolationRecord(run),
+		// Lane cli-2 (migration 220): only the closed set is recorded.
+		Initiator:       string(run.Origin.Normalized().Initiator),
+		ParentSessionID: run.Origin.Normalized().ParentSessionID,
 	})
 }
 
@@ -59,7 +62,7 @@ func runIsolationRecord(run termrun.Run) store.TerminalRunIsolation {
 		CaptureLevel: iso.CaptureLevel, CaptureRule: iso.CaptureRule,
 		CaptureOrigin: iso.CaptureOrigin, CaptureDegraded: iso.CaptureDegraded,
 		NativeSandboxState: iso.NativeSandboxState, Verification: iso.Verification,
-		KeyCustody: iso.KeyCustody,
+		KeyCustody: iso.KeyCustody, Seccomp: iso.Seccomp,
 	}
 	if iso.Class == "" && iso.CaptureLevel == "" && iso.CaptureOrigin == "" {
 		return rec
@@ -337,7 +340,9 @@ func (l *ptyLauncher) Spawn(req termsvc.LaunchRequest) (string, error) {
 // env (observer keeps its own secrets in config files, not env), so the
 // residual exposure is the user's own env — which the agent needs anyway. We
 // therefore strip only the internal OOB channel variables and emit a per-launch
-// env audit line. A tighter policy is a documented follow-up.
+// env audit line. A tighter policy is a documented follow-up. The one other
+// strip is an agent session's marker (isAgentSessionMarkerEnv, lane cli-2
+// fixes-3, audit L4): it names whoever started the daemon, not this terminal.
 //
 // CREDENTIAL-BEARING: req.ExtraEnv may include the caller's forwarded provider-
 // credential values (forwardAuthEnv, gated by [terminal.attach].forward_auth_env)
@@ -347,7 +352,7 @@ func launchChildEnv(req termsvc.LaunchRequest, authToken string) []string {
 	parent := os.Environ()
 	out := make([]string, 0, len(parent)+len(req.ExtraEnv)+6)
 	for _, kv := range parent {
-		if isInternalChildEnv(kv) {
+		if isInternalChildEnv(kv) || isAgentSessionMarkerEnv(kv) {
 			continue
 		}
 		out = append(out, kv)
@@ -362,7 +367,7 @@ func launchChildEnv(req termsvc.LaunchRequest, authToken string) []string {
 	// any OBSERVER_OOB_ / OBSERVER_DAEMON_CHILD entry so the internal channel and
 	// the daemon-child marker can't be spoofed in by a caller.
 	for _, kv := range req.ExtraEnv {
-		if isInternalChildEnv(kv) {
+		if isInternalChildEnv(kv) || isAgentSessionMarkerEnv(kv) {
 			continue
 		}
 		out = append(out, kv)
@@ -393,7 +398,7 @@ func launchChildEnv(req termsvc.LaunchRequest, authToken string) []string {
 	// child (U9 finding). Never set on an unsandboxed launch → honest zero.
 	if req.Sandboxed {
 		out = sandboxTierChildEnv(out, req.WrapArgv)
-		// The names the box's allow-list adds (WINFIX2 R-167).
+		// The names the box's allow-list adds (WINFIX2, ledger SBX-WIN-ENV-1).
 		out = sandboxLaunchEnv(out, req)
 		// A sandboxed launch in a managed clone: the inner launcher's
 		// repository trust check honours the source repository's accepts.
@@ -435,7 +440,7 @@ func setupChildEnvFor(binPath string) []string {
 	parent := os.Environ()
 	out := make([]string, 0, len(parent)+1)
 	for _, kv := range parent {
-		if isInternalChildEnv(kv) {
+		if isInternalChildEnv(kv) || isAgentSessionMarkerEnv(kv) {
 			continue
 		}
 		out = append(out, kv)

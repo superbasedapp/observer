@@ -39,7 +39,9 @@ export type SecurityShareLevel = (typeof SECURITY_SHARE_CHOICES)[number]["id"];
 
 /**
  * securityShareLevel reads the level from GET /api/config's `config`
- * object: an unset or empty value is the default "off"; a value outside the
+ * object: an unset or empty value is the default "posture" (ruling R1 of
+ * lane CODESEC-ORG, 2026-11-03; the daemon resolves it the same way); a
+ * value outside the
  * picker is null (an older or newer daemon), which offers no picker.
  */
 export function securityShareLevel(config: unknown): SecurityShareLevel | null {
@@ -49,7 +51,7 @@ export function securityShareLevel(config: unknown): SecurityShareLevel | null {
   const share = (oc as Record<string, unknown>).Share;
   if (!share || typeof share !== "object") return null;
   const v = (share as Record<string, unknown>).Security;
-  if (v === undefined || v === null || v === "") return "off";
+  if (v === undefined || v === null || v === "") return "posture";
   return SECURITY_SHARE_CHOICES.some((c) => c.id === v) ? (v as SecurityShareLevel) : null;
 }
 

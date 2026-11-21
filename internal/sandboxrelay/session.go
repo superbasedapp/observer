@@ -296,7 +296,8 @@ func Accept(c Conn, p Params, lookup func(runID string) ([]byte, error)) (*Sessi
 		return nil, fmt.Errorf("sandboxrelay.Accept: preamble: %w", err)
 	}
 	if err := c.SetReadDeadline(now().Add(p.Conn.FrameDeadline)); err != nil {
-		return nil, err
+		// A peer that read the preamble and hung up refuses the deadline too.
+		return nil, fmt.Errorf("sandboxrelay.Accept: hello: %w: %w", ErrNoHello, err)
 	}
 	var fixed [helloFixed]byte
 	if _, err := io.ReadFull(c, fixed[:]); err != nil {
@@ -408,6 +409,11 @@ func (s *Session) Release() {
 	s.r.Release()
 	s.w.Release()
 }
+
+// PeerProven reports whether a frame from the peer has verified under the
+// session's keys. Accept checks no secret of its own (the first frame's MAC
+// does), so until then the run id the peer named is only a claim.
+func (s *Session) PeerProven() bool { return s.r.Opener().Verified() }
 
 // Recv reads frames until one whole message has arrived on stream, under
 // the message deadline from its first frame. Heartbeats are skipped; data

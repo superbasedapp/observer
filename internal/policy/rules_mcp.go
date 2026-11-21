@@ -130,14 +130,14 @@ func mcpRules() []Rule {
 			AppliesTo: cfgScan, Match: matchMCPFinding(MCPFindingNewServer),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "new MCP server appeared without an approved pin",
-			Advice: "Review the server's source and tools, then `observer guard mcp approve <server>` to trust it; unapproved servers' results taint the session.",
+			Advice: "Review the server's source and tools, then trust it: Approve on the Observer dashboard (Security > MCP) or `observer guard mcp approve <server>`; unapproved servers' results taint the session.",
 		},
 		{
 			ID: "R-302", Category: CategoryMCP, Severity: SeverityCritical,
 			AppliesTo: cfgScan, Match: matchMCPFinding(MCPFindingDescriptionDrift),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "pinned MCP server's declared tools or descriptions changed (rug-pull shape)",
-			Advice: "Diff the server's tool descriptions against what you originally approved; if the update is legitimate, re-approve with `observer guard mcp approve <server>`.",
+			Advice: "Diff the server's tool descriptions against what you originally approved; if the update is legitimate, re-approve it: Approve on the Observer dashboard (Security > MCP) or `observer guard mcp approve <server>`.",
 		},
 		{
 			ID: "R-303", Category: CategoryMCP, Severity: SeverityHigh,
@@ -165,7 +165,7 @@ func mcpRules() []Rule {
 			AppliesTo: cfgScan, Match: matchMCPFinding(MCPFindingBinaryChanged),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "pinned MCP server's command/binary or URL changed under the same name",
-			Advice: "A same-name binary swap is the classic supply-chain shape; verify the new command is yours, then `observer guard mcp approve <server>`.",
+			Advice: "A same-name binary swap is the classic supply-chain shape; verify the new command is yours, then approve it: Approve on the Observer dashboard (Security > MCP) or `observer guard mcp approve <server>`.",
 		},
 		// Agent Access P4 (doc3 §12.6): the two node-side enforcement rows
 		// over the compiled tools.mcp_access decision table. Both apply

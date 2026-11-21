@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { Stagger } from "@shared/primitives/Motion";
 import { usePortalQuery } from "../lib/query";
 import { DashboardSkeleton, ErrorPanel } from "../components/LoadState";
-import { getUsage } from "../api";
+import { getUsage, isTokenBudgeted, tokensLeft } from "../api";
 import type { UsageView, UsageWarning } from "../api";
 import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList";
 import { StatCard } from "@shared/primitives/StatCard";
@@ -63,6 +63,8 @@ function levelPillVariant(level?: string): "warn" | "danger" | undefined {
 const WINDOW_WORDS: Record<string, string> = {
   daily: "Daily",
   monthly: "Monthly",
+  daily_tokens: "Daily tokens",
+  monthly_tokens: "Monthly tokens",
   concurrency: "Concurrency",
 };
 const LEVEL_WORDS: Record<UsageWarning["level"], string> = {
@@ -137,6 +139,9 @@ export function Usage() {
   }
 
   const jobSlices = jobMixSlices(data.jobs_by_state);
+  // Plan v5 (R-AI1): a token-budgeted plan has no count cap (daily_cap /
+  // monthly_cap read 0), so its windows are the token budgets.
+  const tokens = isTokenBudgeted(data);
 
   return (
     <Stagger className="flex flex-col gap-6">
@@ -170,22 +175,45 @@ export function Usage() {
 
       {/* Allowance meters */}
       <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <UsageMeterCard
-          label="Daily"
-          metric="dailyAllowance"
-          used={data.daily_used}
-          cap={data.daily_cap}
-          level={warningFor(data.warnings, "daily")}
-          sub={`resets ${fmtDateTime(data.daily_resets_at)}`}
-        />
-        <UsageMeterCard
-          label="Monthly"
-          metric="monthlyAllowance"
-          used={data.monthly_used}
-          cap={data.monthly_cap}
-          level={warningFor(data.warnings, "monthly")}
-          sub={`resets ${fmtDateTime(data.monthly_resets_at)}`}
-        />
+        {tokens ? (
+          <>
+            <UsageMeterCard
+              label="Daily tokens"
+              metric="dailyAllowance"
+              used={data.daily_tokens_used ?? 0}
+              cap={data.daily_token_budget ?? 0}
+              level={warningFor(data.warnings, "daily_tokens")}
+              sub={`${fmtInt(tokensLeft(data.daily_token_budget, data.daily_tokens_used, data.daily_tokens_remaining))} left · resets ${fmtDateTime(data.daily_resets_at)}`}
+            />
+            <UsageMeterCard
+              label="Monthly tokens"
+              metric="monthlyAllowance"
+              used={data.monthly_tokens_used ?? 0}
+              cap={data.monthly_token_budget ?? 0}
+              level={warningFor(data.warnings, "monthly_tokens")}
+              sub={`${fmtInt(tokensLeft(data.monthly_token_budget, data.monthly_tokens_used, data.monthly_tokens_remaining))} left · resets ${fmtDateTime(data.monthly_resets_at)}`}
+            />
+          </>
+        ) : (
+          <>
+            <UsageMeterCard
+              label="Daily"
+              metric="dailyAllowance"
+              used={data.daily_used}
+              cap={data.daily_cap}
+              level={warningFor(data.warnings, "daily")}
+              sub={`resets ${fmtDateTime(data.daily_resets_at)}`}
+            />
+            <UsageMeterCard
+              label="Monthly"
+              metric="monthlyAllowance"
+              used={data.monthly_used}
+              cap={data.monthly_cap}
+              level={warningFor(data.warnings, "monthly")}
+              sub={`resets ${fmtDateTime(data.monthly_resets_at)}`}
+            />
+          </>
+        )}
         <UsageMeterCard
           label="Concurrency"
           metric="concurrency"
@@ -211,10 +239,26 @@ export function Usage() {
             </p>
           )}
           <DefinitionList className="mt-2">
+            {tokens && (
+              <>
+                <DefinitionRow
+                  label="Per session"
+                  value={typeof data.session_token_budget === "number"
+                    ? `${fmtInt(data.session_token_budget)} tokens across re-enrichments`
+                    : "Unknown"}
+                />
+                <DefinitionRow
+                  label="Evidence per upload"
+                  value={typeof data.evidence_token_budget === "number"
+                    ? `${fmtInt(data.evidence_token_budget)} tokens; a larger session is sent with a smaller selection`
+                    : "No limit"}
+                />
+              </>
+            )}
             <DefinitionRow label="Weekly project digest" value={data.digest_weekly ? (
               <>Included{typeof data.digests_this_week === "number" ? ` (${fmtInt(data.digests_this_week)} this week)` : ""}</>
             ) : (
-              <>Not in your plan - <Link to="/billing" className="text-accent">Plus</Link></>
+              <>Not in your plan - <Link to="/billing" className="text-accent">Personal Pro</Link></>
             )} />
             <DefinitionRow label="Results kept" value={data.results_retention_days ? `${fmtInt(data.results_retention_days)} days` : "Unknown"} />
           </DefinitionList>

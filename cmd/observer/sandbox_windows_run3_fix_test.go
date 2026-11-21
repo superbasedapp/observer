@@ -198,6 +198,7 @@ func TestMXCRelayHopsAreNamed(t *testing.T) {
 		refusal   string
 		hostSays  string
 		daemonSay string
+		daemonNot string
 		hint      bool
 	}{
 		"run 3: the helper judged a windows path in the posix syntax": {
@@ -212,10 +213,13 @@ func TestMXCRelayHopsAreNamed(t *testing.T) {
 			hint:     true,
 		},
 		"the daemon does not know the run": {
-			opts:      run3Opts{helperPaths: sandboxrelay.WindowsPaths, daemonForgets: true},
-			refusal:   "Observer's capture relay at %s refused the run's host helper",
-			hostSays:  "daemon_refused_link",
-			daemonSay: "run3-relay: closed a helper's link whose handshake failed",
+			opts:     run3Opts{helperPaths: sandboxrelay.WindowsPaths, daemonForgets: true},
+			refusal:  "Observer's capture relay at %s refused the run's host helper",
+			hostSays: "daemon_refused_link",
+			// The line names no run: a failed handshake proved none (fold
+			// audit N4), so it never reaches a run's kept relay log.
+			daemonSay: ": closed a helper's link whose handshake failed",
+			daemonNot: "run3-relay: closed a helper's link",
 		},
 		"the daemon ends the request without an answer": {
 			opts:      run3Opts{helperPaths: sandboxrelay.WindowsPaths, execErr: errors.New("the relay child did not start")},
@@ -246,6 +250,9 @@ func TestMXCRelayHopsAreNamed(t *testing.T) {
 			}
 			if c.daemonSay != "" && !strings.Contains(daemon, c.daemonSay) {
 				t.Errorf("the daemon logged %q", daemon)
+			}
+			if c.daemonNot != "" && strings.Contains(daemon, c.daemonNot) {
+				t.Errorf("the daemon logged %q, which names the run", daemon)
 			}
 			if strings.Contains(host+daemon+msg, r.token) {
 				t.Fatal("the run token reached a log or the refusal")

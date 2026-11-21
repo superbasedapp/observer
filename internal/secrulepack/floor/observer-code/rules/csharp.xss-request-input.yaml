@@ -1,0 +1,75 @@
+rules:
+  - id: csharp.xss-request-input
+    languages: [csharp]
+    severity: ERROR
+    message: Web request input is written into the page as raw HTML, so a caller can run script in it; let Razor encode it, or encode it with HtmlEncoder first. Razor views (.cshtml) are not scanned, only C# code.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: HtmlEncoder.Default.Encode(...)
+      - pattern: WebUtility.HtmlEncode(...)
+      - pattern: HttpUtility.HtmlEncode(...)
+      - pattern: System.Web.HttpUtility.HtmlEncode(...)
+      - pattern: AntiXssEncoder.HtmlEncode(...)
+      - pattern: Html.Encode(...)
+      - patterns:
+          - pattern: $E.Encode(...)
+          - metavariable-regex:
+              metavariable: $E
+              regex: ^(this\.)?_?(htmlEncoder|HtmlEncoder|encoder)$
+      - pattern: int.Parse(...)
+      - pattern: Guid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Html.Raw($X)
+              - patterns:
+                  - pattern: $H.Raw($X)
+                  - metavariable-regex:
+                      metavariable: $H
+                      regex: ^(this\.)?_?(html|htmlHelper|helper|Html)$
+              - pattern: new HtmlString($X)
+              - pattern: new MvcHtmlString($X)
+              - pattern: MvcHtmlString.Create($X)
+              - patterns:
+                  - pattern-either:
+                      - pattern: $RESP.Write($X)
+                      - pattern: $RESP.WriteAsync($X, ...)
+                  - metavariable-regex:
+                      metavariable: $RESP
+                      regex: ^(Response|HttpContext\.Response|HttpContext\.Current\.Response|context\.Response|ctx\.Response)$
+              - patterns:
+                  - pattern: Content($X, $CT, ...)
+                  - metavariable-regex:
+                      metavariable: $CT
+                      regex: (?i)^"[^"]*html
+          - focus-metavariable: $X

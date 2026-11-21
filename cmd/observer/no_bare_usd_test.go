@@ -46,6 +46,7 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 	"cmd/observer/aggregate.go":       {cliRow: "aggregate"},
 	"cmd/observer/backfill.go":        {cliRow: "backfill"},
 	"cmd/observer/backfill_codex.go":  {cliRow: "backfill"},
+	"cmd/observer/chart.go":           {cliRow: "chart"},
 	"cmd/observer/benchmark.go":       {cliRow: "benchmark"},
 	"cmd/observer/benchmark_run.go":   {cliRow: "benchmark"},
 	"cmd/observer/cache_status.go":    {cliRow: "cache-status"},
@@ -62,10 +63,14 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 		"the token view leaves the column out (printCostSummaryAs)."},
 	"cmd/observer/predict.go": {reason: "predictBandRow prints the dollar row only in the dollar view; the token " +
 		"view returns before it."},
+	"cmd/observer/predict_projection_cli.go": {reason: "projUSD is reached only when the token-usage display is " +
+		"off (every caller checks !tokens first); the token view prints tokens or a share instead."},
 	"cmd/observer/advisor_digest.go": {reason: "the session-start digest is masked with costtext.MaskDollars under " +
 		"the resolved display before it is injected."},
 	"cmd/observer/admission.go": {reason: "Plane A admission caps (observer obs admission): an admin-hosted app's " +
 		"authored dollar caps, not a developer's coding spend."},
+	"cmd/observer/obs_traces.go": {reason: "Plane A app traces (observer obs traces): the recorded model spend of " +
+		"an app the developer hosts, not the developer's own coding spend, as admission.go's caps."},
 	"cmd/observer/cloud.go": {reason: "the Cloud Intelligence preview prints the exact bytes and metrics that " +
 		"would leave the machine (two-digest truth); re-denominating them would make the preview lie."},
 	"cmd/observer/cloudconsent.go": {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},
@@ -81,6 +86,9 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 		"the benchmark row) and never rendered by the dashboard."},
 	"internal/budgetwarn/budgetwarn.go": {reason: "budget warnings render shares of the cap under the token display " +
 		"(42274ed2d); the dollar formatter runs only in the dollar view."},
+	"internal/dashapi/projectdetail_fold.go": {reason: "SpendSplitLines is printed only by `observer project` (the " +
+		"project row: its stdout goes through costtext.NewWriter under the token display); the dashboard renders " +
+		"the Spend tab from the JSON, never from these lines."},
 	"internal/intelligence/advisor/detect_phase2.go":       {reason: advisorProseReason},
 	"internal/intelligence/advisor/detect_phase4.go":       {reason: advisorProseReason},
 	"internal/intelligence/advisor/detect_posture.go":      {reason: advisorProseReason},

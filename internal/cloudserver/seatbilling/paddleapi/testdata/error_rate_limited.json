@@ -1,0 +1,9 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "too_many_requests",
+    "detail": "Too many requests, please slow down",
+    "documentation_url": "https://developer.paddle.com/v1/errors/shared/too_many_requests"
+  },
+  "meta": { "request_id": "44444444-5555-6666-7777-888888888888" }
+}

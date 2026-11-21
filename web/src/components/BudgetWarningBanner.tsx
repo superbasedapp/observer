@@ -6,8 +6,14 @@ import { Icon, Tooltip } from "@/components/primitives";
 import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
 import { pushToast } from "@/components/Toast";
 import { getCostDisplayMode } from "@shared/lib/format";
+import { fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { GatedLink } from "@/components/GatedLink";
 import {
+  BUDGET_FETCH_ACCOUNT,
+  BUDGET_FETCH_TRY_NOW_PATH,
+  budgetFetchNotice,
   budgetWarningLabel,
+  guardModeLink,
   isExceeded,
   newerBudgetStatus,
   newNotices,
@@ -110,7 +116,9 @@ export function BudgetWarningBanner() {
   const moreRef = useRef<HTMLButtonElement | null>(null);
 
   const view = pickBudgetWarning(data, dismissed);
-  if (!view) return null;
+  const fetchNotice = budgetFetchNotice(data);
+  if (!view) return fetchNotice ? <BudgetFetchStrip text={fetchNotice.text} onTried={api.reload} /> : null;
+  const guardLink = guardModeLink(view.top);
 
   const mode = getCostDisplayMode();
   const danger = view.tone === "danger";
@@ -174,6 +182,11 @@ export function BudgetWarningBanner() {
         </>
       )}
       <div className="flex-1" />
+      {guardLink && (
+        <GatedLink to={guardLink.href} className="shrink-0 text-[11px] font-medium text-accent hover:text-accent-strong">
+          {guardLink.label}
+        </GatedLink>
+      )}
       <Link
         to={budgetRequestLink(view.top.budget_id)}
         aria-label={ASK_LABEL}
@@ -193,6 +206,54 @@ export function BudgetWarningBanner() {
           <Icon icon={X} size="xs" />
         </button>
       </Tooltip>
+    </div>
+  );
+}
+
+// BudgetFetchStrip is the failed-pull notice (budget enforce consistency,
+// 2026-11-19): this machine could not get its organization's budgets, said
+// in words with "Try now" (one rail cycle, POST /api/enrolment/push-now) and
+// the place to look (Settings > Account). It is not dismissible: it clears
+// itself when the next pull works.
+function BudgetFetchStrip({ text, onTried }: { text: string; onTried: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const tryNow = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fetchJSON(BUDGET_FETCH_TRY_NOW_PATH, undefined, { method: "POST", headers: await localConfirmHeaders(), body: "{}" });
+      onTried();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div
+      data-testid="budget-fetch-strip"
+      className="flex items-center gap-2 border-b border-warn/30 bg-warn-soft px-4 py-1.5 text-[11.5px] text-fg-2"
+    >
+      <span className="inline-flex shrink-0 items-center gap-1.5 font-semibold text-warn">
+        <Icon icon={AlertTriangle} size="xs" />
+        Budgets not updated
+      </span>
+      <span role="status" aria-live="polite" className="min-w-0 truncate">
+        {err ? `Try now failed: ${err}` : text}
+      </span>
+      <div className="flex-1" />
+      <button
+        type="button"
+        onClick={() => void tryNow()}
+        disabled={busy}
+        className="shrink-0 text-[11px] font-medium text-accent hover:text-accent-strong disabled:opacity-60"
+      >
+        {busy ? "Trying..." : "Try now"}
+      </button>
+      <Link to={BUDGET_FETCH_ACCOUNT.href} className="shrink-0 text-[11px] font-medium text-accent hover:text-accent-strong">
+        {BUDGET_FETCH_ACCOUNT.label}
+      </Link>
     </div>
   );
 }

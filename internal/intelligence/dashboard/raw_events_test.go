@@ -77,3 +77,44 @@ func TestHandleSessionRawEventsReadsSourceJSONL(t *testing.T) {
 		t.Errorf("row 3 event_id = %q want call_1", resp.Rows[2].EventID)
 	}
 }
+
+// TestIsRawJSONLSource pins the source_file filter: an absolute path on the
+// daemon's own OS with a .json/.jsonl extension. The Windows rows are the
+// regression: a C:\ transcript path used to be dropped by a SQL `LIKE '/%'`
+// filter, so a Windows daemon showed zero raw events for every session.
+func TestIsRawJSONLSource(t *testing.T) {
+	windows := filepath.Separator == '\\'
+	tests := []struct {
+		name               string
+		path               string
+		wantWin, wantPOSIX bool
+	}{
+		{"posix jsonl", "/home/dev/.claude/projects/p/s.jsonl", false, true},
+		{"posix json upper-case ext", "/home/dev/.codex/s.JSON", false, true},
+		{"windows jsonl", `C:\Users\dev\.claude\projects\p\s.jsonl`, true, false},
+		{"windows slash jsonl", "C:/Users/dev/.codex/sessions/s.jsonl", true, false},
+		{"absolute but not a transcript", filepath.Join(t.TempDir(), "state.db"), false, false},
+		{"relative path", "sessions/s.jsonl", false, false},
+		{"non-path marker", "proxy", false, false},
+		{"empty", "", false, false},
+		// Ledger CLOUDSESS-12: a UNC, device or extended-length path is
+		// never opened, on any OS (a Windows UNC open leaks the owner's
+		// NTLM hash to the named host).
+		{"UNC share", `\\attacker.example@SSL\share\s.jsonl`, false, false},
+		{"forward-slash UNC share", "//attacker.example/share/s.jsonl", false, false},
+		{"extended-length path", `\\?\C:\Users\dev\s.jsonl`, false, false},
+		{"device path", `\\.\pipe\s.jsonl`, false, false},
+		{"cloud-session synthetic key", "cloud-session:9f86d081884c7d65", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.wantPOSIX
+			if windows {
+				want = tc.wantWin
+			}
+			if got := isRawJSONLSource(tc.path); got != want {
+				t.Errorf("isRawJSONLSource(%q) = %v, want %v", tc.path, got, want)
+			}
+		})
+	}
+}

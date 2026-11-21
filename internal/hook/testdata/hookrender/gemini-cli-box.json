@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/user/.observer-box/bin/observer hook gemini-cli BeforeAgent"
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/user/.observer-box/bin/observer hook gemini-cli BeforeTool"
+          }
+        ]
+      }
+    ]
+  }
+}

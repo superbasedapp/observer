@@ -242,9 +242,9 @@ func TestOrgBudgetWireCarriesManagedProtectionIntoGuard(t *testing.T) {
 		return guard.BudgetSnapshot{MonthlyTokens: 2_000_001}, true
 	})
 	approvalCalls := 0
-	g.SetApprovalLookup(func(string, string, string) bool {
+	g.SetApprovalLookup(func(string, string, string) (bool, error) {
 		approvalCalls++
-		return true
+		return true, nil
 	})
 
 	res := g.ScanProxyRequest("openai", []byte(`{"model":"test"}`), "s1", time.Now().UTC())

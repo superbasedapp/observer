@@ -54,10 +54,16 @@ const rangedToken = "?"
 var ErrIndex = errors.New("secfeed: install index refused")
 
 // EncodeMalicious writes the malicious artifact: header, then one
-// tab-separated line per entry, sorted by ecosystem and name.
+// tab-separated line per entry, sorted by ecosystem and name. An entry
+// whose line would pass MaxIndexLineLen is written as several lines with
+// the same ecosystem and name (maliciousLines), which every reader since
+// the index's first release unions (Lookup reads every line of a name,
+// ValidateIndex allows equal keys): a NuGet package listed for 506
+// versions made a 3,972-byte line on 2026-11-06, so a few more versions
+// would have made the whole list unreadable.
 func EncodeMalicious(entries []MaliciousEntry) []byte {
 	es := append([]MaliciousEntry(nil), entries...)
-	sort.Slice(es, func(i, j int) bool {
+	sort.SliceStable(es, func(i, j int) bool {
 		if es[i].Eco != es[j].Eco {
 			return es[i].Eco < es[j].Eco
 		}
@@ -66,17 +72,65 @@ func EncodeMalicious(entries []MaliciousEntry) []byte {
 	var b bytes.Buffer
 	b.WriteString(maliciousHeader + "\n")
 	for _, e := range es {
-		vers := "*"
-		if len(e.Versions) > 0 || e.Ranged {
-			vs := append([]string(nil), e.Versions...)
-			if e.Ranged {
-				vs = append(vs, rangedToken)
-			}
-			vers = strings.Join(vs, ",")
+		for _, l := range maliciousLines(e) {
+			b.WriteString(l)
+			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", e.Eco, e.Name, strings.Join(e.IDs, ","), vers)
 	}
 	return b.Bytes()
+}
+
+// maliciousLines returns one entry's lines, each at most MaxIndexLineLen
+// bytes. The IDs are cut into chunks of at most half the room a line has
+// and the versions into chunks of the rest, and every ID chunk is written
+// with every version chunk, so whichever lines a lookup matches carry
+// every ID, exactly as one line would (one ID chunk, the usual case, makes
+// one line per version chunk). The builder's caps (maxMaliciousID,
+// maxMaliciousName, maxMaliciousVersion) keep every single item inside its
+// chunk.
+func maliciousLines(e MaliciousEntry) []string {
+	vers := []string{"*"}
+	if len(e.Versions) > 0 || e.Ranged {
+		vers = append([]string(nil), e.Versions...)
+		if e.Ranged {
+			vers = append(vers, rangedToken)
+		}
+	}
+	prefix := string(e.Eco) + "\t" + e.Name + "\t"
+	room := MaxIndexLineLen - len(prefix) - 1 // the tab before the versions
+	ids := chunkJoin(e.IDs, room/2)
+	idWidth := 0
+	for _, c := range ids {
+		idWidth = max(idWidth, len(c))
+	}
+	vs := chunkJoin(vers, room-idWidth)
+	out := make([]string, 0, len(ids)*len(vs))
+	for _, id := range ids {
+		for _, v := range vs {
+			out = append(out, prefix+id+"\t"+v)
+		}
+	}
+	return out
+}
+
+// chunkJoin joins items with "," into chunks of at most limit bytes, in
+// order; an item longer than limit gets a chunk of its own. It returns at
+// least one chunk.
+func chunkJoin(items []string, limit int) []string {
+	var out []string
+	cur := ""
+	for _, it := range items {
+		switch {
+		case cur == "":
+			cur = it
+		case len(cur)+1+len(it) <= limit:
+			cur += "," + it
+		default:
+			out = append(out, cur)
+			cur = it
+		}
+	}
+	return append(out, cur)
 }
 
 // EncodePopular writes the popular artifact: header, then one
@@ -250,10 +304,10 @@ func (ix *Index) Lookup(eco Ecosystem, name, version string) Answer {
 		switch versionListed(es[i], version) {
 		case listedCovers:
 			a.Malicious = true
-			a.IDs = append(a.IDs, es[i].IDs...)
+			a.IDs = appendNew(a.IDs, es[i].IDs)
 		case listedSome:
 			a.ListedVersions = true
-			a.IDs = append(a.IDs, es[i].IDs...)
+			a.IDs = appendNew(a.IDs, es[i].IDs)
 		}
 	}
 	if a.Malicious {
@@ -269,6 +323,17 @@ func (ix *Index) Lookup(eco Ecosystem, name, version string) Answer {
 		a.NearMiss = nearMiss(eco, n, pop)
 	}
 	return a
+}
+
+// appendNew appends the ids dst does not hold yet: an entry written as
+// several lines (maliciousLines) repeats an ID on each of them.
+func appendNew(dst, ids []string) []string {
+	for _, id := range ids {
+		if !containsString(dst, id) {
+			dst = append(dst, id)
+		}
+	}
+	return dst
 }
 
 // listedMatch is how one entry relates to the version installed.

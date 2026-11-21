@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // ssh.go serves the SSH remote-system terminal surface
@@ -127,7 +129,15 @@ func (s *Server) handleSSHProfiles(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleSSHLaunch(w http.ResponseWriter, r *http.Request) {
 	seam, ok := s.sshSeam()
 	if !ok {
-		http.Error(w, "SSH remote-system terminals are not available on this daemon (run via `observer start`)", http.StatusNotImplemented)
+		// A nil launch manager is the terminal switch or the OS (the one
+		// sentence names the dashboard control); a manager without the SSH
+		// seam is a build without it.
+		if s.opts.LaunchManager == nil {
+			writeNeedsSetting(w, http.StatusNotImplemented, "SSH remote-system terminals are not available: "+errTerminalUnavailable,
+				msgTerminalUnavailable, settingslink.SessionAttach)
+			return
+		}
+		http.Error(w, "SSH remote-system terminals are not available: this daemon's terminal stack has no SSH launcher", http.StatusNotImplemented)
 		return
 	}
 	var body sshLaunchRequest
@@ -150,11 +160,12 @@ func (s *Server) handleSSHLaunch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	handle, err := seam.CreateSSH(SSHLaunchSpec{Profile: profile})
+	initiator, parent := s.launchOrigin(r)
+	handle, err := seam.CreateSSH(SSHLaunchSpec{Profile: profile, Initiator: initiator, ParentSessionID: parent})
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrLaunchSSHDisabled):
-			http.Error(w, err.Error(), http.StatusForbidden)
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchSSHProfileUnknown):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, ErrLaunchSSHProfileInvalid):

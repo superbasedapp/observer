@@ -199,7 +199,7 @@ func TestMirrorOSVRemoteFeedsTheLocalDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := osvdb.Open(filepath.Join(t.TempDir(), "osv"))
-	rep, err := db.Refresh(context.Background(), mirrorOSVRemote{l: l}, []string{"npm", "PyPI"}, time.Now())
+	rep, err := db.Refresh(context.Background(), newOSVContentRemote(st, l, osvdb.SourceOrgMirror), []string{"npm", "PyPI"}, time.Now())
 	if err != nil || len(rep.Changed) != 1 || rep.Failed["PyPI"] == "" {
 		t.Fatalf("refresh %+v %v", rep, err)
 	}
@@ -213,8 +213,65 @@ func TestMirrorOSVRemoteFeedsTheLocalDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db2 := osvdb.Open(filepath.Join(t.TempDir(), "osv2"))
-	rep, _ = db2.Refresh(context.Background(), mirrorOSVRemote{l: l}, []string{"npm"}, time.Now())
+	rep, _ = db2.Refresh(context.Background(), newOSVContentRemote(st, l, osvdb.SourceOrgMirror), []string{"npm"}, time.Now())
 	if rep.Failed["npm"] == "" {
 		t.Fatalf("a changed export was stored: %+v", rep)
+	}
+}
+
+// TestMirrorOSVRemoteLocalExport is the static feed mirroring plan's B3
+// (G6): LocalExport hands osvdb the installed export itself (to hard-link,
+// not copy) with the same metadata Head reports, and refuses an ecosystem
+// the mirror does not carry and a file changed after install.
+func TestMirrorOSVRemoteLocalExport(t *testing.T) {
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	w, _ := zw.Create("MAL-2.json")
+	_, _ = w.Write([]byte(`{"id":"MAL-2"}`))
+	_ = zw.Close()
+	fm := signedTestKinds(t, map[content.Kind]map[string][]byte{content.OSVExport: {osvMirrorEntryName("npm"): zb.Bytes()}})
+	st := contentchan.Store{Root: filepath.Join(t.TempDir(), "content")}
+	ctx := context.Background()
+	if _, err := fm.InstallSecurityContent(ctx, st, content.OSVExport, depsTrust()); err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Load(content.OSVExport, depsTrust(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newOSVContentRemote(st, l, osvdb.SourceOrgMirror)
+	want, _, _ := l.ArtifactPath(osvMirrorEntryName("npm"))
+	head, err := r.Head(ctx, "npm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		eco     string
+		wantErr bool
+	}{
+		{"an installed ecosystem", "npm", false},
+		{"an ecosystem the mirror does not carry", "PyPI", true},
+	}
+	for _, c := range cases {
+		p, meta, err := r.LocalExport(ctx, c.eco)
+		if (err != nil) != c.wantErr {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if !c.wantErr && (p != want || meta != head || meta.Size != int64(zb.Len())) {
+			t.Fatalf("%s: %s %+v, want %s %+v", c.name, p, meta, want, head)
+		}
+	}
+	// The database links the installed file rather than copying it.
+	db := osvdb.Open(filepath.Join(t.TempDir(), "osv"))
+	if rep, err := db.Refresh(ctx, r, []string{"npm"}, time.Now()); err != nil || len(rep.Changed) != 1 {
+		t.Fatalf("refresh %+v %v", rep, err)
+	}
+	// A changed file (same size) is refused.
+	if err := os.WriteFile(want, bytes.Repeat([]byte{'x'}, zb.Len()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.LocalExport(ctx, "npm"); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("a changed export: %v", err)
 	}
 }

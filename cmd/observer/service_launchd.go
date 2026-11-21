@@ -194,9 +194,9 @@ func runLaunchdInstall(opts serviceInstallOptions, d launchdDeps) error {
 		if err := d.run(service.Launchctl("bootstrap", service.LaunchdDomain(d.uid), plistPath)); err != nil {
 			return fmt.Errorf("launchctl bootstrap: %w", err)
 		}
-		fmt.Fprintln(opts.stdout, "Loaded and started. SuperBased now starts when you log in.")
+		fmt.Fprintln(opts.stdout, "Loaded and started. superbased now starts when you log in.")
 	default:
-		fmt.Fprintln(opts.stdout, "Installed. SuperBased starts at your next login, or now with:\n    observer service start")
+		fmt.Fprintln(opts.stdout, "Installed. superbased starts at your next login, or now with:\n    observer service start")
 	}
 	fmt.Fprintln(opts.stdout, serviceRestartNote(componentSnapshotFor(opts.configPath).Active("capture.proxy")))
 	return nil

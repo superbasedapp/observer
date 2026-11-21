@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -291,5 +292,39 @@ func TestKeyBeforeFirstPosture(t *testing.T) {
 	}
 	if ld := Load(PosturePath(filepath.Join(dir2, "config.toml")), KeyPath(filepath.Join(dir2, "config.toml"))); ld.State != StateTampered {
 		t.Fatalf("a daemon key with no posture reads %v", ld.State)
+	}
+}
+
+// TestPromptJudgeFieldsAreSigned pins the adm-2 posture fields: set, they are
+// covered by the MAC (a flip no longer verifies); unset, the canonical form is
+// byte-identical to the one earlier binaries sign.
+func TestPromptJudgeFieldsAreSigned(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	base := Posture{Schema: 1, Source: SourceLocal, WrittenAt: time.Unix(1700000000, 0).UTC()}
+	if string(canonical(base)) != string(canonical(Posture{Schema: 1, Source: SourceLocal, WrittenAt: base.WrittenAt})) {
+		t.Fatal("canonical form is not stable")
+	}
+	if strings.Contains(string(canonical(base)), "prompt_judge") {
+		t.Fatal("an unset prompt judge field must not change the canonical form")
+	}
+	cases := []struct {
+		name string
+		set  func(*Posture)
+		flip func(*Posture)
+	}{
+		{"active", func(p *Posture) { p.PromptJudgeActive = true }, func(p *Posture) { p.PromptJudgeActive = false }},
+		{"fail closed", func(p *Posture) { p.PromptJudgeActive, p.PromptJudgeFailClosed = true, true }, func(p *Posture) { p.PromptJudgeFailClosed = false }},
+	}
+	for _, tc := range cases {
+		p := base
+		tc.set(&p)
+		signed := Sign(p, key)
+		if !Verify(&signed, key) {
+			t.Fatalf("%s: a signed posture must verify", tc.name)
+		}
+		tc.flip(&signed)
+		if Verify(&signed, key) {
+			t.Fatalf("%s: flipping the field must break the MAC", tc.name)
+		}
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/secshellrisk"
 )
 
 // Severity is a finding's severity.
@@ -48,6 +51,21 @@ var Rules = []Rule{
 	{ID: "S-776", Severity: SeverityLow, FlagOnly: true, Message: "no permissions block: the token's permissions depend on your organization's default token permissions"},
 	{ID: "S-777", Severity: SeverityHigh, Message: "a job that runs the pull request's code also reads a secret, so untrusted code can read it"},
 	{ID: "S-778", Severity: SeverityHigh, Message: "an AI agent step runs with a permission-bypass flag, so the agent acts with no approval in CI"},
+	// S-779 is matched, not checked: Check never emits it (Check stays
+	// database-free). The dependency scan child, where an OSV database is
+	// installed, matches ActionRefs against the GitHub Actions ecosystem and
+	// raises the finding with the advisory's own severity (this row's
+	// SeverityHigh is the ceiling and the default for policy and feedback
+	// code that only knows the rule id).
+	{ID: "S-779", Severity: SeverityHigh, Message: "an action this workflow uses, at the version it pins, has a known advisory in OSV's GitHub Actions ecosystem; move to a fixed version"},
+	// S-780 to S-782 classify run: scripts through internal/secshellrisk.Analyze
+	// (the one owner of the three script classifications).
+	{ID: "S-780", Severity: SeverityLow, FlagOnly: true, Message: "a run: script installs operating system packages with no version, so the build changes when the package does; pin a version"},
+	{ID: "S-781", Severity: SeverityLow, FlagOnly: true, Message: "a run: script installs a language package with no version or lock, so the build changes when the package does; pin a version or install from a lockfile"},
+	{ID: "S-782", Severity: SeverityMedium, Message: "a run: script pipes remote content into an interpreter, so whatever the server returns runs in the build; download, verify a checksum, then run"},
+	// S-783 is one finding per file, at the first moving runner label.
+	{ID: "S-783", Severity: SeverityLow, FlagOnly: true, Message: "runs-on names a moving runner label (ubuntu-latest, windows-latest, macos-latest), so the runner image changes under the workflow; name a specific image version"},
+	{ID: "S-784", Severity: SeverityMedium, Message: "a container, service or docker:// action image is not pinned by an @sha256: digest, which its owner can move; pin it by digest"},
 }
 
 // MaxWorkflowBytes caps the workflow text read.
@@ -158,6 +176,7 @@ func Check(content []byte) Report {
 	if isWriteAll(topPerms) {
 		c.add("S-775", topPerms.Line)
 	}
+	wfShell := defaultShell(root)
 	jobs := get(root, "jobs")
 	anyPerms := topPerms != nil
 	if jobs != nil && jobs.Kind == yaml.MappingNode {
@@ -172,7 +191,7 @@ func Check(content []byte) Report {
 					c.add("S-775", p.Line)
 				}
 			}
-			c.checkJob(job, privileged)
+			c.checkJob(job, privileged, wfShell)
 		}
 	}
 	if !anyPerms {
@@ -210,7 +229,14 @@ func (c *checker) add(id string, line int) {
 }
 
 // checkJob runs the job- and step-level rules.
-func (c *checker) checkJob(job *yaml.Node, privileged bool) {
+func (c *checker) checkJob(job *yaml.Node, privileged bool, wfShell string) {
+	c.checkRunner(get(job, "runs-on"))
+	c.checkJobImages(job)
+	jobShell := defaultShell(job)
+	if jobShell == "" {
+		jobShell = wfShell
+	}
+	windows := runsOnWindows(get(job, "runs-on"))
 	steps := get(job, "steps")
 	headCheckout := false
 	secretLine := 0
@@ -219,38 +245,8 @@ func (c *checker) checkJob(job *yaml.Node, privileged bool) {
 			if st.Kind != yaml.MappingNode {
 				continue
 			}
-			uses := scalar(get(st, "uses"))
-			with := get(st, "with")
-			if isCheckout(uses) && privileged {
-				if ref := get(with, "ref"); ref != nil && prHeadRef.MatchString(scalar(ref)) {
-					headCheckout = true
-					c.add("S-771", ref.Line)
-				}
-			}
-			if uses != "" {
-				c.checkPin(uses, get(st, "uses").Line)
-			}
-			if run := get(st, "run"); run != nil {
-				if untrustedExpr.MatchString(scalar(run)) {
-					c.add("S-772", run.Line+lineOf(scalar(run), untrustedExpr))
-				}
-				if runsPRCode(scalar(run)) && privileged {
-					headCheckout = true
-				}
-				if hasAIBypass(scalar(run)) && mentionsAgentCLI(scalar(run)) {
-					c.add("S-778", run.Line)
-				}
-			}
-			if isAIAgentAction(uses) && with != nil && with.Kind == yaml.MappingNode {
-				for i := 0; i+1 < len(with.Content); i += 2 {
-					k, v := strings.ToLower(with.Content[i].Value), with.Content[i+1]
-					if promptKeys[k] && untrustedExpr.MatchString(scalar(v)) {
-						c.add("S-773", v.Line)
-					}
-					if hasAIBypass(scalar(v)) {
-						c.add("S-778", v.Line)
-					}
-				}
+			if c.checkStep(st, privileged, jobShell, windows) {
+				headCheckout = true
 			}
 			if l := secretRef(st); l > 0 && secretLine == 0 {
 				secretLine = l
@@ -263,6 +259,54 @@ func (c *checker) checkJob(job *yaml.Node, privileged bool) {
 	if privileged && headCheckout && secretLine > 0 {
 		c.add("S-777", secretLine)
 	}
+}
+
+// checkStep runs the step-level rules on one step and reports whether the
+// step checks out (or fetches) the pull request's head in a privileged
+// workflow.
+func (c *checker) checkStep(st *yaml.Node, privileged bool, jobShell string, windows bool) (head bool) {
+	uses := scalar(get(st, "uses"))
+	with := get(st, "with")
+	if isCheckout(uses) && privileged {
+		if ref := get(with, "ref"); ref != nil && prHeadRef.MatchString(scalar(ref)) {
+			head = true
+			c.add("S-771", ref.Line)
+		}
+	}
+	if uses != "" {
+		c.checkPin(uses, get(st, "uses").Line)
+	}
+	if strings.HasPrefix(uses, "docker://") {
+		c.checkImage(uses[len("docker://"):], get(st, "uses").Line)
+	}
+	if run := get(st, "run"); run != nil {
+		if untrustedExpr.MatchString(scalar(run)) {
+			c.add("S-772", run.Line+lineOf(scalar(run), untrustedExpr))
+		}
+		if runsPRCode(scalar(run)) && privileged {
+			head = true
+		}
+		if hasAIBypass(scalar(run)) && mentionsAgentCLI(scalar(run)) {
+			c.add("S-778", run.Line)
+		}
+		shell := scalar(get(st, "shell"))
+		if shell == "" {
+			shell = jobShell
+		}
+		c.checkScript(run, shell, windows)
+	}
+	if isAIAgentAction(uses) && with != nil && with.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(with.Content); i += 2 {
+			k, v := strings.ToLower(with.Content[i].Value), with.Content[i+1]
+			if promptKeys[k] && untrustedExpr.MatchString(scalar(v)) {
+				c.add("S-773", v.Line)
+			}
+			if hasAIBypass(scalar(v)) {
+				c.add("S-778", v.Line)
+			}
+		}
+	}
+	return head
 }
 
 // checkPin flags a remote action not pinned to a full commit SHA.
@@ -429,4 +473,185 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// defaultShell returns the defaults.run.shell of a workflow or job node
+// ("" when unset).
+func defaultShell(n *yaml.Node) string {
+	return scalar(get(get(get(n, "defaults"), "run"), "shell"))
+}
+
+// runnerLabels lists the label scalars of a runs-on value (a scalar, a
+// sequence, or a mapping's labels: value).
+func runnerLabels(n *yaml.Node) []*yaml.Node {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return []*yaml.Node{n}
+	case yaml.SequenceNode:
+		var out []*yaml.Node
+		for _, c := range n.Content {
+			if c.Kind == yaml.ScalarNode {
+				out = append(out, c)
+			}
+		}
+		return out
+	case yaml.MappingNode:
+		return runnerLabels(get(n, "labels"))
+	}
+	return nil
+}
+
+// isExpression reports a value that is a ${{ }} expression (not known at
+// parse time).
+func isExpression(s string) bool { return strings.Contains(s, "${{") }
+
+// gitHubHostedPrefixes are the GitHub-hosted runner families.
+var gitHubHostedPrefixes = []string{"ubuntu-", "windows-", "macos-"}
+
+// isMovingRunnerLabel reports a GitHub-hosted label that tracks the newest
+// image (ubuntu-latest, macos-latest-xlarge).
+func isMovingRunnerLabel(label string) bool {
+	l := strings.ToLower(strings.TrimSpace(label))
+	if isExpression(l) {
+		return false
+	}
+	hosted := false
+	for _, p := range gitHubHostedPrefixes {
+		if strings.HasPrefix(l, p) {
+			hosted = true
+		}
+	}
+	return hosted && (strings.HasSuffix(l, "-latest") || strings.Contains(l, "-latest-"))
+}
+
+// checkRunner raises S-783 (once per file) at the first moving runner label.
+// A runs-on that names self-hosted is the owner's own runner and is not
+// flagged.
+func (c *checker) checkRunner(runsOn *yaml.Node) {
+	labels := runnerLabels(runsOn)
+	for _, n := range labels {
+		if strings.EqualFold(strings.TrimSpace(n.Value), "self-hosted") {
+			return
+		}
+	}
+	for _, n := range labels {
+		if isMovingRunnerLabel(n.Value) {
+			c.addOnce("S-783", n.Line)
+			return
+		}
+	}
+}
+
+// runsOnWindows reports a runs-on that names a Windows runner label.
+func runsOnWindows(runsOn *yaml.Node) bool {
+	for _, n := range runnerLabels(runsOn) {
+		l := strings.ToLower(strings.TrimSpace(n.Value))
+		if l == "windows" || strings.HasPrefix(l, "windows-") {
+			return true
+		}
+	}
+	return false
+}
+
+// addOnce adds a finding of id unless one of that rule is already there.
+func (c *checker) addOnce(id string, line int) {
+	for _, f := range c.out {
+		if f.RuleID == id {
+			return
+		}
+	}
+	c.add(id, line)
+}
+
+// checkJobImages raises S-784 for a job container image and each service
+// image.
+func (c *checker) checkJobImages(job *yaml.Node) {
+	if ct := get(job, "container"); ct != nil {
+		switch ct.Kind {
+		case yaml.ScalarNode:
+			c.checkImage(ct.Value, ct.Line)
+		case yaml.MappingNode:
+			if img := get(ct, "image"); img != nil && img.Kind == yaml.ScalarNode {
+				c.checkImage(img.Value, img.Line)
+			}
+		}
+	}
+	if sv := get(job, "services"); sv != nil && sv.Kind == yaml.MappingNode {
+		for i := 1; i < len(sv.Content); i += 2 {
+			if img := get(sv.Content[i], "image"); img != nil && img.Kind == yaml.ScalarNode {
+				c.checkImage(img.Value, img.Line)
+			}
+		}
+	}
+}
+
+// checkImage raises S-784 for an image reference with no @sha256: digest.
+// An empty reference or an expression is not known and is not flagged.
+func (c *checker) checkImage(image string, line int) {
+	image = strings.TrimSpace(image)
+	if image == "" || isExpression(image) {
+		return
+	}
+	if strings.Contains(strings.ToLower(image), "@sha256:") {
+		return
+	}
+	c.add("S-784", line)
+}
+
+// scriptDialect maps a step's effective shell (and the runner) to a parse
+// dialect. ok is false for a shell that is not a command shell (python and
+// so on): its run: text is not shell script and is not analyzed.
+func scriptDialect(shell string, windows bool) (policy.Dialect, bool) {
+	fields := strings.Fields(strings.ToLower(shell))
+	if len(fields) == 0 {
+		if windows {
+			return policy.DialectPowerShell, true
+		}
+		return policy.DialectPosix, true
+	}
+	name := strings.TrimSuffix(path.Base(strings.ReplaceAll(fields[0], "\\", "/")), ".exe")
+	switch name {
+	case "pwsh", "powershell":
+		return policy.DialectPowerShell, true
+	case "bash", "sh", "zsh", "wsl":
+		return policy.DialectPosix, true
+	case "cmd":
+		return policy.DialectCmd, true
+	}
+	return "", false
+}
+
+// checkScript classifies one run: script through secshellrisk (the one
+// owner of the three classifications) and raises S-780 to S-782.
+func (c *checker) checkScript(run *yaml.Node, shell string, windows bool) {
+	script := scalar(run)
+	if script == "" {
+		return
+	}
+	dialect, ok := scriptDialect(shell, windows)
+	if !ok {
+		return
+	}
+	hits, _ := secshellrisk.Analyze(script, dialect)
+	base := run.Line
+	if run.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		base++ // a block scalar's content starts on the line after its header
+	}
+	for _, h := range hits {
+		id := ""
+		switch h.Kind {
+		case secshellrisk.OSInstallUnpinned:
+			id = "S-780"
+		case secshellrisk.LangInstallUnpinned:
+			id = "S-781"
+		case secshellrisk.RemotePipe:
+			id = "S-782"
+		}
+		if id != "" {
+			c.add(id, base+h.Line)
+		}
+	}
 }

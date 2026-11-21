@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import type { LucideIcon } from "lucide-react";
-import { X } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import { Icon } from "./Icon";
 import { Spinner } from "./Spinner";
 import { chipIdHint } from "../lib/chipId";
@@ -44,6 +45,15 @@ import { STABLE_SCROLL_Y } from "../lib/scroll";
 // `notice` (a muted line at the top of the list, e.g. "Showing the first 50 -
 // type to search"), and `onQueryChange` (the typed query, for a caller that
 // searches server-side).
+//
+// It reads as a dropdown, not a text box (operator report 2026-11-06, the
+// Code security Findings filters): a chevron at the right edge that turns
+// while the list is open (clicking it while open closes the list), a
+// pointer cursor and hover state on the closed field, and the ARIA 1.2
+// combobox pattern on the input (role="combobox", aria-expanded,
+// aria-controls and aria-activedescendant over the role="listbox" list,
+// whose options are not tab stops). A click or focus opens the list, as
+// does typing, ArrowDown or Enter; Escape and Tab close it.
 export interface EntityMultiPickerOption {
   id: string;
   label: string;
@@ -148,6 +158,11 @@ export function EntityMultiPicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // The list's and each option row's DOM ids (aria-controls and
+  // aria-activedescendant), as ComboChip spells them.
+  const uid = useId().replace(/:/g, "");
+  const listId = `picker-${uid}-list`;
+  const optId = (i: number) => `picker-${uid}-opt-${i}`;
 
   const byID = useMemo(() => {
     const m = new Map<string, EntityMultiPickerOption>();
@@ -258,8 +273,17 @@ export function EntityMultiPicker({
       setActiveIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
+      // A closed list opens on Enter, like a select: a row nobody can see
+      // is never picked.
+      if (!open) {
+        setOpen(true);
+        return;
+      }
       const row = enterRow({ activeIdx, moved, pickableLen: pickable.length, hasFree: freeIDCandidate !== null, explicitPick });
       if (row >= 0) selectRow(row);
+    } else if (e.key === "Tab") {
+      // Tab leaves the combobox (the rows are not tab stops); close behind it.
+      setOpen(false);
     } else if (e.key === "Escape") {
       // An open list owns Escape: close it and mark the key handled so an
       // enclosing SlideOver / Modal stays open (shared/lib/overlayEscape.ts).
@@ -291,9 +315,9 @@ export function EntityMultiPicker({
           }
         }}
         className={clsx(
-          "flex min-h-[34px] w-full flex-wrap items-center gap-1.5 rounded-2 border bg-bg-2 px-2 py-1.5 text-[12.5px]",
-          disabled ? "cursor-not-allowed opacity-60" : "cursor-text",
-          open ? "border-accent" : "border-line-2",
+          "relative flex min-h-[34px] w-full flex-wrap items-center gap-1.5 rounded-2 border bg-bg-2 py-1.5 pl-2 pr-7 text-[12.5px] transition-colors",
+          disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+          open ? "border-accent" : disabled ? "border-line-2" : "border-line-2 hover:border-line-3 hover:bg-bg-3",
         )}
       >
         {value.slice(0, visibleCount).map((id, idx) => {
@@ -337,6 +361,12 @@ export function EntityMultiPicker({
           <input
             ref={inputRef}
             type="text"
+            role="combobox"
+            aria-haspopup="listbox"
+            aria-expanded={open && !disabled}
+            aria-controls={open && !disabled ? listId : undefined}
+            aria-autocomplete="list"
+            aria-activedescendant={open && !disabled && activeIdx < rowCount ? optId(activeIdx) : undefined}
             disabled={disabled}
             value={query}
             aria-label={ariaLabel}
@@ -351,15 +381,37 @@ export function EntityMultiPicker({
             onKeyDown={onKey}
             data-explicit-pick={explicitPick ? "true" : undefined}
             placeholder={value.length === 0 ? placeholder : ""}
-            className="min-w-[80px] flex-1 border-none bg-transparent text-fg-1 outline-none placeholder:text-fg-4"
+            className={clsx(
+              "min-w-[80px] flex-1 border-none bg-transparent text-fg-1 outline-none placeholder:text-fg-4",
+              disabled ? "cursor-not-allowed" : open ? "cursor-text" : "cursor-pointer",
+            )}
           />
         )}
+        {/* The dropdown affordance. A click on it while the list is open
+            closes the list; otherwise the click reaches the field, which
+            opens it. Decorative to assistive tech: the input carries the
+            combobox role and its aria-expanded state. */}
+        <span
+          aria-hidden
+          data-picker-chevron
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            if (!open) return;
+            e.stopPropagation();
+            setOpen(false);
+          }}
+          className="absolute inset-y-0 right-0 flex w-7 items-center justify-center text-fg-3"
+        >
+          <Icon icon={ChevronDown} size={12} className={clsx("transition-transform", open && !disabled && "rotate-180")} />
+        </span>
       </div>
 
       {open && !disabled && (
         <div
+          id={listId}
           className="absolute left-0 top-[calc(100%+4px)] z-50 w-full min-w-[220px] overflow-hidden rounded-3 border border-line-2 bg-bg-1 shadow-drawer"
           role="listbox"
+          aria-label={ariaLabel}
           aria-multiselectable={!single}
           aria-busy={loading || undefined}
         >
@@ -413,8 +465,10 @@ export function EntityMultiPicker({
                       {header}
                       <button
                         type="button"
+                        id={optId(i)}
                         data-idx={i}
                         role="option"
+                        tabIndex={-1}
                         aria-selected={false}
                         onMouseEnter={() => setActiveIdx(i)}
                         onClick={() => selectRow(i)}
@@ -443,8 +497,10 @@ export function EntityMultiPicker({
                 {freeIDCandidate && (
                   <button
                     type="button"
+                    id={optId(pickable.length)}
                     data-idx={pickable.length}
                     role="option"
+                    tabIndex={-1}
                     aria-selected={false}
                     onMouseEnter={() => setActiveIdx(pickable.length)}
                     onClick={() => selectRow(pickable.length)}

@@ -53,10 +53,14 @@ import (
 // releases the hold only once the reflog no longer reaches it, names the
 // step that does that (PushReleaseStep), and says that approving sends the
 // held commit, whose secret must then be rotated (merge finding F2 of lane
-// SEC-GATE5: the hold follows the reflog since that lane).
+// SEC-GATE5: the hold follows the reflog since that lane). The approve
+// lives on the verdict (Security > Verdicts, "approve...", which opens the
+// Approvals form) and in `observer guard approve`, not on the finding:
+// Code security > Findings shows the finding but has no approve (dashboard
+// CLI parity plan, B-CS7), so both surfaces read the same sentence.
 const (
-	gateAdvice = "Fix or review the finding first; the developer can see it on Code security > Findings and approve this commit there or with `observer guard approve`."
-	pushAdvice = "Fix or review the finding first; a secret in a commit stays in it after it is removed from the files, and amending, rebasing or resetting does not release this hold while the reflog still reaches the old commit. After dropping the secret from the commit, release it with " + PushReleaseStep + ". The developer can see it on Code security > Findings and approve this push there or with `observer guard approve S-792`; a push approved this way sends the held commit to the remote named above, so rotate the secret afterwards."
+	gateAdvice = "Fix or review the finding first; the developer can see it on Code security > Findings and approve this commit from its verdict on Security > Verdicts or with `observer guard approve`."
+	pushAdvice = "Fix or review the finding first; a secret in a commit stays in it after it is removed from the files, and amending, rebasing or resetting does not release this hold while the reflog still reaches the old commit. After dropping the secret from the commit, release it with " + PushReleaseStep + ". The developer can see it on Code security > Findings and approve this push from its verdict on Security > Verdicts or with `observer guard approve S-792`; a push approved this way sends the held commit to the remote named above, so rotate the secret afterwards."
 )
 
 // PushReleaseStep is the step that releases S-792's hold on a commit the
@@ -170,7 +174,7 @@ func dirtyNotClean(s *policy.Security) bool {
 }
 
 // remoteStateAdvice is the advice of S-792's remote-state row.
-const remoteStateAdvice = "While a blocking finding is open the push gate credits a remote only from its own remote-tracking refs and URLs, so an agent does not write them. Fix or review the finding first; the developer can see it on Code security > Findings and approve this command there or with `observer guard approve S-792`."
+const remoteStateAdvice = "While a blocking finding is open the push gate credits a remote only from its own remote-tracking refs and URLs, so an agent does not write them. Fix or review the finding first; the developer can see it on Code security > Findings and approve this command from its verdict on Security > Verdicts or with `observer guard approve S-792`."
 
 // remoteStateMatch is S-792's remote-state row: an agent write to the
 // remote-tracking refs or the remote configuration while the posture is
@@ -359,7 +363,7 @@ func stateWords(s *policy.Security) string {
 		case policy.QuickScanBlocking:
 			return "the quick scan found a blocking finding in the changes"
 		case policy.QuickScanUnknown:
-			return "the quick scan did not finish"
+			return quickScanUnknownWords(s.QuickScanDetail)
 		default:
 			return "the changes have not been scanned"
 		}

@@ -110,7 +110,7 @@ func handleHermesHook(ctx context.Context, event, configPath string) {
 
 	insertCtx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
 	defer cancel()
-	hookStore := store.New(database)
+	hookStore := hookIngestStore(database)
 	hookStore.SetTasksEnabled(cfg.Tasks.Enabled)
 	hookStore.SetTasksOptions(cfg.Tasks.MatchMode, cfg.Tasks.ConcurrentAttribution, cfg.Tasks.IncludeSidechains)
 	if _, err := hookStore.Ingest(insertCtx, toolEvents, tokenEvents, store.IngestOptions{}); err != nil {

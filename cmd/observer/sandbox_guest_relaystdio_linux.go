@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -99,7 +100,7 @@ func parseRelayStdioArgs(args []string) (relayStdioArgs, error) {
 // readRelaySecret reads the per-run mux secret (an owner-only regular file
 // the home side uploaded) and removes it.
 func readRelaySecret(p string) ([]byte, error) {
-	fi, err := os.Lstat(p)
+	fi, err := os.Lstat(p) //nolint:gosec // G703: false positive; the secret file path the home side passed, checked owner-only and regular below
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +108,7 @@ func readRelaySecret(p string) ([]byte, error) {
 		return nil, fmt.Errorf("the secret file %s is not an owner-only regular file", p)
 	}
 	b, err := os.ReadFile(p) //nolint:gosec // G304: the path the home side passed, lstat-checked above
-	_ = os.Remove(p)
+	_ = os.Remove(p)         //nolint:gosec // G703: false positive; the secret file just read, removed as the protocol requires
 	if err != nil {
 		return nil, err
 	}
@@ -344,15 +345,30 @@ func guestRunPTY(g *relaymux.Guest, a relayStdioArgs) int {
 		_, _ = io.Copy(term, master)
 		close(out)
 	}()
+	var hungUp atomic.Bool
+	waited := make(chan struct{})
 	go func() {
 		// The session ending (the home side gone) ends the command, as a
 		// lost terminal hangs up a local one.
-		<-g.Done()
+		select {
+		case <-g.Done():
+		case <-waited:
+			return
+		}
+		hungUp.Store(true)
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGHUP)
 		}
 	}()
 	err = cmd.Wait()
+	close(waited)
+	// The end record (live run 2026-11-19, D7): which side ended the run and
+	// why goes home on the mux while it lives and always on stderr, which
+	// the home side keeps in the run's log, so an exit the provider reports
+	// can be told apart from the agent's own.
+	end := guestPTYEndRecord(err, hungUp.Load(), g.Err(), g.SinceLastFrame())
+	g.Log(end)
+	fmt.Fprintln(os.Stderr, "observer sandbox --relay-stdio: "+end)
 	// Every byte of output reaches the home side before the session ends:
 	// the copy ends when the PTY has nothing left, the half close tells the
 	// home side, and the home side closes the session.
@@ -379,6 +395,34 @@ func guestRunPTY(g *relaymux.Guest, a relayStdioArgs) int {
 	}
 	fmt.Fprintln(os.Stderr, "observer sandbox --relay-stdio: "+strconv.Quote(err.Error()))
 	return 1
+}
+
+// guestPTYEndRecord says how the agent on the guest's PTY ended: its own
+// exit (a code or a signal), or a hang-up the helper sent because the
+// session home had ended (with why, and how long the home side had been
+// quiet).
+func guestPTYEndRecord(err error, hungUp bool, sessErr error, quiet time.Duration) string {
+	how := "exited with code 0"
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &ee):
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			how = "was ended by signal " + ws.Signal().String()
+		} else {
+			how = "exited with code " + strconv.Itoa(ee.ExitCode())
+		}
+	default:
+		how = "could not be waited for (" + err.Error() + ")"
+	}
+	if !hungUp {
+		return relaymux.PTYEndPrefix + "the agent " + how + " on its own"
+	}
+	why := "it closed"
+	if sessErr != nil {
+		why = sessErr.Error()
+	}
+	return relaymux.PTYEndPrefix + "the session to the home side ended (" + why + "; the home side's last frame came " + quiet.String() + " before), so the helper hung up the agent, which then " + how
 }
 
 // guestRekeyFlag selects replaceGuestRecord (a re-adopted run's relay).

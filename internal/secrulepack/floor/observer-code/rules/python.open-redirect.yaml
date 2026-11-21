@@ -1,0 +1,48 @@
+rules:
+  - id: python.open-redirect
+    languages: [python]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; check it with url_has_allowed_host_and_scheme, or redirect to a named view.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|cookies|get_json|GET|POST|COOKIES|query_params)$
+    pattern-sanitizers:
+      - pattern: url_for(...)
+      - pattern: reverse(...)
+      - pattern: urllib.parse.quote(...)
+      - pattern: quote(...)
+      - pattern: int(...)
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: '"$LIT" + $X + $Y'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^(https?://[^/?#]+[/?#]|/[^/\\])
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: redirect($U, ...)
+              - pattern: flask.redirect($U, ...)
+              - pattern: django.shortcuts.redirect($U, ...)
+              - pattern: HttpResponseRedirect($U, ...)
+              - pattern: HttpResponsePermanentRedirect($U, ...)
+              - pattern: RedirectResponse($U, ...)
+              - pattern: RedirectResponse(..., url=$U, ...)
+          - pattern-not-inside: |
+              if url_has_allowed_host_and_scheme(...):
+                  ...
+          - pattern-not-inside: |
+              if is_safe_url(...):
+                  ...
+          - focus-metavariable: $U

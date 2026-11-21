@@ -7,6 +7,8 @@
 // 3.3 (consent and notice screens) and 3.7 (compulsory consent).
 
 import { orgDisplayLabelSentence } from "./orgName.ts";
+import type { Fix } from "./needsSetting.ts";
+import { orgPlaceLink, placeLink, type OrgPlace, type Place } from "./settingsPlaces.ts";
 import type { OrgIntelResultRow } from "./types";
 
 export type OrgIntelClass = "unenrolled" | "individual" | "managed";
@@ -81,6 +83,11 @@ export type OrgIntelStatus = {
   cached_results: number;
   managed_rail?: OrgIntelRail;
   note?: string;
+  /** The team dashboard's origin, when the node knows a safe address. */
+  org_dashboard?: string;
+  /** "personal" when this machine is connected to the person's own
+   *  personal dashboard (they are its only admin), else "team" or absent. */
+  dashboard_kind?: string;
 };
 
 export type OrgIntelStatusResponse = {
@@ -143,6 +150,13 @@ export function orgIntelOrgName(st: Pick<OrgIntelStatus, "org_name">): string {
   return orgDisplayLabelSentence(st.org_name);
 }
 
+// orgIntelIsPersonal reports a personal dashboard: its org is named
+// "Personal", so an org-level status names the dashboard instead and speaks
+// to its only admin, the person (shared/lib/twoDashboards.ts wording).
+export function orgIntelIsPersonal(st: Pick<OrgIntelStatus, "dashboard_kind"> | null | undefined): boolean {
+  return st?.dashboard_kind === "personal";
+}
+
 // OrgIntelPhase is what the Settings section renders, decided by an ordered
 // table (first match wins), one test row per entry.
 export type OrgIntelPhase =
@@ -172,6 +186,41 @@ export function orgIntelPhase(s: OrgIntelStatus): OrgIntelPhase {
 
 export const ORG_INTEL_PHASES: readonly OrgIntelPhase[] = PHASE_RULES.map((r) => r.phase);
 
+// OrgIntelFixRule is the way forward of a status: a place on this machine
+// (the person changes it here) and/or a team-dashboard place (only the
+// organization's admins change it). Neither means this page itself is the
+// place (the consent card) or nothing is off.
+type OrgIntelFixRule = { place?: Place; org?: OrgPlace };
+
+// ORG_INTEL_PHASE_FIX is one row per Settings phase. A managed machine whose
+// rail does not run is the org's to change (orgIntelFix).
+export const ORG_INTEL_PHASE_FIX: Record<OrgIntelPhase, OrgIntelFixRule> = {
+  unenrolled: { place: "account" },
+  no_terms: { org: "org_session_enrichment" },
+  managed_notice: {},
+  org_off: { org: "org_session_enrichment" },
+  pending_required: {},
+  terms_changed: {},
+  accepted: {},
+  not_opted_in: {},
+};
+
+function fixOfRule(s: OrgIntelStatus, r: OrgIntelFixRule): Fix {
+  return {
+    settings: r.place ? placeLink(r.place) : null,
+    org: r.org ? orgPlaceLink(s.org_dashboard, r.org, s.dashboard_kind) : null,
+  };
+}
+
+// orgIntelFix is the way forward of the Settings section's status.
+export function orgIntelFix(s: OrgIntelStatus): Fix {
+  const phase = orgIntelPhase(s);
+  if (phase === "managed_notice" && s.managed_rail && !s.managed_rail.on) {
+    return fixOfRule(s, { org: "org_session_enrichment" });
+  }
+  return fixOfRule(s, ORG_INTEL_PHASE_FIX[phase]);
+}
+
 // orgIntelBanner is the global pending-consent banner (design 3.7 step 3):
 // shown on every page while an individual node has a compulsory requirement
 // it has not accepted. null when there is nothing to say.
@@ -181,15 +230,15 @@ export function orgIntelBanner(s: OrgIntelStatus | null | undefined): { title: s
   if (s.pending_reason === "terms_changed") {
     return {
       title: "Updated terms",
-      text: `${org} changed its Cloud Intelligence terms. Enrichment continues under the terms you accepted until you review the new ones.`,
+      text: `${org} changed its AI summaries terms. Enrichment continues under the terms you accepted until you review the new ones.`,
     };
   }
   const deadline = s.deadline_passed
-    ? " The deadline has passed, so the organization may refuse this machine's data until you choose."
+    ? " The deadline has passed, so the team may refuse this machine's data until you choose."
     : "";
   return {
     title: "Consent required",
-    text: `${org} now requires Cloud Intelligence. Accept, or leave the organization.${deadline}`,
+    text: `${org} now requires AI summaries. Accept, or leave the team.${deadline}`,
   };
 }
 
@@ -211,6 +260,9 @@ export type OrgSessionsBanner = {
   text: string;
   terms: string;
   link: string;
+  /** The team-dashboard place, when only the organization's admins can
+   *  change the state (not set up, off, not running). */
+  org: Fix["org"];
 };
 
 // SESSIONS_BANNER_RULES decides the org banner's state, first match wins, one
@@ -219,36 +271,47 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   state: string;
   match: (s: OrgIntelStatus) => boolean;
   text: (s: OrgIntelStatus, org: string) => string;
+  /** Set when only the organization's admins can change this state. */
+  org?: OrgPlace;
 }> = [
   {
     state: "Not set up",
     match: (s) => !s.requirement,
-    text: (_s, org) => `${org} has not published enrichment terms yet. Nothing is sent from this machine.`,
+    text: (s, org) =>
+      orgIntelIsPersonal(s)
+        ? "Your personal dashboard has not published enrichment terms yet. Nothing is sent from this machine."
+        : `${org} has not published enrichment terms yet. Nothing is sent from this machine.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Off",
     match: (s) => !s.org_enabled,
-    text: (_s, org) => `${org} has org enrichment turned off. Nothing is sent from this machine.`,
+    text: (s, org) =>
+      orgIntelIsPersonal(s)
+        ? "Your personal dashboard has session enrichment off. Nothing is sent from this machine."
+        : `${org} has team AI summaries turned off. Nothing is sent from this machine.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Not running",
     match: (s) => s.class === "managed" && !!s.managed_rail && !s.managed_rail.on,
-    text: (s, org) => s.managed_rail?.message || `Org enrichment is not running on this machine yet under ${org}'s terms.`,
+    text: (s, org) => s.managed_rail?.message || `Team AI summaries are not running on this machine yet under ${org}'s terms.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Running",
     match: (s) => s.class === "managed",
-    text: (_s, org) => `This machine is managed: ${org} decides, and org enrichment runs here under its terms. There is nothing to accept.`,
+    text: (_s, org) => `This machine is managed: ${org} decides, and team AI summaries run here under its terms. There is nothing to accept.`,
   },
   {
     state: "Terms changed",
     match: (s) => s.pending && s.pending_reason === "terms_changed",
-    text: (_s, org) => `${org} changed its terms. Enrichment continues under the terms you accepted until you review the new ones in Settings, Org enrichment.`,
+    text: (_s, org) => `${org} changed its terms. Enrichment continues under the terms you accepted until you review the new ones in Settings, Team AI summaries.`,
   },
   {
     state: "Your answer needed",
     match: (s) => s.pending,
-    text: (_s, org) => `${org} requires org enrichment. Accept, or leave the organization, in Settings, Org enrichment.`,
+    text: (_s, org) => `${org} requires team AI summaries. Accept, or leave the team, in Settings, Team AI summaries.`,
   },
   {
     state: "Accepted",
@@ -258,9 +321,11 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   {
     state: "Not accepted",
     match: () => true,
-    text: (_s, org) => `You have not accepted ${org}'s terms, so nothing is sent from this machine for these sessions. Review them in Settings, Org enrichment.`,
+    text: (_s, org) => `You have not accepted ${org}'s terms, so nothing is sent from this machine for these sessions. Review them in Settings, Team AI summaries.`,
   },
 ];
+
+const PLACE_TEAM_SUMMARIES = placeLink("team_summaries").href;
 
 export const ORG_SESSIONS_BANNER_STATES: readonly string[] = SESSIONS_BANNER_RULES.map((r) => r.state);
 
@@ -273,10 +338,18 @@ export function orgIntelSessionsBanner(s: OrgIntelStatus | null | undefined, pla
   const rule = SESSIONS_BANNER_RULES.find((r) => r.match(s))!;
   const mode = planes.includes("personal") ? "mixed" : "org";
   let text = rule.text(s, org);
-  if (mode === "mixed") text += " Sessions marked personal use your own Cloud Intelligence, described below.";
+  if (mode === "mixed") text += " Sessions marked personal use your own AI summaries, described below.";
   const r = s.requirement;
   const terms = r ? `${r.provider_label} / ${r.model} · ${orgIntelLevelLabel(r.evidence_level)} · Background: ${orgIntelBackgroundLine(r)}` : "";
-  return { mode, title: `Org enrichment · ${rule.state}`, state: rule.state, text, terms, link: "/settings?section=intel" };
+  return {
+    mode,
+    title: `Team AI summaries · ${rule.state}`,
+    state: rule.state,
+    text,
+    terms,
+    link: PLACE_TEAM_SUMMARIES,
+    org: rule.org ? orgPlaceLink(s.org_dashboard, rule.org, s.dashboard_kind) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +364,14 @@ export type OrgIntelActions = {
   needs_preview: boolean;
   reason?: string;
   reason_text?: string;
+  // The way forward for `reason` (internal/orgintel.ActionReasonFix): a place
+  // on this machine and/or the team-dashboard place only the org's admins
+  // change. Read with needsSetting.fixOf.
+  settings?: string;
+  settings_label?: string;
+  org_settings?: string;
+  org_settings_label?: string;
+  org_dashboard_kind?: string;
 };
 
 export type OrgIntelSubmission = {
@@ -317,6 +398,8 @@ export type OrgIntelSessionView = {
   session_id: string;
   authority: "org" | "personal" | "unknown" | string;
   org_name?: string;
+  /** "personal" or "team" (OrgIntelStatus.dashboard_kind). */
+  dashboard_kind?: string;
   class: OrgIntelClass;
   actions: OrgIntelActions;
   latest?: OrgIntelSubmission;
@@ -449,21 +532,21 @@ export function sessionEnrichPlane(row: { enrich_plane?: string }): SessionEnric
 // orgPlaneEnrichAction is the Sessions list button label for an org-plane
 // session (the personal plane keeps lib/cloudProgress's labels).
 export function orgPlaneEnrichAction(row: { org_title?: string }): string {
-  return row.org_title ? "View org enrichment" : "Org enrichment";
+  return row.org_title ? "View team AI summaries" : "Team AI summaries";
 }
 
 // SESSION_ENRICH_PLANE_COPY says, on the button tooltip and in the drawer,
 // which plane enriches the session.
 export const SESSION_ENRICH_PLANE_COPY: Record<SessionEnrichPlane, { tooltip: string; drawerTitle: string; drawerNote: string }> = {
   org: {
-    tooltip: "Captured while this machine was enrolled: enriched by your organization, on its own server and model",
-    drawerTitle: "Org enrichment",
+    tooltip: "Captured while this machine was connected to a team: summarized by your team, on its own server and model",
+    drawerTitle: "Team AI summaries",
     drawerNote:
-      "This session was captured while this machine was enrolled, so it belongs to your organization's plane: your organization enriches it on its own server and model, under the terms in Settings, Org enrichment.",
+      "This session was captured while this machine was connected to a team, so it belongs to the team: your team summarizes it on its own server and model, under the terms in Settings, Team AI summaries.",
   },
   personal: {
-    tooltip: "Open this session's personal Cloud Intelligence status and controls",
+    tooltip: "Open this session's personal AI summaries status and controls",
     drawerTitle: "Session enrichment",
-    drawerNote: "This session is on your personal Cloud Intelligence plane: you choose what is sent and when.",
+    drawerNote: "This session uses your personal AI summaries: you choose what is sent and when.",
   },
 };

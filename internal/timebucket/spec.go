@@ -16,6 +16,11 @@ type Request struct {
 	LegacyBucket string
 	// TZ is the viewer's IANA zone name.
 	TZ string
+	// Loc, when set, is the zone itself and TZ only names it (empty TZ
+	// names it Loc.String()). It is for a caller that already holds a
+	// location with no IANA name to send, such as the CLI bucketing in the
+	// system zone (time.Local); an HTTP caller sends TZ alone.
+	Loc *time.Location
 	// Since is the window's inclusive lower bound; zero = unbounded.
 	Since time.Time
 	// Until is the window's exclusive upper bound; zero = now.
@@ -89,6 +94,12 @@ func Resolve(req Request) (Spec, error) {
 		until = now
 	}
 	loc, tz, fellBack := LoadZone(req.TZ)
+	if req.Loc != nil {
+		loc, tz, fellBack = req.Loc, req.TZ, false
+		if tz == "" {
+			tz = req.Loc.String()
+		}
+	}
 	sp := Spec{Loc: loc, TZ: tz, TZFallback: fellBack, Since: req.Since, Until: until.UTC()}
 	if !sp.Since.IsZero() {
 		sp.Since = sp.Since.UTC()

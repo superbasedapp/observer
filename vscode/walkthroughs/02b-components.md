@@ -2,7 +2,7 @@
 
 Observer is built from components: one capture adapter per AI tool,
 the API proxy and its compression, terminals, code intelligence, the
-org client, telemetry export and more. **Settings > Components** in the
+team connection, telemetry export and more. **Settings > Components** in the
 dashboard lists every one with what it adds to this machine: the ports
 it listens on, the hosts it talks to, the files it writes and the other
 tools' config files it edits.

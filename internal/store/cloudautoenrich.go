@@ -183,12 +183,33 @@ type CloudSyncLast struct {
 	// DailyCap / MonthlyCap are the resolved plan's per-window allowances;
 	// nil means unknown (no successful usage fetch yet).
 	DailyCap, MonthlyCap *int
+
+	// Token budgets (migration 254, managed-SaaS ruling R-AI1): what GET
+	// /v1/usage reported on this run for a token-budgeted plan.
+	//
+	// BudgetUnit is "count" or "tokens"; "" means unknown. EnrichmentTier is
+	// the tier in force ("" on a count plan or when unknown).
+	BudgetUnit, EnrichmentTier string
+	// EvidenceTokenBudget is the most evidence tokens one envelope may carry
+	// (0 = the plan sets none). It is the one LAST-KNOWN column: nil here
+	// means "this run did not read it" and RecordCloudSyncLast keeps the
+	// stored value, because the envelope builder reads it long after the
+	// sync (LastKnownCloudEvidenceTokenBudget).
+	EvidenceTokenBudget *int
+	// The token windows for display; nil means unknown (rewritten every run,
+	// like the plan caps above).
+	SessionTokenBudget, DailyTokensUsed, DailyTokenBudget, MonthlyTokensUsed, MonthlyTokenBudget *int64
 }
 
 // RecordCloudSyncLast upserts the singleton (id=1) row every `observer cloud
 // sync` run writes at its end, on both its success and failure paths — so
 // `observer cloud status` and GET /api/cloud/status always reflect the last
 // attempt, not just the last one that happened to succeed.
+//
+// Every column is overwritten except evidence_token_budget, which a run that
+// did not read the usage view (r.EvidenceTokenBudget nil) leaves as it was:
+// it is a build input, so a transient failure must not drop the node back to
+// the default budget.
 func (s *Store) RecordCloudSyncLast(ctx context.Context, r CloudSyncLast) error {
 	ok := 0
 	if r.OK {
@@ -202,8 +223,10 @@ func (s *Store) RecordCloudSyncLast(ctx context.Context, r CloudSyncLast) error 
 		INSERT INTO cloud_sync_last
 		  (id, started_at, finished_at, ok, sent, waiting_provider, reconfirm, failed, results,
 		   sign_in_expired, error_class, plan_name, plan_label, digest_weekly,
-		   results_retention_days, daily_cap, monthly_cap)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   results_retention_days, daily_cap, monthly_cap,
+		   budget_unit, enrichment_tier, evidence_token_budget, session_token_budget,
+		   daily_tokens_used, daily_token_budget, monthly_tokens_used, monthly_token_budget)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			started_at              = excluded.started_at,
 			finished_at             = excluded.finished_at,
@@ -220,11 +243,23 @@ func (s *Store) RecordCloudSyncLast(ctx context.Context, r CloudSyncLast) error 
 			digest_weekly           = excluded.digest_weekly,
 			results_retention_days  = excluded.results_retention_days,
 			daily_cap               = excluded.daily_cap,
-			monthly_cap             = excluded.monthly_cap`,
+			monthly_cap             = excluded.monthly_cap,
+			budget_unit             = excluded.budget_unit,
+			enrichment_tier         = excluded.enrichment_tier,
+			evidence_token_budget   = COALESCE(excluded.evidence_token_budget, cloud_sync_last.evidence_token_budget),
+			session_token_budget    = excluded.session_token_budget,
+			daily_tokens_used       = excluded.daily_tokens_used,
+			daily_token_budget      = excluded.daily_token_budget,
+			monthly_tokens_used     = excluded.monthly_tokens_used,
+			monthly_token_budget    = excluded.monthly_token_budget`,
 		timestamp(r.StartedAt), timestamp(r.FinishedAt), ok, r.Sent, r.WaitingProvider, r.Reconfirm,
 		r.Failed, r.Results, signInExpired, r.ErrorClass, r.PlanName, r.PlanLabel,
 		nullableIntPtr(r.DigestWeekly), nullableIntPtr(r.ResultsRetentionDays),
-		nullableIntPtr(r.DailyCap), nullableIntPtr(r.MonthlyCap))
+		nullableIntPtr(r.DailyCap), nullableIntPtr(r.MonthlyCap),
+		r.BudgetUnit, r.EnrichmentTier, nullableIntPtr(r.EvidenceTokenBudget),
+		nullableInt64Ptr(r.SessionTokenBudget), nullableInt64Ptr(r.DailyTokensUsed),
+		nullableInt64Ptr(r.DailyTokenBudget), nullableInt64Ptr(r.MonthlyTokensUsed),
+		nullableInt64Ptr(r.MonthlyTokenBudget))
 	if err != nil {
 		return fmt.Errorf("store.RecordCloudSyncLast: %w", err)
 	}
@@ -251,15 +286,21 @@ func (s *Store) GetCloudSyncLast(ctx context.Context) (CloudSyncLast, bool, erro
 		digestWeekly          sql.NullInt64
 		resultsRetentionDays  sql.NullInt64
 		dailyCap, monthlyCap  sql.NullInt64
+		evidenceBudget        sql.NullInt64
+		tokenWindows          [5]sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT started_at, finished_at, ok, sent, waiting_provider, reconfirm, failed, results,
 		       sign_in_expired, error_class, plan_name, plan_label, digest_weekly,
-		       results_retention_days, daily_cap, monthly_cap
+		       results_retention_days, daily_cap, monthly_cap,
+		       budget_unit, enrichment_tier, evidence_token_budget, session_token_budget,
+		       daily_tokens_used, daily_token_budget, monthly_tokens_used, monthly_token_budget
 		  FROM cloud_sync_last WHERE id = 1`).
 		Scan(&startedAt, &finishedAt, &ok, &r.Sent, &r.WaitingProvider, &r.Reconfirm, &r.Failed,
 			&r.Results, &signInExpired, &r.ErrorClass, &r.PlanName, &r.PlanLabel, &digestWeekly,
-			&resultsRetentionDays, &dailyCap, &monthlyCap)
+			&resultsRetentionDays, &dailyCap, &monthlyCap,
+			&r.BudgetUnit, &r.EnrichmentTier, &evidenceBudget, &tokenWindows[0],
+			&tokenWindows[1], &tokenWindows[2], &tokenWindows[3], &tokenWindows[4])
 	if errors.Is(err, sql.ErrNoRows) {
 		return CloudSyncLast{}, false, nil
 	}
@@ -274,7 +315,42 @@ func (s *Store) GetCloudSyncLast(ctx context.Context) (CloudSyncLast, bool, erro
 	r.ResultsRetentionDays = nullInt64PtrFromSQL(resultsRetentionDays)
 	r.DailyCap = nullInt64PtrFromSQL(dailyCap)
 	r.MonthlyCap = nullInt64PtrFromSQL(monthlyCap)
+	r.EvidenceTokenBudget = nullInt64PtrFromSQL(evidenceBudget)
+	r.SessionTokenBudget = nullInt64Ptr64FromSQL(tokenWindows[0])
+	r.DailyTokensUsed = nullInt64Ptr64FromSQL(tokenWindows[1])
+	r.DailyTokenBudget = nullInt64Ptr64FromSQL(tokenWindows[2])
+	r.MonthlyTokensUsed = nullInt64Ptr64FromSQL(tokenWindows[3])
+	r.MonthlyTokenBudget = nullInt64Ptr64FromSQL(tokenWindows[4])
 	return r, true, nil
+}
+
+// nullInt64Ptr64FromSQL is nullInt64PtrFromSQL for an *int64 field.
+func nullInt64Ptr64FromSQL(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}
+
+// LastKnownCloudEvidenceTokenBudget returns the evidence-token budget the
+// most recent successful usage read stored (migration 254). known=false
+// means no sync has ever read one on this device (no row, or the column is
+// NULL); the caller then applies its own safe default. A stored 0 is KNOWN
+// and means the plan sets no evidence budget.
+func (s *Store) LastKnownCloudEvidenceTokenBudget(ctx context.Context) (budget int, known bool, err error) {
+	var v sql.NullInt64
+	err = s.db.QueryRowContext(ctx, `SELECT evidence_token_budget FROM cloud_sync_last WHERE id = 1`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store.LastKnownCloudEvidenceTokenBudget: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return int(v.Int64), true, nil
 }
 
 // CloudResultEvent is one enrichment result the Sessions-page toast/poll

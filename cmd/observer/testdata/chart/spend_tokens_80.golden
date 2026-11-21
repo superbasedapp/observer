@@ -1,0 +1,18 @@
+Token usage per day, 2026-10-01 to 2026-10-30 UTC (30 buckets)
+
+  200.0K┤
+        │
+        │        ▒                       ▒                       ▒
+        │▂       ▒     ▃         ▂ ▁     ▒           ▂   ▂       ▒
+        │▒ ▆   ▂ ▒     ▒     ▇   ▒ ▒     ▒   ▁ ▆     ▒   ▒ ▆   ▁ ▒
+  100.0K┤▒ ▒   ▒ ▒   ▅ ▒   ▃ ▒   ▒ ▒   ▇ ▒   ▒ ▒ ▄ ▅ ▒ ▂ ▒ ▒   ▒ ▒
+        │▒ ▒ ▇ ▒ ▒ ▂ ▒ ▒   ▒ ▒ ▇ ▒ ▒ ▂ ▒ ▒   ▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒
+        │▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒
+        │▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒ ▒ ▒ ▒ ▒ ▒   ▒ ▒ ▒
+        │█ ▒ █ ▓ ▓ ▓ ▒ █   ▓ ▓ ▓ █ █ ▒ ▓ ▓   █ ▒ █ ▒ ▓ ▓ ▓ █   ▒ ▓ ▓
+       0└────────────────────────────────────────────────────────────
+         10-01                       10-16                     10-30
+█ input  ▓ output  ▒ cache read  ░ cache write
+
+Total 2.9M tokens over 81 turns.
+Costs are hidden: your organization shows token usage instead of costs on this machine.

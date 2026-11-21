@@ -228,6 +228,18 @@
     "PromptProxyScope": ""
   },
   {
+    "Tool": "custom-agent",
+    "ToolCallChannel": "recorded_acceptance",
+    "PromptSubmit": "proxy_only",
+    "BudgetChannel": "",
+    "RouteProof": "none",
+    "Note": "no prompt-submit hook exists; the proxy request-path prompt scan is this tool's only prompt-submit lever",
+    "PromptWarnBeforeModel": false,
+    "RouteProbeRequired": false,
+    "PromptHookScope": "",
+    "PromptProxyScope": ""
+  },
+  {
     "Tool": "deepagents-code",
     "ToolCallChannel": "hook_block",
     "PromptSubmit": "block_only",

@@ -65,3 +65,17 @@ https://github.com/jasontaylordev/CleanArchitecture	968abf7dc4884d14d558e04828df
 https://github.com/bitwarden/server	6fd6ce88d176372ee1404ba6fbda5de3be299394
 https://github.com/jellyfin/jellyfin	c7ce6a1b56ee7dcc1896250df0f2f9deaa828a81
 https://github.com/nopSolutions/nopCommerce	f9e883bc9586b9a2138f8580fc1cbbdc6ec561c6
+# Lane M3L-2 1c: ten public Ruby, PHP and Kotlin applications at their HEAD
+# on 2026-11-04 (git ls-remote), so the Ruby, PHP and Kotlin rules get a
+# denominator beside rails and laravel. None is a deliberately vulnerable
+# training app.
+https://github.com/mastodon/mastodon	ca2f092f4f580b1993bae3ac4f4742b748f18ad1
+https://github.com/chatwoot/chatwoot	a8364f9c4385b12b4f217649c1dad23755459215
+https://github.com/forem/forem	5f0276dce15e3859f7bf4d39c5460efbdc398288
+https://github.com/BookStackApp/BookStack	0b6b667e0d84ebb3406de6de9fadbf4230c29c0b
+https://github.com/FreshRSS/FreshRSS	4e8a258b011aad190597d7953b7122fc43f4658f
+https://github.com/phpmyadmin/phpmyadmin	6f240a8f64d0a4c62a02b0ef484568fe39017480
+https://github.com/gotson/komga	ff800c21253793d4d3fd855651b82d4924915950
+https://github.com/ktorio/ktor-samples	e9763d69954723094da05c3d57b34755b9a1359a
+https://github.com/spring-petclinic/spring-petclinic-kotlin	817dba3b02261e4291f138d5d8bb8c85c7d49758
+https://github.com/thunderbird/thunderbird-android	1d8a4caf60e372b25eb791de216f9409d441a7ca

@@ -4407,7 +4407,7 @@
    "reach": "pull_api",
    "transport": "api",
    "auth": {
-    "kind": "unclassified",
+    "kind": "bearer",
     "doc": "cog_ ViewOrgSessions / UseDevinSessions / ManageOrgSessions / ImpersonateOrgSessions"
    },
    "paging": {
@@ -4428,7 +4428,7 @@
    "read_write_doc": "R/W",
    "class_doc": "Sessions",
    "grain_doc": "PerSession",
-   "build": "buildable",
+   "build": "built",
    "build_doc": "D",
    "sensitivity": "pii",
    "secret_class": "may_return_secret",
@@ -4441,7 +4441,21 @@
      "coverage": {
       "completeness": "segment"
      },
-     "build": "buildable",
+     "build": "built",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "acu",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "built",
      "verification": {
       "synthetic": "doc_only",
       "live": "live_pending"
@@ -4449,18 +4463,25 @@
     }
    ],
    "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.devin.ai",
+     "port": 443
+    }
+   ],
    "sources": [
     {
      "url": "https://docs.devin.ai/api-reference/v3/overview",
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cognition OrgSessions (lane CA-A4, cloud agents arc): GET /v3/organizations/{org}/sessions with first, after and updated_after/updated_before from the window; each session lands as a cognition.devin_session snapshot plus, when acus_consumed is reported, one usage row charged in ACUs (revision updated_at). Conformance against the vendormock mock through the pure adapter. Consumed by the node cloud-agents connector (lane CA-B2) with the developer's own PAT or service key, and, since lane CA-C3 (cloud agents arc), by the org vendor-connection runner too: the row is built with a driver-table entry, the session snapshots land in org_vendor_snapshots and internal/orgserver/cloudproj projects them to members (the ACU usage rows land in org_vendor_usage in ACUs). Synthetic only, no vendor response observed; session member names are Inferred from the reference.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": ""
+    "auth_rule": "plane: Devin v3 bearer credential (cog_ service-user key or PAT) as Bearer; pure driver lane CA-A4"
    },
    "status": "synthetic, awaiting live validation"
   },
@@ -5442,7 +5463,7 @@
    "reach": "pull_api",
    "transport": "api",
    "auth": {
-    "kind": "unclassified",
+    "kind": "bearer",
     "doc": "cog_ View/ManageAccountSessions, View/ManageOrgSessions"
    },
    "paging": {
@@ -5490,12 +5511,12 @@
      "checked_on": "2026-10-07"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/cognition SessionMessages (lane CA-A4, cloud agents arc): GET /v3/organizations/{org}/sessions/{devin_id}/messages with first and after; each message lands as a content item (user prompt, devin response) keyed by event_id. created_at (Unix seconds) is Inferred: the reference names no timestamp member. Conformance against the vendormock mock through the pure adapter. Consumed by the node connector (lane CA-B2), not by the org runner. Synthetic only.",
    "derivation": {
     "reach_rule": "http",
     "build_rule": "build column",
     "source_rule": "legend_key",
-    "auth_rule": ""
+    "auth_rule": "plane: Devin v3 bearer credential (cog_ service-user key or PAT) as Bearer; pure driver lane CA-A4"
    },
    "status": "synthetic, awaiting live validation"
   },

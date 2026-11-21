@@ -45,6 +45,12 @@ type nodeToolGateState struct {
 	Installed bool
 	// Reason says why the hook does or does not hold, as a clause.
 	Reason string
+	// Fixable is true when registering the hook again would make it hold:
+	// it is missing or stale (registration verdict "no"). A hook that cannot
+	// be registered here, conflicts with an entry Observer did not write, is
+	// untrusted by its host or switched off is not something the setup
+	// wizard fixes, so the Security page links only a fixable row to it.
+	Fixable bool
 }
 
 // toolGateRegReason is the reason clause per registration verdict
@@ -109,6 +115,7 @@ func nodeToolGateFor(c integration.Capability, binary, configPath string) nodeTo
 				format = toolGateRegReason["unknown"]
 			}
 			st.Reason = fmt.Sprintf(format, b.NativeEvent)
+			st.Fixable = reg == "no"
 			return st
 		}
 		if t := bindingTrusted(trust, b, reg); t == "no" || t == "unknown" {
@@ -334,6 +341,7 @@ func guardToolGatesSeam(configPath string, prober dashapi.SandboxProber) func() 
 				Current:   st.Current,
 				Installed: st.Installed,
 				Reason:    st.Reason,
+				Fixable:   st.Fixable,
 			})
 		}
 		return out

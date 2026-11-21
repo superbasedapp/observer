@@ -87,3 +87,9 @@ web2/dist/**                                   -diff linguist-generated=true
 webcloud/dist/**                               -diff linguist-generated=true
 internal/intelligence/dashboard/webapp/dist/** -diff linguist-generated=true
 internal/orgserver/dashboard/webapp/dist/**    -diff linguist-generated=true
+
+# A raw unified-diff receipt (OpenShell live check G-L1): its context lines
+# are a space followed by the patched file's tab indent, which git reads as
+# "space before tab". That is the diff format, not damage, so the check is
+# off for this one file (fold-openshell fix round 2, item 7).
+docs/plans/openshell/receipts/g-l-2026-11-03-b2/g-l1-local-patch.diff whitespace=-space-before-tab

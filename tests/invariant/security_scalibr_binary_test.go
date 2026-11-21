@@ -118,6 +118,8 @@ var scalibrOnlyModules = []string{
 	"deps.dev/api",
 	"github.com/diskfs/go-diskfs",
 	"github.com/go-git/go-git/v5",
+	// cargo auditable's section reader (plan 14.6's artifact extractors).
+	"github.com/rust-secure-code/go-rustaudit",
 }
 
 func TestScalibrGoogleClientsOnlyThroughFacade(t *testing.T) {

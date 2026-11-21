@@ -1,0 +1,126 @@
+{
+  "_source": {
+    "dialect": "genai",
+    "grounding": "Source-grounded synthesis against the pinned registry open-telemetry/semantic-conventions-genai@76e0c19e7fe11dc693fe258642363a438af4d3aa (model/gen-ai/registry.yaml, model/gen-ai/spans.yaml), schema https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev, the names an instrumentation emits under OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental. Structured attributes (messages, system instructions, tool call arguments/result) are array/kvlist values per changelog 'structured-attributes.breaking'. Not a live capture.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "chat_full_usage_and_content",
+      "attrs": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4.1",
+        "gen_ai.response.model": "gpt-4.1-2025-04-14",
+        "gen_ai.response.id": "chatcmpl-abc",
+        "gen_ai.usage.input_tokens": 300,
+        "gen_ai.usage.cache_read.input_tokens": 40,
+        "gen_ai.usage.cache_write.input_tokens": 25,
+        "gen_ai.usage.output_tokens": 180,
+        "gen_ai.usage.reasoning.output_tokens": 50,
+        "gen_ai.response.finish_reasons": ["stop"],
+        "gen_ai.request.temperature": 0.2,
+        "gen_ai.request.max_tokens": 1024,
+        "gen_ai.request.stop_sequences": ["END"],
+        "gen_ai.input.messages": [{"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]}],
+        "gen_ai.output.messages": [{"role": "assistant", "parts": [{"type": "text", "content": "Sunny."}], "finish_reason": "stop"}],
+        "gen_ai.system_instructions": [{"type": "text", "content": "Be brief."}]
+      },
+      "want": {
+        "operation": "chat",
+        "provider": "openai",
+        "model": "gpt-4.1-2025-04-14",
+        "request_model": "gpt-4.1",
+        "response_model": "gpt-4.1-2025-04-14",
+        "response_id": "chatcmpl-abc",
+        "input_tokens": 300,
+        "output_tokens": 180,
+        "total_tokens": 480,
+        "total_derived": true,
+        "cache_read_tokens": 40,
+        "cache_write_tokens": 25,
+        "reasoning_tokens": 50,
+        "finish_reasons": ["stop"],
+        "request_params": {"max_tokens": 1024, "stop_sequences": ["END"], "temperature": 0.2},
+        "input_messages": [{"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]}],
+        "output_messages": [{"role": "assistant", "parts": [{"type": "text", "content": "Sunny."}], "finish_reason": "stop"}],
+        "system_instructions": [{"type": "text", "content": "Be brief."}]
+      },
+      "note": "Bucket semantics: cache read/write are subsets of input, reasoning of output, so the derived total is 300+180, never 300+40+25+180+50."
+    },
+    {
+      "name": "both_cache_spellings_first_wins",
+      "attrs": {
+        "gen_ai.usage.input_tokens": 100,
+        "gen_ai.usage.output_tokens": 10,
+        "gen_ai.usage.cache_read.input_tokens": 60,
+        "gen_ai.usage.cache_read_input_tokens": 60,
+        "gen_ai.usage.cache_write.input_tokens": 5,
+        "gen_ai.usage.cache_creation_input_tokens": 5
+      },
+      "want": {"input_tokens": 100, "cache_read_tokens": 60, "cache_write_tokens": 5, "total_tokens": 110, "total_derived": true},
+      "note": "An emitter that sets the dotted and the underscore key yields one value, never a sum."
+    },
+    {
+      "name": "execute_tool_structured_args",
+      "attrs": {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": "get_weather",
+        "gen_ai.tool.call.id": "call_1",
+        "gen_ai.tool.call.arguments": {"city": "Paris", "unit": "C"},
+        "gen_ai.tool.call.result": {"temp": 21}
+      },
+      "want": {
+        "operation": "execute_tool",
+        "tool_name": "get_weather",
+        "tool_call_id": "call_1",
+        "tool_arguments": {"city": "Paris", "unit": "C"},
+        "tool_result": {"temp": 21}
+      }
+    },
+    {
+      "name": "invoke_agent_identity",
+      "attrs": {"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "planner", "gen_ai.agent.id": "asst_1"},
+      "want": {"operation": "invoke_agent", "agent_name": "planner", "agent_id": "asst_1"}
+    },
+    {
+      "name": "error_type",
+      "attrs": {"gen_ai.operation.name": "chat", "gen_ai.request.model": "gpt-4.1", "error.type": "timeout"},
+      "want": {"error_type": "timeout", "model": "gpt-4.1"}
+    },
+    {
+      "name": "embeddings_input_only_total",
+      "attrs": {"gen_ai.operation.name": "embeddings", "gen_ai.request.model": "text-embedding-3-small", "gen_ai.usage.input_tokens": 12},
+      "want": {"input_tokens": 12, "total_tokens": 12, "total_derived": true}
+    },
+    {
+      "name": "retrieval_input_output",
+      "attrs": {"gen_ai.operation.name": "retrieval", "gen_ai.retrieval.query.text": "refund policy", "gen_ai.retrieval.documents": [{"id": "doc-1", "score": 0.9}]},
+      "want": {"input_value": "refund policy", "output_value": [{"id": "doc-1", "score": 0.9}]}
+    },
+    {
+      "name": "no_usage_no_total",
+      "attrs": {"gen_ai.operation.name": "chat"},
+      "want": {"total_tokens": null, "total_derived": false}
+    },
+    {
+      "name": "ai_sdk_reasoning_tokens",
+      "_note": "@ai-sdk/otel 1.0.177 (ai 7.0.177; sdk/contract/fixtures/instrument/vercel-ai-ts.json) reports reasoning only as ai.usage.outputTokenDetails.reasoningTokens and the cache write under the legacy gen_ai.usage.cache_creation.input_tokens.",
+      "attrs": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 40,
+        "gen_ai.usage.cache_read.input_tokens": 1024,
+        "gen_ai.usage.cache_creation.input_tokens": 0,
+        "ai.usage.outputTokenDetails.reasoningTokens": 16,
+        "ai.usage.outputTokenDetails.textTokens": 24
+      },
+      "want": {
+        "reasoning_tokens": 16,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 1024,
+        "total_tokens": 1240
+      }
+    }
+  ]
+}

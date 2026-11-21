@@ -22,7 +22,25 @@ type Node struct {
 	// Signature is a bounded excerpt (the declaration line), never a
 	// body. Persisted as codeintel_nodes.signature.
 	Signature string
+	// Complexity is the cyclomatic complexity of a function or method
+	// (decision points + 1), counted at parse time by an exact-span
+	// backend from the per-language rule table in parse/complexity. 0
+	// means NOT COUNTED (a heuristic span, a language with no counter, a
+	// non-function kind), never "simple": a counted value is at least 1.
+	// Persisted as codeintel_nodes.complexity (NULL when 0).
+	Complexity int
 }
+
+// ExtractVersion is the newest version of what a parse pass extracts per
+// file. The indexer stores the version a file was parsed under on
+// codeintel_files.extract_version: 0 is the base extraction (symbols,
+// spans, imports, calls), 1 adds per-function complexity. A pass requires
+// a file to have been indexed at or above the version it extracts
+// (index.Options.CountComplexity decides between 0 and this), so turning
+// complexity on re-parses each file once, even when its content hash
+// matches, and turning it off re-parses nothing. Rows written before
+// migration 215 carry 0.
+const ExtractVersion = 1
 
 // Import is an import/dependency specifier extracted from a file. Path
 // is the imported module/package as written; RawText is a bounded

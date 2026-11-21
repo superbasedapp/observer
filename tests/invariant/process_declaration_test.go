@@ -410,6 +410,7 @@ var dynamicExecSites = map[string]dynamicSite{
 	"internal/browserhost/windowsreg.go:SetDefault":                          {programs: []string{"reg"}, how: "reg.exe for the browser host keys"},
 	"internal/guard/notify/notify.go:runWithTimeout":                         {programs: []string{"notify-send", "osascript", "powershell"}, how: "the desktop notifier, one per OS"},
 	"internal/intelligence/dashboard/backfill_run.go:realExecBackfill":       {programs: []string{"observer"}, how: "the observer binary itself"},
+	"internal/intelligence/dashboard/connect_flow.go:realExecConnect":        {programs: []string{"observer"}, how: "the observer binary itself (observer connect --json --no-browser)"},
 	"internal/intelligence/dashboard/guard_hookcoverage.go:runSelfDoctor":    {programs: []string{"observer"}, how: "the observer binary itself"},
 	"internal/intelligence/dashboard/guard_prompt.go:handleGuardPromptProbe": {programs: []string{"observer"}, how: "the observer binary itself"},
 	"internal/launch/launch.go:Detect":                                       {programs: []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"}, how: "the Linux terminal emulators it looks for, in order"},
@@ -429,6 +430,8 @@ var dynamicExecSites = map[string]dynamicSite{
 	"internal/termsession/spawn_resolve.go:<pkg>":                            {class: "vendor AI tool CLIs", how: "the lookProgram seam (exec.LookPath) resolving the AI tool CLI Spawn starts"},
 	"internal/thirdparty/actionlint/process.go:run":                          {checkedBy: "internal/secscan/actionlint/actionlint_test.go:TestNoProcessStarted", how: "never reached: the driver leaves the shellcheck and pyflakes names empty, so actionlint creates neither rule"},
 	// Core packages (no component lists them).
+	"internal/cloudagentsnet/net.go:Run":                                 {programs: []string{"codex", "gh"}, how: "argv from the cloudagents connector table, argv[0] bound to the row's command, resolved through the cloudagentsnet resolver"},
+	"internal/cloudagentsnet/net.go:lookPath":                            {programs: []string{"codex", "gh"}, how: "the PATH-directory probe behind the cloudagentsnet resolver"},
 	"internal/deliverynet/client.go:getGH":                               {programs: []string{"gh"}, how: "the gh CLI, resolved by its literal name through the deliverynet resolver"},
 	"internal/deliverynet/client.go:lookPath":                            {programs: []string{"gh", "git"}, how: "the PATH-directory probe behind the deliverynet resolver"},
 	"internal/deliverynet/mirror.go:configSSHCommand":                    {programs: []string{"git"}, how: "git, as the deliverynet resolver found it"},
@@ -440,6 +443,8 @@ var dynamicExecSites = map[string]dynamicSite{
 	"internal/diag/windowsroute.go:probeWindowsCurl":                     {programs: []string{"curl"}, how: "the Windows curl.exe at a constant /mnt/c path (doctor's Windows route probe)"},
 	"internal/extrun/host/exec.go:start":                                 {checkedBy: "tests/invariant/process_declaration_test.go:TestProcessDeclarationRunnerSeam", how: "the shared runner's executor: the checked plan's program, or this binary in its trampoline mode"},
 	"internal/extrun/host/supervise_linux.go:supervise":                  {checkedBy: "tests/invariant/process_declaration_test.go:TestProcessDeclarationRunnerSeam", how: "the shared runner's supervisor: this binary in its exec-mode trampoline, which then execs the checked plan"},
+	"internal/gitview/gitview.go:runGitCapped":                           {programs: []string{"git"}, how: "the one read-only git envelope: the host's git on PATH, or (R3-86) the Windows git.exe internal/gitroute resolved and verified by its --version, run through WSL interop for a checkout on a Windows drive, with the same argv"},
+	"internal/gitview/program.go:ProgramVersion":                         {programs: []string{"git"}, how: "`<git.exe> --version`, internal/gitroute's check that a candidate is Git for Windows before any repository is read with it (R3-86)"},
 	"internal/hookbridgesvc/run.go:Run":                                  {programs: []string{"wsl"}, how: "the System32 wsl.exe (hookbridge.WSLExe, never a PATH lookup) with a closed-spelling argv from hookbridge.Entry.Argv, run by `observer hook-bridge` (surface-gap AW-37)"},
 	"internal/hook/agyhost.go:cachedAgyVersion":                          {programs: []string{"agy"}, how: "the agy binary that is the hook's own ancestor, run with --version"},
 	"internal/hook/ibmbob_policy.go:ibmBobBinaryMissing":                 {lookupOnly: true, how: "resolves the observer binary an IBM Bob EnforcedHooks command names (doctor and stand-down); nothing is started"},
@@ -456,6 +461,10 @@ var dynamicExecSites = map[string]dynamicSite{
 	"internal/planlimitsnet/net.go:Converse":                             {checkedBy: "tests/invariant/process_declaration_test.go:TestProcessDeclarationArgvBuilders", how: "argv from the planlimits driver table"},
 	"internal/shimguard/shimguard.go:LookPath":                           {lookupOnly: true, how: "resolves the vendor binary a caller names past the command-wrapping shims; the caller starts it"},
 	"internal/toolresolve/host/host.go:<pkg>":                            {programs: []string{"npm", "bash", "zsh", "sh", "ksh", "dash", "fish"}, how: "npm (prefix -g) and the operator's login shell from the closed loginShellTable, through the runNpmPrefix and runLoginShell seams"},
+	// Test support, linux only, imported only by _test.go files: no binary
+	// links it.
+	"internal/testsupport/standin/standin.go:<pkg>": {checkedBy: "internal/testsupport/standin/standin_test.go:TestSingleProgramBinaryDoesItsJobUnderAVendorName", how: "test only: a temp-dir copy of the coreutils program a test names (mkdir, sleep, yes from the closed probes table), run once with a fixed probe argv"},
+	"internal/testsupport/standin/standin.go:run":   {checkedBy: "internal/testsupport/standin/standin_test.go:TestSingleProgramBinaryDoesItsJobUnderAVendorName", how: "test only: the probe run of that temp-dir copy, with the probe's fixed argv"},
 }
 
 // TestDynamicExecSitesGrounded (lane LEFT2-SEC item R-025, PT-04): every
@@ -777,6 +786,7 @@ var coreExecAllowance = []struct {
 	binaries []string
 	reason   string
 }{
+	{"internal/cloudagentsnet", []string{"codex", "gh"}, "the cloud-agent connectors' vendor CLIs, through their resolver (dynamic sites, lane CA-B1)"},
 	{"internal/deliverynet", []string{"gh", "git"}, "the delivery lane's gh CLI and git, through its resolver (dynamic sites, lane LEFT2-SEC R-025)"},
 	{"internal/diag", []string{"pwsh", "powershell"}, "doctor's Windows hook-runner rows read the PowerShell execution policy with a fixed read-only Get-ExecutionPolicy -List (surface-gap W-8, dynamic site)"},
 	{"internal/diag", []string{"curl"}, "doctor's Windows route probe runs the Windows curl.exe at a constant /mnt/c path (dynamic site, lane LEFT2-SEC R-025)"},

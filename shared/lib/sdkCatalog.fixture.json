@@ -1,0 +1,15 @@
+{
+  "_readme": "A test-only SDK row (lane C0): every surface's test appends it to the real catalog (shared/lib/sdkCatalog.json) and checks the new language shows up with no other edit: web (planeaFirstRun.test.ts), web2 (appsSdks.test.ts), the marketing page generator (pagegen/sdk_test.go) and scripts/test_sdk_install_strings.py. Never read by a running surface.",
+  "row": {
+    "id": "fixturelang",
+    "label": "Fixturelang",
+    "package": "superbased-fixture-sdk",
+    "registry": "Fixture registry",
+    "docs": "/docs/sdk/fixturelang",
+    "published": false,
+    "release": "none",
+    "install_checkout": "fixture install ./sdk/fixturelang  # from a checkout: not published yet",
+    "install_published": "fixture install superbased-fixture-sdk",
+    "snippet": ["fixture.init(\"my-app\")  # sends to this machine at 127.0.0.1:4318"]
+  }
+}

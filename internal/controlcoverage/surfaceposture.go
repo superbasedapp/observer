@@ -62,6 +62,7 @@ var surfaceKindOrder = map[string]int{
 	models.SurfaceDesktop: 2,
 	models.SurfaceSDK:     3,
 	models.SurfaceWeb:     4,
+	models.SurfaceMobile:  5,
 }
 
 // RouteProofFor is the route proof of one capture surface of c: none when c

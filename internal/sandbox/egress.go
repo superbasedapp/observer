@@ -312,26 +312,27 @@ func HostArgv(observerBin string, n NetRequest) ([]string, error) {
 // first) and remove again afterwards. It returns nil when the helper has
 // nothing to do.
 func (p Plan) HostArgv(observerBin string) ([]string, error) {
-	return hostArgvRelay(observerBin, p.net, p.placeholders, p.relay)
+	return hostArgvRelay(observerBin, p.net, p.placeholders, p.relay, p.seccomp)
 }
 
 // hostArgv composes the helper prefix. --sock-dir is emitted only for a tier
 // that forwards something; placeholders ride as --placeholder-file /
 // --placeholder-dir, one flag per path.
 func hostArgv(observerBin string, n NetRequest, placeholders []Overlay) ([]string, error) {
-	return hostArgvRelay(observerBin, n, placeholders, RelayRequest{})
+	return hostArgvRelay(observerBin, n, placeholders, RelayRequest{}, "")
 }
 
 // hostArgvRelay is hostArgv with the relay: a relayed run always runs the
 // helper (it serves the relay socket), with the socket dir and the relay
-// flags.
-func hostArgvRelay(observerBin string, n NetRequest, placeholders []Overlay, relay RelayRequest) ([]string, error) {
+// flags. A seccomp profile also always runs it (it hands bwrap the program
+// and reads the filter back).
+func hostArgvRelay(observerBin string, n NetRequest, placeholders []Overlay, relay RelayRequest, seccomp string) ([]string, error) {
 	prof, err := resolveNet(n)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox.HostArgv: %w", err)
 	}
 	forwards := prof.ForwardProxy || prof.Gateway
-	if !forwards && len(placeholders) == 0 && !relay.Enabled() {
+	if !forwards && len(placeholders) == 0 && !relay.Enabled() && seccomp == "" {
 		return nil, nil
 	}
 	if err := validateAbs(observerBin, false); err != nil {
@@ -349,6 +350,12 @@ func hostArgvRelay(observerBin string, n NetRequest, placeholders []Overlay, rel
 			return nil, fmt.Errorf("sandbox.HostArgv: relay observer dir: %w", err)
 		}
 		out = append(out, flagRelayRun, relay.RunID, flagObserverDir, relay.HostObserverDir)
+	}
+	if seccomp != "" {
+		if !validSeccompProfile(seccomp) {
+			return nil, fmt.Errorf("sandbox.HostArgv: seccomp profile %q", seccomp)
+		}
+		out = append(out, flagSeccompProfile, seccomp)
 	}
 	if prof.UnshareNet {
 		out = append(out, flagPrivateNet)
@@ -429,7 +436,11 @@ type HostArgs struct {
 	// and serves the relay socket there.
 	RelayRun    string
 	ObserverDir string
-	Command     []string
+	// SeccompProfile names the seccomp profile the helper's child must be
+	// running under when it is read back (lane N2); for a bwrap child the
+	// helper also builds the program and hands it over on SeccompFD.
+	SeccompProfile string
+	Command        []string
 }
 
 // GuestArgs is the parsed guest-helper command line.
@@ -464,6 +475,13 @@ func ParseHostArgs(args []string) (HostArgs, error) {
 			return nil
 		},
 		flagObserverDir: func(v string) error { h.ObserverDir = v; return validateAbs(v, false) },
+		flagSeccompProfile: func(v string) error {
+			h.SeccompProfile = v
+			if !validSeccompProfile(v) {
+				return fmt.Errorf("seccomp profile %q", v)
+			}
+			return nil
+		},
 	}, map[string]func(){
 		flagGateway:       func() { h.Gateway = true },
 		flagProviderBlock: func() { h.ProviderBlock = true },

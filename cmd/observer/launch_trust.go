@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"golang.org/x/term"
 
@@ -454,19 +453,6 @@ func trustReviewLines(r sectrust.Reason) string {
 		fmt.Fprintf(&b, "\n      it %s", terminalSafe(strings.Join(r.Indicators, ", ")))
 	}
 	return b.String()
-}
-
-// terminalSafe replaces every control character (an escape sequence a
-// repository planted in a file name or a command would otherwise reach the
-// developer's terminal) and every bidirectional formatting character with
-// "?".
-func terminalSafe(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
-			return '?'
-		}
-		return r
-	}, s)
 }
 
 // repoTrustTarget is where a launch starts: the repository root (the git
@@ -992,8 +978,8 @@ func sameFile(a, b string) bool {
 	if filepath.Clean(a) == filepath.Clean(b) {
 		return true
 	}
-	fa, errA := os.Stat(a)
-	fb, errB := os.Stat(b)
+	fa, errA := os.Stat(a) //nolint:gosec // G703: false positive; only stat'd to compare two local paths the caller resolved, nothing is read or written
+	fb, errB := os.Stat(b) //nolint:gosec // G703: false positive; as above
 	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 

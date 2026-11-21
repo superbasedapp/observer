@@ -1,0 +1,370 @@
+{
+  "_source": {
+    "target": "openai-agents",
+    "instrumentor": "@arizeai/openinference-instrumentation-openai-agents 0.3.6",
+    "library": "@openai/agents 0.22.0",
+    "grounding": "An @openai/agents Agent with one function tool, run over the chat-completions API against a loopback stub (first reply a tool call, second the answer), inside propagateAttributes({ user }) and an SDK span 'app.request' (the agent's root span joins it). The instrumentation is a trace processor ADDED beside the app's own (exclusiveProcessor false); the test clears the default OpenAI exporter first so nothing leaves the machine.",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "openai-agents",
+  "_gaps": [
+    "generation spans: llm.model_name is the REQUESTED model (gpt-4o-mini), not the response's gpt-4o-mini-2024-07-18, and no response id is written, so model and response_id do not reflect the response.",
+    "The turn and Agent workflow #2 spans are CHAIN spans with no input or output; only the root Agent workflow span carries the run's input and final output."
+  ],
+  "spans": [
+    {
+      "name": "generation",
+      "parent": "turn",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"content\":\"Count letters.\",\"role\":\"system\"},{\"role\":\"user\",\"content\":\"How many letters in superbased?\"}]",
+        "llm.finish_reason": "tool_calls",
+        "llm.input_messages.0.message.content": "Count letters.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "How many letters in superbased?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"word\":\"superbased\"}",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_fixture",
+        "llm.system": "openai",
+        "llm.token_count.completion": 12,
+        "llm.token_count.prompt": 80,
+        "llm.token_count.total": 92,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "[{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":1763510400,\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_fixture\",\"type\":\"function\",\"function\":{\"name\":\"word_length\",\"arguments\":\"{\\\"word\\\":\\\"superbased\\\"}\"}}]}}],\"usage\":{\"prompt_tokens\":80,\"completion_tokens\":12,\"total_tokens\":92}}]",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "finish_reasons": [
+          "tool_calls"
+        ],
+        "input_messages": [
+          {
+            "content": "Count letters.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in superbased?",
+            "role": "user"
+          }
+        ],
+        "input_tokens": 80,
+        "input_value": [
+          {
+            "content": "Count letters.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in superbased?",
+            "role": "user"
+          }
+        ],
+        "model": "gpt-4o-mini",
+        "output_messages": [
+          {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "arguments": "{\"word\":\"superbased\"}",
+                "id": "call_fixture",
+                "name": "word_length"
+              }
+            ]
+          }
+        ],
+        "output_tokens": 12,
+        "output_value": [
+          {
+            "choices": [
+              {
+                "finish_reason": "tool_calls",
+                "index": 0,
+                "message": {
+                  "content": null,
+                  "role": "assistant",
+                  "tool_calls": [
+                    {
+                      "function": {
+                        "arguments": "{\"word\":\"superbased\"}",
+                        "name": "word_length"
+                      },
+                      "id": "call_fixture",
+                      "type": "function"
+                    }
+                  ]
+                }
+              }
+            ],
+            "created": 1763510400,
+            "id": "chatcmpl-1",
+            "model": "gpt-4o-mini-2024-07-18",
+            "object": "chat.completion",
+            "usage": {
+              "completion_tokens": 12,
+              "prompt_tokens": 80,
+              "total_tokens": 92
+            }
+          }
+        ],
+        "provider": "openai",
+        "response_id": "",
+        "span_kind": "LLM",
+        "total_derived": false,
+        "total_tokens": 92
+      }
+    },
+    {
+      "name": "word_length",
+      "parent": "turn",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"word\":\"superbased\"}",
+        "llm.system": "openai",
+        "openinference.span.kind": "TOOL",
+        "output.value": "10",
+        "sbo.user": "end-user-1",
+        "tool.name": "word_length"
+      },
+      "want": {
+        "input_value": {
+          "word": "superbased"
+        },
+        "output_value": "10",
+        "provider": "openai",
+        "span_kind": "TOOL",
+        "tool_arguments": {
+          "word": "superbased"
+        },
+        "tool_name": "word_length",
+        "tool_result": "10"
+      }
+    },
+    {
+      "name": "turn",
+      "parent": "Counter",
+      "attrs": {
+        "llm.system": "openai",
+        "openinference.span.kind": "CHAIN",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "provider": "openai",
+        "span_kind": "CHAIN"
+      }
+    },
+    {
+      "name": "generation #2",
+      "parent": "turn #2",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"content\":\"Count letters.\",\"role\":\"system\"},{\"role\":\"user\",\"content\":\"How many letters in superbased?\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_fixture\",\"type\":\"function\",\"function\":{\"name\":\"word_length\",\"arguments\":\"{\\\"word\\\":\\\"superbased\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_fixture\",\"content\":\"10\"}]",
+        "llm.finish_reason": "stop",
+        "llm.input_messages.0.message.content": "Count letters.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "How many letters in superbased?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.input_messages.2.message.role": "assistant",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"word\":\"superbased\"}",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_fixture",
+        "llm.input_messages.3.message.content": "10",
+        "llm.input_messages.3.message.role": "tool",
+        "llm.input_messages.3.message.tool_call_id": "call_fixture",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.output_messages.0.message.content": "superbased has 10 letters.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.system": "openai",
+        "llm.token_count.completion": 8,
+        "llm.token_count.prompt": 110,
+        "llm.token_count.prompt_details.cache_read": 64,
+        "llm.token_count.total": 118,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "[{\"id\":\"chatcmpl-2\",\"object\":\"chat.completion\",\"created\":1763510401,\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"superbased has 10 letters.\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":8,\"total_tokens\":118,\"prompt_tokens_details\":{\"cached_tokens\":64}}}]",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "cache_read_tokens": 64,
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "content": "Count letters.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in superbased?",
+            "role": "user"
+          },
+          {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "arguments": "{\"word\":\"superbased\"}",
+                "id": "call_fixture",
+                "name": "word_length"
+              }
+            ]
+          },
+          {
+            "content": "10",
+            "role": "tool",
+            "tool_call_id": "call_fixture"
+          }
+        ],
+        "input_tokens": 110,
+        "input_value": [
+          {
+            "content": "Count letters.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in superbased?",
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"word\":\"superbased\"}",
+                  "name": "word_length"
+                },
+                "id": "call_fixture",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "10",
+            "role": "tool",
+            "tool_call_id": "call_fixture"
+          }
+        ],
+        "model": "gpt-4o-mini",
+        "output_messages": [
+          {
+            "content": "superbased has 10 letters.",
+            "role": "assistant"
+          }
+        ],
+        "output_tokens": 8,
+        "output_value": [
+          {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                  "content": "superbased has 10 letters.",
+                  "role": "assistant"
+                }
+              }
+            ],
+            "created": 1763510401,
+            "id": "chatcmpl-2",
+            "model": "gpt-4o-mini-2024-07-18",
+            "object": "chat.completion",
+            "usage": {
+              "completion_tokens": 8,
+              "prompt_tokens": 110,
+              "prompt_tokens_details": {
+                "cached_tokens": 64
+              },
+              "total_tokens": 118
+            }
+          }
+        ],
+        "provider": "openai",
+        "response_id": "",
+        "span_kind": "LLM",
+        "total_derived": false,
+        "total_tokens": 118
+      }
+    },
+    {
+      "name": "turn #2",
+      "parent": "Counter",
+      "attrs": {
+        "llm.system": "openai",
+        "openinference.span.kind": "CHAIN",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "provider": "openai",
+        "span_kind": "CHAIN"
+      }
+    },
+    {
+      "name": "Counter",
+      "parent": "Agent workflow #2",
+      "attrs": {
+        "graph.node.id": "Counter",
+        "llm.system": "openai",
+        "openinference.span.kind": "AGENT",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "provider": "openai",
+        "span_kind": "AGENT"
+      }
+    },
+    {
+      "name": "Agent workflow #2",
+      "parent": "Agent workflow",
+      "attrs": {
+        "llm.system": "openai",
+        "openinference.span.kind": "CHAIN",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "provider": "openai",
+        "span_kind": "CHAIN"
+      }
+    },
+    {
+      "name": "Agent workflow",
+      "parent": "app.request",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"content\":\"Count letters.\",\"role\":\"system\"},{\"role\":\"user\",\"content\":\"How many letters in superbased?\"}]",
+        "llm.system": "openai",
+        "openinference.span.kind": "AGENT",
+        "output.value": "superbased has 10 letters.",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "input_value": [
+          {
+            "content": "Count letters.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in superbased?",
+            "role": "user"
+          }
+        ],
+        "output_value": "superbased has 10 letters.",
+        "provider": "openai",
+        "span_kind": "AGENT"
+      }
+    },
+    {
+      "name": "app.request",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "CHAIN",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "span_kind": "CHAIN"
+      }
+    }
+  ]
+}

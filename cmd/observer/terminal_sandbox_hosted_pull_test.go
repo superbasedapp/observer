@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -78,9 +79,12 @@ func TestHostedIngestRekeys(t *testing.T) {
 	if err := os.WriteFile(q, src, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := hostedIngestPulled(store.New(d))(ctx, "claude-code", "runA", []string{q})
-	if err != nil || n == 0 {
-		t.Fatalf("ingested %d %v", n, err)
+	out, err := hostedIngestPulled(store.New(d))(ctx, "claude-code", hostedCaptureRuns{Run: "runA"}, []string{q})
+	if err != nil || out.Actions == 0 {
+		t.Fatalf("ingested %d %v", out.Actions, err)
+	}
+	if !slices.Equal(out.Sessions, []string{"sess-001"}) {
+		t.Errorf("the agent's sessions %v, want [sess-001] (before the re-key)", out.Sessions)
 	}
 	var plain, keyed int
 	rows, err := d.QueryContext(ctx, `SELECT session_id FROM actions`)
@@ -100,8 +104,8 @@ func TestHostedIngestRekeys(t *testing.T) {
 	if keyed == 0 || plain != 0 {
 		t.Errorf("keyed %d plain %d", keyed, plain)
 	}
-	again, err := hostedIngestPulled(store.New(d))(ctx, "claude-code", "runA", []string{q})
-	if err != nil || again != 0 {
-		t.Errorf("a second pull re-inserted %d (%v)", again, err)
+	again, err := hostedIngestPulled(store.New(d))(ctx, "claude-code", hostedCaptureRuns{Run: "runA"}, []string{q})
+	if err != nil || again.Actions != 0 {
+		t.Errorf("a second pull re-inserted %d (%v)", again.Actions, err)
 	}
 }

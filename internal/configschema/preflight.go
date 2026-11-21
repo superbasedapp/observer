@@ -137,33 +137,43 @@ func CheckKey(dotted string, gov KeyGovernance) KeyCheck {
 // that looks like a credential (the injected detector) or a string under a
 // credential-named map key. The posture (warn / refuse) is the caller's.
 func SecretShaped(v any, detect func(string) bool) bool {
+	return secretShaped(v, detect, true)
+}
+
+// SecretShapedLeaf is SecretShaped for a value of leaf l: a map whose keys
+// are ids (Leaf.KeysAreIDs) is judged by its values alone.
+func SecretShapedLeaf(l Leaf, v any, detect func(string) bool) bool {
+	return secretShaped(v, detect, !l.KeysAreIDs)
+}
+
+func secretShaped(v any, detect func(string) bool, keyNames bool) bool {
 	switch x := v.(type) {
 	case string:
 		return detect != nil && x != "" && detect(x)
 	case []string:
 		for _, e := range x {
-			if SecretShaped(e, detect) {
+			if secretShaped(e, detect, keyNames) {
 				return true
 			}
 		}
 	case []any:
 		for _, e := range x {
-			if SecretShaped(e, detect) {
+			if secretShaped(e, detect, keyNames) {
 				return true
 			}
 		}
 	case map[string]string:
 		for k, e := range x {
-			if (credentialKeyName(k) && e != "") || SecretShaped(e, detect) {
+			if (keyNames && credentialKeyName(k) && e != "") || secretShaped(e, detect, keyNames) {
 				return true
 			}
 		}
 	case map[string]any:
 		for k, e := range x {
-			if s, ok := e.(string); ok && credentialKeyName(k) && s != "" {
+			if s, ok := e.(string); ok && keyNames && credentialKeyName(k) && s != "" {
 				return true
 			}
-			if SecretShaped(e, detect) {
+			if secretShaped(e, detect, keyNames) {
 				return true
 			}
 		}
@@ -235,12 +245,13 @@ func MaskTOMLSecrets(text string, detect func(string) bool) string {
 }
 
 func secretAssignment(dotted, key, rhs string, detect func(string) bool) bool {
-	if l, ok := ResolveKey(dotted); ok && (l.Tier == TierSecret || l.Secret) {
+	l, ok := ResolveKey(dotted)
+	if ok && (l.Tier == TierSecret || l.Secret) {
 		return true
 	}
 	segs := strings.Split(key, ".")
 	val := strings.TrimSpace(rhs)
-	if credentialKeyName(segs[len(segs)-1]) && strings.HasPrefix(val, `"`) && val != `""` {
+	if !(ok && l.KeysAreIDs) && credentialKeyName(segs[len(segs)-1]) && strings.HasPrefix(val, `"`) && val != `""` {
 		return true
 	}
 	if detect == nil {

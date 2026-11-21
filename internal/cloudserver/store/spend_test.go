@@ -103,6 +103,7 @@ func TestSpendCeilingRefusesReservation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, pool := newStore(t)
 			acct := makeAccount(t, s)
+			pinCountPlan(t, pool, acct) // the count path; the token path: tokenbudget_test.go
 			for k, v := range tc.daily {
 				setSpend(t, pool, store.FreeBudgetPool, "daily", k, v)
 			}
@@ -138,11 +139,12 @@ func TestSpendCeilingConfigurable(t *testing.T) {
 
 	s.SetSpendCeilings(map[string]store.SpendCeiling{store.FreeBudgetPool: {DailyUSD: 0.5, MonthlyUSD: 10}})
 	free := makeAccount(t, s)
+	pinCountPlan(t, pool, free)
 	if _, err := s.ReserveAllowance(ctx, free, store.FeatureSessionEnrichment, now); !errors.Is(err, store.ErrSpendCeiling) {
 		t.Fatalf("free with a 0.5 ceiling and 1.0 spent: err=%v, want ErrSpendCeiling", err)
 	}
 	plus := makeAccount(t, s)
-	if _, err := s.AssignPlan(ctx, plus, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, plus, store.PlanPlusBeta, 4, time.Time{}, now); err != nil {
 		t.Fatalf("AssignPlan: %v", err)
 	}
 	if _, err := s.ReserveAllowance(ctx, plus, store.FeatureSessionEnrichment, now); err != nil {
@@ -160,6 +162,7 @@ func TestReservationSpendAccumulates(t *testing.T) {
 	now := midMonth()
 	s.SetSpendCeilings(map[string]store.SpendCeiling{store.FreeBudgetPool: {DailyUSD: 0.01, MonthlyUSD: 1}})
 	acct := makeAccount(t, s)
+	pinCountPlan(t, pool, acct)
 	rid, err := s.ReserveAllowance(ctx, acct, store.FeatureSessionEnrichment, now)
 	if err != nil {
 		t.Fatalf("reserve: %v", err)

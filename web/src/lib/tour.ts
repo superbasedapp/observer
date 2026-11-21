@@ -12,16 +12,13 @@ import type { TourStep } from "@shared/lib/tour";
 
 export type { TourPlacement, TourStep } from "@shared/lib/tour";
 
+// The first-run tour is five places a new person needs (local dashboard
+// first-run design, docs/plans/local-dashboard-first-run-options-2026-11-18.md
+// section 5): Overview, Sessions, Cost, Terminals and Security. It never starts
+// by itself: the Overview welcome band, the Help drawer and the command
+// palette start it. The account chip, Live, Cache, Settings and the global
+// filter each have their own Help entry.
 export const TOUR_STEPS: TourStep[] = [
-  {
-    id: "welcome",
-    // Centered card — no anchor.
-    title: "Welcome to SuperBased",
-    body:
-      "This is your local control plane for every AI coding session - cost, " +
-      "tokens, activity, and guardrails, all captured on your machine. " +
-      "Here's a 60-second tour of where things live.",
-  },
   {
     id: "overview",
     target: '[data-tour="nav-overview"]',
@@ -29,18 +26,8 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Overview - your home base",
     body:
-      "Spend, tokens, and activity at a glance across all your tools and " +
-      "projects. Start here each day.",
-  },
-  {
-    id: "live",
-    target: '[data-tour="nav-live"]',
-    path: "/live",
-    placement: "right",
-    title: "Live",
-    body:
-      "Watch sessions as they happen - active agents, current tools, and " +
-      "streaming activity in real time.",
+      "Spend, tokens and activity at a glance across all your AI tools and " +
+      "projects, captured on this machine. Start here each day.",
   },
   {
     id: "sessions",
@@ -49,8 +36,8 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Sessions",
     body:
-      "Every AI coding session, searchable and filterable - open one to see " +
-      "its full timeline, tokens, and cost.",
+      "Every AI coding session, searchable and filterable. Open one to see " +
+      "its timeline: each prompt, the files read and changed, tokens and cost.",
   },
   {
     id: "cost",
@@ -59,19 +46,9 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Cost",
     body:
-      "Exact token spend, with no estimates on proxied traffic. The tabs " +
-      "break it down by model, track your budget, and print a monthly " +
-      "statement.",
-  },
-  {
-    id: "cache",
-    target: '[data-tour="nav-cache"]',
-    path: "/cache",
-    placement: "right",
-    title: "Cache",
-    body:
-      "Prompt-cache savings and keep-warm advice - see what your cache is " +
-      "earning and when it's about to expire.",
+      "Token spend by model, exact on proxied traffic and estimated from " +
+      "session logs otherwise. The tabs track your budget and print a " +
+      "monthly statement.",
   },
   {
     id: "terminals",
@@ -80,9 +57,8 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Terminals",
     body:
-      "Launch and attach agent terminals right in the dashboard. Each one " +
-      "has a Git tree and file explorer so you can see the project without " +
-      "leaving. Launch settings and the model Arena are the other two tabs.",
+      "Start a coding agent right here with New terminal. Each terminal's " +
+      "Session button shows its live usage: context, cost and limits.",
   },
   {
     id: "security",
@@ -91,29 +67,11 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Security",
     body:
-      "Guardrails on your agents' own commands - dangerous-command policy, " +
-      "MCP pins, and taint tracking for your coding tools. Verdicts, rules, " +
-      "budgets, prompt guard and MCP each have their own tab.",
-  },
-  {
-    id: "settings",
-    target: '[data-tour="nav-settings"]',
-    path: "/settings",
-    placement: "right",
-    title: "Connect your tools",
-    body:
-      "Point Claude Code, Codex, Cursor, and more at SuperBased, tune privacy " +
-      "and routing, and manage Teams sharing - all here in Settings.",
-  },
-  {
-    id: "filter-and-help",
-    target: '[data-tour="global-filter"]',
-    placement: "bottom",
-    title: "One filter, and help anywhere",
-    body:
-      "The window, tool, project and model filters up here scope the whole dashboard; the " +
-      "model filter is always here and greys out on a page it cannot narrow. The bell beside " +
-      "Help collects what needs you. Press ? " +
-      "on any screen to open contextual help. That's the tour - explore away.",
+      "Guardrails on your agents' own commands: dangerous-command policy, " +
+      "MCP pins and taint tracking. Press ? on any screen for help. " +
+      "That's the tour.",
   },
 ];
+
+/** The tour's step ids, in order (pinned by tour.test.ts). */
+export const TOUR_STEP_IDS = TOUR_STEPS.map((s) => s.id);

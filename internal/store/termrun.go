@@ -46,6 +46,13 @@ const (
 	// EndReasonDashboardStop - the dashboard's Stop & close ended the run
 	// (marked before the PTY is closed). NOT resumable-by-restart.
 	EndReasonDashboardStop = "dashboard_stop"
+	// EndReasonCLIStop - `observer terminals stop` ended the run (marked
+	// before the PTY is closed, like the dashboard's stop). NOT
+	// resumable-by-restart.
+	EndReasonCLIStop = "cli_stop"
+	// EndReasonLaunchRefused - a sandboxed CLI launch was refused after its
+	// row was written and before the tool started. NOT resumable-by-restart.
+	EndReasonLaunchRefused = "launch_refused"
 	// EndReasonStoppedOutside - something outside Observer stopped the
 	// process (exit code 0xFFFFFFFF / -1: Stop-Process, taskkill /F, a
 	// POSIX kill signal). NOT resumable-by-restart.
@@ -87,7 +94,7 @@ type TerminalRun struct {
 	// EndReason is the durable end-state discriminator (migration 072): one of
 	// "" (running/crashed), EndReasonChildExit, EndReasonDaemonShutdown,
 	// EndReasonResumed, EndReasonOrgFloorHooksDrifted, EndReasonProcessGone,
-	// EndReasonConsoleClosed, EndReasonDashboardStop or
+	// EndReasonConsoleClosed, EndReasonDashboardStop, EndReasonCLIStop or
 	// EndReasonStoppedOutside (the vocabulary and its named lines:
 	// internal/termrun/endreason.go).
 	EndReason string
@@ -106,6 +113,13 @@ type TerminalRun struct {
 	WrapNote string
 	// Isolation is the G19 isolation evidence (migration 179).
 	Isolation TerminalRunIsolation
+	// Initiator is who started the run (migration 220, lane cli-2): one of
+	// internal/termrun's closed Initiator set, "" when not recorded. The
+	// caller normalizes it (termrun.Origin.Normalized) before the insert.
+	Initiator string
+	// ParentSessionID is the agent session an agent-started run was traced
+	// to (migration 220), "" otherwise or when not known.
+	ParentSessionID string
 }
 
 // TerminalRunIsolation is the G19 isolation evidence of one run (sandbox
@@ -131,6 +145,10 @@ type TerminalRunIsolation struct {
 	EvidenceProducer         string
 	EvidenceComponent        string
 	EvidenceComponentVersion string
+	// Seccomp is what the syscall filter gave the run (migration 232, the
+	// closed sandboxvocab.SeccompRun vocabulary; "" not recorded). Not an
+	// input of the evidence digest.
+	Seccomp string
 }
 
 // TerminalCorrelation is one scored link from a run to an observed agent
@@ -167,8 +185,9 @@ func (s *Store) InsertTerminalRun(ctx context.Context, run TerminalRun) error {
 		    isolation_class, stack, egress_tier, capture_level, capture_rule,
 		    capture_origin, capture_degraded, native_sandbox_state,
 		    verification, key_custody, evidence_digest,
-		    evidence_producer, evidence_component, evidence_component_version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    evidence_producer, evidence_component, evidence_component_version,
+		    seccomp, initiator, parent_session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.Tool, run.Kind, run.SourceSessionID, run.ProjectRootHash,
 		run.CorrelationTokenHash, launched.UTC().Format(time.RFC3339Nano),
 		endedArg, nullIntPtr(run.ExitCode),
@@ -176,7 +195,8 @@ func (s *Store) InsertTerminalRun(ctx context.Context, run TerminalRun) error {
 		iso.Class, strings.Join(iso.Stack, ","), iso.EgressTier, iso.CaptureLevel, iso.CaptureRule,
 		iso.CaptureOrigin, boolToInt(iso.CaptureDegraded), iso.NativeSandboxState,
 		iso.Verification, iso.KeyCustody, iso.EvidenceDigest,
-		iso.EvidenceProducer, iso.EvidenceComponent, iso.EvidenceComponentVersion)
+		iso.EvidenceProducer, iso.EvidenceComponent, iso.EvidenceComponentVersion,
+		iso.Seccomp, run.Initiator, run.ParentSessionID)
 	if err != nil {
 		return fmt.Errorf("store.InsertTerminalRun: %w", err)
 	}
@@ -285,6 +305,20 @@ func (s *Store) LowerTerminalRunCapture(ctx context.Context, runID string, h Ter
 		return false, fmt.Errorf("store.LowerTerminalRunCapture: %w", err)
 	}
 	return true, s.resealTerminalRun(ctx, runID, digest) // isolation.seal: the digest moved
+}
+
+// LoadTerminalRunSeccomp reads what the syscall filter gave a run
+// (migration 232); ok=false: no such run.
+func (s *Store) LoadTerminalRunSeccomp(ctx context.Context, runID string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT seccomp FROM terminal_run WHERE run_id = ?`, runID).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store.LoadTerminalRunSeccomp: %w", err)
+	}
+	return v, true, nil
 }
 
 // LoadTerminalRunCaptureHealth reads what lowered a run's capture
@@ -561,11 +595,11 @@ func (s *Store) LoadTerminalRun(ctx context.Context, runID string) (TerminalRun,
 	err := s.db.QueryRowContext(ctx,
 		`SELECT run_id, tool, kind, source_session_id, project_root_hash,
 		        correlation_token_hash, launched_at, ended_at, exit_code, end_reason,
-		        pid, wrap_applied, wrap_note
+		        pid, wrap_applied, wrap_note, initiator, parent_session_id
 		   FROM terminal_run WHERE run_id = ?`, runID).
 		Scan(&run.RunID, &run.Tool, &run.Kind, &run.SourceSessionID, &run.ProjectRootHash,
 			&run.CorrelationTokenHash, &launched, &ended, &exit, &run.EndReason,
-			&pid, &wrapApplied, &run.WrapNote)
+			&pid, &wrapApplied, &run.WrapNote, &run.Initiator, &run.ParentSessionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return TerminalRun{}, false, nil
@@ -607,6 +641,18 @@ type TerminalRunSummary struct {
 	BestSessionID  string  // strongest correlation; "" when none observed yet
 	BestConfidence float64 // 0 when BestSessionID is ""
 	CommandCount   int     // rows in terminal_commands for this run
+	// The run's recorded isolation evidence (migration 179; '' when the
+	// launch recorded none): the class built, the backend stack (outermost
+	// first, comma separated), the network tier and the computed capture
+	// level. Closed sandboxvocab enums, no path.
+	IsolationClass string
+	Stack          string
+	EgressTier     string
+	CaptureLevel   string
+	// Initiator and ParentSessionID are who started the run (migration
+	// 220, lane cli-2); "" when not recorded.
+	Initiator       string
+	ParentSessionID string
 }
 
 // ListTerminalRuns returns the most-recent terminal runs (newest first), each
@@ -625,7 +671,9 @@ func (s *Store) ListTerminalRuns(ctx context.Context, limit int) ([]TerminalRunS
 		        (SELECT trs.confidence FROM terminal_run_session trs
 		           WHERE trs.run_id = r.run_id
 		           ORDER BY trs.confidence DESC, trs.id ASC LIMIT 1),
-		        (SELECT COUNT(*) FROM terminal_commands tc WHERE tc.run_id = r.run_id)
+		        (SELECT COUNT(*) FROM terminal_commands tc WHERE tc.run_id = r.run_id),
+		        r.isolation_class, r.stack, r.egress_tier, r.capture_level,
+		        r.initiator, r.parent_session_id
 		   FROM terminal_run r
 		  ORDER BY r.launched_at DESC
 		  LIMIT ?`, limit)
@@ -644,7 +692,9 @@ func (s *Store) ListTerminalRuns(ctx context.Context, limit int) ([]TerminalRunS
 			bestConf sql.NullFloat64
 		)
 		if scanErr := rows.Scan(&sum.RunID, &sum.Tool, &sum.Kind, &launched, &ended, &exit, &sum.EndReason,
-			&bestSess, &bestConf, &sum.CommandCount); scanErr != nil {
+			&bestSess, &bestConf, &sum.CommandCount,
+			&sum.IsolationClass, &sum.Stack, &sum.EgressTier, &sum.CaptureLevel,
+			&sum.Initiator, &sum.ParentSessionID); scanErr != nil {
 			return nil, fmt.Errorf("store.ListTerminalRuns scan: %w", scanErr)
 		}
 		sum.LaunchedAt, _ = time.Parse(time.RFC3339Nano, launched)
@@ -666,6 +716,67 @@ func (s *Store) ListTerminalRuns(ctx context.Context, limit int) ([]TerminalRunS
 		out = append(out, sum)
 	}
 	return out, rows.Err()
+}
+
+// sandboxedRunsByIDChunk bounds the run ids one SandboxedTerminalRunsByID
+// query binds.
+const sandboxedRunsByIDChunk = 500
+
+// SandboxedTerminalRunsByID returns the terminal runs among runIDs whose
+// launch recorded a sandbox (an isolation class other than none), ENDED OR
+// NOT, with their end facts (ended_at, end_reason) and isolation evidence
+// (migration 179). It is the loopback exposure gate's read (security ledger
+// LAUNCH-1): the gate holds a sandboxed CLI launch's watch marker and asks
+// about exactly that run, because a recorded end does not prove the box is
+// gone (a graceful daemon stop stamps every live non-attach row
+// daemon_shutdown while a CLI launch and its box keep running, P-074).
+// Ids that match no sandboxed row are absent from the result.
+func (s *Store) SandboxedTerminalRunsByID(ctx context.Context, runIDs []string) ([]TerminalRunSummary, error) {
+	var out []TerminalRunSummary
+	for start := 0; start < len(runIDs); start += sandboxedRunsByIDChunk {
+		end := min(start+sandboxedRunsByIDChunk, len(runIDs))
+		chunk := runIDs[start:end]
+		args := make([]any, 0, len(chunk))
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		//nolint:gosec // G202: placeholders(len(chunk)) is a generated `?` placeholder run; the ids bind via args.
+		query := `SELECT run_id, tool, kind, launched_at, ended_at, end_reason,
+			        isolation_class, stack, egress_tier, capture_level
+			   FROM terminal_run
+			  WHERE run_id IN (` + placeholders(len(chunk)) + `)
+			    AND isolation_class NOT IN ('', 'none')
+			  ORDER BY launched_at DESC`
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store.SandboxedTerminalRunsByID: %w", err)
+		}
+		for rows.Next() {
+			var (
+				sum      TerminalRunSummary
+				launched string
+				ended    sql.NullString
+			)
+			if err := rows.Scan(&sum.RunID, &sum.Tool, &sum.Kind, &launched, &ended, &sum.EndReason,
+				&sum.IsolationClass, &sum.Stack, &sum.EgressTier, &sum.CaptureLevel); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("store.SandboxedTerminalRunsByID scan: %w", err)
+			}
+			sum.LaunchedAt, _ = time.Parse(time.RFC3339Nano, launched)
+			if ended.Valid {
+				if t, perr := time.Parse(time.RFC3339Nano, ended.String); perr == nil {
+					sum.EndedAt = &t
+				}
+			}
+			out = append(out, sum)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return nil, fmt.Errorf("store.SandboxedTerminalRunsByID rows: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // LoadCorrelations returns a run's correlations, strongest first.

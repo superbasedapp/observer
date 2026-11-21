@@ -28,6 +28,8 @@ func seedProjectMove(t *testing.T, d *sql.DB) {
 	exec(`INSERT INTO api_turns (session_id, project_id, timestamp, provider, model, input_tokens, output_tokens) VALUES ('s-old', 2, ?, 'anthropic', 'm', 1, 1)`, at)
 	exec(`INSERT INTO failure_context (action_id, session_id, project_id, timestamp, command_hash, command_summary) VALUES (10, 's-old', 2, ?, 'h', 'go test')`, at)
 	exec(`INSERT INTO compaction_events (session_id, project_id, timestamp, tool) VALUES ('s-old', 2, ?, 'claude-code')`, at)
+	exec(`INSERT INTO process_runs (process_key, pid, session_id, project_id, attribution_source, attribution_confidence, started_at, last_seen_at) VALUES ('pk-old', 42, 's-old', 2, 'env_token', 'high', ?, ?)`, at, at)
+	exec(`INSERT INTO process_events (process_key, timestamp, event_type, project_id) VALUES ('pk-old', ?, 'exec', 2)`, at)
 	fs := func(pid int, path, seen string) {
 		exec(`INSERT INTO file_state (project_id, file_path, content_hash, file_mtime, file_size_bytes, last_action_type, last_seen_at) VALUES (?, ?, ?, ?, 1, 'read_file', ?)`,
 			pid, path, path+"@"+seen, seen, seen)
@@ -86,6 +88,8 @@ func TestMoveProjectRows_AllTables(t *testing.T) {
 		"actions":         {Table: "actions", Moved: 1},
 		"api_turns":       {Table: "api_turns", Moved: 1},
 		"failure_context": {Table: "failure_context", Moved: 1},
+		"process_runs":    {Table: "process_runs", Moved: 1},
+		"process_events":  {Table: "process_events", Moved: 1},
 		"file_state":      {Table: "file_state", Moved: 2, KeptOnOld: 2, Swapped: 1},
 		"file_changes":    {Table: "file_changes", Moved: 1},
 		"project_commits": {Table: "project_commits", Moved: 2, KeptOnOld: 2, Swapped: 1},
@@ -198,5 +202,71 @@ func TestMoveProjectRowsResendsToOrg(t *testing.T) {
 	var name string
 	if err := db.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = 7`).Scan(&name); err != nil || name != "moved" {
 		t.Errorf("old row name = %q, %v; want it kept and marked", name, err)
+	}
+}
+
+// TestFoldedProjectSQL: a row the worktree-roots backfill marked as moved
+// is folded while nothing is filed under it, and stops being folded once a
+// session or an action lands on it again; an unmarked row (even an empty
+// one) and a row merely named like a project are never folded.
+func TestFoldedProjectSQL(t *testing.T) {
+	s, d := newTestStore(t)
+	ctx := context.Background()
+	seedProjectMove(t, d)
+	if _, err := s.MoveProjectRows(ctx, 2, 1, WorktreeRootMovedMark(1)); err != nil {
+		t.Fatal(err)
+	}
+	const at = "2026-10-01T00:00:00Z"
+	if _, err := d.ExecContext(ctx, `INSERT INTO projects (id, root_path, name, created_at) VALUES (3, '/r/empty', NULL, ?), (4, '/r/named', 'worktree root', ?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	folded := func() []int64 {
+		t.Helper()
+		rows, err := d.QueryContext(ctx, `SELECT p.id FROM projects p WHERE `+FoldedProjectSQL("p")+` ORDER BY p.id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	if got := folded(); !reflect.DeepEqual(got, []int64{2}) {
+		t.Fatalf("folded after the move = %v, want [2]", got)
+	}
+	// The kept clash rows (file_state, project_commits) do not make the
+	// row a project again; a new session does.
+	if _, err := d.ExecContext(ctx, `INSERT INTO sessions (id, tool, started_at, project_id) VALUES ('s-new', 'claude-code', ?, 2)`, at); err != nil {
+		t.Fatal(err)
+	}
+	if got := folded(); len(got) != 0 {
+		t.Errorf("folded with a new session on the row = %v, want none", got)
+	}
+	if _, err := d.ExecContext(ctx, `UPDATE sessions SET project_id = 1 WHERE id = 's-new'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `INSERT INTO actions (id, session_id, project_id, timestamp, action_type, tool) VALUES (11, 's-new', 2, ?, 'read_file', 'claude-code')`, at); err != nil {
+		t.Fatal(err)
+	}
+	if got := folded(); len(got) != 0 {
+		t.Errorf("folded with a new action on the row = %v, want none", got)
+	}
+	// NOT (...) keeps every row that is not folded, an unnamed one included
+	// (a NULL name must not make the predicate NULL).
+	var kept int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects p WHERE NOT (`+FoldedProjectSQL("p")+`)`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 4 {
+		t.Errorf("NOT folded keeps %d rows, want all 4", kept)
+	}
+	if got := WorktreeRootMovedMark(7); got != "worktree root moved to project 7 (observer backfill --worktree-roots)" {
+		t.Errorf("WorktreeRootMovedMark(7) = %q", got)
 	}
 }

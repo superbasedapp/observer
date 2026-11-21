@@ -390,6 +390,12 @@ type AccessRequestCreate struct {
 
 // AccessRequestGrantSummary is the grant a request produced, as GET
 // /api/agent/requests lists it beside the request row.
+//
+// The request row's own status records the DECISION ("granted") and never
+// moves on afterwards: org_requests has one writer (grantstore) and a revoke
+// touches only the grant. Status here is the grant's live state (active,
+// scheduled, exhausted, expired, revoked), and a node renders the request's
+// outcome from it (demo finding #27, 2026-11-10).
 type AccessRequestGrantSummary struct {
 	ID          int64  `json:"id"`
 	Type        string `json:"type"`
@@ -399,4 +405,10 @@ type AccessRequestGrantSummary struct {
 	ExpiresAtNs int64  `json:"expires_at_ns,omitempty"`
 	MaxUses     int64  `json:"max_uses,omitempty"`
 	SubjectKind string `json:"subject_kind"`
+	// RevokedAtNs and RevokeReason say when the organization revoked the
+	// grant and the reason the admin gave (empty when none). Both optional:
+	// a server that predates them sends neither, and an older node ignores
+	// them.
+	RevokedAtNs  int64  `json:"revoked_at_ns,omitempty"`
+	RevokeReason string `json:"revoke_reason,omitempty"`
 }

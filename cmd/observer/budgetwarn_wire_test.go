@@ -162,8 +162,12 @@ func TestBudgetStatuslineLabel(t *testing.T) {
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 0.75, Ratio: 1.68, Crossed: 1, Enforcement: "soft"}, "tokens", "budget 168%"},
 		{budgetwarnfile.Window{Window: "monthly", Unit: "tokens", Cap: 1e6, Ratio: 0.96, Crossed: 0.9, Enforcement: "soft"}, "usd", "budget 96% of 1,000,000 tokens/mo"},
 		{budgetwarnfile.Window{Window: "monthly", Unit: "tokens", Cap: 1e6, Ratio: 0.96, Crossed: 0.9, Enforcement: "soft"}, "tokens", "budget 96% of 1,000,000 tokens/mo"},
-		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "usd", "budget 110% of $5.00/day (blocked)"},
-		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "tokens", "budget 110% (blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "blocks", Blocked: true}, "usd", "budget 110% of $5.00/day (blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "blocks", Blocked: true}, "tokens", "budget 110% (blocked)"},
+		// A hard cap this machine does not block (observe mode) never reads
+		// "(blocked)"; a file from an older daemon (no effect) says neither.
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "warn_observe"}, "usd", "budget 110% of $5.00/day (not blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "usd", "budget 110% of $5.00/day"},
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 0.1, Crossed: 0, Enforcement: "soft"}, "usd", ""},
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 0.1, Crossed: 0, Enforcement: "soft"}, "tokens", ""},
 	}
@@ -224,4 +228,39 @@ func TestBudgetWarnServiceKeepsStateWhenSpendIsUnavailable(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("the same rung was announced again after a transient failure: %q", notices)
 	}
+}
+
+// TestBudgetWarnServiceRecordsTheBudgetPull: the status file carries the
+// machine's last organization budget pull (budget enforce consistency,
+// 2026-11-19), so the local dashboard can say when it fails: when it last
+// worked, and when the current run of failures began. An answer that is not
+// a failure (disabled, no budget) clears the run; nil is inert.
+func TestBudgetWarnServiceRecordsTheBudgetPull(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "observer.db")
+	svc := newBudgetWarnService(db, nil, nil, nil)
+	t0 := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	read := func() *budgetwarnfile.Fetch {
+		t.Helper()
+		svc.evaluate()
+		f, err := budgetwarnfile.Read(budgetwarnfile.StatusPath(db))
+		if err != nil || f == nil {
+			t.Fatalf("read status file: %v", err)
+		}
+		return f.Fetch
+	}
+	svc.SetFetch("ok", t0)
+	if f := read(); f == nil || f.State != "ok" || !f.LastOKAt.Equal(t0) || !f.FailingSince.IsZero() {
+		t.Fatalf("after ok: %+v", f)
+	}
+	svc.SetFetch("unreachable", t0.Add(time.Minute))
+	svc.SetFetch("unreachable", t0.Add(3*time.Minute))
+	if f := read(); f.State != "unreachable" || !f.LastOKAt.Equal(t0) || !f.FailingSince.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("after two failures: %+v", f)
+	}
+	svc.SetFetch("no_budget", t0.Add(4*time.Minute))
+	if f := read(); f.State != "no_budget" || !f.FailingSince.IsZero() {
+		t.Fatalf("after an answer: %+v", f)
+	}
+	var none *budgetWarnService
+	none.SetFetch("unreachable", t0)
 }

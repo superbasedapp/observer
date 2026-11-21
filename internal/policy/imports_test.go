@@ -27,7 +27,11 @@ func TestPackageImports_Bounded(t *testing.T) {
 			"github.com/fsnotify/fsnotify",
 		},
 		ForbiddenPrefixes: []string{"github.com/marmutapp/superbased-observer/"},
-		Reason:            "module boundary section 17.1",
+		// The one allowed Observer import is the stdlib-only IP classifier, so
+		// host classification (metadata, private ranges) has one owner shared
+		// with internal/netpolicy's dial policy and can never fork.
+		Except: []string{"github.com/marmutapp/superbased-observer/internal/ipclass"},
+		Reason: "module boundary section 17.1",
 	})
 }
 

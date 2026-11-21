@@ -69,6 +69,32 @@ type Attributor struct {
 	// window, persist cadence). Zero value = DefaultMetricPolicy; installed by
 	// the daemon via SetMetricPolicy.
 	metricRing MetricPolicy
+
+	// isService reports whether an executable starts a service (the capture
+	// budget's service table, proccapture.Policy.IsService). Nil (the default,
+	// and whenever the capture budget is off) disables service marking, so
+	// the tree and attribution behave exactly as before.
+	isService func(exe string) bool
+}
+
+// SetServiceTable installs the capture budget's service table (plan §4.2).
+// With it, a run whose executable is a service becomes a service root
+// (ProcessRun.ServiceRootKey = its own key), its descendants carry that key,
+// and an env-token hit on a descendant no longer counts as a direct identity
+// (see resolveAttribution). Nil disables it. Not safe to call concurrently
+// with Observe; the daemon sets it once at construction.
+func (a *Attributor) SetServiceTable(fn func(exe string) bool) { a.isService = fn }
+
+// serviceRootFromParent returns the service root a child inherits, "" when
+// the parent is untracked or not in a service.
+func (a *Attributor) serviceRootFromParent(parentKey string) string {
+	if a.isService == nil || parentKey == "" {
+		return ""
+	}
+	if p := a.runs[parentKey]; p != nil {
+		return p.ServiceRootKey
+	}
+	return ""
 }
 
 // NewAttributor builds an Attributor. seed may be nil (everything is then
@@ -370,6 +396,7 @@ func (a *Attributor) fork(ev RawEvent) (*ProcessRun, Change) {
 		if parent := a.runs[parentKey]; parent != nil {
 			run.Attribution = inherit(parent)
 		}
+		run.ServiceRootKey = a.serviceRootFromParent(parentKey)
 	}
 	a.runs[childKey] = run
 	a.livePID[ev.PID] = childKey
@@ -435,7 +462,18 @@ func (a *Attributor) exec(ev RawEvent, env map[string]string) (*ProcessRun, Chan
 		a.appendMetricSample(run, &ev)
 	}
 
+	// Service membership (capture budget, plan §4.2): re-inherit from the
+	// parent as it is NOW (a parent detached as a service after this child
+	// forked still owns it), so resolveAttribution knows whether an env
+	// token on this run is a service member's inherited environment.
+	if inherited := a.serviceRootFromParent(run.ParentProcessKey); inherited != "" {
+		run.ServiceRootKey = inherited
+	}
 	a.resolveAttribution(run, ev.SessionToken)
+	// A service-table executable in a session starts a service of its own.
+	if a.isService != nil && run.ServiceRootKey == "" && run.Attribution.SessionID != "" && a.isService(run.ExeBasename) {
+		run.ServiceRootKey = run.ProcessKey
+	}
 	return run, ChangeCreated
 }
 
@@ -464,6 +502,22 @@ func (a *Attributor) resolveAttribution(run *ProcessRun, sessionToken string) {
 	}
 	if a.tokenSeed != nil && sessionToken != "" {
 		if s, ok := a.tokenSeed(sessionToken); ok && s.SessionID != "" {
+			// THE ENV TOKEN STOPS AT A SERVICE ROOT (capture budget, plan
+			// §4.2). Environment variables are inherited by everything, so a
+			// service the agent started (Docker Desktop restarted from a tool
+			// call) hands the session token to every process it spawns for as
+			// long as it runs. The token proves where the environment came
+			// from, not that the session is driving the process: inside a
+			// service subtree that already inherits this session, the run
+			// keeps its INHERITED attribution (still the session's, so the
+			// service stays tracked under it, per the operator ruling) instead
+			// of becoming a fresh direct identity, and the service marking
+			// (ServiceRootKey) is never cleared. An init/relay boundary is
+			// still cleared below, today's behaviour for the agent itself.
+			if run.ServiceRootKey != "" && run.ServiceRootKey != run.ProcessKey &&
+				run.Attribution.SessionID == s.SessionID {
+				return
+			}
 			run.IsBoundary = false
 			run.Attribution = Attribution{
 				SessionID:  s.SessionID,

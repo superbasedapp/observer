@@ -1,0 +1,58 @@
+: run stream, first read window (shape live-verified 2026-11-01, values synthetic, see README)
+retry: 3000
+
+id: 1792264205000-1
+event: status
+data: {"runId":"run-00000000-0000-0000-0000-000000000002","status":"RUNNING"}
+
+id: 1792264205100-2
+event: interaction_update
+data: {"type":"step-started","stepId":"step-1"}
+
+id: 1792264205200-3
+event: thinking
+data: {"text":"look at the loader first"}
+
+id: 1792264206000-4
+event: tool_call
+data: {"callId":"toolu_01|loader-read","name":"read_file","status":"running"}
+
+id: 1792264206050-5
+event: tool_call
+data: {"callId":"toolu_01|loader-read","name":"read_file","status":"running","args":{"path":"/workspace/src/loader.go","limit":200}}
+
+id: 1792264206400-6
+event: tool_call
+data: {"callId":"toolu_01|loader-read","name":"read_file","status":"completed","args":{"path":"/workspace/src/loader.go","limit":200},"result":{"success":{"content":"package loader // SYNTHETIC FILE BODY"}}}
+
+event: heartbeat
+data: {}
+
+id: 1792264207000-7
+event: tool_call
+data: {"callId":"toolu_02|find-tests","name":"file_search","status":"running"}
+
+id: 1792264207020-8
+event: tool_call
+data: {"callId":"toolu_02|find-tests","name":"file_search","status":"running","args":{"globPattern":"**/*_test.go","targetDirectory":"/workspace/src"}}
+
+id: 1792264207300-9
+event: tool_call
+data: {"callId":"toolu_02|find-tests","name":"file_search","status":"completed","args":{"globPattern":"**/*_test.go","targetDirectory":"/workspace/src"},"result":{"success":{"files":["/workspace/src/loader_test.go"]}}}
+
+id: 1792264208000-10
+event: assistant
+data: {"text":"adding the retry"}
+
+id: 1792264209000-11
+event: tool_call
+data: {"callId":"toolu_03|loader-edit","name":"edit_file","status":"running"}
+
+id: 1792264209100-12
+event: tool_call
+data: {"callId":"toolu_03|loader-edit","name":"edit_file","status":"running","args":{"path":"/workspace/src/loader.go","streamContent":"SYNTHETIC NEW CONTENT"}}
+
+id: 1792264210000-13
+event: tool_call
+data: {"callId":"toolu_04|run-tests","name":"run_terminal_cmd","status":"running"}
+

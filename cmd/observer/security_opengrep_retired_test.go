@@ -32,8 +32,8 @@ func TestPackUpgradeClosesARetiredRulesFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if floor.Version() != "1.3.1" {
-		t.Fatalf("the embedded pack is %s, want 1.3.1", floor.Version())
+	if floor.Version() != "1.5.0" {
+		t.Fatalf("the embedded pack is %s, want 1.5.0", floor.Version())
 	}
 	const retired = "go.retired-in-1-2-0"
 	if _, ok := floor.Rule(retired); ok {
@@ -98,8 +98,8 @@ func TestPackUpgradeClosesARetiredRulesFindings(t *testing.T) {
 		t.Fatalf("an unclosable run closed findings: %v", s)
 	}
 	for _, f := range res.Findings {
-		if f.Rule.PackVersion != "1.3.1" {
-			t.Fatalf("a 1.3.1 run labelled its finding %s", f.Rule.PackVersion)
+		if f.Rule.PackVersion != "1.5.0" {
+			t.Fatalf("a 1.5.0 run labelled its finding %s", f.Rule.PackVersion)
 		}
 	}
 

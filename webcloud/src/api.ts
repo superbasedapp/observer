@@ -19,6 +19,22 @@ let authMode: AuthMode | null = null;
 // arrives on the same responses, lives exactly as long, and is cleared by the
 // same sign-out. Like the account id it is in-memory only - never persisted.
 let profile: AccountProfile | null = null;
+// C2: this session's passkey second factor, from the session bootstrap. A
+// pending session reaches only the second-factor screen (the server refuses
+// everything else with second_factor_required).
+let secondFactor: SecondFactorState | null = null;
+
+/** getSecondFactor returns this session's second-factor state, or null when
+ * the server did not report one. */
+export function getSecondFactor(): SecondFactorState | null {
+  return secondFactor;
+}
+
+// The personal portal plane's switch as the session read last reported it
+// (D-IND-8): "serving" while the old enrichment pages still hold data,
+// "retired" once it moved into the personal org. Null = not reported, which
+// readers treat as serving (lib/personalModel.ts personalPlaneOf).
+let personalPlane: string | null = null;
 
 /** setCsrf stores the CSRF token in memory after a successful login. */
 export function setCsrf(t: string): void {
@@ -31,6 +47,8 @@ export function clearCsrf(): void {
   accountId = null;
   authMode = null;
   profile = null;
+  secondFactor = null;
+  personalPlane = null;
 }
 
 /** hasCsrf reports whether the user is "signed in" for this page load. */
@@ -54,6 +72,13 @@ export function getProfile(): AccountProfile | null {
  * getAuthModeHint for the pre-sign-in cached hint). */
 export function getAuthMode(): AuthMode | null {
   return authMode;
+}
+
+/** getPersonalPlane returns the personal portal plane switch the session read
+ * reported ("serving" | "retired"), or null when it was not reported (an
+ * older server), which means serving. */
+export function getPersonalPlane(): string | null {
+  return personalPlane;
 }
 
 // ---- Auth-mode hint (localStorage, non-sensitive) --------------------------
@@ -120,6 +145,9 @@ type CsrfSyncMessage =
       // adopts the name to render for it; null means "nothing known", which
       // every reader treats as "fall back to the account id".
       profile: AccountProfile | null;
+      // The personal plane switch (D-IND-8); absent from an older build's
+      // message, which reads as serving.
+      personalPlane?: string | null;
     }
   | { type: "signed-out" };
 
@@ -141,6 +169,7 @@ function broadcastCsrf(): void {
     accountId,
     authMode,
     profile,
+    personalPlane,
   };
   csrfChannel.postMessage(msg);
 }
@@ -175,6 +204,7 @@ export function onCsrfSync(callback: (signedIn: boolean) => void): () => void {
     // `?? null` tolerates a message from a tab still running the older build,
     // which carries no profile field at all.
     profile = msg.profile ?? null;
+    personalPlane = msg.personalPlane ?? null;
     writeAuthModeHint(msg.authMode);
     callback(true);
   }
@@ -186,29 +216,45 @@ export function onCsrfSync(callback: (signedIn: boolean) => void): () => void {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** body is the refusal's parsed JSON body, kept for the few refusals that
+   * carry more than a message and a code (account_deletion_blocked's
+   * `blockers`); read it through a typed helper such as refusalBlockers. */
+  readonly body: Readonly<Record<string, unknown>>;
+  constructor(status: number, code: string, message: string, body: Record<string, unknown> = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 
 interface ErrorBody {
   error?: string;
   code?: string;
+  message?: string;
 }
 
+// parseError reads the server's refusal. The cloud API writes
+// {"error": <message>, "code": <code>} (server.go writeErr); a body that
+// instead carries {"error": <code>, "message": <message>} (no "code") is read
+// the same way, so either spelling yields the code and the sentence.
 async function parseError(res: Response): Promise<ApiError> {
-  let body: ErrorBody = {};
+  let body: ErrorBody & Record<string, unknown> = {};
   try {
-    body = (await res.json()) as ErrorBody;
+    const parsed: unknown = await res.json();
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      body = parsed as ErrorBody & Record<string, unknown>;
+    }
   } catch {
     // Non-JSON error body; fall back to status text.
   }
+  if (body.code === undefined && typeof body.message === "string" && typeof body.error === "string") {
+    return new ApiError(res.status, body.error, body.message, body);
+  }
   const message = body.error ?? res.statusText ?? "request failed";
   const code = body.code ?? "";
-  return new ApiError(res.status, code, message);
+  return new ApiError(res.status, code, message, body);
 }
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -225,7 +271,7 @@ async function getJSON<T>(path: string): Promise<T> {
 
 async function mutate<T>(
   path: string,
-  method: "POST" | "DELETE",
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
   body?: unknown,
 ): Promise<T> {
   const headers: Record<string, string> = {
@@ -274,12 +320,32 @@ export interface LoginResult {
   profile?: AccountProfile;
 }
 
+/** PersonalPlaneState is the personal portal plane switch (D-IND-8):
+ * "serving" while the old enrichment pages still hold the account's data,
+ * "retired" once it has moved into the personal org. Absent = serving. */
+export type PersonalPlaneState = "serving" | "retired";
+
 export interface SessionResult {
   account_id: string;
   csrf_token: string;
   expires_at: string;
   auth_mode: AuthMode;
   profile?: AccountProfile;
+  /** C2: this session's passkey second factor (portalmfa.go). */
+  second_factor?: SecondFactorState;
+  personal_plane?: PersonalPlaneState;
+}
+
+/** SecondFactorState is a session's passkey second factor. */
+export interface SecondFactorState {
+  /** enrolled: the account holds at least one passkey. */
+  enrolled: boolean;
+  /** pending: enrolled, and this session has not used its passkey yet. */
+  pending: boolean;
+  /** method: how this session completed it ("passkey" | "recovery_code"). */
+  method?: "passkey" | "recovery_code";
+  /** multi_factor: what a team sign-in will be told (a passkey only). */
+  multi_factor: boolean;
 }
 
 export interface Allowance {
@@ -424,6 +490,38 @@ export interface UsageView extends Allowance {
   digest_weekly: boolean;
   results_retention_days: number;
   digests_this_week?: number;
+  // Plan v5 (ruling R-AI1): how session enrichment is budgeted. "count" is
+  // the daily/monthly enrichment caps above; "tokens" is the tier's token
+  // budgets below, and then daily_cap / monthly_cap read 0 because no count
+  // cap is enforced. Absent from a server that predates plan v5 (= count).
+  budget_unit?: "count" | "tokens";
+  enrichment_tier?: string;
+  enrichment_tier_version?: number;
+  daily_tokens_used?: number;
+  daily_token_budget?: number;
+  daily_tokens_remaining?: number;
+  monthly_tokens_used?: number;
+  monthly_token_budget?: number;
+  monthly_tokens_remaining?: number;
+  // session_token_budget is one session's cumulative cap across
+  // re-enrichments; evidence_token_budget is the most evidence one upload
+  // may carry (the node sends a smaller selection of a larger session).
+  session_token_budget?: number;
+  evidence_token_budget?: number;
+}
+
+/** isTokenBudgeted reports whether the plan budgets enrichment in tokens
+ * (plan v5), so a page shows the token windows rather than the count caps,
+ * which read 0 on such a plan. */
+export function isTokenBudgeted(view: Pick<UsageView, "budget_unit"> | undefined): boolean {
+  return view?.budget_unit === "tokens";
+}
+
+/** tokensLeft is the server's remaining figure for a token window, falling
+ * back to budget minus used (never below 0) for a server that predates it. */
+export function tokensLeft(budget?: number, used?: number, remaining?: number): number {
+  if (typeof remaining === "number") return remaining;
+  return Math.max((budget ?? 0) - (used ?? 0), 0);
 }
 
 export interface Device {
@@ -476,6 +574,7 @@ export interface DeletionResult {
 export interface AuthConfig {
   auth_mode: AuthMode;
   workos_browser_enabled: boolean;
+  personal_plane?: PersonalPlaneState;
 }
 
 // ---- API functions --------------------------------------------------------
@@ -573,7 +672,9 @@ async function fetchSession(): Promise<SessionResult | null> {
   setCsrf(result.csrf_token);
   accountId = result.account_id;
   profile = result.profile ?? null;
+  secondFactor = result.second_factor ?? null;
   authMode = result.auth_mode;
+  personalPlane = result.personal_plane ?? null;
   writeAuthModeHint(result.auth_mode);
   broadcastCsrf();
   return result;
@@ -1120,7 +1221,14 @@ export interface BillingSubscription {
   current_period_end?: string;
   canceled_at?: string;
   trial_ends_at?: string;
+  /** When the subscription entered past_due (W16-D5); set only while it is
+   * past_due. */
+  past_due_since?: string;
   management_urls?: BillingManagementURLs;
+  /** The seat quantity Paddle bills (when known). */
+  seat_quantity?: number;
+  /** Set when the subscription is billed through the personal dashboard. */
+  org_id?: string;
 }
 
 /** CheckoutPrice is one purchasable price in the portal's checkout catalogue. */
@@ -1134,16 +1242,19 @@ export interface CheckoutPrice {
 
 /** CheckoutCatalog is the `checkout` slice of GET /portal/api/billing:
  * whether this deployment can open a checkout at all, the Paddle.js
- * environment + client token, the purchasable prices, and the advertised
- * trial length. `available` is false until the operator has provisioned a
- * client token AND at least one price — the Upgrade button renders its honest
- * disabled state until then. */
+ * environment + client token, the purchasable prices, and the trial this
+ * account (or org) would get. `available` is false until the operator has
+ * provisioned a client token AND at least one price — the Upgrade button
+ * renders its honest disabled state until then. `trial_used` is true once the
+ * scope has had its free trial: `trial_days` is then 0 and the server opens
+ * the checkout on a price billed from the first day. Older servers omit it. */
 export interface CheckoutCatalog {
   available: boolean;
   environment: string;
   client_token: string;
   prices: CheckoutPrice[];
   trial_days: number;
+  trial_used?: boolean;
 }
 
 /** BillingView is GET /portal/api/billing. `has_subscription` is false for
@@ -1157,6 +1268,13 @@ export interface BillingView {
   subscription?: BillingSubscription;
   plan?: UsageView;
   checkout: CheckoutCatalog;
+  /** Wave 17: the deployment can open Paddle's customer portal (invoices,
+   * payment method) for this account's subscription. */
+  portal_available?: boolean;
+  /** The account's own subscription is billed through its personal
+   * organization (after its move onto it): the plan lives there, so `plan` is
+   * absent and the page reads the subscription's plan instead. */
+  paid_through_personal_org?: boolean;
 }
 
 /** getBilling loads the account's plan + subscription status + checkout
@@ -1170,6 +1288,9 @@ export function getBilling(): Promise<BillingView> {
  * checkout back to this account. Handed verbatim to Paddle.Checkout.open. */
 export interface CheckoutIntent {
   price_id: string;
+  /** The quantity to open the checkout with (wave 17: 1 for a personal
+   * plan). Older servers omit it; treat that as 1. */
+  quantity?: number;
   expires_at: string;
   custom_data: {
     account_id: string;
@@ -1225,4 +1346,630 @@ export async function postCorrection(
     throw await parseError(res);
   }
   return (await res.json()) as CorrectionResponse;
+}
+
+// ---- Orgs (plan 07 M6.5: the console's team orgs) --------------------------
+//
+// GET/POST /portal/api/orgs, GET/PATCH /portal/api/orgs/{id}, the slug
+// availability read, and billing per org (internal/cloudserver/api
+// portal_orgs*.go). Every host and link in these responses is built by the
+// server from the org's slug; the console never composes a tenant host.
+
+/** OrgStatus is the org's lifecycle state (platformcontract TenantState). */
+export type OrgStatus =
+  | "provisioning"
+  | "active"
+  | "suspended"
+  | "pending_deletion"
+  | "purging"
+  | "purged";
+
+/** ProvisioningStage is the console's one word for a create in flight
+ * (provisioningRules in portal_orgs.go). */
+export type ProvisioningStage =
+  | "ready"
+  | "closing"
+  | "unknown"
+  | "failed"
+  | "finishing"
+  | "waitlisted"
+  | "queued"
+  | "retrying"
+  | "creating";
+
+/** OrgProvisioning is the progress of an org's create. */
+export interface OrgProvisioning {
+  stage: ProvisioningStage;
+  state?: string;
+  attempts: number;
+  last_error_class?: string;
+  next_attempt_at?: string;
+  queued_at?: string;
+  created_on_host_at?: string;
+}
+
+/** PortalOrg is one org as the console shows it. */
+export interface PortalOrg {
+  org_id: string;
+  slug: string;
+  display_name: string;
+  kind: "personal" | "team";
+  status: OrgStatus;
+  tenancy: string;
+  console_role: "owner" | "admin" | "member";
+  is_billing_owner: boolean;
+  created_at: string;
+  /** host is <slug>.<tenant domain>; absent when none is configured. */
+  host?: string;
+  /** machines_page_url is the team dashboard's page listing the signed-in
+   * user's own machines in this team (server-built; active teams only). The
+   * console links to it rather than reading tenants from the browser. */
+  machines_page_url?: string;
+  /** open_url opens the org's dashboard (active orgs only), built by the
+   * server's one link function (tenantlink.go): every "Open your dashboard"
+   * button reads it and the console never composes a tenant address. A
+   * personal dashboard's address is opened from buttons, never shown as
+   * text. (The server still sends the older dashboard_url for one release;
+   * nothing here reads it.) */
+  open_url?: string;
+  /** invite_url is a team dashboard's invite page (active teams only). */
+  invite_url?: string;
+  /** members is the team's member count from its latest usage report (the
+   * org list only; absent before the first report). */
+  members?: number;
+  provisioning?: OrgProvisioning;
+}
+
+/** TeamOrgAllowance is the signed-in account's team count against its cap
+ * (portal_orgs.go teamOrgsJSON; default 3, raised on request). */
+export interface TeamOrgAllowance {
+  used: number;
+  limit: number;
+  remaining: number;
+  /** invite_only is true while the team create allow-list is on (W17,
+   * portal_teamallowlist.go); create_allowed then says whether this account
+   * is on it, and account_ref is what to quote to support when it is not.
+   * Absent on an older server: treated as open. */
+  invite_only?: boolean;
+  create_allowed?: boolean;
+  account_ref?: string;
+}
+
+/** OrgsList is GET /portal/api/orgs. */
+export interface OrgsList {
+  orgs: PortalOrg[];
+  tenant_domain: string;
+  /** team_orgs is absent when the server could not read it. */
+  team_orgs?: TeamOrgAllowance;
+  /** team_price is the team plan's catalogue price, shown before a create;
+   * absent when none is configured. */
+  team_price?: { display: string; interval: string };
+}
+
+/** OrgPlan is the plan the org's signed entitlement document carries. */
+export interface OrgPlan {
+  name: string;
+  version: number;
+  label: string;
+  source: "subscription" | "org_grant" | "launch" | "floor";
+  not_after?: string;
+  seats_min?: number;
+}
+
+/** OrgSeats is the latest usage day the tenant reported. */
+export interface OrgSeats {
+  in_use: number;
+  members: number;
+  day: string;
+}
+
+/** OrgCaps says what the signed-in user may do with the org. */
+export interface OrgCaps {
+  rename: boolean;
+  view_billing: boolean;
+  checkout: boolean;
+}
+
+/** OrgDetail is GET /portal/api/orgs/{id} (and the create/rename answer). */
+export interface OrgDetail {
+  org: PortalOrg;
+  launch_url?: string;
+  plan?: OrgPlan;
+  seats?: OrgSeats;
+  can: OrgCaps;
+  replayed?: boolean;
+}
+
+/** SlugAvailability is GET /portal/api/orgs/slug-availability. */
+export interface SlugAvailability {
+  slug: string;
+  available: boolean;
+  reason?: "invalid" | "reserved" | "taken";
+  host?: string;
+}
+
+export function listOrgs(): Promise<OrgsList> {
+  return getJSON<OrgsList>("/portal/api/orgs");
+}
+
+export function getOrg(id: string): Promise<OrgDetail> {
+  return getJSON<OrgDetail>("/portal/api/orgs/" + encodeURIComponent(id));
+}
+
+export function checkSlug(slug: string): Promise<SlugAvailability> {
+  return getJSON<SlugAvailability>(
+    "/portal/api/orgs/slug-availability?slug=" + encodeURIComponent(slug),
+  );
+}
+
+/** createTeam creates a team org; the tenant is created in the background. */
+export function createTeam(displayName: string, slug: string): Promise<OrgDetail> {
+  return mutate<OrgDetail>("/portal/api/orgs", "POST", {
+    display_name: displayName,
+    slug,
+  });
+}
+
+/** createPersonalOrg creates the signed-in account's personal org, or returns
+ * the one it already has (201 created / 200 existing, the same detail body
+ * as a team create). Its tenant is created in the background, like a team's. */
+export function createPersonalOrg(): Promise<OrgDetail> {
+  return mutate<OrgDetail>("/portal/api/orgs/personal", "POST", {});
+}
+
+/** renameOrg sets the org's display name (refused, code org_provisioning,
+ * while the team is still being created). */
+export function renameOrg(id: string, displayName: string): Promise<OrgDetail> {
+  return mutate<OrgDetail>("/portal/api/orgs/" + encodeURIComponent(id), "PATCH", {
+    display_name: displayName,
+  });
+}
+
+/** OrgBillingView is GET /portal/api/orgs/{id}/billing. */
+export interface OrgBillingView {
+  has_subscription: boolean;
+  subscription?: BillingSubscription;
+  plan?: OrgPlan;
+  checkout: CheckoutCatalog;
+  can_checkout: boolean;
+  is_billing_owner: boolean;
+  /** Wave 17: the billing owner can open Paddle's customer portal. */
+  portal_available?: boolean;
+}
+
+export function getOrgBilling(id: string): Promise<OrgBillingView> {
+  return getJSON<OrgBillingView>(
+    "/portal/api/orgs/" + encodeURIComponent(id) + "/billing",
+  );
+}
+
+/** OrgCheckoutIntent is the org checkout's server-minted custom_data. */
+export interface OrgCheckoutIntent {
+  price_id: string;
+  /** The quantity to open the checkout with: the plan's seat minimum (3 for
+   * Team, 10 for Business). Older servers omit it; treat that as 1. */
+  quantity?: number;
+  expires_at: string;
+  custom_data: {
+    account_id: string;
+    org_id: string;
+    checkout_nonce: string;
+  };
+}
+
+/** PortalSession is a Paddle customer portal link pair (wave 17): `url` is
+ * the portal's overview (invoices, payment methods, subscriptions). The
+ * links carry a short-lived token; never store them. */
+export interface PortalSession {
+  url: string;
+  cancel?: string;
+  update_payment_method?: string;
+}
+
+/** createBillingPortalSession opens the account's Paddle customer portal. */
+export function createBillingPortalSession(): Promise<PortalSession> {
+  return mutate<PortalSession>("/portal/api/billing/portal-session", "POST", {});
+}
+
+/** createOrgBillingPortalSession opens an org's Paddle customer portal (its
+ * billing owner only). */
+export function createOrgBillingPortalSession(id: string): Promise<PortalSession> {
+  return mutate<PortalSession>(
+    "/portal/api/orgs/" + encodeURIComponent(id) + "/billing/portal-session",
+    "POST",
+    {},
+  );
+}
+
+export function createOrgCheckout(id: string, priceID: string): Promise<OrgCheckoutIntent> {
+  return mutate<OrgCheckoutIntent>(
+    "/portal/api/orgs/" + encodeURIComponent(id) + "/billing/checkout",
+    "POST",
+    { price_id: priceID },
+  );
+}
+
+// ---- Deletion: an org's deletion and the account deletion precheck ---------
+//
+// Plan 07 M6.9 / M7a.1. An org owner requests the deletion of a team org
+// (typing the slug to confirm); it waits out a cooling-off window, during
+// which an owner can cancel it, and is then purged. The account deletion
+// (POST /portal/api/deletion-requests, above) is preceded by a precheck that
+// names what blocks it and what it takes with it.
+
+/** OrgDeletionState is where an org's deletion request stands. */
+export type OrgDeletionState = "cooling_off" | "canceled" | "purging" | "done" | "blocked";
+
+/** OrgDeletionOrigin says who started the deletion. */
+export type OrgDeletionOrigin = "owner" | "account_deletion" | "staff";
+
+/** OrgDeletionStatus is one org deletion request. */
+export interface OrgDeletionStatus {
+  request_id: string;
+  state: OrgDeletionState;
+  /** step is the purge's current step, free text for support. */
+  step: string;
+  origin: OrgDeletionOrigin;
+  requested_at: string;
+  purge_after: string;
+  canceled_at?: string;
+  done_at?: string;
+  blocked_reason?: string;
+  /** can_cancel: the request can still be canceled (cooling off). */
+  can_cancel: boolean;
+}
+
+/** OrgDeletionRefusal is why the caller cannot request a deletion now
+ * ("" when they can). personal_org: a personal org is deleted with the
+ * account, never from the team route. billing_cancel_unavailable: the team
+ * has a live subscription this deployment cannot cancel automatically. */
+export type OrgDeletionRefusal =
+  | ""
+  | "not_owner"
+  | "personal_org"
+  | "deletion_open"
+  | "org_not_deletable"
+  | "billing_cancel_unavailable";
+
+/** OrgDeletionReauth is the re-authentication a deletion request needs:
+ * "step_up" (WorkOS re-authentication; a passkey used in this session in
+ * the last five minutes also counts), "broker_token" (dev sign-in: re-enter
+ * the developer subject) or "unavailable" (this deployment cannot
+ * re-authenticate, so no request can be made). */
+export type OrgDeletionReauth = "step_up" | "broker_token" | "unavailable";
+
+/** OrgDeletionPreview is what a deletion requested now would do. */
+export interface OrgDeletionPreview {
+  can_request: boolean;
+  refusal: OrgDeletionRefusal;
+  cooling_off_days: number;
+  /** purge_after is when the purge would start if requested now. */
+  purge_after: string;
+  live_subscription: boolean;
+  members: number;
+  /** kept names what survives the purge ("usage_counts", "deletion_record"). */
+  kept: string[];
+  /** reauth is the re-authentication a request needs (absent from an older
+   * server). */
+  reauth?: OrgDeletionReauth;
+}
+
+/** OrgDeletionView is GET /portal/api/orgs/{id}/deletion. */
+export interface OrgDeletionView {
+  deletion: OrgDeletionStatus | null;
+  preview: OrgDeletionPreview;
+}
+
+/** getOrgDeletion reads an org's deletion status and preview (any member). */
+export function getOrgDeletion(id: string): Promise<OrgDeletionView> {
+  return getJSON<OrgDeletionView>("/portal/api/orgs/" + encodeURIComponent(id) + "/deletion");
+}
+
+/** OrgDeletionProof is how a deletion request proves the person is present:
+ * the developer subject re-entered (dev sign-in), or the one-use step-up
+ * authorization id WorkOS re-authentication minted. Neither is sent when
+ * empty: a passkey used in this session in the last five minutes is enough. */
+export interface OrgDeletionProof {
+  brokerSubject?: string;
+  stepUpAuthorizationId?: string;
+}
+
+/** requestOrgDeletion asks for the org's deletion (owner). confirmSlug must
+ * be the org's slug; refusals: 403 not_owner, 409 personal_org, 409
+ * deletion_open, 409 org_not_deletable, 409 billing_cancel_unavailable, 400
+ * confirm_mismatch, 401 reauth_required, 403 reauth_mismatch, 403
+ * step_up_required (start WorkOS re-authentication), 403 step_up_invalid,
+ * 501 provider_not_configured. The broker token is "dev:" + subject, as in
+ * requestDeletion. */
+export function requestOrgDeletion(
+  id: string,
+  confirmSlug: string,
+  proof: OrgDeletionProof = {},
+): Promise<OrgDeletionStatus> {
+  const body: { confirm_slug: string; broker_token?: string; step_up_authorization_id?: string } = {
+    confirm_slug: confirmSlug,
+  };
+  const subject = (proof.brokerSubject ?? "").trim();
+  if (subject !== "") body.broker_token = "dev:" + subject;
+  const stepUp = (proof.stepUpAuthorizationId ?? "").trim();
+  if (stepUp !== "") body.step_up_authorization_id = stepUp;
+  return mutate<OrgDeletionStatus>("/portal/api/orgs/" + encodeURIComponent(id) + "/deletion", "POST", body);
+}
+
+/** cancelOrgDeletion cancels a deletion still cooling off (owner); 409
+ * not_cancellable once the purge has started. */
+export function cancelOrgDeletion(id: string): Promise<OrgDeletionStatus> {
+  return mutate<OrgDeletionStatus>("/portal/api/orgs/" + encodeURIComponent(id) + "/deletion", "DELETE");
+}
+
+/** AccountDeletionBlockerCode is why an org blocks the account's deletion. */
+export type AccountDeletionBlockerCode =
+  | "pays_for_live_org"
+  | "billing_owner"
+  | "sole_owner_with_members"
+  | "sole_owner_alone";
+
+/** OrgRef names an org in the deletion precheck. */
+export interface OrgRef {
+  org_id: string;
+  slug: string;
+  display_name: string;
+}
+
+/** AccountDeletionBlocker is one org that blocks the account's deletion. */
+export interface AccountDeletionBlocker extends OrgRef {
+  code: AccountDeletionBlockerCode;
+}
+
+/** AccountDeletionPrecheck is GET /portal/api/account/deletion-precheck. */
+export interface AccountDeletionPrecheck {
+  can_delete: boolean;
+  blockers: AccountDeletionBlocker[];
+  /** personal_org is deleted with the account. */
+  personal_org: OrgRef | null;
+  /** memberships_removed: the teams the account leaves; their data stays
+   * with the team. */
+  memberships_removed: OrgRef[];
+}
+
+/** getAccountDeletionPrecheck reads what blocks the account's deletion and
+ * what it takes with it. */
+export function getAccountDeletionPrecheck(): Promise<AccountDeletionPrecheck> {
+  return getJSON<AccountDeletionPrecheck>("/portal/api/account/deletion-precheck");
+}
+
+/** refusalBlockers reads the `blockers` array an account_deletion_blocked
+ * refusal carries; [] for any other error or a malformed body. */
+export function refusalBlockers(err: unknown): AccountDeletionBlocker[] {
+  if (!(err instanceof ApiError)) return [];
+  const raw = err.body.blockers;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (b): b is AccountDeletionBlocker =>
+      b !== null && typeof b === "object" && typeof (b as { code?: unknown }).code === "string" &&
+      typeof (b as { org_id?: unknown }).org_id === "string",
+  );
+}
+
+// ---- Passkey second factor (C2; portalmfa.go) ------------------------------
+
+/** PortalPasskey is one of the account's passkeys (no key material). */
+export interface PortalPasskey {
+  id: string;
+  label: string;
+  /** synced: the passkey may be synced off the device (backup-eligible). */
+  synced: boolean;
+  created_at: string;
+  last_used_at?: string;
+}
+
+/** MFAStatus is GET /portal/api/mfa. */
+export interface MFAStatus {
+  /** available: this server verifies passkeys. */
+  available: boolean;
+  session: SecondFactorState;
+  recovery_codes_left: number;
+  passkeys: PortalPasskey[];
+}
+
+/** CeremonyStart is a begin answer: the ceremony token and the options for
+ * navigator.credentials (JSON form). */
+export interface CeremonyStart {
+  ceremony: string;
+  options: Record<string, unknown>;
+}
+
+export function getMFA(): Promise<MFAStatus> {
+  return getJSON<MFAStatus>("/portal/api/mfa");
+}
+
+export function beginPasskeyRegistration(label: string): Promise<CeremonyStart> {
+  return mutate<CeremonyStart>("/portal/api/mfa/passkeys/register/begin", "POST", { label });
+}
+
+export function finishPasskeyRegistration(
+  ceremony: string,
+  credential: unknown,
+): Promise<{ passkey: PortalPasskey; recovery_codes?: string[] }> {
+  return mutate("/portal/api/mfa/passkeys/register/finish", "POST", { ceremony, credential });
+}
+
+export function removePasskey(id: string): Promise<{ passkeys_left: number }> {
+  return mutate("/portal/api/mfa/passkeys/" + encodeURIComponent(id), "DELETE");
+}
+
+export function newRecoveryCodes(): Promise<{ recovery_codes: string[] }> {
+  return mutate("/portal/api/mfa/recovery-codes", "POST", {});
+}
+
+export function beginPasskeyAssertion(): Promise<CeremonyStart> {
+  return mutate<CeremonyStart>("/portal/api/mfa/assert/begin", "POST", {});
+}
+
+export function finishPasskeyAssertion(
+  ceremony: string,
+  credential: unknown,
+  returnTo: string,
+): Promise<{ next: string }> {
+  return mutate("/portal/api/mfa/assert/finish", "POST", { ceremony, credential, return_to: returnTo });
+}
+
+export function redeemRecoveryCode(
+  code: string,
+  returnTo: string,
+): Promise<{ next: string; recovery_codes_left: number }> {
+  return mutate("/portal/api/mfa/recover", "POST", { code, return_to: returnTo });
+}
+
+/** OrgSigninPolicy is an org's "require a second factor" setting. */
+export interface OrgSigninPolicy {
+  require_second_factor: boolean;
+  /** can_change: an owner or admin who signed in with a passkey. */
+  can_change: boolean;
+  /** reason: why an admin cannot change it yet (passkey_signin_required). */
+  reason?: string;
+}
+
+export function getOrgSigninPolicy(orgId: string): Promise<OrgSigninPolicy> {
+  return getJSON<OrgSigninPolicy>("/portal/api/orgs/" + encodeURIComponent(orgId) + "/signin-policy");
+}
+
+export function setOrgSigninPolicy(orgId: string, require: boolean): Promise<OrgSigninPolicy> {
+  return mutate<OrgSigninPolicy>("/portal/api/orgs/" + encodeURIComponent(orgId) + "/signin-policy", "PUT", {
+    require_second_factor: require,
+  });
+}
+
+/** approveDevice approves a new device (the id its sign-in printed) for the
+ * next 15 minutes; needs a session that signed in with a passkey (FR-6). */
+export function approveDevice(thumbprint: string): Promise<{ expires_at: string }> {
+  return mutate("/portal/api/mfa/devices/approve", "POST", { thumbprint });
+}
+
+// ---- Connect a machine (Getting started v2) --------------------------------
+// docs/plans/onboarding-v2-connect-flow.md; portal_connect.go. A machine
+// running `observer connect` creates a request; this console shows it,
+// lets the signed-in person pick a dashboard and approve, and lists what
+// was connected.
+
+/** ShareLevel is how much a connected machine sends. */
+export type ShareLevel = "summary" | "full";
+
+/** ConnectDisclosure is the exact text shown for a dashboard, with the
+ * version and digest the approval sends back (the consent receipt). */
+export interface ConnectDisclosure {
+  share_level: ShareLevel;
+  title: string;
+  text: string;
+  disclosure_version: string;
+  disclosure_sha256: string;
+}
+
+/** ConnectChoice is one dashboard the machine can connect to. */
+export interface ConnectChoice {
+  org_id: string;
+  kind: "personal" | "team";
+  display_name: string;
+  /** slug is a team's name; absent for the personal dashboard. */
+  slug?: string;
+  status: OrgStatus;
+  share_level: ShareLevel;
+  disclosure: ConnectDisclosure;
+  preselected: boolean;
+}
+
+/** ConnectTarget is the dashboard an approved request connected to. */
+export interface ConnectTarget {
+  org_id: string;
+  slug: string;
+  kind: "personal" | "team";
+  display_name: string;
+  share_level: ShareLevel;
+}
+
+/** ConnectStatus is a request's state. */
+export type ConnectStatus = "pending" | "approved" | "declined" | "expired";
+
+/** ConnectRequestView is GET /portal/api/connect/requests/{id}. */
+export interface ConnectRequestView {
+  request_id: string;
+  status: ConnectStatus;
+  /** user_code is set while pending, to compare with the terminal. */
+  user_code?: string;
+  machine_name: string;
+  os: string;
+  arch: string;
+  observer_version: string;
+  created_at: string;
+  age_seconds: number;
+  expires_in: number;
+  network: { prefix: string; same_as_you: boolean };
+  choices: ConnectChoice[];
+  target: ConnectTarget | null;
+  /** open_url opens the chosen dashboard (a button, never text), built by
+   * the server (tenantlink.go). The older online_url is not read. */
+  open_url?: string;
+}
+
+/** ConnectMachine is one recent approval on the account home. */
+export interface ConnectMachine {
+  request_id: string;
+  machine_name: string;
+  os: string;
+  approved_at: string;
+  target: ConnectTarget | null;
+  /** open_url opens the dashboard the machine connected to (server-built). */
+  open_url?: string;
+}
+
+/** ConnectHome is GET /portal/api/connect/machines. */
+export interface ConnectHome {
+  /** devices is the number of signed-in machines. */
+  devices: number;
+  recent: ConnectMachine[];
+}
+
+export function getConnectRequest(id: string): Promise<ConnectRequestView> {
+  return getJSON<ConnectRequestView>("/portal/api/connect/requests/" + encodeURIComponent(id));
+}
+
+/** lookupConnectCode turns a typed code into its waiting request. */
+export function lookupConnectCode(userCode: string): Promise<{ request_id: string }> {
+  return mutate<{ request_id: string }>("/portal/api/connect/lookup", "POST", { user_code: userCode });
+}
+
+/** approveConnect connects the machine to the chosen dashboard, sending back
+ * the disclosure that was shown. */
+export function approveConnect(id: string, choice: ConnectChoice): Promise<ConnectRequestView> {
+  return mutate<ConnectRequestView>(
+    "/portal/api/connect/requests/" + encodeURIComponent(id) + "/approve",
+    "POST",
+    {
+      target_org_id: choice.org_id,
+      disclosure_version: choice.disclosure.disclosure_version,
+      disclosure_sha256: choice.disclosure.disclosure_sha256,
+    },
+  );
+}
+
+/** connectNotNow signs the machine in and sends nothing. */
+export function connectNotNow(id: string): Promise<ConnectRequestView> {
+  return mutate<ConnectRequestView>(
+    "/portal/api/connect/requests/" + encodeURIComponent(id) + "/approve",
+    "POST",
+    { target_org_id: "" },
+  );
+}
+
+/** declineConnect refuses a request ("This is not my machine"). */
+export function declineConnect(id: string): Promise<ConnectRequestView> {
+  return mutate<ConnectRequestView>(
+    "/portal/api/connect/requests/" + encodeURIComponent(id) + "/decline",
+    "POST",
+    {},
+  );
+}
+
+export function getConnectHome(): Promise<ConnectHome> {
+  return getJSON<ConnectHome>("/portal/api/connect/machines");
 }

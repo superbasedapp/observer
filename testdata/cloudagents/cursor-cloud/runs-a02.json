@@ -1,0 +1,5 @@
+{"items":[
+ {"id":"run-b3000000-0000-4000-8000-0000000000b3","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a02","status":"CANCELLED","createdAt":"2026-10-17T17:55:00.000Z","updatedAt":"2026-10-17T17:56:10.222Z","durationMs":70222,"git":{"branches":[{"repoUrl":"https://origin.cursor.com/git/acme-dev/tmp-0123456789abcdef","branch":"main"}]}},
+ {"id":"run-b2000000-0000-4000-8000-0000000000b2","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a02","status":"FINISHED","createdAt":"2026-10-17T17:40:00.000Z","updatedAt":"2026-10-17T17:47:30.000Z","durationMs":450000,"git":{"branches":[{"repoUrl":"https://origin.cursor.com/git/acme-dev/tmp-0123456789abcdef","branch":"main"}]}},
+ {"id":"run-b1000000-0000-4000-8000-0000000000b1","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a02","status":"FINISHED","createdAt":"2026-10-17T17:20:04.000Z","updatedAt":"2026-10-17T17:20:23.221Z","durationMs":19221,"git":{"branches":[{"repoUrl":"https://origin.cursor.com/git/acme-dev/tmp-0123456789abcdef","branch":"main"}]}}
+]}

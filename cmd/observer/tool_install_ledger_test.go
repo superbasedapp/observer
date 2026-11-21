@@ -342,3 +342,177 @@ func TestToolInstallLedgerWaitingForInput(t *testing.T) {
 		t.Fatalf("settled install still flagged: %+v", rec)
 	}
 }
+
+// ---- sandbox setup records (subject_kind sandbox) --------------------------
+
+// aptBwrapArgv is the argv toolinstall builds for bubblewrap on apt.
+func aptBwrapArgv(t *testing.T) []string {
+	t.Helper()
+	pm, ok := toolinstall.PackageManagerByName("apt")
+	if !ok {
+		t.Fatal("no apt row")
+	}
+	_, argv, ok := toolinstall.InstallArgvFor(pm, []string{"bubblewrap"})
+	if !ok {
+		t.Fatal("no apt argv")
+	}
+	return argv
+}
+
+// TestSandboxLedgerSettlesWithTheVerify: a sandbox step settles from its
+// prerequisite's own Detect (verify), never the tool binary, and never calls
+// the post-install tool hook; a tool record's behaviour is unchanged.
+func TestSandboxLedgerSettlesWithTheVerify(t *testing.T) {
+	cases := []struct {
+		name   string
+		code   int
+		found  string
+		status toolinstall.Status
+	}{
+		{"exit 0 and detected", 0, "/usr/bin/bwrap", toolinstall.StatusInstalled},
+		{"exit 0 but not detected", 0, "", toolinstall.StatusInstalledNotFound},
+		{"exit 1", 1, "/usr/bin/bwrap", toolinstall.StatusInstallFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, st, _, _ := newTestLedger(t, npmCodexPlan)
+			toolBinCalls, hookCalls := 0, 0
+			l.resolveBin = func(string) string { toolBinCalls++; return "/x" }
+			l.setOnInstalled(func(string) { hookCalls++ })
+			argv := aptBwrapArgv(t)
+			id, err := l.RecordSandboxInstall(context.Background(), sandboxInstallRecord{
+				Name: "bwrap", Backend: "bwrap", Channel: "apt", Argv: argv, Display: toolinstall.DisplayArgv(argv), Elevated: true,
+			}, "h-1", func(bool) string { return tc.found })
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.observeExit("h-1", tc.code)
+			row, ok, err := st.GetInstallRecord(context.Background(), store.SubjectSandbox, id)
+			if err != nil || !ok {
+				t.Fatalf("row: %v %v", ok, err)
+			}
+			if row.Status != string(tc.status) || row.Backend != "bwrap" || !row.Elevated || row.Package != "bubblewrap" {
+				t.Fatalf("row = %+v", row)
+			}
+			if toolBinCalls != 0 || hookCalls != 0 {
+				t.Fatalf("a sandbox record touched the tool path: resolveBin %d hook %d", toolBinCalls, hookCalls)
+			}
+			// The tool routes never see it.
+			if recs, _ := l.List(context.Background()); len(recs) != 0 {
+				t.Fatalf("tool List shows a sandbox record: %+v", recs)
+			}
+		})
+	}
+}
+
+// TestSandboxLedgerOpsSettleFromTheOp: an op-driven record (a download)
+// settles from the op's outcome with its digest and placed path.
+func TestSandboxLedgerOpsSettleFromTheOp(t *testing.T) {
+	l, st, _, _ := newTestLedger(t, npmCodexPlan)
+	ctx := context.Background()
+	rec := sandboxInstallRecord{Name: "cloud-hypervisor", Backend: "cloud-hypervisor", Channel: "pinned_download", Argv: []string{"pinned_download", "cloud-hypervisor", "v54"}, Display: "download", Source: "vendor_release"}
+	id, err := l.BeginSandboxOp(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// While the op runs, the orphan sweep never takes it.
+	rows, _ := l.SandboxRecords(ctx)
+	if len(rows) != 1 || rows[0].Status != string(toolinstall.StatusInstalling) {
+		t.Fatalf("in flight = %+v", rows)
+	}
+	got, err := l.FinishSandboxOp(ctx, id, sandboxOpOutcome{Digest: "abc", PlacedPath: "/home/u/.observer/tools/cloud-hypervisor"}, func() string { return "/home/u/.observer/tools/cloud-hypervisor" })
+	if err != nil || got != toolinstall.StatusInstalled {
+		t.Fatalf("finish = %v %v", got, err)
+	}
+	row, _, _ := st.GetInstallRecord(ctx, store.SubjectSandbox, id)
+	if row.Digest != "abc" || row.PlacedPath == "" || row.Source != "vendor_release" {
+		t.Fatalf("row = %+v", row)
+	}
+	id2, _ := l.BeginSandboxOp(ctx, rec)
+	if got, _ := l.FinishSandboxOp(ctx, id2, sandboxOpOutcome{Err: errors.New("sha256 mismatch")}, nil); got != toolinstall.StatusInstallFailed {
+		t.Fatalf("failed op = %v", got)
+	}
+}
+
+// TestSandboxLedgerReconcilesOrphans: an in-flight sandbox record a previous
+// daemon left is settled as interrupted on the next read.
+func TestSandboxLedgerReconcilesOrphans(t *testing.T) {
+	l, st, _, _ := newTestLedger(t, npmCodexPlan)
+	ctx := context.Background()
+	id, err := st.InsertToolInstall(ctx, store.ToolInstallRow{
+		SubjectKind: store.SubjectSandbox, Tool: "bwrap", Channel: "apt", Argv: aptBwrapArgv(t),
+		Status: string(toolinstall.StatusInstalling), StartedAt: l.bootAt.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := l.SandboxRecords(ctx)
+	if err != nil || len(rows) != 1 || rows[0].ID != id || rows[0].Status != string(toolinstall.StatusInstallInterrupted) {
+		t.Fatalf("rows = %+v %v", rows, err)
+	}
+}
+
+// TestSandboxLedgerUninstallDerivesTheArgv: the undo of a package step runs
+// toolinstall.PlanUninstall over the recorded argv (sudo kept, remove not
+// purge) and settles on exit.
+func TestSandboxLedgerUninstallDerivesTheArgv(t *testing.T) {
+	l, st, _, _ := newTestLedger(t, npmCodexPlan)
+	ctx := context.Background()
+	argv := aptBwrapArgv(t)
+	id, err := l.RecordSandboxInstall(ctx, sandboxInstallRecord{Name: "bwrap", Backend: "bwrap", Channel: "apt", Argv: argv, Display: "x", Elevated: true}, "h-1", func(bool) string { return "/usr/bin/bwrap" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.observeExit("h-1", 0)
+	want, err := toolinstall.PlanUninstall("apt", argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawned []string
+	started, err := l.UninstallSandbox(ctx, "bwrap", id, func(a []string) (string, error) { spawned = a; return "h-2", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(spawned, want.Argv) || spawned[0] != "sudo" || started.Handle != "h-2" {
+		t.Fatalf("spawned %v, want %v", spawned, want.Argv)
+	}
+	for _, a := range spawned {
+		if a == "purge" || a == "autoremove" {
+			t.Fatalf("uninstall argv %v purges", spawned)
+		}
+	}
+	l.observeExit("h-2", 0)
+	row, _, _ := st.GetInstallRecord(ctx, store.SubjectSandbox, id)
+	if row.Status != string(toolinstall.StatusUninstalled) {
+		t.Fatalf("status = %s", row.Status)
+	}
+	// A tool route can never act on it.
+	if _, err := l.Uninstall(ctx, "bwrap", id, func([]string) (string, error) { return "", nil }); !errors.Is(err, dashapi.ErrToolInstallNotFound) {
+		t.Fatalf("tool Uninstall on a sandbox record = %v", err)
+	}
+}
+
+// TestSandboxLedgerForegroundAndUndone: the CLI's foreground settle and an
+// in-process undo.
+func TestSandboxLedgerForegroundAndUndone(t *testing.T) {
+	l, st, _, _ := newTestLedger(t, npmCodexPlan)
+	ctx := context.Background()
+	id, err := l.SettleSandboxForeground(ctx, sandboxInstallRecord{Name: "component:bwrap", Backend: "bwrap", Channel: "component_select", Argv: []string{"components", "add", "x"}, Display: "x"}, 0, func(bool) string { return "x" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ := st.GetInstallRecord(ctx, store.SubjectSandbox, id)
+	if row.Status != string(toolinstall.StatusInstalled) {
+		t.Fatalf("foreground = %s", row.Status)
+	}
+	if err := l.MarkSandboxUndone(ctx, "component:bwrap", id, "observer components remove x", nil); err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ = st.GetInstallRecord(ctx, store.SubjectSandbox, id)
+	if row.Status != string(toolinstall.StatusUninstalled) {
+		t.Fatalf("undone = %s", row.Status)
+	}
+	if err := l.MarkSandboxUndone(ctx, "component:bwrap", id, "again", nil); err == nil {
+		t.Fatal("a second undo of a settled record was accepted")
+	}
+}

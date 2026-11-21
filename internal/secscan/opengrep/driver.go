@@ -87,7 +87,16 @@ type Env struct {
 	// like any other binary.
 	Installed string
 	// Jobs is -j; 0 is DefaultJobs.
-	Jobs         int
+	Jobs int
+	// Taint configures the intrafile taint pass of a full scan (the zero
+	// value: auto, the scaled budget, TaintDefaultJobs, the default memory).
+	Taint TaintConfig
+	// Stat reports a project file's size and whether it is a regular file,
+	// never following a symlink. Nil leaves the taint pass skipped
+	// (no_file_access); the core pass never calls it.
+	Stat func(path string) (size int64, regular bool, err error)
+	// TaintCache is the taint pass's result cache; nil caches nothing.
+	TaintCache   TaintCacheStore
 	GOOS, GOARCH string
 	Now          func() time.Time
 }
@@ -439,10 +448,12 @@ func (d *Driver) ScanFiles(ctx context.Context, t secscan.Target) (secscan.Resul
 	if r := classify(run); r != "" {
 		return failed(ident, r, notes), Scanned{}, nil
 	}
-	out, scanned, passed, why := d.read(run, t, dir, mode, ident, selfTest)
+	cr, why := d.decode(run, dir, mode, selfTest)
 	if why != "" {
 		return failed(ident, why, notes), Scanned{}, nil
 	}
+	passed := cr.passed
+	out, scanned := d.adaptWithTaintPass(ctx, runner, rs, dir, v.Version, mode, cr, t, ident)
 	out.Coverage.Notes = append(notes, out.Coverage.Notes...)
 	if rs.decision.Status == secengine.StatusVerified {
 		d.recordAfterVerifiedRun(rs, v.Version, passed)
@@ -455,6 +466,28 @@ func (d *Driver) ScanFiles(ctx context.Context, t secscan.Target) (secscan.Resul
 		scanned.Files = nil
 	}
 	return out, scanned, nil
+}
+
+// adaptWithTaintPass adapts the core run, after the intrafile taint pass
+// on a full scan (taintpass.go): the pass runs once the core pass's output
+// is read in full, and on any failure hands the core run back unchanged.
+// The pass's status joins the coverage, and the files it did not answer in
+// full hold their taint-rule findings open.
+func (d *Driver) adaptWithTaintPass(ctx context.Context, runner *extrun.Runner, rs resolved, dir, version string, mode Mode, cr coreRead, t secscan.Target, ident secscan.EngineIdentity) (secscan.Result, Scanned) {
+	if mode != ModeFull {
+		return d.adapt(cr, t, dir, mode, ident)
+	}
+	to := d.taintPass(ctx, runner, rs, dir, version, mode, cr)
+	cr.project = to.project
+	out, scanned := d.adapt(cr, t, dir, mode, ident)
+	out.Coverage.Passes = append(out.Coverage.Passes, to.status)
+	if len(scanned.Files) > 0 && len(to.hold) > 0 {
+		scanned.TaintHold = to.hold
+		if rules, ok := HeldCloseRules(d.env.Pack); ok {
+			scanned.TaintHoldRules = rules
+		}
+	}
+	return out, scanned
 }
 
 // unverifiedNotes is the note a labelled (unverified) decision carries.
@@ -586,7 +619,7 @@ func (d *Driver) request(rs resolved, mode Mode, root, base string, paths ...str
 	return extrun.Request{
 		Component: ComponentID,
 		Program:   prog,
-		Args:      ArgsFor(mode, d.rulesDir(), d.canary(), d.join(strings.TrimRight(d.env.OutDir, `/\`), "opengrep.json"), base, paths, d.env.Jobs),
+		Args:      ArgsForPack(mode, d.rulesDir(), d.canary(), d.join(strings.TrimRight(d.env.OutDir, `/\`), "opengrep.json"), base, paths, d.env.Jobs, d.env.Pack.EngineFlags()),
 		Expect:    expect,
 		Dir:       root,
 		Limits:    LimitsFor(mode, d.env.Jobs),
@@ -665,19 +698,20 @@ func (d *Driver) canaryHit(run extrun.Result) bool {
 	return hit
 }
 
-// read turns a result run's SARIF and JSON copy into the driver result.
-func (d *Driver) read(run extrun.Result, t secscan.Target, dir string, mode Mode, ident secscan.EngineIdentity, selfTest bool) (secscan.Result, Scanned, bool, string) {
+// decode reads a result run's SARIF and JSON copy: the project's results
+// (the canary split off), the files it read and whether the canary passed.
+func (d *Driver) decode(run extrun.Result, dir string, mode Mode, selfTest bool) (coreRead, string) {
 	log, err := sarif.Decode(run.Stdout)
 	if err != nil || len(log.Runs) != 1 {
-		return secscan.Result{}, Scanned{}, false, ReasonOutput
+		return coreRead{}, ReasonOutput
 	}
 	jb, err := d.env.ReadFile(d.join(strings.TrimRight(d.env.OutDir, `/\`), "opengrep.json"), MaxJSONCopyBytes)
 	if err != nil {
-		return secscan.Result{}, Scanned{}, false, ReasonOutput
+		return coreRead{}, ReasonOutput
 	}
 	scanned, err := ParseJSONCopy(jb, dir, d.canary())
 	if err != nil {
-		return secscan.Result{}, Scanned{}, false, ReasonOutput
+		return coreRead{}, ReasonOutput
 	}
 	prefix := secrulepack.RulePrefix(d.rulesDir())
 	project, hit := splitCanary(log.Runs[0], d.env.Pack.Manifest.Canary.Rule, prefix, d.canary())
@@ -685,6 +719,13 @@ func (d *Driver) read(run extrun.Result, t secscan.Target, dir string, mode Mode
 	if carriesCanary(mode) {
 		passed = hit && scanned.Canary
 	}
+	return coreRead{project: project, scanned: scanned, passed: passed, prefix: prefix}, ""
+}
+
+// adapt turns a decoded (and, on a full scan, merged) run into the driver
+// result.
+func (d *Driver) adapt(cr coreRead, t secscan.Target, dir string, mode Mode, ident secscan.EngineIdentity) (secscan.Result, Scanned) {
+	project, scanned, passed, prefix := cr.project, cr.scanned, cr.passed, cr.prefix
 	row, _ := secscan.Adapter("opengrep")
 	findings, cov := secscan.Adapt(row, project, secscan.AdaptOptions{
 		ProjectRoot: dir, ProjectRootHash: secposture.ProjectRootHash(t.ProjectRoot),
@@ -713,7 +754,7 @@ func (d *Driver) read(run extrun.Result, t secscan.Target, dir string, mode Mode
 	if carriesCanary(mode) && !closable(passed, cov) {
 		scanned.Files = nil
 	}
-	return secscan.Result{Findings: findings, Coverage: cov, Engine: ident}, scanned, passed, ""
+	return secscan.Result{Findings: findings, Coverage: cov, Engine: ident}, scanned
 }
 
 // TestExcludedPrefix starts the note of a run that dropped results of

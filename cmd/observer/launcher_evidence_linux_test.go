@@ -14,6 +14,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/standin"
 )
 
 // Launchers that pass no process evidence can never be admitted by the node's
@@ -87,11 +88,13 @@ func TestCursorLauncherPassesProcessEvidence(t *testing.T) {
 // could never be the attested surface these tests need. `mkdir` is a real ELF
 // whose only side effect is the observable one — given the marker path as its
 // argument, the directory exists afterwards if and only if the process ran.
+// It must also run under the vendor's name, which a multi-call coreutils's
+// /bin/mkdir does not (internal/testsupport/standin).
 func writeBudgetLaunchMarkerBinary(t *testing.T, name string) (string, string) {
 	t.Helper()
-	raw, err := os.ReadFile("/bin/mkdir")
+	raw, err := os.ReadFile(standin.SingleProgramBinary(t, "mkdir"))
 	if err != nil {
-		t.Skipf("no native stand-in binary available: %v", err)
+		t.Fatalf("read the mkdir stand-in: %v", err)
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, name)

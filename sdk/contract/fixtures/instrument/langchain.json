@@ -1,0 +1,119 @@
+{
+  "_source": {
+    "target": "langchain",
+    "instrumentor": "openinference-instrumentation-langchain 0.1.88",
+    "library": "langgraph 1.2.23",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "A two-node LangGraph StateGraph: node 'count' calls a @tool, node 'answer' calls langchain_core's GenericFakeChatModel with usage_metadata. LangGraph runs are LangChain runs, so one instrumentor covers both. 'metadata' (per-run checkpoint ids) is not recorded and UUIDs are written as <id>.",
+    "recorded": "2026-11-19, offline (mocked transport, no network), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "langchain",
+  "spans": [
+    {
+      "name": "LangGraph",
+      "parent": null,
+      "attrs": {
+        "input.value": "superbased",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"q\": \"superbased\", \"n\": 10, \"a\": \"superbased has 10 letters\"}"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "input_value": "superbased",
+        "output_value": {
+          "q": "superbased",
+          "n": 10,
+          "a": "superbased has 10 letters"
+        }
+      }
+    },
+    {
+      "name": "count",
+      "parent": "LangGraph",
+      "attrs": {
+        "input.value": "superbased",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"n\": 10}"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "output_value": {
+          "n": 10
+        }
+      }
+    },
+    {
+      "name": "word_length",
+      "parent": "count",
+      "attrs": {
+        "input.value": "superbased",
+        "openinference.span.kind": "TOOL",
+        "output.value": "10",
+        "tool.description": "Length of a word.",
+        "tool.name": "word_length"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "tool_name": "word_length",
+        "tool_arguments": "superbased",
+        "tool_result": "10"
+      }
+    },
+    {
+      "name": "answer",
+      "parent": "LangGraph",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"q\": \"superbased\", \"n\": 10}",
+        "openinference.span.kind": "CHAIN",
+        "output.value": "superbased has 10 letters"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "output_value": "superbased has 10 letters"
+      }
+    },
+    {
+      "name": "GenericFakeChatModel",
+      "parent": "answer",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"messages\": [[{\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"HumanMessage\"], \"kwargs\": {\"content\": \"superbased has 10 letters?\", \"type\": \"human\"}}]]}",
+        "llm.input_messages.0.message.content": "superbased has 10 letters?",
+        "llm.input_messages.0.message.role": "user",
+        "llm.invocation_parameters": "{\"_type\": \"generic-fake-chat-model\", \"stop\": null}",
+        "llm.output_messages.0.message.content": "superbased has 10 letters",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "genericfakechatmodel",
+        "llm.token_count.completion": 6,
+        "llm.token_count.prompt": 12,
+        "llm.token_count.total": 18,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"generations\": [[{\"text\": \"superbased has 10 letters\", \"generation_info\": null, \"type\": \"ChatGeneration\", \"message\": {\"lc\": 1, \"type\": \"constructor\", \"id\": [\"langchain\", \"schema\", \"messages\", \"AIMessage\"], \"kwargs\": {\"content\": \"superbased has 10 letters\", \"type\": \"ai\", \"id\": \"lc_run--<id>-0\", \"usage_metadata\": {\"input_tokens\": 12, \"output_tokens\": 6, \"total_tokens\": 18}, \"tool_calls\": [], \"invalid_tool_calls\": []}}}]], \"llm_output\": null, \"run\": null, \"type\": \"LLMResult\"}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "provider": "genericfakechatmodel",
+        "input_tokens": 12,
+        "output_tokens": 6,
+        "total_tokens": 18,
+        "total_derived": false,
+        "input_messages": [
+          {
+            "role": "user",
+            "content": "superbased has 10 letters?"
+          }
+        ],
+        "output_messages": [
+          {
+            "role": "assistant",
+            "content": "superbased has 10 letters"
+          }
+        ]
+      }
+    }
+  ]
+}

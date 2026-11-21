@@ -45,10 +45,16 @@ type PersistedLayout = {
 
 export function WorkspaceGrid({
   policyHint,
+  launchOffHint = "",
   onOpenSettings,
 }: {
   /** Honest first-run hint when fresh launch is policy-blocked ("" = ok). */
   policyHint: string;
+  /**
+   * launchOffHint is said beside the New terminal button while fresh launch
+   * and plain shell are both off (D-12), so the button is never silent.
+   */
+  launchOffHint?: string;
   onOpenSettings: () => void;
 }) {
   const dock = useLaunchDock();
@@ -248,6 +254,16 @@ export function WorkspaceGrid({
             className="rounded-2 border border-accent/50 bg-accent/15 px-3 py-1 text-[12px] text-accent hover:bg-accent/25"
           >
             + New terminal
+          </button>
+        )}
+        {!readOnly && launchOffHint && (
+          <button
+            type="button"
+            data-testid="launch-switches-off"
+            onClick={onOpenSettings}
+            className="text-left text-[11px] text-warn underline decoration-dotted underline-offset-2"
+          >
+            {launchOffHint}
           </button>
         )}
         {readOnly && (

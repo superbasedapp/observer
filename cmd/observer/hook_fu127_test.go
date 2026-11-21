@@ -5,11 +5,64 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
+	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 )
+
+// TestSiblingGateMarkerDatedAfterPersist pins FU-127's window to the record,
+// not to the firing's start. The first firing's persist can outlast
+// siblingGateWindow (its first database open runs the whole migration chain:
+// about 20 s under -race on a CI runner, release CI round 2), and the sibling
+// firing that follows must still find a fresh marker and skip its record.
+// With the marker dated before the persist, the sibling saw it as stale and
+// both firings recorded.
+func TestSiblingGateMarkerDatedAfterPersist(t *testing.T) {
+	clock := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	prev := siblingGateNow
+	siblingGateNow = func() time.Time { return clock }
+	t.Cleanup(func() { siblingGateNow = prev })
+
+	pre, ok := resolveHookBinding("devin", "PreToolUse")
+	if !ok {
+		t.Fatal("devin PreToolUse: no binding")
+	}
+	cascade, ok := resolveHookBinding("devin", "pre_run_command")
+	if !ok {
+		t.Fatal("devin pre_run_command: no binding")
+	}
+	if len(siblingGateEvents("devin", pre)) == 0 || len(siblingGateEvents("devin", cascade)) == 0 {
+		t.Fatal("devin's two tool-gate dialects must be siblings of each other")
+	}
+	spool := filepath.Join(t.TempDir(), "guard-hookfail.jsonl")
+	var v guard.ActionVerdict
+	v.Input.Target = "rm -rf ~/"
+	v.Verdict.RuleID = "R-101"
+
+	records := 0
+	slowFirst := recordSiblingGateOnce("devin", pre, spool, func(guard.ActionVerdict) {
+		records++
+		clock = clock.Add(siblingGateWindow + 10*time.Second) // a persist longer than the window
+	})
+	sibling := recordSiblingGateOnce("devin", cascade, spool, func(guard.ActionVerdict) { records++ })
+	slowFirst(v)
+	clock = clock.Add(time.Second) // the sibling process runs right after the record lands
+	sibling(v)
+	if records != 1 {
+		t.Fatalf("records = %d, want 1: the sibling firing must skip a verdict recorded a second ago, however long its persist took", records)
+	}
+	// The window still bounds the pair: a sibling arriving a full window
+	// after the record lands records again.
+	slowFirst(v)
+	clock = clock.Add(siblingGateWindow + time.Second)
+	sibling(v)
+	if records != 3 {
+		t.Fatalf("records = %d, want 3: a sibling a full window after the record is a new call", records)
+	}
+}
 
 // guardEventRowsAll returns "tool session rule decision" for every
 // guard_events row in the database, in insert order.

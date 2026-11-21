@@ -165,7 +165,7 @@ func runSecurityVerifyUpload(ctx context.Context, stdout, stderr io.Writer, o se
 // readVerifyUploadSARIF reads the artifact, capped; nil when it is absent
 // (the verdict job wrote none, which uploads unknown).
 func readVerifyUploadSARIF(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G703: false positive; the operator's own artifact path from the command line, read capped
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

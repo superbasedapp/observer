@@ -171,7 +171,7 @@ type guiLaunchResponse struct {
 // (fail-closed, the same reasoning the sandbox validation uses): a caller that
 // asked for a sandboxed, model-pinned launch and silently got a bare IDE would
 // have been misled about what ran.
-func (s *Server) handleGUILaunch(w http.ResponseWriter, body terminalLaunchRequest) {
+func (s *Server) handleGUILaunch(w http.ResponseWriter, r *http.Request, body terminalLaunchRequest) {
 	id := strings.TrimSpace(body.Tool)
 	if id == "" {
 		writeErrStatus(w, errors.New("missing tool"), http.StatusBadRequest)
@@ -187,13 +187,12 @@ func (s *Server) handleGUILaunch(w http.ResponseWriter, body terminalLaunchReque
 		return
 	}
 
-	res, err := s.opts.LaunchManager.CreateGUI(GUILaunchSpec{ID: id, ProjectRoot: body.ProjectRoot})
+	initiator, parent := s.launchOrigin(r)
+	res, err := s.opts.LaunchManager.CreateGUI(GUILaunchSpec{ID: id, ProjectRoot: body.ProjectRoot, Initiator: initiator, ParentSessionID: parent})
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrLaunchFreshDisabled):
-			writeErrStatus(w, err, http.StatusForbidden)
-		case errors.Is(err, ErrLaunchToolNotAllowed):
-			writeErrStatus(w, err, http.StatusForbidden)
+		case errors.Is(err, ErrLaunchFreshDisabled), errors.Is(err, ErrLaunchToolNotAllowed):
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchProjectRootDenied):
 			writeErrStatus(w, err, http.StatusBadRequest)
 		case errors.Is(err, ErrLaunchGUINotLaunchable):
@@ -235,6 +234,7 @@ func guiUnsupportedField(body terminalLaunchRequest) (string, bool) {
 		{"model", strings.TrimSpace(body.Model) != ""},
 		{"workspace_source", strings.TrimSpace(body.WorkspaceSource) != ""},
 		{"workspace_remote", strings.TrimSpace(body.WorkspaceRemote) != ""},
+		{"workspace_clone_where", strings.TrimSpace(body.WorkspaceCloneWhere) != ""},
 		{"workspace_branch", strings.TrimSpace(body.WorkspaceBranch) != ""},
 	}
 	for _, c := range checks {

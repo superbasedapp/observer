@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/guard"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -24,6 +25,11 @@ import (
 func wantWatcherRows() int {
 	n := 0
 	for _, tool := range config.Default().Observer.Watch.EnabledAdapters {
+		// A proxy-only row (custom-agent, P-228) has no transcript or DB
+		// tail, so no post-hoc watcher channel exists for it.
+		if cap, ok := integration.For(tool); ok && cap.ProxyOnlyCapture {
+			continue
+		}
 		if !strings.HasSuffix(tool, "-web") {
 			n++
 		}

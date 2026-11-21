@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/planlimits"
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // planlimits.go is the ONE store seam of the Plans & limits module
-// (docs/plans-and-limits.md): the only writer of the four NODE-LOCAL plan_*
-// tables (agent migration 163) and the only SQL that reads the passive
-// signals the module reuses READ-ONLY (limit_snapshots, the codex
-// rate_limit actions, tool_account_observations). None of it is selected by
-// orgpush.go (tests/invariant/privacy_test.go).
+// (docs/plans-and-limits.md): the only writer of the NODE-LOCAL plan_*
+// tables (agent migrations 163 and 248) and the only SQL that reads the
+// passive signals the module reuses READ-ONLY (limit_snapshots, the codex
+// rate_limit actions, tool_account_observations, and the deduplicated
+// token_usage / api_turns substrate for the daily usage reconciliation).
+// None of it is selected by orgpush.go (tests/invariant/privacy_test.go).
 
 // ErrPlanAccountNotFound is returned for an unknown account id.
 var ErrPlanAccountNotFound = errors.New("store: plan account not found")
@@ -169,8 +171,8 @@ func (s *Store) UpdatePlanAccount(ctx context.Context, a PlanAccountRow) error {
 	return nil
 }
 
-// DeletePlanAccount removes an account with its snapshots and runs, in one
-// transaction. The caller deletes the keychain secrets first.
+// DeletePlanAccount removes an account with its snapshots, runs and daily
+// usage rows, in one transaction. The caller deletes the keychain secrets first.
 func (s *Store) DeletePlanAccount(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -184,7 +186,11 @@ func (s *Store) DeletePlanAccount(ctx context.Context, id string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrPlanAccountNotFound
 	}
-	for _, q := range []string{`DELETE FROM plan_snapshots WHERE account_id = ?`, `DELETE FROM plan_runs WHERE account_id = ?`} {
+	for _, q := range []string{
+		`DELETE FROM plan_snapshots WHERE account_id = ?`,
+		`DELETE FROM plan_runs WHERE account_id = ?`,
+		`DELETE FROM plan_usage_daily WHERE account_id = ?`,
+	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return fmt.Errorf("store.DeletePlanAccount: %w", err)
 		}
@@ -368,6 +374,136 @@ func (s *Store) PrunePlanHistory(ctx context.Context, before time.Time) (int64, 
 		total += n
 	}
 	return total, nil
+}
+
+// --- Daily usage reconciliation (agent migration 248) ---------------------------
+
+// UpsertPlanUsageDaily stores the daily totals one reading carried for an
+// account. The latest value for a day wins; a day absent from this reading
+// keeps its stored row (a vendor that trims its history never erases ours).
+// One transaction per reading.
+func (s *Store) UpsertPlanUsageDaily(ctx context.Context, accountID, provider string, days []planlimits.UsageDay, fetchedAt time.Time) error {
+	if accountID == "" || len(days) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store.UpsertPlanUsageDaily: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO plan_usage_daily (account_id, provider, day, tokens, fetched_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, day) DO UPDATE SET provider = excluded.provider, tokens = excluded.tokens,
+		       fetched_at = excluded.fetched_at`)
+	if err != nil {
+		return fmt.Errorf("store.UpsertPlanUsageDaily: %w", err)
+	}
+	defer stmt.Close()
+	at := fetchedAt.UTC().Unix()
+	for _, d := range days {
+		if _, err := stmt.ExecContext(ctx, accountID, provider, d.Day, d.Tokens, at); err != nil {
+			return fmt.Errorf("store.UpsertPlanUsageDaily: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store.UpsertPlanUsageDaily: %w", err)
+	}
+	return nil
+}
+
+// PlanUsageDaily returns an account's stored daily totals for the inclusive
+// day window [from, to] (YYYY-MM-DD), oldest first, with the time of the
+// newest reading that wrote any of the account's rows (zero when it has
+// none at all).
+func (s *Store) PlanUsageDaily(ctx context.Context, accountID, from, to string) ([]planlimits.UsageDay, time.Time, error) {
+	var last sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(fetched_at) FROM plan_usage_daily WHERE account_id = ?`, accountID).Scan(&last); err != nil {
+		return nil, time.Time{}, fmt.Errorf("store.PlanUsageDaily: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT day, tokens FROM plan_usage_daily
+		WHERE account_id = ? AND day >= ? AND day <= ? ORDER BY day`, accountID, from, to)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("store.PlanUsageDaily: %w", err)
+	}
+	defer rows.Close()
+	out := []planlimits.UsageDay{}
+	for rows.Next() {
+		var d planlimits.UsageDay
+		if err := rows.Scan(&d.Day, &d.Tokens); err != nil {
+			return nil, time.Time{}, fmt.Errorf("store.PlanUsageDaily: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf("store.PlanUsageDaily: %w", err)
+	}
+	return out, timeOrZero(last.Int64), nil
+}
+
+// CapturedToolTokensByDay returns the tokens this node captured for sessions
+// of the given tools, per UTC day (YYYY-MM-DD) in the inclusive window
+// [from, to]. It reads the same deduplicated substrate the spend windows use
+// (spendUnionRecordedSQL's rows: the stored sessionmsg verdicts, so a turn
+// seen by both the proxy and the transcript counts once) and adds every
+// token class the vendor's daily total counts: input + cache read + output +
+// reasoning. Observer stores input NET of cache reads on both arms, and a
+// token_usage row's output NET of its reasoning (agent migration 058), so
+// the sum is the gross total the OpenAI usage object reports. Cache
+// creation is not added (OpenAI reports none). Read-only.
+func (s *Store) CapturedToolTokensByDay(ctx context.Context, tools []string, from, to string) (map[string]int64, error) {
+	out := map[string]int64{}
+	if len(tools) == 0 {
+		return out, nil
+	}
+	start, err := time.Parse(planlimits.UsageDayLayout, from)
+	if err != nil {
+		return nil, fmt.Errorf("store.CapturedToolTokensByDay: from: %w", err)
+	}
+	s.refreshSpendVerdictsBounded(ctx)
+	// The stored timestamps are compared as text, so the lower bound leaves a
+	// day of margin for a row written with a non-UTC offset; date() then
+	// normalises every row to its UTC day.
+	floor := timestamp(start.Add(-24 * time.Hour))
+	args := []any{floor, floor}
+	for _, t := range tools {
+		args = append(args, t)
+	}
+	args = append(args, from, to)
+	//nolint:gosec // G202: the SQL is closed constant fragments and the IN list is placeholders; values bind via args.
+	q := `SELECT date(u.ts) d, SUM(u.t) FROM (
+		SELECT tu.session_id sid, tu.timestamp ts,
+		       COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.output_tokens, 0)
+		         + COALESCE(tu.reasoning_tokens, 0) t
+		  FROM token_usage tu
+		 WHERE tu.timestamp >= ? AND ` + spendverdict.CountedTokenRow("tu") + `
+		UNION ALL
+		SELECT COALESCE(a.session_id, '') sid, a.timestamp ts,
+		       COALESCE(a.input_tokens, 0) + COALESCE(a.cache_read_tokens, 0) + ` + spendverdict.ProxyOutput("a") + `
+		         + ` + spendverdict.ProxyReasoning() + ` t
+		  FROM api_turns a` + spendverdict.ProxyVerdictJoin("a") + `
+		 WHERE a.timestamp >= ? AND ` + spendverdict.CountedProxyRow() + `
+	) u JOIN sessions s ON s.id = u.sid
+	 WHERE s.tool IN (` + placeholders(len(tools)) + `) AND date(u.ts) >= ? AND date(u.ts) <= ?
+	 GROUP BY d`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.CapturedToolTokensByDay: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d sql.NullString
+		var n sql.NullInt64
+		if err := rows.Scan(&d, &n); err != nil {
+			return nil, fmt.Errorf("store.CapturedToolTokensByDay: %w", err)
+		}
+		if d.Valid && n.Int64 > 0 {
+			out[d.String] = n.Int64
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.CapturedToolTokensByDay: %w", err)
+	}
+	return out, nil
 }
 
 // --- Passive signals, read-only -------------------------------------------------

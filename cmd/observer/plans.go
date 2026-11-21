@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -51,7 +52,7 @@ func newPlansCmd() *cobra.Command {
 	status.Flags().BoolVar(&jsonOut, "json", false, "print the page model as JSON")
 	cmd.AddCommand(status, newPlansAddCmd(&configPath), newPlansRemoveCmd(&configPath),
 		newPlansRefreshCmd(&configPath), newPlansOptInCmd(&configPath), newPlansProbeCmd(&configPath),
-		newPlansSourcesCmd())
+		newPlansSourcesCmd(), newPlansUsageCmd(&configPath))
 	return cmd
 }
 
@@ -80,6 +81,109 @@ func runPlansStatus(cmd *cobra.Command, configPath string, jsonOut bool) error {
 		printPlanView(out, v, time.Now())
 		return nil
 	})
+}
+
+// --- usage ----------------------------------------------------------------------
+
+// newPlansUsageCmd is the CLI twin of the card's "Codex usage by day": the
+// vendor's account-wide daily total, what this node captured, and what it
+// did not capture, per UTC day. It reads the local database only.
+func newPlansUsageCmd(configPath *string) *cobra.Command {
+	var days int
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "usage <account-id>",
+		Short: "Show an account's daily usage beside what this machine captured",
+		Long: "For an account whose source reports daily usage (the Codex app-server), shows per UTC day\n" +
+			"the vendor's account-wide token total, the tokens this machine captured for that tool,\n" +
+			"and the difference: usage not captured here (Codex cloud chats, other devices or\n" +
+			"sessions Observer did not run on). Tokens only. Reads the local database; it does not\n" +
+			"poll. Run `observer plans refresh <account-id>` first for a fresh reading.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withPlans(cmd, *configPath, func(svc *planlimitssvc.Service) error {
+				v, err := svc.Usage(cmd.Context(), args[0], days)
+				if err != nil {
+					return plansCLIError(err)
+				}
+				out := cmd.OutOrStdout()
+				if jsonOut {
+					enc := json.NewEncoder(out)
+					enc.SetIndent("", "  ")
+					return enc.Encode(v)
+				}
+				printPlanUsage(out, v)
+				return nil
+			})
+		},
+	}
+	cmd.Flags().IntVar(&days, "days", planlimitssvc.DefaultUsageDays, "how many UTC days to show (1 to 366)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the reconciliation as JSON")
+	return cmd
+}
+
+// printPlanUsage renders a UsageView as a table, newest day first.
+func printPlanUsage(out io.Writer, v planlimitssvc.UsageView) {
+	name := planProviderLabel(v.Provider)
+	if !v.Available {
+		fmt.Fprintf(out, "%s: this account's source does not report daily usage.\n", name)
+		return
+	}
+	if v.Reconciliation == nil {
+		fmt.Fprintf(out, "%s: no daily usage read yet. Run `observer plans refresh %s`.\n", name, v.AccountID)
+		return
+	}
+	r := v.Reconciliation
+	fmt.Fprintf(out, "%s usage by day, %s to %s (UTC days)\n", name, r.From, r.To)
+	if len(r.Days) == 0 {
+		fmt.Fprintln(out, "No usage on any day in this window.")
+	} else {
+		tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', tabwriter.AlignRight)
+		fmt.Fprintln(tw, "Day\tVendor total\tCaptured here\tNot captured here\tCaptured share\t")
+		for _, d := range r.Days {
+			vendor := planTokens(d.VendorTokens)
+			if !d.VendorReported {
+				vendor = "none reported"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\n", d.Day, vendor, planTokens(d.CapturedTokens),
+				planTokens(d.UncapturedTokens), planRatio(d.Ratio))
+		}
+		fmt.Fprintf(tw, "Total\t%s\t%s\t%s\t%s\t\n", planTokens(r.Totals.VendorTokens), planTokens(r.Totals.CapturedTokens),
+			planTokens(r.Totals.UncapturedTokens), planRatio(r.Totals.Ratio))
+		_ = tw.Flush()
+	}
+	if v.FetchedAt != nil {
+		fmt.Fprintf(out, "Vendor figures read %s.\n", v.FetchedAt.Local().Format("Mon Jan 2 15:04"))
+	}
+	fmt.Fprintln(out, "Not captured here: Codex cloud chats, other devices or sessions Observer did not run on.")
+	fmt.Fprintln(out, "The vendor total is account-wide; captured here is this machine's "+strings.Join(v.Tools, ", ")+
+		" sessions for any login. Days are UTC; the vendor does not document its day boundary.")
+}
+
+// planTokens formats a token count with thousands separators.
+func planTokens(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
+// planRatio formats a captured share; "" when there is no vendor total.
+func planRatio(r *float64) string {
+	if r == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", *r*100)
 }
 
 // --- add / remove / refresh / optin ---------------------------------------------

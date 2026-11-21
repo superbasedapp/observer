@@ -134,7 +134,7 @@ var vmSetRules = []struct {
 }{
 	{"rootfs installed", func(p *vmPass) (string, string) {
 		if p.in.Rootfs.NotInstalled {
-			return ReasonNotInstalled, "no signed sandbox.rootfs manifest is installed; import a guest image set with `observer sandbox content import <dir>`"
+			return ReasonNotInstalled, "no signed sandbox.rootfs manifest is installed; import a guest image set with Import image set in the microVM panel of Terminals > Settings > Sandbox isolation (same as `observer sandbox content import <dir>`)"
 		}
 		return "", ""
 	}},

@@ -323,6 +323,14 @@
     "stdout": "{\"permission\":\"allow\",\"continue\":true}\n",
     "exit_code": 0
   },
+  "custom-agent PreToolUse": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
+  "custom-agent UserPromptSubmit": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
   "deepagents-code no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0

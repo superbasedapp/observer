@@ -142,7 +142,9 @@ export async function securityPost<T>(path: string, token: string, body: unknown
   }
   if (!res.ok) {
     const msg = (parsed as { message?: string } | null)?.message;
-    throw new Error(msg || text.trim() || `HTTP ${res.status}`);
+    // The status and the full body ride along (structurally, like ApiError)
+    // so lib/needsSetting.ts can read a "turn this on" refusal's deep link.
+    throw Object.assign(new Error(msg || text.trim() || `HTTP ${res.status}`), { status: res.status, body: text });
   }
   return parsed as T;
 }

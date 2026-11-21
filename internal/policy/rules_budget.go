@@ -166,7 +166,7 @@ func budgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "session cost exceeded [guard.budget].session_usd",
-			Advice: "Review what the session is burning tokens on; raise [guard.budget].session_usd, approve B-601 for this session, or stop the run. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Review what the session is burning tokens on; raise the per-session limit (Observer dashboard Security > Budgets or Settings > Guard; [guard.budget].session_usd), approve B-601 for this session, or stop the run. hard=true blocks further proxy requests in enforce mode.",
 		},
 		{
 			ID: "B-602", Category: CategoryBudget, Severity: SeverityHigh,
@@ -179,7 +179,7 @@ func budgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "daily cost (all sessions) exceeded [guard.budget].daily_usd",
-			Advice: "Today's total spend across sessions crossed the configured ceiling; raise [guard.budget].daily_usd or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Today's total spend across sessions crossed the configured ceiling; raise the daily limit (Observer dashboard Security > Budgets or Settings > Guard; [guard.budget].daily_usd) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 		{
 			ID: "B-603", Category: CategoryBudget, Severity: SeverityHigh,
@@ -192,7 +192,7 @@ func budgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "calendar-month cost (all sessions) exceeded [guard.budget].monthly_usd",
-			Advice: "Month-to-date spend crossed the configured ceiling; raise [guard.budget].monthly_usd or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Month-to-date spend crossed the configured ceiling; raise the monthly limit (Observer dashboard Settings > Guard, More settings; [guard.budget].monthly_usd) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 		{
 			ID: "B-604", Category: CategoryBudget, Severity: SeverityHigh,
@@ -205,7 +205,7 @@ func budgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "rolling-7-day cost (all sessions) exceeded [guard.budget].weekly_usd",
-			Advice: "Last-7-days spend crossed the configured ceiling; raise [guard.budget].weekly_usd or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Last-7-days spend crossed the configured ceiling; raise the weekly limit (Observer dashboard Settings > Guard, More settings; [guard.budget].weekly_usd) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 	}
 }
@@ -239,7 +239,7 @@ func tokenBudgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "session token usage exceeded [guard.budget].session_tokens",
-			Advice: "Review what the session is burning tokens on; raise [guard.budget].session_tokens, approve B-621 for this session, or stop the run. hard=true blocks further proxy requests in enforce mode. An organization budget can lower this ceiling but never raise it.",
+			Advice: "Review what the session is burning tokens on; raise the per-session token cap (Observer dashboard Settings > Guard, or Security > Budgets in the token view; [guard.budget].session_tokens), approve B-621 for this session, or stop the run. hard=true blocks further proxy requests in enforce mode. An organization budget can lower this ceiling but never raise it.",
 		},
 		{
 			ID: "B-622", Category: CategoryBudget, Severity: SeverityHigh,
@@ -252,7 +252,7 @@ func tokenBudgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "daily token usage (all sessions) exceeded [guard.budget].daily_tokens",
-			Advice: "Today's total token usage across sessions crossed the configured ceiling; raise [guard.budget].daily_tokens or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Today's total token usage across sessions crossed the configured ceiling; raise the daily token cap (Observer dashboard Settings > Guard, or Security > Budgets in the token view; [guard.budget].daily_tokens) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 		{
 			ID: "B-623", Category: CategoryBudget, Severity: SeverityHigh,
@@ -265,7 +265,7 @@ func tokenBudgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "calendar-month token usage (all sessions) exceeded [guard.budget].monthly_tokens",
-			Advice: "Month-to-date token usage crossed the configured ceiling; raise [guard.budget].monthly_tokens or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Month-to-date token usage crossed the configured ceiling; raise the monthly token cap (Observer dashboard Settings > Guard, or Security > Budgets in the token view; [guard.budget].monthly_tokens) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 		{
 			ID: "B-624", Category: CategoryBudget, Severity: SeverityHigh,
@@ -278,7 +278,7 @@ func tokenBudgetRules() []Rule {
 			),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "rolling-7-day token usage (all sessions) exceeded [guard.budget].weekly_tokens",
-			Advice: "Last-7-days token usage crossed the configured ceiling; raise [guard.budget].weekly_tokens or pause agent work. hard=true blocks further proxy requests in enforce mode.",
+			Advice: "Last-7-days token usage crossed the configured ceiling; raise the weekly token cap (Observer dashboard Settings > Guard, or Security > Budgets in the token view; [guard.budget].weekly_tokens) or pause agent work. hard=true blocks further proxy requests in enforce mode.",
 		},
 	}
 }

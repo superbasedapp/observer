@@ -78,7 +78,9 @@ func TestHandWrittenConsentRecordsDoNotCount(t *testing.T) {
 	}
 	d := &countingDriver{}
 	res, err := e.scanOne(ctx, d, t.TempDir(), secscan.Target{Scope: policy.FindingScopeManual}, false, nil, false)
-	if err != nil || d.scans != 0 || res.Coverage.Reason != depscan.ReasonDBNotAccepted {
+	// A fresh install with no verified accept has chosen nothing (lane RM-2,
+	// ruling Q8 (a)): lookup_not_chosen, never a scan.
+	if err != nil || d.scans != 0 || res.Coverage.Reason != depscan.ReasonLookupNotChosen {
 		t.Fatalf("scan after a hand-written accept: %+v %v (scans %d)", res.Coverage, err, d.scans)
 	}
 
@@ -157,7 +159,7 @@ func TestScanOnlineSkipsTheAcceptWait(t *testing.T) {
 	if n, res := scan(true); n != 1 || res.Coverage.Reason == depscan.ReasonDBNotAccepted {
 		t.Fatalf("--online with the gate open was held back: scans %d, %+v", n, res.Coverage)
 	}
-	if n, res := scan(false); n != 0 || res.Coverage.Reason != depscan.ReasonDBNotAccepted {
+	if n, res := scan(false); n != 0 || res.Coverage.Reason != depscan.ReasonLookupNotChosen {
 		t.Fatalf("a local scan ran before the accept: scans %d, %+v", n, res.Coverage)
 	}
 	e.cfg.Security.Deps.Online = false

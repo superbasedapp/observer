@@ -34,9 +34,10 @@ func TestPlanV4PinsHaikuAndRoutesDirectly(t *testing.T) {
 	ctx := context.Background()
 	now := midMonth()
 	free := makeAccount(t, s)
+	pinCountPlan(t, pool, free) // v4 is no longer the default (0079); pin it
 	plus := makeAccount(t, s)
-	if _, err := s.AssignPlan(ctx, plus, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
-		t.Fatalf("AssignPlan(plus, latest): %v", err)
+	if _, err := s.AssignPlan(ctx, plus, store.PlanPlusBeta, 4, time.Time{}, now); err != nil {
+		t.Fatalf("AssignPlan(plus, v4): %v", err)
 	}
 
 	pins := map[string]string{}

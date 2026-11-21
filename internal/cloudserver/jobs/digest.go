@@ -253,9 +253,9 @@ func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route
 	res, err := e.provider.Complete(ctx, BuildDigestRequest(route, freshKey, prompt))
 	if err != nil {
 		if errors.Is(err, inference.ErrPersistenceViolation) {
-			return ExecResult{Outcome: ExecProviderError, Terminal: true, TerminalReason: store.ReasonPersistenceViolation, Detail: "store:false violated"}, nil
+			return ExecResult{Outcome: ExecProviderError, Terminal: true, TerminalReason: store.ReasonPersistenceViolation, FailKind: FailPersistenceViolation, EstimateUSD: estimateCallUSD(prompt, route), Detail: "store:false violated"}, nil
 		}
-		return ExecResult{Outcome: ExecProviderError, Detail: providerErrClass(err)}, nil
+		return ExecResult{Outcome: ExecProviderError, FailKind: classifyProviderErr(err), EstimateUSD: estimateCallUSD(prompt, route), Detail: providerErrClass(err)}, nil
 	}
 	tokensIn, tokensOut := res.TokensIn, res.TokensOut
 
@@ -264,7 +264,7 @@ func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route
 		// The rejected call was still billed: carry its cost so the worker
 		// counts it against the pool's spend ceiling (T-946).
 		attemptCost, _ := priceCall(e.pricer, route, res, now)
-		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: attemptCost, Detail: InvalidOutputDetail(res, rejection)}, nil
+		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: attemptCost, CostKnown: true, FailKind: FailInvalidOutput, Detail: InvalidOutputDetail(res, rejection)}, nil
 	}
 
 	resultJSON, err := json.Marshal(cleaned)

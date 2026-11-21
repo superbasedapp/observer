@@ -18,14 +18,37 @@ import (
 // every later call fails.
 
 // ErrTimeout is returned when a deadline passes. It satisfies the
-// net.Error Timeout convention.
+// net.Error Timeout convention. The error a Read or a Write returns names
+// its direction (live run 2026-11-19, D7: "relaymux: deadline exceeded"
+// alone could not say whether the peer went silent or stopped reading);
+// errors.Is(err, ErrTimeout) holds for both.
 var ErrTimeout error = timeoutError{}
 
-type timeoutError struct{}
+// errReadTimeout and errWriteTimeout are ErrTimeout with the direction.
+var (
+	errReadTimeout  error = timeoutError{op: "read"}
+	errWriteTimeout error = timeoutError{op: "write"}
+)
 
-func (timeoutError) Error() string   { return "relaymux: deadline exceeded" }
+type timeoutError struct{ op string }
+
+func (e timeoutError) Error() string {
+	switch e.op {
+	case "read":
+		return "relaymux: read deadline exceeded (nothing arrived from the peer in time)"
+	case "write":
+		return "relaymux: write deadline exceeded (the peer did not take the bytes in time)"
+	}
+	return "relaymux: deadline exceeded"
+}
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
+
+// Is makes every direction match ErrTimeout.
+func (timeoutError) Is(target error) bool {
+	_, ok := target.(timeoutError)
+	return ok
+}
 
 // ErrBroken is returned after a write timed out: the stream may hold half
 // a frame, so the adapter refuses everything after it.
@@ -127,7 +150,7 @@ func (c *DeadlineConn) Read(p []byte) (int, error) {
 		}
 		return n, nil
 	case <-tc:
-		return 0, ErrTimeout
+		return 0, errReadTimeout
 	case <-c.closed:
 		return 0, io.ErrClosedPipe
 	}
@@ -157,7 +180,7 @@ func (c *DeadlineConn) Write(p []byte) (int, error) {
 		c.mu.Lock()
 		c.broken = true
 		c.mu.Unlock()
-		return 0, ErrTimeout
+		return 0, errWriteTimeout
 	case <-c.closed:
 		return 0, io.ErrClosedPipe
 	}

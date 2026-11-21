@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -49,7 +50,7 @@ func TestFeedbackRoundTrip(t *testing.T) {
 		return FeedbackOffer{Hits: append(hits, hits...)}, nil
 	}, nil)
 	res, err := AskFeedback(context.Background(), ep, FeedbackRequest{ProjectRoot: "/repo", SessionID: "s1"}, time.Second)
-	if err != nil || len(res) != MaxFeedbackFindings || res[0] != hits[0] || res[1] != hits[1] {
+	if err != nil || len(res) != MaxFeedbackFindings || !reflect.DeepEqual(res[0], hits[0]) || !reflect.DeepEqual(res[1], hits[1]) {
 		t.Fatalf("AskFeedback = %+v, %v", res, err)
 	}
 	if got.ProjectRoot != "/repo" || got.SessionID != "s1" {

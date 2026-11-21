@@ -4,11 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
+
+// handoffTranscript is the seeded session's transcript path, absolute on this
+// OS: a Windows daemon stores C:\ paths, and the source-file filter must keep
+// them (it once matched only a leading "/").
+func handoffTranscript() string {
+	p := filepath.FromSlash("/home/u/.claude/projects/x/hs-1.jsonl")
+	if runtime.GOOS == "windows" {
+		p = `C:` + p
+	}
+	return p
+}
 
 func seedHandoffSession(t *testing.T, s *Store) {
 	t.Helper()
@@ -22,7 +36,7 @@ func seedHandoffSession(t *testing.T, s *Store) {
 	mustExec(`INSERT INTO projects (id, root_path, created_at) VALUES (7, '/home/u/proj', ?)`, timestamp(time.Now()))
 	mustExec(`INSERT INTO sessions (id, project_id, tool, model, git_branch, started_at) VALUES ('hs-1', 7, 'claude-code', '', 'main', '2026-07-03T10:00:00Z')`)
 	mustExec(`INSERT INTO token_usage (session_id, tool, model, input_tokens, output_tokens, timestamp, source, source_file)
-	          VALUES ('hs-1', 'claude-code', 'opus-4-8', 100, 50, '2026-07-03T10:01:00Z', 'transcript', '/home/u/.claude/projects/x/hs-1.jsonl')`)
+	          VALUES ('hs-1', 'claude-code', 'opus-4-8', 100, 50, '2026-07-03T10:01:00Z', 'transcript', ?)`, handoffTranscript())
 	acts := []struct {
 		typ, target, errMsg string
 		success             int
@@ -55,7 +69,7 @@ func TestLoadHandoffSubstrate(t *testing.T) {
 		t.Errorf("model fallback from token_usage failed: %q", sub.Session.Model)
 	}
 	// The `<tool>:hook` sentinel must be filtered (D-P0.1); the real path kept.
-	if len(sub.SourceFiles) != 1 || sub.SourceFiles[0] != "/home/u/.claude/projects/x/hs-1.jsonl" {
+	if len(sub.SourceFiles) != 1 || sub.SourceFiles[0] != handoffTranscript() {
 		t.Errorf("source files = %v", sub.SourceFiles)
 	}
 	if len(sub.Files) != 2 || sub.Files[0].Path != "internal/a.go" || sub.Files[0].Edits != 1 || sub.Files[0].Reads != 1 {
@@ -331,5 +345,34 @@ func TestClaimArmedHandoffHook(t *testing.T) {
 	// One-shot: a second claim finds nothing (the live row is delivered).
 	if _, ok, err := s.ClaimArmedHandoffHook(ctx, "claude-code", "/home/u/proj", now); err != nil || ok {
 		t.Fatalf("second claim must be a no-op (one-shot): ok=%v err=%v", ok, err)
+	}
+}
+
+// TestLoadHandoffSubstrateRefusesNetworkPaths pins ledger CLOUDSESS-12 on
+// the handoff reader: a stored source_file naming a UNC share, a device or
+// an extended-length path is never handed to a reader that opens it
+// (handoffsvc, the MCP get_session_message tool), on any OS, while the
+// session's real transcript path is kept.
+func TestLoadHandoffSubstrateRefusesNetworkPaths(t *testing.T) {
+	s, _ := newTestStore(t)
+	seedHandoffSession(t, s)
+	for i, p := range []string{
+		`\attacker.example@SSL\share\a.jsonl`,
+		"//attacker.example/share/a.jsonl",
+		`\?\C:\Users\me\a.jsonl`,
+		`\.\pipe\a.jsonl`,
+	} {
+		if _, err := s.db.Exec(`INSERT INTO actions (session_id, project_id, timestamp, action_type, target, success, tool, source_file, source_event_id)
+		          VALUES ('hs-1', 7, '2026-07-03T10:06:00Z', ?, 'x', 1, 'claude-code', ?, ?)`,
+			models.ActionReadFile, p, fmt.Sprintf("unc-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sub, err := s.LoadHandoffSubstrate(context.Background(), "hs-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.SourceFiles) != 1 || sub.SourceFiles[0] != handoffTranscript() {
+		t.Fatalf("source files = %v, want only the local transcript", sub.SourceFiles)
 	}
 }

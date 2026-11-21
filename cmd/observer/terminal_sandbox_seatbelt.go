@@ -294,7 +294,7 @@ func (d *seatbeltDriver) compose(created termsvc.CreateResult) ([]string, error)
 	tier := vocab.Tier(r.egress.Mode)
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs, HostSocketDir: dirs.SocketDir}
 	if capture := sandboxRunCaptureFor(seatbeltRow(), created.ProxyRouted, tier, r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
-		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHosts
+		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHostList()
 	}
 	host, err := sandbox.RelayHostArgv(r.observerBin, netReq, nil, sandbox.RelayRequest{RunID: run.ID, HostObserverDir: r.observerDir})
 	if err != nil {
@@ -414,7 +414,7 @@ func (d *seatbeltDriver) Destroy(_ context.Context, run termsvc.SandboxRun) (ter
 // profile hides /private/tmp, so a tool that would make its own folder there
 // (Claude Code's /tmp/claude-<uid>, D-UC1) could not start.
 func seatbeltAgentEnv(environ []string, dirs macRunDirs, gatewayPort int, native, tempEnv []string) []string {
-	// The allow-list first (WINFIX2 R-167); the drops below stay.
+	// The allow-list first (WINFIX2, ledger SBX-WIN-ENV-1); the drops below stay.
 	environ = sandboxBoxEnv("darwin", environ)
 	drop := map[string]bool{"TMPDIR": true, "xcrun_db": true, sandboxsbpl.EnvSocketDir: true, sandboxEnvMarker: true}
 	for _, k := range sandbox.GuestUnsetEnv {

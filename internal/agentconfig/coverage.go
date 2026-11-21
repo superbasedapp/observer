@@ -43,6 +43,7 @@ var noSurfaceTools = map[string]string{
 	"gemini-web":     "Browser chat: settings live in the vendor's web account.",
 	"copilot-web":    "Browser chat: settings live in the vendor's web account.",
 	"grokbot":        "Grok Bot desktop: settings are server-side (vendor admin), nothing local to edit.",
+	"custom-agent":   "Own agent (P-228): the developer's own code; it has no vendor settings file to edit.",
 }
 
 // ToolCoverage is one registry tool's catalogue coverage.

@@ -25,6 +25,9 @@ export type GrantDisclosure = {
   server_url: string;
   expires_at?: string;
   managed: boolean;
+  /** Plain words when the organization asking is the developer's own
+   *  (a personal organization, managed by its owner); absent otherwise. */
+  owner?: string;
   may: AuthorityLine[] | null;
   config_writes?: string[] | null;
   families?: string[] | null;
@@ -50,6 +53,10 @@ export type EnrolmentOverview = {
   enrolled_at?: string;
   credential_store?: string;
   tenancy?: string;
+  /** The organization's re-consent advisory ("owner_managed": a personal
+   *  dashboard managed by its owner offers this individually-connected
+   *  machine more). Absent is the normal case. */
+  reconsent?: string;
   /** Set when the daemon of a managed enrolment signs no machine proof. */
   machine_proof_warning?: string;
   /** Set when a running daemon cannot read the org credential, so it does not push. */
@@ -134,7 +141,8 @@ export function pushCadenceLine(
   fmtTime: (iso: string) => string,
 ): string {
   const secs = ov.push_interval_seconds ?? 0;
-  if (!ov.pushing_enabled) return "The push loop is off: [org_client] enabled = false in config.toml.";
+  if (!ov.pushing_enabled)
+    return "Sending is off on this machine ([org_client] enabled = false in config.toml). Connecting this machine again here turns it back on; or set enabled = true and restart the daemon.";
   if (!ov.push_loop_running) return "The push loop is not running in this daemon yet; restart it, or use Push now.";
   if (secs <= 0) return "The push loop is running.";
   const every = `Pushes at least every ${secs} s, sooner when new activity arrives.`;
@@ -326,10 +334,34 @@ export function canSubmit(f: EnrolForm): boolean {
 }
 
 /** enrolBody builds the POST /api/enrolment/enrol body: only the fields the
- *  method uses ever leave the page. */
-export function enrolBody(f: EnrolForm): Record<string, string> {
-  if (f.method === "link") return { method: "link", link: f.link.trim() };
-  return { method: "code", org_url: f.orgUrl.trim(), token: f.token.trim() };
+ *  method uses ever leave the page. dropUnsent is the explicit "Switch anyway"
+ *  after an unsent_rows refusal (R3-78); it is sent only when true. */
+export function enrolBody(f: EnrolForm, dropUnsent = false): Record<string, string | boolean> {
+  const body: Record<string, string | boolean> =
+    f.method === "link"
+      ? { method: "link", link: f.link.trim() }
+      : { method: "code", org_url: f.orgUrl.trim(), token: f.token.trim() };
+  if (dropUnsent) body.drop_unsent = true;
+  return body;
+}
+
+/** UNSENT_ROWS is the code of a switch or a leave the daemon refused because
+ *  rows captured for the current organization could not be sent to it first
+ *  (R3-78). Nothing changed; the page offers "Switch anyway" / "Leave anyway"
+ *  (drop_unsent) or Cancel. */
+export const UNSENT_ROWS = "unsent_rows";
+
+/** apiErrorCode extracts the server's classified failure code ({error}) from a
+ *  failed call, or "" when there is none. */
+export function apiErrorCode(err: unknown): string {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (typeof body !== "string" || !body.trim()) return "";
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed.error === "string" ? parsed.error : "";
+  } catch {
+    return "";
+  }
 }
 
 /** apiErrorMessage extracts the server's sentence from a failed call: the
@@ -407,4 +439,23 @@ export function pendingGrantOf(
     if (p && !decidedOfferIds.has(p.offer_id)) return p;
   }
   return null;
+}
+
+/** RECONSENT_PROMPTS: what each re-consent advisory says, and its one action.
+ *  A reason this page does not know shows nothing (budget enforce
+ *  consistency, 2026-11-19). */
+export const RECONSENT_PROMPTS: Record<string, { title: string; body: string; action: string }> = {
+  owner_managed: {
+    title: "Your personal dashboard can now manage this machine",
+    body:
+      "Budgets you set to Enforce on your personal dashboard can block requests on this machine, and settings you pin there apply here, once you review and accept. " +
+      "Nothing changes until you do. Your dashboard keeps getting a summary only.",
+    action: "Review and accept",
+  },
+};
+
+/** reconsentPrompt is the prompt for an enrolment overview, or null. */
+export function reconsentPrompt(s: Pick<EnrolmentOverview, "enrolled" | "reconsent"> | null | undefined) {
+  if (!s?.enrolled || !s.reconsent) return null;
+  return RECONSENT_PROMPTS[s.reconsent] ?? null;
 }

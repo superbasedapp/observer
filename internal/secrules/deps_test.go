@@ -31,6 +31,11 @@ func TestInstallGateDecisionTable(t *testing.T) {
 	chk := func(v policy.InstallVerdict) policy.InstallCheck {
 		return policy.InstallCheck{Ecosystem: "npm", Name: "pkg", Verdict: v}
 	}
+	prov := func(v policy.InstallVerdict, p policy.InstallProvenance) policy.InstallCheck {
+		c := chk(v)
+		c.Provenance = p
+		return c
+	}
 	rows := []struct {
 		name             string
 		kind             policy.EventKind
@@ -45,6 +50,17 @@ func TestInstallGateDecisionTable(t *testing.T) {
 		{"online unknown S-748", policy.KindShellExec, depsSec(chk(policy.InstallOnlineUnknown)), "S-748", policy.DecisionFlag, policy.DecisionAsk},
 		{"listed version S-749", policy.KindShellExec, depsSec(chk(policy.InstallListedVersion)), "S-749", policy.DecisionFlag, policy.DecisionFlag},
 		{"known good", policy.KindShellExec, depsSec(chk(policy.InstallKnownGood)), "", policy.DecisionAllow, policy.DecisionAllow},
+		{"provenance regressed S-757", policy.KindShellExec, depsSec(prov(policy.InstallKnownGood, policy.InstallProvenanceRegressed)), "S-757", policy.DecisionFlag, policy.DecisionFlag},
+		{"provenance regressed, not checked S-757", policy.KindShellExec, depsSec(prov(policy.InstallNotChecked, policy.InstallProvenanceRegressed)), "S-757", policy.DecisionFlag, policy.DecisionFlag},
+		{"provenance regressed under malicious S-741", policy.KindShellExec, depsSec(prov(policy.InstallMalicious, policy.InstallProvenanceRegressed)), "S-741", policy.DecisionAsk, policy.DecisionDeny},
+		{"provenance present", policy.KindShellExec, depsSec(prov(policy.InstallKnownGood, policy.InstallProvenancePresent)), "", policy.DecisionAllow, policy.DecisionAllow},
+		{"provenance absent", policy.KindShellExec, depsSec(prov(policy.InstallKnownGood, policy.InstallProvenanceAbsent)), "", policy.DecisionAllow, policy.DecisionAllow},
+		{"provenance unknown", policy.KindShellExec, depsSec(prov(policy.InstallKnownGood, policy.InstallProvenanceUnknown)), "", policy.DecisionAllow, policy.DecisionAllow},
+		{"provenance regressed in a manifest edit", policy.KindFileAccess, func() *policy.Security {
+			s := depsSec(prov(policy.InstallKnownGood, policy.InstallProvenanceRegressed))
+			s.InstallManifest = true
+			return s
+		}(), "", policy.DecisionAllow, policy.DecisionAllow},
 		{"not checked", policy.KindShellExec, depsSec(chk(policy.InstallNotChecked)), "", policy.DecisionAllow, policy.DecisionAllow},
 		{"custom registry S-745", policy.KindShellExec, func() *policy.Security { s := depsSec(); s.InstallCustomRegistry = true; return s }(), "S-745", policy.DecisionFlag, policy.DecisionFlag},
 		{"manifest edit S-747", policy.KindFileAccess, func() *policy.Security {

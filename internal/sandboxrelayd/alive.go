@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelay"
@@ -122,8 +123,44 @@ func helperOf(observerDir, runID string) helperState {
 	return probeAlive(alivePath(observerDir, runID))
 }
 
+// deadRunHold is the one hold every prune of a dead helper's record asks
+// first (SetDeadRunHold).
+var deadRunHold atomic.Pointer[func(observerDir, runID string) bool]
+
+// SetDeadRunHold installs the hold PruneDeadRunRecords asks about every run
+// whose helper is gone, before it removes the run's record and lock file;
+// nil removes it. A run it holds keeps both, so the one owner of what
+// happens to that run (the local re-adoption step, which offers it, holds it
+// or ends it as before, tracker F-045) decides first, whichever sweep runs
+// first: before it, the relay's start prune or its own sweep removed a
+// re-adoptable run's record and the run was reaped without a decision.
+func SetDeadRunHold(f func(observerDir, runID string) bool) {
+	if f == nil {
+		deadRunHold.Store(nil)
+		return
+	}
+	deadRunHold.Store(&f)
+}
+
+// DeadRunHeld asks the installed dead-run hold (SetDeadRunHold) about
+// runID; false with none. A sweep of what a dead run left beside its relay
+// record (its credential files, tracker F-055) asks the same hold, so the
+// re-adoption step stays the one owner of a held run's fate.
+func DeadRunHeld(observerDir, runID string) bool {
+	return deadRunHeld(observerDir, runID)
+}
+
+// deadRunHeld asks the installed hold about runID (false with none).
+func deadRunHeld(observerDir, runID string) bool {
+	if f := deadRunHold.Load(); f != nil {
+		return (*f)(observerDir, runID)
+	}
+	return false
+}
+
 // PruneDeadRuns removes the record and the lock file of every run whose
-// helper is gone (its lock file exists and nobody holds it), and reports how
+// helper is gone (its lock file exists and nobody holds it, and the dead-run
+// hold, SetDeadRunHold, does not hold it), and reports how
 // many runs it removed. The daemon runs it at start and on every sweep, so
 // a helper killed with SIGKILL leaves nothing behind for long. A temporary
 // lock file (".<run>.alive") that a helper killed between creating and
@@ -160,6 +197,9 @@ func PruneDeadRunRecords(observerDir string) ([]RunRecord, error) {
 			continue
 		}
 		if helperOf(observerDir, id) != helperGone {
+			continue
+		}
+		if deadRunHeld(observerDir, id) {
 			continue
 		}
 		rec, rerr := ReadRun(observerDir, id)
@@ -205,4 +245,33 @@ func pruneAliveTemp(dir string, e os.DirEntry, now time.Time) bool {
 		_ = os.Remove(path) //nolint:gosec // G703: under the 0700 runs dir; the id passed ValidRunID
 	}
 	return true
+}
+
+// TerminalRunLive reports whether any relay run bound to terminalRunID
+// (RunRecord.TerminalRunID) still has a live helper (RunLive), so a caller
+// can tell a box that is still running from a stale marker its CLI left
+// (cli-1b fixes-3, the loopback exposure gate's marker sweep). An empty id
+// or an unreadable runs directory is not live.
+func TerminalRunLive(observerDir, terminalRunID string) bool {
+	if terminalRunID == "" {
+		return false
+	}
+	entries, err := os.ReadDir(RunsDir(observerDir))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || !e.Type().IsRegular() || !sandboxrelay.ValidRunID(id) {
+			continue
+		}
+		rec, err := ReadRun(observerDir, id)
+		if err != nil || rec.TerminalRunID != terminalRunID {
+			continue
+		}
+		if RunLive(observerDir, id) {
+			return true
+		}
+	}
+	return false
 }

@@ -47,6 +47,15 @@ type SecurityConfig struct {
 	// Trust is [security.trust]: the node's own pre-launch trust step
 	// (component security.trust).
 	Trust SecurityTrustConfig `toml:"trust"`
+	// Reach is [security.reach]: the reachability checks' caps (today the
+	// Go source check's, component security.reach.go).
+	Reach SecurityReachConfig `toml:"reach"`
+	// Assessments is [security.assessments]: what the agent-run security
+	// assessments may ask to lift for one run (plan section 13.3).
+	Assessments SecurityAssessmentsConfig `toml:"assessments"`
+	// Licenses is [security.licenses]: the project licence policy
+	// (component security.deps, security_licenses.go).
+	Licenses SecurityLicensesConfig `toml:"licenses"`
 	// CommitGateFloor is not a setting: the org floor require.commit_gate
 	// (managed only) writes "quick_scan" here through the floors' read seam
 	// (cmd/observer securityFloorsAppliedAt, lane SEC-P4 decision 9); the
@@ -124,6 +133,9 @@ type SecurityScanConfig struct {
 	Opengrep SecurityOpengrepConfig `toml:"opengrep"`
 	Trivy    SecurityTrivyConfig    `toml:"trivy"` // security.scan.trivy, lane GATES-SEC (security_iac.go)
 	Kics     SecurityKICSConfig     `toml:"kics"`  // security.scan.kics, lane GATES-SEC (security_iac.go)
+	// Image is [security.scan.image]: the image OS package driver (lane
+	// OS-2 T, security_image.go).
+	Image SecurityImageScanConfig `toml:"image"`
 }
 
 // SecurityOpengrepConfig is [security.scan.opengrep]: when the code rules
@@ -156,6 +168,39 @@ type SecurityOpengrepConfig struct {
 	// only while an Opengrep engine is installed (P-061). Default true. A
 	// managed node takes both from its org mirror whatever this says.
 	Feed bool `toml:"feed"`
+	// TaintPass is the intrafile taint pass of a full scan: after the core
+	// pass, the pack's taint-mode rules run again alone with Opengrep's
+	// --taint-intrafile, in batches under their own budget, and their
+	// results replace the core pass's taint-rule results only for the files
+	// a finished batch read in full. "auto" (the default; empty reads as
+	// auto) or "off". Diff, commit and post-write scans never run it.
+	TaintPass string `toml:"taint_pass"`
+	// TaintPassBudgetSeconds is the taint pass's wall budget; 0, the
+	// default, scales it with the files it must read (60 s to 900 s, 300 s
+	// for about 25,000 files). Otherwise 30 to 3600.
+	TaintPassBudgetSeconds int `toml:"taint_pass_budget_seconds"`
+	// TaintPassJobs is the taint pass's Opengrep -j; 0, the default, is 2.
+	// At most 8.
+	TaintPassJobs int `toml:"taint_pass_jobs"`
+	// TaintPassMemoryMiB caps each taint pass batch's memory; 0, the
+	// default, is 2048. Otherwise 512 to 8192.
+	TaintPassMemoryMiB int `toml:"taint_pass_memory_mib"`
+}
+
+// validateSecurityOpengrepTaint checks the taint pass keys of
+// [security.scan.opengrep] (0 is each number's default).
+func validateSecurityOpengrepTaint(c SecurityOpengrepConfig) error {
+	switch {
+	case c.TaintPass != "" && c.TaintPass != "auto" && c.TaintPass != "off":
+		return fmt.Errorf("config: security.scan.opengrep.taint_pass %q is not auto or off", c.TaintPass)
+	case c.TaintPassBudgetSeconds != 0 && (c.TaintPassBudgetSeconds < 30 || c.TaintPassBudgetSeconds > 3600):
+		return fmt.Errorf("config: security.scan.opengrep.taint_pass_budget_seconds %d not 0 or 30 to 3600", c.TaintPassBudgetSeconds)
+	case c.TaintPassJobs < 0 || c.TaintPassJobs > 8:
+		return fmt.Errorf("config: security.scan.opengrep.taint_pass_jobs %d not 0 to 8", c.TaintPassJobs)
+	case c.TaintPassMemoryMiB != 0 && (c.TaintPassMemoryMiB < 512 || c.TaintPassMemoryMiB > 8192):
+		return fmt.Errorf("config: security.scan.opengrep.taint_pass_memory_mib %d not 0 or 512 to 8192", c.TaintPassMemoryMiB)
+	}
+	return nil
 }
 
 // SecurityOpengrepScheduleHours are the schedule picker's steps: off,
@@ -228,6 +273,60 @@ type SecurityDepsConfig struct {
 	// could not answer in time (S-748; its own decision is flag in
 	// observe, ask in enforce).
 	OnlineUnknownAction string `toml:"online_unknown_action"`
+	// Provenance is the build-provenance check of an agent install
+	// (security coverage-gaps plan 2026-11-13 section 4, rule S-757), one
+	// of SecurityDepsProvenance: "flag" (the default) reads, for an
+	// answered online check, whether the version installed lacks the
+	// provenance an earlier version carried (npm provenance, PyPI
+	// attestations) and flags it; "off" makes no PyPI provenance request
+	// and sets no provenance state.
+	Provenance string `toml:"provenance"`
+	// DBSource is where an INDIVIDUAL node's OSV databases (the dependency
+	// scanners' local copy) come from, one of SecurityDepsDBSources: "auto"
+	// (the default) takes SuperBased's signed mirror on superbased.app and
+	// falls back to the OSV project's bucket when the mirror is unavailable
+	// and DBFallbackUpstream allows it; "feed" takes the mirror only (a
+	// failure keeps the last-known-good, reported); "upstream" takes the
+	// bucket only; "import" takes only what `observer security scan db
+	// import <dir>` installed and makes no request. A managed node ignores
+	// it: its databases come from its org mirror only. Read once per
+	// refresh (cmd/observer depsSourcePlan), so a change needs no restart.
+	DBSource string `toml:"db_source"`
+	// DBFallbackUpstream lets db_source = "auto" fall back to the OSV
+	// bucket when the signed mirror is not published, not verifiable or
+	// unreachable. Default true; false keeps the last-known-good instead.
+	DBFallbackUpstream bool `toml:"db_fallback_upstream"`
+	// Match is the package lookup mode (OS and CI vulnerability scanning
+	// plan sections 13.9 and 13.10, lane RM-2), one of
+	// SecurityDepsMatchModes: "local" matches against the downloaded
+	// databases; "remote" downloads no database and looks every ecosystem
+	// up at SuperBased (hash-prefix shards, never a package name); "both"
+	// matches locally where a database is installed and looks up only the
+	// rest. "" (the default) is not chosen: an install whose database
+	// accept is recorded reads "local", a fresh one reads "not scanned"
+	// (lookup_not_chosen) until the developer picks on the Privacy page's
+	// Package lookup card or with `observer security lookup mode`. Remote
+	// and both need the developer's own signed remote-lookup consent
+	// (osv-remote-consent.json), never an agent's (R-165). A managed node
+	// ignores it: its organization decides. Re-read at every scan.
+	Match string `toml:"match"`
+	// RemoteVia is how a remote lookup is answered, one of
+	// SecurityDepsRemoteVia: "shards" (the default and the only value this
+	// build serves). "service" is reserved for a SuperBased matcher service
+	// (plan section 13.9, M2) and refused by validation.
+	RemoteVia string `toml:"remote_via"`
+	// RemoteKinds are the package kinds a remote lookup covers, a subset of
+	// SecurityDepsRemoteKinds: "language" (lockfile packages) and "actions"
+	// (GitHub Actions). nil or empty means every kind this build serves;
+	// "os" (an image's OS packages) is reserved and refused by validation
+	// until remote lookup serves images.
+	RemoteKinds []string `toml:"remote_kinds"`
+	// RemotePrivate is whether a remote lookup sends private and internal
+	// package names too, one of SecurityDepsRemotePrivate: "withhold" (the
+	// default: a name not provably public is never looked up, and the run
+	// is never clean) or "send", which needs its own signed consent
+	// (osv-remote-private-consent.json).
+	RemotePrivate string `toml:"remote_private"`
 	// ScannerSources is not a setting: the org floor
 	// allow.scanner_sources writes the allowed advisory database sources
 	// here through the floors' read seam (cmd/observer
@@ -246,6 +345,34 @@ var SecurityDepsInstallWaitMS = []int{500, 1500, 3000}
 // SecurityDepsUnknownActions is the picker of [security.deps].unknown_action
 // and online_unknown_action: today's rule decision, then stricter ones.
 var SecurityDepsUnknownActions = []string{"default", "ask", "deny"}
+
+// SecurityDepsProvenance is the picker of [security.deps].provenance.
+var SecurityDepsProvenance = []string{"flag", "off"}
+
+// SecurityDepsDBSources is the picker of [security.deps].db_source.
+var SecurityDepsDBSources = []string{"auto", "feed", "upstream", "import"}
+
+// SecurityDepsMatchModes is the picker of [security.deps].match ("" is not
+// chosen).
+var SecurityDepsMatchModes = []string{"local", "remote", "both"}
+
+// SecurityDepsRemoteVia is the picker of [security.deps].remote_via in this
+// build; SecurityDepsRemoteViaReserved are values a later build may serve.
+var (
+	SecurityDepsRemoteVia         = []string{"shards"}
+	SecurityDepsRemoteViaReserved = []string{"service"}
+)
+
+// SecurityDepsRemoteKinds is the vocabulary of [security.deps].remote_kinds
+// in this build; SecurityDepsRemoteKindsReserved are kinds a later build
+// may serve.
+var (
+	SecurityDepsRemoteKinds         = []string{"language", "actions"}
+	SecurityDepsRemoteKindsReserved = []string{"os"}
+)
+
+// SecurityDepsRemotePrivate is the picker of [security.deps].remote_private.
+var SecurityDepsRemotePrivate = []string{"withhold", "send"}
 
 // SecurityDepsMinPackageAgeH is the picker of
 // [security.deps].min_package_age_h.
@@ -317,15 +444,17 @@ var SecurityRetentionDays = []int{90, 180, 365, 730}
 // DefaultSecurityConfig is the [security] default.
 func DefaultSecurityConfig() SecurityConfig {
 	return SecurityConfig{
-		Retention: SecurityRetentionConfig{Days: 365},
-		Deps:      SecurityDepsConfig{Online: true, InstallWaitMS: 1500, MinPackageAgeH: 72, IndexDownload: true, UnknownAction: "default", OnlineUnknownAction: "default"},
-		Secrets:   SecuritySecretsConfig{WriteCheck: true, CommitCheck: true, PostWriteCapKiB: 256},
-		MCP:       SecurityMCPConfig{Tools: true},
-		Custom:    SecurityCustomConfig{ScheduleHours: 0, PauseOnBattery: true},
-		Feedback:  SecurityFeedbackConfig{AfterWrite: true},
-		Scan:      SecurityScanConfig{Opengrep: SecurityOpengrepConfig{PostWrite: true, CommitDiff: true, ScheduleHours: 0, PauseOnBattery: true, Feed: true}},
-		Scanning:  SecurityScanningConfig{QuickScanBudgetS: 2, MinBlockingSeverity: "high"},
-		Trust:     SecurityTrustConfig{Prelaunch: "warn"},
+		Retention:   SecurityRetentionConfig{Days: 365},
+		Deps:        SecurityDepsConfig{Online: true, InstallWaitMS: 1500, MinPackageAgeH: 72, IndexDownload: true, UnknownAction: "default", OnlineUnknownAction: "default", Provenance: "flag", DBSource: "auto", DBFallbackUpstream: true, RemoteVia: "shards", RemotePrivate: "withhold"},
+		Secrets:     SecuritySecretsConfig{WriteCheck: true, CommitCheck: true, PostWriteCapKiB: 256},
+		MCP:         SecurityMCPConfig{Tools: true},
+		Custom:      SecurityCustomConfig{ScheduleHours: 0, PauseOnBattery: true},
+		Feedback:    SecurityFeedbackConfig{AfterWrite: true},
+		Scan:        SecurityScanConfig{Opengrep: SecurityOpengrepConfig{PostWrite: true, CommitDiff: true, ScheduleHours: 0, PauseOnBattery: true, Feed: true, TaintPass: "auto"}},
+		Scanning:    SecurityScanningConfig{QuickScanBudgetS: 2, MinBlockingSeverity: "high"},
+		Trust:       SecurityTrustConfig{Prelaunch: "warn"},
+		Licenses:    DefaultSecurityLicensesConfig(),
+		Assessments: DefaultSecurityAssessmentsConfig(),
 	}
 }
 
@@ -384,7 +513,7 @@ func validateSecurityOpengrep(c SecurityOpengrepConfig) error {
 	if !slices.Contains(SecurityOpengrepScheduleHours, c.ScheduleHours) {
 		return fmt.Errorf("config: security.scan.opengrep.schedule_hours %d not in %v", c.ScheduleHours, SecurityOpengrepScheduleHours)
 	}
-	return nil
+	return validateSecurityOpengrepTaint(c)
 }
 
 // validateSecurityDeps checks [security.deps].
@@ -400,6 +529,33 @@ func validateSecurityDeps(d SecurityDepsConfig) error {
 	}
 	if !slices.Contains(SecurityDepsUnknownActions, d.OnlineUnknownAction) {
 		return fmt.Errorf("config: security.deps.online_unknown_action %q not in %v", d.OnlineUnknownAction, SecurityDepsUnknownActions)
+	}
+	if !slices.Contains(SecurityDepsProvenance, d.Provenance) {
+		return fmt.Errorf("config: security.deps.provenance %q not in %v", d.Provenance, SecurityDepsProvenance)
+	}
+	if !slices.Contains(SecurityDepsDBSources, d.DBSource) {
+		return fmt.Errorf("config: security.deps.db_source %q not in %v", d.DBSource, SecurityDepsDBSources)
+	}
+	if d.Match != "" && !slices.Contains(SecurityDepsMatchModes, d.Match) {
+		return fmt.Errorf("config: security.deps.match %q not in %v", d.Match, SecurityDepsMatchModes)
+	}
+	if d.RemoteVia != "" && !slices.Contains(SecurityDepsRemoteVia, d.RemoteVia) {
+		if slices.Contains(SecurityDepsRemoteViaReserved, d.RemoteVia) {
+			return fmt.Errorf("config: security.deps.remote_via %q is not in this build (only %v)", d.RemoteVia, SecurityDepsRemoteVia)
+		}
+		return fmt.Errorf("config: security.deps.remote_via %q not in %v", d.RemoteVia, SecurityDepsRemoteVia)
+	}
+	for _, k := range d.RemoteKinds {
+		if slices.Contains(SecurityDepsRemoteKinds, k) {
+			continue
+		}
+		if slices.Contains(SecurityDepsRemoteKindsReserved, k) {
+			return fmt.Errorf("config: security.deps.remote_kinds %q is not in this build (only %v)", k, SecurityDepsRemoteKinds)
+		}
+		return fmt.Errorf("config: security.deps.remote_kinds %q not in %v", k, SecurityDepsRemoteKinds)
+	}
+	if d.RemotePrivate != "" && !slices.Contains(SecurityDepsRemotePrivate, d.RemotePrivate) {
+		return fmt.Errorf("config: security.deps.remote_private %q not in %v", d.RemotePrivate, SecurityDepsRemotePrivate)
 	}
 	return nil
 }
@@ -441,8 +597,18 @@ func SecuritySettings() []SecuritySetting {
 		{Key: "security.secrets.write_check", Class: SettingPolicy, Values: "On / Off", Default: "On", NodeHome: "Code security"},
 		{Key: "security.secrets.commit_check", Class: SettingPolicy, Values: "On / Off", Default: "On", NodeHome: "Code security"},
 		{Key: "security.secrets.postwrite_cap_kib", Class: SettingPolicy, Values: "256 / 64 (scans less; an individual node only, a managed node keeps 256; the hook's 16 KiB is fixed)", Default: "256", NodeHome: "Code security"},
+		{Key: "security.deps.db_source", Class: SettingLocal, Values: "auto (signed mirror, then the OSV bucket) / feed / upstream / import", Default: "auto (an individual node; a managed node uses its org mirror)", NodeHome: "Code security"},
+		{Key: "security.deps.db_fallback_upstream", Class: SettingLocal, Values: "On / Off", Default: "On", NodeHome: "Code security"},
+		// The package lookup posture (lane RM-2, plan section 13.10): the
+		// individual developer's to set, from the Privacy page; a managed
+		// node's organization decides (no remote toggle on the node).
+		{Key: "security.deps.match", Class: SettingLocal, Values: "local (download the databases) / remote (superbased lookup) / both (local first, remote for the gaps)", Default: "not chosen (an install with the database accept reads local)", NodeHome: "Privacy"},
+		{Key: "security.deps.remote_via", Class: SettingLocal, Values: "shards (service reserved)", Default: "shards", NodeHome: "Privacy"},
+		{Key: "security.deps.remote_kinds", Class: SettingLocal, Values: "language, actions (os reserved)", Default: "every kind this build serves", NodeHome: "Privacy"},
+		{Key: "security.deps.remote_private", Class: SettingLocal, Values: "withhold / send", Default: "withhold", NodeHome: "Privacy"},
 		{Key: "security.deps.unknown_action", Class: SettingPolicy, Values: "default (flag) / ask / deny", Default: "default", NodeHome: "Code security"},
 		{Key: "security.deps.online_unknown_action", Class: SettingPolicy, Values: "default (flag in observe, ask in enforce) / ask / deny", Default: "default", NodeHome: "Code security"},
+		{Key: "security.deps.provenance", Class: SettingPolicy, Values: "flag / off", Default: "flag", NodeHome: "Code security"},
 		{Key: "security.scanning.quick_scan_budget_s", Class: SettingPolicy, Values: "2 / 5 / 10 / 30", Default: "2", NodeHome: "Code security"},
 		{Key: "security.scanning.max_scan_staleness_min", Class: SettingPolicy, Values: "0 (off) / 1440 / 240 / 60 / 30", Default: "0 (off)", NodeHome: "Code security"},
 		{Key: "security.scanning.min_blocking_severity", Class: SettingPolicy, Values: "high / medium / low", Default: "high", NodeHome: "Code security"},
@@ -460,11 +626,21 @@ func SecuritySettings() []SecuritySetting {
 		{Key: "security.scan.opengrep.schedule_hours", Class: SettingLocal, Values: "0 (off) / 24 / 168", Default: "0 (off)", NodeHome: "Code security"},
 		{Key: "security.scan.opengrep.pause_on_battery", Class: SettingLocal, Values: "On / Off", Default: "On", NodeHome: "Code security"},
 		{Key: "security.scan.opengrep.feed", Class: SettingLocal, Values: "On / Off", Default: "On (an individual node; a managed node uses its org mirror)", NodeHome: "Code security"},
+		{Key: "security.scan.opengrep.taint_pass", Class: SettingLocal, Values: "auto / off", Default: "auto (full scans only, while security.scan.opengrep is selected and Opengrep is installed)", NodeHome: "Code security"},
+		{Key: "security.scan.opengrep.taint_pass_budget_seconds", Class: SettingLocal, Values: "0 (scaled) / 30 to 3600", Default: "0 (scaled, 60 s to 900 s)", NodeHome: "Code security"},
+		{Key: "security.scan.opengrep.taint_pass_jobs", Class: SettingLocal, Values: "0 (2) / 1 to 8", Default: "0 (2)", NodeHome: "Code security"},
+		{Key: "security.scan.opengrep.taint_pass_memory_mib", Class: SettingLocal, Values: "0 (2048) / 512 to 8192", Default: "0 (2048)", NodeHome: "Code security"},
+		// The Go source check's caps (3b-src, security_reach.go): shown on the
+		// Scanners card's Go source check row, set in the settings editor or
+		// with `observer config set` (the developer's; R-165).
+		{Key: "security.reach.go.source_memory_mib", Class: SettingLocal, Values: "0 (12288) / 512 to 65536", Default: "0 (12288; GOMEMLIMIT at 90 %)", NodeHome: "Code security > Scanners"},
+		{Key: "security.reach.go.source_timeout_seconds", Class: SettingLocal, Values: "0 (1200) / 60 to 7200", Default: "0 (1200 s per go.mod)", NodeHome: "Code security > Scanners"},
+		{Key: "security.reach.go.source_max_modules", Class: SettingLocal, Values: "0 (16) / 1 to 64", Default: "0 (16 go.mod files)", NodeHome: "Code security > Scanners"},
 		{Key: "security.feedback.after_write", Class: SettingPolicy, Values: "On / Off", Default: "On (acts only while security.feedback is selected, which is off by default)", NodeHome: "Code security"},
 		// The one share key outside [security] (plan 6.5 "Share findings with
 		// the org", lane SEC-E2): local only, never raised remotely; a
 		// managed node follows the managed pull's finding_share instead. Its
 		// picker is on the Privacy page (lane SEC-H2).
-		{Key: "org_client.share.security", Class: SettingPolicy, Values: "Off / Posture / Findings", Default: "Off", NodeHome: "Privacy"},
-	}, iacSecuritySettings()...) // lane GATES-SEC (security_iac.go)
+		{Key: "org_client.share.security", Class: SettingPolicy, Values: "Off / Posture / Findings", Default: "Posture", NodeHome: "Privacy"},
+	}, slices.Concat(iacSecuritySettings(), imageSecuritySettings(), licenseSecuritySettings(), assessmentsSecuritySettings())...) // lanes GATES-SEC (security_iac.go), OS-2 T (security_image.go), licences (security_licenses.go) and assessments (security_assess.go)
 }

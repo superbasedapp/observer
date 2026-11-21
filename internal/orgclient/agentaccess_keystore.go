@@ -118,6 +118,10 @@ func OpenAgentAccessKeyStoreIn(service, fallbackDir string, logger *slog.Logger)
 		return nil, fmt.Errorf("%w: file fallback: %w", ErrAgentAccessKeychainUnavailable, err)
 	}
 	st.useFile = true
+	if !keystore.KeychainChosen(service) {
+		// The file store is this machine's choice (KEYSTORE-LINUX-1): no WARN.
+		return st, nil
+	}
 	if _, err := os.Stat(sentinel); err != nil {
 		logger.Warn(
 			"agent-access key: OS keychain unavailable, falling back to 0600 file store",

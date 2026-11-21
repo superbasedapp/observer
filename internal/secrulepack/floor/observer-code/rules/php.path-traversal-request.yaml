@@ -1,0 +1,84 @@
+rules:
+  - id: php.path-traversal-request
+    languages: [php]
+    severity: WARNING
+    message: A file path built from web request input is opened, included or sent, so a caller can reach files outside the intended directory with ../ (or include a file that runs as PHP); take basename() or check the real path stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: basename(...)
+      # A digest of the input is hex, never a path.
+      - pattern: sha1(...)
+      - pattern: md5(...)
+      - pattern: hash(...)
+      - pattern: crc32(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: include $P;
+              - pattern: include_once $P;
+              - pattern: require $P;
+              - pattern: require_once $P;
+              - patterns:
+                  - pattern: $F($P, ...)
+                  - metavariable-regex:
+                      metavariable: $F
+                      regex: ^(file_get_contents|file_put_contents|fopen|file|readfile|unlink|copy|rename|mkdir|rmdir|opendir|scandir|dir|glob|parse_ini_file|highlight_file|show_source|simplexml_load_file|touch|chmod)$
+              - pattern: move_uploaded_file($TMP, $P)
+              - pattern: new SplFileObject($P, ...)
+              - pattern: new BinaryFileResponse($P, ...)
+              - pattern: response()->download($P, ...)
+              - pattern: response()->file($P, ...)
+              - patterns:
+                  - pattern: Storage::$OP($P, ...)
+                  - metavariable-regex:
+                      metavariable: $OP
+                      regex: ^(get|put|delete|download|readStream|writeStream|copy|move|append|prepend)$
+          # The request body stream itself (a source, not a path).
+          - metavariable-pattern:
+              metavariable: $P
+              patterns:
+                - pattern-not-regex: ^["']php://
+          - focus-metavariable: $P

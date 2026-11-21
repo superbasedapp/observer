@@ -42,11 +42,11 @@ func seedCoOwnedFixture(t *testing.T) (s *Server, projectID int64) {
 	}
 	edit := func(sess, file, oldS, newS, eventID string, ts time.Time) models.ToolEvent {
 		return ev(sess, models.ActionEditFile, root+"/"+file,
-			`{"file_path":"`+root+`/`+file+`","old_string":"`+oldS+`","new_string":"`+newS+`"}`, eventID, ts)
+			editInputJSON(t, root+"/"+file, oldS, newS), eventID, ts)
 	}
 	events := []models.ToolEvent{
 		ev("sBig", models.ActionUserPrompt, "build the big thing", "build the big thing", "pBig", base),
-		edit("sBig", "big.go", "x := 1", `// why x\nx := 2\ny := 3\nz := 4`, "eBig", base.Add(time.Minute)),
+		edit("sBig", "big.go", "x := 1", "// why x\nx := 2\ny := 3\nz := 4", "eBig", base.Add(time.Minute)),
 		ev("sSmall", models.ActionUserPrompt, "small tweak", "small tweak", "pSmall", base.Add(5*time.Minute)),
 		edit("sSmall", "small.go", "s := 1", "s := 2", "eSmall", base.Add(6*time.Minute)),
 		ev("sIdle", models.ActionUserPrompt, "explore only", "explore only", "pIdle", base.Add(7*time.Minute)),
@@ -77,6 +77,21 @@ func seedCoOwnedFixture(t *testing.T) (s *Server, projectID int64) {
 		t.Fatalf("SetCommitScanState: %v", err)
 	}
 	return s, projectID
+}
+
+// editInputJSON renders an Edit tool's raw input the way a real transcript
+// carries it: JSON-encoded, so the backslashes of a Windows t.TempDir()
+// path are escaped. Splicing the path into a JSON literal by string
+// concatenation yields invalid JSON on Windows (a bare `\U` is a bad
+// escape), and the LOC extractor then counts the whole body as one
+// unparsed line.
+func editInputJSON(t *testing.T, filePath, oldS, newS string) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"file_path": filePath, "old_string": oldS, "new_string": newS})
+	if err != nil {
+		t.Fatalf("editInputJSON: %v", err)
+	}
+	return string(b)
 }
 
 func getSessionCommits(t *testing.T, s *Server, sessionID string) (int, apiSessionCommitsResponse) {

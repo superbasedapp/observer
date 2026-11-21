@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "event_id": "event_synth_0004",
+      "source": "user",
+      "message": "Thanks, please also add a regression test.",
+      "user_id": "user_synth0001",
+      "username": "ada",
+      "created_at": 1793353140
+    }
+  ],
+  "has_next_page": false,
+  "end_cursor": null
+}

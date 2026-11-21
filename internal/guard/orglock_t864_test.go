@@ -46,7 +46,7 @@ func TestOrgBundleDeletionFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("guard.New: %v", err)
 			}
-			g.SetApprovalLookup(func(string, string, string) bool { return true })
+			g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 			av, _ := g.EvaluateHook(rmRfEvent())
 			if av.Verdict.Decision != tc.wantDecision {
 				t.Fatalf("rm -rf / = %v (%s), want %v (issues %v)", av.Verdict.Decision, av.Verdict.Reason, tc.wantDecision, g.LoadIssues())

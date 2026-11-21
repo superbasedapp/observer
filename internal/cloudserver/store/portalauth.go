@@ -13,8 +13,12 @@ import (
 // short: an auth transaction only has to survive one AuthKit round-trip, and a
 // step-up authorization only has to survive the user clicking "confirm".
 const (
-	// DefaultAuthTransactionTTL bounds the OAuth leg (plan: ≤10 min).
-	DefaultAuthTransactionTTL = 10 * time.Minute
+	// DefaultAuthTransactionTTL bounds the OAuth leg. It was 10 minutes (plan
+	// §3 W1); a sign-up with email verification (find the code, come back) runs
+	// past that, so it is 30 (L-142). The state is still single-use, bound to
+	// its cookie and PKCE-protected; the window only decides how long a
+	// started sign-in may take.
+	DefaultAuthTransactionTTL = 30 * time.Minute
 	// DefaultStepUpTTL bounds a minted step-up authorization (plan: ≤5 min).
 	DefaultStepUpTTL = 5 * time.Minute
 	// authTransactionSweepBatch bounds one opportunistic expired-row delete so a
@@ -59,8 +63,14 @@ type AuthTransactionInput struct {
 	ReturnTo     string // same-origin path, validated by the caller; may be ""
 	SessionID    string // step-up only
 	AccountID    string // step-up only
-	TTL          time.Duration
-	Now          time.Time
+	// ForceReauth records that the authorize request sent the provider
+	// prompt=login and max_age=0 (a step-up always; a login when the platform
+	// OIDC issuer asked for a fresh sign-in). It is kept server-side so the
+	// callback, not the browser, decides whether the sign-in it completes was
+	// a fresh authentication (store.WithFreshAuthentication).
+	ForceReauth bool
+	TTL         time.Duration
+	Now         time.Time
 }
 
 // AuthTransaction is a consumed OAuth transaction: everything the callback
@@ -76,7 +86,10 @@ type AuthTransaction struct {
 	RedirectURI  string
 	NonceHash    string
 	PKCEVerifier string
-	ExpiresAt    time.Time
+	// ForceReauth is AuthTransactionInput.ForceReauth as recorded at start
+	// (false on a transaction minted before cloud migration 0083).
+	ForceReauth bool
+	ExpiresAt   time.Time
 }
 
 // CreateAuthTransaction mints a single-use pre-auth transaction row. It runs on
@@ -129,12 +142,12 @@ func (s *Store) CreateAuthTransaction(ctx context.Context, in AuthTransactionInp
 			ctx,
 			`INSERT INTO auth_transactions
 			   (state_hash, pkce_verifier_enc, nonce_hash, redirect_uri, purpose,
-			    action, return_to, session_id, account_id, created_at, expires_at)
+			    action, return_to, session_id, account_id, created_at, expires_at, force_reauth)
 			 VALUES ($1, $2, $3, $4, $5,
-			         nullif($6, ''), nullif($7, ''), nullif($8, '')::uuid, nullif($9, '')::uuid, $10, $11)
+			         nullif($6, ''), nullif($7, ''), nullif($8, '')::uuid, nullif($9, '')::uuid, $10, $11, $12)
 			 RETURNING txn_id::text`,
 			in.StateHash, sealed, in.NonceHash, in.RedirectURI, in.Purpose,
-			in.Action, in.ReturnTo, in.SessionID, in.AccountID, now, now.Add(ttl),
+			in.Action, in.ReturnTo, in.SessionID, in.AccountID, now, now.Add(ttl), in.ForceReauth,
 		).Scan(&txnID)
 	})
 	if err != nil {
@@ -166,11 +179,11 @@ func (s *Store) ConsumeAuthTransaction(ctx context.Context, stateHash string, no
 			  WHERE state_hash = $1 AND consumed_at IS NULL AND expires_at > $2
 			  RETURNING txn_id::text, purpose, action, return_to,
 			            session_id::text, account_id::text, redirect_uri,
-			            nonce_hash, pkce_verifier_enc, expires_at`,
+			            nonce_hash, pkce_verifier_enc, expires_at, force_reauth`,
 			stateHash, now).Scan(
 			&out.ID, &out.Purpose, &action, &returnTo,
 			&sessionID, &accountID, &out.RedirectURI,
-			&out.NonceHash, &sealed, &out.ExpiresAt,
+			&out.NonceHash, &sealed, &out.ExpiresAt, &out.ForceReauth,
 		)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return ErrNotFound

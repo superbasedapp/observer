@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 func TestCheckProcessObservability_DisabledIsOK(t *testing.T) {
@@ -17,6 +18,11 @@ func TestCheckProcessObservability_DisabledIsOK(t *testing.T) {
 	c := checkProcessObservability(context.Background(), database, cfg)
 	if c.Status != StatusOK {
 		t.Errorf("disabled feature should be OK, got %s (%q)", c.Status, c.Message)
+	}
+	// The opt-in is a link to Settings > Process capture.
+	assertSpelled(t, c, remedy.OpenSettings)
+	if c.Remediations[0].Tool != "process" {
+		t.Errorf("remediation %+v, want the process section", c.Remediations)
 	}
 }
 
@@ -27,6 +33,19 @@ func TestCheckProcessObservability_EnabledNoRowsWarns(t *testing.T) {
 	c := checkProcessObservability(context.Background(), database, cfg)
 	if c.Status != StatusWarn {
 		t.Errorf("enabled-but-empty should WARN (verify backend availability), got %s (%q)", c.Status, c.Message)
+	}
+}
+
+// TestCheckProcessObservability_NoDaemonHealthOffersRestart: enabled with
+// no daemon health published, the fix is a restart (a daemon started before
+// capture was turned on), linked to Settings > Health.
+func TestCheckProcessObservability_NoDaemonHealthOffersRestart(t *testing.T) {
+	cfg, database, _, _ := newTestEnv(t)
+	cfg.Observer.Process.Enabled = true
+	c := checkProcessObservability(context.Background(), database, cfg)
+	assertSpelled(t, c, remedy.RestartDaemon)
+	if !strings.Contains(strings.Join(c.Details, "\n"), "Restart daemon") {
+		t.Errorf("details do not name the restart control:\n%s", strings.Join(c.Details, "\n"))
 	}
 }
 

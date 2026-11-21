@@ -166,6 +166,19 @@ type StreamStats struct {
 	// FirstSequence / LastSequence bound the retained range (0 when empty).
 	FirstSequence uint64
 	LastSequence  uint64
+	// CeilingSequence is the stream's last sequence read AGAIN, after the
+	// consumer states (0 when the engine did not re-read it). A consumer whose
+	// position is above max(LastSequence, CeilingSequence) cannot be explained
+	// by a record published between the two reads: the stream was recreated
+	// or reset under it (see telemetrylog.AheadOfStream). Additive.
+	CeilingSequence uint64
+	// CeilingUnknown is true when the engine re-reads the ceiling but every
+	// attempt failed (R-A05). The ahead check is then skipped for this read
+	// (AheadOf reports nothing) and the trim holds instead of faulting: a
+	// consumer that acked a record published between the two reads must never
+	// be reported ahead. Additive: an engine that does not re-read leaves it
+	// false and its ceiling is the first read.
+	CeilingUnknown bool
 	// MaxBytes is the stream's configured storage cap, the disk safety valve
 	// at which Publish answers ErrFull: 0 when the engine did not report one,
 	// -1 when the stream is unlimited (T-823). Additive: an adapter that does
@@ -189,6 +202,10 @@ type ConsumerStats struct {
 	// this consumer was ever delivered has been acked (or terminated). 0 when
 	// the engine has no such notion or nothing was acked yet (T-823).
 	AckFloor uint64
+	// Delivered is the highest stream sequence delivered to this consumer (0
+	// when the engine has no such notion or nothing was delivered). Additive:
+	// it is how a consumer AHEAD of the stream is told apart (F01).
+	Delivered uint64
 	// OldestPendingAt is the publish time of the oldest record this consumer
 	// has not yet acked (the freshness edge, T-813). Zero when nothing is
 	// pending or the engine cannot report it.
@@ -214,6 +231,11 @@ type Report struct {
 	StatsUnavailable bool `json:"stats_unavailable,omitempty"`
 	// Detail is a one-line human explanation (the error text when unhealthy).
 	Detail string `json:"detail,omitempty"`
+	// Fault is set when the round trip succeeded but the log is in a state
+	// that loses or never applies records: today a durable consumer AHEAD of
+	// the stream (F01, telemetrylog.AheadOfStream). /readyz fails on it.
+	// Empty when the log is sound. Additive.
+	Fault string `json:"fault,omitempty"`
 }
 
 // Log is the durable log every collector publishes into and every consumer

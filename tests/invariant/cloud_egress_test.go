@@ -439,3 +439,55 @@ func TestGatewayBootstrapLaneWorksWithoutGrants(t *testing.T) {
 		t.Fatalf("bootstrap logout reached the server %d time(s), want 1", logouts)
 	}
 }
+
+// TestGatewayDiscoveryRidesTheBootstrapLane pins D-IND-2 (ledger row IND-2):
+// `observer connect`'s organization discovery (GET /v1/orgs, POST
+// /v1/orgs/personal:ensure) is on the bootstrap lane, so it works with zero
+// consent grants, exactly like sign-in, and reaches only those two paths.
+// The feature lane is unchanged: TestGatewayMakesNoRequestBeforeConsent still
+// pins that no grant means no feature request.
+func TestGatewayDiscoveryRidesTheBootstrapLane(t *testing.T) {
+	var hits []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/orgs", func(w http.ResponseWriter, _ *http.Request) {
+		hits = append(hits, "list")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orgs":[]}`))
+	})
+	mux.HandleFunc("POST /v1/orgs/personal:ensure", func(w http.ResponseWriter, _ *http.Request) {
+		hits = append(hits, "ensure")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"org":{"org_id":"o1","slug":"u-abcdefgh","kind":"personal","status":"active",` +
+			`"tenancy":"individual","server_url":"https://u-abcdefgh.example.test"},"created":false}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("discovery reached an unexpected path: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected", http.StatusTeapot)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cred := &memCloudCred{}
+	gw, err := cloudgateway.Open(cloudgateway.Options{
+		Grants:     &fakeCloudGrants{}, // zero grants, deliberately
+		Cred:       cred,
+		BaseURL:    srv.URL,
+		MaxRetries: 0,
+		Backoff:    func(int) time.Duration { return 0 },
+	})
+	if err != nil {
+		t.Fatalf("open gateway: %v", err)
+	}
+	if err := cred.SaveAPIToken("tok-1"); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	if _, err := gw.BootstrapListOrgs(context.Background()); err != nil {
+		t.Fatalf("BootstrapListOrgs must work without any consent grant: %v", err)
+	}
+	if _, err := gw.BootstrapEnsurePersonalOrg(context.Background()); err != nil {
+		t.Fatalf("BootstrapEnsurePersonalOrg must work without any consent grant: %v", err)
+	}
+	if strings.Join(hits, ",") != "list,ensure" {
+		t.Fatalf("discovery hits = %v, want [list ensure]", hits)
+	}
+}

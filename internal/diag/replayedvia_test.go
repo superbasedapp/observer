@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // TestReplayGatesFromRegistry: the walk finds the gates that ride another
@@ -75,6 +76,12 @@ func TestReplayedViaChecks(t *testing.T) {
 		r := rows[0]
 		if r.Name != "cortex-code.hooks.replayed_via" || r.Status != tc.wantStatus || !strings.Contains(r.Message, tc.wantText) {
 			t.Errorf("%s: %+v, want %s with %q", tc.name, r, tc.wantStatus, tc.wantText)
+		}
+		if tc.name == "host not registered" {
+			assertSpelled(t, r, remedy.InitTool)
+			if r.Remediations[0].Tool != "claude-code" {
+				t.Errorf("%s: remediation %+v, want the host claude-code", tc.name, r.Remediations)
+			}
 		}
 	}
 }

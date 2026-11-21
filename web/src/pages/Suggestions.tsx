@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  Button,
   HeroStat,
   PageHeader,
   Pill,
   SegmentedControl,
   Tooltip,
 } from "@/components/primitives";
+import { pushToast } from "@/components/Toast";
+import { fetchJSON } from "@/lib/api";
+import { writeClipboard } from "@/lib/clipboard";
+import { adviseDigest, DIGEST_TOP } from "@/lib/adviseDigest";
 import { Pagination } from "@/components/DataTable";
 import { ChartState } from "@/components/ChartState";
 import { HelpInd } from "@/components/HelpInd";
@@ -75,6 +80,34 @@ export function SuggestionsPage() {
   const suggestions = rep?.suggestions ?? [];
   const totalCount = rep?.total_count ?? 0;
 
+  // Copy digest (lane L5 B-R4): the `observer advise --digest` markdown,
+  // built from the first page of the same query (top suggestions by
+  // savings, totals and the per-category rollup over the filtered set).
+  const [copying, setCopying] = useState(false);
+  async function copyDigest() {
+    setCopying(true);
+    try {
+      const first = await fetchJSON<AdvisorListResponse>("/api/suggestions", {
+        ...winParams,
+        project: projectParam,
+        tool: toolParam,
+        model: modelParam,
+        category: category === "all" ? undefined : category,
+        page: 1,
+        limit: DIGEST_TOP,
+      });
+      const res = await writeClipboard(adviseDigest(first, (usd) => fmtUSD(usd)));
+      pushToast(
+        res === "failed" ? "Could not reach the clipboard from this page." : "Digest copied as markdown.",
+        res === "failed" ? "warn" : "success",
+      );
+    } catch (e) {
+      pushToast(`Could not build the digest: ${e instanceof Error ? e.message : String(e)}`, "danger");
+    } finally {
+      setCopying(false);
+    }
+  }
+
   return (
     <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
@@ -85,6 +118,15 @@ export function SuggestionsPage() {
           "Prescriptive recommendations computed locally from your captured activity.",
         )}
         helpId="tab.suggestions"
+        right={
+          dollarsShown() ? (
+            <Tooltip content="Copy a markdown rollup of these suggestions: avoidable spend, savings by category and the top 10 with their nudges (the same digest as observer advise --digest, for this window and filter).">
+              <Button size="sm" variant="secondary" onClick={() => void copyDigest()} loading={copying} disabled={!rep}>
+                Copy digest
+              </Button>
+            </Tooltip>
+          ) : undefined
+        }
       />
 
       {/* Camera-ready pass (growth-review §4): "avoidable spend" is the

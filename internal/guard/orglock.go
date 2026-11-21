@@ -35,15 +35,23 @@ func (g *Guard) applyOrgLock(opts Options) {
 		// bundle and the lock deleted together).
 		g.orgBundleExpected = true
 	}
+	// The tenancy rides every lock state that resolved one (FU-235). A
+	// valid lock carries the daemon's tenancy; a TAMPERED lock carries one
+	// only when the daemon's own verified posture vouches for an individual
+	// node (config guardFloorFor), and before this fix that reading was
+	// dropped here, so a hook on an individual node read its tenancy as
+	// unresolved and locked EVERY rule while the daemon repaired the lock.
+	// Both sources are MAC'd daemon records; the conservative unresolved
+	// reading stays for a lock that resolved no tenancy.
+	if opts.ManagedTenancy == nil && lk.TenancyKnown {
+		managed := lk.Managed
+		g.SetManagedTenancy(func() bool { return managed })
+	}
 	if lk.State != "valid" {
 		return
 	}
 	if lk.BundleExpected || lk.Bundle != "" {
 		g.orgBundleExpected = true
-	}
-	if opts.ManagedTenancy == nil && lk.TenancyKnown {
-		managed := lk.Managed
-		g.SetManagedTenancy(func() bool { return managed })
 	}
 	if g.orgKeyPinHash == "" {
 		g.orgKeyPinHash = lk.KeyPinHash

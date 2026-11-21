@@ -54,14 +54,24 @@ type Notice struct {
 	CrossedAt   time.Time `json:"crossed_at"`
 	Level       string    `json:"level"`
 	Message     string    `json:"message"`
+	// Effect / Blocked / DeniesOnLocal say what the cap does on THIS
+	// machine (budgetwarn.EffectOf): a file from an older daemon has none,
+	// and a reader then must not claim a block it cannot see.
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // Window mirrors budgetwarn.WindowStatus on disk.
 type Window struct {
-	Window      string  `json:"window"`
-	Unit        string  `json:"unit"`
-	Subject     string  `json:"subject,omitempty"` // "tool:<id>" / "model:<id>"; empty = whole caller
-	Period      string  `json:"period"`
+	Window  string `json:"window"`
+	Unit    string `json:"unit"`
+	Subject string `json:"subject,omitempty"` // "tool:<id>" / "model:<id>"; empty = whole caller
+	Period  string `json:"period"`
+	// Timezone is the IANA zone Period is named in (the cap's own calendar),
+	// written as "UTC" for a UTC cap. Empty means a file from a daemon that
+	// predates the field: a reader then has to assume UTC and say so.
+	Timezone    string  `json:"timezone,omitempty"`
 	Cap         float64 `json:"cap"`
 	Spent       float64 `json:"spent"`
 	Ratio       float64 `json:"ratio"`
@@ -69,6 +79,10 @@ type Window struct {
 	Enforcement string  `json:"enforcement"`
 	Level       string  `json:"level"`
 	Crossed     float64 `json:"crossed"`
+	// Effect / Blocked / DeniesOnLocal: see Notice.
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // Notified mirrors one budgetwarn.State entry.
@@ -93,6 +107,24 @@ type File struct {
 	// State is the daemon's persisted ladder memory (which rung each window
 	// already announced this period), so a restart does not re-announce.
 	State map[string]Notified `json:"state,omitempty"`
+	// Fetch is the last pull of this machine's organization budget (GET
+	// /api/agent/budget), so the local dashboard can say when it fails
+	// (budget enforce consistency, 2026-11-19: a failed pull was visible
+	// nowhere on the machine). nil from an older daemon or a machine with no
+	// organization budget rail.
+	Fetch *Fetch `json:"fetch,omitempty"`
+}
+
+// Fetch is one machine's organization budget pull, as the daemon last saw it.
+type Fetch struct {
+	// State is the closed orgcontract.BudgetFetch* value.
+	State string `json:"state"`
+	// LastOKAt is the last pull that got a verified answer; zero when none
+	// has in this daemon's life.
+	LastOKAt time.Time `json:"last_ok_at,omitempty"`
+	// FailingSince is when the current run of failed pulls began; zero while
+	// the pull works.
+	FailingSince time.Time `json:"failing_since,omitempty"`
 }
 
 // StatusPath returns the status file path beside dbPath ("" when dbPath is

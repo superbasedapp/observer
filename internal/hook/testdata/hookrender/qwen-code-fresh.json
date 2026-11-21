@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qwen-code PreToolUse --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qwen-code SessionStart --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qwen-code UserPromptSubmit --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ]
+  }
+}

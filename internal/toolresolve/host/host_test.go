@@ -15,9 +15,11 @@ import (
 
 // writeFakeShell writes an executable script at <dir>/<name> whose body is the
 // given shell code, and returns its path. filepath.Base(path) == name so
-// loginArgv routes it correctly.
+// loginArgv routes it correctly. It opens the test-binary login shell guard
+// for the test (allowFakeLoginShell): the shell it runs is this fake one.
 func writeFakeShell(t *testing.T, name, body string) string {
 	t.Helper()
+	allowFakeLoginShell(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {

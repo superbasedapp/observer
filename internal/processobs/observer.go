@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/proccapture"
 )
 
 // Backend is the OS event source. Implementations (linuxebpf / etw /
@@ -180,6 +182,12 @@ type Options struct {
 	// takes precedence. This field is for the case where the transport never
 	// became a backend at all.
 	TransportUnavailableReason string
+	// Capture is the process capture budget (docs/process-observability.md
+	// §11 "Capture budget"): the decision table that keeps, folds, tracks as
+	// a service, rolls up or drops each run before it reaches the sink. The
+	// zero value (Enabled false) is the pre-budget behaviour, byte for byte:
+	// every run snapshot goes to Sink.PersistRuns exactly as before.
+	Capture proccapture.Config
 }
 
 // Observer is the orchestrator: it drains the backend, enriches, attributes,
@@ -225,6 +233,11 @@ type Observer struct {
 	// in the project dir, so this is what extends process attribution to EVERY
 	// adapter. Read on the single Run goroutine; written by the refresher.
 	activeRoots atomic.Pointer[map[string]struct{}]
+
+	// capture is the drain-owned capture-budget state (nil when the budget is
+	// off) and captureOn the immutable flag the flusher reads.
+	capture   *captureState
+	captureOn bool
 }
 
 // DefaultMaxRetainedRuns is the default ceiling on runs held back across
@@ -368,6 +381,8 @@ func NewObserver(opts Options) *Observer {
 		lateSeed:             opts.LateSeed.withDefaults(),
 		now:                  opts.Now,
 		health:               newHealth(name, opts.NetworkAccounting, transport, transportUnavailable),
+		capture:              newCaptureState(opts.Capture),
+		captureOn:            opts.Capture.Enabled,
 	}
 }
 
@@ -541,8 +556,10 @@ func (o *Observer) Run(ctx context.Context) error {
 				// SnapshotForPersist (not *run) is the persist boundary: it
 				// downsamples the live-chart ring into a FRESH slice, so the
 				// stored JSON stays small and the batched copy can never be
-				// mutated by subsequent in-place ring refreshes.
-				batch = append(batch, o.attr.SnapshotForPersist(run))
+				// mutated by subsequent in-place ring refreshes. appendRun is the
+				// capture-budget seam (capture.go); with the budget off it is
+				// exactly that append.
+				batch = o.appendRun(batch, run, change)
 				if len(batch) >= o.batchSize {
 					handOff()
 				}
@@ -554,12 +571,17 @@ func (o *Observer) Run(ctx context.Context) error {
 			// lifecycle path uses, so the upgrade reaches the DB (and the
 			// dashboard's resource chart) on the very next flush.
 			for _, run := range o.lateSeedPass() {
-				batch = append(batch, o.attr.SnapshotForPersist(run))
+				batch = o.appendRun(batch, run, ChangeUpdated)
 				if len(batch) >= o.batchSize {
 					handOff()
 				}
 			}
 		case <-ticker.C:
+			// Bound the capture-budget maps on the same tick as the live-tree
+			// cap, and finalize runs it evicted while still provisional.
+			if o.capture != nil {
+				batch = append(batch, o.capture.prune(o, o.now())...)
+			}
 			if len(batch) == 0 {
 				// handOff would no-op, but the live-tree cap must not become
 				// contingent on capture volume — an idle box with a huge tree
@@ -668,7 +690,7 @@ func (o *Observer) flushPending(ctx context.Context, retained, incoming []Proces
 	pending = append(pending, incoming...)
 
 	flushStart := o.now()
-	if _, err := o.sink.PersistRuns(ctx, pending); err != nil {
+	if err := o.persistBatch(ctx, pending); err != nil {
 		retained = o.retainAfterSinkFailure(pending, err, final)
 	}
 	o.health.observeFlush(o.now().Sub(flushStart))
@@ -763,6 +785,9 @@ func (o *Observer) handleNetworkConnect(ctx context.Context, ev *RawEvent) {
 		return
 	}
 	run := o.attr.RunForEvent(*ev)
+	if run != nil {
+		o.markSideEffect(run.ProcessKey)
+	}
 	if run == nil || !run.Attributed() {
 		o.health.addDropped(DropUnattributed, 1)
 		return

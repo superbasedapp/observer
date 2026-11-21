@@ -1,0 +1,138 @@
+# Level "lockdown": strict, and nothing leaves or changes without a person.
+#
+# Network commands may reach only the hosts on [guard.network] allow_hosts
+# (loopback always passes; an empty list refuses every other host), writes
+# outside the project deny, package installs, pushes and database commands
+# ask, MCP servers must be approved, and every taint rule denies. Run agents
+# in a sandboxed terminal as well: these rules see the command line, the
+# sandbox sees every connection.
+
+name = "lockdown"
+kind = "level"
+title = "Lockdown"
+summary = "Strict plus: network only to [guard.network] allow_hosts, no writes outside the project, installs, pushes and database commands ask, only approved MCP servers, and taint rules deny."
+version = 1
+order = 50
+mode = "enforce"
+prompt_mode = "block"
+extends = "strict"
+inputs = ["guard.network.allow_hosts"]
+advice = [
+  "Run agents in a sandboxed terminal (Terminals > Settings > Sandbox isolation): these rules judge the hosts a command line names, the sandbox holds every connection to the allow list.",
+  "List the hosts agents may reach in [guard.network] allow_hosts (Settings > Guard > Network). With the list empty every non-loopback host is refused.",
+]
+
+[[override]]
+rule = "R-176"
+decision = "deny"
+enforce = true
+note = "a network command to a host not on [guard.network] allow_hosts"
+
+[[override]]
+rule = "R-177"
+decision = "deny"
+enforce = true
+note = "listeners as well as reverse shells"
+
+[[override]]
+rule = "R-179"
+decision = "deny"
+enforce = true
+note = "network scanners"
+
+[[override]]
+rule = "R-130"
+decision = "deny"
+enforce = true
+note = "cloud infrastructure destruction"
+
+[[override]]
+rule = "R-140"
+decision = "deny"
+enforce = true
+note = "publishing to a package registry"
+
+[[override]]
+rule = "R-124"
+decision = "deny"
+enforce = true
+note = "ORM and migration resets"
+
+[[override]]
+rule = "R-302"
+decision = "deny"
+enforce = true
+note = "a pinned MCP server's tools changed"
+
+[[override]]
+rule = "R-305"
+decision = "deny"
+enforce = true
+note = "a pinned MCP server's command or URL changed"
+
+[[override]]
+rule = "T-501"
+decision = "deny"
+enforce = true
+note = "shell command while the session carries injection-shaped untrusted content"
+
+[[override]]
+rule = "T-502"
+decision = "deny"
+enforce = true
+note = "write outside the project while the session carries untrusted content"
+
+[[override]]
+rule = "T-503"
+decision = "deny"
+enforce = true
+note = "git push while the session carries untrusted content"
+
+[[override]]
+rule = "T-504"
+decision = "deny"
+enforce = true
+note = "network command after the session read a secrets file"
+
+[[override]]
+rule = "T-505"
+decision = "deny"
+enforce = true
+note = "cross-server MCP flow after an unpinned server's result"
+
+# Writes outside the project deny (R-150's write row only asks; one rule ID
+# carries one decision, so the deny is its own rule).
+[[rule]]
+id = "RC-LCK-01"
+doc = "write outside the project root (lockdown level: denied)"
+advice = "Write inside the project root, or ask the developer to make the change."
+category = "boundary"
+severity = "high"
+decision = "deny"
+enforce = true
+[rule.match]
+sink = "out_of_project_write"
+
+# Every git push asks.
+[[rule]]
+id = "RC-LCK-02"
+doc = "git push (lockdown level: every push asks)"
+advice = "Ask the developer to review and push."
+category = "destructive"
+severity = "warn"
+decision = "ask"
+enforce = true
+[rule.match]
+sink = "git_push"
+
+# Every database command asks.
+[[rule]]
+id = "RC-LCK-03"
+doc = "database command (lockdown level: every database command asks)"
+advice = "Tell the developer which database and statement you need to run."
+category = "destructive"
+severity = "warn"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(psql|mysql|mariadb|sqlite3|sqlcmd|mongosh|mongo|redis-cli|cqlsh|clickhouse-client|clickhouse|duckdb|cockroach)(\s|$)'

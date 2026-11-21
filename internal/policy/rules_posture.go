@@ -92,7 +92,7 @@ func postureRules() []Rule {
 			AppliesTo: cfgScan, Match: matchPostureFinding(PostureFindingDialectDrift),
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "compiled native guard rules drifted from the effective policy",
-			Advice: "Run `observer guard compile --diff` to inspect the divergence, then `observer guard compile` to re-sync the client's native rules.",
+			Advice: "Inspect the divergence with Check for drift, then re-sync the client's native rules with Write native rules (Observer dashboard Security > Rules, Apply policy changes), or run `observer guard compile --diff` then `observer guard compile`.",
 		},
 		{
 			ID: "R-205", Category: CategoryPosture, Severity: SeverityHigh,

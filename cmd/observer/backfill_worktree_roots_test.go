@@ -39,6 +39,8 @@ func TestBackfillWorktreeRoots(t *testing.T) {
 	}
 	exec(`INSERT INTO actions (session_id, project_id, timestamp, action_type, tool) VALUES ('s-wt1', 2, ?, 'read_file', 'claude-code')`, at)
 	exec(`INSERT INTO api_turns (session_id, project_id, timestamp, provider, model, input_tokens, output_tokens) VALUES ('s-wt2', 2, ?, 'anthropic', 'm', 1, 1)`, at)
+	// A process run attributed while its session sat on the worktree row.
+	exec(`INSERT INTO process_runs (process_key, pid, session_id, project_id, attribution_source, attribution_confidence, started_at, last_seen_at) VALUES ('pk-wt1', 7, 's-wt1', 2, 'env_token', 'high', ?, ?)`, at, at)
 
 	count := func(q string, args ...any) int {
 		t.Helper()
@@ -77,6 +79,9 @@ func TestBackfillWorktreeRoots(t *testing.T) {
 	}
 	if n := count(`SELECT COUNT(*) FROM sessions WHERE project_id = 1`); n != 3 {
 		t.Errorf("main project holds %d sessions, want 3", n)
+	}
+	if n := count(`SELECT COUNT(*) FROM process_runs WHERE project_id = 1 AND session_id = 's-wt1'`); n != 1 {
+		t.Errorf("the worktree session's process run did not move with it (%d on the main project)", n)
 	}
 	if n := count(`SELECT COUNT(*) FROM actions WHERE project_id = 1`); n != 1 {
 		t.Errorf("main project holds %d actions, want 1", n)

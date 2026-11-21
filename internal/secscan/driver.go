@@ -237,6 +237,35 @@ type Coverage struct {
 	Notes []string `json:",omitempty"`
 	// Truncated reports that MaxFindings or MaxOutputBytes was reached.
 	Truncated bool
+	// Passes are the extra passes a run made beside its core pass (the
+	// Opengrep driver's intrafile taint pass on a full scan), each with its
+	// own status. Empty for a driver that makes none.
+	Passes []PassStatus `json:",omitempty"`
+}
+
+// PassStatus is one extra pass of a run: its name, its status (a closed
+// vocabulary the driver owns, for example completed, timed_out, failed or
+// skipped) and a closed reason, and counts only: no path, no engine text.
+// A pass never changes the core pass's outcome; what it merged is already
+// in the run's findings.
+type PassStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+	// Batches is how many target batches the pass planned, Merged how many
+	// finished with their canary reported and were merged.
+	Batches int `json:"batches,omitempty"`
+	Merged  int `json:"merged,omitempty"`
+	// Targets are the files the pass applies to; Covered those whose
+	// results it merged (Cached of them from its cache), Partial those the
+	// engine did not read in full.
+	Targets int `json:"targets,omitempty"`
+	Covered int `json:"covered,omitempty"`
+	Cached  int `json:"cached,omitempty"`
+	Partial int `json:"partial,omitempty"`
+	// BudgetMS is the pass's wall budget and TookMS its time, in ms.
+	BudgetMS int64 `json:"budget_ms,omitempty"`
+	TookMS   int64 `json:"took_ms,omitempty"`
 }
 
 // EngineIdentity names the engine that ran (section 4.4).

@@ -1,0 +1,3 @@
+{"items":[
+ {"id":"run-c1000000-0000-4000-8000-0000000000c1","agentId":"bc-5e1f0a2b-7c3d-4e5f-8a9b-0c1d2e3f4a03","status":"FINISHED","createdAt":"2026-10-15T10:58:01.000Z","updatedAt":"2026-10-15T11:22:31.900Z","durationMs":1470900,"git":{"branches":[{"repoUrl":"https://github.com/acme-dev/gadgets","branch":"cursor/fix-flaky-test-9f8e"}]}}
+]}

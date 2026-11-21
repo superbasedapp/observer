@@ -17,9 +17,13 @@ const cases: Array<{ name: string; over: Partial<ToolPreflight>; want: string[] 
   {
     name: "stale config override",
     over: { config_override: "missing", verdict: "not_found" },
-    want: ["[launch.tools.codex].path is set, but nothing is there. Fix the path or remove it."],
+    want: ["Nothing is at the binary path set for this tool. Change or remove it in Settings > Session attach (Launch binary paths)."],
   },
-  { name: "config override used", over: { config_override: "used" }, want: ["Uses the path set in [launch.tools.codex].path."] },
+  {
+    name: "config override used",
+    over: { config_override: "used" },
+    want: ["Uses the binary path set in Settings > Session attach (Launch binary paths)."],
+  },
   {
     name: "missing interpreter",
     over: { missing_interpreter: "node" },
@@ -33,7 +37,7 @@ const cases: Array<{ name: string; over: Partial<ToolPreflight>; want: string[] 
   {
     name: "unverified packaged app",
     over: { install_unverified: true },
-    want: ["SuperBased can't confirm it's installed. The launch will tell you if it isn't."],
+    want: ["superbased can't confirm it's installed. The launch will tell you if it isn't."],
   },
 ];
 cases.push(

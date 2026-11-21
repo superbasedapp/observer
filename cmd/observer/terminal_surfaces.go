@@ -1,6 +1,11 @@
 package main
 
-import "github.com/marmutapp/superbased-observer/internal/dashapi"
+import (
+	"context"
+	"net/netip"
+
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
+)
 
 // terminal_surfaces.go is the core view of the terminal stack (lane MP-L1K,
 // T-715): what `observer start` and `observer dashboard` read from it, typed
@@ -49,6 +54,18 @@ type terminalSurfaces struct {
 	// same disabled_by_config verdict while staying able to pick a later
 	// save up without a restart.
 	sandboxProber dashapi.SandboxProber
+	// loopbackCallerGate is the dashboard's caller check
+	// (dashapi.Options.LoopbackCallerGate, ledger LAUNCH-1); nil when no
+	// terminal stack was built (no box can be live then).
+	loopbackCallerGate func(ctx context.Context, client, server netip.AddrPort, mutating bool) (string, bool)
+	// launchCaller resolves who started a dashboard launch
+	// (dashapi.Options.LaunchCaller, lane cli-2); nil when no terminal
+	// stack was built.
+	launchCaller func(ctx context.Context, client, server netip.AddrPort) (string, string)
+	// pendingLaunches is the daemon's store of launches held for a human
+	// (dashapi.Options.PendingLaunches, lane cli-2 fixes-1); nil when no
+	// terminal stack was built.
+	pendingLaunches dashapi.PendingLaunches
 	// toolInstalls is the dashboard-install record + uninstall seam (nil
 	// interface unless the launch manager is wired AND a DB exists).
 	toolInstalls dashapi.ToolInstallLedger

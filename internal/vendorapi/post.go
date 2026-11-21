@@ -27,6 +27,11 @@ const (
 	PostEpochRangePage PostKind = "epoch_range_page"
 	// PostPage is {"page", "pageSize"}.
 	PostPage PostKind = "page"
+	// PostEpochRangePageHosting is {"startDate", "endDate", "page",
+	// "pageSize", "hostingType"}: an EpochRangePage narrowed to one hosting
+	// type from a closed table (cloud agents arc, lane CA-C8: Cursor's
+	// filtered-usage-events read for cloud-hosted agents only).
+	PostEpochRangePageHosting PostKind = "epoch_range_page_hosting"
 	// PostUserSpendLimitSet is {"userEmail", "spendLimitDollars"} with a
 	// whole, non-negative dollar amount: the one vendor WRITE body (lane
 	// ENTAPI-L14, T-617, Cursor "Set User Spend Limit"). It is never a read
@@ -86,6 +91,25 @@ type EpochRangePage struct {
 	PageSize    int
 }
 
+// EpochRangePageHosting is an EpochRangePage plus one hosting type from the
+// closed hostingTypes table (lane CA-C8). The vendor ANDs the filter with the
+// range, so the body only narrows what an EpochRangePage would read.
+type EpochRangePageHosting struct {
+	StartMillis int64
+	EndMillis   int64
+	Page        int
+	PageSize    int
+	HostingType string
+}
+
+// HostingCloud is Cursor's hostingType filter value for cloud-hosted agents
+// (Admin API "Get Usage Events Data": hostingType CLOUD or SELF_HOSTED).
+const HostingCloud = "CLOUD"
+
+// hostingTypes is the closed table of hosting types a body may name. Only
+// CLOUD is reviewed: the one read lane CA-C8 needs.
+var hostingTypes = map[string]bool{HostingCloud: true}
+
 // PageQuery is a 1-based page and a page size alone.
 type PageQuery struct {
 	Page     int
@@ -127,6 +151,9 @@ func (EpochRangePage) PostKind() PostKind { return PostEpochRangePage }
 // PostKind implements PostBody.
 func (PageQuery) PostKind() PostKind { return PostPage }
 
+// PostKind implements PostBody.
+func (EpochRangePageHosting) PostKind() PostKind { return PostEpochRangePageHosting }
+
 func validRange(start, end int64) bool { return start > 0 && end >= start }
 
 func validPage(page, size int) bool { return page >= 1 && size >= 1 && size <= MaxPostPageSize }
@@ -151,6 +178,19 @@ func (b EpochRangePage) encode() ([]byte, error) {
 		Page      int   `json:"page"`
 		PageSize  int   `json:"pageSize"`
 	}{b.StartMillis, b.EndMillis, b.Page, b.PageSize})
+}
+
+func (b EpochRangePageHosting) encode() ([]byte, error) {
+	if !validRange(b.StartMillis, b.EndMillis) || !validPage(b.Page, b.PageSize) || !hostingTypes[b.HostingType] {
+		return nil, ErrBadPostBody
+	}
+	return json.Marshal(struct {
+		StartDate   int64  `json:"startDate"`
+		EndDate     int64  `json:"endDate"`
+		Page        int    `json:"page"`
+		PageSize    int    `json:"pageSize"`
+		HostingType string `json:"hostingType"`
+	}{b.StartMillis, b.EndMillis, b.Page, b.PageSize, b.HostingType})
 }
 
 func (b PageQuery) encode() ([]byte, error) {

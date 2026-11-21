@@ -65,6 +65,11 @@ type Turn struct {
 	SourceTag string
 	Provider  string
 	SessionID string
+	// Agent is the developer's own agent the call belongs to (normalized
+	// name); empty except on the own-agent row (Vendor.ClaimByAgent). The
+	// caller makes the session row through the own-agent seam when it is
+	// set, so the session carries the same surface the proxy path stamps.
+	Agent string
 	// RequestID is the vendor's per-call id when the export carries one,
 	// otherwise a deterministic id derived from the record (RequestSynthetic
 	// true), so an at-least-once redelivery of the same record upserts the
@@ -77,9 +82,12 @@ type Turn struct {
 	OutputTokens     int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
-	ReasoningTokens  int64
-	CostUSD          float64
-	DurationMS       int64
+	// CacheWrite1hTokens is the 1-hour-TTL part of CacheWriteTokens (a
+	// subset, Fields.CacheWrite1h); 0 when the vendor does not split it.
+	CacheWrite1hTokens int64
+	ReasoningTokens    int64
+	CostUSD            float64
+	DurationMS         int64
 	// TimeToFirstTokenMS is the vendor's own time-to-first-token for the
 	// call (Fields.TTFT); 0 when the export carries none. It lands on
 	// api_turns.time_to_first_token_ms, an enrichment column the merge
@@ -113,8 +121,10 @@ type Member struct {
 
 // ToolCall is one tool invocation reported by the export.
 type ToolCall struct {
-	Tool         string
-	SessionID    string
+	Tool      string
+	SessionID string
+	// Agent: see Turn.Agent.
+	Agent        string
 	CallID       string
 	Name         string
 	Success      bool
@@ -126,9 +136,11 @@ type ToolCall struct {
 // Content is one captured content body. Content is the RAW text as emitted;
 // the caller scrubs, bounds and hashes it before storage.
 type Content struct {
-	Tool         string
-	SourceTag    string
-	SessionID    string
+	Tool      string
+	SourceTag string
+	SessionID string
+	// Agent: see Turn.Agent.
+	Agent        string
 	RequestID    string
 	ToolUseID    string
 	Kind         string
@@ -154,11 +166,35 @@ type GenTiming struct {
 	Timestamp  time.Time
 }
 
+// Execution is one session's cloud-execution attribution as the export
+// reports it (Vendor.Execution): where the session ran and, when the marker
+// carries one, the vendor's cross-rail session reference. One entry per
+// (tool, session) per export; the first matched record decides.
+type Execution struct {
+	Tool      string
+	SessionID string
+	// Location is a models.Execution* value.
+	Location string
+	// VendorRef is the marker attribute's raw value when the marker declares
+	// it a reference (ExecutionMarker.ValueIsVendorRef); "" otherwise. The
+	// caller validates it before storing.
+	VendorRef string
+	// CreatesSession copies ExecutionMarker.CreatesSession.
+	CreatesSession bool
+	// Model / Timestamp come from the first marked record, for the session
+	// row CreatesSession may create.
+	Model     string
+	Timestamp time.Time
+}
+
 // Result is everything one export mapped to.
 type Result struct {
-	Turns    []Turn
-	Tools    []ToolCall
-	Contents []Content
+	Turns []Turn
+	// Executions are the cloud-execution stamps the export's markers
+	// resolved (Vendor.Execution), at most one per (tool, session).
+	Executions []Execution
+	Tools      []ToolCall
+	Contents   []Content
 	// GenTimings are the per-call generation durations for the transcript's
 	// own token rows (KindGenTiming rules).
 	GenTimings []GenTiming

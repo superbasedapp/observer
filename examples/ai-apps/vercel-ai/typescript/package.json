@@ -1,0 +1,20 @@
+{
+  "name": "superbased-example-vercel-ai",
+  "private": true,
+  "type": "module",
+  "description": "Vercel AI SDK v7 chatbot (TypeScript)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node chatbot.ts",
+    "verify": "python3 ../../verify.py run.json --llm-spans 4"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.121",
+    "@ai-sdk/otel": "1.0.177",
+    "@superbased/sdk": "file:../../../../sdk/typescript",
+    "ai": "7.0.177",
+    "zod": "4.6.7"
+  }
+}

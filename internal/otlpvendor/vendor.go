@@ -20,6 +20,23 @@ type Vendor struct {
 	// Only the Claude Code row sets it: its original parser read every
 	// resource, and a configured OTEL_SERVICE_NAME must not stop it working.
 	ClaimByEventName bool
+	// ClaimByAgent makes this the own-agent row (PT-55): it claims every
+	// resource the own-agent claim table (ownagent.ClaimOTLPResource) gives
+	// to a developer's own agent, by the sbo.agent resource attribute rather
+	// than by service.name. Its records carry the normalized agent name and
+	// their session ids are the agent's capture session ids
+	// (ownagent.SpanSessionID), the same ids the proxy's X-Session-Id path
+	// mints, so one run that is both proxied and traced is one session. At
+	// most one row sets it (TestOneAgentClaimRow).
+	ClaimByAgent bool
+	// AdapterGated: the tool's registry adapter writes no transcript, and
+	// its place in [observer.watch].enabled_adapters is the capture switch
+	// itself. With the adapter disabled nothing from the export lands; with
+	// it enabled the export owns every kind (there is no transcript to
+	// share ownership with). Only the own-agent row sets it, mirroring the
+	// proxy path, which also captures own agents only while the adapter is
+	// enabled.
+	AdapterGated bool
 	// Provider is the upstream provider stamped on a turn when the export
 	// does not name one.
 	Provider string
@@ -49,6 +66,14 @@ type Vendor struct {
 	// ActionTypes maps a raw tool name to an Observer action type; a name
 	// not listed falls back to models.ActionUnknown at the store boundary.
 	ActionTypes map[string]string
+	// Execution are the vendor's cloud-execution markers (cloud-agents arc,
+	// CA-D1/CA-D2), walked top-down for every matched record that names a
+	// session: the first marker whose attribute is present decides where
+	// that session ran and, when the marker says so, carries the vendor's
+	// cross-rail session reference (Result.Executions). Empty for a vendor
+	// whose export has no grounded marker; a session no marker matched is
+	// the honest unknown, never defaulted to local.
+	Execution []ExecutionMarker
 	// Rules are walked top-down for every record of a claimed resource; a
 	// record may match several rules of different kinds (a tool result is
 	// both a tool call and tool-output content).
@@ -57,6 +82,25 @@ type Vendor struct {
 	// the version, or the vendor document) so a reader can tell a captured
 	// shape from a documented one.
 	Evidence string
+}
+
+// ExecutionMarker is one row of a vendor's cloud-execution marker table.
+type ExecutionMarker struct {
+	// Keys are the candidate attribute keys, tried in order, record
+	// attributes before resource attributes; a non-empty value marks the
+	// record's session.
+	Keys []string
+	// Location is the models.Execution* value a marked session ran at.
+	Location string
+	// ValueIsVendorRef: the attribute's value is the vendor's second native
+	// session reference (sessions.vendor_session_ref), an opaque id the
+	// caller still validates against orgcontract.ValidVendorSessionRef.
+	ValueIsVendorRef bool
+	// CreatesSession lets a marked session create its session row even on a
+	// vendor with NoSessionRows: the marker proves the run's transcript and
+	// hooks live in the vendor's sandbox, not on this node, so nothing else
+	// here would ever create the row the export's turns belong to.
+	CreatesSession bool
 }
 
 // TimingKey names a transcript token_usage column an export's per-call id
@@ -167,6 +211,11 @@ type Cond struct {
 	Equals string
 	// Absent inverts the condition: the key must NOT be present.
 	Absent bool
+	// AnyOf, when set, replaces Key: the condition holds when at least one
+	// of these keys is present on the record (Equals and Absent are not
+	// read). The own-agent row uses it so a span without any usage
+	// attribute yields no turn rather than a zero-token one.
+	AnyOf []string
 }
 
 // Fields are the candidate attribute keys per field, tried in order, record
@@ -180,7 +229,13 @@ type Fields struct {
 	Output     []string
 	CacheRead  []string
 	CacheWrite []string
-	Reasoning  []string
+	// CacheWrite1h is the 1-hour-TTL part of CacheWrite (a SUBSET of it,
+	// never added to it), the split Anthropic reports and the Claude Code
+	// transcript keeps (cloud-agents lane CA-C7: without it a turn that
+	// folds against its transcript twin would report every cache write at
+	// the 5-minute tier).
+	CacheWrite1h []string
+	Reasoning    []string
 	// Total is the vendor's total token count, read only by
 	// Normalize.ReasoningByTotal.
 	Total []string

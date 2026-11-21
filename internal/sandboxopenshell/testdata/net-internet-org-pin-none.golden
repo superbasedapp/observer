@@ -1,0 +1,30 @@
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only:
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/bin"
+    - "/sbin"
+    - "/etc"
+    - "/proc"
+    - "/dev"
+    - "/run"
+    - "/var"
+    - "/home/dev/.observer/bin/observer"
+    - "/home/dev/src/app/.git/config"
+    - "/home/dev/src/app/.git/hooks"
+    - "/tmp/observer-sbx-RUN"
+  read_write:
+    - "/tmp"
+    - "/dev/null"
+    - "/dev/pts"
+    - "/home/dev"
+    - "/home/dev/.claude"
+    - "/home/dev/src/app"
+landlock:
+  compatibility: hard_requirement
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"

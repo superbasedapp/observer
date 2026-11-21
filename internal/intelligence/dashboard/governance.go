@@ -75,6 +75,23 @@ const (
 	// SectionMessages is the admin and developer Messages page (T-854). It
 	// sits on the unhideable floor (D-695), so its routes are never refused.
 	SectionMessages Section = "messages"
+	// SectionYou is the You page (identity, accounts, consents, credentials).
+	// It carries the developer's own consent withdrawals, so it sits on the
+	// unhideable floor like Messages and Requests.
+	SectionYou Section = "you"
+
+	// The Your apps pages (Plane A lane B5): the machine's own app
+	// telemetry. Their routes stay SectionNone for now (obsRouteSections in
+	// cmd/observer/obs_wire.go maps none of them yet), so hiding one hides
+	// the page, not its API.
+	SectionAppTraces    Section = "app-traces"
+	SectionAppSessions  Section = "app-sessions"
+	SectionAppAnalytics Section = "app-analytics"
+	SectionAppEndUsers  Section = "app-end-users"
+	SectionAppEvals     Section = "app-evals"
+	SectionAppScores    Section = "app-scores"
+	SectionAppPrompts   Section = "app-prompts"
+	SectionAppAlerts    Section = "app-alerts"
 )
 
 // AllSections is the closed set, for the coverage test and for callers that
@@ -84,7 +101,9 @@ var AllSections = []Section{
 	SectionCodeSecurity, SectionEgress, SectionSearch, SectionCost, SectionPlans, SectionAnalysis, SectionTools,
 	SectionCompression, SectionCache, SectionSuggestions, SectionRouting,
 	SectionBenchmarks, SectionDiscovery, SectionPatterns, SectionPolicies, SectionAgentConfig,
-	SectionPrivacy, SectionTerminals, SectionRemote, SectionMessages, SectionRequests, SectionSettings,
+	SectionPrivacy, SectionTerminals, SectionRemote, SectionMessages, SectionRequests, SectionSettings, SectionYou,
+	SectionAppTraces, SectionAppSessions, SectionAppAnalytics, SectionAppEndUsers, SectionAppEvals, SectionAppScores,
+	SectionAppPrompts, SectionAppAlerts,
 }
 
 // configSectionPrefix is the one route whose SUB-resource is itself a
@@ -192,6 +211,8 @@ var settingsSharedRoutes = map[string]string{
 	"/api/config":                   "composite read: handleConfig withholds every hidden subsection's values (withholdHiddenSettings)",
 	"/api/config/section/":          "the subsection is the path's <id> (configSectionID)",
 	"/api/config/keys":              "each patched key's subsection is resolved from the schema (governanceConfigKeys)",
+	"/api/config/proposals":         "the settings an AI agent asked for (D19): set_setting refuses a key in a hidden or read-only subsection before filing, and approving one is a PUT /api/config/keys, which governanceConfigKeys checks",
+	"/api/config/proposals/":        "resolving a proposal changes no value; the value is written by PUT /api/config/keys, which governanceConfigKeys checks",
 	"/api/config/backup":            "whole file: the preview is concealed while any subsection is hidden, a restore refused while any is hidden or read-only",
 	"/api/config/schema":            "static descriptor of every key; carries no values",
 	"/api/config/reload":            "re-reads the developer-owned file and changes no value itself; the file is not governed (D-134)",
@@ -769,6 +790,29 @@ var shareLocalTable = map[string]func(config.Config) any{
 	"obs.admission":               func(c config.Config) any { return c.OrgClient.Share.Obs.Admission },
 	"obs.eval_items":              func(c config.Config) any { return c.OrgClient.Share.Obs.EvalItems },
 	"obs.egress":                  func(c config.Config) any { return c.OrgClient.Share.Obs.Egress },
+	// The scope raise directives (R3-85) act on [org_client.scope], not on a
+	// share tier; shareScopeTable renders them.
+	govern.ScopeUnrestrictedShareKey:   func(c config.Config) any { return c.OrgClient.Scope.ProjectRootAllowlist },
+	govern.ScopeDenylistRemoveShareKey: func(c config.Config) any { return c.OrgClient.Scope.ProjectRootDenylist },
+}
+
+// shareScopeTable renders the scope raise directives (R3-85) from the same
+// govern.Effective.RaiseScope the push seam applies, so the card cannot
+// drift from what ships. The unrestricted row is rendered as a bool ("this
+// machine shares every project": an empty allowlist), because an empty
+// effective allowlist rendered as a list would read as "none" when it means
+// "all"; the removal row is the denylist itself, before and after.
+var shareScopeTable = map[string]func(c config.Config, eff govern.Effective) (local, effective any, raised bool){
+	govern.ScopeUnrestrictedShareKey: func(c config.Config, eff govern.Effective) (any, any, bool) {
+		lv := c.OrgClient.Scope.ProjectRootAllowlist
+		ev, _ := eff.RaiseScope(lv, c.OrgClient.Scope.ProjectRootDenylist)
+		return len(lv) == 0, len(ev) == 0, len(ev) != len(lv)
+	},
+	govern.ScopeDenylistRemoveShareKey: func(c config.Config, eff govern.Effective) (any, any, bool) {
+		lv := c.OrgClient.Scope.ProjectRootDenylist
+		_, ev := eff.RaiseScope(c.OrgClient.Scope.ProjectRootAllowlist, lv)
+		return orEmpty(lv), orEmpty(ev), len(ev) != len(lv)
+	},
 }
 
 // resolveShareBlock resolves the org's delivered share directives against this
@@ -801,7 +845,15 @@ func (s *Server) resolveShareBlock(eff govern.Effective) map[string]governanceSh
 	for key, directive := range eff.Share {
 		row := governanceShareKey{PolicyVersion: eff.Version}
 		fn, known := shareLocalTable[key]
+		scope, isScope := shareScopeTable[key]
 		switch {
+		case isScope:
+			var raised bool
+			row.Local, row.Effective, raised = scope(local, eff)
+			row.Source = govern.ShareSourceLocal
+			if raised {
+				row.Source = govern.ShareSourceOrgRaised
+			}
 		case !known:
 			// Unreachable while TestShareLocalTableCoversNodegovVocabulary
 			// passes — nodegov.Compile refuses any share key outside its own

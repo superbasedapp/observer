@@ -77,6 +77,21 @@ export type ConfigKeyPath =
   "observer.process.etw.token" |
   "observer.process.etw.token_path" |
   "observer.process.etw.handshake_timeout_ms" |
+  "observer.process.capture.enabled" |
+  "observer.process.capture.budget.per_tool_call" |
+  "observer.process.capture.budget.per_session" |
+  "observer.process.capture.budget.per_minute" |
+  "observer.process.capture.services.track" |
+  "observer.process.capture.services.detach_after_minutes" |
+  "observer.process.capture.services.exemplars_per_service" |
+  "observer.process.capture.services.tail_minutes" |
+  "observer.process.capture.services.extra_basenames" |
+  "observer.process.capture.fold.enabled" |
+  "observer.process.capture.fold.extra_basenames" |
+  "observer.process.capture.metrics.ring_min_lifetime_seconds" |
+  "observer.process.capture.rollups.bucket_seconds" |
+  "observer.process.capture.unattributed.pending_hours" |
+  "observer.process.capture.unattributed.mode" |
   "observer.db.hard_heap_limit_mb" |
   "observer.db.temp_store" |
   "observer.db.max_open_conns" |
@@ -105,6 +120,7 @@ export type ConfigKeyPath =
   "proxy.org_route.direct_fallback_custody_ack" |
   "dashboard.addr" |
   "dashboard.org_announcements" |
+  "dashboard.live_ribbon" |
   "compression.shell.enabled" |
   "compression.shell.exclude_commands" |
   "compression.indexing.enabled" |
@@ -246,6 +262,7 @@ export type ConfigKeyPath =
   "projects.alignment_judge" |
   "projects.skill_history" |
   "projects.skill_history_skew_seconds" |
+  "projects.quality_metrics" |
   "delivery.local" |
   "delivery.poll_minutes" |
   "delivery.mirror_cap_mb" |
@@ -317,6 +334,7 @@ export type ConfigKeyPath =
   "terminal.sandbox.vendor_forced_native" |
   "terminal.sandbox.workspaces_dir" |
   "terminal.sandbox.workspace_retention_days" |
+  "terminal.sandbox.returned_copy_retention_days" |
   "terminal.sandbox.mask_paths" |
   "terminal.sandbox.extra_ro_binds" |
   "terminal.sandbox.extra_rw_binds" |
@@ -330,6 +348,8 @@ export type ConfigKeyPath =
   "terminal.sandbox.pass_env" |
   "terminal.sandbox.sign_in_seed_tools" |
   "terminal.sandbox.allow_osc52_clipboard" |
+  "terminal.sandbox.seccomp" |
+  "terminal.sandbox.seccomp_allow_seize" |
   "terminal.sandbox.backends" |
   "terminal.sandbox.min_isolation" |
   "terminal.sandbox.oci.allow_rootful" |
@@ -353,32 +373,68 @@ export type ConfigKeyPath =
   "terminal.sandbox.landlock.min_abi" |
   "terminal.sandbox.hosted.min_session_minutes" |
   "terminal.sandbox.hosted.key_custody" |
+  "terminal.sandbox.hosted.key_custody_by_tool" |
+  "terminal.sandbox.hosted.tool_keys" |
+  "terminal.sandbox.hosted.login_seed" |
   "terminal.sandbox.hosted.memory_images" |
   "terminal.sandbox.hosted.checkpoint_minutes" |
   "terminal.sandbox.hosted.max_run_minutes" |
   "terminal.sandbox.hosted.daily_box_minutes" |
   "terminal.sandbox.hosted.db_export" |
+  "terminal.sandbox.hosted.diff_against" |
+  "terminal.sandbox.hosted.allow_private_ranges" |
+  "terminal.sandbox.hosted.guard_hooks" |
+  "terminal.sandbox.hosted.clone_where" |
+  "terminal.sandbox.hosted.upload_non_git" |
+  "terminal.sandbox.hosted.upload_ignore" |
   "terminal.sandbox.hosted.e2b.region" |
   "terminal.sandbox.hosted.e2b.template" |
   "terminal.sandbox.hosted.e2b.box_binary" |
   "terminal.sandbox.hosted.e2b.endpoint" |
   "terminal.sandbox.hosted.e2b.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.e2b.allow_private_ranges" |
   "terminal.sandbox.hosted.modal.region" |
   "terminal.sandbox.hosted.modal.template" |
   "terminal.sandbox.hosted.modal.box_binary" |
   "terminal.sandbox.hosted.modal.endpoint" |
   "terminal.sandbox.hosted.modal.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.modal.allow_private_ranges" |
   "terminal.sandbox.hosted.vercel.region" |
   "terminal.sandbox.hosted.vercel.template" |
   "terminal.sandbox.hosted.vercel.box_binary" |
   "terminal.sandbox.hosted.vercel.endpoint" |
   "terminal.sandbox.hosted.vercel.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.vercel.allow_private_ranges" |
+  "terminal.sandbox.hosted.docker.region" |
+  "terminal.sandbox.hosted.docker.template" |
+  "terminal.sandbox.hosted.docker.box_binary" |
+  "terminal.sandbox.hosted.docker.endpoint" |
+  "terminal.sandbox.hosted.docker.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.docker.allow_private_ranges" |
+  "terminal.sandbox.hosted.openshell-org.laptop_relay" |
+  "terminal.sandbox.hosted.openshell-org.hold_on_end" |
+  "terminal.sandbox.hosted.instabox.region" |
+  "terminal.sandbox.hosted.instabox.template" |
+  "terminal.sandbox.hosted.instabox.box_binary" |
+  "terminal.sandbox.hosted.instabox.endpoint" |
+  "terminal.sandbox.hosted.instabox.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.instabox.allow_private_ranges" |
+  "terminal.sandbox.hosted.daytona.region" |
+  "terminal.sandbox.hosted.daytona.template" |
+  "terminal.sandbox.hosted.daytona.box_binary" |
+  "terminal.sandbox.hosted.daytona.endpoint" |
+  "terminal.sandbox.hosted.daytona.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.daytona.allow_private_ranges" |
   "terminal.sandbox.readopt.bound_minutes" |
   "terminal.sandbox.readopt.checkpoint_cap_mib" |
   "terminal.sandbox.wslc.path" |
   "terminal.sandbox.wslc.image" |
   "terminal.sandbox.hcs.utility_vm_image" |
   "terminal.sandbox.windows.mxc_tier" |
+  "terminal.sandbox.openshell.gateway_mode" |
+  "terminal.sandbox.openshell.endpoint" |
+  "terminal.sandbox.openshell.version" |
+  "terminal.sandbox.openshell.state_dir" |
   "terminal.sandbox.vm.vmm" |
   "terminal.sandbox.vm.image_set" |
   "terminal.sandbox.vm.vcpus" |
@@ -387,6 +443,7 @@ export type ConfigKeyPath =
   "terminal.sandbox.vm.workspace_delivery" |
   "terminal.sandbox.vm.cloud_hypervisor_path" |
   "terminal.sandbox.vm.virtiofsd_path" |
+  "terminal.sandbox.setup.allow_elevated" |
   "terminal.ssh.enabled" |
   "terminal.ssh.connect_timeout_seconds" |
   "terminal.ssh.keepalive_seconds" |
@@ -420,6 +477,7 @@ export type ConfigKeyPath =
   "shell_wrap.windows.shim_dir" |
   "shell_wrap.org_maintain" |
   "shell_wrap.org_applied" |
+  "workspace.default_dir" |
   "security.retention.days" |
   "security.deps.online" |
   "security.deps.install_wait_ms" |
@@ -427,6 +485,13 @@ export type ConfigKeyPath =
   "security.deps.index_download" |
   "security.deps.unknown_action" |
   "security.deps.online_unknown_action" |
+  "security.deps.provenance" |
+  "security.deps.db_source" |
+  "security.deps.db_fallback_upstream" |
+  "security.deps.match" |
+  "security.deps.remote_via" |
+  "security.deps.remote_kinds" |
+  "security.deps.remote_private" |
   "security.secrets.write_check" |
   "security.secrets.commit_check" |
   "security.secrets.postwrite_cap_kib" |
@@ -441,6 +506,10 @@ export type ConfigKeyPath =
   "security.scan.opengrep.schedule_hours" |
   "security.scan.opengrep.pause_on_battery" |
   "security.scan.opengrep.feed" |
+  "security.scan.opengrep.taint_pass" |
+  "security.scan.opengrep.taint_pass_budget_seconds" |
+  "security.scan.opengrep.taint_pass_jobs" |
+  "security.scan.opengrep.taint_pass_memory_mib" |
   "security.scan.trivy.post_write" |
   "security.scan.trivy.schedule_hours" |
   "security.scan.trivy.run_on_battery" |
@@ -451,6 +520,7 @@ export type ConfigKeyPath =
   "security.scan.kics.run_on_battery" |
   "security.scan.kics.allow_repo_config" |
   "security.scan.kics.allow_unpinned" |
+  "security.scan.image.driver" |
   "security.scanning.quick_scan_budget_s" |
   "security.scanning.max_scan_staleness_min" |
   "security.scanning.min_blocking_severity" |
@@ -458,6 +528,46 @@ export type ConfigKeyPath =
   "security.scanning.reflog_hold_max_age_days" |
   "security.scanning.reflog_hold_max_entries" |
   "security.trust.prelaunch" |
+  "security.reach.go.source_memory_mib" |
+  "security.reach.go.source_timeout_seconds" |
+  "security.reach.go.source_max_modules" |
+  "security.assessments.relax_pentest_local" |
+  "security.assessments.relax_red_team_local" |
+  "security.assessments.scoped_approval" |
+  "security.assessments.max_network_tier" |
+  "security.assessments.relaxation_scope" |
+  "security.assessments.relaxation_max_minutes" |
+  "security.assessments.report_to_org" |
+  "security.assessments.time_box_threat_model_minutes" |
+  "security.assessments.time_box_pentest_local_minutes" |
+  "security.assessments.time_box_red_team_local_minutes" |
+  "security.assessments.time_box_action" |
+  "security.assessments.boundary_audit" |
+  "security.assessments.evidence_retention_days" |
+  "security.assessments.rerun_dedup" |
+  "security.assessments.findings_cap" |
+  "security.assessments.import_min_band" |
+  "security.assessments.prompt_selfcheck" |
+  "security.assessments.report_validation_to_org" |
+  "security.assessments.tm_frameworks" |
+  "security.assessments.tm_method_extras" |
+  "security.assessments.pt_categories" |
+  "security.assessments.ref_match_window_lines" |
+  "security.assessments.model_max_mib" |
+  "security.assessments.ref_budget_files" |
+  "security.assessments.ref_budget_mib" |
+  "security.assessments.ref_budget_seconds" |
+  "security.assessments.grounding" |
+  "security.assessments.workspace_secret_mode" |
+  "security.assessments.pentest_request_budget" |
+  "security.assessments.pentest_pace_rps" |
+  "security.assessments.probe_helper" |
+  "security.assessments.display_redaction" |
+  "security.assessments.diagram_max_nodes" |
+  "security.assessments.diagram_label_chars" |
+  "security.licenses.deny" |
+  "security.licenses.allow" |
+  "security.licenses.unknown" |
   "messages.toast" |
   "messages.vscode" |
   "messages.statusline" |
@@ -511,6 +621,7 @@ export type ConfigKeyPath =
   "guard.enabled" |
   "guard.mode" |
   "guard.strict" |
+  "guard.level" |
   "guard.retention_days" |
   "guard.rules.disable" |
   "guard.rules.evasion_window_seconds" |
@@ -522,6 +633,9 @@ export type ConfigKeyPath =
   "guard.boundary.allow_paths" |
   "guard.boundary.protected_branches" |
   "guard.boundary.protected_path_classes" |
+  "guard.database.prod_patterns" |
+  "guard.network.allow_hosts" |
+  "guard.network.deny_hosts" |
   "guard.taint.enabled" |
   "guard.taint.decay_turns" |
   "guard.proxy.egress_scan" |
@@ -604,6 +718,8 @@ export type ConfigKeyPath =
   "observability.judge.timeout_ms" |
   "observability.judge.max_tokens" |
   "observability.judge.num_ctx" |
+  "observability.judge.request_profile" |
+  "observability.judge.reasoning_effort" |
   "observability.judge.use_org_relay" |
   "observability.admission.enabled" |
   "observability.admission.mode" |
@@ -619,6 +735,8 @@ export type ConfigKeyPath =
   "observability.admission.judge.timeout_ms" |
   "observability.admission.judge.max_tokens" |
   "observability.admission.judge.num_ctx" |
+  "observability.admission.judge.request_profile" |
+  "observability.admission.judge.reasoning_effort" |
   "observability.admission.judge.use_org_relay" |
   "observability.admission.prefilter.allow" |
   "observability.admission.prefilter.deny" |
@@ -638,6 +756,8 @@ export type ConfigKeyPath =
   "observability.alerts.email" |
   "observability.alerts.email_to" |
   "observability.alerts.eval_interval_minutes" |
+  "observability.alerts.slack_webhook_url" |
+  "observability.alerts.pagerduty_routing_key" |
   "observability.alerts.rules" |
   "observability.egress.enabled" |
   "observability.egress.mode" |
@@ -646,6 +766,9 @@ export type ConfigKeyPath =
   "observability.egress.targets" |
   "observability.egress.cohorts" |
   "observability.proxy_turn_traces" |
+  "observability.store_content" |
+  "observability.sdk.destination" |
+  "observability.sdk.gateway_url" |
   "selfobs.enabled" |
   "selfobs.endpoint" |
   "selfobs.key_id" |
@@ -721,6 +844,7 @@ export type ConfigSchemaLeaf = {
   min?: number;
   max?: number;
   doc?: string;
+  help?: string;
 };
 
 export type ConfigSchemaTable = {
@@ -729,6 +853,7 @@ export type ConfigSchemaTable = {
   owner: string;
   block: string;
   doc?: string;
+  help?: string;
 };
 
 export type ConfigSchemaDescriptor = {

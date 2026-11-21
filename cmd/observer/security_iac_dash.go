@@ -54,11 +54,11 @@ func iacDashRows(ctx context.Context, configPath string, database *sql.DB) []das
 		case !compiled:
 			row.Platform, row.Note = "unsupported", "Not in this build."
 		case err != nil || e == nil:
-			row.Note = "Not selected: IaC checks are opt-in (add " + row.Component + " and security.code under [components]). Nothing is installed, downloaded or run."
+			row.Note = "Off: IaC checks are opt-in. Turn them on with this scanner's switch on the Code security Scanners tab. Nothing is installed, downloaded or run until then."
 		default:
 			row.Selected = true
 			in := e.inspector().Inspect()
-			row.Note = iacStatusLine(eng, in)
+			row.Note = iacStatusLine(eng, in, iacInstallHintDash)
 			if eng.RequireIsolation {
 				row.Labels = append(row.Labels, "isolated only")
 			}

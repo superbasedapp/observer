@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/extrun"
 	"github.com/marmutapp/superbased-observer/internal/extrun/extruntest"
+	"github.com/marmutapp/superbased-observer/internal/secreach"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 )
@@ -294,5 +295,64 @@ func TestScalibrIsolation(t *testing.T) {
 				t.Fatalf("notes %q, want %q", notes, c.noteHas)
 			}
 		})
+	}
+}
+
+// TestApplyOnlineTurnsLookupGapsIntoGaps (lane RM-2): packages a remote
+// lookup could not match (a shard that failed) become remote_lookup_failed
+// gaps, so the ecosystem is partial and its run never reads clean.
+func TestApplyOnlineTurnsLookupGapsIntoGaps(t *testing.T) {
+	resp := depscan.ChildResponse{
+		Packages:   []depscan.Package{{Ecosystem: "npm", Name: "a", Version: "1.0.0", Path: "package-lock.json"}, {Ecosystem: "npm", Name: "b", Version: "1.0.0", Path: "package-lock.json"}},
+		Ecosystems: []depscan.EcoResult{{Ecosystem: "npm", Outcome: depscan.EcoNotScanned, Reason: depscan.ReasonNoDatabase, Packages: 2}},
+	}
+	m := func(_ context.Context, eco string, _ []depscan.Package, idx []int) (depscan.EcoResult, bool) {
+		return depscan.EcoResult{Ecosystem: eco, Outcome: depscan.EcoScanned, Packages: len(idx) - 1, LookupGaps: 1, Epoch: "remote:x npm@1"}, true
+	}
+	out := ApplyOnline(context.Background(), resp, m)
+	if len(out.Gaps) != 1 || out.Gaps[0].Reason != depscan.ReasonRemoteLookupFailed || out.Gaps[0].Packages != 1 || len(resp.Gaps) != 0 {
+		t.Fatalf("gaps %+v (input %+v)", out.Gaps, resp.Gaps)
+	}
+	res := Result(Input{DriverID: depscan.ScalibrID, Target: secscan.Target{ProjectRoot: t.TempDir()}, Response: out})
+	if res.Coverage.Outcome == secscan.OutcomeClean || len(res.Coverage.Scanned) != 0 {
+		t.Fatalf("a run with a failed shard read %s, scanned %v", res.Coverage.Outcome, res.Coverage.Scanned)
+	}
+}
+
+// TestScalibrReachGoPlumbing: the symbol check is asked for only while
+// Env.ReachGo is set, an unisolated child gets the prepared scratch
+// directory, and the child's runs reach the sink unchanged, findings
+// untouched.
+func TestScalibrReachGoPlumbing(t *testing.T) {
+	runs := []secreach.SymbolRun{{Source: secreach.SourceGovulncheckBinary, Target: "bin/app", Reason: secreach.ReasonStripped}}
+	for _, on := range []bool{false, true} {
+		ex := &extruntest.Executor{Facts: childAnswer(depscan.ChildResponse{
+			Version: depscan.ProtocolVersion, Compiled: true, Reach: runs, ReachRan: on,
+		})}
+		env := newEnv(ex, true)
+		env.ReachGo = on
+		cleaned := false
+		env.ReachScratch = func() (string, func(), error) { return "/tmp/reach-1", func() { cleaned = true }, nil }
+		var gotRoot string
+		var gotRuns []secreach.SymbolRun
+		var gotRan bool
+		env.ReachSink = func(root string, r []secreach.SymbolRun, ran bool) { gotRoot, gotRuns, gotRan = root, r, ran }
+		res, err := NewScalibr(env).Scan(context.Background(), secscan.Target{ProjectRoot: "/home/u/src/p", Scope: "manual"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req depscan.ChildRequest
+		if err := json.Unmarshal(ex.Calls()[0].Stdin, &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.ReachGo != on || (on && req.ScratchDir != "/tmp/reach-1") || (!on && req.ScratchDir != "") || cleaned != on {
+			t.Fatalf("on=%v: request %+v, cleaned %v", on, req, cleaned)
+		}
+		if gotRoot != "/home/u/src/p" || gotRan != on || len(gotRuns) != 1 {
+			t.Fatalf("on=%v: sink %q %+v %v", on, gotRoot, gotRuns, gotRan)
+		}
+		if len(res.Findings) != 0 {
+			t.Fatalf("findings %+v", res.Findings)
+		}
 	}
 }

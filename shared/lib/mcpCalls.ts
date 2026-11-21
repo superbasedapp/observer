@@ -252,6 +252,6 @@ export function panelState(
     kind: "empty",
     message:
       unlinkedNote(r.totals) ??
-      "No MCP calls are tied to this session. Only calls that went through the SuperBased MCP relay or gateway can be shown, and a call the client sent without an anchor only when a captured tool call of this session names it.",
+      "No MCP calls are tied to this session. Only calls that went through the superbased MCP relay or gateway can be shown, and a call the client sent without an anchor only when a captured tool call of this session names it.",
   };
 }

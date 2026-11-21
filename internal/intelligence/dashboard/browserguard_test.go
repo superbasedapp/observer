@@ -172,3 +172,30 @@ func TestBrowserGuardOriginPortAndClients(t *testing.T) {
 		})
 	}
 }
+
+// TestBrowserGuardOriginCoversEveryUpgradeSpelling (callerid fixes-1, H1):
+// a cross-origin WebSocket handshake is refused however its Upgrade header
+// is spelt, as coder/websocket's Accept would still upgrade it.
+func TestBrowserGuardOriginCoversEveryUpgradeSpelling(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := browserGuard(next, hostIsLoopback)
+	for name, lines := range map[string][]string{
+		"a comma list":      {"h2c, websocket"},
+		"two Upgrade lines": {"h2c", "websocket"},
+		"another case":      {"WebSocket"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/ws/launch/h-1", nil)
+			req.Host = "127.0.0.1:8820"
+			req.Header.Set("Origin", "http://127.0.0.1:9999")
+			for _, l := range lines {
+				req.Header.Add("Upgrade", l)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("code=%d, want 403", rec.Code)
+			}
+		})
+	}
+}

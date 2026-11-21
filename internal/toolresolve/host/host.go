@@ -312,9 +312,16 @@ var captureEnvVars = []string{
 // It is a package var so tests can drive the attempt ladder without spawning a
 // shell; production keeps the real exec.
 var runLoginShell = func(ctx context.Context, argv []string, env []string) (string, error) {
+	if loginShellBlocked {
+		return "", ErrLoginShellInTest
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) /* #nosec G204 -- argv[0] is the operator's own login shell ($SHELL / explicit Options.Shell) and the arguments are constants from loginShellTable; nothing request- or network-derived reaches this exec */
 	cmd.Stdin = nil                                       // exec wires /dev/null; no inherited terminal
 	cmd.Env = env
+	// The shell runs in a session of its own (unix; a no-op elsewhere), so an
+	// interactive login shell cannot take the observer's terminal and stop
+	// its process group (tracker F-031).
+	detachSession(cmd)
 	// WaitDelay bounds Wait after the context is canceled: a login shell that
 	// backgrounds a slow child (which would otherwise hold the stdout pipe open)
 	// is force-reaped instead of stalling the launch to the child's lifetime.

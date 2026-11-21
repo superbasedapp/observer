@@ -651,13 +651,15 @@ func migrationLockWait(busy time.Duration) time.Duration {
 // parallel line under a number below a step another line already shipped in
 // a build (migplan.LateStep).
 //
-// A database that has a ledger never needs a row: its missing step simply has
-// no per-step record and runs. Add a row only when a PRE-LEDGER node database
-// (one last migrated by a binary older than T-979) may already hold a version
-// record above the step without having run it. Name a column the step adds,
-// so the probe adopts the step where it really ran and runs it where it did
-// not, and add a test that stages such a database. See
-// docs/migration-numbering.md.
+// A database that has a ledger never needs a row for a step it lacks: the
+// missing step simply has no per-step record and runs. Add a row when a
+// PRE-LEDGER node database (one last migrated by a binary older than T-979)
+// may already hold a version record above the step without having run it,
+// or when a merge renumbered a step that is not idempotent (an ALTER TABLE
+// ADD COLUMN) and a database may already have run it under its old number.
+// Name a column the step adds, so the probe adopts the step where it really
+// ran and runs it where it did not, and add a test that stages such a
+// database. See docs/migration-numbering.md.
 //
 // The two rows below are the wave lineage fork (2026-10-25): main's
 // wave-followups-2026-10-24 line shipped guard_action_anchor as 177 in local
@@ -671,6 +673,21 @@ func migrationLockWait(busy time.Duration) time.Duration {
 // column. On a plans-line or fresh database 177 is either recorded or runs,
 // and 197 runs. Each probe decides only its own step, so every other shape
 // keeps its ordinary plan.
+//
+// The rows 220 and 221 are the main merge (2026-11-06, plans decision log
+// P-247): main and the release line had both used 213, 214 and 216, so
+// those numbers were retired and the moved steps renumbered. The two moved
+// ALTER steps cannot simply run again, because SQLite has no ADD COLUMN IF
+// NOT EXISTS: 220 (the release line's 214) is adopted on a release-line
+// database and runs on a main-built or fresh one; 221 (main's 216) is
+// adopted on a main-built database and runs on a release-line or fresh
+// one, after 219 creates its table. TestMergeMainLedgerShapes stages all
+// three shapes.
+//
+// The row 222 is the sandbox installation lifecycle step (PT-89): it was
+// authored after the line shipped 230 to 248, so a pre-ledger database
+// recorded at 248 has not run it and must, and a database that already ran
+// it adopts it. TestToolInstallsSubjectLateStep stages both shapes.
 var lateSteps = []migplan.LateStep{
 	// 177_security_findings.sql (plans line, security pillar Phase A) creates
 	// sec_findings; a wave-built node at version 177 never ran it.
@@ -678,6 +695,18 @@ var lateSteps = []migplan.LateStep{
 	// 197_guard_action_anchor.sql (main's 177, renumbered at the merge) adds
 	// guard_events.action_anchor; a wave-built node already has it.
 	{Version: 197, Table: "guard_events", Column: "action_anchor"},
+	// 220_terminal_run_initiator.sql (the release line's 214, renumbered at
+	// the main merge, P-247) adds terminal_run.initiator; a database that ran
+	// the old 214 already has it.
+	{Version: 220, Table: "terminal_run", Column: "initiator"},
+	// 221_project_quality_complexity.sql (main's 216, renumbered at the main
+	// merge, P-247) adds project_quality_daily.complexity_state; a database
+	// that ran main's 216 already has it.
+	{Version: 221, Table: "project_quality_daily", Column: "complexity_state"},
+	// 222_tool_installs_subject.sql (sandbox installation lifecycle, PT-89)
+	// adds tool_installs.subject_kind below the shipped 230 to 248; a
+	// pre-ledger database recorded at 230 or above has not run it.
+	{Version: 222, Table: "tool_installs", Column: "subject_kind"},
 }
 
 // runMigrationsWait is runMigrations with an explicit wait for the

@@ -119,7 +119,7 @@ func TestStartStopsWithinBoundWhileWatcherIsMidScan(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	startCmd := newStartCmd()
-	t.Cleanup(func() { setDaemonConfigPath("") })
+	cleanupInProcessDaemon(t)
 	startCmd.SetArgs([]string{"--no-dashboard", "--no-open", "--config", cfgPath})
 	out := &syncBuffer{}
 	startCmd.SetOut(out)

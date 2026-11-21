@@ -1,0 +1,9 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "subscription_update_when_canceled",
+    "detail": "Subscription is canceled and cannot be changed.",
+    "documentation_url": "https://developer.paddle.com/v1/errors/subscriptions/subscription_update_when_canceled"
+  },
+  "meta": { "request_id": "55555555-6666-7777-8888-999999999999" }
+}

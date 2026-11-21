@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,6 +238,231 @@ func TestSnapshot_CountsGuardAndRouterRows(t *testing.T) {
 	}
 }
 
+// TestSnapshot_CountsPatternsPlansBenchmarks pins the three table counts
+// behind the sidebar "Patterns", "Plans & limits" and "Benchmarks" badges:
+// each counts its own table (Patterns used to show the projects count).
+func TestSnapshot_CountsPatternsPlansBenchmarks(t *testing.T) {
+	cases := []struct {
+		name                         string
+		patterns, plans, benchmarks  int
+		wantPatterns, wantPlans      int
+		wantBenchmarks, wantProjects int
+	}{
+		{name: "empty tables count zero", wantProjects: 1},
+		{
+			name: "each table counted on its own", patterns: 3, plans: 2, benchmarks: 1,
+			wantPatterns: 3, wantPlans: 2, wantBenchmarks: 1, wantProjects: 1,
+		},
+		{
+			name: "patterns are not projects", patterns: 5,
+			wantPatterns: 5, wantProjects: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dbPath := filepath.Join(t.TempDir(), "obs.db")
+			d, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			// One project for the patterns' foreign key.
+			if _, err := store.New(d).Ingest(ctx, []models.ToolEvent{{
+				SourceFile: "f", SourceEventID: "e1", SessionID: "s1",
+				ProjectRoot: t.TempDir(), Timestamp: time.Now().UTC().Add(-48 * time.Hour),
+				Tool: models.ToolClaudeCode, ActionType: models.ActionReadFile,
+				Target: "a.go", Success: true,
+			}}, nil, store.IngestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			var projectID int64
+			if err := d.QueryRowContext(ctx, `SELECT id FROM projects LIMIT 1`).Scan(&projectID); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < tc.patterns; i++ {
+				if _, err := d.ExecContext(ctx,
+					`INSERT INTO project_patterns (project_id, pattern_type, pattern_data) VALUES (?, ?, ?)`,
+					projectID, "hot_file", fmt.Sprintf(`{"n":%d}`, i)); err != nil {
+					t.Fatalf("seed project_patterns: %v", err)
+				}
+			}
+			for i := 0; i < tc.plans; i++ {
+				if _, err := d.ExecContext(ctx,
+					`INSERT INTO plan_accounts (id, provider, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+					fmt.Sprintf("acct-%d", i), "anthropic", "official", 1, 1); err != nil {
+					t.Fatalf("seed plan_accounts: %v", err)
+				}
+			}
+			for i := 0; i < tc.benchmarks; i++ {
+				if _, err := d.ExecContext(ctx,
+					`INSERT INTO benchmark_runs (run_id, spec_name, spec_hash, spec_json, started_at, status)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					fmt.Sprintf("run-%d", i), "spec", "h", "{}", "2026-11-07T10:00:00Z", "completed"); err != nil {
+					t.Fatalf("seed benchmark_runs: %v", err)
+				}
+			}
+
+			snap, err := Snapshot(ctx, d, dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.QueryErrors != 0 {
+				t.Errorf("QueryErrors = %d, want 0", snap.QueryErrors)
+			}
+			got := [4]int{snap.Counts.ProjectPatterns, snap.Counts.PlanAccounts, snap.Counts.BenchmarkRuns, snap.Counts.Projects}
+			want := [4]int{tc.wantPatterns, tc.wantPlans, tc.wantBenchmarks, tc.wantProjects}
+			if got != want {
+				t.Errorf("patterns/plans/benchmarks/projects = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestSnapshot_ActiveSessionWindows pins the "Live" and "Overview" badges:
+// distinct sessions with activity in actions, api_turns or token_usage in
+// the last 15 minutes and the last 24 hours, one session counted once
+// however many tables and rows it touches.
+func TestSnapshot_ActiveSessionWindows(t *testing.T) {
+	type activity struct {
+		table, session string
+		age            time.Duration
+	}
+	cases := []struct {
+		name              string
+		rows              []activity
+		wantLive, wantDay int
+	}{
+		{name: "no recent activity", wantLive: 0, wantDay: 0},
+		{
+			name: "an action five minutes ago is live and day-active",
+			rows: []activity{{"actions", "s1", 5 * time.Minute}}, wantLive: 1, wantDay: 1,
+		},
+		{
+			name: "a token row two hours ago is day-active only",
+			rows: []activity{{"token_usage", "s1", 2 * time.Hour}}, wantLive: 0, wantDay: 1,
+		},
+		{
+			name: "an api turn thirty hours ago is neither",
+			rows: []activity{{"api_turns", "s1", 30 * time.Hour}}, wantLive: 0, wantDay: 0,
+		},
+		{
+			name: "one session across all three tables counts once",
+			rows: []activity{
+				{"actions", "s1", time.Minute},
+				{"api_turns", "s1", 2 * time.Minute},
+				{"token_usage", "s1", 3 * time.Hour},
+			}, wantLive: 1, wantDay: 1,
+		},
+		{
+			name: "sessions split across the windows",
+			rows: []activity{
+				{"actions", "s1", 10 * time.Minute},
+				{"api_turns", "s2", 20 * time.Minute},
+				{"token_usage", "s3", 23 * time.Hour},
+				{"actions", "s4", 25 * time.Hour},
+			}, wantLive: 1, wantDay: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dbPath := filepath.Join(t.TempDir(), "obs.db")
+			d, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			st := store.New(d)
+			now := time.Now().UTC()
+			root := t.TempDir()
+			// Every session exists first, through an action outside both
+			// windows (token_usage references sessions).
+			seeded := map[string]bool{}
+			for _, r := range tc.rows {
+				if seeded[r.session] {
+					continue
+				}
+				seeded[r.session] = true
+				if _, err := st.Ingest(ctx, []models.ToolEvent{{
+					SourceFile: "seed", SourceEventID: "seed-" + r.session, SessionID: r.session,
+					ProjectRoot: root, Timestamp: now.Add(-72 * time.Hour),
+					Tool: models.ToolClaudeCode, ActionType: models.ActionReadFile,
+					Target: "a.go", Success: true,
+				}}, nil, store.IngestOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, r := range tc.rows {
+				ts := now.Add(-r.age)
+				var err error
+				switch r.table {
+				case "actions":
+					_, err = st.Ingest(ctx, []models.ToolEvent{{
+						SourceFile: "f", SourceEventID: fmt.Sprintf("e%d", i), SessionID: r.session,
+						ProjectRoot: root, Timestamp: ts,
+						Tool: models.ToolClaudeCode, ActionType: models.ActionReadFile,
+						Target: "a.go", Success: true,
+					}}, nil, store.IngestOptions{})
+				case "api_turns":
+					_, err = d.ExecContext(ctx,
+						`INSERT INTO api_turns (session_id, timestamp, provider, model, input_tokens, output_tokens)
+						 VALUES (?, ?, 'anthropic', 'claude-opus-4-8', 1, 1)`,
+						r.session, ts.Format(time.RFC3339Nano))
+				case "token_usage":
+					_, err = d.ExecContext(ctx,
+						`INSERT INTO token_usage (session_id, timestamp, tool, source, source_file, source_event_id)
+						 VALUES (?, ?, 'claude-code', 'jsonl', 'f', ?)`,
+						r.session, ts.Format(time.RFC3339Nano), fmt.Sprintf("t%d", i))
+				default:
+					t.Fatalf("unknown table %q", r.table)
+				}
+				if err != nil {
+					t.Fatalf("seed %s: %v", r.table, err)
+				}
+			}
+
+			snap, err := Snapshot(ctx, d, dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.QueryErrors != 0 {
+				t.Errorf("QueryErrors = %d, want 0", snap.QueryErrors)
+			}
+			if snap.Counts.LiveSessions != tc.wantLive || snap.Counts.ActiveSessions24h != tc.wantDay {
+				t.Errorf("live/24h = %d/%d, want %d/%d",
+					snap.Counts.LiveSessions, snap.Counts.ActiveSessions24h, tc.wantLive, tc.wantDay)
+			}
+		})
+	}
+}
+
+// TestSnapshot_LeavesOpenIssuesUnset pins that the plain-SQL snapshot never
+// fabricates the open-issue count the dashboard stamps: nil, and absent on
+// the wire.
+func TestSnapshot_LeavesOpenIssuesUnset(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "obs.db")
+	d, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	snap, err := Snapshot(context.Background(), d, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Counts.OpenIssues != nil {
+		t.Fatalf("OpenIssues = %+v, want nil (the dashboard stamps it)", snap.Counts.OpenIssues)
+	}
+	body, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "open_issues") {
+		t.Errorf("open_issues on the wire of an unstamped snapshot: %s", body)
+	}
+}
+
 func TestFormatStatus_RendersAllFields(t *testing.T) {
 	snap := StatusSnapshot{
 		DBPath:         "/tmp/x.db",
@@ -251,7 +477,10 @@ func TestFormatStatus_RendersAllFields(t *testing.T) {
 		RecentFailures24: 3,
 	}
 	out := FormatStatus(snap)
-	for _, want := range []string{"/tmp/x.db", "schema v1", "Projects:", "Failures (24h):   3", "Cache events:", "claude-code"} {
+	for _, want := range []string{
+		"/tmp/x.db", "schema v1", "Projects:", "Failures (24h):   3", "Cache events:", "claude-code",
+		"Sessions (24h):", "Patterns:", "Plan accounts:", "Benchmark runs:",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -419,8 +648,8 @@ func TestSnapshot_QueryErrors(t *testing.T) {
 		}
 		// Sanity: the counter is a count, not a bool — every table lookup
 		// plus the aggregate queries should have registered.
-		if snap.QueryErrors < 12 {
-			t.Errorf("QueryErrors = %d, want >= 12 (11 table counts + the aggregates)", snap.QueryErrors)
+		if snap.QueryErrors < 15 {
+			t.Errorf("QueryErrors = %d, want >= 15 (14 table counts + the aggregates)", snap.QueryErrors)
 		}
 	})
 
@@ -554,5 +783,42 @@ func TestSnapshot_SurfacesIntegrityVerdict(t *testing.T) {
 				t.Errorf("JSON carries \"integrity\" = %v, want %v", got, tc.wantPresent)
 			}
 		})
+	}
+}
+
+// TestSnapshot_ProjectsLeaveOutFoldedRows: the Projects badge counts what
+// the Projects page lists. A row the worktree-roots backfill folded into
+// its repository's project, with nothing filed under it since, is left
+// out; an empty row that was never folded still counts.
+func TestSnapshot_ProjectsLeaveOutFoldedRows(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "obs.db")
+	d, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := store.New(d).Ingest(ctx, []models.ToolEvent{{
+		SourceFile: "f", SourceEventID: "e1", SessionID: "s1",
+		ProjectRoot: t.TempDir(), Timestamp: time.Now().UTC().Add(-48 * time.Hour),
+		Tool: models.ToolClaudeCode, ActionType: models.ActionReadFile,
+		Target: "a.go", Success: true,
+	}}, nil, store.IngestOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	const at = "2026-11-07T00:00:00Z"
+	if _, err := d.ExecContext(ctx, `INSERT INTO projects (root_path, name, created_at) VALUES ('/r/main/.claude/worktrees/x', ?, ?), ('/r/empty', NULL, ?)`,
+		store.WorktreeRootMovedMark(1), at, at); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Snapshot(ctx, d, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.QueryErrors != 0 {
+		t.Errorf("QueryErrors = %d, want 0", snap.QueryErrors)
+	}
+	if snap.Counts.Projects != 2 {
+		t.Errorf("Counts.Projects = %d, want 2 (the ingested project and the never-folded empty row)", snap.Counts.Projects)
 	}
 }

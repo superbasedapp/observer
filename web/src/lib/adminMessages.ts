@@ -486,7 +486,7 @@ export function readReceiptNote(readReceipts: boolean): string | null {
 
 /** The send error codes POST /api/messages answers with. */
 const SEND_ERRORS: Record<string, string> = {
-  not_enrolled: "Messages go to an organization, and this machine is not enrolled.",
+  not_enrolled: "Messages go to your organization, and this machine is not connected to one. Connect it in Settings > Account.",
   not_supported: "Your organization's server does not support messages yet.",
   threads_disabled: "Your organization does not let you start conversations.",
   topic_not_allowed: "Your organization does not take messages on this topic.",
@@ -562,11 +562,12 @@ export function requestInit(body: unknown, confirmToken: string): RequestInit {
 // ---------- attachments ----------
 
 /** AttachmentView is one attachment card: its label, its sub line and the
- *  node page it opens. */
+ *  node page it opens (null when that page is hidden on this machine, so the
+ *  card renders without a link). */
 export interface AttachmentView {
   title: string;
   sub: string;
-  to: string;
+  to: string | null;
   icon: "session" | "turn" | "model" | "guard_event" | "project" | "budget" | "request" | "other";
 }
 
@@ -634,12 +635,25 @@ const SUB: Record<string, string> = {
   request: "Open Requests",
 };
 
-/** attachmentView builds a card for one attachment. */
-export function attachmentView(a: MessageAttachment): AttachmentView {
+/** ATTACHMENT_MANAGED_SUB: the sub line of a card whose page is hidden on
+ *  this machine (Security is hidden by default on a managed node, CG-21). */
+export const ATTACHMENT_MANAGED_SUB = "Managed by your organization on this machine";
+
+/**
+ * attachmentView builds a card for one attachment. `hidden` reports whether
+ * an address is hidden on this machine (the caller passes the governance
+ * gate, lib/visibility.ts hrefGate); a card whose page is hidden gets no link
+ * and says why, rather than opening a "managed by your organization" notice.
+ * The default hides nothing, which is an individual node.
+ */
+export function attachmentView(a: MessageAttachment, hidden: (href: string) => boolean = () => false): AttachmentView {
   const known = a.type in TYPE_TITLE;
   const title = a.label?.trim() || (a.type === "turn" ? `${TYPE_TITLE.turn} in ${shortRef(a.ref.split("#")[0] ?? "")}` : `${TYPE_TITLE[a.type] ?? "Item"} ${shortRef(a.ref)}`);
+  const to = attachmentLink(a);
+  const icon = known ? (a.type as AttachmentView["icon"]) : "other";
+  if (hidden(to)) return { title, sub: ATTACHMENT_MANAGED_SUB, to: null, icon };
   const sub = a.excerpt?.trim() ? `"${truncate(a.excerpt.trim(), 60)}"` : (SUB[a.type] ?? "Open");
-  return { title, sub, to: attachmentLink(a), icon: known ? (a.type as AttachmentView["icon"]) : "other" };
+  return { title, sub, to, icon };
 }
 
 function shortRef(ref: string): string {

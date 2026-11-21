@@ -54,11 +54,17 @@ type bearerAuthContextKey string
 // ingestCredentialContextKey is the context key for ingestCredential security scheme
 type ingestCredentialContextKey string
 
+// otelTokenContextKey is the context key for otelToken security scheme
+type otelTokenContextKey string
+
 // samlSessionContextKey is the context key for samlSession security scheme
 type samlSessionContextKey string
 
 // scimTokenContextKey is the context key for scimToken security scheme
 type scimTokenContextKey string
+
+// shipTokenContextKey is the context key for shipToken security scheme
+type shipTokenContextKey string
 
 // PushBatchParams defines parameters for PushBatch.
 type PushBatchParams struct {

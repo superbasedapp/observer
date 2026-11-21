@@ -17,6 +17,7 @@ type guardToolGateJSON struct {
 	Current   bool   `json:"current"`
 	Installed bool   `json:"installed"`
 	Reason    string `json:"reason"`
+	Fixable   bool   `json:"fixable"`
 }
 
 // toolGates reports the node's per-tool tool-gate state, or nil when no seam

@@ -183,6 +183,9 @@ func newGuardApproveCmd() *cobra.Command {
 			if !policy.IsBuiltinRuleID(ruleID) && !strings.ContainsAny(ruleID, "-") {
 				return fmt.Errorf("unknown rule id %q (see `observer guard rules`)", ruleID)
 			}
+			if policy.AsksEveryUse(ruleID) {
+				return fmt.Errorf("%s asks on every use and no approval covers it; start the run yourself (the dashboard's New Terminal or `observer launch`)", ruleID)
+			}
 			scopeCount := 0
 			scope, anchorSession, anchorHash := "", "", ""
 			if sessionID != "" {
@@ -225,18 +228,24 @@ func newGuardApproveCmd() *cobra.Command {
 			row := store.GuardApprovalRow{
 				TS: now, RuleID: ruleID, Scope: scope,
 				SessionID: anchorSession, ProjectRootHash: anchorHash,
-				GrantedBy: localOperatorIdentity(),
+				GrantedBy: localOperatorIdentity(), Channel: "cli",
 			}
 			if ttl > 0 {
 				row.ExpiresAt = now.Add(ttl)
 			}
-			id, err := store.New(database).InsertGuardApproval(cmd.Context(), row)
+			id, existing, err := store.New(database).GrantGuardApproval(cmd.Context(), row)
 			if err != nil {
 				return err
 			}
 			expiry := "no expiry"
 			if ttl > 0 {
 				expiry = "expires " + row.ExpiresAt.Format(time.RFC3339)
+			}
+			if existing {
+				// Grant-or-extend (P-232): the same key already had a
+				// grant, which now carries the later expiry.
+				fmt.Fprintf(cmd.OutOrStdout(), "approval %d already covers %s scope=%s; kept, with the later expiry (%s requested)\n", id, ruleID, scope, expiry)
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "approval %d granted: %s scope=%s (%s)\n", id, ruleID, scope, expiry)
 			return nil

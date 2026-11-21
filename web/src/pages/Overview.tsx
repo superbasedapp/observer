@@ -26,8 +26,7 @@ import {
   TruncatedPath,
 } from "@/components/primitives";
 import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
-import { OnboardingCard } from "@/components/OnboardingCard";
-import { ComponentsSetupCard } from "@/components/ComponentsSetupCard";
+import { GetStartedSurface } from "@/components/firstrun/GetStartedSurface";
 import { MilestonesCard } from "@/components/MilestonesCard";
 import { CommunityCard } from "@/components/CommunityCard";
 import { ToolCoverageCard } from "@/components/ToolCoverage";
@@ -481,7 +480,7 @@ export function OverviewPage() {
           deniedPermission={sessions.deniedPermission}
           onRetry={sessions.reload}
           empty={!sessions.data?.rows?.length}
-          emptyHint="No sessions yet. With the daemon running, a session appears here the moment you use an AI tool - route Claude Code / Codex through the proxy from the Compression page's Proxy banner, or wire hooks + MCP from Settings > Connected tools (each tool's Set up)."
+          emptyHint="No sessions yet. A session appears here the moment you use an AI tool. Turn capture on for your tools in Get started above, or per tool in Settings > Connected tools."
         >
           {sessions.data && <RecentSessions rows={sessions.data.rows} />}
         </ChartState>
@@ -503,15 +502,13 @@ export function OverviewPage() {
         helpId="tab.overview"
         right={<CustomizeOverview layout={layout} onChange={updateLayout} />}
       />
-      {/* First-run onboarding (P5.1/F1+D-1): renders only while the
-          DB has zero sessions; permanently dismissable. */}
-      <OnboardingCard sessions={status.data?.sessions ?? null} />
-      {/* Milestones (P5.6/D-4): once-each, max one visible,
-          dismissable; existing installs retire crossed ones silently. */}
-      <MilestonesCard sessions={status.data?.sessions ?? null} />
-      {/* Modular packaging 7.1: until a component selection is recorded,
-          one dismissible pointer to Settings > Components. */}
-      <ComponentsSetupCard />
+      {/* The one getting-started surface (first-run plan revision 2,
+          3.6 and 7.1): the welcome band and Get started composed under one
+          container, with the AI apps track beside or instead of them, as
+          the daemon's /api/firstrun "plane" decides. The components pointer
+          moved to Settings; Milestones show only after the first result. */}
+      <GetStartedSurface sessions={status.data?.sessions ?? null} />
+      {(status.data?.sessions ?? 0) > 0 && <MilestonesCard sessions={status.data?.sessions ?? null} />}
       {/* Sections in the operator's chosen order; each rises in on page
           entry (sb-stagger on the wrapper). */}
       <Stagger className="space-y-6">
@@ -712,7 +709,7 @@ function CacheEfficiencyTile({
   const subLine =
     eventCount > 0
       ? `${fmtInt(eventCount)} events · ${fmtInt(sessionCount)} sessions · read ${fmtCompact(efficiency?.read_tokens ?? 0)}`
-      : "no cache events yet · enable [cachetrack] or run Settings > Backfill > cache-rescan";
+      : "no cache events yet · turn on Settings > Cache tracking, or run Settings > Backfill > cache-rescan";
 
   const cornerPill =
     dominantCause && dominantCause.count > 0 ? (

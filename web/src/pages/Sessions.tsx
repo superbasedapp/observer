@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   CalendarDays,
   Check,
+  CornerDownRight,
   Info,
   List,
   Pencil,
   Star,
+  StickyNote,
   Table2,
+  Bot,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -17,6 +20,7 @@ import {
   ActiveFilterChips,
   ChartShell,
   type FilterChip,
+  GlyphBadge,
   Icon,
   LiveDot,
   ModelMark,
@@ -26,9 +30,12 @@ import {
   SlideOver,
   SurfaceBadge,
   type SurfaceKind,
+  ExecutionLocationBadge,
+  EXECUTION_FILTER_OPTIONS,
+  type ExecutionFilterValue,
+  TokenBar,
   ToolBadge,
   Tooltip,
-  TruncatedPath,
 } from "@/components/primitives";
 import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
 import { shortModel } from "@/lib/models";
@@ -87,6 +94,29 @@ import {
   SessionsFiltersDrawer,
 } from "./sessions/FiltersDrawer";
 import { navIcon } from "@/lib/nav";
+import { OwnAgentsView } from "./sessions/OwnAgentsView";
+import { ColumnsPicker } from "./sessions/ColumnsPicker";
+import { agentFromSurfaceHost } from "@/lib/ownAgents";
+import {
+  ENRICH_TONE_CLASS,
+  SORT_OPTIONS,
+  inlineFacets,
+  loadColumnOverrides,
+  matchSortOption,
+  parentSessionId,
+  projectName,
+  resolveSessionColumns,
+  rowTagCount,
+  saveColumnOverrides,
+  sessionColumn,
+  sessionTokenTotal,
+  shortSessionId,
+  sortButtonLabel,
+  type ColumnOverrides,
+  type ColumnStorage,
+  type EnrichVariant,
+  type SessionColumnId,
+} from "@/lib/sessionColumns";
 
 // One glyph per sessions section card title (the ChartShell `icon` slot): the
 // chart or table shape the section shows, never decoration.
@@ -113,27 +143,23 @@ function selectActiveIds(d: { active_ids?: string[] }): string[] {
 // SESSIONS_POLL_MS is the list poll (see the useApi call below).
 const SESSIONS_POLL_MS = 30_000;
 
-// SORT_OPTIONS backs the toolbar's Sort menu. Since the Rating column was
-// removed (rating is now a click-popover only, not a whole column), there is
-// no clickable header left for "best/worst rated first" — this menu is how
-// that server-side sort_by=rating ordering stays reachable, alongside a few
-// other sorts that are handy without hunting for the right column header.
-// Remaining columns (Session/Tool/Project/quality/errors/redundancy/token
-// buckets…) are still sortable via a header click, which drives the same
-// `sorting` state untouched by this menu.
-type SortOption = { id: string; desc: boolean; label: string };
-const SORT_OPTIONS: SortOption[] = [
-  { id: "started_at", desc: true, label: "Started (newest first)" },
-  { id: "cost", desc: true, label: "Cost (highest first)" },
-  { id: "elapsed", desc: true, label: "Elapsed (longest first)" },
-  { id: "actions", desc: true, label: "Actions (most first)" },
-  { id: "ai_code_lines", desc: true, label: "AI code lines (most first)" },
-  { id: "rating", desc: true, label: "Rating (best first)" },
-  { id: "rating", desc: false, label: "Rating (worst first)" },
-  { id: "favorite", desc: true, label: "Favorites first" },
-];
+// The Sort menu (SORT_OPTIONS) and the column table live in
+// lib/sessionColumns. The menu reaches the sorts that have no visible header:
+// rating (no column), and the four token buckets the Tokens column sums.
+// Header clicks drive the same `sorting` state.
 
-type View = "table" | "calendar";
+// browserStorage is localStorage, or null where reading it throws (a
+// private window, blocked site data). The column choices degrade to the
+// defaults; nothing else depends on it.
+function browserStorage(): ColumnStorage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+type View = "table" | "calendar" | "agents";
 
 // SURFACE_FILTER_OPTIONS backs the toolbar's Client dropdown — one row per
 // value of the closed capture-surface vocabulary (SurfaceBadge's
@@ -149,6 +175,7 @@ const SURFACE_FILTER_OPTIONS: ReadonlyArray<{ value: SurfaceKind | ""; label: st
   { value: "desktop", label: "desktop - desktop app" },
   { value: "sdk", label: "sdk - programmatic" },
   { value: "web", label: "web - browser" },
+  { value: "mobile", label: "mobile - phone app" },
 ];
 
 export function SessionsPage() {
@@ -177,12 +204,29 @@ export function SessionsPage() {
   ]);
   const sortBy = sorting[0]?.id ?? "started_at";
   const sortDir = sorting[0]?.desc === false ? "asc" : "desc";
-  // Only truthy when the current sort exactly matches one of the toolbar's
-  // named options — a header click on a column the menu doesn't cover (e.g.
-  // "Project") leaves the button reading plain "Sort".
-  const sortOption = SORT_OPTIONS.find(
-    (o) => o.id === sortBy && o.desc === (sortDir === "desc"),
+  // The menu row for the current sort, when one matches. The button names
+  // any other sort by its column (a header sort on a column that may now be
+  // hidden), so the order on screen is always explained.
+  const sortOption = matchSortOption(sortBy, sortDir === "desc");
+  const sortLabel = sortButtonLabel(sortBy, sortDir === "desc").replace(
+    "Total $",
+    costLabel("Total $", "Total tokens"),
   );
+
+  // Column choices (lib/sessionColumns): the viewer's explicit on/off per
+  // column, remembered in this browser. The fit rule below drops default
+  // columns that do not fit the card's measured width.
+  const [colOverrides, setColOverrides] = useState<ColumnOverrides>(() =>
+    loadColumnOverrides(browserStorage()),
+  );
+  useEffect(() => {
+    saveColumnOverrides(browserStorage(), colOverrides);
+  }, [colOverrides]);
+  // fitRef wraps the table; its width is what the columns must fit. Read
+  // before paint (layout effect) so the first frame is already fitted, and
+  // again whenever the card resizes.
+  const fitRef = useRef<HTMLDivElement | null>(null);
+  const [fitWidth, setFitWidth] = useState<number | null>(null);
   const [localQuery, setLocalQuery] = useState("");
   // pickedDay is set when the user clicks a CalendarView cell — drives
   // a server-side from_date/to_date filter on /api/sessions so the
@@ -249,6 +293,16 @@ export function SessionsPage() {
   // or "" for any. Server-side (all pages) and transient, exactly like
   // favoriteOnly — the stamp is the server's fact, the filter a view choice.
   const [surfaceFilter, setSurfaceFilter] = useState<SurfaceKind | "">("");
+  // agentHost is the Own agents view's pick: one own agent's stored
+  // surface_host ("agent:<name>"). It narrows the table SERVER-side to that
+  // agent's custom-agent sessions (tool + surface_host), all pages, and is
+  // transient like the Client dropdown. null = no agent filter.
+  const [agentHost, setAgentHost] = useState<string | null>(null);
+  // ranFilter is the "Where it ran" dropdown's value (execution_location on
+  // /api/sessions, node migration 240): local / vendor_cloud /
+  // customer_worker / unknown, or "" for anywhere. Server-side and transient,
+  // exactly like surfaceFilter.
+  const [ranFilter, setRanFilter] = useState<ExecutionFilterValue>("");
   const tagKey = tagFilters.join(",");
   // annotations holds per-session optimistic overrides for the
   // classification fields, merged over the fetched rows. Each entry is
@@ -276,7 +330,7 @@ export function SessionsPage() {
   };
 
   // Reset page when filters change (incl. picked calendar day).
-  const filterKey = `${win}|${tool}|${project}|${model}|${pickedDay ?? ""}|${sortBy}|${sortDir}|${tagKey}|${favoriteOnly}|${surfaceFilter}`;
+  const filterKey = `${win}|${tool}|${project}|${model}|${pickedDay ?? ""}|${sortBy}|${sortDir}|${tagKey}|${favoriteOnly}|${surfaceFilter}|${agentHost ?? ""}|${ranFilter}`;
   const lastKey = useMemo(() => filterKey, [filterKey]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useMemo(() => setPage(1), [lastKey]);
@@ -289,7 +343,10 @@ export function SessionsPage() {
     {
       page,
       limit: PAGE_LIMIT,
-      tool: toolParam,
+      // An own-agent pick names its tool outright (the global tool filter
+      // would otherwise hide every custom-agent session).
+      tool: agentHost ? "custom-agent" : toolParam,
+      surface_host: agentHost ?? undefined,
       model: modelParam,
       project: projectParam,
       ...winParams,
@@ -303,6 +360,8 @@ export function SessionsPage() {
       // Capture-surface kind, exact match server-side; "" is dropped by
       // buildUrl so "any" sends nothing.
       surface: surfaceFilter || undefined,
+      // Where it ran; "" (anywhere) is dropped by buildUrl.
+      execution_location: ranFilter || undefined,
     },
     [
       page,
@@ -317,6 +376,8 @@ export function SessionsPage() {
       tagKey,
       favoriteOnly,
       surfaceFilter,
+      agentHost,
+      ranFilter,
     ],
     // Live-capture refresh: every 30 s while the tab is visible and the
     // table is not covered by a modal panel. Lets fresh Antigravity-CLI .pb
@@ -677,14 +738,46 @@ export function SessionsPage() {
         onClear: () => setSurfaceFilter(""),
       });
     }
+    if (agentHost) {
+      c.push({
+        label: `agent: ${agentFromSurfaceHost(agentHost)}`,
+        title: "Show every session again",
+        onClear: () => setAgentHost(null),
+      });
+    }
+    if (ranFilter) {
+      c.push({
+        label: `ran: ${EXECUTION_FILTER_OPTIONS.find((o) => o.value === ranFilter)?.label.split(" - ")[0] ?? ranFilter}`,
+        title: "Show sessions from everywhere again",
+        onClear: () => setRanFilter(""),
+      });
+    }
     return c;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [favoriteOnly, tagKey, surfaceFilter]);
+  }, [favoriteOnly, tagKey, surfaceFilter, agentHost, ranFilter]);
 
   const showScoring = (sessions.data?.scored_count ?? 0) > 0;
+  useLayoutEffect(() => {
+    const el = fitRef.current;
+    if (view !== "table" || !el) return undefined;
+    const read = () => {
+      const w = Math.floor(el.clientWidth);
+      setFitWidth((cur) => (w > 0 && cur !== w ? w : cur));
+    };
+    read();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view]);
+  const resolvedColumns = useMemo(
+    () => resolveSessionColumns({ overrides: colOverrides, scoring: showScoring, available: fitWidth }),
+    [colOverrides, showScoring, fitWidth],
+  );
+  const shownKey = resolvedColumns.shown.join(",");
   const columns = useMemo<ColumnDef<SessionRow, unknown>[]>(
     () =>
-      buildColumns(showScoring, liveSet, activeSet, setWatch, {
+      buildColumns(resolvedColumns.shown, resolvedColumns.flexWidth, resolvedColumns.overflow, liveSet, activeSet, setWatch, {
         onToggleFavorite: (r) => void toggleFavorite(r),
         onSetRating: (r, rating) => void setRating(r, rating),
         onTagClick: addTagFilter,
@@ -695,7 +788,7 @@ export function SessionsPage() {
         onSetTitle: (r, title) => setTitle(r, title),
       }, setEnrichmentSession),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [showScoring, liveSet, activeSet],
+    [shownKey, resolvedColumns.flexWidth, resolvedColumns.overflow, liveSet, activeSet],
   );
 
   return (
@@ -710,6 +803,7 @@ export function SessionsPage() {
             options={[
               { value: "table", label: "Table", icon: Table2 },
               { value: "calendar", label: "Calendar", icon: CalendarDays },
+              { value: "agents", label: "Own agents", icon: Bot },
             ]}
             value={view}
             onChange={setView}
@@ -745,158 +839,193 @@ export function SessionsPage() {
         icon={SECTION_ICONS.allSessions}
         sub="click any row for the per-session breakdown"
         stale={sessions.isStale}
-        right={
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="search"
-              aria-label="Filter sessions by id or project"
-              placeholder="filter by id, project…"
-              value={localQuery}
-              onChange={(e) => setLocalQuery(e.target.value)}
-              className="h-7 w-full min-w-0 rounded-2 sm:w-[240px] border border-line-2 bg-bg-2 px-2 font-mono text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
-            />
-            <Tooltip
-              content={
-                surfaceFilter
-                  ? `Showing ${surfaceFilter} sessions only - pick "any" to show all`
-                  : "Filter by how the tool was driven: terminal, editor, desktop app, SDK, or browser (server-side, all pages)"
-              }
-              maxWidth={320}
-            >
-              <select
-                aria-label="Filter sessions by client"
-                value={surfaceFilter}
-                onChange={(e) => setSurfaceFilter(e.target.value as SurfaceKind | "")}
-                className={
-                  surfaceFilter
-                    ? "h-7 rounded-2 border border-accent/50 bg-accent-soft px-2 text-[11px] text-accent focus:outline-none"
-                    : "h-7 rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] text-fg-2 hover:bg-bg-3 focus:border-accent focus:outline-none"
-                }
-              >
-                {SURFACE_FILTER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Tooltip>
-            <Tooltip
-              content={
-                favoriteOnly
-                  ? "Showing favorited sessions only - click to show all"
-                  : "Show only sessions you starred (server-side filter, all pages)"
-              }
-            >
-              <button
-                type="button"
-                aria-pressed={favoriteOnly}
-                onClick={() => setFavoriteOnly((v) => !v)}
-                className={
-                  favoriteOnly
-                    ? "inline-flex items-center gap-1.5 rounded-2 border border-warn/50 bg-warn-soft px-2.5 py-1 text-[11px] text-warn"
-                    : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-                }
-              >
-                <Icon icon={Star} size="xs" fill={favoriteOnly ? "currentColor" : "none"} />
-                Favorites
-              </button>
-            </Tooltip>
-            <Tooltip
-              content={
-                sortOption
-                  ? `Sorted by ${sortOption.label.toLowerCase()} - click to change`
-                  : "Choose a sort order (also reaches Rating best/worst-first, which has no column any more)"
-              }
-              maxWidth={320}
-            >
-              <button
-                ref={sortTriggerRef}
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={sortMenuOpen}
-                onClick={() => setSortMenuOpen((o) => !o)}
-                className={
-                  sortMenuOpen
-                    ? "inline-flex items-center gap-1.5 rounded-2 border border-accent/50 bg-accent-soft px-2.5 py-1 text-[11px] text-accent"
-                    : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-                }
-              >
-                Sort{sortOption ? `: ${sortOption.label}` : ""}
-              </button>
-            </Tooltip>
-            <AnchoredPopover
-              open={sortMenuOpen}
-              anchorRef={sortTriggerRef}
-              ariaLabel="Sort sessions"
-              width={220}
-              onDismiss={() => setSortMenuOpen(false)}
-            >
-              <div role="menu" className="py-1">
-                {SORT_OPTIONS.map((opt) => {
-                  const active =
-                    opt.id === sortBy && opt.desc === (sortDir === "desc");
-                  return (
-                    <button
-                      key={`${opt.id}-${opt.desc}`}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={active}
-                      onClick={() => {
-                        setSorting([{ id: opt.id, desc: opt.desc }]);
-                        setSortMenuOpen(false);
-                      }}
-                      className={clsx(
-                        "flex w-full items-center justify-between px-3 py-1.5 text-left text-[11.5px] focus:outline-none",
-                        active
-                          ? "bg-accent-soft text-accent"
-                          : "text-fg-2 hover:bg-bg-2 hover:text-fg-0 focus:bg-bg-2 focus:text-fg-0",
-                      )}
-                    >
-                      {opt.label}
-                      {active && <Icon icon={Check} size="xs" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </AnchoredPopover>
-            <Tooltip
-              content={
-                drawerCount > 0
-                  ? `${drawerCount} drawer filter${drawerCount === 1 ? "" : "s"} active - click to edit`
-                  : "Open the filters drawer (model, cost, duration, sidechain…)"
-              }
-              maxWidth={320}
-            >
-              <button
-                type="button"
-                onClick={() => setDrawerOpen(true)}
-                className={
-                  drawerCount > 0
-                    ? "inline-flex items-center gap-1.5 rounded-2 border border-accent/50 bg-accent-soft px-2.5 py-1 text-[11px] text-accent hover:bg-accent-soft/70"
-                    : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-                }
-              >
-                Filters
-                {drawerCount > 0 && (
-                  <span className="rounded-pill bg-accent px-1.5 py-px font-mono text-[9.5px] font-semibold leading-none text-accent-on">
-                    {drawerCount}
-                  </span>
-                )}
-              </button>
-            </Tooltip>
-            <Tooltip content="Download visible sessions as CSV">
-              <button
-                type="button"
-                onClick={() => exportSessionsCsv(filtered)}
-                disabled={!filtered.length}
-                className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-40"
-              >
-                Export
-              </button>
-            </Tooltip>
-          </div>
-        }
       >
+        {/* The toolbar is its own wrapping row under the title (it used to
+            sit in the card header, where at 1280px it squeezed the title
+            into a one-word column and ran past the card edge). */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            type="search"
+            aria-label="Filter sessions by id or project"
+            placeholder="filter by id, project…"
+            value={localQuery}
+            onChange={(e) => setLocalQuery(e.target.value)}
+            className="h-7 w-full min-w-0 rounded-2 sm:w-[180px] border border-line-2 bg-bg-2 px-2 font-mono text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
+          />
+          <Tooltip
+            content={
+              surfaceFilter
+                ? `Showing ${surfaceFilter} sessions only - pick "any" to show all`
+                : "Filter by how the tool was driven: terminal, editor, desktop app, SDK, or browser (server-side, all pages)"
+            }
+            maxWidth={320}
+          >
+            <select
+              aria-label="Filter sessions by client"
+              value={surfaceFilter}
+              onChange={(e) => setSurfaceFilter(e.target.value as SurfaceKind | "")}
+              className={
+                surfaceFilter
+                  ? "h-7 max-w-[124px] rounded-2 border border-accent/50 bg-accent-soft px-2 text-[11px] text-accent focus:outline-none"
+                  : "h-7 max-w-[124px] rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] text-fg-2 hover:bg-bg-3 focus:border-accent focus:outline-none"
+              }
+            >
+              {SURFACE_FILTER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Tooltip>
+          <Tooltip
+            content={
+              ranFilter
+                ? "Showing sessions from one place only - pick \"anywhere\" to show all"
+                : "Filter by where the agent ran: this machine, a vendor's cloud sandbox, or compute your organization runs (server-side, all pages)"
+            }
+            maxWidth={320}
+          >
+            <select
+              aria-label="Filter sessions by where they ran"
+              value={ranFilter}
+              onChange={(e) => setRanFilter(e.target.value as ExecutionFilterValue)}
+              className={
+                ranFilter
+                  ? "h-7 max-w-[124px] rounded-2 border border-accent/50 bg-accent-soft px-2 text-[11px] text-accent focus:outline-none"
+                  : "h-7 max-w-[124px] rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] text-fg-2 hover:bg-bg-3 focus:border-accent focus:outline-none"
+              }
+            >
+              {EXECUTION_FILTER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Tooltip>
+          <Tooltip
+            content={
+              favoriteOnly
+                ? "Showing favorited sessions only - click to show all"
+                : "Show only sessions you starred (server-side filter, all pages)"
+            }
+          >
+            <button
+              type="button"
+              aria-pressed={favoriteOnly}
+              onClick={() => setFavoriteOnly((v) => !v)}
+              className={
+                favoriteOnly
+                  ? "inline-flex items-center gap-1.5 rounded-2 border border-warn/50 bg-warn-soft px-2.5 py-1 text-[11px] text-warn"
+                  : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
+              }
+            >
+              <Icon icon={Star} size="xs" fill={favoriteOnly ? "currentColor" : "none"} />
+              Favorites
+            </button>
+          </Tooltip>
+          <span aria-hidden className="hidden flex-1 lg:block" />
+          <Tooltip
+            content={
+              sortOption
+                ? `Sorted by ${sortOption.label.toLowerCase()} - click to change`
+                : "Choose a sort order, including rating and each token type, which have no column of their own"
+            }
+            maxWidth={320}
+          >
+            <button
+              ref={sortTriggerRef}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={sortMenuOpen}
+              onClick={() => setSortMenuOpen((o) => !o)}
+              className={
+                sortMenuOpen
+                  ? "inline-flex items-center gap-1.5 rounded-2 border border-accent/50 bg-accent-soft px-2.5 py-1 text-[11px] text-accent"
+                  : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
+              }
+            >
+              {sortLabel}
+            </button>
+          </Tooltip>
+          <AnchoredPopover
+            open={sortMenuOpen}
+            anchorRef={sortTriggerRef}
+            ariaLabel="Sort sessions"
+            width={220}
+            onDismiss={() => setSortMenuOpen(false)}
+          >
+            <div role="menu" className="py-1">
+              {SORT_OPTIONS.map((opt) => {
+                const active =
+                  opt.id === sortBy && opt.desc === (sortDir === "desc");
+                return (
+                  <button
+                    key={`${opt.id}-${opt.desc}`}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={active}
+                    onClick={() => {
+                      setSorting([{ id: opt.id, desc: opt.desc }]);
+                      setSortMenuOpen(false);
+                    }}
+                    className={clsx(
+                      "flex w-full items-center justify-between px-3 py-1.5 text-left text-[11.5px] focus:outline-none",
+                      active
+                        ? "bg-accent-soft text-accent"
+                        : "text-fg-2 hover:bg-bg-2 hover:text-fg-0 focus:bg-bg-2 focus:text-fg-0",
+                    )}
+                  >
+                    {opt.label}
+                    {active && <Icon icon={Check} size="xs" />}
+                  </button>
+                );
+              })}
+            </div>
+          </AnchoredPopover>
+          {view === "table" && (
+            <ColumnsPicker
+              resolved={resolvedColumns}
+              overrides={colOverrides}
+              scoring={showScoring}
+              onChange={setColOverrides}
+            />
+          )}
+          <Tooltip
+            content={
+              drawerCount > 0
+                ? `${drawerCount} drawer filter${drawerCount === 1 ? "" : "s"} active - click to edit`
+                : "Open the filters drawer (model, cost, duration, sidechain…)"
+            }
+            maxWidth={320}
+          >
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              className={
+                drawerCount > 0
+                  ? "inline-flex items-center gap-1.5 rounded-2 border border-accent/50 bg-accent-soft px-2.5 py-1 text-[11px] text-accent hover:bg-accent-soft/70"
+                  : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
+              }
+            >
+              Filters
+              {drawerCount > 0 && (
+                <span className="rounded-pill bg-accent px-1.5 py-px font-mono text-[9.5px] font-semibold leading-none text-accent-on">
+                  {drawerCount}
+                </span>
+              )}
+            </button>
+          </Tooltip>
+          <Tooltip content="Download visible sessions as CSV">
+            <button
+              type="button"
+              onClick={() => exportSessionsCsv(filtered)}
+              disabled={!filtered.length}
+              className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-40"
+            >
+              Export
+            </button>
+          </Tooltip>
+        </div>
         {(query ||
           pickedDay ||
           drawerChips.length > 0 ||
@@ -925,10 +1054,22 @@ export function SessionsPage() {
               setTagFilters([]);
               setFavoriteOnly(false);
               setSurfaceFilter("");
+              setAgentHost(null);
+              setRanFilter("");
             }}
           />
         )}
-        {view === "calendar" ? (
+        {view === "agents" ? (
+          <OwnAgentsView
+            onPick={(a) => {
+              // Narrow the table to the picked agent's sessions, then
+              // swap to it (the calendar's day-pick precedent).
+              setAgentHost(a.surface_host);
+              setLocalQuery("");
+              setView("table");
+            }}
+          />
+        ) : view === "calendar" ? (
           <CalendarView
             cells={calendar.data?.cells ?? []}
             loading={calendar.loading}
@@ -944,7 +1085,7 @@ export function SessionsPage() {
             }}
           />
         ) : (
-          <>
+          <div ref={fitRef} className="min-w-0">
             <ChartState
               loading={sessions.loading && !sessions.data}
               error={sessions.error}
@@ -968,17 +1109,18 @@ export function SessionsPage() {
                 onRowClick={(r) => setSelected(r.id)}
                 rowKey={(r) => r.id}
                 zebra
-                // Every column declares meta.width (COL_W), so the fixed
-                // layout can hold the budget: no single long project path or
-                // tool label can inflate its column and push Output / Total $
-                // off the right edge. minWidth is the sum of that budget;
-                // below it the wrapper scrolls, with a visible scrollbar and
-                // an edge fade rather than a silently clipped table.
+                // The fixed layout holds each column to its budget from
+                // lib/sessionColumns, so no long path or label can widen the
+                // table; Session alone takes the leftover width. The fit
+                // rule already dropped what does not fit, so the table only
+                // scrolls sideways when the viewer chose more columns than
+                // fit (then Favorite and Session stay pinned). While it fits,
+                // the wrapper clips instead of scrolling, which lets the
+                // header stick to the page as it scrolls.
                 layout="fixed"
-                minWidth={
-                  SESSIONS_MIN_WIDTH +
-                  (showScoring ? SESSIONS_SCORING_WIDTH : 0)
-                }
+                minWidth={resolvedColumns.minWidth}
+                scrollX={resolvedColumns.overflow}
+                stickyHeader
                 loading={sessions.loading}
                 sorting={sorting}
                 onSortingChange={setSorting}
@@ -1004,7 +1146,7 @@ export function SessionsPage() {
                 )}
               </div>
             )}
-          </>
+          </div>
         )}
       </ChartShell>
 
@@ -1445,95 +1587,21 @@ type TagsCtx = {
   onSetTitle: (row: SessionRow, title: string) => Promise<void>;
 };
 
-// MAX_ROW_TAGS caps how many pills a row shows before collapsing the rest
-// into a "+n" affordance. Two keeps the column inside its width budget
-// (COL_W.tags) without wrapping every tagged row onto three lines.
-const MAX_ROW_TAGS = 2;
-
-// COL_W is the Sessions table's width budget, in px, one entry per column.
-// It exists because the table has 15 columns and the operator's report was
-// that the last two (Output, Total $) fell off the right edge at default
-// zoom on a ~2000px display: with auto layout a single long value (a deep
-// project path, a 16-character tool label like "Open Interpreter") inflates
-// its own column and pushes everything after it out of view.
-//
-// The table renders with layout="fixed", so these numbers are authoritative
-// and any surplus container width is redistributed across them in
-// proportion. Each is sized to its HEADER plus its typical value, and the
-// three text columns that can hold an unbounded string (project, tool,
-// models) also set meta.truncate so they clip instead of growing.
-//
-// Sum without the optional scoring columns: 1386px. That fits inside the
-// ~1620px of table area a 1920px viewport leaves after the sidebar and the
-// page/card padding, with room to spare; at 1440px the wrapper scrolls the
-// last ~140px, with a visible scrollbar and an edge fade to say so.
-const COL_W = {
-  favorite: 44,
-  session: 116,
-  // 110 is the width at which the two most common labels ("Claude Code",
-  // "Antigravity CLI") still read; longer ones ellipsize with the badge's
-  // own tooltip carrying the full name.
-  tool: 120,
-  // Client: one small pill. The cell renders the compact badge (glyph +
-  // host, T-803: "cli · cla..." was all that fit), so 104 holds the common
-  // hosts ("claude-code", "vscode"); the pill's own tooltip carries the
-  // full gloss + host, and the cell truncates rather than growing.
-  client: 104,
-  project: 132,
-  tags: 116,
-  models: 108,
-  // 110 keeps "Sep 07, 12:31" on ONE line: at 98 it wrapped and every row
-  // in the table grew a second line for it.
-  started: 110,
-  // The numeric columns are sized by their HEADER, not their values: the
-  // label plus its help dot plus the sort caret is wider than "481.1K".
-  elapsed: 80,
-  actions: 80,
-  aiCode: 80,
-  input: 68,
-  cacheR: 82,
-  cacheW: 86,
-  output: 78,
-  cost: 78,
-  quality: 68,
-  errors: 66,
-  redundancy: 120,
-} as const;
-
-// SESSIONS_MIN_WIDTH is the sum of COL_W: below it the DataTable wrapper
-// scrolls horizontally rather than squeezing the numerics into two lines.
-const SESSIONS_MIN_WIDTH =
-  COL_W.favorite +
-  COL_W.session +
-  COL_W.tool +
-  COL_W.client +
-  COL_W.project +
-  COL_W.tags +
-  COL_W.models +
-  COL_W.started +
-  COL_W.elapsed +
-  COL_W.actions +
-  COL_W.aiCode +
-  COL_W.input +
-  COL_W.cacheR +
-  COL_W.cacheW +
-  COL_W.output +
-  COL_W.cost;
-
-const SESSIONS_SCORING_WIDTH =
-  COL_W.quality + COL_W.errors + COL_W.redundancy;
+// TAGS_CELL_WIDTH is the Tags column's budget, which rowTagCount sizes the
+// pills against.
+const TAGS_CELL_WIDTH = sessionColumn("tags")?.width ?? 164;
 
 // SESSION_TITLE_MAX_LENGTH mirrors the server's <= 200-char rule
 // (store.MaxTitleLen).
 const SESSION_TITLE_MAX_LENGTH = 200;
 
-// SessionTitleCell renders the Session column's primary text — the EFFECTIVE
-// title (the developer's own title > the AI/cloud title > the plain id
-// fallback) — with inline editing. The id itself never disappears: it stays
-// the CopyOnClick value and the "click to copy" tooltip target, so a titled
-// row is still one click from its real id.
+// SessionTitleCell renders the Session cell's text: the EFFECTIVE title (the
+// developer's own title > the AI/cloud title > the org title) over the short
+// id, or the short id alone when nothing titled the session. The title is
+// plain text (a click on it opens the row like any other cell, its tooltip
+// carries the full title); the id is the click-to-copy target either way.
 //
-// A hover-revealed pencil, or a double-click on the title, opens a text
+// A hover-revealed pencil, or a double-click on the text, opens a text
 // input; Enter saves (POST /api/session/<id>/tags {title}), Escape cancels,
 // and an empty save clears the title (falls back to the AI/cloud title, then
 // the plain id).
@@ -1549,12 +1617,8 @@ function SessionTitleCell({
   // org-plane AI title (lib/orgIntel sessionEffectiveTitle, design 3.2).
   const eff = sessionEffectiveTitle(row);
   const effectiveTitle = eff.text;
-  // The primary text duplicates the cloud-enriched dot's tooltip exactly
-  // when it's showing the cloud title with no user override — so the dot is
-  // hidden in that one case (see the cell renderer below).
   const usingAI = eff.source === "cloud" || eff.source === "org";
-  const fallback = `${(row.id.split(":agent:").at(-1) ?? row.id).slice(0, 12)}…`;
-  const primaryText = effectiveTitle || fallback;
+  const shortId = shortSessionId(row.id);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(userTitle);
@@ -1588,7 +1652,7 @@ function SessionTitleCell({
 
   if (editing) {
     return (
-      <span className="flex flex-col gap-0.5">
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <input
           ref={inputRef}
           value={draft}
@@ -1613,67 +1677,229 @@ function SessionTitleCell({
     );
   }
 
+  const idCopy = (className: string) => (
+    <CopyOnClick value={row.id} className={className}>
+      <span className="truncate">{shortId}</span>
+    </CopyOnClick>
+  );
+
   return (
     <span
-      className="group/title inline-flex min-w-0 max-w-full items-center gap-1"
+      className="group/title flex min-w-0 flex-1 flex-col justify-center leading-tight"
       onDoubleClick={(e) => {
         e.stopPropagation();
         openEditor();
       }}
     >
-      {usingAI && (
-        <Pill variant="accent" className="shrink-0 whitespace-nowrap" title={eff.source === "org" ? "Title from your organization's session enrichment" : undefined}>
-          {eff.source === "org" ? "org" : "AI"}
-        </Pill>
-      )}
-      <CopyOnClick
-        value={row.id}
-        className="min-w-0 font-mono text-[11px] text-accent hover:text-accent-strong"
-      >
-        <span className="truncate">{primaryText}</span>
-      </CopyOnClick>
-      <Tooltip content={userTitle ? "Edit your title" : "Set your own title"}>
-        <button
-          type="button"
-          aria-label={userTitle ? "Edit your title" : "Set your own title"}
-          onClick={(e) => {
-            e.stopPropagation();
-            openEditor();
-          }}
-          className="shrink-0 opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover/title:opacity-100"
-        >
-          <Icon icon={Pencil} size={10} />
-        </button>
-      </Tooltip>
+      <span className="flex min-w-0 items-center gap-1">
+        {usingAI && (
+          <Pill variant="accent" className="shrink-0 whitespace-nowrap" title={eff.source === "org" ? "Title from your organization's session enrichment" : "Title from your AI summaries"}>
+            {eff.source === "org" ? "org" : "AI"}
+          </Pill>
+        )}
+        {effectiveTitle ? (
+          <Tooltip
+            content={
+              <span className="block">
+                <span className="block text-fg-0">{effectiveTitle}</span>
+                <span className="block break-all font-mono text-[10.5px] text-fg-3">{row.id}</span>
+              </span>
+            }
+            maxWidth={360}
+          >
+            <span tabIndex={0} className="min-w-0 truncate text-[12px] font-medium text-fg-0 focus:outline-none">
+              {effectiveTitle}
+            </span>
+          </Tooltip>
+        ) : (
+          idCopy("min-w-0 font-mono text-[11px] text-accent hover:text-accent-strong")
+        )}
+        <Tooltip content={userTitle ? "Edit your title" : "Set your own title"}>
+          <button
+            type="button"
+            aria-label={userTitle ? "Edit your title" : "Set your own title"}
+            onClick={(e) => {
+              e.stopPropagation();
+              openEditor();
+            }}
+            className="shrink-0 text-fg-4 opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover/title:opacity-100"
+          >
+            <Icon icon={Pencil} size={10} />
+          </button>
+        </Tooltip>
+      </span>
+      {effectiveTitle &&
+        idCopy("mt-0.5 min-w-0 max-w-full font-mono text-[10px] text-fg-4 hover:text-accent")}
     </span>
   );
 }
 
+// EnrichButton is the Session cell's enrichment control: one icon whose
+// glyph and colour say where the session's AI summaries stand, and whose
+// name says what a click does ("Enrich session", "Team AI summaries",
+// "Queued · view status", ...). The words, the plane and any AI title are in
+// the tooltip; the click opens the enrichment panel, never the row.
+function EnrichButton({ row, onEnrich }: { row: SessionRow; onEnrich: (r: SessionRow) => void }) {
+  const plane = sessionEnrichPlane(row);
+  const progress = row.cloud_enrichment;
+  const action =
+    plane === "org"
+      ? orgPlaneEnrichAction(row)
+      : cloudProgressAction(progress, !!row.cloud_enriched);
+  const meta = cloudProgressMeta(progress);
+  // The org plane has no request state on this node: a pulled-back title is
+  // the only result there is.
+  const variant: EnrichVariant =
+    plane === "org"
+      ? row.org_title
+        ? "success"
+        : "neutral"
+      : progress
+        ? meta.variant
+        : row.cloud_enriched
+          ? "success"
+          : "neutral";
+  const hasResult = plane === "org" ? !!row.org_title : !!row.cloud_enriched;
+  const glyphState = progress && plane === "personal" ? progress.state : hasResult ? "complete" : "idle";
+  // The AI title is worth repeating here only when the row shows another
+  // (your own title wins over it).
+  const aiTitle = plane === "org" ? row.org_title : row.cloud_title;
+  const showAiTitle = !!aiTitle && !!row.title;
+  const inFlight = plane === "personal" && meta.inFlight === true;
+  return (
+    <Tooltip
+      content={
+        <span className="block space-y-0.5">
+          <span className="block font-medium text-fg-0">{action}</span>
+          <span className="block text-fg-2">{SESSION_ENRICH_PLANE_COPY[plane].tooltip}</span>
+          {showAiTitle && <span className="block text-fg-3">AI title: {aiTitle}</span>}
+        </span>
+      }
+      maxWidth={320}
+    >
+      <button
+        type="button"
+        aria-label={action}
+        onClick={(event) => {
+          event.stopPropagation();
+          onEnrich(row);
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+        className={clsx(
+          "inline-grid h-[22px] w-[22px] shrink-0 place-items-center rounded-1 transition-colors hover:bg-bg-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+          ENRICH_TONE_CLASS[variant],
+        )}
+      >
+        <Icon
+          icon={vocabIcon("cloudProgress", glyphState)}
+          size={13}
+          className={inFlight ? "animate-pulse" : undefined}
+        />
+      </button>
+    </Tooltip>
+  );
+}
+
+// LiveBadge is the compact "live" pill: green for a session that is running
+// now. A bare session (running outside observer) is a button that opens the
+// drawer in read-only watch mode; an attachable one is informational (open
+// the row and Jump in). The full words ("live · watch", "live · joinable")
+// are the accessible text and the tooltip; on screen the pill says "live",
+// and on a phone only the dot shows, so the title keeps the room.
+function LiveBadge({ joinable, onWatch }: { joinable: boolean; onWatch: () => void }) {
+  const pill = (qualifier: string) => (
+    <Pill variant="success" className="relative whitespace-nowrap">
+      <LiveDot tone="success" size="sm" className="shrink-0" />
+      <span aria-hidden className="hidden sm:inline">live</span>
+      <span className="sr-only">live · {qualifier}</span>
+    </Pill>
+  );
+  if (joinable) {
+    return (
+      <Tooltip content="Running as an attachable observer session - open it and click Jump in to join the live terminal.">
+        <span tabIndex={0} className="relative inline-flex shrink-0 focus:outline-none">
+          {pill("joinable")}
+        </span>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip content="Running outside observer - click to watch the conversation read-only; joining requires an observer-launched session.">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onWatch();
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
+        className="relative inline-flex shrink-0 rounded-pill focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+      >
+        {pill("watch")}
+      </button>
+    </Tooltip>
+  );
+}
+
+// TokenBreakdown is the Tokens cell's tooltip: every bucket the column sums,
+// plus the cache-write tier split and reasoning when the row carries them.
+function TokenBreakdown({ row }: { row: SessionRow }) {
+  const tier1h = row.cache_creation_1h_tokens || 0;
+  const tier5m = Math.max(0, row.cache_creation_tokens - tier1h);
+  const lines: [string, number, string?][] = [
+    ["Input", row.input_tokens],
+    ["Cache read", row.cache_read_tokens],
+    ["Cache write", row.cache_creation_tokens, row.cache_creation_tokens > 0 ? `5m ${fmtCompact(tier5m)} · 1h ${fmtCompact(tier1h)}` : undefined],
+    ["Output", row.output_tokens, (row.reasoning_tokens ?? 0) > 0 ? `reasoning ${fmtCompact(row.reasoning_tokens ?? 0)}` : undefined],
+  ];
+  return (
+    <span className="block min-w-[180px] space-y-0.5 text-[11px]">
+      {lines.map(([label, value, note]) => (
+        <span key={label} className="flex items-baseline gap-3">
+          <span className="text-fg-3">{label}</span>
+          {note && <span className="text-[10px] text-fg-4">{note}</span>}
+          <span className="ml-auto tabular-nums text-fg-0">{fmtInt(value)}</span>
+        </span>
+      ))}
+      <span className="mt-1 flex items-baseline gap-3 border-t border-line-2 pt-1">
+        <span className="text-fg-2">Total</span>
+        <span className="ml-auto font-medium tabular-nums text-fg-0">{fmtInt(sessionTokenTotal(row))}</span>
+      </span>
+    </span>
+  );
+}
+
+// tokenCount renders a token count, or a muted dash for none.
+function tokenCount(v: number) {
+  return v > 0 ? (
+    <span className="tabular-nums text-fg-1">{fmtCompact(v)}</span>
+  ) : (
+    <span className="text-fg-4">-</span>
+  );
+}
+
+// buildColumns builds every column's def, then returns the ones `shown`
+// names, in that order, with the width budget and flags from the one column
+// table (lib/sessionColumns). Session takes `flexWidth` (the fit rule's
+// answer). `pinned` (the table scrolls sideways) pins Favorite and Session.
 function buildColumns(
-  showScoring: boolean,
+  shown: readonly SessionColumnId[],
+  flexWidth: number | null,
+  pinned: boolean,
   liveSet: Set<string>,
   activeSet: Set<string>,
   onWatch: (id: string) => void,
   tagsCtx: TagsCtx,
   onEnrich: (session: SessionRow) => void,
 ): ColumnDef<SessionRow, unknown>[] {
-  // Column order matches design/page-sessions.jsx exactly (Client, the
-  // capture-surface pill, was added beside Tool after the design snapshot):
-  // Session / Tool / Client / Project / Model(s) / Started / Elapsed /
-  // Actions / Sub / Input / Cache R / Cache W / Output / API $ / Tool $ /
-  // Total $. Reliability and scoring (optional) come after.
-  const cols: ColumnDef<SessionRow, unknown>[] = [
-    {
+  const facets = inlineFacets(shown);
+  const defs: Record<SessionColumnId, ColumnDef<SessionRow, unknown>> = {
+    favorite: {
       // Favorite star + a compact rating trigger sharing one narrow column.
-      // There is no dedicated Rating column any more (issue: rating should be
-      // reachable only via a click-popover, not a whole column that's empty
-      // for most rows) — server-side "best/worst first" sort now lives in the
-      // toolbar's Sort menu instead of a clickable header. Still
-      // server-sortable via sort_by=favorite (the header click toggles it).
+      // Rating has no column of its own; best/worst-first lives in the Sort
+      // menu. Server-sortable via sort_by=favorite (the header click).
       id: "favorite",
       header: () => <Icon icon={Star} size="xs" label="Favorites" />,
       accessorFn: (r) => (r.favorite ? 1 : 0),
-      meta: { width: COL_W.favorite },
       cell: ({ row }) => {
         const rating = row.original.rating ?? 0;
         return (
@@ -1687,8 +1913,7 @@ function buildColumns(
               rating={rating}
               onRate={(next) => tagsCtx.onSetRating(row.original, next)}
               // Rated rows always show the number; unrated rows only reveal
-              // the "rate" affordance on row hover/keyboard focus so the
-              // column doesn't fill up with muted placeholder icons.
+              // the "rate" affordance on row hover/keyboard focus.
               className={
                 rating > 0
                   ? undefined
@@ -1699,135 +1924,70 @@ function buildColumns(
         );
       },
     },
-    {
+    session: {
       id: "session",
       header: () => <>Session<HelpInd id="column.sessions.id" /></>,
       accessorKey: "id",
-      meta: { width: COL_W.session },
-      // flex-wrap, not nowrap: the id + copy affordance already fills the
-      // column, so a "live" pill drops to a second line instead of pushing
-      // the column (and every column after it) wider.
-      cell: ({ row }) => (
-        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <SessionTitleCell row={row.original} onSetTitle={tagsCtx.onSetTitle} />
-          <Tooltip content={SESSION_ENRICH_PLANE_COPY[sessionEnrichPlane(row.original)].tooltip}>
-          <button type="button" className="inline-flex items-center gap-1 rounded-1 border border-accent/30 px-1.5 py-0.5 text-micro font-medium text-accent hover:bg-accent/10"
-            onClick={(event) => { event.stopPropagation(); onEnrich(row.original); }}
-            onKeyDown={(event) => event.stopPropagation()}>
-            {/* An upload under way (cloudProgressMeta inFlight) pulses its
-                VOCAB_ICONS.cloudProgress glyph (CloudUpload). */}
-            {cloudProgressMeta(row.original.cloud_enrichment).inFlight && (
-              <Icon
-                icon={vocabIcon("cloudProgress", row.original.cloud_enrichment?.state)}
-                size={10}
-                className="shrink-0 animate-pulse"
+      // One fixed-height line of status: subagent glyph, the title/id
+      // block (two text lines at most), then the live pill and the
+      // enrichment button at the right edge. Nothing wraps, so every row is
+      // the same height.
+      cell: ({ row }) => {
+        const r = row.original;
+        const parent = parentSessionId(r.id);
+        const joinable = liveSet.has(r.id);
+        const live = joinable || activeSet.has(r.id);
+        return (
+          <span className="flex h-8 min-w-0 items-center gap-1.5">
+            {parent && (
+              <GlyphBadge
+                icon={CornerDownRight}
+                label={`Subagent session, started by ${shortSessionId(parent)}`}
               />
             )}
-            {sessionEnrichPlane(row.original) === "org"
-              ? orgPlaneEnrichAction(row.original)
-              : cloudProgressAction(row.original.cloud_enrichment, !!row.original.cloud_enriched)}
-          </button>
-          </Tooltip>
-          {row.original.id.includes(":agent:") && (
-            <span className="text-[10px] text-fg-3">subagent</span>
-          )}
-          {row.original.cloud_enriched &&
-            // Cloud-enriched marker — makes an AI-summarized session spottable
-            // in the list. Hidden when the primary text is ALREADY showing the
-            // cloud title (no user title set): the dot would otherwise repeat
-            // exactly what's already on the row. Still shown when a user title
-            // is displayed instead (the dot's tooltip then surfaces the
-            // DIFFERENT AI title) or when enrichment exists with no title yet.
-            !(!row.original.title && row.original.cloud_title) && (
-              <Tooltip
-                content={
-                  row.original.cloud_title
-                    ? `Cloud enrichment: ${row.original.cloud_title}`
-                    : "Cloud-enriched session"
-                }
-              >
-                <span
-                  tabIndex={0}
-                  aria-label="Cloud-enriched session"
-                  className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
-                />
-              </Tooltip>
-            )}
-          {liveSet.has(row.original.id) ? (
-            <Pill
-              variant="success"
-              title="Running as an attachable `observer --attach` session - open it and click Jump in to join the live terminal."
-            >
-              <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
-              live · joinable
-            </Pill>
-          ) : (
-            activeSet.has(row.original.id) && (
-              // Bare (non-attachable) live session — offer a read-only
-              // watch. stopPropagation so the pill click doesn't also
-              // fire the row's open-in-normal-mode handler.
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onWatch(row.original.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    onWatch(row.original.id);
-                  }
-                }}
-                className="cursor-pointer focus:outline-none"
-              >
-                <Pill
-                  variant="success"
-                  title="Running outside observer - watch the conversation read-only; joining requires an observer-launched session"
-                >
-                  <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
-                  live · watch
-                </Pill>
-              </span>
-            )
-          )}
-        </span>
-      ),
+            <SessionTitleCell row={r} onSetTitle={tagsCtx.onSetTitle} />
+            {live && <LiveBadge joinable={joinable} onWatch={() => onWatch(r.id)} />}
+            <EnrichButton row={r} onEnrich={onEnrich} />
+          </span>
+        );
+      },
     },
-    {
+    tool: {
       id: "tool",
       header: () => <>Tool<HelpInd id="column.sessions.tool" /></>,
       accessorKey: "tool",
-      meta: { width: COL_W.tool, truncate: true },
-      // The badge's label is the tool's display name, which runs to 16
-      // characters ("Open Interpreter", "Perplexity (web)"). min-w-0 on
-      // both the wrapper and the badge lets the label shrink; the arbitrary
-      // child selector puts the ellipsis on the label span itself, which is
-      // the only text node in the shared primitive. The badge's own tooltip
-      // still carries the full name.
+      // The badge label ellipsizes (its glyph's tooltip names the tool);
+      // the client and where-it-ran ride along as glyphs while their own
+      // columns are off, each with the full words in its tooltip.
       cell: ({ row }) => (
-        <span className="flex min-w-0">
+        <span className="flex min-w-0 items-center gap-1.5">
           <ToolBadge
             tool={row.original.tool}
             pip={false}
-            className="min-w-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate"
+            className="min-w-0 !shrink [&>span:last-child]:min-w-0 [&>span:last-child]:truncate"
           />
+          {facets.client && (
+            <SurfaceBadge glyph surface={row.original.surface} host={row.original.surface_host} />
+          )}
+          {facets.ran && (
+            <ExecutionLocationBadge
+              glyph
+              hideLocal
+              location={row.original.execution_location}
+              vendorRef={row.original.vendor_session_ref}
+            />
+          )}
         </span>
       ),
     },
-    {
+    client: {
       // Client: the capture-surface pill (cli / ide / desktop / sdk / web +
       // host). SurfaceBadge renders NOTHING when neither field is present —
-      // absent is unknown, never "cli" — so an unstamped row shows a blank
-      // cell rather than a fabricated default. Not sortable: there is no
-      // server sort key for it, and the table is manualSorting, so a header
-      // click would otherwise send a sort_by the server ignores.
+      // absent is unknown, never "cli". Not sortable: no server sort key.
       id: "client",
       header: () => <>Client<HelpInd id="column.sessions.client" /></>,
       accessorFn: (r) => r.surface ?? "",
       enableSorting: false,
-      meta: { width: COL_W.client, truncate: true },
       cell: ({ row }) => (
         <span className="flex min-w-0">
           <SurfaceBadge
@@ -1839,67 +1999,75 @@ function buildColumns(
         </span>
       ),
     },
-    {
+    ran: {
+      // Ran: where the session's agent ran (node migration 240). Blank is
+      // unknown, never "local". Not sortable (no server sort key).
+      id: "ran",
+      header: () => <>Ran<HelpInd id="column.sessions.ran" /></>,
+      accessorFn: (r) => r.execution_location ?? "",
+      enableSorting: false,
+      cell: ({ row }) => (
+        <span className="flex min-w-0">
+          <ExecutionLocationBadge
+            location={row.original.execution_location}
+            vendorRef={row.original.vendor_session_ref}
+          />
+        </span>
+      ),
+    },
+    project: {
       id: "project",
       header: () => <>Project<HelpInd id="column.sessions.project" /></>,
       accessorKey: "project",
-      meta: { width: COL_W.project, truncate: true },
-      cell: ({ row }) =>
-        row.original.project ? (
-          // TruncatedPath keeps the TAIL (the basename) readable and puts
-          // the ellipsis at the head; the full path stays on hover/focus.
-          <TruncatedPath
-            value={row.original.project}
-            className="font-mono text-[11px] text-fg-3"
-          />
-        ) : (
-          <Pill>none</Pill>
-        ),
+      // The folder name reads at a glance; the full path is the tooltip.
+      cell: ({ row }) => {
+        const p = row.original.project;
+        if (!p) return <span className="text-fg-4">none</span>;
+        return (
+          <Tooltip content={<span className="break-all font-mono">{p}</span>} maxWidth={420}>
+            <span tabIndex={0} className="block min-w-0 cursor-help truncate text-fg-2 focus:outline-none">
+              {projectName(p) || p}
+            </span>
+          </Tooltip>
+        );
+      },
     },
-    {
-      // Tags: up to MAX_ROW_TAGS pills + a "+n" overflow, followed by the
-      // editor trigger. Clicking a pill filters the list to that tag
-      // (server-side); clicking the trigger opens the popover editor.
+    tags: {
+      // Tags: as many pills as fit (rowTagCount, at most two) + a "+n"
+      // overflow, the note glyph, and the editor trigger, which shows on row
+      // hover / focus (or while open) so untagged rows stay empty. A pill
+      // click filters the list.
       id: "tags",
       header: () => <>Tags</>,
       enableSorting: false,
-      meta: { width: COL_W.tags },
       cell: ({ row }) => {
         const tags = row.original.tags ?? [];
-        const shown = tags.slice(0, MAX_ROW_TAGS);
-        const hidden = tags.slice(MAX_ROW_TAGS);
+        const count = rowTagCount(tags, row.original.has_note === true, TAGS_CELL_WIDTH);
+        const shownTags = tags.slice(0, count);
+        const hidden = tags.slice(count);
         return (
-          // No max-width: the cell already has a hard width budget, and
-          // flex-wrap keeps the pills inside it instead of overflowing.
-          <span className="flex flex-wrap items-center gap-1">
-            {shown.map((t) => (
-              <TagPill key={t} tag={t} onClick={tagsCtx.onTagClick} />
+          <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+            {shownTags.map((t) => (
+              <TagPill key={t} tag={t} shrink onClick={tagsCtx.onTagClick} />
             ))}
             {hidden.length > 0 && (
               <Tooltip content={hidden.join(", ")}>
                 <span
                   tabIndex={0}
-                  className="cursor-help font-mono text-[10px] text-fg-3 focus:outline-none"
+                  className="shrink-0 cursor-help font-mono text-[10px] text-fg-3 focus:outline-none"
                 >
                   +{hidden.length}
                 </span>
               </Tooltip>
             )}
             {row.original.has_note && (
-              <Tooltip content="This session has a note - open it to read.">
-                <span
-                  tabIndex={0}
-                  aria-label="has note"
-                  className="inline-flex cursor-help text-fg-3 focus:outline-none"
-                >
-                  <Icon icon={Pencil} size={10} />
-                </span>
-              </Tooltip>
+              <GlyphBadge icon={StickyNote} label="This session has a note. Open it to read." />
             )}
             <TagEditor
+              quiet
               sessionId={row.original.id}
               tags={tags}
-              label={tags.length > 0 ? "edit" : "+ tag"}
+              className="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 aria-expanded:opacity-100"
               onTagsChange={(next) =>
                 tagsCtx.onTagsChange(row.original.id, next)
               }
@@ -1908,13 +2076,11 @@ function buildColumns(
         );
       },
     },
-    {
+    models: {
       id: "models",
       header: "Model(s)",
-      // Not server-sortable (no single ordering key); keep the header inert
-      // rather than offering a sort affordance the backend would ignore.
+      // Not server-sortable (no single ordering key).
       enableSorting: false,
-      meta: { width: COL_W.models, truncate: true },
       cell: ({ row }) => {
         const ms = row.original.models ?? [];
         if (ms.length === 0) {
@@ -1942,7 +2108,7 @@ function buildColumns(
               </span>
               {extras.length > 0 && (
                 <span className="shrink-0 font-mono text-[10.5px] text-fg-3">
-                  + {extras.length}
+                  +{extras.length}
                 </span>
               )}
             </span>
@@ -1950,51 +2116,45 @@ function buildColumns(
         );
       },
     },
-    {
+    started_at: {
       id: "started_at",
       header: () => <>Started<HelpInd id="column.sessions.started" /></>,
       accessorKey: "started_at",
-      meta: { width: COL_W.started },
       cell: ({ row }) => (
         <Tooltip content={fmtDateTime(row.original.started_at)}>
           <span
             tabIndex={0}
-            className="cursor-help font-mono text-[11px] text-fg-3 focus:outline-none"
+            className="cursor-help whitespace-nowrap font-mono text-[11px] text-fg-3 focus:outline-none"
           >
             {fmtTimestamp(row.original.started_at)}
           </span>
         </Tooltip>
       ),
     },
-    {
+    elapsed: {
       id: "elapsed",
       header: () => <>Elapsed<HelpInd id="column.sessions.elapsed" /></>,
       accessorKey: "duration_seconds",
-      meta: { align: "right", width: COL_W.elapsed },
       cell: ({ row }) => (
-        <span className="tabular-nums text-fg-2">
+        <span className="text-fg-2">
           {fmtDuration(row.original.duration_seconds * 1000)}
         </span>
       ),
     },
-    {
+    actions: {
       id: "actions",
       header: () => <>Actions<HelpInd id="column.sessions.actions" /></>,
       accessorKey: "total_actions",
-      meta: { align: "right", width: COL_W.actions },
       cell: ({ row }) => (
-        <span className="tabular-nums text-fg-1">
-          {fmtInt(row.original.total_actions)}
-        </span>
+        <span className="text-fg-1">{fmtInt(row.original.total_actions)}</span>
       ),
     },
-    {
+    ai_code_lines: {
       // AI code lines (lines-of-code tracking §3.4). Server-sortable via
       // sort_by=ai_code_lines. There is deliberately NO human column and no
       // share here: with no editor capture the human side is unmeasured
       // rather than zero, and a table cell has no room for the capture
-      // caveat that would make either honest. The share lives only where
-      // /api/loc/summary supplies human_capture.
+      // caveat that would make either honest.
       id: "ai_code_lines",
       header: () => (
         <Tooltip content="Code lines the agent added or modified. Comments and blank lines are excluded; deleted lines are not included. The muted percentage is the comment share: comment lines over code plus comment lines the agent wrote in code files.">
@@ -2005,11 +2165,8 @@ function buildColumns(
         </Tooltip>
       ),
       accessorKey: "ai_code_lines",
-      meta: { align: "right", mono: true, width: COL_W.aiCode },
       cell: ({ row }) => {
-        // omitempty on the wire: absent means NOT COUNTED, never zero. A
-        // session that was never counted is not a session that wrote no
-        // code, so it gets a dash and the backfill hint instead of a 0.
+        // omitempty on the wire: absent means NOT COUNTED, never zero.
         const v = row.original.ai_code_lines;
         if (v === undefined || v === null) {
           return (
@@ -2021,11 +2178,10 @@ function buildColumns(
           );
         }
         // The comment share is server-computed (internal/loc.SplitAuthored)
-        // over the same rows as the number, and rendered by the one shared
-        // renderer; the cell does no arithmetic. Absent split = no suffix.
+        // and rendered by the one shared renderer; absent split = no suffix.
         return (
           <span className="whitespace-nowrap">
-            <span className="tabular-nums text-fg-1">{fmtCompact(v)}</span>
+            <span className="text-fg-1">{fmtCompact(v)}</span>
             {row.original.ai_split && (
               <CodeCommentSplit
                 split={row.original.ai_split}
@@ -2038,43 +2194,63 @@ function buildColumns(
         );
       },
     },
-    {
+    tokens: {
+      // Tokens: the four billable buckets added up, with their mix as a thin
+      // bar under the number. No server sort key exists for the sum, so the
+      // header does not sort; the Sort menu and the per-bucket columns do.
+      id: "tokens",
+      header: () => <>Tokens<HelpInd id="column.sessions.tokens" /></>,
+      accessorFn: (r) => sessionTokenTotal(r),
+      enableSorting: false,
+      cell: ({ row }) => {
+        const r = row.original;
+        const total = sessionTokenTotal(r);
+        if (total <= 0) return <span className="text-fg-4">-</span>;
+        return (
+          <div className="flex flex-col items-end gap-1">
+            <Tooltip content={<TokenBreakdown row={r} />} maxWidth={300}>
+              <span
+                tabIndex={0}
+                data-tokens-cell
+                className="cursor-help text-fg-1 focus:outline-none"
+              >
+                {fmtCompact(total)}
+              </span>
+            </Tooltip>
+            <TokenBar
+              buckets={{
+                netInput: r.input_tokens,
+                cacheRead: r.cache_read_tokens,
+                cacheWrite: r.cache_creation_tokens,
+                output: r.output_tokens,
+              }}
+              trackClassName="h-[3px]"
+              className="max-w-[56px]"
+            />
+          </div>
+        );
+      },
+    },
+    input: {
       id: "input",
       header: () => <>Input<HelpInd id="column.sessions.input_tokens" /></>,
       accessorKey: "input_tokens",
-      meta: { align: "right", mono: true, width: COL_W.input },
-      cell: ({ row }) =>
-        row.original.input_tokens > 0 ? (
-          <span className="tabular-nums text-fg-1">
-            {fmtCompact(row.original.input_tokens)}
-          </span>
-        ) : (
-          <span className="text-fg-4">-</span>
-        ),
+      cell: ({ row }) => tokenCount(row.original.input_tokens),
     },
-    {
+    cache_r: {
       id: "cache_r",
       header: () => (
         <>Cache R<HelpInd id="column.sessions.cache_read_tokens" /></>
       ),
       accessorKey: "cache_read_tokens",
-      meta: { align: "right", mono: true, width: COL_W.cacheR },
-      cell: ({ row }) =>
-        row.original.cache_read_tokens > 0 ? (
-          <span className="tabular-nums text-fg-1">
-            {fmtCompact(row.original.cache_read_tokens)}
-          </span>
-        ) : (
-          <span className="text-fg-4">-</span>
-        ),
+      cell: ({ row }) => tokenCount(row.original.cache_read_tokens),
     },
-    {
+    cache_w: {
       id: "cache_w",
       header: () => (
         <>Cache W<HelpInd id="column.sessions.cache_creation_tokens" /></>
       ),
       accessorKey: "cache_creation_tokens",
-      meta: { align: "right", mono: true, width: COL_W.cacheW },
       cell: ({ row }) => {
         const total = row.original.cache_creation_tokens;
         if (total <= 0) return <span className="text-fg-4">-</span>;
@@ -2105,38 +2281,26 @@ function buildColumns(
         );
         return (
           <Tooltip content={tipBody} maxWidth={260}>
-            <span tabIndex={0} className="cursor-help tabular-nums text-fg-1 focus:outline-none">
+            <span tabIndex={0} className="cursor-help text-fg-1 focus:outline-none">
               {fmtCompact(total)}
             </span>
           </Tooltip>
         );
       },
     },
-    {
+    output: {
       id: "output",
       header: () => <>Output<HelpInd id="column.sessions.output_tokens" /></>,
       accessorKey: "output_tokens",
-      meta: { align: "right", mono: true, width: COL_W.output },
-      cell: ({ row }) =>
-        row.original.output_tokens > 0 ? (
-          <span className="tabular-nums text-fg-1">
-            {fmtCompact(row.original.output_tokens)}
-          </span>
-        ) : (
-          <span className="text-fg-4">-</span>
-        ),
+      cell: ({ row }) => tokenCount(row.original.output_tokens),
     },
-    {
+    cost: {
       id: "cost",
-      // Only Total $ in the table — API $ + Tool $ live on the
-      // SessionDetailPanel's CostStat tile per operator feedback that
-      // the Sessions table had too many cost cols. Hover shows the
-      // 3-way split as a tooltip so the data isn't hidden.
-      // The cell renders the row's token total in the org's token-usage view,
-      // so the header names tokens there too.
+      // Only Total $ in the table — API $ + Tool $ live on the detail panel;
+      // hover shows the split. In the org's token-usage view the cell renders
+      // the row's token total, so the header names tokens there too.
       header: () => <>{costLabel("Total $", "Total tok")}<HelpInd id="column.sessions.cost" /></>,
       accessorKey: "cost_usd",
-      meta: { align: "right", width: COL_W.cost },
       cell: ({ row }) => {
         const total = row.original.cost_usd;
         if (total <= 0) {
@@ -2150,17 +2314,10 @@ function buildColumns(
               : "text-fg-0";
         const api = row.original.ai_cost_usd;
         const tool = row.original.tool_cost_usd;
-        // In the org's token-usage view (lib/costDisplay.tsx) fmtCost renders
-        // this row's token total instead of dollars, and the dollar split
-        // tooltip renders hidden values - so it is not offered.
-        const rowTokens =
-          row.original.input_tokens +
-          row.original.output_tokens +
-          row.original.cache_read_tokens +
-          row.original.cache_creation_tokens;
+        const rowTokens = sessionTokenTotal(row.original);
         if (getCostDisplayMode() === "tokens") {
           return (
-            <span className="font-semibold tabular-nums text-fg-0">{fmtCost(total, rowTokens)}</span>
+            <span className="font-semibold text-fg-0">{fmtCost(total, rowTokens)}</span>
           );
         }
         const split =
@@ -2178,7 +2335,7 @@ function buildColumns(
           >
             <span
               tabIndex={0}
-              className={`cursor-help font-semibold tabular-nums focus:outline-none ${color}`}
+              className={`cursor-help font-semibold focus:outline-none ${color}`}
             >
               {fmtCost(total, rowTokens)}
             </span>
@@ -2186,69 +2343,101 @@ function buildColumns(
         );
       },
     },
-  ];
-
-  if (showScoring) {
-    cols.push(
-      {
-        id: "quality",
-        header: () => <>Quality<HelpInd id="column.sessions.quality" /></>,
-        accessorFn: (r) => r.quality_score ?? -1,
-        meta: { align: "right", width: COL_W.quality },
-        cell: ({ row }) =>
-          row.original.quality_score != null
-            ? fmtPct(row.original.quality_score)
-            : "-",
-      },
-      {
-        id: "errors",
-        header: () => <>Errors<HelpInd id="column.sessions.errors" /></>,
-        accessorFn: (r) => r.error_rate ?? -1,
-        meta: { align: "right", width: COL_W.errors },
-        cell: ({ row }) =>
-          row.original.error_rate != null ? (
-            <span
-              className={
-                row.original.error_rate > 0.05 ? "text-warn" : "text-fg-2"
-              }
-            >
-              {fmtPct(row.original.error_rate)}
-            </span>
-          ) : (
-            "-"
-          ),
-      },
-      {
-        id: "redundancy",
-        header: () => <>Redund.<HelpInd id="column.sessions.redundancy" /></>,
-        accessorFn: (r) => r.redundancy_ratio ?? -1,
-        meta: { align: "right", width: COL_W.redundancy },
-        cell: ({ row }) => {
-          const r = row.original;
-          if (r.redundancy_ratio == null) return "-";
-          // Spec §14.1 wasteful subset rendered as
-          // "0.30 (0.20 wasteful)" when present. Sessions
-          // without cache_events keep the legacy single value.
-          if (r.redundancy_ratio_wasteful != null) {
-            return (
-              <Tooltip content="total / wasteful subset">
-                <span tabIndex={0} className="focus:outline-none">
-                  {fmtPct(r.redundancy_ratio)}
-                  <span className="ml-1 text-fg-3">
-                    ({fmtPct(r.redundancy_ratio_wasteful)} wasteful)
-                  </span>
+    quality: {
+      id: "quality",
+      header: () => <>Quality<HelpInd id="column.sessions.quality" /></>,
+      accessorFn: (r) => r.quality_score ?? -1,
+      cell: ({ row }) =>
+        row.original.quality_score != null
+          ? fmtPct(row.original.quality_score)
+          : <span className="text-fg-4">-</span>,
+    },
+    errors: {
+      id: "errors",
+      header: () => <>Errors<HelpInd id="column.sessions.errors" /></>,
+      accessorFn: (r) => r.error_rate ?? -1,
+      cell: ({ row }) =>
+        row.original.error_rate != null ? (
+          <span
+            className={
+              row.original.error_rate > 0.05 ? "text-warn" : "text-fg-2"
+            }
+          >
+            {fmtPct(row.original.error_rate)}
+          </span>
+        ) : (
+          <span className="text-fg-4">-</span>
+        ),
+    },
+    redundancy: {
+      id: "redundancy",
+      header: () => <>Redund.<HelpInd id="column.sessions.redundancy" /></>,
+      accessorFn: (r) => r.redundancy_ratio ?? -1,
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.redundancy_ratio == null) return <span className="text-fg-4">-</span>;
+        // Spec §14.1 wasteful subset rendered as
+        // "0.30 (0.20 wasteful)" when present. Sessions
+        // without cache_events keep the legacy single value.
+        if (r.redundancy_ratio_wasteful != null) {
+          return (
+            <Tooltip content="total / wasteful subset">
+              <span tabIndex={0} className="focus:outline-none">
+                {fmtPct(r.redundancy_ratio)}
+                <span className="ml-1 text-fg-3">
+                  ({fmtPct(r.redundancy_ratio_wasteful)} wasteful)
                 </span>
-              </Tooltip>
-            );
-          }
-          return fmtPct(r.redundancy_ratio);
-        },
+              </span>
+            </Tooltip>
+          );
+        }
+        return fmtPct(r.redundancy_ratio);
       },
-    );
-  }
+    },
+  };
 
-  return cols;
+  return shown.map((id) => {
+    const spec = sessionColumn(id);
+    const def = defs[id];
+    return {
+      ...def,
+      meta: {
+        ...COLUMN_META[id],
+        // Session declares the fit rule's width for it (null until the card
+        // is measured: no width, so it takes the leftover space).
+        width: spec?.flex ? (flexWidth ?? undefined) : spec?.width,
+        sticky: pinned && spec?.locked === true,
+      },
+    } as ColumnDef<SessionRow, unknown>;
+  });
 }
+
+// COLUMN_META is each column's alignment and clipping (widths and pinning
+// come from lib/sessionColumns): numbers right-aligned in tabular figures,
+// and every text column clips rather than widening the table.
+const COLUMN_META: Record<SessionColumnId, { align?: "right"; truncate?: boolean }> = {
+  favorite: {},
+  session: { truncate: true },
+  tool: { truncate: true },
+  client: { truncate: true },
+  ran: { truncate: true },
+  project: { truncate: true },
+  tags: { truncate: true },
+  models: { truncate: true },
+  started_at: {},
+  elapsed: { align: "right" },
+  actions: { align: "right" },
+  ai_code_lines: { align: "right" },
+  tokens: { align: "right" },
+  input: { align: "right" },
+  cache_r: { align: "right" },
+  cache_w: { align: "right" },
+  output: { align: "right" },
+  cost: { align: "right" },
+  quality: { align: "right" },
+  errors: { align: "right" },
+  redundancy: { align: "right" },
+};
 
 // Format an ISO timestamp as "MMM DD HH:MM" — matches design's
 // dim mono treatment for the Started column. localeString is the cached,
@@ -2277,6 +2466,8 @@ function exportSessionsCsv(rows: SessionRow[]) {
     { header: "tool", value: (r) => r.tool },
     { header: "surface", value: (r) => r.surface },
     { header: "surface_host", value: (r) => r.surface_host },
+    { header: "execution_location", value: (r) => r.execution_location },
+    { header: "vendor_session_ref", value: (r) => r.vendor_session_ref },
     { header: "project", value: (r) => r.project },
     { header: "started_at", value: (r) => r.started_at },
     { header: "duration_seconds", value: (r) => r.duration_seconds },

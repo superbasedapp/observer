@@ -1,7 +1,7 @@
 {
   "schema": "sbo.code-rule-pack.v1",
   "id": "observer-code",
-  "version": "1.3.1",
+  "version": "1.5.0",
   "licence": "Apache-2.0",
   "canary": {
     "rule": "observer-code.canary",
@@ -41,6 +41,26 @@
       "exclude_tests": true
     },
     {
+      "id": "csharp.nosql-injection",
+      "file": "rules/csharp.nosql-injection.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "csharp.open-redirect",
+      "file": "rules/csharp.open-redirect.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
+    },
+    {
       "id": "csharp.path-traversal-request",
       "file": "rules/csharp.path-traversal-request.yaml",
       "languages": [
@@ -60,7 +80,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -83,20 +103,6 @@
       "category": "code_vuln",
       "severity": "high",
       "cwe": "CWE-89",
-      "precision": {
-        "figure": 0,
-        "wilson_lower": 0,
-        "denominator": 4,
-        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
-        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
-        "results": 4,
-        "passes": {
-          "results": 0,
-          "verdict_agreements": 0,
-          "reason_agreements": 0,
-          "second_pass_pending": 48
-        }
-      },
       "exclude_tests": true
     },
     {
@@ -161,7 +167,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -186,9 +192,29 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
+    },
+    {
+      "id": "csharp.xss-request-input",
+      "file": "rules/csharp.xss-request-input.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "csharp.xxe-parser",
+      "file": "rules/csharp.xxe-parser.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
     },
     {
       "id": "go.cors-credentials-any-origin",
@@ -222,6 +248,26 @@
       "exclude_tests": true
     },
     {
+      "id": "go.nosql-injection",
+      "file": "rules/go.nosql-injection.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "go.open-redirect",
+      "file": "rules/go.open-redirect.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
+    },
+    {
       "id": "go.path-traversal-request",
       "file": "rules/go.path-traversal-request.yaml",
       "languages": [
@@ -241,7 +287,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -275,7 +321,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -321,7 +367,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -348,6 +394,16 @@
       "cwe": "CWE-916"
     },
     {
+      "id": "go.xss-request-input",
+      "file": "rules/go.xss-request-input.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
       "id": "java.cors-credentials-any-origin",
       "file": "rules/java.cors-credentials-any-origin.yaml",
       "languages": [
@@ -367,7 +423,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -391,7 +447,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -405,6 +461,26 @@
       "severity": "high",
       "cwe": "CWE-347",
       "exclude_tests": true
+    },
+    {
+      "id": "java.nosql-injection",
+      "file": "rules/java.nosql-injection.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "java.open-redirect",
+      "file": "rules/java.open-redirect.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
     },
     {
       "id": "java.path-traversal-request",
@@ -426,7 +502,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -471,7 +547,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -506,7 +582,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -531,7 +607,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -555,7 +631,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -569,6 +645,26 @@
       "category": "code_vuln",
       "severity": "high",
       "cwe": "CWE-916"
+    },
+    {
+      "id": "java.xss-request-input",
+      "file": "rules/java.xss-request-input.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "java.xxe-parser",
+      "file": "rules/java.xxe-parser.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
     },
     {
       "id": "js.cors-credentials-any-origin",
@@ -613,7 +709,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -628,6 +724,28 @@
       "severity": "high",
       "cwe": "CWE-347",
       "exclude_tests": true
+    },
+    {
+      "id": "js.nosql-injection",
+      "file": "rules/js.nosql-injection.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "js.open-redirect",
+      "file": "rules/js.open-redirect.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
     },
     {
       "id": "js.path-traversal-request",
@@ -650,7 +768,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       }
     },
@@ -698,7 +816,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -735,7 +853,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -772,7 +890,7 @@
           "results": 0,
           "verdict_agreements": 0,
           "reason_agreements": 0,
-          "second_pass_pending": 48
+          "second_pass_pending": 44
         }
       },
       "exclude_tests": true
@@ -787,6 +905,212 @@
       "category": "code_vuln",
       "severity": "high",
       "cwe": "CWE-916"
+    },
+    {
+      "id": "js.xss-request-input",
+      "file": "rules/js.xss-request-input.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "js.xxe-parser",
+      "file": "rules/js.xxe-parser.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
+    },
+    {
+      "id": "kotlin.nosql-injection",
+      "file": "rules/kotlin.nosql-injection.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "kotlin.open-redirect",
+      "file": "rules/kotlin.open-redirect.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
+    },
+    {
+      "id": "kotlin.path-traversal-request",
+      "file": "rules/kotlin.path-traversal-request.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22"
+    },
+    {
+      "id": "kotlin.shell-interpolation",
+      "file": "rules/kotlin.shell-interpolation.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "kotlin.sql-string-concat",
+      "file": "rules/kotlin.sql-string-concat.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "kotlin.ssrf-request-url",
+      "file": "rules/kotlin.ssrf-request-url.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "kotlin.unsafe-deserialization",
+      "file": "rules/kotlin.unsafe-deserialization.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "kotlin.xss-request-input",
+      "file": "rules/kotlin.xss-request-input.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "kotlin.xxe-parser",
+      "file": "rules/kotlin.xxe-parser.yaml",
+      "languages": [
+        "kotlin"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
+    },
+    {
+      "id": "php.nosql-injection",
+      "file": "rules/php.nosql-injection.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "php.open-redirect",
+      "file": "rules/php.open-redirect.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
+    },
+    {
+      "id": "php.path-traversal-request",
+      "file": "rules/php.path-traversal-request.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22"
+    },
+    {
+      "id": "php.shell-interpolation",
+      "file": "rules/php.shell-interpolation.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "php.sql-string-concat",
+      "file": "rules/php.sql-string-concat.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "php.ssrf-request-url",
+      "file": "rules/php.ssrf-request-url.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "php.unsafe-deserialization",
+      "file": "rules/php.unsafe-deserialization.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "php.xss-request-input",
+      "file": "rules/php.xss-request-input.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "php.xxe-parser",
+      "file": "rules/php.xxe-parser.yaml",
+      "languages": [
+        "php"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
     },
     {
       "id": "python.cors-credentials-any-origin",
@@ -828,6 +1152,26 @@
       "severity": "high",
       "cwe": "CWE-347",
       "exclude_tests": true
+    },
+    {
+      "id": "python.nosql-injection",
+      "file": "rules/python.nosql-injection.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "python.open-redirect",
+      "file": "rules/python.open-redirect.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
     },
     {
       "id": "python.path-traversal-request",
@@ -922,6 +1266,118 @@
       "category": "code_vuln",
       "severity": "high",
       "cwe": "CWE-916"
+    },
+    {
+      "id": "python.xss-request-input",
+      "file": "rules/python.xss-request-input.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "python.xxe-parser",
+      "file": "rules/python.xxe-parser.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
+    },
+    {
+      "id": "ruby.nosql-injection",
+      "file": "rules/ruby.nosql-injection.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-943"
+    },
+    {
+      "id": "ruby.open-redirect",
+      "file": "rules/ruby.open-redirect.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-601"
+    },
+    {
+      "id": "ruby.path-traversal-request",
+      "file": "rules/ruby.path-traversal-request.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22"
+    },
+    {
+      "id": "ruby.shell-interpolation",
+      "file": "rules/ruby.shell-interpolation.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "ruby.sql-string-concat",
+      "file": "rules/ruby.sql-string-concat.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "ruby.ssrf-request-url",
+      "file": "rules/ruby.ssrf-request-url.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "ruby.unsafe-deserialization",
+      "file": "rules/ruby.unsafe-deserialization.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "ruby.xss-request-input",
+      "file": "rules/ruby.xss-request-input.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-79"
+    },
+    {
+      "id": "ruby.xxe-parser",
+      "file": "rules/ruby.xxe-parser.yaml",
+      "languages": [
+        "ruby"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-611"
     }
   ]
 }

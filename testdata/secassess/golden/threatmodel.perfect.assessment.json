@@ -1,0 +1,1196 @@
+{
+  "schema": "observer.threatmodel.v1",
+  "run_id": "GOLDEN",
+  "prompt_version": "tm.2",
+  "generator": {"tool": "golden-fixture", "model": "hand-written"},
+  "summary": "Golden threat model result (perfect): hand-written for the scorer's tests on a deliberately vulnerable fixture, local testing only. The run id is a placeholder. All 7 components, 9 flows and 14 expected threats, the existing mitigations cited at real lines, every other applicable cell waived with a reason.",
+  "scope": {
+    "in_scope": ["server.py", "templates", "static", "notes.sqlite.seed.sql"],
+    "out_of_scope": [],
+    "assumptions": ["The application runs on a developer machine on loopback."]
+  },
+  "system": {
+    "components": [
+      {
+        "id": "http_server",
+        "name": "http_server",
+        "type": "service",
+        "description": "Request parsing, routing, cookies, CORS headers, error handling, the debug route.",
+        "paths": [{"path": "server.py", "line": 228, "needle": "class Handler(BaseHTTPRequestHandler):"}],
+        "tech": ["python3", "http.server"],
+        "zone": "app"
+      },
+      {
+        "id": "auth",
+        "name": "auth",
+        "type": "service",
+        "description": "Register, login, session issue, bearer token reading, logout.",
+        "paths": [{"path": "server.py", "line": 391, "needle": "def route_login(h):"}],
+        "tech": ["python3"],
+        "zone": "app"
+      },
+      {
+        "id": "notes",
+        "name": "notes",
+        "type": "service",
+        "description": "Note search, read, create, delete, pin, profile update, export credits.",
+        "paths": [{"path": "server.py", "line": 429, "needle": "def route_notes(h):"}],
+        "tech": ["python3"],
+        "zone": "app"
+      },
+      {
+        "id": "importer",
+        "name": "importer",
+        "type": "service",
+        "description": "Fetches a URL on behalf of a signed-in user (limited to the internal console).",
+        "paths": [{"path": "server.py", "line": 219, "needle": "def fetch_url(url):"}],
+        "tech": ["urllib"],
+        "zone": "app"
+      },
+      {
+        "id": "database",
+        "name": "database",
+        "type": "datastore",
+        "description": "In-memory SQLite: users, notes, sessions.",
+        "paths": [
+          {
+            "path": "server.py",
+            "line": 50,
+            "needle": "DB = sqlite3.connect(\":memory:\", check_same_thread=False)"
+          }
+        ],
+        "tech": ["sqlite3"],
+        "zone": "app"
+      },
+      {
+        "id": "file_store",
+        "name": "file_store",
+        "type": "datastore",
+        "description": "The static and attachments directories and the application tree they sit in.",
+        "paths": [{"path": "server.py", "line": 31, "needle": "STATIC_DIR = os.path.join(APP_ROOT, \"static\")"}],
+        "tech": ["filesystem"],
+        "zone": "app"
+      },
+      {
+        "id": "internal_console",
+        "name": "internal_console",
+        "type": "service",
+        "description": "The unauthenticated loopback listener that returns the application configuration.",
+        "paths": [{"path": "server.py", "line": 336, "needle": "class ConsoleHandler(BaseHTTPRequestHandler):"}],
+        "tech": ["python3", "http.server"],
+        "zone": "internal"
+      }
+    ],
+    "zones": [
+      {
+        "id": "client",
+        "name": "client",
+        "description": "The browser and the network path to the server; untrusted."
+      },
+      {
+        "id": "app",
+        "name": "app",
+        "description": "The server process: request handling, the in-memory database and the static files."
+      },
+      {
+        "id": "internal",
+        "name": "internal",
+        "description": "The loopback-only sibling listener (internal console), meant for the host only."
+      }
+    ],
+    "actors": [
+      {"id": "visitor", "name": "visitor", "kind": "anonymous"},
+      {"id": "member", "name": "member", "kind": "end_user"},
+      {"id": "admin", "name": "admin", "kind": "admin"}
+    ],
+    "assets": [
+      {
+        "id": "user_credentials_and_password_hashes",
+        "name": "user credentials and password hashes",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "private_notes",
+        "name": "private notes",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "session_tokens",
+        "name": "session tokens",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "internal_console_configuration",
+        "name": "internal console configuration",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["internal_console"]
+      },
+      {
+        "id": "application_source_and_example_settings",
+        "name": "application source and example settings",
+        "sensitivity": "internal",
+        "data_classes": [],
+        "stored_in": ["file_store"]
+      }
+    ],
+    "entry_points": [
+      {
+        "id": "EP-1",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-2",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-3",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-4",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-5",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-6",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-7",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-8",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-9",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-10",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-11",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      }
+    ],
+    "flows": [
+      {
+        "id": "requests",
+        "from": "visitor",
+        "to": "http_server",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["client", "app"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "responses",
+        "from": "http_server",
+        "to": "visitor",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["app", "client"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "auth_calls",
+        "from": "http_server",
+        "to": "auth",
+        "data": [],
+        "protocol": "in-process",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "note_calls",
+        "from": "http_server",
+        "to": "notes",
+        "data": [],
+        "protocol": "in-process",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "note_queries",
+        "from": "notes",
+        "to": "database",
+        "data": [],
+        "protocol": "sqlite",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "user_and_session_queries",
+        "from": "auth",
+        "to": "database",
+        "data": [],
+        "protocol": "sqlite",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "file_reads",
+        "from": "http_server",
+        "to": "file_store",
+        "data": [],
+        "protocol": "filesystem",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": false
+      },
+      {
+        "id": "import_requests",
+        "from": "http_server",
+        "to": "importer",
+        "data": [],
+        "protocol": "in-process",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": false
+      },
+      {
+        "id": "console_fetch",
+        "from": "importer",
+        "to": "internal_console",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["app", "internal"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": false
+      }
+    ]
+  },
+  "threats": [
+    {
+      "id": "TH01",
+      "title": "SQL injection tampers with the notes query",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "flow", "id": "note_queries"},
+      "description": "The q parameter is concatenated into the SELECT. A UNION payload reads other tables (users, sessions). The helper that looks like input validation returns its argument unchanged.",
+      "rating": {"likelihood": 4, "impact": 5},
+      "existing": [
+        {
+          "text": "Bound parameter in the tag lookup",
+          "refs": [{"path": "server.py", "line": 93, "needle": "AND tag = ?"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Bind q as a parameter.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 431, "needle": "title LIKE '%{q}%'"}]
+        }
+      ],
+      "cwe": ["CWE-89"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial",
+      "abuse_case": {
+        "actor": "visitor",
+        "goal": "SQL injection tampers with the notes query",
+        "steps": ["GET /notes?q=zz%27%20UNION%20SELECT%20id%2C%20username%2C%20role%20FROM%20users--%20"]
+      }
+    },
+    {
+      "id": "TH02",
+      "title": "Reflected script in the response page",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "flow", "id": "responses"},
+      "description": "The term parameter is placed in the page heading without escaping; the result list is escaped, the heading is not.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [
+        {
+          "text": "html.escape on the note page",
+          "refs": [{"path": "server.py", "line": 110, "needle": "html.escape(note"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Escape the term before it is placed in the page.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 444, "needle": "Results for {term}"}]
+        }
+      ],
+      "cwe": ["CWE-79"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial"
+    },
+    {
+      "id": "TH03",
+      "title": "Any signed-in user reads another user's note",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "notes"},
+      "description": "Any signed-in user can read any note by id, including other users' private notes. Delete and pin check the owner; read does not.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [
+        {
+          "text": "Ownership check on delete and pin",
+          "refs": [{"path": "server.py", "line": 208, "needle": "owner_id != uid"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Check the note's owner before returning it.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 464, "needle": "SELECT * FROM notes WHERE id = ?"}]
+        }
+      ],
+      "cwe": ["CWE-639"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial",
+      "abuse_case": {
+        "actor": "member",
+        "goal": "Any signed-in user reads another user's note",
+        "steps": ["POST /api/login", "GET /api/notes/1"]
+      }
+    },
+    {
+      "id": "TH04",
+      "title": "Admin route trusts a client-set role cookie",
+      "framework": "stride",
+      "category": "elevation_of_privilege",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "The admin user list is gated on a plain cookie named role, which the client sets. No session is needed.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Authorise from the server-side session, not a cookie.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 514, "needle": "h.cookie(\"role\") != \"admin\""}]
+        }
+      ],
+      "cwe": ["CWE-602"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "abuse_case": {
+        "actor": "visitor",
+        "goal": "Admin route trusts a client-set role cookie",
+        "steps": ["GET /admin/users"]
+      }
+    },
+    {
+      "id": "TH05",
+      "title": "Predictable session tokens let one user act as another",
+      "framework": "stride",
+      "category": "spoofing",
+      "element": {"kind": "component", "id": "auth"},
+      "description": "Session tokens are sequential numbers (sess-1001, sess-1002, ...), so a neighbour's token can be guessed; the cookie carries no HttpOnly, Secure or SameSite attribute.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Issue random tokens and set HttpOnly, Secure and SameSite.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 190, "needle": "sid={token}; Path=/"}]
+        }
+      ],
+      "cwe": ["CWE-330", "CWE-1004"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH06",
+      "title": "Path traversal discloses files outside the static directory",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "file_store"},
+      "description": "The file parameter is joined onto the static directory without normalisation, so ../ reaches the application directory (the source, the example settings file, the seed SQL). The shared reader stops at the application directory; that fence is containment for the fixture, not a mitigation of the flaw.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [
+        {
+          "text": "Real-path check on attachments",
+          "refs": [{"path": "server.py", "line": 123, "needle": "path.startswith(ATTACH_DIR"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Resolve the path and require it to stay under static/.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 528, "needle": "path = os.path.join(STATIC_DIR, name)"}]
+        }
+      ],
+      "cwe": ["CWE-22"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial"
+    },
+    {
+      "id": "TH07",
+      "title": "SSRF reaches the internal console",
+      "framework": "stride",
+      "category": "elevation_of_privilege",
+      "element": {"kind": "component", "id": "importer"},
+      "description": "A signed-in user supplies the URL the server fetches. The only accepted target is the sibling loopback listener (the internal console, no authentication), which returns its configuration. The target check is containment for the fixture: it keeps the fetcher from reaching anything else.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Remove the feature or allow-list the destinations that need it.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 224, "needle": "with opener.open(url, timeout=3) as resp:"}]
+        }
+      ],
+      "cwe": ["CWE-918"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH08",
+      "title": "Forged bearer token accepted",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "auth"},
+      "description": "The token is split into three parts and the middle part is trusted; the signature part is never compared, so a forged claim set (sub 3) acts as the admin user.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [
+        {
+          "text": "Constant-time API key comparison",
+          "refs": [{"path": "server.py", "line": 141, "needle": "hmac.compare_digest(provided"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Verify the signature before trusting a claim.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 153, "needle": "head, body, sig = token.split(\".\")"}]
+        }
+      ],
+      "cwe": ["CWE-347"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial",
+      "abuse_case": {"actor": "visitor", "goal": "Forged bearer token accepted", "steps": ["GET /api/me"]}
+    },
+    {
+      "id": "TH09",
+      "title": "Tracebacks and the debug route disclose internals",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "An unhandled exception returns the full traceback to the client, and /debug/info lists every route and every live session token.",
+      "rating": {"likelihood": 2, "impact": 2},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Return a generic error and remove the debug route.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 321, "needle": "traceback.format_exc()"}]
+        }
+      ],
+      "cwe": ["CWE-209", "CWE-489"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH10",
+      "title": "Unlimited login attempts allow credential guessing",
+      "framework": "stride",
+      "category": "spoofing",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "Failed logins are neither counted nor delayed; a correct password still works after any number of wrong ones.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Throttle or lock after repeated failures.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 395, "needle": "invalid credentials"}]
+        }
+      ],
+      "cwe": ["CWE-307"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH11",
+      "title": "Open redirect sends users to an attacker site",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "The next parameter becomes the Location header unchanged, so any absolute URL is accepted.",
+      "rating": {"likelihood": 2, "impact": 2},
+      "existing": [
+        {
+          "text": "Return-path allow-list on logout",
+          "refs": [{"path": "server.py", "line": 170, "needle": "target not in ALLOWED_RETURN"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Allow only local paths or an allow-list.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 412, "needle": "h.redirect(next_url)"}]
+        }
+      ],
+      "cwe": ["CWE-601"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial"
+    },
+    {
+      "id": "TH12",
+      "title": "Mass assignment writes the role column",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "database"},
+      "description": "The profile update copies role from the request body, so any member can make themselves admin.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Copy only the fields a member may change.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 482, "needle": "body.get(\"role\")"}]
+        }
+      ],
+      "cwe": ["CWE-915"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "abuse_case": {
+        "actor": "member",
+        "goal": "Mass assignment writes the role column",
+        "steps": ["POST /api/login", "POST /api/profile"]
+      }
+    },
+    {
+      "id": "TH13",
+      "title": "Negative quantity inflates the credit balance",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "notes"},
+      "description": "The page count is never checked for sign, so a negative count makes the cost negative and the balance grows.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Reject a non-positive page count.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 496, "needle": "cost = pages * PRICE_PER_PAGE"}]
+        }
+      ],
+      "cwe": ["CWE-840"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH14",
+      "title": "Credentialed CORS reflection and GET state change",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "flow", "id": "responses"},
+      "description": "Pinning a note is a GET that changes state, and every response reflects any Origin with credentials allowed, so a foreign page can both trigger the change and read the answer.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Use POST with a token and an origin allow-list.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 473, "needle": "UPDATE notes SET pinned = ?"}]
+        }
+      ],
+      "cwe": ["CWE-352", "CWE-942"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    }
+  ],
+  "no_threat": [
+    {
+      "element": {"kind": "actor", "id": "visitor"},
+      "category": "spoofing",
+      "reason": "A visitor is anonymous by design, so there is no identity to spoof."
+    },
+    {
+      "element": {"kind": "actor", "id": "visitor"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log of what a visitor does, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "actor", "id": "member"},
+      "category": "spoofing",
+      "reason": "Taking over a member's identity is the predictable session token, modelled on the auth component."
+    },
+    {
+      "element": {"kind": "actor", "id": "member"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log of what a member does, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "actor", "id": "admin"},
+      "category": "spoofing",
+      "reason": "Acting as the admin without a session is the role cookie weakness, modelled on the http_server component."
+    },
+    {
+      "element": {"kind": "actor", "id": "admin"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log of what the admin does, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "http_server"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log and acts only as the caller, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "http_server"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "auth"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log and acts only as the caller, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "auth"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "auth"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "auth"},
+      "category": "elevation_of_privilege",
+      "reason": "No further privilege boundary here beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "notes"},
+      "category": "spoofing",
+      "reason": "No separate way to impersonate this element beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "notes"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log and acts only as the caller, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "notes"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "notes"},
+      "category": "elevation_of_privilege",
+      "reason": "No further privilege boundary here beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "importer"},
+      "category": "spoofing",
+      "reason": "No separate way to impersonate this element beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "importer"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "importer"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log and acts only as the caller, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "importer"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "importer"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "database"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "database"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "file_store"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "file_store"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "spoofing",
+      "reason": "No separate way to impersonate this element beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "repudiation",
+      "reason": "The fixture keeps no log and acts only as the caller, so there is nothing to repudiate."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "component", "id": "internal_console"},
+      "category": "elevation_of_privilege",
+      "reason": "No further privilege boundary here beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "requests"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "responses"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "auth_calls"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_calls"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "note_queries"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "linkability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "identifiability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "non_repudiation",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "detectability",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "disclosure_of_information",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "unawareness",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "user_and_session_queries"},
+      "category": "non_compliance",
+      "reason": "No new privacy concern for this flow beyond the weaknesses already listed; the data is a username, a note and a session cookie."
+    },
+    {
+      "element": {"kind": "flow", "id": "file_reads"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "file_reads"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "file_reads"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "import_requests"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "import_requests"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "import_requests"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    },
+    {
+      "element": {"kind": "flow", "id": "console_fetch"},
+      "category": "tampering",
+      "reason": "Nothing here is changed by an outsider beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "console_fetch"},
+      "category": "information_disclosure",
+      "reason": "No further disclosure path beyond the weaknesses already listed."
+    },
+    {
+      "element": {"kind": "flow", "id": "console_fetch"},
+      "category": "denial_of_service",
+      "reason": "An in-memory demo; availability is out of scope and bodies and time are capped."
+    }
+  ],
+  "attack_trees": [
+    {
+      "root": "Read another user's data",
+      "nodes": [
+        {"id": "n1", "parent": "", "label": "Read another user's data", "op": "or", "leaf": false},
+        {"id": "n2", "parent": "n1", "label": "Inject SQL in the note search", "op": "or", "leaf": true},
+        {"id": "n3", "parent": "n1", "label": "Read a note by id", "op": "or", "leaf": true},
+        {"id": "n4", "parent": "n1", "label": "Forge a bearer token", "op": "or", "leaf": true}
+      ]
+    }
+  ],
+  "open_questions": [],
+  "limits": ["Single process, in-memory database, plain HTTP on loopback."]
+}

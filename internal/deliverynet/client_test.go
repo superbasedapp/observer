@@ -404,3 +404,36 @@ func TestInputValidationRefusesBeforeRequest(t *testing.T) {
 		t.Fatalf("hits %d", *hits)
 	}
 }
+
+// TestPullsForHeadQueriesByHeadBranch (lane CA-C5): the head= query names
+// the repository owner and the branch, a returned PR whose head ref is
+// another branch is dropped, and the head ref is kept on the PR.
+func TestPullsForHeadQueriesByHeadBranch(t *testing.T) {
+	var gotQuery string
+	c, _ := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/app/pulls" {
+			http.NotFound(w, r)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+		  {"number": 7, "state": "closed", "merged_at": "2026-11-01T10:00:00Z", "merge_commit_sha": "3333333333333333333333333333333333333333",
+		   "head": {"sha": "1111111111111111111111111111111111111111", "ref": "cursor/fix-a"}, "base": {"ref": "main"}, "user": {"login": "cursor[bot]"}},
+		  {"number": 8, "state": "open", "head": {"sha": "2222222222222222222222222222222222222222", "ref": "other"}, "base": {"ref": "main"}}
+		]`))
+	}), Options{})
+	prs, err := c.PullsForHead(context.Background(), tokenAuth(), "acme/app", "cursor/fix-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "head=acme%3Acursor%2Ffix-a") || !strings.Contains(gotQuery, "state=all") {
+		t.Fatalf("query %q", gotQuery)
+	}
+	if len(prs) != 1 || prs[0].Number != 7 || prs[0].HeadRef != "cursor/fix-a" || prs[0].State != delivery.PRMerged {
+		t.Fatalf("prs %+v", prs)
+	}
+	if _, err := c.PullsForHead(context.Background(), tokenAuth(), "acme/app", "bad branch"); KindOf(err) != KindInvalid {
+		t.Fatalf("bad branch err = %v", err)
+	}
+}

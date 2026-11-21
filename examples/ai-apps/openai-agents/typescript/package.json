@@ -1,0 +1,19 @@
+{
+  "name": "superbased-example-openai-agents",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI Agents SDK (JS) chatbot (TypeScript)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node chatbot.ts",
+    "verify": "python3 ../../verify.py run.json --llm-spans 4"
+  },
+  "dependencies": {
+    "@arizeai/openinference-instrumentation-openai-agents": "0.4.0",
+    "@openai/agents": "0.22.0",
+    "@superbased/sdk": "file:../../../../sdk/typescript",
+    "zod": "4.6.7"
+  }
+}

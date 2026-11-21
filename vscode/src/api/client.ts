@@ -4,6 +4,7 @@
 // directly. Uses the global `fetch` (Node >= 18 — VS Code 1.90+ ships
 // Node 20).
 
+import type { AppsStatusLite, EnableReportLite } from '../apps-internals';
 import type { ComponentsStateLite } from '../components-internals';
 import type { SecurityEditorResponse } from '../security-internals';
 import type {
@@ -85,6 +86,9 @@ export interface ClientOptions {
   fetchImpl?: typeof fetch;
   signalTimeoutMs?: number; // per-request timeout; default 5_000
 }
+
+/** The AI Apps enable waits for the receiver's bind (30 s) plus margin. */
+export const APPS_ENABLE_TIMEOUT_MS = 45_000;
 
 export class Client {
   readonly host: string;
@@ -266,6 +270,46 @@ export class Client {
     }
   }
 
+  /**
+   * appsStatus is GET /api/apps/status (lane POLISH-F2): the AI Apps block
+   * plus the confirm token the enable echoes. Returns the HTTP status and
+   * the parsed body (undefined when it is not JSON), so the caller tells an
+   * older daemon (404) or a process without the seam (501) apart.
+   */
+  async appsStatus(): Promise<[number, AppsStatusLite | undefined]> {
+    const res = await this.fetchWithTimeout(this.url('/api/apps/status'), { method: 'GET' });
+    return [res.status, res.ok ? ((await res.json()) as AppsStatusLite) : undefined];
+  }
+
+  /**
+   * appsEnable is POST /api/apps/enable, the daemon's ONE AI Apps enable
+   * seam (the dashboard button and `observer apps on` call it too), with
+   * the double-submit confirm token. The seam waits for the OTLP receiver
+   * to bind (up to 30 s), so it gets a longer timeout than other calls.
+   */
+  async appsEnable(token: string): Promise<[number, EnableReportLite | undefined]> {
+    const res = await this.fetchWithTimeout(
+      this.url('/api/apps/enable'),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Observer-Confirm': token,
+          Cookie: `sb_remote_confirm=${token}`,
+        },
+        body: JSON.stringify({ source: 'vscode' }),
+      },
+      APPS_ENABLE_TIMEOUT_MS,
+    );
+    let body: EnableReportLite | undefined;
+    try {
+      body = (await res.json()) as EnableReportLite;
+    } catch {
+      body = undefined;
+    }
+    return [res.status, body];
+  }
+
   private async get<T>(pathAndQuery: string): Promise<T> {
     const res = await this.fetchWithTimeout(this.url(pathAndQuery), { method: 'GET' });
     if (!res.ok) {
@@ -274,9 +318,9 @@ export class Client {
     return (await res.json()) as T;
   }
 
-  private async fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+  private async fetchWithTimeout(input: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs ?? this.timeoutMs);
     try {
       return await this.fetchImpl(input, { ...init, signal: controller.signal });
     } finally {

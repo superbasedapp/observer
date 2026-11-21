@@ -256,7 +256,7 @@ var contractRequiredParams = map[string][]string{
 	"get_relations":    {"project_root", "file", "name", "kind"},
 	"get_symbols":      {"project_root", "requests"},
 	"retrieve_stashed": {"sha"},
-	// experimental (7, two of them the security module's): no cross-release promise, pinned so a change is
+	// experimental (9, two of them the security module's): no cross-release promise, pinned so a change is
 	// at least a deliberate edit rather than an accident.
 	"continue_session":       {},
 	"check_change":           {"path", "content"},
@@ -265,6 +265,8 @@ var contractRequiredParams = map[string][]string{
 	"get_output_composition": {"session_id"},
 	"get_session_message":    {"session_id"},
 	"get_session_tasks":      {"session_id"},
+	"get_settings":           {},
+	"set_setting":            {"key", "value"},
 }
 
 // listToolSchemas returns the `inputSchema` object tools/list advertises for

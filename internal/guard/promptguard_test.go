@@ -521,7 +521,7 @@ func TestEvaluatePrompt_PerDetectorOffCannotEscalatePastGlobalOff(t *testing.T) 
 func TestEvaluatePrompt_DashboardApprovalDowngrades(t *testing.T) {
 	t.Parallel()
 	g := newTestGuard(t, promptCfg("enforce", "block", nil), nil)
-	g.SetApprovalLookup(func(ruleID, sessionID, projectRootHash string) bool { return true })
+	g.SetApprovalLookup(func(ruleID, sessionID, projectRootHash string) (bool, error) { return true, nil })
 
 	pv := g.EvaluatePrompt(promptEvent("s1", nil, []policy.PIIFinding{creditCardFinding("h1")}))
 	if pv.Outcome != PromptOutcomeApproved || pv.Verdict.Decision != policy.DecisionFlag {

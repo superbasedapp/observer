@@ -48,18 +48,33 @@ const (
 	// DoctorDBIntegrity is `observer doctor db` (the forced whole-database
 	// integrity check).
 	DoctorDBIntegrity Action = "doctor_db_integrity"
+	// OpenSettings opens one Settings section; Tool is the section id (the
+	// dashboard's ?section= value, e.g. "proxy"). It has no command: the
+	// section's form (or its More settings editor) is the control, and the
+	// finding's text names the config key for a reader of the file.
+	OpenSettings Action = "open_settings"
+	// BrowserHostSetup is `observer init --browser`: the browser-capture
+	// native-messaging host and per-browser manifests. The dashboard control
+	// lives in Settings > Browser capture.
+	BrowserHostSetup Action = "browser_host_setup"
+	// OpenScanners opens Code security > Scanners, where each scanner
+	// component has its switch. No command: the finding's text names the
+	// [components] key for a reader of the file.
+	OpenScanners Action = "open_scanners"
 )
 
 // Remediation is one structured fix for a finding. Tool is the action's one
-// parameter: a tool id ("cursor"), a cross-OS target ("codex-windows"), or
-// empty where the action takes none (or leaves the choice to the operator).
+// parameter: a tool id ("cursor"), a cross-OS target ("codex-windows"), a
+// Settings section id (OpenSettings), or empty where the action takes none
+// (or leaves the choice to the operator).
 type Remediation struct {
 	Action Action `json:"action"`
 	Tool   string `json:"tool,omitempty"`
 }
 
 // Control is a remediation as the dashboard renders it: a button label and
-// the in-app link to the control that performs it.
+// the in-app link to the control that performs it (a Settings section for
+// most actions; Code security > Scanners for OpenScanners).
 type Control struct {
 	Label string `json:"label"`
 	Href  string `json:"href"`
@@ -105,6 +120,57 @@ func toolSelector(tool string) string {
 		return f
 	}
 	return "--all"
+}
+
+// settingsSections is the dashboard's Settings section vocabulary (the
+// ?section= ids and the labels the rail shows), for OpenSettings. A section
+// missing here still links; it only renders a generic label.
+var settingsSections = map[string]string{
+	"advisor":       "Advisor",
+	"antigravity":   "Antigravity",
+	"backfill":      "Backfill",
+	"browser":       "Browser capture",
+	"cachetrack":    "Cache tracking",
+	"cloud":         "Cloud Intelligence",
+	"compression":   "Compression",
+	"dashboard":     "Dashboard",
+	"enrolment":     "Enrolment",
+	"guard":         "Guard",
+	"health":        "Health",
+	"hooks":         "Hooks",
+	"intelligence":  "Intelligence",
+	"mcp":           "MCP tools",
+	"observability": "Observability",
+	"observer":      "Observer",
+	"org":           "Org sharing",
+	"process":       "Process capture",
+	"proxy":         "Proxy",
+	"retention":     "Retention",
+	"routing":       "Routing",
+	"storage":       "Storage",
+	"terminal":      "Session attach",
+	"tools":         "Connected tools",
+	"watcher":       "Watcher",
+}
+
+// SettingsSectionLabel returns the rail label of a Settings section id, and
+// false when the id is not in the vocabulary.
+func SettingsSectionLabel(id string) (string, bool) {
+	l, ok := settingsSections[id]
+	return l, ok
+}
+
+func settingsHref(section string) string {
+	q := url.Values{}
+	q.Set("section", section)
+	return "/settings?" + q.Encode()
+}
+
+func openSettingsLabel(section string) string {
+	if l, ok := settingsSections[section]; ok {
+		return "Open Settings > " + l
+	}
+	return "Open Settings"
 }
 
 // row is one action: its CLI command, its dashboard label and its link.
@@ -186,9 +252,17 @@ var table = map[Action]row{
 		href:  func(t string) string { return toolsHref(t, "setup") },
 	},
 	UninstallTool: {
-		command: func(t string) string { return "observer uninstall " + toolSelector(t) },
-		label:   func(t string) string { return "Remove Observer's wiring from " + orTool(t, "the tool") },
-		href:    func(t string) string { return toolsHref(t, "remove") },
+		// A tool with no CLI selector has no one-tool uninstall command:
+		// `--all` would remove every tool's wiring and the keychain entries,
+		// so the dashboard's Remove panel is the only one-step form.
+		command: func(t string) string {
+			if f, ok := toolFlags[t]; ok {
+				return "observer uninstall " + f
+			}
+			return ""
+		},
+		label: func(t string) string { return "Remove Observer's wiring from " + orTool(t, "the tool") },
+		href:  func(t string) string { return toolsHref(t, "remove") },
 	},
 	InitWindowsHome: {
 		command: func(t string) string {
@@ -239,6 +313,21 @@ var table = map[Action]row{
 		command: func(string) string { return "observer doctor db" },
 		label:   func(string) string { return "Run the integrity check" },
 		href:    func(string) string { return "/settings?section=health#integrity" },
+	},
+	OpenSettings: {
+		command: func(string) string { return "" },
+		label:   openSettingsLabel,
+		href:    settingsHref,
+	},
+	BrowserHostSetup: {
+		command: func(string) string { return "observer init --browser" },
+		label:   func(string) string { return "Set up browser capture" },
+		href:    func(string) string { return settingsHref("browser") },
+	},
+	OpenScanners: {
+		command: func(string) string { return "" },
+		label:   func(string) string { return "Open Code security > Scanners" },
+		href:    func(string) string { return "/code-security?tab=scanners" },
 	},
 }
 

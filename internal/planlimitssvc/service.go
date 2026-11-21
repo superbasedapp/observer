@@ -49,6 +49,9 @@ type Store interface {
 	PrunePlanHistory(ctx context.Context, before time.Time) (int64, error)
 	LoadPlanPassiveSignals(ctx context.Context, since time.Time) (store.PlanPassiveSignals, error)
 	ObservedToolSpendSince(ctx context.Context, tools []string, since time.Time) (float64, error)
+	UpsertPlanUsageDaily(ctx context.Context, accountID, provider string, days []planlimits.UsageDay, fetchedAt time.Time) error
+	PlanUsageDaily(ctx context.Context, accountID, from, to string) ([]planlimits.UsageDay, time.Time, error)
+	CapturedToolTokensByDay(ctx context.Context, tools []string, from, to string) (map[string]int64, error)
 }
 
 // Egress performs network calls and vendor processes (internal/planlimitsnet).
@@ -139,9 +142,11 @@ func accountInfo(a store.PlanAccountRow) planlimits.AccountInfo {
 			params[k] = v
 		}
 	}
+	src, _ := planlimits.SourceByID(a.Source)
 	return planlimits.AccountInfo{
 		ID: a.ID, Provider: a.Provider, Source: a.Source, Label: a.Label, Params: params,
 		Secrets: append([]string(nil), a.SecretKeys...), Enabled: a.Enabled, State: a.State, CreatedAt: a.CreatedAt,
+		DailyUsage: src.DailyUsage,
 	}
 }
 
@@ -496,6 +501,70 @@ func (s *Service) History(ctx context.Context, id string, days int) ([]planlimit
 	}
 	runs, err := s.st.RecentPlanRuns(ctx, id, 20)
 	return snaps, runs, err
+}
+
+// --- Daily usage reconciliation -------------------------------------------------
+
+// DefaultUsageDays is the window the page and the CLI show by default.
+const DefaultUsageDays = 30
+
+// UsageView is one account's daily usage reconciliation
+// (docs/plans-and-limits.md "Daily usage reconciliation").
+//
+// Available is false when the account's source does not report daily usage
+// (SourceDef.DailyUsage). FetchedAt is the newest reading that stored any
+// daily total; Reconciliation is nil until there is one, so a surface shows
+// nothing before the first reading. Tools names the tools whose captured
+// tokens this node compares (the provider's catalogue Tools). The vendor
+// figure is account-wide; the captured figure is this node's rows for those
+// tools, whatever login ran them.
+type UsageView struct {
+	AccountID      string                     `json:"account_id"`
+	Provider       string                     `json:"provider"`
+	Available      bool                       `json:"available"`
+	Days           int                        `json:"days"`
+	FetchedAt      *time.Time                 `json:"fetched_at,omitempty"`
+	Tools          []string                   `json:"tools"`
+	Reconciliation *planlimits.Reconciliation `json:"reconciliation,omitempty"`
+}
+
+// Usage builds an account's reconciliation over the last days UTC days
+// (clamped to 1..366; 0 means DefaultUsageDays). It reads the local
+// database only and never polls.
+func (s *Service) Usage(ctx context.Context, id string, days int) (UsageView, error) {
+	a, err := s.st.PlanAccount(ctx, id)
+	if err != nil {
+		return UsageView{}, err
+	}
+	if days <= 0 {
+		days = DefaultUsageDays
+	}
+	days = min(days, 366)
+	v := UsageView{AccountID: a.ID, Provider: a.Provider, Days: days, Tools: []string{}}
+	src, ok := planlimits.SourceByID(a.Source)
+	if !ok || !src.DailyUsage {
+		return v, nil
+	}
+	v.Available = true
+	if prov, ok := planlimits.ProviderByID(a.Provider); ok {
+		v.Tools = append(v.Tools, prov.Tools...)
+	}
+	from, to := planlimits.UsageWindow(s.now(), days)
+	vendor, fetched, err := s.st.PlanUsageDaily(ctx, a.ID, from, to)
+	if err != nil {
+		return v, err
+	}
+	if fetched.IsZero() {
+		return v, nil
+	}
+	v.FetchedAt = &fetched
+	captured, err := s.st.CapturedToolTokensByDay(ctx, v.Tools, from, to)
+	if err != nil {
+		return v, err
+	}
+	r := planlimits.Reconcile(vendor, captured, from, to)
+	v.Reconciliation = &r
+	return v, nil
 }
 
 // --- Status line ingest ---------------------------------------------------------

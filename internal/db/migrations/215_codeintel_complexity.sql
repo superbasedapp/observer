@@ -1,0 +1,25 @@
+-- 215_codeintel_complexity.sql - per-function cyclomatic complexity in the
+-- code-intelligence index (docs/codeintel/schema.md; the Projects page's
+-- complexity metric, docs/projects-page.md "Quality metrics"; plan
+-- docs/plans/os-and-ci-vulnerability-scanning-plan-2026-11-04.md section
+-- 14.10, item 8, M3L-4).
+--
+-- codeintel_nodes.complexity: decision points + 1 for a function or method,
+-- counted at parse time by an exact-span backend (go/ast, tree-sitter) from
+-- the per-language rule table in internal/codeintel/parse/complexity. NULL
+-- means NOT COUNTED (a heuristic-fallback span, a language with no counter,
+-- a non-function kind, or a row indexed before this step), never zero: a
+-- counted value is at least 1. A number only, no body.
+--
+-- codeintel_files.extract_version: the extraction version a file was parsed
+-- under (codeintel.ExtractVersion): 0 the base extraction, 1 with
+-- complexity counted. Existing rows read 0. The indexer counts complexity
+-- only when [projects].quality_metrics is on; then it re-parses each file
+-- below version 1 once (its content hash alone would skip it) and fills
+-- the column above. With it off nothing is re-parsed.
+--
+-- NODE-LOCAL: both tables are already in the org-push forbidden-table
+-- sentinel (tests/invariant/privacy_test.go) and never named by
+-- internal/store/orgpush.go. No server pair.
+ALTER TABLE codeintel_nodes ADD COLUMN complexity INTEGER;
+ALTER TABLE codeintel_files ADD COLUMN extract_version INTEGER NOT NULL DEFAULT 0;

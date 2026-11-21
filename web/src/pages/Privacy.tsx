@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { Link } from "react-router-dom";
 import { ChartShell, PageHeader, Pill, Table } from "@/components/primitives";
 import { TitleWithHelp } from "@/components/HelpInd";
@@ -22,6 +24,7 @@ import { orgDisplayLabelSentence } from "@/lib/orgName";
 import { pricingFeedFromConfig } from "@/lib/pricingFeed";
 import type { ConfigKeysDryRun, ConfigKeysError, ConfigKeysResponse } from "@/lib/configSchema";
 import { markRestartPending } from "@/lib/restartPending";
+import { PackageLookupCard } from "@/components/security/PackageLookupCard";
 import {
   SECURITY_SHARE_CHOICES,
   SECURITY_SHARE_KEY,
@@ -129,6 +132,10 @@ export function PrivacyPage() {
       <ScrubTesterCard scrubbingEnabled={secrets?.EnableScrubbing ?? true} />
       <SharingSourceCard config={cfg.data?.config as Record<string, any> | undefined} />
       <SecurityShareCard config={cfg.data ?? null} managed={managed} onSaved={() => void cfg.reload()} />
+      {/* The package lookup posture (lane RM-2, plan section 13.10): beside
+          the security sharing picker, because it decides what leaves the
+          machine at every dependency scan. */}
+      <PackageLookupCard />
       <PageVisibilityCard />
       <OrgPushCard />
     </div>
@@ -404,8 +411,8 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
     >
       {enrol.data && !enrol.data.enrolled && (
         <p className="pb-2 text-[11.5px] text-fg-2">
-          This machine is not enrolled in any organization, so nothing below is shared with anyone. The settings are
-          what would apply if you enrolled.
+          This machine is not connected to any organization, so nothing below is shared with anyone. The settings are
+          what would apply if you connected it, in Settings &gt; Account. <NeedsSettingLink link={placeLink("account")} />
         </p>
       )}
       <Table

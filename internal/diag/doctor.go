@@ -440,9 +440,13 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 	// Snapshot rows too large for any push: the daemon's report
 	// (store.OrgPushOversizedKey; family names and sizes only, never row
 	// content). Read here with this file's own SQL, like org_push_log above.
+	var rems []remedy.Remediation
 	for _, line := range oversizedPushLines(ctx, database) {
 		details = append(details, "oversized:     "+line)
 		shareStatus = worseStatus(shareStatus, StatusWarn)
+		if len(rems) == 0 {
+			rems = append(rems, remedy.Of(remedy.OpenSettings, "org"))
+		}
 	}
 	if line, unavailable := machineProofLine(ctx, database); line != "" {
 		details = append(details, "machine proof: "+line)
@@ -458,10 +462,11 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 		)
 	}
 	return Check{
-		Name:    "org enrolment",
-		Status:  shareStatus,
-		Message: msg,
-		Details: details,
+		Name:         "org enrolment",
+		Status:       shareStatus,
+		Message:      msg,
+		Details:      details,
+		Remediations: rems,
 	}
 }
 
@@ -488,7 +493,7 @@ func oversizedPushLines(ctx context.Context, database *sql.DB) []string {
 	}
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, fmt.Sprintf("%s: %d row(s) larger than the %d-byte snapshot budget (largest %d bytes, last %s); raise [org_client] max_push_bytes to ship them",
+		out = append(out, fmt.Sprintf("%s: %d row(s) larger than the %d-byte snapshot budget (largest %d bytes, last %s); raise [org_client] max_push_bytes (Settings > Org sharing) to ship them",
 			r.Family, r.Rows, r.BudgetBytes, r.LargestBytes, r.LastSeen))
 	}
 	return out
@@ -828,10 +833,11 @@ func checkAntigravityFamily(homeDir string, cfg config.Config) Check {
 
 	if cliPbs > 0 && net != "local" {
 		return Check{
-			Name:    "antigravity.family",
-			Status:  StatusWarn,
-			Message: fmt.Sprintf("%d Antigravity-CLI .pb file(s) present but [observer.antigravity] network_recovery is %q - set to \"local\" so the gRPC fallback can recover CLI conversations", cliPbs, net),
-			Details: details,
+			Name:         "antigravity.family",
+			Status:       StatusWarn,
+			Message:      fmt.Sprintf("%d Antigravity-CLI .pb file(s) present but [observer.antigravity] network_recovery is %q - set it to \"local\" (Settings > Antigravity) so the gRPC fallback can recover CLI conversations", cliPbs, net),
+			Details:      details,
+			Remediations: []remedy.Remediation{remedy.Of(remedy.OpenSettings, "antigravity")},
 		}
 	}
 	if desktopPbs+cliPbs == 0 {
@@ -1262,6 +1268,10 @@ func checkHookCommandsBinary(homeDir, binaryPath, realBinary string) Check {
 func checkMCPRegistrations(homeDir, binaryPath, realBinary string, getenv func(string) string, stableCommand bool) Check {
 	c := checkMCPRegistrationsAt(homeDir, binaryPath, realBinary, getenv, stableCommand)
 	c.Details = append(c.Details, stableMCPCommandNote(stableCommand))
+	if !stableCommand {
+		// The opt-in lives in Settings > Observer (its More settings).
+		c.Remediations = append(c.Remediations, remedy.Of(remedy.OpenSettings, "observer"))
+	}
 	return c
 }
 
@@ -1272,7 +1282,7 @@ func stableMCPCommandNote(on bool) string {
 	if on {
 		return "stable MCP command ([observer.mcp] stable_command): ON by opt-in, so an org-managed Linux or macOS node registers the bare observer when PATH runs this install; not live-verified, waiting on " + installshape.PathNameLiveCheck
 	}
-	return "stable MCP command for managed nodes: built, waiting on " + installshape.PathNameLiveCheck + "; off by default (opt in with [observer.mcp] stable_command = true)"
+	return "stable MCP command for managed nodes: built, waiting on " + installshape.PathNameLiveCheck + "; off by default (opt in with [observer.mcp] stable_command = true, in Settings > Observer)"
 }
 
 // checkMCPRegistrationsAt is checkMCPRegistrations before the DEC-12 note.

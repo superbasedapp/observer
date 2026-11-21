@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +61,64 @@ type RunRecord struct {
 	// ConfigPath is the daemon's config file, so the host helper reads the
 	// hook registration the daemon wrote ("" is the default config).
 	ConfigPath string `json:"config_path,omitempty"`
+	// RefusalAuditRequired records that the org's require_refusal_audit
+	// floor was in force when the run was composed (tracker F-012, audit
+	// finding N4-A4). The host helper reads it: while it is set, a run
+	// whose link to the daemon is lost closes its egress gateway rather
+	// than let refusals go unrecorded; while it is not, the run keeps its
+	// egress and the lost refusals are counted when the link comes back.
+	// Additive: a record without it reads false.
+	RefusalAuditRequired bool `json:"refusal_audit_required,omitempty"`
+	// PathMap maps a box's own path prefixes onto host directories (a
+	// hosted box that works in a fixed path of its own, lane G4 fix round
+	// 2, G4-R2; pathmap.go). The relay rewrites a payload's mapped paths
+	// before binding and reading; a box prefix is never a root. Additive:
+	// a record without it maps nothing.
+	PathMap []PathPrefix `json:"path_map,omitempty"`
+	// RemoteBox records that the run's box is on another machine (a hosted
+	// row, FX4-A1): this machine's home is not the box's, so a payload's
+	// "~/" file value names nothing of this machine and the binding refuses
+	// it instead of expanding it here (expandHome), and the record's roots
+	// never list this machine's tool state. Additive: a record without it
+	// reads false (a local box, which sees this machine's home).
+	RemoteBox bool `json:"remote_box,omitempty"`
+}
+
+// HomeIsThisMachines reports whether a payload's "~/" names this machine's
+// home for the run: a local box only. A record that is remote, or that maps
+// box paths (a box with paths of its own), does not (FX4-A1).
+func (r RunRecord) HomeIsThisMachines() bool { return !r.RemoteBox && len(r.PathMap) == 0 }
+
+// ReadRoots are the directories a relayed payload's files may be read under
+// for this record, at bind time and in the confined reader alike. For a
+// record whose home is not this machine's (HomeIsThisMachines false) they
+// are its WorkspaceDir and its PathMap hosts only, whatever the stored
+// Roots say: a hosted record written before FX4 that stays live across the
+// upgrade (never re-keyed) still lists this machine's tool state there
+// (FX4 fix round 2, FX4-R1). Otherwise the stored Roots.
+func (r RunRecord) ReadRoots() []string {
+	if r.HomeIsThisMachines() {
+		return r.Roots
+	}
+	return RemoteBoxRoots(r.WorkspaceDir, r.PathMap)
+}
+
+// RemoteBoxRoots is the one owner of the read-roots rule for a box whose
+// home is not this machine's (FX4-A1; fold delta audit N3): the run's
+// workspace and its mapped host directories only, never this machine's
+// tool state. ReadRoots, the record writer and the hosted re-key all call
+// it.
+func RemoteBoxRoots(workspace string, pathMap []PathPrefix) []string {
+	var out []string
+	if workspace != "" {
+		out = append(out, workspace)
+	}
+	for _, pm := range pathMap {
+		if pm.Host != "" && !slices.Contains(out, pm.Host) {
+			out = append(out, pm.Host)
+		}
+	}
+	return out
 }
 
 // BoxRecord is the BOX copy of the launch record (sandbox plan section 5.2,
@@ -126,6 +185,9 @@ func NewRunRecord(r RunRecord) (RunRecord, error) {
 	if r.Delivery == "" {
 		r.Delivery = DeliveryLive
 	}
+	if err := validPathMap(r.PathMap); err != nil {
+		return RunRecord{}, err
+	}
 	r.V, r.CreatedAt = RecordVersion, time.Now().UTC()
 	return r, nil
 }
@@ -163,6 +225,9 @@ func ReadRun(observerDir, runID string) (RunRecord, error) {
 	}
 	if rec.V != RecordVersion || rec.RunID != runID || len(rec.BoxSecret) != sandboxrelay.SecretSize || len(rec.LinkSecret) != sandboxrelay.SecretSize {
 		return RunRecord{}, fmt.Errorf("%w: fields", ErrBadRecord)
+	}
+	if err := validPathMap(rec.PathMap); err != nil {
+		return RunRecord{}, err
 	}
 	return rec, nil
 }

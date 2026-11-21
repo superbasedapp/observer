@@ -114,3 +114,66 @@ online_sample_rate = 0.25
 		t.Errorf("editable_sections missing observability: %v", got.EditableSections)
 	}
 }
+
+// TestHandleConfigSection_ObservabilityStoreContent pins the node-local Plane
+// A content key ([observability].store_content, F07/D8) round-tripping through
+// the observability section: default true when unset, false persisted when
+// sent, and left alone by a body that omits it (the pointer partial-merge).
+func TestHandleConfigSection_ObservabilityStoreContent(t *testing.T) {
+	tdir := t.TempDir()
+	cfgPath := filepath.Join(tdir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[observability]\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(tdir, "d.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	server, err := New(Options{DB: database, ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := func() config.ObservabilityConfig {
+		t.Helper()
+		c, err := config.Load(config.LoadOptions{GlobalPath: cfgPath})
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		return c.Observability
+	}
+	if !load().StoreContent {
+		t.Fatal("store_content must default true for a section that only sets enabled")
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/config/section/observability", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		// store_content is a sensitive-tier key (a capture/content
+		// setting), so the save echoes the double-submit confirm token.
+		_, token, cookie := configGet(t, server)
+		req.Header.Set(remoteConfirmHeader, token)
+		req.AddCookie(cookie)
+		server.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+	rr := put(`{"StoreContent":false}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT store_content=false: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if load().StoreContent {
+		t.Fatal("store_content=false must persist")
+	}
+	if rr := put(`{"Enabled":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("PUT enabled: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if load().StoreContent {
+		t.Fatal("a body without StoreContent must leave it false")
+	}
+	if rr := put(`{"StoreContent":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("PUT store_content=true: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !load().StoreContent {
+		t.Fatal("store_content=true must persist")
+	}
+}

@@ -89,7 +89,8 @@ func feedEngineInstalled(t *testing.T) {
 func TestFeedRulePackNewestWinsAndOutageKeepsLastKnownGood(t *testing.T) {
 	// The fed versions sit above the embedded pack (9.x), so the test does
 	// not go stale when the floor's version moves (it did at pack 1.3.0;
-	// lane LEFT-SEC moved it to 1.3.1).
+	// lane LEFT-SEC moved it to 1.3.1, lane M3L-2 1b to 1.4.0, lane M3L-2
+	// 1c to 1.5.0).
 	priv := codeTestKeys(t)
 	feedEngineInstalled(t)
 	e := openSelected(t, priv, nil)

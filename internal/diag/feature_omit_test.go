@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // TestFeatureStubsSayNotInThisBuild: with codeintel and browser capture
@@ -20,6 +21,8 @@ func TestFeatureStubsSayNotInThisBuild(t *testing.T) {
 			t.Errorf("status = %v, want OK", s)
 		}
 		got = append(got, m)
+	}, func(r remedy.Remediation) {
+		t.Errorf("compiled out: no fix expected, got %+v", r)
 	})
 	if len(got) != 1 || got[0] != "browser capture is not in this build (compiled out)" {
 		t.Errorf("notes = %v", got)

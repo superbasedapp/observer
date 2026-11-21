@@ -549,6 +549,12 @@ func runHookInvocation(ctx context.Context, args []string, configPath string, ma
 	plan.Started = start
 	setHookPlan(plan)
 	budget := hookGateBudget(resolveHookMaxRuntime(maxRuntime, hc.Getenv("OBSERVER_HOOK_MAX_RUNTIME")), plan)
+	if budget > 0 {
+		// Work that waits inside this invocation sizes its wait from the
+		// watchdog's deadline (adm-2 fixes-1, M2).
+		plan.Deadline = start.Add(budget)
+		setHookPlan(plan)
+	}
 	stopWatchdog := installHookWatchdog(hookRemaining(start, budget), exitFn, os.Stderr)
 	defer stopWatchdog()
 	// Hook liveness (OBS-7): ONE DB-free spool record per invocation, after
@@ -1534,24 +1540,28 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 	// §6.3 approvals on the hook path: the lookup opens the DB
 	// LAZILY and only runs for verdicts that would block (ask/deny —
 	// rare by construction), so the common approve path never pays a
-	// DB open before its reply. Open failures report false:
-	// fail-safe toward enforcement.
-	g.SetApprovalLookup(func(ruleID, sessionID, rootHash string) bool {
-		database, err := db.Open(context.Background(), db.Options{Path: cfg.Observer.DBPath})
-		if err != nil {
-			return false
-		}
-		defer database.Close()
-		lctx, cancel := context.WithTimeout(context.Background(), cfg.Observer.Hooks.HookTimeout())
-		defer cancel()
-		return store.New(database).ApprovalActiveFor(lctx, ruleID, sessionID, rootHash, time.Now().UTC())
-	})
+	// DB open before its reply. The open is READ-ONLY with no migration
+	// run and a busy timeout bounded inside the hook budget
+	// (hookApprovalLookup); any failure reports no grant (fail-safe
+	// toward enforcement) and the guard records it on the verdict
+	// (P-232).
+	g.SetApprovalLookup(hookApprovalLookup(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()))
+	g.SetApprovalCoverLookup(hookApprovalCoverLookup(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()))
+	// CG-16: where the dashboard Security page is hidden (the managed
+	// default), the block texts name the CLI. Same lazy, read-only,
+	// blocking-path-only open as the approval lookup above.
+	g.SetApprovalPageHidden(approvalPageHiddenLookup(cfg, hookStoreOpener(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()), nil))
 	// Org access grants (request-grants G3): the org's signed, time-bound
 	// exceptions, read from the SAME re-verified cache the daemon reads and
 	// counted through the same conditional UPDATE, so a hook process and
-	// the daemon racing on a grant's last use cannot both win. Lazy DB open
-	// on the blocking path only; any failure is "no grant".
-	g.SetOrgGrantClaim(newOrgGrantClaim(hookOrgGrantOpener(cfg.Observer.DBPath), cfg.Observer.Hooks.HookTimeout()))
+	// the daemon racing on a grant's last use cannot both win. Lazy,
+	// migration-free DB open on the blocking path only; any failure is "no
+	// grant", recorded on the verdict (orggrant_wire.go).
+	// The question has its own budget (hookOrgGrantBudget: at most 4 s, and
+	// what is left on this invocation's watchdog minus 1 s), not the 500 ms
+	// timeout_ms of the approval read, and the peek and the claim of one
+	// verdict share one open (newOrgGrantSession).
+	g.SetOrgGrantSession(newOrgGrantSession(hookOrgGrantOpener(cfg.Observer.DBPath), hookOrgGrantQuestionBudget))
 	// Request-grants G4: the org-locked deny line links the node request
 	// form under the dashboard origin (the daemon's guard stamps the same).
 	g.SetRequestAccessBase(requestAccessBase(cfg))
@@ -1828,10 +1838,14 @@ func evaluatePromptSubmitBody(tool, label, dialect, promptEvent, event, configPa
 	handled := false
 	var recordAfterReply func()
 	exitCode := 0
+	guardRan := false
 	if cfgErr == nil && promptGuardEnabled(cfg) {
 		if g := buildHookGuard(cfg, os.Stderr); g != nil {
+			guardRan = true
+			// The organization's prompt judge (lane adm-2) rides the
+			// evaluator as an optional capability.
 			handled, recordAfterReply, exitCode = hook.HandlePromptSubmitGuarded(
-				tool, dialect, promptEvent, body, truncated, g,
+				tool, dialect, promptEvent, body, truncated, withOrgPromptJudge(g, configPath, cfg),
 				makePromptGuardPersist(cfg, g, tool, fullLabel, os.Stderr), stdout, os.Stderr,
 			)
 			// A prompt payload the dialect cannot decode was not judged:
@@ -1852,6 +1866,18 @@ func evaluatePromptSubmitBody(tool, label, dialect, promptEvent, event, configPa
 				markHookDecided(exitCode)
 			}
 		} else if hookFailClosed(guardposture.KindGuardInit, body) {
+			return
+		}
+	}
+	if !handled && !guardRan && cfgErr == nil {
+		// The local prompt guard did not evaluate (off, disabled, its hook
+		// lane off, or no guard): the organization's judge still runs, a
+		// local switch never turns it off (adm-2 fixes-1, H3).
+		handled, recordAfterReply, exitCode = hook.HandlePromptSubmitOrgJudge(tool, dialect, promptEvent, body, truncated, newOrgPromptJudge(configPath, cfg), stdout, os.Stderr)
+		if handled {
+			markHookDecided(exitCode)
+		}
+		if !handled && judgeOnlyUndecodableRefused(dialect, body, truncated) {
 			return
 		}
 	}
@@ -1948,8 +1974,10 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 	handled := false
 	var recordAfterReply func()
 	exitCode := 0
+	guardRan := false
 	if cfgErr == nil && promptGuardEnabled(cfg) {
 		if g := buildHookGuard(cfg, os.Stderr); g != nil {
+			guardRan = true
 			// LIVE CORRECTION (2026-09-07 operator step-in): Claude
 			// Code blocks THIS event only via process exit code 2
 			// (its stderr is the user-visible reason); the JSON
@@ -1961,7 +1989,7 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 			// run and closed its DB handle.
 			handled, recordAfterReply, exitCode = hook.HandlePromptSubmitGuarded(
 				models.ToolClaudeCode, hook.PromptDialectClaudeCode, "UserPromptSubmit",
-				body, truncated, g, makePromptGuardPersist(cfg, g, models.ToolClaudeCode, label, os.Stderr), stdout, os.Stderr,
+				body, truncated, withOrgPromptJudge(g, configPath, cfg), makePromptGuardPersist(cfg, g, models.ToolClaudeCode, label, os.Stderr), stdout, os.Stderr,
 			)
 			// FU-161: an undecodable prompt payload fails closed under
 			// enforcement instead of reaching the approve below.
@@ -1981,6 +2009,17 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 				markHookDecided(exitCode)
 			}
 		} else if hookFailClosed(guardposture.KindGuardInit, body) {
+			return
+		}
+	}
+	if !handled && !guardRan && cfgErr == nil {
+		// The organization's judge runs whatever the local guard switches
+		// say (adm-2 fixes-1, H3).
+		handled, recordAfterReply, exitCode = hook.HandlePromptSubmitOrgJudge(models.ToolClaudeCode, hook.PromptDialectClaudeCode, "UserPromptSubmit", body, truncated, newOrgPromptJudge(configPath, cfg), stdout, os.Stderr)
+		if handled {
+			markHookDecided(exitCode)
+		}
+		if !handled && judgeOnlyUndecodableRefused(hook.PromptDialectClaudeCode, body, truncated) {
 			return
 		}
 	}
@@ -2023,11 +2062,14 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 		defer database.Close()
 		insertCtx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
 		defer cancel()
-		st := store.New(database)
+		st := hookIngestStore(database)
 		// The same prompt typed again later in the session is its own row;
 		// the same event delivered again is not (B7, promptOccurrenceID).
 		ev.SourceEventID = resolvePromptOccurrence(insertCtx, st, ev.SourceFile, ev.SourceEventID, ev.Timestamp)
-		if _, err := st.Ingest(insertCtx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
+		// Cloud-execution stamp from the hook environment (CA-B4): nil
+		// off the cloud, so a developer machine ingests exactly as before.
+		opts := store.IngestOptions{SessionExecutions: hookCloudExecution(models.ToolClaudeCode, ev.SessionID, hookEnvLookup(ctx))}
+		if _, err := st.Ingest(insertCtx, []models.ToolEvent{ev}, nil, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "observer-hook: %s insert: %v\n", label, err)
 		}
 	}()
@@ -2238,7 +2280,7 @@ func handleClaudeCodeActionEvent(ctx context.Context, stdin io.Reader, label, co
 
 	insertCtx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
 	defer cancel()
-	hookStore := store.New(database)
+	hookStore := hookIngestStore(database)
 	// [tasks].enabled gate: this generic handler also serves the
 	// PostToolBatch hook builder — the capture path for the
 	// post_tool_batch envelope rows carrying claude-code Task payloads
@@ -2246,7 +2288,10 @@ func handleClaudeCodeActionEvent(ctx context.Context, stdin io.Reader, label, co
 	// get decoded by a later `observer backfill --tasks` pass).
 	hookStore.SetTasksEnabled(cfg.Tasks.Enabled)
 	hookStore.SetTasksOptions(cfg.Tasks.MatchMode, cfg.Tasks.ConcurrentAttribution, cfg.Tasks.IncludeSidechains)
-	if _, err := hookStore.Ingest(insertCtx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
+	// Cloud-execution stamp from the hook environment (CA-B4): nil off the
+	// cloud, so a developer machine ingests exactly as before.
+	opts := store.IngestOptions{SessionExecutions: hookCloudExecution(models.ToolClaudeCode, ev.SessionID, hookEnvLookup(ctx))}
+	if _, err := hookStore.Ingest(insertCtx, []models.ToolEvent{ev}, nil, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "observer-hook: %s insert: %v\n", label, err)
 	}
 }
@@ -2997,7 +3042,7 @@ func handleClaudeCodeWorktreeCreate(ctx context.Context, label, configPath strin
 	defer database.Close()
 	insertCtx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
 	defer cancel()
-	hookStore := store.New(database)
+	hookStore := hookIngestStore(database)
 	hookStore.SetTasksEnabled(cfg.Tasks.Enabled)
 	hookStore.SetTasksOptions(cfg.Tasks.MatchMode, cfg.Tasks.ConcurrentAttribution, cfg.Tasks.IncludeSidechains)
 	if _, err := hookStore.Ingest(insertCtx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {

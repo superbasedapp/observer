@@ -19,6 +19,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/promptjudgeipc"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxenv"
@@ -59,6 +60,11 @@ const (
 	landlockExecVerb  = "sandbox-landlock-exec"
 	// landlockPlanVersion is the plan file's schema version.
 	landlockPlanVersion = 1
+	// landlockPlanVersionSeccomp is the version of a plan that names a
+	// seccomp profile (lane N2): an exec step from before the filter reads
+	// only version 1, so it refuses such a plan instead of running the
+	// agent unfiltered.
+	landlockPlanVersionSeccomp = 2
 )
 
 func init() {
@@ -86,6 +92,8 @@ type landlockDriver struct {
 	mu     sync.Mutex
 	last   sandboxlandlock.ProbeResult
 	lastAt time.Time
+	// lastGen is the probe-cache generation last was taken under.
+	lastGen uint64
 }
 
 func newLandlockDriver(r *sandboxRuntime, full config.Config) sandboxDriver {
@@ -158,9 +166,64 @@ func landlockDeniedPorts(ls []landlockListener, proxyPort int) []int {
 }
 
 // deniedPorts is the deny list for a launch now, so a dashboard address
-// resolved after the driver was built still counts.
-func (d *landlockDriver) deniedPorts() []int {
-	return landlockDeniedPorts(landlockListeners(d.full, resolvedDashboardListen()), d.full.Proxy.Port)
+// resolved after the driver was built still counts. It fails when a
+// running dashboard's port cannot be determined (landlockDashboardAddrs).
+// A port change after the box started is not re-denied to that box: the
+// ruleset is applied once, at the box's start.
+func (d *landlockDriver) deniedPorts() ([]int, error) {
+	dashes, err := landlockDashboardAddrs(resolvedDashboardListen(), d.full.Observer.DBPath, oneShotProcessAlive)
+	if err != nil {
+		return nil, err
+	}
+	ls := landlockListeners(d.full, dashes[0])
+	for _, a := range dashes[1:] {
+		ls = append(ls, landlockListener{name: "dashboard", addr: a, on: true})
+	}
+	return landlockDeniedPorts(ls, d.full.Proxy.Port), nil
+}
+
+// errLandlockDashboardUnknown refuses a Landlock launch whose deny list
+// could not include the running dashboard's port (cli-1b fixes-3, A).
+var errLandlockDashboardUnknown = errors.New("terminal_sandbox: process_lite shares the host's network and must deny the dashboard's port, " +
+	"but the running daemon's dashboard address is not known (no live dashboard-listen.json beside the database); " +
+	"start the daemon with `observer start` and launch again, or use bwrap; the launch is refused, never run with the dashboard reachable")
+
+// errLandlockDashboardPortZero refuses a Landlock launch next to a
+// dashboard bound to port 0: the operating system chose its port, and the
+// address Observer recorded does not carry it (cli-1b fixes-4).
+var errLandlockDashboardPortZero = errors.New("terminal_sandbox: process_lite must deny the dashboard's port, " +
+	"but a dashboard listens on port 0 (a port the operating system chose, which is not recorded); " +
+	"give --dashboard-addr (or [dashboard].addr) a fixed port, or use bwrap; the launch is refused")
+
+// landlockDashboardAddrs is every dashboard address a Landlock box must not
+// reach: the one this process resolved (the daemon's own, a --dashboard-addr
+// or --addr override included) and every one recorded beside the database
+// by a live process (the daemon's dashboard-listen.json and each
+// standalone `observer dashboard` record). A sandboxed CLI launch builds
+// its plan in its own process, where nothing was resolved and whose env and
+// config may not be the daemon's, so the records are what it has. None, or
+// a dashboard on port 0, refuses the launch (fail closed): falling back to
+// this process's env, config or default could miss the real port.
+func landlockDashboardAddrs(noted, dbPath string, alive func(pid int) bool) ([]string, error) {
+	var addrs []string
+	if noted != "" {
+		addrs = append(addrs, noted)
+	}
+	for _, a := range liveDashboardListenAddrs(dbPath, alive) {
+		if !slices.Contains(addrs, a) {
+			addrs = append(addrs, a)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil, errLandlockDashboardUnknown
+	}
+	for _, a := range addrs {
+		_, port, err := net.SplitHostPort(a)
+		if n, cerr := strconv.Atoi(port); err != nil || cerr != nil || n == 0 {
+			return nil, errLandlockDashboardPortZero
+		}
+	}
+	return addrs, nil
 }
 
 // landlockRow is the registry row.
@@ -206,13 +269,14 @@ func (d *landlockDriver) version() string {
 func (d *landlockDriver) probeResult() sandboxlandlock.ProbeResult {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.lastAt.IsZero() && time.Since(d.lastAt) < sandboxProbeTTL {
+	if sandboxProbeFresh(d.lastAt, d.lastGen, time.Now()) {
 		return d.last
 	}
+	gen := sandboxProbeGeneration()
 	env := landlockProbeEnvFn()
 	env.Active = d.listed()
 	env.MinABI = d.cfg.MinABI
-	d.last, d.lastAt = sandboxlandlock.Probe(env), time.Now()
+	d.last, d.lastAt, d.lastGen = sandboxlandlock.Probe(env), time.Now(), gen
 	return d.last
 }
 
@@ -288,6 +352,30 @@ type landlockPlanFile struct {
 	// (sandboxenv.TempDirEnv, D-UC1): the ruleset grants only the run's
 	// TMPDIR, so the agent gets each set to it.
 	TempDirEnv []string `json:"temp_dir_env,omitempty"`
+	// Seccomp is the seccomp profile the exec step loads after
+	// no_new_privs ("" for none; lane N2). Only a version 2 plan carries
+	// one.
+	Seccomp string `json:"seccomp,omitempty"`
+}
+
+// landlockPlanVersionFor is the version a plan is written with.
+func landlockPlanVersionFor(seccomp string) int {
+	if seccomp != "" {
+		return landlockPlanVersionSeccomp
+	}
+	return landlockPlanVersion
+}
+
+// checkLandlockPlanVersion refuses a plan whose version this binary does not
+// read, or whose seccomp field disagrees with its version.
+func checkLandlockPlanVersion(plan landlockPlanFile) error {
+	switch {
+	case plan.Version == landlockPlanVersion && plan.Seccomp == "":
+	case plan.Version == landlockPlanVersionSeccomp && plan.Seccomp != "":
+	default:
+		return fmt.Errorf("landlock plan: version %d (seccomp %q), this binary reads %d, or %d with a seccomp profile (restart the daemon after an upgrade)", plan.Version, plan.Seccomp, landlockPlanVersion, landlockPlanVersionSeccomp)
+	}
+	return nil
 }
 
 // Attach writes the run record and the plan file and returns the argv the
@@ -342,6 +430,15 @@ func (d *landlockDriver) compose(created termsvc.CreateResult, abi int) ([]strin
 	if err != nil {
 		return nil, err
 	}
+	// The seccomp filter (lane N2): the exec step loads it, the host
+	// helper reads it back on the held step before it releases the gate.
+	seccomp, err := sandboxSeccompProfile(r.cfg, landlockRow(), created.Isolation.Seccomp)
+	if err != nil {
+		return nil, err
+	}
+	if host, err = sandbox.HostArgvWithSeccomp(host, seccomp); err != nil {
+		return nil, err
+	}
 	abs := func(rels []string) []string {
 		out := make([]string, 0, len(rels))
 		for _, rel := range rels {
@@ -353,6 +450,10 @@ func (d *landlockDriver) compose(created termsvc.CreateResult, abi int) ([]strin
 	for _, rel := range sandboxRuntimeLadder {
 		runtimes = append(runtimes, filepath.Join(home, rel))
 	}
+	denied, err := d.deniedPorts()
+	if err != nil {
+		return nil, err
+	}
 	in := sandboxlandlock.PlanInput{
 		ABI: abi, Workspace: run.Dir,
 		StateRW: abs(spec.StateRW), StateRO: abs(spec.StateRO),
@@ -363,14 +464,14 @@ func (d *landlockDriver) compose(created termsvc.CreateResult, abi int) ([]strin
 		ConfigRO:      landlockConfigView(r.observerDir, landlockDaemonConfigFile()),
 		ObserverDir:   r.observerDir,
 		DaemonSockets: landlockDaemonSockets(r.observerDir, d.attachSocket),
-		DeniedPorts:   d.deniedPorts(),
+		DeniedPorts:   denied,
 	}
 	// Validate now, so a bad plan refuses the launch here rather than in
 	// the exec step.
 	if _, err := sandboxlandlock.BuildRuleset(in); err != nil {
 		return nil, fmt.Errorf("terminal_sandbox: %w", err)
 	}
-	planPath, err := writeLandlockPlan(r.observerDir, run.ID, landlockPlanFile{Version: landlockPlanVersion, MinABI: sandboxlandlock.Floor(d.cfg.MinABI), Plan: in, TempDirEnv: sandboxenv.TempDirEnv(run.Tool)})
+	planPath, err := writeLandlockPlan(r.observerDir, run.ID, landlockPlanFile{Version: landlockPlanVersionFor(seccomp), MinABI: sandboxlandlock.Floor(d.cfg.MinABI), Plan: in, TempDirEnv: sandboxenv.TempDirEnv(run.Tool), Seccomp: seccomp})
 	if err != nil {
 		return nil, err
 	}
@@ -422,10 +523,14 @@ func landlockConfigView(observerDir, configFile string) []string {
 }
 
 // landlockDaemonSockets are the daemon's own unix sockets no grant may let
-// the box connect to: the relay's link endpoint and the attach socket.
+// the box connect to: the relay's link endpoint, the org prompt judge's ask
+// endpoint (adm-2 fixes-1, M1) and the attach socket.
 func landlockDaemonSockets(observerDir, attach string) []string {
 	out := []string{}
 	if ep, err := sandboxRelayEndpoint(observerDir); err == nil && filepath.IsAbs(ep) {
+		out = append(out, filepath.Clean(ep))
+	}
+	if ep, err := promptjudgeipc.EndpointInDir(observerDir); err == nil && filepath.IsAbs(ep) {
 		out = append(out, filepath.Clean(ep))
 	}
 	if filepath.IsAbs(attach) {

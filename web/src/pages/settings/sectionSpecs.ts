@@ -7,6 +7,8 @@
 // the legacy's per-field labels + help text + option lists, which
 // were lost when the static TomlView replaced the structured form.
 
+import { PRODUCT_NAMES } from "../../../../shared/lib/productNames.ts";
+
 export type FieldKind = "text" | "select" | "bool" | "int" | "list";
 
 // OptionSourceId names a roster a picker field reads from the daemon:
@@ -49,12 +51,23 @@ export type FieldDef = {
   // `effective_mode`. Used by the ten "prompt-detectors" section
   // fields below.
   showEffectiveMode?: boolean;
+  // For a `list` whose Go field distinguishes nil ("use the engine's
+  // defaults") from an explicitly empty list ("none"): renders a three-way
+  // choice and sends JSON null / the list / [] (web/src/lib/guardSettingsExtras.ts
+  // keeps the value model). The labels name what each end means for the field.
+  nullableList?: { defaultsLabel: string; noneLabel: string };
   // Renders the control inert. For a key the config still carries but no
   // Go consumer reads — a live-looking switch that changes nothing is a
   // lie, so the renderer disables it and prints `note` underneath
   // (honest-disabled-copy convention). `note` names the exact reason.
   disabled?: boolean;
   note?: string;
+  // Renders the control inert but, unlike `disabled`, keeps the key in the
+  // save payload unchanged: a key another surface owns (guard.level is
+  // written by a recipe apply on the Security page, together with the rows
+  // it stands for, so a hand edit here would change no rule). `note` names
+  // where it is changed.
+  readOnly?: boolean;
 };
 
 export type SectionSpec = {
@@ -64,6 +77,9 @@ export type SectionSpec = {
   // section. Resolved at render time. May be empty when the spec is
   // purely a parent for grouped sub-paths (see `groups` below).
   path: string[];
+  // title overrides the card title (the section id, capitalised): the AI
+  // Apps section keeps the id "observability" for links and governance.
+  title?: string;
   description: string;
   // Flat fields. Pages with sub-objects (e.g. compression's 4 layers)
   // use `groups` instead — the renderer prefers `groups` when present.
@@ -84,6 +100,10 @@ export type SectionGroup = {
   path: string[];
   description?: string;
   fields: FieldDef[];
+  // Render the group only when its object exists in the loaded config. For a
+  // group whose keys an older daemon does not know: showing empty controls
+  // there would invite a save the daemon rejects.
+  hideWhenAbsent?: boolean;
 };
 
 // COMPRESS_TYPES is the conversation compressor's content-type vocabulary
@@ -110,9 +130,204 @@ export const BUILTIN_PROFILE_NAMES = [
   "codex-variant",
 ];
 
+// PROCESS_CAPTURE_LIMIT_GROUPS is the "Capture limits" subsection of the
+// process section: every [observer.process.capture] key (process capture
+// budget plan 9.1; defaults are the plan's). Field ids are the Go field names
+// of the capture config; web/src/lib/processCapture.ts CAPTURE_FIELDS lists the
+// same keys and a test keeps the two in step. Hidden on a daemon whose config
+// has no Capture object.
+const CAPTURE_PATH = ["Observer", "Process", "Capture"];
+const PROCESS_CAPTURE_LIMIT_GROUPS: SectionGroup[] = [
+  {
+    id: "capture-limits",
+    label: "Capture limits",
+    path: CAPTURE_PATH,
+    hideWhenAbsent: true,
+    description:
+      "Bound how many process rows one session stores. Findings, failures and tool-linked runs are always kept; routine helpers are folded, the overflow becomes counted rollups, and services the agent started are tracked in their own block. The data-volume card below shows what the values you are editing would store per day.",
+    fields: [
+      {
+        id: "Enabled",
+        label: "Apply capture limits",
+        kind: "bool",
+        help: "Master switch for the limits below. Off = every captured run becomes a row, as before capture limits existed.",
+      },
+    ],
+  },
+  {
+    id: "capture-budget",
+    label: "Capture limits: budgets",
+    path: [...CAPTURE_PATH, "Budget"],
+    hideWhenAbsent: true,
+    description: "Individual rows kept before the rest of the runs are counted into rollups. Findings and failures never count against a full budget.",
+    fields: [
+      {
+        id: "PerToolCall",
+        label: "Rows per tool call",
+        kind: "int",
+        min: 0,
+        max: 100000,
+        step: 10,
+        help: "Individual process rows kept for one tool call before further runs are rolled up. Default 200.",
+      },
+      {
+        id: "PerSession",
+        label: "Rows per session",
+        kind: "int",
+        min: 0,
+        max: 1000000,
+        step: 100,
+        help: "Individual process rows kept for one session. Default 5000.",
+      },
+      {
+        id: "PerMinute",
+        label: "Rows per minute",
+        kind: "int",
+        min: 0,
+        max: 100000,
+        step: 10,
+        help: "Burst guard: individual rows kept for one session in any one minute. Default 300.",
+      },
+    ],
+  },
+  {
+    id: "capture-services",
+    label: "Capture limits: services",
+    path: [...CAPTURE_PATH, "Services"],
+    hideWhenAbsent: true,
+    description: "Long-lived programs the agent starts (dev servers, watchers, desktop apps) are tracked as services instead of filling the session with their children.",
+    fields: [
+      {
+        id: "Track",
+        label: "Track services",
+        kind: "bool",
+        help: "Track services the agent spawns and show them in the session's System tab. Default on.",
+      },
+      {
+        id: "DetachAfterMinutes",
+        label: "Detach after (minutes)",
+        kind: "int",
+        min: 0,
+        max: 1440,
+        step: 1,
+        help: "A run that outlives its tool call by this long and keeps spawning becomes a service root. Default 10.",
+      },
+      {
+        id: "ExemplarsPerService",
+        label: "Rows per service",
+        kind: "int",
+        min: 0,
+        max: 10000,
+        step: 5,
+        help: "Individual rows kept under one service root; the rest are rolled up. Default 20.",
+      },
+      {
+        id: "TailMinutes",
+        label: "Tail (minutes)",
+        kind: "int",
+        min: 0,
+        max: 10080,
+        step: 5,
+        help: "Stop tracking a service this long after the session's last activity. Default 30.",
+      },
+      {
+        id: "ExtraBasenames",
+        label: "Extra service programs",
+        kind: "list",
+        help: "Executable names added to the built-in service table (for example my-dev-server). Comma-separated.",
+      },
+    ],
+  },
+  {
+    id: "capture-fold",
+    label: "Capture limits: folding",
+    path: [...CAPTURE_PATH, "Fold"],
+    hideWhenAbsent: true,
+    description: "Routine helper runs (credential helpers, probes) that add nothing on their own are folded into a count on their parent row.",
+    fields: [
+      {
+        id: "Enabled",
+        label: "Fold routine helpers",
+        kind: "bool",
+        help: "Apply the fold table. Default on.",
+      },
+      {
+        id: "ExtraBasenames",
+        label: "Extra folded programs",
+        kind: "list",
+        help: "Executable names added to the built-in fold table. Comma-separated.",
+      },
+    ],
+  },
+  {
+    id: "capture-metrics",
+    label: "Capture limits: metrics",
+    path: [...CAPTURE_PATH, "Metrics"],
+    hideWhenAbsent: true,
+    fields: [
+      {
+        id: "RingMinLifetimeSeconds",
+        label: "Metric ring minimum lifetime (s)",
+        kind: "int",
+        min: 0,
+        max: 86400,
+        step: 5,
+        help: "Keep the CPU and memory sample ring only for runs alive at least this long; shorter runs keep their totals and no samples. Default 30.",
+      },
+    ],
+  },
+  {
+    id: "capture-rollups",
+    label: "Capture limits: rollups",
+    path: [...CAPTURE_PATH, "Rollups"],
+    hideWhenAbsent: true,
+    fields: [
+      {
+        id: "BucketSeconds",
+        label: "Rollup bucket (s)",
+        kind: "int",
+        min: 1,
+        max: 86400,
+        step: 10,
+        help: "Width of the time bucket rolled-up runs are counted into. Default 60.",
+      },
+    ],
+  },
+  {
+    id: "capture-unattributed",
+    label: "Capture limits: unattributed runs",
+    path: [...CAPTURE_PATH, "Unattributed"],
+    hideWhenAbsent: true,
+    description: "Runs that could not be tied to a session wait for correlation, then are summarised or dropped.",
+    fields: [
+      {
+        id: "PendingHours",
+        label: "Wait for correlation (hours)",
+        kind: "int",
+        min: 0,
+        max: 720,
+        step: 1,
+        help: "How long an unattributed run waits to be matched to a session. Default 24.",
+      },
+      {
+        id: "Mode",
+        label: "After the wait",
+        kind: "select",
+        options: ["rollup", "drop"],
+        help: "rollup = fold it into a machine-level count and delete the row; drop = delete it without a count. Default rollup.",
+      },
+    ],
+  },
+];
+
 // Each spec matches a single ConfigViewerSection route in
 // Settings.tsx::sectionData(). The path[] resolves to the same object
 // today's sectionData() returns.
+
+/** AI_APPS_SUMMARY is the ONE owner of the AI Apps section's summary (sweep
+ *  finding F-20: it was written twice, in Settings.tsx and here, and the two
+ *  drifted). Settings.tsx's "About this section" reads this constant. */
+export const AI_APPS_SUMMARY = `${PRODUCT_NAMES.planea}: traces, cost and evals of the LLM apps and agents you build, sent by the superbased SDKs or any OpenTelemetry SDK to this machine's trace receiver. It is not your own coding-agent usage (every other section is); the data shows on the ${PRODUCT_NAMES.planea_local} pages. Off until you turn it on. Trace data stays on this machine unless you turn on an ${PRODUCT_NAMES.planea} share tier under Org sharing.`;
 
 export const SECTION_SPECS: Record<string, SectionSpec> = {
   observer: {
@@ -373,25 +588,26 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
           },
         ],
       },
+      ...PROCESS_CAPTURE_LIMIT_GROUPS,
       {
         id: "network-capture",
         label: "Network capture",
         path: ["Observer", "Process", "Network"],
         description:
-          "Network events for AI-tool sessions. Body excerpts are only available for SuperBased-proxied/plaintext flows; non-proxied TLS remains metadata-only.",
+          "Network events for AI-tool sessions. Body excerpts are only available for superbased-proxied/plaintext flows; non-proxied TLS remains metadata-only.",
         fields: [
           {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Records network_connect events for attributed sessions, including SuperBased proxy calls. Required for the session API/network calls table.",
+            help: "Records network_connect events for attributed sessions, including superbased proxy calls. Required for the session API/network calls table.",
           },
           {
             id: "CaptureBodies",
             label: "Body capture",
             kind: "select",
             options: ["off", "proxied", "available"],
-            help: "`off` stores metadata only. `proxied` stores capped/scrubbed excerpts for SuperBased proxy flows. `available` is reserved for future plaintext/instrumented backends.",
+            help: "`off` stores metadata only. `proxied` stores capped/scrubbed excerpts for superbased proxy flows. `available` is reserved for future plaintext/instrumented backends.",
           },
           {
             id: "MaxRequestBytes",
@@ -564,7 +780,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Retention (days)",
         kind: "int",
         min: 0,
-        help: "Days to keep cache_segments / cache_entries / cache_events rows. 0 = never prune. Default 90.",
+        help: "Days to keep the prompt-cache records (segments, entries and events). 0 = never prune. Default 90.",
       },
       {
         id: "CalibrateLogPath",
@@ -584,7 +800,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "Enabled",
         label: "Enabled",
         kind: "bool",
-        help: "Decode todo/plan tool calls into task_items/task_transitions as they're captured. Default on. Disabling makes the task-tracking ingest pass a pure no-op; historical rows already decoded stay in the DB. Retrofit history after enabling with Settings > Backfill > tasks.",
+        help: "Decode todo/plan tool calls into tasks and their status changes as they're captured. Default on. Disabling makes the task-tracking ingest pass a pure no-op; historical rows already decoded stay in the DB. Retrofit history after enabling with Settings > Backfill > tasks.",
       },
       {
         id: "MatchMode",
@@ -610,28 +826,28 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "BackfillOnStart",
         label: "Backfill on start",
         kind: "bool",
-        help: "Re-derive task_items/task_transitions from historical actions rows once at daemon startup (the same work as Settings > Backfill > tasks, run automatically). Default off - run that backfill once after enabling this section on a daemon with historical task-tool traffic. Idempotent.",
+        help: "Re-derive tasks and their status changes from past actions once at daemon startup (the same work as Settings > Backfill > tasks, run automatically). Default off - run that backfill once after enabling this section on a daemon with historical task-tool traffic. Idempotent.",
       },
       {
         id: "RetentionDays",
         label: "Retention (days)",
         kind: "int",
         min: 0,
-        help: "Days to keep task_items/task_transitions rows. 0 = never prune (the default - no pruning sweep ships yet; this field exists so one has a home without a future config-shape change).",
+        help: "Days to keep tasks and their status changes. 0 = never prune (the default - no pruning sweep ships yet; this field exists so one has a home without a future config-shape change).",
       },
     ],
   },
   observability: {
     id: "observability",
+    title: PRODUCT_NAMES.planea,
     path: ["Observability"],
-    description:
-      "Generalized observability subsystem (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose end-users route through SuperBased. Distinct from your own coding-agent usage; the captured data is viewed on the admin/org dashboard. Opt-in and node-local: trace data never leaves this machine unless an obs share tier is enabled. The receiver binds at daemon start, so enabling here needs a restart to take effect. Note the receiver is SHARED with the log-ingest path - it also comes alive whenever [ingest.otel] is enabled, so this toggle is not the only thing that binds :4317/:4318.",
+    description: AI_APPS_SUMMARY,
     fields: [
       {
         id: "Enabled",
         label: "Enabled",
         kind: "bool",
-        help: "Turn on the obs subsystem: the OTLP trace receiver (gRPC :4317 / HTTP :4318), the obs_* schema, trajectory ingestion + API, and the eval plane. Default off. The receiver is shared with [ingest.otel] (logs), so it may already be bound from that toggle. The judge model + online-sampling eval config ([observability.eval]) stays a hand-edited config decision.",
+        help: "Turns on AI Apps: the trace receiver (gRPC and HTTP), its tables, trace capture and evals. Default off. Saving here takes effect at the next start; the AI Apps on this machine card below turns it on now. The receiver is shared with log ingest under OTel export, so it may already be listening. The judge model and online-sampling evals are under More settings below.",
       },
     ],
   },
@@ -967,7 +1183,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // touch it (test-pinned).
     path: ["OrgClient"],
     description:
-      "What this node shares with your organization's SuperBased server - and only when enrolled ([org_client] enabled by enrolling in the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs.summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
+      "What this node shares with your organization's superbased server - and only when enrolled ([org_client] enabled by enrolling in the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs.summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
     fields: [
       {
         id: "PushIntervalSeconds",
@@ -1084,13 +1300,14 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // PUT /api/config/section/guard decodes config.GuardConfig, so the
     // spec roots at ["Guard"] and group paths include that prefix (the
     // strip convention — see compression). [guard.cloud] is deliberately
-    // ABSENT: network egress opt-ins stay a hand-written config decision
-    // (D1 posture) and the backend preserves the prior Cloud block on
-    // every save. Rules.OrgBundle + Rules.CEL likewise survive saves
+    // ABSENT here: its network opt-ins are a consent, made on the Security
+    // page's MCP tab (Network features card, PUT /api/guard/cloud, human-only,
+    // plan decision P-2), and the backend preserves the prior Cloud block on
+    // every section save. Rules.OrgBundle + Rules.CEL likewise survive saves
     // untouched server-side.
     path: ["Guard"],
     description:
-      "Security guard layer - posture, rule tuning, taint tracking, proxy scans, MCP pinning, budgets, and alerts. Everything here binds at daemon start (restart banner after save). Moving to enforce? Use the Security page's mode control - it shows what would have blocked first.",
+      "Security guard layer - posture, rule tuning, taint tracking, proxy scans, MCP pinning, budgets, and alerts. Everything here binds at daemon start (restart banner after save). Moving to enforce? Use the Security page's mode control - it shows what would have blocked first. For a strictness level (none, loose, balanced, strict, lockdown) or a pack of rules for your kind of work, use Security > Rules > Recipes.",
     fields: [
       {
         id: "Enabled",
@@ -1107,9 +1324,17 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
       },
       {
         id: "Strict",
-        label: "Strict (fail-closed)",
+        label: "Fail closed when the guard itself errors",
         kind: "bool",
-        help: "A guard-internal error then blocks instead of approving. Enterprise posture; default off (fail-open).",
+        help: "When the guard hits an internal error, block the action instead of letting it through. Default off (fail open). This is not a strictness level: for how strict the rules are, use Security > Rules > Recipes.",
+      },
+      {
+        id: "Level",
+        label: "Level",
+        kind: "text",
+        readOnly: true,
+        note: "Set by applying a recipe in Security > Rules > Recipes.",
+        help: "The recipe level applied to this whole machine (none, loose, balanced, strict, lockdown, or one of your own). Applying a level writes this key together with the mode, the prompt guard mode and the rules the level stands for, so editing it by hand would change no rule. Empty means no level was applied.",
       },
       {
         id: "RetentionDays",
@@ -1154,19 +1379,65 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Boundary",
         path: ["Guard", "Boundary"],
         description:
-          "Write/read boundary allowlists. EMPTY here means 'keep the engine defaults' - an explicit 'no allowlist at all' is a config-file edit (the form can't express the difference).",
+          "Write/read boundary allowlists. Each list is a three-way choice: Engine defaults (no entry is written to config.toml, the policy engine's built-in list applies), Custom list (your entries replace the defaults), or None (an explicit empty list: the built-in entries are dropped and nothing is added).",
         fields: [
           {
             id: "AllowPaths",
             label: "Allowed paths",
             kind: "list",
-            help: "Glob patterns the boundary rules (R-15x) treat as in-bounds - e.g. ../sibling-project/**. Empty = engine defaults.",
+            nullableList: {
+              defaultsLabel: "Engine defaults",
+              noneLabel: "None (no extra paths allowed)",
+            },
+            help: "Glob patterns the boundary rules (R-15x) treat as in-bounds - e.g. ../sibling-project/**. Engine defaults = the built-in allowlist. None = an explicit empty allowlist: no extra path is treated as in-bounds.",
           },
           {
             id: "ProtectedBranches",
             label: "Protected branches",
             kind: "list",
-            help: "Branches R-110/R-111 protect from force-push / deletion. Empty = engine defaults (main, master, …).",
+            nullableList: {
+              defaultsLabel: "Engine defaults (main, master, …)",
+              noneLabel: "None (no branch protected)",
+            },
+            help: "Branches R-110/R-111 protect from force-push / deletion. Engine defaults = main, master and the other built-ins. None = no branch is protected from force-push or deletion.",
+          },
+        ],
+      },
+      {
+        id: "database",
+        label: "Database",
+        path: ["Guard", "Database"],
+        hideWhenAbsent: true,
+        description:
+          "Inputs of the database rules (R-120 to R-126): destructive SQL and NoSQL commands, ORM resets and SQL run from a file.",
+        fields: [
+          {
+            id: "ProdPatterns",
+            label: "Production patterns",
+            kind: "list",
+            help: "Production hosts, connection strings, database names or profiles. A pattern with no * or ? matches anywhere in the value (prod matches any host with prod in its name); one with them is a glob over the whole value (db-*-prod). R-125 asks before any database command that names one. Empty leaves R-125 off.",
+          },
+        ],
+      },
+      {
+        id: "network",
+        label: "Network",
+        path: ["Guard", "Network"],
+        hideWhenAbsent: true,
+        description:
+          "Host lists of the network rules (R-174 to R-179). Each entry is a host name (example.com also matches its subdomains, *.example.com only the subdomains), an IP address or a CIDR block (10.0.0.0/8). The rules judge the hosts a command line names; they are not a firewall.",
+        fields: [
+          {
+            id: "AllowHosts",
+            label: "Allowed hosts",
+            kind: "list",
+            help: "R-176 flags a network command to a host not on this list (loopback always passes). R-176 is silent until a level or pack raises it (lockdown, the networking pack); then an empty list means every host other than loopback.",
+          },
+          {
+            id: "DenyHosts",
+            label: "Denied hosts",
+            kind: "list",
+            help: "R-174 flags a network command to a host on this list in observe mode and denies it in enforce mode, beside the cloud metadata endpoints it always covers. Empty adds no host.",
           },
         ],
       },
@@ -1412,7 +1683,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Prompt-submit detector overrides",
         path: ["Guard", "Prompt", "Detectors"],
         description:
-          "Per-detector mode overrides for the most common secret + PII detectors - a stricter override here always wins over the global mode above; a looser one clamps up to it. The full detector vocabulary (GET /api/guard/prompt/detectors) is larger; less common ids stay config-file-only ([guard.prompt.detectors] in config.toml) to keep this list from growing unbounded.",
+          "Per-detector mode overrides - a stricter override here always wins over the global mode above; a looser one clamps up to it. The common secret + PII detectors are listed; any other override (including one set in config.toml) appears below them with a Remove button, and 'Add an override for another detector' picks from the full detector vocabulary.",
         fields: [
           {
             id: "credit_card",
@@ -1491,18 +1762,17 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
   routing: {
     id: "routing",
     // PUT /api/config/section/routing decodes ONLY the adoption-funnel
-    // knobs below; every other [routing] sub-shape — tiers,
-    // benchmark_files, path_classes, privacy rules, budget scopes,
-    // reliability, key_pool (holds API keys), local_upstreams —
-    // is deliberately ABSENT from this form (complex shapes + secrets
-    // stay config-file-only) and the backend preserves the prior
-    // values on every save. [[routing.rules]] is the one exception
-    // (R2.2): the lint-gated fragment editor rendered BELOW the form
-    // sends RulesTOML through this same seam; the form itself never
-    // sends that key, so plain saves keep preserving rules wholesale.
+    // knobs below from this form; every other [routing] sub-shape is
+    // ABSENT from it and the backend preserves the prior values on a
+    // plain save. The cards rendered BELOW the form edit the shapes
+    // through the same seam with their own fields: RulesTOML (the
+    // lint-gated [[routing.rules]] editor, R2.2) and the Set* fields of
+    // RoutingShapesCards (tiers, path classes, budget scopes, privacy
+    // rules, local upstreams, fallbacks). The form never sends those
+    // keys. key_pool holds API keys and has no field at all.
     path: ["Routing"],
     description:
-      "Model routing - opt-in, off by default. Pick a policy template and a mode: advise only logs what it would have done; enforce rewrites models (same provider shape, never silently). Everything binds at daemon start (restart banner after save). Promoting advise → enforce? Use the Routing page's Shadow card - it shows the readiness evidence first. Custom [[routing.rules]] are editable in the lint-gated editor below; tier overrides, budgets, privacy rules, key pools, and local upstreams stay config-file-only.",
+      "Model routing - opt-in, off by default. Pick a policy template and a mode: advise only logs what it would have done; enforce rewrites models (same provider shape, never silently). Everything binds at daemon start (restart banner after save). Promoting advise → enforce? Use the Routing page's Shadow card - it shows the readiness evidence first. Custom [[routing.rules]], tier overrides, path classes, budget scopes, privacy rules, local upstreams and model fallbacks each have a card below; key pools hold API keys and stay in config.toml.",
     fields: [
       {
         id: "Enabled",
@@ -1530,7 +1800,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
           "enterprise-default",
           "custom",
         ],
-        help: "value (default) = quality floors + cost minimization. frugal = budget-first. fast = latency-first. plan-exec = plan pinned flagship, execution downshifts. strict-privacy = local/allow-listed only. enterprise-default = value with conservative coherence. custom = your [[routing.rules]] only (config-file edit).",
+        help: "value (default) = quality floors + cost minimization. frugal = budget-first. fast = latency-first. plan-exec = plan pinned flagship, execution downshifts. strict-privacy = local/allow-listed only. enterprise-default = value with conservative coherence. custom = your [[routing.rules]] only (edit them in the Custom rules card below).",
       },
       {
         id: "DecisionLogRetentionDays",

@@ -1,0 +1,94 @@
+{
+  "_doc": "The TraceCost object (contracts/cost-source.md section 6), as the org answers GET /v1/sdk/traces/{trace_id}/cost and as the machine carries it under 'cost' in GET /api/obs/trace/{id} (the machine has no api_version). cost_source_values and cost_source_labels are section 1. go test ./tests/sdkcontract (TestCostSourceContract) pins the values and the field names; the SDK tests serve 'org' and 'machine' from stub servers. Field names are the same in both SDKs (TypeScript camelCases them).",
+  "cost_source_values": ["gateway_exact", "proxy_exact", "computed", "reported", ""],
+  "cost_source_labels": {
+    "gateway_exact": "Gateway exact",
+    "proxy_exact": "Proxy exact",
+    "computed": "Computed",
+    "reported": "Reported",
+    "": "Unpriced"
+  },
+  "provenance_labels": ["gateway_exact", "proxy_exact", "computed", "reported", "mixed", "unpriced"],
+  "request_id_header": "X-SBO-Request-Id",
+  "trace_cost_fields": ["api_version", "trace_id", "cost_usd", "cost_provenance", "spans"],
+  "provenance_fields": ["label", "complete", "sources"],
+  "provenance_source_keys": ["gateway_exact", "proxy_exact", "computed", "reported", "unpriced"],
+  "span_fields": ["span_id", "model", "cost_usd", "cost_source", "reported_usd", "computed_usd", "exact_usd", "cost_delta_usd", "gateway_request_id"],
+  "org": {
+    "status": 200,
+    "body": {
+      "api_version": "v1",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "cost_usd": 0.0133,
+      "cost_provenance": {
+        "label": "mixed",
+        "complete": false,
+        "sources": {"gateway_exact": 1, "proxy_exact": 0, "computed": 1, "reported": 0, "unpriced": 1}
+      },
+      "spans": [
+        {
+          "span_id": "00f067aa0ba902b7",
+          "model": "gpt-4o-mini",
+          "cost_usd": 0.0123,
+          "cost_source": "gateway_exact",
+          "reported_usd": 0.01,
+          "computed_usd": 0.0121,
+          "exact_usd": 0.0123,
+          "cost_delta_usd": 0.0023,
+          "gateway_request_id": "gw-3f0c9a"
+        },
+        {
+          "span_id": "00f067aa0ba902b8",
+          "model": "claude-sonnet-4-5",
+          "cost_usd": 0.001,
+          "cost_source": "computed",
+          "reported_usd": null,
+          "computed_usd": 0.001,
+          "exact_usd": null,
+          "cost_delta_usd": null,
+          "gateway_request_id": null
+        },
+        {
+          "span_id": "00f067aa0ba902b9",
+          "model": "in-house-model",
+          "cost_usd": null,
+          "cost_source": "",
+          "reported_usd": null,
+          "computed_usd": null,
+          "exact_usd": null,
+          "cost_delta_usd": null,
+          "gateway_request_id": null
+        }
+      ]
+    }
+  },
+  "machine": {
+    "status": 200,
+    "body": {
+      "trace": {"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "service": "support-bot"},
+      "cost": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "cost_usd": 0.0121,
+        "cost_provenance": {
+          "label": "proxy_exact",
+          "complete": true,
+          "sources": {"gateway_exact": 0, "proxy_exact": 1, "computed": 0, "reported": 0, "unpriced": 0}
+        },
+        "spans": [
+          {
+            "span_id": "00f067aa0ba902b7",
+            "model": "gpt-4o-mini",
+            "cost_usd": 0.0121,
+            "cost_source": "proxy_exact",
+            "reported_usd": null,
+            "computed_usd": 0.0119,
+            "exact_usd": 0.0121,
+            "cost_delta_usd": null,
+            "gateway_request_id": null
+          }
+        ]
+      }
+    }
+  },
+  "not_found": {"status": 404, "body": {"api_version": "v1", "error": "not_found", "message": "trace not found"}}
+}

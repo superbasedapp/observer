@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "event_id": "event_synth_0001",
+      "source": "user",
+      "message": "Please fix the flaky login test in tests/auth.",
+      "user_id": "user_synth0001",
+      "username": "ada",
+      "created_at": 1793350805
+    },
+    {
+      "event_id": "event_synth_0002",
+      "source": "devin",
+      "message": "I will reproduce the failure first and then patch the retry logic.",
+      "user_id": null,
+      "username": null,
+      "created_at": 1793350870
+    },
+    {
+      "event_id": "event_synth_0003",
+      "source": "devin",
+      "message": "Opened a pull request with the fix.",
+      "user_id": null,
+      "username": null,
+      "created_at": 1793353080
+    }
+  ],
+  "has_next_page": true,
+  "end_cursor": "synthmessage0003"
+}

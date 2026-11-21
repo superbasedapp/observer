@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secfeed"
+	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depdriver"
@@ -56,10 +58,11 @@ import (
 // with `observer security scan db accept`, never by an agent (R-165);
 // after the accept the refreshes are automatic. Online matching
 // (depsOnlineGate) sends package names, so it keeps the install gate's
-// online setting and disclosure. A managed node never downloads from the
-// public bucket: its databases come from the org mirror (security plan
-// section 8.3), which is not built yet, so a managed node reports its
-// dependencies "not scanned" (database_missing) and says why.
+// online setting and disclosure. Where the databases come from is the
+// source order (security_osv_source.go, static feed mirroring plan section
+// 7): a managed node takes its org mirror only and never a public host; an
+// individual node takes SuperBased's signed mirror, the OSV bucket or an
+// imported set by [security.deps] db_source.
 
 // Cadence and bounds.
 const (
@@ -107,6 +110,24 @@ type depsScanEnv struct {
 	disclose secfeed.Disclosure
 	// consent is the one-time accept of the database download.
 	consent osvdb.Consent
+	// osConsent is the one accept of the OS release databases (ruling Q1
+	// (b), security_osv_os.go).
+	osConsent osvdb.OSConsent
+	// remoteConsent and remotePrivate are the SuperBased package lookup's
+	// two records (lane RM-2, security_osv_remote.go).
+	remoteConsent osvdb.RemoteConsent
+	remotePrivate osvdb.RemotePrivateConsent
+	// remote memoizes the verified shard sets for this env; live watches the
+	// posture's files so a lookup turned off stops sending at once;
+	// remoteFetchAlways makes the shard manifest fetch on every env (the
+	// CLI), not only when due.
+	remote            *remoteSetsState
+	live              lookupGate
+	remoteFetchAlways bool
+	// orgLookup is a managed node's package lookup posture, as its org's
+	// signed security policy decides it (lane RM-3); zero (off) on an
+	// individual node.
+	orgLookup orgLookupPosture
 	// mirror: the managed pull in force names the org mirror (lane SEC-E4).
 	mirror bool
 	// configPath is the --config the env was opened with.
@@ -116,6 +137,12 @@ type depsScanEnv struct {
 	// root is the project a gate is walked for (onlineBlockedAt); "" reads
 	// the org-wide floor only.
 	root string
+	// submodules is the online git submodule check the linked driver runs
+	// after online matching (security_scan_submodules.go); set only by a
+	// manual run that asked for online matching (depsRunMatchers: `observer
+	// security scan --online`, the dashboard's "Also check online"), never
+	// by the daemon's loop.
+	submodules depdriver.SubmoduleMatcher
 }
 
 func openDepsScanEnv(ctx context.Context, configPath string) (*depsScanEnv, error) {
@@ -137,9 +164,13 @@ func openDepsScanEnv(ctx context.Context, configPath string) (*depsScanEnv, erro
 	e.configPath = configPath
 	if e.managed {
 		e.mirror = depsMirrorNamedFor(ctx, cfg, st)
+		e.orgLookup = depsOrgLookupFor(ctx, cfg, st)
 	}
 	e.disclose = readDepsDisclosure(dir)
 	e.consent = osvdb.ReadConsent(dir, depsRecordKey(dir))
+	e.osConsent = osvdb.ReadOSConsent(dir, depsRecordKey(dir))
+	e.remoteConsent = osvdb.ReadRemoteConsent(dir, depsRecordKey(dir))
+	e.remotePrivate = osvdb.ReadRemotePrivateConsent(dir, depsRecordKey(dir))
 	return e, nil
 }
 
@@ -171,7 +202,11 @@ var depsDownloadGate = depsGate{
 	{"scanner_source_not_allowed", func(e *depsScanEnv) bool {
 		return !depsScannerSourceAllowed(e.cfg.Security, e.dbSource())
 	}},
-	{depscan.ReasonDBNotAccepted, func(e *depsScanEnv) bool { return !e.managed && !e.consent.Accepted() }},
+	// Lookup mode remote downloads no database (lane RM-2): its ecosystems
+	// are looked up at SuperBased instead.
+	{"lookup_mode_remote", func(e *depsScanEnv) bool { return !e.managed && e.cfg.Security.Deps.Match == lookupRemote }},
+	// db_source = import fetches nothing, so it needs no accept.
+	{depscan.ReasonDBNotAccepted, func(e *depsScanEnv) bool { return !e.managed && !e.osvImportOnly() && !e.consent.Accepted() }},
 }
 
 // dbSource is where this node's databases come from (the
@@ -220,33 +255,46 @@ func (e *depsScanEnv) onlineBlockedAt(root string) string {
 // never waits for an accept it cannot give (its databases come from the
 // organization's mirror), so its scans keep reporting database_missing
 // (lane sec-deps4 audit finding 3).
-func (e *depsScanEnv) awaitingAccept() bool {
-	if e.managed || e.consent.Accepted() {
-		return false
-	}
-	eps, err := e.db.Installed()
-	return err != nil || len(eps) == 0
-}
+//
+// Since lane RM-2 the reason is the package lookup posture's
+// (scanWaitReason): a fresh install that chose neither the download nor
+// the SuperBased lookup waits too (lookup_not_chosen), and lookup mode
+// remote waits for its own consent, not the download's.
+func (e *depsScanEnv) awaitingAccept() bool { return e.scanWaitReason() != "" }
 
 // depsAcceptHint is the one sentence every surface shows before the
 // accept: the size, the source and the two ways to accept.
 var depsAcceptHint = fmt.Sprintf("databases not downloaded: accept to download about %d MB from %s (`observer security scan db accept`, or the Scanners card on the dashboard's Code security page)", osvdb.ApproxDownloadMB, osvdb.Source)
 
-// refreshDB refreshes every ecosystem's export when the gate is open.
+// refreshDB refreshes every ecosystem's export when the gate is open,
+// from the first source of the node's order that can serve it
+// (osvRemote, security_osv_source.go), and records which one did.
 func (e *depsScanEnv) refreshDB(ctx context.Context) (osvdb.Report, string, error) {
 	if r := e.downloadBlocked(); r != "" {
 		return osvdb.Report{}, r, nil
 	}
-	remote := depsOSVRemote()
-	if e.managed {
-		r, err := e.orgMirrorOSV(ctx)
-		if err != nil {
-			return osvdb.Report{}, "", err
-		}
-		remote = r
+	served, rec, err := e.osvRemotes(ctx, depscan.Ecosystems())
+	writeDepsOSVSource(e.dir, rec)
+	if err != nil {
+		return osvdb.Report{}, "", err
 	}
-	rep, err := e.db.Refresh(ctx, remote, depscan.Ecosystems(), time.Now())
-	return rep, "", err
+	if rec.Fallback != "" {
+		e.logger.Debug("security: OSV databases refreshed from a fallback source", "source", rec.Source, "why", rec.Fallback)
+	}
+	rep := osvdb.Report{Failed: map[string]string{}, Incremental: map[string]int{}}
+	now := time.Now()
+	var errs []error
+	for _, s := range served {
+		r, err := e.db.Refresh(ctx, s.remote, s.ecos, now)
+		rep.Changed = append(rep.Changed, r.Changed...)
+		rep.Unchanged = append(rep.Unchanged, r.Unchanged...)
+		maps.Copy(rep.Failed, r.Failed)
+		maps.Copy(rep.Incremental, r.Incremental)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return rep, "", errors.Join(errs...)
 }
 
 // orgMirrorOSV fetches the security.osv_export kind from the org mirror
@@ -263,7 +311,7 @@ func (e *depsScanEnv) orgMirrorOSV(ctx context.Context) (osvdb.Remote, error) {
 	if ferr != nil {
 		e.logger.Warn("security: org mirror fetch failed; the installed OSV exports stay in use", "err", ferr, "freshness", l.Freshness)
 	}
-	return mirrorOSVRemote{l: l}, nil
+	return newOSVContentRemote(st, l, osvdb.SourceOrgMirror), nil
 }
 
 // depsOSVRemote is the database download's network side (the declared
@@ -311,10 +359,33 @@ func depsOnlineAttached(component string, m depdriver.OnlineMatcher) bool {
 // depsDriverFor is depsDriver with an online matcher for the linked driver
 // (nil keeps matching local).
 func (e *depsScanEnv) depsDriverFor(component string, runner *extrun.Runner, online depdriver.OnlineMatcher) (secscan.Driver, error) {
+	return e.depsDriverWith(component, runner, online, artifactScanPlan{})
+}
+
+// depsDriverAt is depsDriverFor for one project: the linked driver also
+// reads the artifact folders the developer turned on for it, and leaves
+// the discovered ones that are off alone (planArtifactScan). The daemon's
+// schedule, Scan now and the CLI all build their driver here, so the choice
+// is one (ruling 2026-11-05, item 4 folders).
+func (e *depsScanEnv) depsDriverAt(component string, runner *extrun.Runner, online depdriver.OnlineMatcher, root string, named []string) (secscan.Driver, error) {
+	if component != depscan.ScalibrComponent {
+		return e.depsDriverFor(component, runner, online)
+	}
+	return e.depsDriverWith(component, runner, online, planArtifactScan(e.dir, root, named))
+}
+
+// depsDriverWith is depsDriverFor with an artifact plan (artifacts: the
+// folders turned on or named for this run, and the candidates left off; both
+// relative to the project root, forward slashes). The linked driver reads
+// executables only under the folders on; osv-scanner reads no artifact, so
+// it ignores the plan.
+func (e *depsScanEnv) depsDriverWith(component string, runner *extrun.Runner, online depdriver.OnlineMatcher, artifacts artifactScanPlan) (secscan.Driver, error) {
 	epochs, err := e.db.Installed()
 	if err != nil {
 		return nil, err
 	}
+	// Lookup mode remote matches no local database (lane RM-2).
+	epochs = e.matchEpochs(epochs)
 	switch component {
 	case depscan.ScalibrComponent:
 		exe, err := depsSelfExecutable()
@@ -324,7 +395,10 @@ func (e *depsScanEnv) depsDriverFor(component string, runner *extrun.Runner, onl
 		env := depdriver.Env{
 			Runner: runner, Executable: exe, Compiled: scalibrfacade.Compiled, Extractors: facadeExtractorNames(),
 			DBDir: e.db.Dir(), Epochs: epochs, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Online: online,
+			Submodules: e.submodules, ArtifactDirs: artifacts.On, ArtifactOff: artifacts.Off,
 		}
+		e.wireReachGo(&env)
+		env.InventorySink = e.inventorySink()
 		if factory := isolationFactoryFor(componentSnapshotForConfig(e.cfg), filepath.Dir(e.dir), nil); factory != nil {
 			env.Isolate = e.scalibrIsolate(factory, epochs)
 			env.IsolatedRunner = func(p extrun.IsolationProvider) *extrun.Runner {
@@ -333,7 +407,7 @@ func (e *depsScanEnv) depsDriverFor(component string, runner *extrun.Runner, onl
 		}
 		return depdriver.NewScalibr(env), nil
 	case depscan.OSVComponent:
-		d := depsOSVDriver(runner, e.db.Dir(), epochs, filepath.Join(e.dir, "osv-canary"))
+		d := depsOSVDriver(runner, e.db.Dir(), epochs, filepath.Join(e.dir, "osv-canary"), e.inventorySink())
 		if d == nil {
 			return nil, nil
 		}
@@ -411,7 +485,11 @@ func (e *depsScanEnv) scalibrIsolate(factory extrun.IsolationFactory, epochs map
 		case err != nil:
 			return iso, err
 		}
-		iso.Provider, iso.Root, iso.DBDir = prov, realRoot, realDB
+		realCache, err := filepath.EvalSymlinks(cache)
+		if err != nil {
+			return iso, fmt.Errorf("the run's cache directory could not be resolved: %w", err)
+		}
+		iso.Provider, iso.Root, iso.DBDir, iso.Scratch = prov, realRoot, realDB, realCache
 		return iso, nil
 	}
 }
@@ -477,15 +555,15 @@ func (e *depsScanEnv) acquireDepsScan(ctx context.Context, wait bool, onWait fun
 // ecosystem it scanned in full, becomes not_reproduced. The run is also
 // remembered in the last-scan file, so a restarted daemon does not scan
 // the project again before it is due. online reports that the driver
-// carries an online matcher (`scan --online`, depsOnlineAttached): with
+// carries an online matcher (depsRunMatchers, depsOnlineAttached): with
 // the online gate open it can match without a local database, so the
 // accept does not hold it back (lane sec-deps4 audit finding 2).
 func (e *depsScanEnv) scanOne(ctx context.Context, d secscan.Driver, root string, scope secscan.Target, wait bool, onWait func(), online bool) (secscan.Result, error) {
-	if !(online && e.onlineBlockedAt(root) == "") && e.awaitingAccept() {
+	if why := e.scanWaitReason(); why != "" && !(online && e.onlineBlockedAt(root) == "") {
 		// Before the accept: no driver starts, nothing is recorded, and
-		// the result says why (PT-19 (2)).
+		// the result says why (PT-19 (2); lane RM-2's posture reasons).
 		return secscan.Result{
-			Coverage: secscan.Coverage{Outcome: secscan.OutcomeNotScanned, Reason: depscan.ReasonDBNotAccepted},
+			Coverage: secscan.Coverage{Outcome: secscan.OutcomeNotScanned, Reason: why},
 			Engine:   secscan.EngineIdentity{Name: d.Row().ID},
 		}, nil
 	}
@@ -512,12 +590,16 @@ func (e *depsScanEnv) scanOne(ctx context.Context, d secscan.Driver, root string
 	if res.Engine.Name == "" {
 		res.Engine.Name = d.Row().ID
 	}
+	// Every run records the lookup posture it ran under (lane RM-2, plan
+	// section 13.10), so a later change never rereads an old run.
+	if n := e.postureNote(d.Row().ID); n != "" {
+		res.Coverage.Notes = append(res.Coverage.Notes, n)
+	}
 	if _, err := secsvc.RecordRun(ctx, e.st, t, res, started, time.Since(started), secsvc.Gone{}, securityRT.notify); err != nil {
 		return res, err
 	}
 	if res.Coverage.Outcome == secscan.OutcomeFindings || res.Coverage.Outcome == secscan.OutcomeClean || res.Coverage.Outcome == secscan.OutcomeUnknown {
-		hash := secposture.ProjectRootHash(root)
-		open, err := e.st.ListSecFindings(ctx, store.SecFindingFilter{ProjectRootHash: hash, Status: policy.FindingStatusOpen, Limit: 1000})
+		open, err := e.openDepFindings(ctx, secposture.ProjectRootHash(root))
 		if err == nil {
 			for _, id := range depscan.StaleFindings(open, d.Row().ID, res.Findings, depscan.ScannedEcosystems(res.Coverage)) {
 				// Hold-aware (lane sec-gate4 milestone 1c): a finding an
@@ -526,8 +608,7 @@ func (e *depsScanEnv) scanOne(ctx context.Context, d secscan.Driver, root string
 			}
 		}
 	}
-	epochs, _ := e.db.Installed()
-	if err := e.rememberScan(d.Row().ID, root, depdriver.EpochSummary(epochs), time.Now()); err != nil {
+	if err := e.rememberScan(d.Row().ID, root, e.scanEpoch(ctx), time.Now()); err != nil {
 		e.logger.Debug("security: could not record the last dependency scan", "err", err)
 	}
 	return res, nil
@@ -631,21 +712,44 @@ func depsScanPass(ctx context.Context, configPath, component string, lastDB *tim
 			*lastDB = time.Now()
 		}
 	}
+	// The OS release databases already installed refresh on the same
+	// cadence under their own gate (security_osv_os.go); none installed makes
+	// no request.
+	e.maybeRefreshOS(ctx, time.Now())
+	// Trivy's database for the Trivy image driver, behind its own gate (the
+	// components, an individual node, the Trivy accept) and its own
+	// cadence (trivydb.Due); fail-soft, the last good database stays.
+	maybeRefreshTrivyDB(ctx, e, time.Now())
 	if e.awaitingAccept() {
 		e.logger.Debug("security: dependency scans wait for the OSV database accept", "driver", component)
 		return nil
 	}
-	d, err := e.depsDriver(component, extrunhost.NewRunner(extrunhost.Options{}))
+	runner := extrunhost.NewRunner(extrunhost.Options{})
+	d, err := e.depsDriver(component, runner)
 	if err != nil || d == nil {
 		return err
 	}
-	epochs, _ := e.db.Installed()
-	epoch := depdriver.EpochSummary(epochs)
+	epoch := e.scanEpoch(ctx)
 	roots, err := e.st.SecActiveProjectRoots(ctx, time.Now().Add(-depsScanActive))
 	if err != nil {
 		return err
 	}
 	e.scheduledScans(ctx, component, d.Row().ID, epoch, roots, os.Stat, func(root string) (secscan.Result, error) {
+		// The SuperBased lookup (lane RM-2) matches per project: its
+		// classifier reads the project's own package-manager configuration.
+		var online depdriver.OnlineMatcher
+		if m := e.remoteMatcher(root); m != nil && depsOnlineAttached(component, m) {
+			online = m
+		}
+		// The SCALIBR driver is built per project: it reads the artifact
+		// folders the developer turned on for that project and nothing else.
+		if online != nil || component == depscan.ScalibrComponent {
+			rd, err := e.depsDriverAt(component, runner, online, root, nil)
+			if err != nil || rd == nil {
+				return secscan.Result{}, err
+			}
+			return e.scanOne(ctx, rd, root, secscan.Target{Scope: policy.FindingScopeScheduled}, false, nil, false)
+		}
 		return e.scanOne(ctx, d, root, secscan.Target{Scope: policy.FindingScopeScheduled}, false, nil, false)
 	})
 	return nil
@@ -706,4 +810,25 @@ func runScanChild(ctx context.Context, in io.Reader, out, errw io.Writer) error 
 	}
 	resp := scalibrchild.Run(ctx, req, errw)
 	return json.NewEncoder(out).Encode(resp)
+}
+
+// openDepFindings lists a project's open findings with each one's evidence
+// text filled in. The list query carries no evidence, and a dependency
+// finding's ecosystem is read from it (depscan.EcosystemOfFinding): without
+// it StaleFindings skips every finding, so a fixed dependency was never
+// closed by a later complete scan.
+func (e *depsScanEnv) openDepFindings(ctx context.Context, rootHash string) ([]secfinding.Finding, error) {
+	open, err := e.st.ListSecFindings(ctx, store.SecFindingFilter{ProjectRootHash: rootHash, Status: policy.FindingStatusOpen, Limit: 1000})
+	if err != nil {
+		return nil, err
+	}
+	for i := range open {
+		if open[i].Category != policy.FindingVulnerableDependency {
+			continue
+		}
+		if ev, _, ok, err := e.st.SecFindingEvidence(ctx, open[i].ID); err == nil && ok {
+			open[i].EvidenceRedacted = ev
+		}
+	}
+	return open, nil
 }

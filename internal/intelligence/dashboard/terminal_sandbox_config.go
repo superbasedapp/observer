@@ -40,7 +40,7 @@ type terminalSandboxConfigPayload struct {
 	// pointer for the same reason.
 	EgressAllowHosts *[]string `json:"egress_allow_hosts,omitempty"`
 	// PassEnv names the extra variables a sandboxed agent may receive
-	// (WINFIX2 R-167), a pointer for the same reason.
+	// (WINFIX2, ledger SBX-WIN-ENV-1), a pointer for the same reason.
 	PassEnv *[]string `json:"pass_env,omitempty"`
 	// SignInSeedTools are the tools whose sign-in a sandboxed run copies
 	// without asking (lane BOXSIGNIN, local-only), a pointer for the same
@@ -81,6 +81,30 @@ type terminalSandboxConfigPayload struct {
 	// VendorForcedNative is [terminal.sandbox].vendor_forced_native (lane
 	// SBX-P3D, the native panel); a pointer for the same reason.
 	VendorForcedNative *string `json:"vendor_forced_native,omitempty"`
+	// Seccomp is [terminal.sandbox].seccomp, Observer's own syscall filter
+	// for bwrap and process_lite (lane N2, the Settings toggle of lane O4);
+	// a pointer for the same reason.
+	Seccomp *bool `json:"seccomp,omitempty"`
+	// Setup is [terminal.sandbox.setup], the sandbox installation lifecycle
+	// (allow_elevated, decision P-250; the Settings card's toggle, P-254); a
+	// pointer for the same reason: an older client keeps the saved block.
+	Setup *terminalSandboxSetupPayload `json:"setup,omitempty"`
+	// The gateway-row block (lanes O1A and O2, the Settings panel of lane
+	// O4): embedded from terminal_sandbox_config_gatewayrow.go, the one
+	// dashboard file that names it (the OpenShell boundary invariant).
+	terminalSandboxGatewayRowPayload
+	// The vm, readopt, wslc, hcs and windows blocks (dashboard CLI parity
+	// lane L3): embedded from terminal_sandbox_config_tiers.go.
+	terminalSandboxTiersPayload
+	// returned_copy_retention_days (SBXD-2): embedded from
+	// terminal_sandbox_config_copies.go.
+	terminalSandboxCopiesPayload
+}
+
+// terminalSandboxSetupPayload is the dashboard shape of
+// [terminal.sandbox.setup]. Local-only: an organization can never turn it on.
+type terminalSandboxSetupPayload struct {
+	AllowElevated bool `json:"allow_elevated"`
 }
 
 // terminalSandboxLandlockPayload is the dashboard shape of
@@ -104,6 +128,71 @@ type terminalSandboxHostedPayload struct {
 	E2B      hostedProviderPayload `json:"e2b"`
 	Modal    hostedProviderPayload `json:"modal"`
 	Vercel   hostedProviderPayload `json:"vercel"`
+	// Docker (lane SBX-DOCKER) is a pointer so a client that predates the
+	// table keeps the saved value.
+	Docker *hostedProviderPayload `json:"docker,omitempty"`
+	// InstaBox is a pointer so a client that predates the row keeps the
+	// saved table.
+	InstaBox *hostedProviderPayload `json:"instabox,omitempty"`
+	// Daytona (a hosted row) is a pointer so a client that predates
+	// it keeps the saved table.
+	Daytona *hostedProviderPayload `json:"daytona,omitempty"`
+	// diff_against: embedded from terminal_sandbox_config_copies.go.
+	terminalSandboxHostedDiffPayload
+	// The internet tier's private-range deny (decision SBXD-7), its own block.
+	hostedPrivateRangesPayload
+	// GuardHooks ([terminal.sandbox.hosted].guard_hooks, lane HOOKS:
+	// auto, on or off) is a pointer so a client that predates it keeps the
+	// saved value.
+	GuardHooks *string `json:"guard_hooks,omitempty"`
+	// CloneWhere (the clone location, decision SBXD-5) is a pointer so a
+	// client that predates it keeps the saved value.
+	CloneWhere *string `json:"clone_where,omitempty"`
+	// The per-tool key settings (decisions SBXD-1 and SBXD-4): the custody
+	// per tool and the two opt-in in-box key sources. Pointers so a client
+	// that predates them keeps the saved values; an empty map clears.
+	KeyCustodyByTool *map[string]string `json:"key_custody_by_tool,omitempty"`
+	ToolKeys         *map[string]bool   `json:"tool_keys,omitempty"`
+	LoginSeed        *map[string]bool   `json:"login_seed,omitempty"`
+	// KeyTools is read-only (ignored on PUT): the tools these settings can
+	// name, from the integration registry, so the panel never names a tool
+	// itself.
+	KeyTools *hostedKeyToolsPayload `json:"key_tools,omitempty"`
+	// upload_non_git and upload_ignore (decision SBXD-8): embedded from
+	// terminal_sandbox_config_hostedupload.go.
+	terminalSandboxHostedUploadPayload
+}
+
+// hostedKeyToolsPayload lists, for the per-tool key settings, the
+// sandbox-launchable tools (id and display name) and those whose registry
+// row grounds a saved-keys file or a login file.
+type hostedKeyToolsPayload struct {
+	Tools     []hostedKeyTool `json:"tools"`
+	SavedKeys []string        `json:"saved_keys"`
+	LoginSeed []string        `json:"login_seed"`
+}
+
+type hostedKeyTool struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// hostedKeyToolsFor reads the registry's tool lists for the panel.
+func hostedKeyToolsFor() *hostedKeyToolsPayload {
+	out := &hostedKeyToolsPayload{Tools: []hostedKeyTool{}}
+	for _, c := range integration.Capabilities() {
+		if integration.TerminalLaunchable(c) && len(c.Sandbox.StateRW) > 0 {
+			out.Tools = append(out.Tools, hostedKeyTool{ID: c.Tool, Name: integration.DisplayName(c.Tool)})
+		}
+	}
+	out.SavedKeys, out.LoginSeed = integration.SandboxKeySourceTools()
+	if out.SavedKeys == nil {
+		out.SavedKeys = []string{}
+	}
+	if out.LoginSeed == nil {
+		out.LoginSeed = []string{}
+	}
+	return out
 }
 
 // hostedProviderPayload is one provider's table.
@@ -124,6 +213,104 @@ func hostedProviderToPayload(c config.TerminalSandboxHostedProviderConfig) hoste
 
 // keepHostedEndpoints puts the saved endpoint keys back on a provider table
 // whose payload omitted them (a client that predates them).
+// keepHostedOnPut carries the saved hosted table over what a PUT body leaves
+// out: the always-sent provider tables keep the saved endpoints the client
+// cannot see, an optional provider table that is absent (a client that
+// predates its row) keeps the saved one, and an absent db_export keeps the
+// saved value.
+func keepHostedOnPut(next *config.TerminalSandboxHostedConfig, body *terminalSandboxHostedPayload, saved config.TerminalSandboxHostedConfig) {
+	keepHostedEndpoints(&next.E2B, body.E2B, saved.E2B)
+	keepHostedEndpoints(&next.Modal, body.Modal, saved.Modal)
+	keepHostedEndpoints(&next.Vercel, body.Vercel, saved.Vercel)
+	for _, o := range []struct {
+		dst   *config.TerminalSandboxHostedProviderConfig
+		sent  *hostedProviderPayload
+		saved config.TerminalSandboxHostedProviderConfig
+	}{
+		{&next.Docker, body.Docker, saved.Docker},
+		{&next.InstaBox, body.InstaBox, saved.InstaBox},
+		{&next.Daytona, body.Daytona, saved.Daytona},
+	} {
+		if o.sent == nil {
+			*o.dst = o.saved
+			continue
+		}
+		keepHostedEndpoints(o.dst, *o.sent, o.saved)
+	}
+	if body.DBExport == nil {
+		next.DBExport = saved.DBExport
+	}
+	body.terminalSandboxHostedDiffPayload.keepUnsent(next, saved)
+	keepHostedPrivateRanges(next, body.hostedPrivateRangesPayload, saved)
+	if body.GuardHooks == nil {
+		next.GuardHooks = saved.GuardHooks
+	}
+	if body.CloneWhere == nil {
+		next.CloneWhere = saved.CloneWhere
+	}
+	keepHostedUploadOnPut(next, body.terminalSandboxHostedUploadPayload, saved)
+	keepHostedKeySettings(next, body, saved)
+}
+
+// keepHostedKeySettings keeps the saved per-tool key settings a PUT body
+// leaves out (a client that predates them).
+func keepHostedKeySettings(next *config.TerminalSandboxHostedConfig, body *terminalSandboxHostedPayload, saved config.TerminalSandboxHostedConfig) {
+	if body.KeyCustodyByTool == nil {
+		next.KeyCustodyByTool = saved.KeyCustodyByTool
+	}
+	if body.ToolKeys == nil {
+		next.ToolKeys = saved.ToolKeys
+	}
+	if body.LoginSeed == nil {
+		next.LoginSeed = saved.LoginSeed
+	}
+}
+
+// hostedKeySettingsPayload copies the per-tool key settings into the
+// payload (never nil, so a client sees an empty map, not an absent one).
+func hostedKeySettingsPayload(p *terminalSandboxHostedPayload, c config.TerminalSandboxHostedConfig) {
+	byTool, toolKeys, loginSeed := map[string]string{}, map[string]bool{}, map[string]bool{}
+	for k, v := range c.KeyCustodyByTool {
+		byTool[k] = v
+	}
+	for k, v := range c.ToolKeys {
+		toolKeys[k] = v
+	}
+	for k, v := range c.LoginSeed {
+		loginSeed[k] = v
+	}
+	p.KeyCustodyByTool, p.ToolKeys, p.LoginSeed = &byTool, &toolKeys, &loginSeed
+	p.KeyTools = hostedKeyToolsFor()
+}
+
+// hostedKeySettingsFromPayload reads the per-tool key settings of a PUT
+// body (trimmed; an entry switched off is dropped, so the file stays
+// minimal). Absent maps are kept by keepHostedKeySettings.
+func hostedKeySettingsFromPayload(out *config.TerminalSandboxHostedConfig, h *terminalSandboxHostedPayload) {
+	if h.KeyCustodyByTool != nil && len(*h.KeyCustodyByTool) > 0 {
+		out.KeyCustodyByTool = map[string]string{}
+		for k, v := range *h.KeyCustodyByTool {
+			out.KeyCustodyByTool[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	on := func(m *map[string]bool) map[string]bool {
+		if m == nil {
+			return nil
+		}
+		var out map[string]bool
+		for k, v := range *m {
+			if v {
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[strings.TrimSpace(k)] = true
+			}
+		}
+		return out
+	}
+	out.ToolKeys, out.LoginSeed = on(h.ToolKeys), on(h.LoginSeed)
+}
+
 func keepHostedEndpoints(next *config.TerminalSandboxHostedProviderConfig, sent hostedProviderPayload, saved config.TerminalSandboxHostedProviderConfig) {
 	if sent.Endpoint == nil {
 		next.Endpoint = saved.Endpoint
@@ -279,9 +466,11 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 	// writes nothing, `?base_etag=` refuses a file changed since that
 	// preview, and the write is validated, read back and audited like every
 	// section save.
+	var savedMXCTier string // the audit row says when a save loosens the MXC tier floor
 	s.commitConfigEdit(w, r, configEdit{
 		section: "terminal.sandbox",
 		apply: func(cfg *config.Config) {
+			savedMXCTier = cfg.Terminal.Sandbox.Windows.MXCTier
 			// Omitted optional fields keep their saved value (see the payload).
 			if body.Egress == nil {
 				next.Egress = cfg.Terminal.Sandbox.Egress
@@ -345,39 +534,54 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 			if body.Hosted == nil {
 				next.Hosted = cfg.Terminal.Sandbox.Hosted
 			} else {
-				saved := cfg.Terminal.Sandbox.Hosted
-				keepHostedEndpoints(&next.Hosted.E2B, body.Hosted.E2B, saved.E2B)
-				keepHostedEndpoints(&next.Hosted.Modal, body.Hosted.Modal, saved.Modal)
-				keepHostedEndpoints(&next.Hosted.Vercel, body.Hosted.Vercel, saved.Vercel)
-				if body.Hosted.DBExport == nil {
-					next.Hosted.DBExport = saved.DBExport
-				}
+				keepHostedOnPut(&next.Hosted, body.Hosted, cfg.Terminal.Sandbox.Hosted)
 			}
 			if body.VendorForcedNative == nil {
 				next.VendorForcedNative = cfg.Terminal.Sandbox.VendorForcedNative
 			}
+			if body.Seccomp == nil {
+				next.Seccomp = cfg.Terminal.Sandbox.Seccomp
+			}
+			body.terminalSandboxGatewayRowPayload.keepUnsent(&next, cfg.Terminal.Sandbox)
+			body.terminalSandboxTiersPayload.keepUnsent(&next, cfg.Terminal.Sandbox)
+			body.terminalSandboxCopiesPayload.keepUnsent(&next, cfg.Terminal.Sandbox)
+			keepUnsentSandboxBlocks(&next, cfg.Terminal.Sandbox, body.Setup != nil)
 			cfg.Terminal.Sandbox = next
 		},
 		auditAction: "terminal_sandbox_config",
 		auditDetailFor: func(cfg config.Config) string {
 			n := cfg.Terminal.Sandbox
 			return fmt.Sprintf(
-				"enabled=%v default_on=%v egress=%s egress_allow_cidrs=%d tool_config_writes=%v remote_clone=%v worktree=%v mask_paths=%d ro_binds=%d rw_binds=%d backends=%d min_isolation=%s oci_rootful=%v oci_devcontainer=%v seatbelt_keychain=%v",
+				"enabled=%v default_on=%v egress=%s egress_allow_cidrs=%d tool_config_writes=%v remote_clone=%v worktree=%v mask_paths=%d ro_binds=%d rw_binds=%d backends=%d min_isolation=%s oci_rootful=%v oci_devcontainer=%v seatbelt_keychain=%v mxc_tier=%s mxc_tier_loosened=%v",
 				n.Enabled, n.DefaultOn, n.Egress, len(n.EgressAllowCIDRs), n.AllowToolConfigWrites, n.AllowRemoteClone, n.AllowWorktreeSource,
 				len(n.MaskPaths), len(n.ExtraROBinds), len(n.ExtraRWBinds), len(n.Backends), n.MinIsolation, n.OCI.AllowRootful, n.OCI.AllowDevcontainerImage, n.Seatbelt.AllowKeychain,
+				n.Windows.MXCTier, mxcTierLoosens(savedMXCTier, n.Windows.MXCTier),
 			)
 		},
+		// restart_required comes from the changed keys' restart classes
+		// (configschema annotations: the block binds on the next launch,
+		// workspaces_dir needs a restart), never a constant here (D-R4-1).
 		extra: func(cfg config.Config) map[string]any {
 			return map[string]any{
-				"sandbox":          sandboxConfigPayload(cfg.Terminal.Sandbox),
-				"restart_required": true,
+				"sandbox": sandboxConfigPayload(cfg.Terminal.Sandbox),
 			}
+		},
+		// The save binds on the next launch through the same seam a setup
+		// step's Enable uses (sandbox_setup.go applySandboxLive).
+		afterWrite: func(config.Config) map[string]any {
+			s.applySandboxLive(r)
+			return nil
 		},
 	})
 }
 
 func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigPayload {
 	dbExport := c.Hosted.DBExport
+	guardHooks := c.Hosted.GuardHooks
+	if guardHooks == "" {
+		guardHooks = "auto" // the empty value's meaning (guard_hooks)
+	}
+	cloneWhere := c.Hosted.CloneWhere
 	egress := c.Egress
 	if egress == "" {
 		egress = "internet" // the empty value's meaning ([terminal.sandbox].egress)
@@ -408,7 +612,8 @@ func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigP
 	if liveRunPolicy == "" {
 		liveRunPolicy = "defer" // the empty value's meaning (live_run_update_policy)
 	}
-	return terminalSandboxConfigPayload{
+	seccomp := c.Seccomp
+	p := terminalSandboxConfigPayload{
 		Enabled:                c.Enabled,
 		Backend:                c.Backend,
 		HomeMode:               c.HomeMode,
@@ -448,14 +653,53 @@ func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigP
 		AppleContainer: &terminalSandboxAppleContainerPayload{
 			Image: c.AppleContainer.Image, MemoryMiB: c.AppleContainer.MemoryMiB, CPUs: c.AppleContainer.CPUs,
 		},
-		Landlock:           &terminalSandboxLandlockPayload{MinABI: c.Landlock.MinABI},
-		VendorForcedNative: &vendorForced,
+		Landlock:                         &terminalSandboxLandlockPayload{MinABI: c.Landlock.MinABI},
+		VendorForcedNative:               &vendorForced,
+		Seccomp:                          &seccomp,
+		Setup:                            &terminalSandboxSetupPayload{AllowElevated: c.Setup.AllowElevated},
+		terminalSandboxGatewayRowPayload: gatewayRowPayloadFor(c),
+		terminalSandboxTiersPayload:      tiersPayloadFor(c),
+		terminalSandboxCopiesPayload:     copiesPayloadFor(c),
 		Hosted: &terminalSandboxHostedPayload{
 			MinSessionMinutes: c.Hosted.MinSessionMinutes, KeyCustody: c.Hosted.KeyCustody, MemoryImages: c.Hosted.MemoryImages,
 			CheckpointMinutes: c.Hosted.CheckpointMinutes, MaxRunMinutes: c.Hosted.MaxRunMinutes, DailyBoxMinutes: c.Hosted.DailyBoxMinutes,
 			DBExport: &dbExport,
 			E2B:      hostedProviderToPayload(c.Hosted.E2B), Modal: hostedProviderToPayload(c.Hosted.Modal), Vercel: hostedProviderToPayload(c.Hosted.Vercel),
+			Docker:   hostedProviderPayloadPtr(c.Hosted.Docker),
+			InstaBox: hostedProviderPayloadPtr(c.Hosted.InstaBox),
+			Daytona:  hostedProviderPayloadPtr(c.Hosted.Daytona),
+
+			terminalSandboxHostedDiffPayload: hostedDiffPayloadFor(c.Hosted),
+			hostedPrivateRangesPayload:       hostedPrivateRangesToPayload(c.Hosted),
+			// lane HOOKS
+			GuardHooks: &guardHooks,
+			// SBXD-5: the clone location.
+			CloneWhere: &cloneWhere,
+			// Decision SBXD-8's two keys.
+			terminalSandboxHostedUploadPayload: hostedUploadToPayload(c.Hosted),
 		},
+	}
+	hostedKeySettingsPayload(p.Hosted, c.Hosted)
+	return p
+}
+
+// keepUnsentSandboxBlocks puts back the [terminal.sandbox] keys the payload
+// has no field for (each has its own route, CLI or pin), so a Settings
+// save never resets them (lane O4: a save rebuilt the block from the
+// payload, which dropped every key it does not carry). The vm, readopt,
+// wslc, hcs and windows blocks are the tiers payload's now, kept by its
+// keepUnsent when a save omits them (dashboard CLI parity lane L3).
+// sentSetup says the body carried a setup field; without one the saved
+// [terminal.sandbox.setup] is kept, so a save from a client that predates
+// the allow_elevated toggle never turns it off (P-254).
+func keepUnsentSandboxBlocks(next *config.TerminalSandboxConfig, saved config.TerminalSandboxConfig, sentSetup bool) {
+	next.ProviderDirect = saved.ProviderDirect
+	// The strace switch has its own route (POST
+	// /api/terminal/sandbox/ptrace-seize, lane ptrace); this save never
+	// writes it, whatever the body says.
+	next.SeccompAllowSeize = saved.SeccompAllowSeize
+	if !sentSetup {
+		next.Setup = saved.Setup
 	}
 }
 
@@ -557,14 +801,26 @@ func normalizedSandboxConfig(p terminalSandboxConfigPayload) (config.TerminalSan
 	}
 	// A client that predates the hosted block validates with its defaults
 	// here; the save keeps the file's own block (apply).
-	next.Hosted = config.Default().Terminal.Sandbox.Hosted
-	if p.Hosted != nil {
-		next.Hosted = normalizedSandboxHostedConfig(p.Hosted)
+	hosted, err := hostedBlockFor(p.Hosted)
+	if err != nil {
+		return config.TerminalSandboxConfig{}, err
 	}
+	next.Hosted = hosted
 	next.VendorForcedNative = config.Default().Terminal.Sandbox.VendorForcedNative
 	if p.VendorForcedNative != nil {
 		next.VendorForcedNative = strings.TrimSpace(*p.VendorForcedNative)
 	}
+	if p.Seccomp != nil {
+		next.Seccomp = *p.Seccomp
+	}
+	if p.Setup != nil {
+		next.Setup = config.TerminalSandboxSetupConfig{AllowElevated: p.Setup.AllowElevated}
+	}
+	p.terminalSandboxGatewayRowPayload.applyTo(&next)
+	if err := p.terminalSandboxTiersPayload.applyTo(&next); err != nil {
+		return config.TerminalSandboxConfig{}, err
+	}
+	p.terminalSandboxCopiesPayload.applyTo(&next)
 	// Validate against an otherwise-default config before taking the write
 	// locks so request mistakes are a 400, not an internal-error-shaped 500.
 	probe := config.Default()
@@ -630,13 +886,45 @@ func normalizedSandboxHostedConfig(h *terminalSandboxHostedPayload) config.Termi
 		}
 		return out
 	}
-	return config.TerminalSandboxHostedConfig{
+	out := config.TerminalSandboxHostedConfig{
 		MinSessionMinutes: h.MinSessionMinutes, KeyCustody: strings.TrimSpace(h.KeyCustody),
 		MemoryImages: strings.TrimSpace(h.MemoryImages), CheckpointMinutes: h.CheckpointMinutes,
 		MaxRunMinutes: h.MaxRunMinutes, DailyBoxMinutes: h.DailyBoxMinutes,
 		DBExport: h.DBExport != nil && *h.DBExport,
 		E2B:      trim(h.E2B), Modal: trim(h.Modal), Vercel: trim(h.Vercel),
+		Docker:   trimHostedProvider(h.Docker, trim),
+		InstaBox: trimHostedProvider(h.InstaBox, trim),
+		Daytona:  trimHostedProvider(h.Daytona, trim),
 	}
+	h.terminalSandboxHostedDiffPayload.applyTo(&out)
+	if h.GuardHooks != nil {
+		out.GuardHooks = strings.TrimSpace(*h.GuardHooks)
+	}
+	// SBXD-5: an absent clone_where validates as the default and then keeps
+	// the saved value (keepHostedOnPut).
+	out.CloneWhere = config.Default().Terminal.Sandbox.Hosted.CloneWhere
+	if h.CloneWhere != nil {
+		out.CloneWhere = strings.TrimSpace(*h.CloneWhere)
+	}
+	hostedKeySettingsFromPayload(&out, h)
+	normalizedHostedUpload(&out, h.terminalSandboxHostedUploadPayload)
+	return out
+}
+
+// trimHostedProvider is trim over an optional table (the zero table when
+// the client sent none; the saved one is kept by the caller).
+func trimHostedProvider(p *hostedProviderPayload, trim func(hostedProviderPayload) config.TerminalSandboxHostedProviderConfig) config.TerminalSandboxHostedProviderConfig {
+	if p == nil {
+		return config.TerminalSandboxHostedProviderConfig{}
+	}
+	return trim(*p)
+}
+
+// hostedProviderPayloadPtr is hostedProviderToPayload as a pointer (a table
+// the payload carries optionally).
+func hostedProviderPayloadPtr(c config.TerminalSandboxHostedProviderConfig) *hostedProviderPayload {
+	p := hostedProviderToPayload(c)
+	return &p
 }
 
 func cleanStringList(in []string) []string {

@@ -112,6 +112,7 @@ func (g *Guard) ActionVerdictFromPrompt(pv PromptVerdict, em Emission, input Act
 		SuppressAlert: suppress,
 		SilentStop:    pv.BlockSilent && pv.Action == PromptActionBlock,
 		GrantID:       pv.GrantID,
+		GrantProject:  pv.GrantProject,
 	}
 }
 

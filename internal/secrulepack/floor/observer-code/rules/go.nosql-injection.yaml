@@ -1,0 +1,83 @@
+rules:
+  - id: go.nosql-injection
+    languages: [go]
+    severity: ERROR
+    message: A JSON request body decoded into a map reaches a MongoDB query filter, so a caller can send an operator object such as a not-equal match in place of a value; decode into a struct with typed fields instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      # A map (or bson.M) the request body is decoded into: an untyped map
+      # carries whatever operators the caller sent. A struct with string
+      # fields does not, so it is not a source.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  var $F $T
+                  ...
+              - pattern-inside: |
+                  $F := $T{}
+                  ...
+              - pattern-inside: |
+                  $F := make($T)
+                  ...
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(bson\.M|bson\.D|primitive\.M|primitive\.D|map\[string\]interface\{\}|map\[string\]any)$
+          - pattern-either:
+              - pattern-inside: |
+                  $DEC.Decode(&$F)
+                  ...
+              - pattern-inside: |
+                  $ERR := $DEC.Decode(&$F)
+                  ...
+              - pattern-inside: |
+                  $ERR = $DEC.Decode(&$F)
+                  ...
+              - pattern-inside: |
+                  if $ERR := $DEC.Decode(&$F); $COND {
+                    ...
+                  }
+                  ...
+          - metavariable-regex:
+              metavariable: $DEC
+              regex: ^json\.NewDecoder\((r|req|request)\.Body\)$
+          - pattern: $F
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  var $F $T
+                  ...
+              - pattern-inside: |
+                  $F := $T{}
+                  ...
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(bson\.M|bson\.D|primitive\.M|primitive\.D|map\[string\]interface\{\}|map\[string\]any)$
+          - pattern-either:
+              - pattern-inside: |
+                  if $ERR := $C.$BIND(&$F); $COND {
+                    ...
+                  }
+                  ...
+              - pattern-inside: |
+                  $ERR := $C.$BIND(&$F)
+                  ...
+              - pattern-inside: |
+                  $C.$BIND(&$F)
+                  ...
+          - metavariable-regex:
+              metavariable: $BIND
+              regex: ^(ShouldBindJSON|BindJSON|ShouldBind|Bind)$
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+          - pattern: $F
+    pattern-sinks:
+      - patterns:
+          - pattern: $COLL.$M($CTX, $Q, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(Find|FindOne|FindOneAndUpdate|FindOneAndDelete|FindOneAndReplace|UpdateOne|UpdateMany|DeleteOne|DeleteMany|CountDocuments|ReplaceOne)$
+          - focus-metavariable: $Q

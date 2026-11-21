@@ -272,12 +272,14 @@ func (g *guiLauncher) configuredPath(id string) (string, bool) {
 // setupChildEnv use — so there is one answer to "which variables are the
 // daemon's private business" across every spawn path. The OOB variables are
 // stripped because a GUI child has no OOB channel at all: inheriting a stale
-// fd number and auth token would be meaningless at best.
+// fd number and auth token would be meaningless at best. An agent session's
+// marker the daemon inherited is dropped too (isAgentSessionMarkerEnv, lane
+// cli-2 fixes-3, audit L4).
 func guiChildEnv(wrap []string) []string {
 	parent := os.Environ()
 	out := make([]string, 0, len(parent)+len(wrap))
 	for _, kv := range parent {
-		if isInternalChildEnv(kv) {
+		if isInternalChildEnv(kv) || isAgentSessionMarkerEnv(kv) {
 			continue
 		}
 		out = append(out, kv)
@@ -328,6 +330,7 @@ func (a *launchManagerAdapter) CreateGUI(spec dashapi.GUILaunchSpec) (dashapi.GU
 	res, err := a.svc.LaunchGUI(context.Background(), termsvc.GUIRequest{
 		ID:          spec.ID,
 		ProjectRoot: crossmount.TranslateForeignPath(spec.ProjectRoot),
+		Origin:      specOrigin(spec.Initiator, spec.ParentSessionID),
 	})
 	if err != nil {
 		return dashapi.GUILaunchResult{}, mapGUIErr(err)

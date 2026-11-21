@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook copilot-cli userPromptSubmitted; exit 0 # sbo-cloud-session",
+        "timeoutSec": 30
+      },
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent copilot --trigger prompt --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+        "timeoutSec": 30
+      }
+    ],
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent copilot --trigger start --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+        "timeoutSec": 60
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent copilot --trigger periodic --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+        "timeoutSec": 60
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent copilot --trigger final --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+        "timeoutSec": 60
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "[ \"${GITHUB_ACTIONS:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent copilot --trigger final --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+        "timeoutSec": 60
+      }
+    ]
+  }
+}

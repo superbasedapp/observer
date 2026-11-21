@@ -208,6 +208,17 @@
     "prompt_scope": "",
     "prompt_warn_only": false
   },
+  "custom-agent": {
+    "auto_wired": false,
+    "cross_os_bridge": false,
+    "enforcement": "recorded_acceptance",
+    "enforcement_no_sbx": "recorded_acceptance",
+    "mechanism": "",
+    "prompt_lane": "proxy_only",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
   "deepagents-code": {
     "auto_wired": true,
     "cross_os_bridge": true,

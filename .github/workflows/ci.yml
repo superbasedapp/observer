@@ -29,7 +29,10 @@
 #       gate accepts. No schedule: removed 2026-10-20 by
 #       operator ruling (no scheduled Actions).
 #   v* tag push: only the full omit-tag list, against the tagged commit
-#       (path filters never apply to tag pushes).
+#       (path filters never apply to tag pushes), and only when no green
+#       full dispatch run already covers that exact sha (the plan job's
+#       `proven` step; release.sh tags only such a sha, so a normal release
+#       repeats nothing).
 #   paths-ignore: a push or PR that touches ONLY the paths below skips
 #       the workflow. Each entry is one no job here reads: Go tests read
 #       docs/*.md, docs/openapi, docs/recipes,
@@ -111,7 +114,21 @@ on:
       - 'superbased-final-spec-v2.md'
   # The nightly schedule was removed 2026-10-20 by operator ruling (no
   # scheduled Actions); a FULL run is dispatched by hand before a release.
-  workflow_dispatch: {}
+  # `since` (P-222, 2026-11-01): empty = the FULL run. A 40-hex sha = a
+  # NARROWED release-gate run for a REPEAT release commit, tested against
+  # that sha, which must be the cycle's green full run (see the plan job).
+  workflow_dispatch:
+    inputs:
+      since:
+        description: 'Empty for the FULL run. For a repeat release commit only: the sha of this cycle''s green full ci run to narrow against (P-222).'
+        required: false
+        default: ''
+        type: string
+
+# The run describes itself: release.sh reads the base a narrowed run was
+# narrowed against from this title (cipkgs gate). Every other run keeps the
+# default name (an empty run-name falls back to it).
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.since != '' && format('ci narrowed since {0}', inputs.since) || '' }}
 
 # A newer push to the same ref cancels the run it replaces (main included:
 # its successor contains the superseded commit and is tested in full).
@@ -121,6 +138,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# Linux runner switch (lane CICD round 2, item C, 2026-11-01). The Linux
+# test jobs (frontend, go, lint, go-test, omit-tags, plugins-build-drift,
+# taxonomy-build-drift) take their runner label from the repository
+# variable SBO_CI_LINUX_RUNNER and fall back to ubuntu-latest when it is
+# unset or empty, so a third-party runner trial is one variable and its
+# rollback is deleting it. None of these jobs reads a secret. plan (it
+# holds actions: read and gates the release), distros (its smoke test
+# needs the hosted kernel's sysctl and user namespaces) and installer (an
+# OS matrix) stay on GitHub-hosted runners, as does every job outside this
+# file (npm-release, signing, images, provenance, ci-private).
 permissions:
   contents: read
 
@@ -137,6 +164,18 @@ jobs:
   #         table for the packages this run tests (1 to 12 shards).
   #   omit  the omit-tag matrix: one distro job, or the full list in
   #         batches that share one warm build cache.
+  #   tier  push | full | narrowed (P-222). A narrowed run is a dispatch
+  #         with the `since` input: the base must have a green FULL
+  #         dispatch on main, be an ancestor of this sha and come after
+  #         the previous release tag (else the run fails, naming why).
+  #         `cipkgs narrow` then decides: within its bounds the run tests
+  #         `cipkgs affected base..sha` (-count=1, -race on the
+  #         concurrent ones) and the omit-tag editions plus the single
+  #         sets the diff can touch; outside them (go.mod, go.sum,
+  #         ci.yml, .github/actions, scripts/ci, build scripts, Makefiles, top-level
+  #         testdata, a file in no package, more than 300 files) it runs
+  #         FULL. Every other job runs as on any dispatch.
+  #         plan/narrow.txt records the base and the verdict.
   # The package lists (affected.txt, race.txt, fresh.txt) travel to the
   # shards as an artifact, so every shard tests from the same plan.
   # ----------------------------------------------------------------
@@ -145,42 +184,141 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # actions: read lets a v* tag run ask whether a FULL dispatch of this
+      # workflow already passed on the tagged sha (the `proven` step).
+      actions: read
     outputs:
       run: ${{ steps.plan.outputs.run }}
       full: ${{ steps.plan.outputs.full }}
       shards: ${{ steps.plan.outputs.shards }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
       omit: ${{ steps.plan.outputs.omit }}
+      tier: ${{ steps.plan.outputs.tier }}
+      sdk: ${{ steps.plan.outputs.sdk }}
+      attested: ${{ steps.attest.outputs.attested }}
     steps:
       - uses: actions/checkout@v5
-      # Restore (never save) the go job's cache: go list needs the module
-      # sources, and a new cache family would cost budget for nothing.
+      # Gate attestation (L-139): when the ops gate (a full Docker Sandbox
+      # run of this exact commit) passed and its signed attestation is
+      # published as refs/gate-attestations/<sha>, the jobs it covers
+      # (scripts/ci/gate-coverage.tsv: go-test, lint, frontend) are skipped
+      # here and every other job still runs. Without an attestation, or with
+      # any doubt about it, the answer is false and nothing is skipped.
+      - id: attest
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        run: bash scripts/ci/gate-attestation.sh "$GITHUB_SHA"
+      # v* tag push (CICD lane, 2026-11-01): release.sh tags only a sha whose
+      # FULL ci run (a workflow_dispatch on main) is green, and that run
+      # already ran this same omit-tag matrix on this same tree. Measured
+      # 2026-11-01: the tag re-run cost about 315 billed minutes per release
+      # (22% of a release) and gated nothing, since npm-release never waits
+      # for it. So a tag run first asks the API for a successful dispatch run
+      # of ci.yml on main for this exact sha; when one exists the matrix is
+      # skipped with a notice. Any other answer (none found, an API error, a
+      # tag cut with --allow-unverified-ci, the public repository whose tag
+      # is a snapshot commit nobody dispatched) runs the full matrix as
+      # before, so the skip can only drop a repeat of a green run.
+      - id: proven
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # A green narrowed dispatch counts too: it is what the release gate
+          # accepted for a repeat release commit (P-222).
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=workflow_dispatch&branch=main&status=success&per_page=1" --jq '.total_count' 2>/dev/null)
+          if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ]; then
+            echo "::notice::a successful release-gate ci run (workflow_dispatch on main) already covers ${GITHUB_SHA}; the omit-tag matrix is not repeated for ${GITHUB_REF_NAME}"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no successful full ci run found for ${GITHUB_SHA} (answer: '${n}'); running the full omit-tag matrix"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Restore (never save) the lint job's cache family, without the disk
+      # cleanup (lane CICD round 3, row 10, 2026-11-03). go list and cipkgs
+      # need the module sources, not a build cache. The go family this step
+      # used to restore is 2.3 GB compressed and about 9 GB unpacked, so it
+      # needed the SDK cleanup first: in run 41274192950 the cleanup took 55 s
+      # and the restore 70 s of the plan job's 2.8 minutes, and every other
+      # job waits for this one. The lint family is the module cache plus what
+      # go list writes (about 0.8 GB compressed, under 2 GB unpacked, with 13
+      # GB free on the runner). Measured locally: with warm modules and a
+      # cold build cache the plan step's commands take about 30 s (21 s on the
+      # go family); with no cache at all, go list downloads the modules in
+      # about 80 s, still less than the cleanup plus the old restore.
       - uses: ./.github/actions/go-cache
+        if: steps.proven.outputs.skip != 'true'
         with:
-          family: go
+          family: lint
+          free-disk: 'false'
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           PUSH_BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PROVEN: ${{ steps.proven.outputs.skip }}
+          SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p plan
+          if [ "${PROVEN:-}" = true ]; then
+            # Tag run of a sha a green full dispatch already covers: nothing
+            # to repeat. The artifact still uploads so the run shape is fixed.
+            : > plan/affected.txt; : > plan/race.txt; : > plan/fresh.txt
+            { echo "run=true"; echo "full=true"; echo "tier=full"; echo "shards=[]"; echo "shard_count=0"; echo "omit=[]"; echo "sdk=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           case "$EVENT:$REF" in
             workflow_dispatch:*|push:refs/tags/*) full=true ;;
             *) full=false ;;
           esac
-          if [ "$full" = true ]; then
+          tier=push
+          [ "$full" = true ] && tier=full
+          # The previous release (race scope below, and the P-222 rule that
+          # a narrowed base must come after it).
+          prev=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+            | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -vx "${GITHUB_REF_NAME}" | sort -V | tail -1 || true)
+          narrow_tags=""
+          if [ -n "${SINCE:-}" ]; then
+            # P-222: a narrowed release-gate run. A base that does not qualify
+            # fails the run: a narrowed title must never stand on a bad base.
+            fail() { echo "::error::narrowed dispatch refused: $*. Dispatch without 'since' for the full run."; exit 1; }
+            [[ "$SINCE" =~ ^[0-9a-f]{40}$ ]] || fail "since must be a full 40-hex commit sha"
+            [ "$REF" = refs/heads/main ] || fail "a narrowed run counts only on main"
+            base_state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SINCE" --limit 50 \
+              --json status,conclusion,event,headBranch,displayTitle | go run ./scripts/ci/cipkgs gate base) \
+              || fail "could not read the ci runs of $SINCE"
+            [ "$base_state" = full ] || fail "$SINCE has no green FULL dispatch run on main"
+            rel=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${SINCE}...${GITHUB_SHA}" --jq .status) || fail "could not compare $SINCE with $GITHUB_SHA"
+            case "$rel" in ahead|identical) ;; *) fail "$SINCE is not an ancestor of $GITHUB_SHA ($rel)" ;; esac
+            [ -n "$prev" ] || fail "no previous release tag: the first release needs a full run"
+            after=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${prev}...${SINCE}" --jq .status) || fail "could not compare $prev with $SINCE"
+            [ "$after" = ahead ] || fail "$SINCE is not after the previous release $prev ($after): the first release commit of a cycle needs a full run"
+            git fetch --no-tags --depth=1 origin "$SINCE" || fail "could not fetch $SINCE"
+            go run ./scripts/ci/cipkgs narrow "$SINCE" "$GITHUB_SHA" > plan/narrow.txt
+            echo "base=$SINCE" >> plan/narrow.txt
+            cat plan/narrow.txt
+            if grep -qx 'mode=narrowed' plan/narrow.txt; then
+              tier=narrowed
+              narrow_tags=$(sed -n 's/^tags=//p' plan/narrow.txt)
+            else
+              echo "::notice::narrowed dispatch runs FULL: $(sed -n 's/^reason=//p' plan/narrow.txt)"
+            fi
+            { echo "### ci narrowed since ${SINCE}"; echo; echo '```'; cat plan/narrow.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$tier" = narrowed ]; then
+            go run ./scripts/ci/cipkgs affected "$SINCE" "$GITHUB_SHA" > plan/affected.txt
+            go run ./scripts/ci/cipkgs race > plan/race.txt
+          elif [ "$full" = true ]; then
             echo ALL > plan/affected.txt
             # Race scope (item 8 of the test-time plan): the same list a
             # push uses, unless go.mod or go.sum changed since the previous
             # release (a new toolchain or dependency), which races every
             # package. No previous release found or fetched: race every
             # package (cipkgs race --since with an empty base).
-            prev=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
-              | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | grep -vx "${GITHUB_REF_NAME}" | sort -V | tail -1 || true)
             if [ -n "$prev" ] && ! git fetch --no-tags --depth=1 origin "refs/tags/$prev:refs/tags/$prev"; then
               echo "::warning::could not fetch the previous release $prev; racing everything"
               prev=""
@@ -195,6 +333,26 @@ jobs:
             go run ./scripts/ci/cipkgs affected "$base" "$GITHUB_SHA" > plan/affected.txt
             go run ./scripts/ci/cipkgs race > plan/race.txt
           fi
+          # The sdk job (E-91): a push or PR runs the SDK suites only when
+          # it touches sdk/** or their runner scripts/ci/sdk.sh; a full run
+          # always does, a narrowed one when its diff does. No base to
+          # diff against (a new branch, a failed fetch) runs them.
+          sdk=true
+          if [ "$tier" = narrowed ]; then
+            sdk_base="$SINCE"
+          elif [ "$full" = true ]; then
+            sdk_base=""
+          else
+            sdk_base="${PR_BASE:-$PUSH_BEFORE}"
+            [ -n "${sdk_base//0/}" ] || sdk_base=""
+            [ -n "$sdk_base" ] || sdk_base="none"
+          fi
+          if [ -n "$sdk_base" ] && [ "$sdk_base" != none ]; then
+            if changed=$(git diff --name-only "$sdk_base" "$GITHUB_SHA" -- sdk scripts/ci/sdk.sh 2>/dev/null); then
+              [ -n "$changed" ] || sdk=false
+            fi
+          fi
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
           # Packages that never replay a cached test result (item 17): the
           # push tier lets the others replay; a full run replays nothing.
           go run ./scripts/ci/cipkgs fresh > plan/fresh.txt
@@ -207,13 +365,17 @@ jobs:
           else
             shards='[]'
           fi
-          if [ "$full" = true ]; then
+          if [ "$tier" = narrowed ]; then
+            # The four editions plus the single sets the diff can touch, in
+            # two LPT batches (P-222).
+            omit=$(seq 0 1 | jq -R --arg tags "$narrow_tags" '{name: ("narrowed " + . + "/2"), args: ("--scope narrow --tags \"" + $tags + "\" --batch " + . + "/2")}' | jq -sc .)
+          elif [ "$full" = true ]; then
             omit=$(seq 0 5 | jq -R '{name: ("batch " + . + "/6"), args: ("--batch " + . + "/6")}' | jq -sc .)
           else
             omit='[{"name":"distro sets","args":"--scope distro"}]'
           fi
-          echo "full=$full packages=$(grep -c . plan/affected.txt) race_packages=$(grep -c . plan/race.txt) shards=$count"
-          { echo "run=true"; echo "full=$full"; echo "shards=$shards"; echo "shard_count=$count"; echo "omit=$omit"; } >> "$GITHUB_OUTPUT"
+          echo "tier=$tier full=$full packages=$(grep -c . plan/affected.txt) race_packages=$(grep -c . plan/race.txt) shards=$count"
+          { echo "run=true"; echo "full=$full"; echo "tier=$tier"; echo "shards=$shards"; echo "shard_count=$count"; echo "omit=$omit"; } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v5
         with:
           name: test-plan
@@ -232,8 +394,8 @@ jobs:
     # Every job except omit-tags skips on tag pushes (header: "What runs
     # when").
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -306,12 +468,12 @@ jobs:
     name: go
     needs: plan
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: free runner disk (T-806)
         # This job fills the runner's root disk: the restored build cache
         # (about 2 GB compressed, several times that unpacked), then Linux
-        # and Windows vet, lint, the build, the toolchain tests and a
+        # and Windows vet, the build, the toolchain tests and a
         # Windows compile of every package, each adding its own objects to
         # GOCACHE, and finally the Windows link of every main package. In
         # October 2026 the Windows compile step began failing with "no space
@@ -357,31 +519,6 @@ jobs:
         run: |
           GOOS=windows GOARCH=amd64 go vet ./...
           df -h / | tail -1
-
-      - name: lint
-        # golangci-lint enforces the full .golangci.yml set — including
-        # gofumpt + goimports formatting, errorlint, gosec, gocritic, and
-        # gocyclo (threshold 30; see .golangci.yml for the documented
-        # pre-existing exclusions). Joined CI in v1.7; the tree is clean.
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          # v2.14.0 is the oldest golangci-lint that can lint this go.mod
-          # (go 1.27.0). Its prebuilt binary is compiled with Go 1.27
-          # (go1.27.0), so there is no "language version used to build
-          # golangci-lint is lower than the targeted Go version" refusal
-          # (v2.12.2, built with go1.26.2, refuses it), and it bundles
-          # golang.org/x/tools v0.50.0, the first that reads Go 1.27 export
-          # data. v2.13.2 is also built with go1.27.0 but bundles x/tools
-          # v0.49.0, so every package fails type checking with "export
-          # data version 5 is greater than maximum supported version 4".
-          # The go1.27.3 patch move (lane RB1, GO-2026-6809) keeps v2.14.0.
-          # Moved with the Go 1.27 toolchain (lane GO127); the previous
-          # move was v2.12.2 with Go 1.26 (T-696), when .golangci.yml was
-          # migrated to the v2 schema.
-          version: v2.14.0
-
-      - name: disk after lint
-        run: df -h / | tail -1
 
       - name: copy lint
         # Spelling, no-dash copy, posture comment wording and the one
@@ -450,7 +587,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           df -h /
-          sudo du -sh "$(go env GOCACHE)" "$(go env GOMODCACHE)" "$HOME/.cache/golangci-lint" /tmp "$RUNNER_TEMP" 2>/dev/null || true
+          sudo du -sh "$(go env GOCACHE)" "$(go env GOMODCACHE)" /tmp "$RUNNER_TEMP" 2>/dev/null || true
 
       - name: save go cache (full runs only, D-612)
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
@@ -460,6 +597,122 @@ jobs:
             ${{ steps.go.outputs.gocache }}
             ${{ steps.go.outputs.gomodcache }}
           key: ${{ steps.go.outputs.key }}
+
+  # ----------------------------------------------------------------
+  # golangci-lint, in its own job (lane CICD round 2, item D, 2026-11-01).
+  #
+  # Why: run 41290821526 (v1.37.1's full gate) lost the `go` job twice at
+  # this step, about 12.5 minutes into golangci-lint, with "The runner has
+  # received a shutdown signal", while the same tree linted in 6.5 minutes
+  # on run 41274192950. Lint time had drifted from 3 to 7 minutes before
+  # 2026-10-20 to 10 to 25 minutes since. Two measured causes:
+  #   1. The analysis cache was cold every run. golangci-lint-action keys
+  #      its cache by week and go.sum and never re-saves on an exact hit, so
+  #      a 2 MB entry saved by a cancelled run (this week's key) was
+  #      restored all week and nothing better could replace it.
+  #   2. Lint shared the job, and its memory, with a 7.6 GB build cache and
+  #      every other Go step; a cold whole-tree lint (tests included,
+  #      staticcheck, gosec, gocritic, unused) is the job's memory peak, and
+  #      a runner that runs out of memory loses its agent, which GitHub
+  #      reports as that shutdown signal.
+  # What changed: lint runs here, beside `go`; the action's own cache is
+  # off (skip-cache) and the analysis cache is ours, keyed per commit and
+  # saved from every dispatch on main (restore falls back to the newest
+  # entry), so it is warm instead of pinned to a stale entry; GOMEMLIMIT is
+  # set to 70% of the runner's RAM so the Go GC works harder before the
+  # kernel kills anything; and a sampler records peak memory, with any
+  # OOM-killer line, in the job log, so the next failure names its cause.
+  # The `go` job keeps vet, copy lint, build and the toolchain tests.
+  # ----------------------------------------------------------------
+  lint:
+    name: lint
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # Its own cache family. golangci-lint type-checks every package from
+      # source (go/packages with syntax), so the go job's 7.6 GB build cache
+      # would buy little beyond the module cache and cost minutes to
+      # restore. This family holds the module cache plus what `go list`
+      # writes, and is saved below from a dispatch on main (D-612).
+      - uses: ./.github/actions/go-cache
+        id: go
+        with:
+          family: lint
+
+      - name: memory guard and sampler
+        run: |
+          set -euo pipefail
+          kib=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          echo "runner: $(nproc) vCPU, $((kib / 1024)) MiB RAM"
+          echo "GOMEMLIMIT=$((kib * 7 / 10))KiB" >> "$GITHUB_ENV"
+          echo "GOLANGCI_LINT_CACHE=$HOME/.cache/golangci-lint-ci" >> "$GITHUB_ENV"
+          # Used memory every 5 s until the job ends (the runner reaps it).
+          # shellcheck disable=SC2016 # expanded by the inner bash, not here
+          nohup bash -c 'while :; do free -m | awk "NR==2 {print \$3}" >> "$RUNNER_TEMP/mem.log"; sleep 5; done' > /dev/null 2>&1 &
+
+      - name: restore lint cache
+        id: lintcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/golangci-lint-ci
+          key: golangci-lint-ci-v2.14.0-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            golangci-lint-ci-v2.14.0-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml') }}-
+            golangci-lint-ci-v2.14.0-${{ runner.os }}-
+
+      - name: lint
+        # golangci-lint enforces the full .golangci.yml set, including
+        # gofumpt + goimports formatting, errorlint, gosec, gocritic, and
+        # gocyclo (threshold 30; see .golangci.yml for the documented
+        # pre-existing exclusions). Joined CI in v1.7; the tree is clean.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # The cache is managed by the two cache steps around this one.
+          skip-cache: true
+          # v2.14.0 is the oldest golangci-lint that can lint this go.mod
+          # (go 1.27.0). Its prebuilt binary is compiled with Go 1.27
+          # (go1.27.0), so there is no "language version used to build
+          # golangci-lint is lower than the targeted Go version" refusal
+          # (v2.12.2, built with go1.26.2, refuses it), and it bundles
+          # golang.org/x/tools v0.50.0, the first that reads Go 1.27 export
+          # data. v2.13.2 is also built with go1.27.0 but bundles x/tools
+          # v0.49.0, so every package fails type checking with "export
+          # data version 5 is greater than maximum supported version 4".
+          # The go1.27.3 patch move (lane RB1, GO-2026-6809) keeps v2.14.0.
+          # Moved with the Go 1.27 toolchain (lane GO127); the previous
+          # move was v2.12.2 with Go 1.26 (T-696), when .golangci.yml was
+          # migrated to the v2 schema.
+          version: v2.14.0
+
+      - name: memory report
+        if: ${{ always() }}
+        run: |
+          peak=$(sort -n "$RUNNER_TEMP/mem.log" 2>/dev/null | tail -1)
+          echo "peak used memory: ${peak:-unknown} MiB of $(free -m | awk 'NR==2 {print $2}') MiB"
+          du -sh "$GOLANGCI_LINT_CACHE" 2>/dev/null || true
+          sudo dmesg 2>/dev/null | grep -i -E 'out of memory|oom-kill|killed process' | tail -5 || true
+
+      # Saved from a dispatch on main (D-612), under this commit's key, so the
+      # next run restores the newest caches.
+      - name: save lint go cache
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.go.outputs.gocache }}
+            ${{ steps.go.outputs.gomodcache }}
+          key: ${{ steps.go.outputs.key }}
+
+      - name: save lint cache
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.lintcache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/golangci-lint-ci
+          key: golangci-lint-ci-v2.14.0-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml') }}-${{ github.sha }}
 
   # ----------------------------------------------------------------
   # Go race suite, sharded.
@@ -487,6 +740,14 @@ jobs:
   # shard's budget. It stays generous because internal/intelligence/dashboard
   # alone can exceed 40m under -race on a loaded runner; the loud failure
   # is now timeout-minutes: 120 on the job, well under the 6 h cap.
+  #
+  # Split packages (lane CICD, 2026-11-01): LPT cannot split one package, so
+  # the slowest package bounded the matrix (cmd/observer alone took 83 min
+  # of the 96-min shard in run 41274192950). The packages on
+  # scripts/ci/go-test-splits.tsv are scheduled as <import>#<i>/<k> units
+  # and go-test-run.sh runs each as a -run / -skip part of that package's
+  # tests (cipkgs split); the k parts cover the package exactly once by
+  # construction, and `shard plan` checks every part is assigned once.
   #
   # Shard count: the plan job sizes it (go-test-shards.sh plan) and hands
   # the matrix and SHARDS over together, and the `shard plan` step runs
@@ -519,23 +780,59 @@ jobs:
   # pattern below turns checkptr off ONLY for modernc.org/...: the race
   # detector itself still instruments those packages, and every package of
   # this module (and every other dependency) keeps checkptr.
+  #
+  # PostgreSQL (D-24, M3-0.6): dbtest.New opens PostgreSQL by default, and
+  # every dbtest PostgreSQL fixture FAILS its test when
+  # OBSERVER_CONTROL_STORE_DSN is unset, so a shard holding an org package
+  # (about 100 of them, scripts/ci/org-postgres-suite.tsv) needs a server.
+  # Each shard gets its own postgres:16-alpine service; every fixture
+  # creates and drops a database of its own, cloned from one migrated
+  # template per server. This runs no more packages than before: the same
+  # shards, the same packages, now with a database. With the DSN set, the
+  # controltest "postgres" dialect cases and the TestLivePG* tests of those
+  # packages run instead of skipping. A shard with no org package only pays
+  # the service start (about 10 s). The service trusts connections and has
+  # no password: it exists only inside this ephemeral runner, and its
+  # superuser has the CREATEDB the fixtures need. It needs a runner with
+  # Docker: a third-party runner chosen through SBO_CI_LINUX_RUNNER must
+  # support job service containers.
   # ----------------------------------------------------------------
   go-test:
     name: go test (shard ${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0'
-    runs-on: ubuntu-latest
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0' && needs.plan.outputs.attested != 'true'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: observer
+          POSTGRES_DB: observer_org
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observer -d observer_org"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       SHARDS: ${{ needs.plan.outputs.shard_count }}
       SHARD_FILTER: plan/affected.txt
       RACE_FILTER: plan/race.txt
       FRESH_FILTER: plan/fresh.txt
-      GO_TEST_REPLAY: ${{ needs.plan.outputs.full == 'true' && '0' || '1' }}
+      # The org test database (see the PostgreSQL note above).
+      # OBSERVER_DBTEST_ENGINE stays unset: PostgreSQL is the default.
+      OBSERVER_CONTROL_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
+      OBSERVER_DATA_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
+      # Only the push tier may replay a cached result; a full or narrowed
+      # release-gate run (P-222) runs every package it tests with -count=1.
+      GO_TEST_REPLAY: ${{ needs.plan.outputs.tier == 'push' && '1' || '0' }}
       SBO_SKIP_TOOLCHAIN_TESTS: '1'
       SBO_SKIP_LATENCY_TESTS: '1'
     steps:
@@ -565,11 +862,12 @@ jobs:
       - name: test
         run: scripts/ci/go-test-run.sh ${{ matrix.shard }} "${SHARDS}"
 
-      # Saved from a dispatched FULL run only (D-609): a push compiles just its
-      # affected packages, so its cache would be a partial one, and the
-      # newest entry is what every shard restores.
+      # Saved from a dispatched FULL run only (D-609): a push or a narrowed
+      # dispatch (P-222) compiles just its affected packages, so its cache
+      # would be a partial one, and the newest entry is what every shard
+      # restores.
       - name: save go cache (full run, shard 0 only)
-        if: ${{ !cancelled() && matrix.shard == 0 && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && matrix.shard == 0 && github.event_name == 'workflow_dispatch' && needs.plan.outputs.tier == 'full' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -602,10 +900,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # One cache family for the four editions, saved by the full leg only
+      # (lane CICD round 3, 2026-11-03). Four per-edition families wrote
+      # about 3.7 GB per full run into a 10 GB repository budget the other
+      # families already filled, so entries were evicted: in the v1.37.0 full
+      # run two of the four missed and rebuilt cold (140 and 214 s against 5
+      # to 6 s warm). Measured with `go list -deps` per edition tag set
+      # (CGO_ENABLED=0, as build-distro.sh builds): against the full
+      # edition's build cache, minimal recompiles 20 of its 481 non-standard
+      # packages, developer 4 of 828 and managed 22 of 1,012, so one shared
+      # entry keeps every leg warm and frees about 2.8 GB per full run.
       - uses: ./.github/actions/go-cache
         id: go
         with:
-          family: distro-${{ matrix.distro }}
+          family: distro
 
       # The full distro needs obs, and the public tree has none: release.sh
       # strips cmd/observer/obs_wire.go and retags the stubs so the public
@@ -630,8 +938,10 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           scripts/distro-smoke.sh bin/distro/observer-${{ matrix.distro }}-linux-amd64
 
-      - name: save go cache (full runs only, D-612)
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+      # The full leg compiles the superset of the untagged packages the
+      # other three restore; they save nothing (see the restore above).
+      - name: save go cache (full runs only, D-612; the full leg only)
+        if: ${{ !cancelled() && matrix.distro == 'full' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -703,12 +1013,11 @@ jobs:
   # ----------------------------------------------------------------
   # Omit-tag variants (plan 5.9, risk R1 "stub rot"): every sbo_omit_*
   # tag a build line names, the no_obs alias and each distro's tag set
-  # get `go vet ./...` (which type-checks every test file) and the tests
-  # of the packages that hold a tagged file. The four editions run those
-  # tests in full; any other set runs the five heavy packages
-  # (cmd/observer, the two org packages, internal/store,
-  # internal/intelligence/dashboard) as a compile plus their tagged tests
-  # only (item 1 of the test-time plan). The set list comes from the tree
+  # get `go vet ./...` (which type-checks every test file). The four
+  # editions also run the full tests of the packages that hold a tagged
+  # file; every single sbo_omit_* set runs vet only (operator decision
+  # "Vet only", 2026-11-01: their tests were about 80 minutes of a full
+  # run, vet about 211). The set list comes from the tree
   # (omit-tag-check.sh --list) and is filtered by the script itself, never
   # restated here (D-602, D-609):
   #   PR / branch push: one job, --scope distro: the distro sets (the
@@ -717,18 +1026,49 @@ jobs:
   #     tag; the distros job builds, proves and smokes it on every push.
   #   workflow_dispatch, v* tag push: the whole list, i.e. also
   #     every single sbo_omit_* tag (custom-build.yml customer builds,
-  #     which the release does not publish), in 6 batches (--batch i/6).
+  #     which the release does not publish), in 6 batches (--batch i/6,
+  #     LPT over scripts/ci/omit-tag-weights.tsv). Six is the fewest that
+  #     keeps this leg (about 43 minutes plus setup) no longer than the go
+  #     test shards; eight would add two setups and shorten nothing.
+  #   workflow_dispatch with `since` (P-222, narrowed): the editions plus
+  #     the single sets the diff can touch, in 2 batches.
+  #     A tag push skips the job when a green dispatch run already covers
+  #     its sha (plan job, `proven` step).
+  # PostgreSQL (D-24): an edition's tests include org packages that open a
+  # PostgreSQL fixture (tests/e2e/orgserver under sbo_distro_minimal at
+  # this commit), which fail without OBSERVER_CONTROL_STORE_DSN, so each
+  # batch gets the same passwordless service and DSNs as the go test
+  # shards. It runs nothing more than before.
   # ----------------------------------------------------------------
   omit-tags:
     name: omit tags ${{ matrix.name }}
     needs: plan
-    if: needs.plan.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # omit is [] only on a tag run whose sha a green full dispatch already
+    # covers (the plan job's `proven` step).
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.omit != '[]'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.omit) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: observer
+          POSTGRES_DB: observer_org
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observer -d observer_org"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      OBSERVER_CONTROL_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
+      OBSERVER_DATA_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
     steps:
       - uses: actions/checkout@v5
       # One cache family for every batch: build tags only change which files
@@ -778,7 +1118,7 @@ jobs:
     name: plugin manifest drift
     needs: plan
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
@@ -831,7 +1171,7 @@ jobs:
     name: action taxonomy drift
     needs: plan
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
@@ -871,3 +1211,53 @@ jobs:
           cd ..
           make verify-webcloud-dist
 
+  # ----------------------------------------------------------------
+  # SDK suites (review E-91): scripts/ci/sdk.sh, the one owner of the SDK
+  # test commands (the ops gate's sdk:* units and sdk-release.yml call it
+  # too), runs sdk/python's pytest and sdk/typescript's typecheck and npm
+  # test, sdk/java's mvn test, and sdk/go's gofmt, vet and go test -race, each
+  # against sdk/contract. The plan job's `sdk` output path-
+  # filters it: a push or PR runs it only when it touches sdk/** or
+  # scripts/ci/sdk.sh; a full (dispatch) run always does. One Python and
+  # one Node version here; sdk-release.yml runs the whole version matrix
+  # before a publish. Same skips as the other jobs: never on a tag push,
+  # and the workflow's paths-ignore and concurrency apply.
+  # ----------------------------------------------------------------
+  sdk:
+    name: sdk ${{ matrix.unit }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.sdk == 'true'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { unit: python-3.12, python: '3.12', mode: python }
+          - { unit: node-22, node: '22', mode: node }
+          - { unit: java-17, java: '17', mode: java }
+          - { unit: go, mode: go }
+    steps:
+      - uses: actions/checkout@v5
+      - if: matrix.mode == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - if: matrix.mode == 'go'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: sdk/go/go.mod
+          cache-dependency-path: sdk/go/go.sum
+      - if: matrix.mode == 'node'
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - if: matrix.mode == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+          cache-dependency-path: sdk/java/pom.xml
+      - name: scripts/ci/sdk.sh ${{ matrix.mode }}
+        run: bash scripts/ci/sdk.sh "${{ matrix.mode }}"

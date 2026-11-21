@@ -32,7 +32,7 @@ func TestFloorValidates(t *testing.T) {
 			langs[l] = true
 		}
 	}
-	for _, l := range []string{"python", "javascript", "typescript", "go", "java", "csharp"} {
+	for _, l := range []string{"python", "javascript", "typescript", "go", "java", "csharp", "ruby", "php", "kotlin"} {
 		if !langs[l] {
 			t.Errorf("no rule for %s", l)
 		}
@@ -79,7 +79,7 @@ func TestParseRefuses(t *testing.T) {
 		{"no manifest", func(f map[string][]byte) { delete(f, ManifestFile) }, "no pack.json"},
 		{"unknown manifest key", replace(ManifestFile, `"licence"`, `"remote": "https://example.com", "licence"`), "unknown field"},
 		{"wrong pack id", replace(ManifestFile, `"id": "observer-code"`, `"id": "observer-rules"`), "pack id"},
-		{"bad version", replace(ManifestFile, `"version": "1.3.1"`, `"version": "latest"`), "MAJOR.MINOR.PATCH"},
+		{"bad version", replace(ManifestFile, `"version": "`+floorVersion(t)+`"`, `"version": "latest"`), "MAJOR.MINOR.PATCH"},
 		{"duplicate rule id", replace(ManifestFile, `"id": "go.sql-string-concat"`, `"id": "go.shell-interpolation"`), "used twice"},
 		{"rule id of another file", replace(sql, "id: python.sql-string-concat", "id: python.sql-other"), "not the manifest's"},
 		{"severity disagrees", replace(sql, "severity: ERROR", "severity: WARNING"), "severity"},
@@ -341,9 +341,10 @@ func TestValidatorRefusesBlocking(t *testing.T) {
 
 func TestChoose(t *testing.T) {
 	floor, _ := Floor()
-	newer := withVersion(t, "1.3.2")
+	v := ParseVersion(floorVersion(t))
+	newer := withVersion(t, fmt.Sprintf("%d.%d.%d", v[0], v[1], v[2]+1))
 	older := withVersion(t, "1.1.0")
-	same := withVersion(t, "1.3.1")
+	same := withVersion(t, floorVersion(t))
 	cases := []struct {
 		name     string
 		imported *Pack
@@ -363,10 +364,21 @@ func TestChoose(t *testing.T) {
 	}
 }
 
+// floorVersion is the embedded floor's version, so no test moves with a
+// pack revision.
+func floorVersion(t *testing.T) string {
+	t.Helper()
+	p, err := Floor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.Version()
+}
+
 func withVersion(t *testing.T, v string) *Pack {
 	t.Helper()
 	f := floorFiles(t)
-	f[ManifestFile] = []byte(strings.Replace(string(f[ManifestFile]), `"version": "1.3.1"`, `"version": "`+v+`"`, 1))
+	f[ManifestFile] = []byte(strings.Replace(string(f[ManifestFile]), `"version": "`+floorVersion(t)+`"`, `"version": "`+v+`"`, 1))
 	p, err := Parse(f)
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +387,7 @@ func withVersion(t *testing.T, v string) *Pack {
 }
 
 func TestBundleRoundTrip(t *testing.T) {
-	p := withVersion(t, "1.3.1")
+	p := withVersion(t, floorVersion(t))
 	b, err := EncodeBundle(p)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +396,7 @@ func TestBundleRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeBundle: %v", err)
 	}
-	if q.Digest() != p.Digest() || q.Version() != "1.3.1" {
+	if q.Digest() != p.Digest() || q.Version() != floorVersion(t) {
 		t.Fatalf("round trip changed the pack: %s %s", q.Digest(), q.Version())
 	}
 	if _, err := DecodeBundle([]byte(`{"schema":"x","files":{}}`)); err == nil {

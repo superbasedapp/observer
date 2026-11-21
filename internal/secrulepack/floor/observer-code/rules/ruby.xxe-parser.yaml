@@ -1,0 +1,20 @@
+rules:
+  - id: ruby.xxe-parser
+    languages: [ruby]
+    severity: ERROR
+    message: An XML parser is asked to substitute entities or load an external DTD (Nokogiri's NOENT or DTDLOAD, libxml-ruby's default_substitute_entities), so a document can read local files or reach internal hosts; parse with the defaults, which leave both off.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    pattern-either:
+      - pattern: Nokogiri::XML::ParseOptions::NOENT
+      - pattern: Nokogiri::XML::ParseOptions::DTDLOAD
+      # The block form: Nokogiri::XML(doc) { |config| config.noent }.
+      - pattern: $CONFIG.noent
+      - pattern: $CONFIG.dtdload
+      - pattern: LibXML::XML.default_substitute_entities = true
+      - pattern: XML.default_substitute_entities = true
+      - pattern: LibXML::XML::Parser::Options::NOENT
+      - pattern: XML::Parser::Options::NOENT
+      - pattern: LibXML::XML::Parser::Options::DTDLOAD
+      - pattern: XML::Parser::Options::DTDLOAD

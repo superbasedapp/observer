@@ -103,6 +103,15 @@ type launcherSpec struct {
 	// inner is the dialect the launched command runs under. Empty
 	// inherits the launcher's own dialect.
 	inner Dialect
+	// reparse marks a launcher whose launched command is a SHELL LINE a
+	// remote shell will parse, not an argv the local lexer already split
+	// correctly (ssh). When set, unwrapLauncher re-joins each candidate
+	// with spaces and runs it back through parseDepth under `inner`, one
+	// level deeper, so the remote `cmd a && cmd b | cmd c` splits into its
+	// own units exactly as a directly-typed line would — honouring the
+	// depth, fan-out and expansion limits, and Unanalyzed, like every
+	// other path.
+	reparse bool
 }
 
 // launchers is the launcher table, keyed by canonical base.
@@ -121,12 +130,28 @@ type launcherSpec struct {
 // their native Windows peer left the same hole under a different
 // spelling — `runas /user:admin "crontab -e"` ALLOWED in all three
 // dialects (docs/security.md H5 round 2).
+//
+// docker/podman/nerdctl/docker-compose, kubectl/oc and ssh join the table
+// for the same reason the Windows launchers did: each RUNS another command
+// whose argv (or remote shell line) is recoverable from its own, and a
+// dangerous command behind `docker exec`, `kubectl exec -- ` or `ssh host`
+// otherwise reached the matchers as the wrapper's positional and matched
+// nothing. The container runtimes run the inner command under POSIX (a Linux
+// container is the overwhelming case and the safe default); ssh's remote
+// command is a SHELL LINE the remote shell re-parses, so it is reparse=true.
 var launchers = map[string]launcherSpec{
-	"start-process": {name: "start-process", resolve: startProcessCandidates},
-	"saps":          {name: "start-process", resolve: startProcessCandidates},
-	"start":         {name: "start-process", resolve: startProcessCandidates},
-	"wsl":           {name: "wsl", resolve: wslInnerArgv, inner: DialectPosix},
-	"runas":         {name: "runas", resolve: runasCandidates},
+	"start-process":  {name: "start-process", resolve: startProcessCandidates},
+	"saps":           {name: "start-process", resolve: startProcessCandidates},
+	"start":          {name: "start-process", resolve: startProcessCandidates},
+	"wsl":            {name: "wsl", resolve: wslInnerArgv, inner: DialectPosix},
+	"runas":          {name: "runas", resolve: runasCandidates},
+	"docker":         {name: "docker exec", resolve: dockerExecResolver, inner: DialectPosix},
+	"podman":         {name: "docker exec", resolve: dockerExecResolver, inner: DialectPosix},
+	"nerdctl":        {name: "docker exec", resolve: dockerExecResolver, inner: DialectPosix},
+	"docker-compose": {name: "docker exec", resolve: composeExecResolver, inner: DialectPosix},
+	"kubectl":        {name: "kubectl exec", resolve: kubectlExecCandidates, inner: DialectPosix},
+	"oc":             {name: "kubectl exec", resolve: kubectlExecCandidates, inner: DialectPosix},
+	"ssh":            {name: "ssh", resolve: sshRemoteCommand, inner: DialectPosix, reparse: true},
 }
 
 // launcherWrapperNames is the set of names launchers records on
@@ -205,6 +230,15 @@ func unwrapLauncher(cmd *Command, spec launcherSpec, st parseState) []Command {
 	}
 	var out []Command
 	for _, inner := range candidates {
+		if spec.reparse {
+			// The launched "command" is a remote shell line (ssh): the
+			// remote shell, not the local lexer, splits it, so re-join and
+			// re-parse it as a command line one level deeper. parseDepth
+			// honours maxUnwrapDepth, the expansion budget and Unanalyzed
+			// itself, exactly like every other nested-payload path.
+			out = append(out, parseDepth(strings.Join(inner, " "), dialect, st.deeper())...)
+			continue
+		}
 		processUnit(unit{words: inner}, dialect, st.deeper(), &out)
 	}
 	for i := range out {
@@ -949,4 +983,438 @@ func runasCandidates(argv []string) launchResult {
 		return launchResult{candidates: [][]string{words}, named: true}
 	}
 	return launchResult{}
+}
+
+// --- container exec (docker / podman / nerdctl / docker-compose) -------
+
+// dockerExecValuedFlags are the `docker exec` / `docker compose exec` options
+// that consume a FOLLOWING token, so a launched program's own operand is not
+// mistaken for one (SH-2, SA-6): -u/-w/-e and their long spellings, --env-file,
+// --detach-keys (docker), --preserve-fds / --preserve-fd (podman) and --index
+// (compose). A missing valued flag shifts the operand, which is exactly the
+// SH-2 bypass.
+var dockerExecValuedFlags = map[string]bool{
+	"-u": true, "--user": true,
+	"-w": true, "--workdir": true,
+	"-e": true, "--env": true, "--env-file": true,
+	"--detach-keys":  true,
+	"--preserve-fds": true, "--preserve-fd": true,
+	"--index": true,
+}
+
+// dockerExecSwitchFlags are the `docker exec` options that consume NOTHING,
+// so a short cluster made only of them (`-it`, `-ti`) is a switch too
+// (shortSwitchCluster). An exec flag that is neither valued nor a known
+// switch is UNKNOWN: both readings are emitted (containerExecInner), never
+// guessed, per launcher.go's never-suppress rule.
+var dockerExecSwitchFlags = map[string]bool{
+	"-i": true, "-t": true, "-d": true,
+	"--interactive": true, "--tty": true, "--detach": true, "--privileged": true,
+}
+
+// dockerExecNoOperandFlags are the `podman exec` options after which there is
+// NO container operand — the command begins immediately (SA-6: `-l` /
+// `--latest` run in the most-recent container).
+var dockerExecNoOperandFlags = map[string]bool{"-l": true, "--latest": true}
+
+// globalFlagTable is one tool's GLOBAL option set (the options it accepts
+// BEFORE its subcommand), split by whether an option consumes the following
+// token (SH-1). Short options are matched CASE-SENSITIVELY (docker's `-H` is
+// --host and its `-h` is --help); long options are matched lower-cased.
+//
+// BOTH halves must be right, because either mistake hides `exec`: a switch
+// listed as valued swallows the subcommand word (`--remote exec` would read
+// `exec` as a value), and a valued option listed as a switch leaves its
+// value standing in the subcommand slot. So a row is added only when it is
+// grounded in the tool's own help; anything else stays UNKNOWN and fails
+// closed (skipGlobalFlags → ambiguousExec → R-157).
+type globalFlagTable struct {
+	valued   map[string]bool
+	switches map[string]bool
+}
+
+// dockerGlobalFlags is the docker / podman / nerdctl global option set.
+// Grounded against `docker --help` (Docker Desktop, 2026-11-08): valued
+// --config, -c/--context, -H/--host, -l/--log-level, --tlscacert, --tlscert,
+// --tlskey; switches -D/--debug, --tls, --tlsverify, -v/--version (and the
+// -h/--help every cobra CLI has). podman's -r/--remote and nerdctl's
+// --debug-full / --insecure-registry are switches per those tools' docs (not
+// installed here, so not checked against a live binary). One table serves all
+// three because none of these rows disagrees between them.
+var dockerGlobalFlags = globalFlagTable{
+	valued: setOf("--config", "-c", "--context", "-H", "--host", "-l", "--log-level",
+		"--tlscacert", "--tlscert", "--tlskey"),
+	switches: setOf("-D", "--debug", "--tls", "--tlsverify", "-v", "--version", "-h", "--help",
+		"-r", "--remote", "--debug-full", "--insecure-registry"),
+}
+
+// composeGlobalFlags is the compose global option set (after the `compose`
+// word, or on the `docker-compose` binary). Grounded against `docker compose
+// --help` / `docker-compose --help` (compose v2): valued --ansi, --env-file,
+// -f/--file, --parallel, --profile, --progress, --project-directory,
+// -p/--project-name; switches --all-resources, --compatibility, --dry-run.
+// --verbose is compose v1's switch (absent from the v2 help) and -h/--help is
+// cobra's.
+var composeGlobalFlags = globalFlagTable{
+	valued: setOf("--ansi", "--env-file", "-f", "--file", "--parallel", "--profile",
+		"--progress", "--project-directory", "-p", "--project-name"),
+	switches: setOf("--all-resources", "--compatibility", "--dry-run", "--verbose", "-h", "--help"),
+}
+
+// dockerExecResolver / composeExecResolver select the global-flag region a
+// base starts in: a bare `docker` / `podman` / `nerdctl` has docker globals
+// then optionally the `container` / `compose` grouping word, while the
+// `docker-compose` binary is already inside compose.
+func dockerExecResolver(argv []string) launchResult  { return containerExecCandidates(argv, false) }
+func composeExecResolver(argv []string) launchResult { return containerExecCandidates(argv, true) }
+
+// containerExecCandidates resolves `docker exec`, `docker container exec`,
+// `docker [globals] compose [globals] exec <svc>`, `docker-compose exec <svc>`
+// (and the podman / nerdctl spellings) into the command run inside the
+// container.
+//
+// `docker run image cmd` is deliberately NOT handled: it starts a NEW
+// container from an image, not a command in a running one, and the image's
+// own entrypoint muddies what "the command" even is — out of scope by the
+// brief. A non-exec docker invocation therefore names nothing and denies
+// nothing (named=false). A bare `docker exec -it ctr` with no command is the
+// same: it opens an interactive shell, which names no command to analyse.
+//
+// SH-1: a GLOBAL option before the subcommand is skipped (skipGlobalFlags).
+// An UNKNOWN global dashed token before a recognisable `exec` could be a
+// valued flag whose value is the subcommand, so `exec` cannot be located and
+// the unit fails closed (ambiguousExec → Unanalyzed → R-157).
+func containerExecCandidates(argv []string, composeBinary bool) launchResult {
+	i := 1
+	compose := composeBinary
+	if !composeBinary {
+		var ambiguous bool
+		if i, ambiguous = skipGlobalFlags(argv, i, dockerGlobalFlags); ambiguous {
+			return ambiguousExec(argv, i)
+		}
+		if i < len(argv) {
+			switch strings.ToLower(argv[i]) {
+			case "container":
+				i++
+			case "compose":
+				i++
+				compose = true
+			}
+		}
+	}
+	if compose {
+		var ambiguous bool
+		if i, ambiguous = skipGlobalFlags(argv, i, composeGlobalFlags); ambiguous {
+			return ambiguousExec(argv, i)
+		}
+	}
+	if i >= len(argv) || strings.ToLower(argv[i]) != "exec" {
+		return launchResult{} // not an exec: nothing to launch
+	}
+	i++ // past `exec`
+	candidates := containerExecInner(argv, i, dockerExecValuedFlags, dockerExecSwitchFlags, dockerExecNoOperandFlags)
+	if len(candidates) == 0 {
+		// Flags only, or a container with no command (interactive shell):
+		// nothing to analyse, and nothing dangerous to miss.
+		return launchResult{}
+	}
+	return launchResult{candidates: candidates, named: true}
+}
+
+// skipGlobalFlags skips a tool's GLOBAL options (before its subcommand)
+// starting at i, using the tool's globalFlagTable (SH-1). Per token:
+//
+//   - a non-dashed token is the subcommand: stop;
+//   - `--` ends the option region;
+//   - `--flag=value` / `-f=value` carries its value inline and can never hide
+//     the subcommand, so it is skipped whether or not the table knows it;
+//   - a known valued option consumes the following token;
+//   - a known switch consumes nothing;
+//   - a short valued option with its value ATTACHED (`-v6`, `-nprod`, the
+//     pflag/getopt form) is self-contained;
+//   - anything else is UNKNOWN: it could be a valued option whose value is
+//     the subcommand, so ambiguous=true and the caller fails closed when an
+//     `exec` follows.
+func skipGlobalFlags(argv []string, i int, tbl globalFlagTable) (int, bool) {
+	for i < len(argv) {
+		t := argv[i]
+		if t == "" || t[0] != '-' {
+			return i, false
+		}
+		if t == "--" {
+			return i + 1, false
+		}
+		if strings.IndexByte(t, '=') >= 0 {
+			i++ // inline value: cannot shift the subcommand
+			continue
+		}
+		key := globalFlagKey(t)
+		switch {
+		case tbl.valued[key]:
+			i += 2 // option + its value token
+		case tbl.switches[key]:
+			i++
+		case len(t) > 2 && t[1] != '-' && tbl.valued[t[:2]]:
+			i++ // short option with its value attached (`-v6`)
+		default:
+			return i, true // unknown: fail closed if exec follows
+		}
+	}
+	return i, false
+}
+
+// globalFlagKey is the lookup spelling of an option token: a long option
+// (`--Context`) lower-cased, a short one (`-H` vs `-h`) exactly as typed,
+// because short options are case-sensitive in every CLI these tables cover.
+func globalFlagKey(t string) string {
+	if strings.HasPrefix(t, "--") {
+		return strings.ToLower(t)
+	}
+	return t
+}
+
+// ambiguousExec is the SH-1 fail-closed arm: when the global-flag region
+// could not be resolved, the unit is Unanalyzed (→ R-157) only if a
+// recognisable `exec` still appears — otherwise the line is not a container
+// exec at all and must not deny.
+func ambiguousExec(argv []string, i int) launchResult {
+	for j := i; j < len(argv); j++ {
+		if strings.ToLower(argv[j]) == "exec" {
+			return launchResult{named: true} // exec present but uncovered: deny
+		}
+	}
+	return launchResult{} // no exec: not a container exec, nothing to launch
+}
+
+// containerExecInner resolves the region AFTER `exec` into every argv the
+// launched command could be (SH-2, SA-6). It walks the exec-flag region and:
+//
+//   - a valued flag consumes its following token;
+//   - a known switch (or a short cluster of them) consumes nothing;
+//   - a no-operand flag (`-l` / `--latest`) means the command begins right
+//     after the flags, with NO container operand;
+//   - an UNKNOWN dashed token forks BOTH readings — the switch reading and
+//     the valued reading — because a missing valued flag shifts the operand
+//     (the never-suppress rule); dedup and maxLauncherCandidates bound it.
+//
+// A reading that reaches no command contributes nothing (an interactive
+// `exec`); when none do, the caller treats it as "no command to analyse".
+func containerExecInner(argv []string, start int, valued, switches, noOperand map[string]bool) [][]string {
+	type frame struct {
+		i      int
+		latest bool
+	}
+	var out [][]string
+	seen := make(map[int]bool)
+	stack := []frame{{start, false}}
+	for len(stack) > 0 && len(out) <= maxLauncherCandidates {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		j, latest := f.i, f.latest
+		for j < len(argv) {
+			t := argv[j]
+			if t == "" || t[0] != '-' {
+				break // the container operand, or (with --latest) the command
+			}
+			if t == "--" {
+				j++
+				break
+			}
+			low := strings.ToLower(t)
+			if eq := strings.IndexByte(low, '='); eq >= 0 {
+				j++ // `--flag=value`: self-contained
+				continue
+			}
+			switch {
+			case noOperand[low]:
+				latest = true
+				j++
+			case valued[low]:
+				j += 2
+			case switches[low] || shortSwitchCluster(low, switches):
+				j++
+			default:
+				// Unknown dashed: emit both readings. The valued reading
+				// skips this flag AND the next token; the switch reading
+				// skips only this flag.
+				stack = append(stack, frame{j + 2, latest})
+				j++
+			}
+		}
+		cmdStart := j
+		if !latest {
+			cmdStart = j + 1 // skip the container / pod operand
+		}
+		if cmdStart < len(argv) && !seen[cmdStart] {
+			seen[cmdStart] = true
+			out = append(out, argv[cmdStart:])
+		}
+	}
+	return out
+}
+
+// shortSwitchCluster reports whether a single-dash token is a cluster made
+// ENTIRELY of known switch letters (`-it`, `-ti`), so it consumes nothing.
+func shortSwitchCluster(low string, switches map[string]bool) bool {
+	if len(low) < 2 || low[0] != '-' || low[1] == '-' {
+		return false
+	}
+	for k := 1; k < len(low); k++ {
+		if !switches["-"+string(low[k])] {
+			return false
+		}
+	}
+	return true
+}
+
+// --- kubectl / oc exec -------------------------------------------------
+
+// kubectlExecValuedFlags are the `kubectl exec` options (AFTER `exec`) that
+// consume a following token: -n/-c and their long spellings, --context, and
+// --pod-running-timeout (SH-2 — its legacy no-`--` form otherwise reads the
+// timeout value as the pod and the pod as the command).
+var kubectlExecValuedFlags = map[string]bool{
+	"-n": true, "--namespace": true,
+	"-c": true, "--container": true,
+	"--context": true, "--pod-running-timeout": true,
+}
+
+// kubectlExecSwitchFlags are the `kubectl exec` options that consume nothing;
+// an exec flag that is neither valued nor a known switch is UNKNOWN and forks
+// both readings (containerExecInner).
+var kubectlExecSwitchFlags = map[string]bool{
+	"-i": true, "-t": true,
+	"--stdin": true, "--tty": true, "-q": true, "--quiet": true,
+}
+
+// kubectlGlobalFlags is the kubectl / oc global option set (before `exec`).
+// Grounded against `kubectl options` (Docker Desktop's kubectl, 2026-11-08):
+// every non-boolean option there is valued — note -v/--v (the log level,
+// `-v 6` / `-v=6`) is VALUED here, unlike docker's -v/--version switch — and
+// the four booleans are switches (pflag booleans never consume a following
+// token; `--insecure-skip-tls-verify=false` uses the inline form). -h/--help
+// is cobra's. oc is not installed here; it shares kubectl's global set.
+var kubectlGlobalFlags = globalFlagTable{
+	valued: setOf("--as", "--as-group", "--as-uid", "--cache-dir", "--certificate-authority",
+		"--client-certificate", "--client-key", "--cluster", "--context", "--kubeconfig", "--kuberc",
+		"--log-flush-frequency", "-n", "--namespace", "--password", "--profile", "--profile-output",
+		"--request-timeout", "-s", "--server", "--tls-server-name", "--token", "--user", "--username",
+		"-v", "--v", "--vmodule"),
+	switches: setOf("--disable-compression", "--insecure-skip-tls-verify", "--match-server-version",
+		"--warnings-as-errors", "-h", "--help"),
+}
+
+// kubectlExecCandidates resolves `kubectl [globals] exec [flags] <pod> -- <cmd…>`
+// and the legacy `kubectl exec [flags] <pod> <cmd…>` form without the `--`
+// terminator (oc shares the grammar). GLOBAL options before `exec` are
+// skipped (SH-1); an unknown one fails closed (ambiguousExec). When a `--` is
+// present everything after it is the command verbatim; otherwise exec's own
+// flags are resolved (both readings for an unknown, SH-2), the first
+// positional is the pod and the rest is the command.
+func kubectlExecCandidates(argv []string) launchResult {
+	i := 1
+	var ambiguous bool
+	if i, ambiguous = skipGlobalFlags(argv, i, kubectlGlobalFlags); ambiguous {
+		return ambiguousExec(argv, i)
+	}
+	if i >= len(argv) || strings.ToLower(argv[i]) != "exec" {
+		return launchResult{}
+	}
+	i++ // past `exec`
+	// A `--` terminator: the remote command is everything after it.
+	for j := i; j < len(argv); j++ {
+		if argv[j] == "--" {
+			if j+1 < len(argv) {
+				return launchResult{candidates: [][]string{argv[j+1:]}, named: true}
+			}
+			return launchResult{} // `--` with nothing after it
+		}
+	}
+	// Legacy form: skip exec's own flags (kubectl has no --latest), then the
+	// pod operand; the rest is the command.
+	candidates := containerExecInner(argv, i, kubectlExecValuedFlags, kubectlExecSwitchFlags, nil)
+	if len(candidates) == 0 {
+		return launchResult{} // no command: an interactive/attach shell
+	}
+	return launchResult{candidates: candidates, named: true}
+}
+
+// --- ssh ---------------------------------------------------------------
+
+// sshValuedFlags are the ssh options that take a value (the brief's set).
+// ssh uses getopt single-dash options only, so the value may be attached
+// (`-p22`) or the next token (`-p 22`); the rest are switches. A valued flag
+// ends an option cluster.
+var sshValuedFlags = map[byte]bool{
+	'p': true, 'l': true, 'i': true, 'o': true, 'F': true, 'J': true,
+	'L': true, 'R': true, 'D': true, 'b': true, 'c': true, 'E': true,
+	'e': true, 'I': true, 'm': true, 'O': true, 'Q': true, 'S': true,
+	'W': true, 'w': true, 'B': true, 'P': true,
+}
+
+// sshRemoteCommand resolves `ssh [options] destination [options] [command…]`
+// into the remote command line it runs. ssh joins the trailing args with
+// spaces and hands them to the REMOTE shell, so the launcher row is
+// reparse=true and the joined candidate is re-parsed as a POSIX command line.
+//
+// SA-5: OpenSSH keeps reading options AFTER the destination (`ssh host -t cmd`,
+// `ssh host -o BatchMode=yes cmd`) unless a `--` has ended them, so the option
+// scan runs again past the destination — honouring `--`. A bare interactive
+// `ssh host` (no command) names nothing and must not deny; so does `ssh` with
+// only options. Only a destination FOLLOWED by a command produces a candidate.
+func sshRemoteCommand(argv []string) launchResult {
+	i, ended := skipSSHFlagsTracked(argv, 1)
+	if i >= len(argv) {
+		return launchResult{} // no destination
+	}
+	i++ // the destination operand (user@host / host)
+	if !ended {
+		// Options are re-read after the destination until `--` or the command.
+		i, _ = skipSSHFlagsTracked(argv, i)
+	}
+	if i >= len(argv) {
+		return launchResult{} // interactive login: no remote command
+	}
+	return launchResult{candidates: [][]string{argv[i:]}, named: true}
+}
+
+// skipSSHFlags advances past ssh's own options starting at i and returns the
+// next index. It is the host-resolution entry used by the network rules;
+// sshRemoteCommand wants the extra `--`-ended fact, so both share one
+// implementation (skipSSHFlagsTracked).
+func skipSSHFlags(argv []string, i int) int {
+	next, _ := skipSSHFlagsTracked(argv, i)
+	return next
+}
+
+// skipSSHFlagsTracked advances past ssh's own options starting at i, returning
+// the next index and whether a `--` ended the options (OpenSSH then stops
+// reading options, so sshRemoteCommand must not re-scan past the destination).
+// A token is an option cluster of single letters; the first valued letter in a
+// cluster takes the remainder of the token as its value, or the next token
+// when the letter ends the cluster (getopt).
+func skipSSHFlagsTracked(argv []string, i int) (next int, endedByDashDash bool) {
+	for i < len(argv) {
+		t := argv[i]
+		if len(t) < 2 || t[0] != '-' {
+			break
+		}
+		if t == "--" {
+			return i + 1, true
+		}
+		consumesNext := false
+		for k := 1; k < len(t); k++ {
+			if sshValuedFlags[t[k]] {
+				// Attached value (`-p22`) stays in this token; a bare
+				// valued letter at the cluster's end takes the next token.
+				consumesNext = k == len(t)-1
+				break
+			}
+		}
+		i++
+		if consumesNext && i < len(argv) {
+			i++
+		}
+	}
+	return i, false
 }

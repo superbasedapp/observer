@@ -1,0 +1,44 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "items": "Inferred",
+    "items[]": "Inferred",
+    "items[].created_at": "Inferred",
+    "items[].created_by_user_id": "Inferred",
+    "items[].execution_status": "Inferred",
+    "items[].id": "Inferred",
+    "items[].llm_model": "Inferred",
+    "items[].metrics": "Inferred",
+    "items[].metrics.accumulated_cost": "Inferred",
+    "items[].metrics.accumulated_token_usage": "Inferred",
+    "items[].metrics.accumulated_token_usage.completion_tokens": "Inferred",
+    "items[].metrics.accumulated_token_usage.prompt_tokens": "Inferred",
+    "items[].sandbox_status": "Inferred",
+    "items[].selected_branch": "Inferred",
+    "items[].selected_repository": "Inferred",
+    "items[].title": "Inferred",
+    "items[].trigger": "Inferred",
+    "items[].updated_at": "Inferred",
+    "next_page_id": "Inferred"
+  },
+  "fixture_sha256": "60ea90340242def5df58ac129bce607b9c05027fef3af687fdf613af32b7134f",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/app-conversations/search",
+    "query": {
+      "limit": "100",
+      "include_sub_conversations": "true",
+      "page_id": "synthpage0002"
+    },
+    "status": 200
+  },
+  "notes": "Synthesized for lane CA-A4. The reference (OH04) names the search route, limit, the page_id cursor and next_page_id, include_sub_conversations, and record members: ids, created_by_user_id, selected repository and branch, trigger, parent and child ids, status, timestamps, accumulated token and cost metrics (prompt, completion, cache and reasoning token categories) and session_api_key (a secret, synthetic placeholder here). The exact member spellings follow the OpenHands app-conversation model and are Inferred until a live response is observed. Whether prompt_tokens includes cached tokens is not documented.",
+  "scenario": "last_page",
+  "sdk_or_spec_version_or_commit": "OpenHands Cloud V1 API as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids OH01 OH04 OH08) and the OpenHands software-agent-sdk event model; docs.openhands.dev was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.openhands.dev/openhands/usage/cloud/api-reference/conversations/search-app-conversations",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "openhands.cloud.app_conversations_search"
+}

@@ -1,8 +1,11 @@
 package depscan
 
 import (
+	"encoding/json"
 	"path"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -42,6 +45,9 @@ func Finalize(resp ChildResponse) (ChildResponse, []Gap) {
 	}
 	for _, m := range resp.Unlocked {
 		add(key{m.Ecosystem, m.Path, ReasonNoLockfile}, 0)
+	}
+	for _, g := range resp.Gaps {
+		add(key{g.Ecosystem, g.Path, g.Reason}, g.Packages)
 	}
 	for _, x := range resp.Extractors {
 		if x.OK {
@@ -102,11 +108,25 @@ type lockedManifest struct {
 	Declares  func([]byte) bool
 }
 
+// lockedManifests is the manifest table. A Gradle build is not a row: what
+// resolves it can live below the build's directory
+// (gradle/verification-metadata.xml), which the facade's sibling-or-above
+// lockfile look cannot see, so the dependency-file table (unread.go) owns
+// build.gradle and reports a lockless one "no lockfile" the same way.
 var lockedManifests = []lockedManifest{
 	{Name: "Cargo.toml", Ecosystem: "crates.io", Lockfiles: []string{"Cargo.lock"}, Declares: cargoDeclares},
 	{Name: "pyproject.toml", Ecosystem: "PyPI", Lockfiles: []string{
 		"uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "pylock.toml", "pylock.*.toml", "requirements*.txt",
 	}, Declares: pyprojectDeclares},
+	// An installed node_modules does not stand in for a lockfile: a fresh
+	// install resolves the ranges again. bun.lockb counts as a lockfile
+	// here and is reported unread by the dependency-file table instead.
+	{Name: "package.json", Ecosystem: "npm", Lockfiles: []string{
+		"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb",
+	}, Declares: packageJSONDeclares},
+	{Name: "Gemfile", Ecosystem: "RubyGems", Lockfiles: []string{"Gemfile.lock", "gems.locked"}, Declares: gemfileDeclares},
+	{Name: "gems.rb", Ecosystem: "RubyGems", Lockfiles: []string{"gems.locked", "Gemfile.lock"}, Declares: gemfileDeclares},
+	{Name: "composer.json", Ecosystem: "Packagist", Lockfiles: []string{"composer.lock"}, Declares: composerDeclares},
 }
 
 // ManifestFor returns the manifest row's ecosystem and lockfile patterns for
@@ -229,6 +249,47 @@ func pyprojectDeclares(body []byte) bool {
 	return false
 }
 
+// packageJSONDeclares: a dependencies, devDependencies,
+// optionalDependencies or peerDependencies object with an entry (npm 7 and
+// later install peers too).
+func packageJSONDeclares(body []byte) bool {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return true
+	}
+	for _, k := range []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"} {
+		if nonEmpty(doc[k]) {
+			return true
+		}
+	}
+	return false
+}
+
+// gemfileLine is a Gemfile's gem or gemspec line.
+var gemfileLine = regexp.MustCompile(`(?m)^\s*(?:gem|gemspec)\b`)
+
+// gemfileDeclares: a gem or gemspec line.
+func gemfileDeclares(body []byte) bool { return gemfileLine.Match(body) }
+
+// composerDeclares: a require or require-dev entry naming a package
+// (vendor/name); a platform requirement (php, ext-*, lib-*) has no slash
+// and is nothing to check.
+func composerDeclares(body []byte) bool {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return true
+	}
+	for _, k := range []string{"require", "require-dev"} {
+		reqs, _ := doc[k].(map[string]any)
+		for name := range reqs {
+			if strings.Contains(name, "/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // reasonWords are the plain words of each reason a run, an ecosystem or a
 // gap carries, for the CLI and the dashboard.
 var reasonWords = map[string]string{
@@ -242,10 +303,41 @@ var reasonWords = map[string]string{
 	ReasonEngineFailed:     "engine failed",
 	ReasonIsolationRefused: "isolation refused the run",
 	ReasonDBNotAccepted:    "databases not downloaded: waiting for your one-time accept",
+
+	// The package lookup posture (lane RM-2).
+	ReasonLookupNotChosen:    "no package lookup chosen yet: download the databases or use the superbased lookup",
+	ReasonRemoteNotAccepted:  "superbased lookup chosen but not accepted",
+	ReasonRemoteUnavailable:  "the superbased lookup is unavailable",
+	ReasonRemoteLookupFailed: "the superbased lookup could not fetch this package's advisories",
+
 	ReasonExtractorFailed:  "could not be read",
 	ReasonUnpinned:         "no exact version pinned",
 	ReasonLockfileTooLarge: "lockfile too large to check local entries",
 	ReasonNoLockfile:       "no lockfile",
+	ReasonPinnedBySHA:      "pinned by a commit SHA with no version comment",
+	ReasonArtifactTooLarge: "build artifact over the size cap, not read",
+	ReasonGoVersionUnknown: "Go version of a binary unknown (a development build or unreadable): its standard library was not matched",
+	// A dependency file the run did not read (unread.go). The online words
+	// are neutral for both surfaces (dashboard CLI parity plan section 3):
+	// the dashboard's scan dialog has "Also check online", the CLI --online.
+	ReasonNoExtractor:             "no extractor for this file in this build",
+	ReasonNeedsOnline:             "checked only online: turn on online package checks, then scan with online checks",
+	ReasonNoAdvisoryData:          "not checked: no vulnerability database publishes advisories for this ecosystem (OSV has none), and the online lookup cannot map its packages to upstream releases",
+	ReasonSubmodulePinsUnreadable: "git submodule pins could not be read, so they were not checked",
+	ReasonSubmoduleCheckFailed:    "the online check of a git submodule's pinned commit failed",
+	ReasonNoDatabaseOffered:       "Observer downloads no database for this ecosystem",
+	// An image's OS release (osimage.go).
+	ReasonNoOSCanary:          "no self-test for this release",
+	ReasonRPMOnWindows:        "not supported on Windows",
+	ReasonNoOSRelease:         "the image has no os-release",
+	ReasonDistroNotSupported:  "distribution not supported in this build",
+	ReasonReleaseNotSupported: "release not supported",
+	ReasonFeedUnavailable:     "the release database could not be fetched",
+	ReasonReleaseNotPublished: "no database is published for this release",
+	ReasonOtherRelease:        "a package of another release",
+	ReasonImageEntryRefused:   "a package database in the image could not be read safely",
+	ReasonNoImagePackages:     "no OS package database in the image",
+	ReasonDatabaseLinkFailed:  "the release database could not be linked for the scan",
 }
 
 // ReasonWords returns a reason's plain words, or the reason itself.

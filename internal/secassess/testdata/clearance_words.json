@@ -1,0 +1,21 @@
+{
+  "about": "The words and phrases no sentence Observer builds for an assessment may use, because they read as a clearance (depth plan section 13, limit 3: a result with nothing in it is not a clearance). One list for both sides: internal/secassess/reading_test.go (Go) and web/src/lib/secAssessModel.test.ts, web/src/components/secassess/AssessModelView.test.tsx and web/e2e/security-assessments.spec.ts (TypeScript) read this file. A word matches whole, in any case; a phrase matches with any run of spaces between its words. The categories of Observer's own vocabulary (for example Vulnerability analysis) are names, not claims, which is why the bare word vulnerability is not on the list.",
+  "words": [
+    "clean", "verified", "confirmed", "certified", "secure", "safe", "passed", "pass", "passes",
+    "vulnerable", "vulnerabilities", "compliant", "healthy"
+  ],
+  "phrases": [
+    "no issues", "no issue", "no problems", "no problem", "no vulnerability", "no weaknesses",
+    "all good", "all clear", "nothing wrong", "looks fine", "good to go", "no risk", "no risks"
+  ],
+  "caught": [
+    "Clean.", "a clean run", "all SECURE", "was verified", "Confirmed by", "it is safe", "passed", "it will pass",
+    "vulnerable", "no vulnerabilities", "No vulnerability", "Compliant", "no issues found", "No  issues", "all good here",
+    "nothing wrong", "healthy"
+  ],
+  "allowed": [
+    "unsafe", "insecure", "a vulnerability", "Vulnerability analysis", "cleanup", "cleaning", "secured", "security",
+    "bypassed", "password", "No weakness was reported in what was tested", "No threat was recorded",
+    "The agent reported no findings", "issues", "no log"
+  ]
+}

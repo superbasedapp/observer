@@ -331,6 +331,9 @@ var interventionDeclarations = map[string][]interventionDeclaration{
 	"kimchi":          {dedicated("cli", native(), NativeUsagePresent)},
 	"stakpak":         {dedicated("cli", native(), NativeUsagePresent)},
 	"vtcode":          {dedicated("cli", native(), NativeUsagePresent)},
+	// custom-agent (P-228): the developer's own program; Observer neither
+	// launches nor binds it, so there is no process cutoff boundary.
+	"custom-agent": {shared("own", "the developer's own agent process is not one Observer launches or binds; the proxy turn is the only control point")},
 }
 
 func dedicated(id string, binding ProcessBindingSpec, nativeUsage NativeUsageKind) interventionDeclaration {

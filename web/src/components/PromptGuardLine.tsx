@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { useApi } from "@/lib/useApi";
 import { HelpInd } from "@/components/HelpInd";
 import { VocabPill } from "@shared/lib/vocabPill";
@@ -64,12 +64,13 @@ export function PromptGuardLine({ sessionId }: { sessionId: string }) {
       >
         {lastOutcome}
       </VocabPill>
-      <Link
+      <GatedLink
         to="/security?tab=prompt-guard"
+        managed={null}
         className="ml-auto text-[11px] text-accent underline decoration-dotted underline-offset-[3px] hover:decoration-accent"
       >
         View in Security →
-      </Link>
+      </GatedLink>
     </div>
   );
 }

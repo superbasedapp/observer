@@ -8,8 +8,31 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
+
+// TestOrgStatusPrintsTheEnrolmentKind pins demo bug #3: `observer org status`
+// names the enrolment kind, one row per kind, and prints nothing (never a
+// guess) when the kind was not resolved.
+func TestOrgStatusPrintsTheEnrolmentKind(t *testing.T) {
+	cases := []struct {
+		tenancy string
+		want    string
+	}{
+		{orgcontract.TenancyIndividual, "Kind:             individual - "},
+		{orgcontract.TenancyManaged, "Kind:             organization-managed - "},
+		{"", ""},
+	}
+	for _, c := range cases {
+		var out bytes.Buffer
+		printOrgStatus(&out, orgStatusReport{State: orgclient.EnrolmentState{Enrolled: true, OrgID: "A"}, Tenancy: c.tenancy})
+		has := strings.Contains(out.String(), "Kind:")
+		if has != (c.want != "") || (c.want != "" && !strings.Contains(out.String(), c.want)) {
+			t.Errorf("tenancy %q: kind line present=%v, want %q:\n%s", c.tenancy, has, c.want, out.String())
+		}
+	}
+}
 
 // TestOrgReportsNameOnlyRefusedCrossTenancyGrants (OSH-R-013, operator
 // ruling P-204): `observer org status` and `observer org grant show` print a

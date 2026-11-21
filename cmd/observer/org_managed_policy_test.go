@@ -360,7 +360,7 @@ func TestManagedPolicyFamiliesToWrite(t *testing.T) {
 				Accepted: true, Managed: true,
 				Authority: []string{govern.AuthorityCaptureRaise, govern.AuthorityEnforceAdmission},
 			},
-			want: []string{"admission.input", "node.features", "security.scanning", "terminals.isolation"},
+			want: []string{"admission.input", "node.features", "planeb.admission", "security.scanning", "terminals.isolation"},
 		},
 		{
 			name:    "accepted, managed, the default managed grant governs node.features via feature.lock",

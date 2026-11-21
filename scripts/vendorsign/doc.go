@@ -26,9 +26,40 @@
 //
 // Verbs:
 //
-//	vendorsign keygen  -out DIR
+//	vendorsign keygen  -out DIR [-feed]
 //	vendorsign sign    -key FILE ARCHIVE...
 //	vendorsign manifest -key FILE -dir DIR -version vX.Y.Z -channel stable -out FILE
+//	vendorsign osvexport -key FILE -in DIR -state DIR -out DIR [-manifest-version N]
+//	vendorsign osvosexport -key FILE -in DIR -state DIR -out DIR [-manifest-version N]
+//	vendorsign osvshards -key FILE [-lang DIR] [-os DIR] -state DIR -objects DIR -out DIR
+//	vendorsign kev -key FILE -in FILE -state DIR -out DIR
+//	vendorsign epss -key FILE -in FILE -state DIR -out DIR [-osv DIR]...
+//	vendorsign secindex -kind security.malicious_packages -key FILE -osv-export DIR -state DIR -out DIR
+//	vendorsign secindex -kind security.popular_names -key FILE -popular eco=FILE... -source TEXT
+//	        -license SPDX -source-url URL -state DIR -out DIR
+//
+// (main.go's usage lists every verb.) keygen -feed mints the CONTENT-FEED
+// key instead (content-feed.key, internal/update/contentfeedkey.go): it signs
+// ClassFeed kinds only and lives only on the feed publisher host
+// (/etc/sbo-feed), never as a repository secret. osvexport is that host's
+// daily job (static feed mirroring plan section 6.2 and 6.3, osvexport.go):
+// it turns the fetched OSV all.zip exports into a per-ecosystem base plus a
+// cumulative delta and signs the security.osv_export manifest with the feed
+// key. osvosexport is its sibling for the OS package databases (OS and CI
+// scanning plan sections 6.4 and 6.6.1, osvosexport.go): it strips each
+// distribution's whole export into one file per row of osvdb.OSReleases and
+// publishes those the same way, as the security.osv_os_export kind.
+// osvshards splits both kinds' inputs into the hash-prefix shards of
+// remote matching (OS and CI scanning plan sections 13.3 and 13.11, lane
+// RM-1; osvshards.go): content-addressed shards and index files in an
+// object store the publisher uploads to the public shard bucket, and the
+// signed security.osv_shards manifest naming each set's descriptor.
+// kev and epss publish the exploit-likelihood kinds security.kev and
+// security.epss (OS and CI scanning plan section 14.7; exploitkev.go,
+// exploitepss.go, the shared small-feed path feedsingle.go): the CISA KEV
+// catalog compacted, and the FIRST EPSS scores cut to the CVEs of the
+// published OSV exports and quantized, in the formats internal/secexploit
+// owns.
 //
 // The private key is a base64 32-byte Ed25519 seed on one line, held in
 // the OBSERVER_VENDOR_SIGNING_KEY repository secret on the private

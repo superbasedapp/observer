@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/agentconfigorg"
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/orgenrol"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -55,7 +57,20 @@ type agentConfigOrgRow struct {
 // agentConfigOrgView is GET /api/agent-config/org.
 type agentConfigOrgView struct {
 	// Managed: a managed enrolment with a live grant (the policy applies).
-	Managed         bool                      `json:"managed"`
+	Managed bool `json:"managed"`
+	// Status tells the tab which of the four states this machine is in
+	// (orgManagementStatus), so an enrolled machine whose org does not manage
+	// its AI tool settings is never told to go and enrol.
+	Status orgManagementStatus `json:"status"`
+	// Enrolled, OrgName and Tenancy describe the enrolment the machine holds:
+	// the org_enrolment row (store.LoadEnrolment, the row `observer org
+	// status` and Settings > Enrolment read), never a second copy.
+	Enrolled bool   `json:"enrolled"`
+	OrgName  string `json:"org_name,omitempty"`
+	Tenancy  string `json:"tenancy,omitempty"`
+	// GrantState is the governance resolver's verdict (govern.State) when the
+	// machine is managed but its grant is not in force.
+	GrantState      string                    `json:"grant_state,omitempty"`
 	HasPolicy       bool                      `json:"has_policy"`
 	Version         int64                     `json:"version,omitempty"`
 	ReceivedAt      string                    `json:"received_at,omitempty"`
@@ -70,6 +85,59 @@ type agentConfigOrgView struct {
 	Instructions []orgcontract.AgentConfigInstruction `json:"instructions"`
 	Rows         []agentConfigOrgRow                  `json:"rows"`
 	Drifted      int                                  `json:"drifted"`
+}
+
+// orgManagementStatus is the Organization tab's state.
+type orgManagementStatus string
+
+const (
+	// orgStatusNotEnrolled: no enrolment on this machine.
+	orgStatusNotEnrolled orgManagementStatus = "not_enrolled"
+	// orgStatusUnmanaged: enrolled with an individual (teams) enrolment, so
+	// the org sees what the machine shares but does not manage its AI tool
+	// settings.
+	orgStatusUnmanaged orgManagementStatus = "unmanaged"
+	// orgStatusManagedInactive: a managed enrolment (or an org switched to
+	// enterprise) whose grant is not in force, so nothing the org sets
+	// applies until it is.
+	orgStatusManagedInactive orgManagementStatus = "managed_inactive"
+	// orgStatusManaged: managed with a live grant; the org's AI tool policy
+	// applies (HasPolicy says whether one has arrived).
+	orgStatusManaged orgManagementStatus = "managed"
+)
+
+// orgManagementFacts are what the status table reads, resolved at the
+// handler from the governance Effective and the enrolment row.
+type orgManagementFacts struct {
+	enrolled bool
+	// applies is govern.Effective.ManagedDefaultsApply: managed and live.
+	applies bool
+	// claimsManaged: the enrolment row is managed tenancy, or the grant is
+	// managed-class (govern.Effective.Managed), live or not.
+	claimsManaged bool
+}
+
+// orgManagementTable is walked top-down, first match wins (CLAUDE.md #5).
+// A live managed posture wins over a missing enrolment row so the tab can
+// never contradict ManagedDefaultsApply, which gates the apply route.
+var orgManagementTable = []struct {
+	name   string
+	match  func(orgManagementFacts) bool
+	status orgManagementStatus
+}{
+	{"managed and live", func(f orgManagementFacts) bool { return f.applies }, orgStatusManaged},
+	{"not enrolled", func(f orgManagementFacts) bool { return !f.enrolled }, orgStatusNotEnrolled},
+	{"managed, grant not in force", func(f orgManagementFacts) bool { return f.claimsManaged }, orgStatusManagedInactive},
+	{"enrolled, not managed", func(orgManagementFacts) bool { return true }, orgStatusUnmanaged},
+}
+
+func resolveOrgManagement(f orgManagementFacts) orgManagementStatus {
+	for _, r := range orgManagementTable {
+		if r.match(f) {
+			return r.status
+		}
+	}
+	return orgStatusUnmanaged
 }
 
 func stampRFC3339(t time.Time) string {
@@ -89,14 +157,38 @@ func (s *Server) handleAgentConfigOrg(w http.ResponseWriter, r *http.Request) {
 		Grants: []string{}, Policies: []string{}, Directives: []agentConfigOrgDirective{},
 		Instructions: []orgcontract.AgentConfigInstruction{}, Rows: []agentConfigOrgRow{},
 	}
+	var eff govern.Effective
 	if s.opts.Governance != nil {
-		v.Managed = s.opts.Governance(ctx).ManagedDefaultsApply()
+		eff = s.opts.Governance(ctx)
 	}
-	if s.db() == nil {
+	v.Managed = eff.ManagedDefaultsApply()
+	facts := orgManagementFacts{applies: v.Managed, claimsManaged: eff.Managed}
+	var st *store.Store
+	if s.db() != nil {
+		st = store.New(s.db())
+		enr, err := st.LoadEnrolment(ctx)
+		if err != nil {
+			writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": "enrolment_unreadable", "message": "This machine's enrolment could not be read."})
+			return
+		}
+		if enr != nil {
+			facts.enrolled = true
+			facts.claimsManaged = facts.claimsManaged || enr.IsManaged()
+			v.Enrolled, v.Tenancy = true, enr.Tenancy
+			v.OrgName = orgenrol.DisplayName(enr.OrgID, enr.OrgServerURL, eff.OrgName, enr.OrgName)
+		}
+	}
+	if v.OrgName == "" {
+		v.OrgName = eff.OrgName
+	}
+	v.Status = resolveOrgManagement(facts)
+	if v.Status == orgStatusManagedInactive {
+		v.GrantState = string(eff.State)
+	}
+	if st == nil {
 		writeJSON(w, v)
 		return
 	}
-	st := store.New(s.db())
 	if body, row, ok := st.OrgAgentConfigBody(ctx); ok {
 		v.HasPolicy, v.Version, v.ReceivedAt = true, row.Version, stampRFC3339(row.ReceivedAt)
 		v.OnDrift = orgcontract.NormalizeAgentConfigOnDrift(body.OnDrift)

@@ -11,12 +11,15 @@ import {
   TruncatedPath,
 } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
-import { ORG_STATE_LABEL, ORG_STATE_TONE, formatValue, type OrgPolicyView } from "@/lib/agentConfig";
+import { ORG_STATE_LABEL, ORG_STATE_TONE, formatValue, orgNotice, type OrgNotice, type OrgPolicyView } from "@/lib/agentConfig";
 import { applyOrg, asCallError } from "./api";
 
 // OrgTab: the organization's AI tool policy as this managed machine holds
 // it (adapter config P6/P7), and what Observer did with each setting on
-// each file. The server decides everything; this tab shows it. Enforced
+// each file. The server decides everything; this tab shows it. Short of a
+// policy in force, it says which state the machine is in (orgNotice): not
+// enrolled, enrolled but not managed (naming the org), managed with the
+// grant not in force, or managed with no policy yet. Enforced
 // settings are also marked "set by your organization" on the By tool tab,
 // where the editor refuses them.
 
@@ -45,24 +48,8 @@ export function OrgTab({ confirmToken }: { confirmToken: string }) {
   if (!org.data) return <InlineLoading label="Reading your organization's policy" />;
   const v = org.data;
 
-  if (!v.managed) {
-    return (
-      <EmptyState
-        title="Not managed by an organization"
-        body="This machine is not enrolled under an organization that manages it, so no organization sets its AI tool settings. Everything on this page is yours to edit. To join your organization, enrol this machine in Settings > Enrolment with the server address and the enrolment code or link your admin gave you."
-        to="/settings?section=enrolment"
-        toLabel="Open Settings > Enrolment"
-      />
-    );
-  }
-  if (!v.has_policy) {
-    return (
-      <EmptyState
-        title="No AI tool policy yet"
-        body="Your organization manages this machine but has not sent an AI tool policy. Until it does, AI tool settings are read-only here."
-      />
-    );
-  }
+  const notice = orgNotice(v);
+  if (notice) return <OrgStatusNotice notice={notice} />;
 
   async function apply() {
     setBusy(true);
@@ -218,6 +205,11 @@ export function OrgTab({ confirmToken }: { confirmToken: string }) {
       </Card>
     </div>
   );
+}
+
+// OrgStatusNotice renders the tab's state when no policy is in force.
+export function OrgStatusNotice({ notice }: { notice: OrgNotice }) {
+  return <EmptyState title={notice.title} body={notice.body} to={notice.to} toLabel={notice.toLabel} />;
 }
 
 function safeParse(s: string): unknown {

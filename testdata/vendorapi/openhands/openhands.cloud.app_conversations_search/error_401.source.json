@@ -1,0 +1,21 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "detail": "Inferred"
+  },
+  "fixture_sha256": "ef343fe4909c193ec8f90e8c651d8a59ccc5afd1857699c3bda03351352bba88",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/app-conversations/search",
+    "status": 401
+  },
+  "notes": "A FastAPI-style 401 detail body (the OpenHands app server is a FastAPI application); the exact body is Inferred, the status is the documented auth failure.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "OpenHands Cloud V1 API as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids OH01 OH04 OH08) and the OpenHands software-agent-sdk event model; docs.openhands.dev was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.openhands.dev/openhands/usage/cloud/api-reference/conversations/search-app-conversations",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "openhands.cloud.app_conversations_search"
+}

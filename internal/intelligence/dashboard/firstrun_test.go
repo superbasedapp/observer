@@ -404,3 +404,31 @@ func TestDashboardNoticeDismissalsPersistOnTheDaemon(t *testing.T) {
 		t.Fatalf("dismissed after reload = %q, want components_setup,tour", got)
 	}
 }
+
+// TestGetStartedSnoozePersistsOnTheDaemon (Getting started v2): the Overview
+// Get started panel put away with {"snooze": "get_started"} reports when on
+// the next read (a second server over the same database sees it), never
+// joins the for-good dismissals, and an unknown key is refused.
+func TestGetStartedSnoozePersistsOnTheDaemon(t *testing.T) {
+	f := newFirstRunFixture(t, true)
+	if got := f.get(t).Snoozed; len(got) != 0 {
+		t.Fatalf("snoozed before any = %v", got)
+	}
+	if code := f.postSeen(t, `{"snooze":"get_started"}`); code != http.StatusOK {
+		t.Fatalf("snooze = %d", code)
+	}
+	if code := f.postSeen(t, `{"snooze":"tour"}`); code != http.StatusBadRequest {
+		t.Fatalf("unknown snooze key = %d, want 400", code)
+	}
+	again := newFirstRunFixtureOver(t, f).get(t)
+	at, ok := again.Snoozed["get_started"]
+	if !ok {
+		t.Fatalf("snooze lost after reload: %+v", again.Snoozed)
+	}
+	if _, err := time.Parse(time.RFC3339, at); err != nil {
+		t.Fatalf("snoozed at %q: %v", at, err)
+	}
+	if len(again.Dismissed) != 0 {
+		t.Fatalf("a snooze must not dismiss for good: %v", again.Dismissed)
+	}
+}

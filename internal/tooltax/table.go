@@ -369,6 +369,16 @@ var cursorRows = concat(
 	rows(toolCursor, SurfaceBuiltin, ActionSearchFiles, "glob", "findfiles"),
 	rows(toolCursor, SurfaceOrchestration, ActionSpawnSubagent, "subagent", "agent"),
 	rows(toolCursor, SurfaceMCP, ActionMCPCall, "call_mcp_tool", "mcp", "mcptool"),
+	// Cursor Cloud Agents run streams (lane CA-B2, live-verified 2026-11-01)
+	// name their tools in snake_case: read_file and edit_file resolve through
+	// the normalized pass above; these are the rest. communicate_update
+	// (a progress note) and send_message (a message to the user) address
+	// the user, not another agent, so they are harness calls, not codex's
+	// inter-agent send_message; create_agent starts a child cloud agent.
+	rows(toolCursor, SurfaceBuiltin, ActionRunCommand, "run_terminal_cmd"),
+	rows(toolCursor, SurfaceBuiltin, ActionSearchFiles, "file_search"),
+	rows(toolCursor, SurfaceOrchestration, ActionSpawnSubagent, "create_agent"),
+	rows(toolCursor, SurfaceMeta, ActionHarnessCall, "communicate_update", "send_message"),
 	// `await` is a control-flow primitive with no file/command target;
 	// the adapter keeps it deliberately unclassified rather than
 	// mis-categorising it (adapter.go:1009-1014). Preserved as an

@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
-import { SANDBOX_ISOLATION_PICKER } from "@/lib/components.gen";
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { SANDBOX_ISOLATION_PICKER, SANDBOX_SETUP_PANEL } from "@/lib/components.gen";
 import { Link } from "react-router-dom";
 import { EyeOff, Lock, PowerOff, type LucideIcon } from "lucide-react";
 import { ApiError, apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
@@ -22,7 +22,32 @@ import {
   defaultIsolationChoice,
   isolationOptions,
 } from "@/lib/sandboxIsolation";
-import { SHELL_TOOL, isolationPickerProps, sandboxLaunchFields, sandboxStartBlock, sshSystemDisabledReason } from "@/lib/newTerminalSandbox";
+import { setupCandidates } from "@/lib/sandboxSetup";
+import type { SandboxSetupPlan, SandboxSetupSummary, SandboxSetupSummaryResponse } from "@/lib/sandboxSetupTypes";
+import { LAUNCH_SWITCHES_OFF, launchSwitchesOff } from "@/lib/launchSwitches";
+import {
+  SHELL_TOOL,
+  chosenBackendRow,
+  hostedKeyBlock,
+  hostedHookLine,
+  hostedNetworkNotes,
+  hostedToolBlock,
+  hostedToolPlace,
+  hostedUploadNeedsRepo,
+  hostedWorkspaceBlock,
+  rowSourceOffered,
+  sandboxSourceNotes,
+  sandboxSourceOptions,
+  type HostedWorkspaceReply,
+  isolationPickerProps,
+  sandboxLaunchFields,
+  sandboxStartBlock,
+  sshSystemDisabledReason,
+} from "@/lib/newTerminalSandbox";
+import { placeLink } from "@/lib/settingsPlaces";
+import { cloneWhereLaunchValue, hostedConsentRefusalOf, isHostedConsentRefusal } from "@/lib/hostedClone";
+import { HostedCloneRemoteExtras } from "@/components/sandboxHosted/HostedCloneRemoteExtras";
+import { HostedUploadConsent } from "@/components/sandboxHosted/HostedUploadConsent";
 import { DashboardInstallRecord } from "@/components/DashboardInstallRecord";
 import type {
   GUILaunchable,
@@ -65,6 +90,7 @@ import {
 } from "@/lib/toolInstall";
 import { installPrereqRemedyFor } from "@/lib/installPrereq";
 import { RuntimeRemedy } from "@/components/RuntimeRemedy";
+import { HostedKeyLineControls } from "@/components/sandboxHosted/HostedKeyLineControls";
 import {
   guiLaunchDisabledReason,
   guiLaunchErrorMessage,
@@ -84,6 +110,8 @@ import {
   TERMINALS_REMOTE_SYSTEMS_HASH,
 } from "@/lib/nodePageTabs";
 import { pushToast } from "@/components/Toast";
+import { ApiErrorNotice, NeedsSettingNotice } from "@/components/NeedsSettingNotice";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
 import {
   AllowFolderStep,
   FreshLaunchStep,
@@ -94,6 +122,27 @@ import {
   type SignInConsent,
 } from "@/components/LaunchPolicyInline";
 import { folderNeedsAllow, isPermittedRoot, stepHoldsStart } from "@/lib/launchPolicyStep";
+import { isRemoteView } from "@/lib/remote";
+import {
+  consentChanges,
+  consentTriggers,
+  continueAction,
+  firstLaunchFolder,
+  homeShortPath,
+  isInstalledVerdict,
+  type ContinueMode,
+} from "@/lib/launchpad";
+import { FirstLaunchConsent, type FirstLaunchSaved } from "@/components/launchpad/FirstLaunchConsent";
+import {
+  taskLaunchRequest,
+  taskPasteText,
+  taskPickerItems,
+  type NewTerminalTask,
+  type TaskLaunchResponse,
+} from "@/lib/terminalTask";
+import { writeClipboard } from "@/lib/clipboard";
+import { TaskPromptBlock } from "@/components/TaskPromptBlock";
+import { HelpInd } from "@/components/HelpInd";
 import {
   Button,
   ComboChip,
@@ -120,18 +169,10 @@ const CUSTOM_ROOT = "\u0000custom";
 // can never be empty.
 const LOCAL_SYSTEM = "";
 
-// SANDBOX_SOURCE_LABELS maps the server's closed workspace-source vocabulary
-// (SandboxAvailability.sources[].id, mirrored 1:1 from internal/workspace's
-// Source constants) to the dialog's display labels — the ONE place that
-// vocabulary is spelled out for humans. Falls back to the raw id for any
-// future source the dialog hasn't been taught about yet, rather than hiding
-// it.
-const SANDBOX_SOURCE_LABELS: Record<string, string> = {
-  live: "Live project directory",
-  "clone-local": "Copy of the project (clone)",
-  "clone-remote": "Clone a remote URL",
-  worktree: "Worktree",
-};
+// The workspace-source labels live in lib/newTerminalSandbox
+// (SANDBOX_SOURCE_LABELS, read through sandboxSourceLabel), so a hosted row
+// relabels a source by how its box gets it (an uploaded copy, not the live
+// folder) and a test pins every label.
 
 // The sources whose launch takes a branch: a clone checks the name out as a
 // new branch, a worktree run names its own branch's last component with it
@@ -262,6 +303,14 @@ function shortenPath(p: string): string {
 // (Allow this folder, Turn on fresh-agent launch) has a change open.
 const POLICY_STEP_PENDING = "Save or cancel the config change above first";
 
+// FIRST_LAUNCH_PENDING is Start's tip while the launchpad's first-launch
+// consent (FirstLaunchConsent) is open: Allow or Cancel answers it.
+const FIRST_LAUNCH_PENDING = "Allow or cancel the step above first";
+
+// TASK_FOLDER_PENDING is Start's tip in task mode while the task's project
+// folder is not allow-listed yet (the inline step above allows it).
+const TASK_FOLDER_PENDING = "Allow the project folder above first";
+
 // NewTerminalDialog is the F1 "New terminal" affordance: start a FRESH agent
 // (no --continue-from) in the embedded web terminal. The tool picker is
 // populated from GET /api/terminal/sessions (launchable_tools — the capability
@@ -291,7 +340,27 @@ export type NewTerminalDraft = {
    * (isGUISelection); this field is not itself load-bearing for that.
    */
   kind?: "gui";
+  /**
+   * The sandbox backend whose setup panel was open (sandbox installation
+   * lifecycle plan section 3.7): a setup step's terminal resumes the dialog
+   * with the panel open on this row and a fresh plan. Absent: no panel.
+   */
+  setupBackend?: string;
 };
+
+/**
+ * withSetupBackend adds the open sandbox setup panel's row to a resume
+ * draft, so a setup step's terminal reopens the dialog with the panel on
+ * that row (and a closed panel leaves the draft as it was).
+ */
+export function withSetupBackend(draft: NewTerminalDraft, setupOpen: boolean, setupBackend: string | undefined): NewTerminalDraft {
+  if (!setupOpen || !setupBackend) {
+    const { setupBackend: _drop, ...rest } = draft;
+    void _drop;
+    return rest;
+  }
+  return { ...draft, setupBackend };
+}
 
 type Props = {
   onClose: () => void;
@@ -308,7 +377,41 @@ type Props = {
    * initialSandboxProbe).
    */
   initialWindowsPathsToWSL?: boolean;
+  /**
+   * initialSetupSummaries and initialSetupPlan seed the sandbox setup
+   * panel's row list and plan (component tests only, like
+   * initialSandboxProbe: no fetch answers under server rendering).
+   */
+  initialSetupSummaries?: SandboxSetupSummary[];
+  initialSetupPlan?: SandboxSetupPlan;
+  /**
+   * initialLaunchSwitches seeds fresh_enabled and shell_enabled from the
+   * sessions meta (component tests only, like initialSandboxProbe).
+   */
+  initialLaunchSwitches?: { fresh: boolean; shell: boolean };
   resumedAfterInstall?: boolean;
+  /**
+   * The launchpad (door A): this dialog reopened after a launchpad guided
+   * install, so it starts the agent by itself once the availability check
+   * says it is installed (lib/launchpad.ts continueAction, "after_install").
+   * It never installs again. Absent: the person presses Start as usual.
+   */
+  autoStart?: boolean;
+  /**
+   * Task mode (fix findings with an agent, lib/terminalTask.ts): the
+   * project folder is fixed to task.projectRoot, the picker lists terminal
+   * agents only (no IDE or desktop rows, no Shell, no SSH system) with each
+   * row's seed label, and Start posts to task.launchPath with the task's
+   * fields plus the agent choice. Absent: the dialog is unchanged.
+   */
+  task?: NewTerminalTask;
+  /**
+   * Task mode only: docks a started terminal WITHOUT closing the dialog,
+   * so an agent that was not started on the task can still have it copied
+   * from here. Absent: the dialog calls onLaunched and shows the task in a
+   * toast instead.
+   */
+  onTaskStarted?: (handle: string, tool: string, hasProjectRoot?: boolean) => void;
   /**
    * Called with the minted handle + tool once a fresh launch succeeds. The
    * third arg (review finding 8) reports whether the launch was given a project
@@ -336,7 +439,13 @@ export function NewTerminalDialog({
   initialDraft,
   initialSandboxProbe,
   initialWindowsPathsToWSL = false,
+  initialSetupSummaries,
+  initialSetupPlan,
+  initialLaunchSwitches,
   resumedAfterInstall = false,
+  autoStart = false,
+  task,
+  onTaskStarted,
 }: Props) {
   const [tools, setTools] = useState<string[]>([]);
   // Per-tool annotations from the SAME GET /api/terminal/sessions reply
@@ -375,6 +484,29 @@ export function NewTerminalDialog({
   // An inline launch-policy step that is confirming, reviewing or saving its
   // change holds Start until it ends (lib/launchPolicyStep.ts stepHoldsStart).
   const [policyStepBusy, setPolicyStepBusy] = useState(false);
+  // The launchpad's first-launch consent (door A, lib/launchpad.ts): the
+  // playground folder the route names (null until it answers; path "" when
+  // it cannot, e.g. a remote viewer), whether the person cancelled the
+  // consent for this tool, whether it is previewing or saving, and what the
+  // dialog does on its own next (after the consent saved, or after a
+  // launchpad install).
+  const [playground, setPlayground] = useState<{ path: string; exists: boolean } | null>(null);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [consentDismissed, setConsentDismissed] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
+  // The consent for this tool saved: it closes at once (no second preview
+  // while the policy is re-read).
+  const [consentDone, setConsentDone] = useState(false);
+  const [continueMode, setContinueMode] = useState<ContinueMode | null>(autoStart ? "after_install" : null);
+  // The first-launch folder is suggested once, and only when the person has
+  // not chosen one (a resumed draft that names a folder keeps it).
+  const folderDefaulted = useRef(!!(initialDraft?.rootSel || initialDraft?.customRoot));
+  // Task mode: whether the sessions meta (the allow-list) has answered, so
+  // the task folder's "Allow this folder" step does not flash before it;
+  // and the task text kept for copying after a launch that was not started
+  // on it.
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const [taskPaste, setTaskPaste] = useState<string | null>(null);
   // refreshAllowedRoots re-reads the canonical allow-list after the inline
   // "Allow this folder" step saved it (the server canonicalizes the path).
   function refreshAllowedRoots() {
@@ -382,10 +514,25 @@ export function NewTerminalDialog({
       setAllowedRoots(d.allowed_project_roots ?? []),
     );
   }
+  // refreshLaunchMeta re-reads every launch-policy fact the dialog shows after
+  // the first-launch consent saved (the tool's allowed flag, fresh launch,
+  // the folders), so Start reflects the new policy at once.
+  function refreshLaunchMeta() {
+    return fetchJSON<TerminalSessionsMeta>("/api/terminal/sessions").then((d) => {
+      setToolInfo(d.launchable_tool_info ?? []);
+      setAllowedRoots(d.allowed_project_roots ?? []);
+      setShellEnabled(d.shell_enabled ?? false);
+      setFreshEnabled(d.fresh_enabled);
+    });
+  }
   // shell_enabled from GET /api/terminal/sessions — the SEPARATE
   // [terminal.launch].allow_shell opt-in that gates the Shell option below,
   // independent of allow_fresh_agent / allowed_tools.
-  const [shellEnabled, setShellEnabled] = useState(false);
+  const [shellEnabled, setShellEnabled] = useState(initialLaunchSwitches?.shell ?? false);
+  // fresh_enabled from the same reply (D-12): with it and shell_enabled both
+  // off nothing can start here, and the dialog says so. Undefined (an older
+  // daemon, or the reply not in yet) is unknown, never off.
+  const [freshEnabled, setFreshEnabled] = useState<boolean | undefined>(initialLaunchSwitches?.fresh);
   // windows_paths_to_wsl from the same reply: the custom-root hint about
   // Windows paths shows only for a daemon inside WSL (B4).
   const [windowsPathsToWSL, setWindowsPathsToWSL] = useState(initialWindowsPathsToWSL);
@@ -417,7 +564,7 @@ export function NewTerminalDialog({
   const [rootSel, setRootSel] = useState(initialDraft?.rootSel ?? "");
   const [customRoot, setCustomRoot] = useState(initialDraft?.customRoot ?? "");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | string | null>(null);
   // Pre-launch binary-resolution verdict for the selected tool (tool-binary-
   // resolution arc). Null when unknown, the seam is disabled (501), or the fetch
   // failed — in every case the strip simply doesn't render (fail-silent), so an
@@ -453,6 +600,9 @@ export function NewTerminalDialog({
     if (previousTool.current === tool) return;
     previousTool.current = tool;
     setModelSel("");
+    // A new tool asks its own first-launch consent.
+    setConsentDismissed(false);
+    setConsentDone(false);
     // A failure belonging to the PREVIOUS tool must not be read as a verdict on
     // the new one (DI-17) — e.g. "codex is not installed" left hanging under a
     // freshly-selected claude-code.
@@ -479,6 +629,16 @@ export function NewTerminalDialog({
   // True when the probe route answered 404 component_not_installed: the
   // Sandboxes and VMs module is not installed, so no Isolation picker shows.
   const [sandboxModuleAbsent, setSandboxModuleAbsent] = useState(false);
+  // Bumped to re-probe the sandbox (and the setup rows) after a setup row
+  // became ready; readyChoice is the row the re-probe then selects.
+  const [probeNonce, setProbeNonce] = useState(0);
+  const readyChoice = useRef<string | null>(null);
+  // The sandbox setup panel (lane sbxinstall-ui): the offered rows on this
+  // host, whether the panel is open, and the row it is on. A resumed draft
+  // that names a row reopens the panel there.
+  const [setupSummaries, setSetupSummaries] = useState<SandboxSetupSummary[] | null>(initialSetupSummaries ?? null);
+  const [setupOpen, setSetupOpen] = useState(!!initialDraft?.setupBackend);
+  const [setupBackend, setSetupBackend] = useState<string | undefined>(initialDraft?.setupBackend);
   const [workspaceSource, setWorkspaceSource] = useState(
     initialDraft?.workspaceSource ?? "live",
   );
@@ -488,6 +648,13 @@ export function NewTerminalDialog({
   const [workspaceBranch, setWorkspaceBranch] = useState(
     initialDraft?.workspaceBranch ?? "",
   );
+  // A hosted row's clone of a remote URL (lane CLONE2, SBXD-5): where it is
+  // cloned when the launch chooses ("" takes the setting), and the inline
+  // consent a Start refused for its hosted consent waits on (a clone's, or
+  // an upload's whose scope changed: HostedUploadConsent).
+  const [cloneWherePick, setCloneWherePick] = useState("");
+  const [cloneConsentRefresh, setCloneConsentRefresh] = useState(0);
+  const [cloneConsentHeld, setCloneConsentHeld] = useState(false);
   // Remote-device launch gate: a paired device can only fresh-launch when the
   // owner has enabled [remote].allow_terminal. When it's off we say so up front
   // and disable Start, rather than letting the POST fail with a raw 403.
@@ -521,7 +688,9 @@ export function NewTerminalDialog({
         });
         setAllowedRoots(d.allowed_project_roots ?? []);
         setShellEnabled(d.shell_enabled ?? false);
+        setFreshEnabled(d.fresh_enabled);
         setWindowsPathsToWSL(d.windows_paths_to_wsl === true);
+        setMetaLoaded(true);
       })
       .catch((e) => {
         // DI-05: this route carries the whole picker. Swallowing its failure
@@ -542,6 +711,19 @@ export function NewTerminalDialog({
       })
       .catch(() => {
         /* no project index yet — leave the launcher-default selection */
+      })
+      .finally(() => {
+        if (!cancelled) setProjectsLoaded(true);
+      });
+    // The playground folder a first launch uses on a machine with no
+    // project history (owner-local route: a remote viewer gets 403 and the
+    // launchpad then suggests no new folder).
+    fetchJSON<{ playground_path?: string; playground_exists?: boolean }>("/api/terminal/first-launch")
+      .then((d) => {
+        if (!cancelled) setPlayground({ path: d.playground_path ?? "", exists: d.playground_exists === true });
+      })
+      .catch(() => {
+        if (!cancelled) setPlayground({ path: "", exists: false });
       });
     // SSH systems. The route is owner-LOCAL, so a paired remote device gets a
     // 403 here — which lands in .catch() and correctly leaves the selector
@@ -643,6 +825,16 @@ export function NewTerminalDialog({
       .then((d) => {
         if (!cancelled) {
           setSandboxProbe(d);
+          // A re-probe after a setup row became ready selects that row;
+          // only the first probe applies the defaults.
+          const ready = readyChoice.current;
+          if (ready) {
+            readyChoice.current = null;
+            setIsolationChoice(ready);
+            setSandboxOn(true);
+            return;
+          }
+          if (probeNonce > 0) return;
           if (!initialDraft) setSandboxOn(d.default_on ?? false);
           const first = defaultIsolationChoice(isolationOptions(d));
           if (first) setIsolationChoice(first);
@@ -658,20 +850,47 @@ export function NewTerminalDialog({
     return () => {
       cancelled = true;
     };
-  }, []);
+    // initialDraft is read once; probeNonce re-probes after a setup step.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeNonce]);
+
+  // The sandbox setup panel's row list (sandbox installation lifecycle plan
+  // section 3.7), fetched with the probe. Null (no setup line, no panel)
+  // when this build has no panel, the routes answer 404 or 501, or the fetch
+  // failed: the picker then reads exactly as it did before setup existed.
+  useEffect(() => {
+    if (!SANDBOX_SETUP_PANEL || initialSetupSummaries) return;
+    let cancelled = false;
+    fetchJSON<SandboxSetupSummaryResponse>("/api/terminal/sandbox/setup")
+      .then((d) => {
+        if (!cancelled) setSetupSummaries(d.backends ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setSetupSummaries(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // initialSetupSummaries is a test seed, read once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probeNonce]);
 
   // installTool spawns the tool's grounded install command in a fresh embedded
   // terminal (POST /api/terminal/install), the guided fix for a not_found /
   // foreign_only verdict. It is a Local + confirm-token-gated EXECUTE, so it
-  // reads the double-submit token from /api/remote/config exactly like the
-  // Remote page's privileged POSTs, then opens the returned handle in the dock
-  // like any launch (labelled "<tool> install"). The server owns the argv — the
-  // request carries only the tool name.
+  // takes the owner-local confirm token from localConfirmHeaders (the core
+  // command-job list mints it), then opens the returned handle in the dock
+  // like any launch (labelled "<tool> install"). It never reads the token
+  // from /api/remote/config: that route belongs to the Remote dashboard
+  // component, which is off by default in the developer edition, so an
+  // install was refused for an unrelated component (operator report
+  // 2026-11-18). The server owns the argv: the request carries only the tool
+  // name.
   // currentDraft is the exact launch draft the dock restores when a guided
   // install / uninstall terminal exits, so the dialog reopens where it was
   // with a fresh availability check.
   function currentDraft(): NewTerminalDraft {
-    return {
+    const draft: NewTerminalDraft = {
       tool,
       rootSel,
       customRoot,
@@ -682,25 +901,38 @@ export function NewTerminalDialog({
       workspaceBranch,
       ...(gui ? { kind: "gui" as const } : {}),
     };
+    return withSetupBackend(draft, setupOpen, setupBackend);
   }
+
+  // openSetup opens the sandbox setup panel, on a row when one is named
+  // (choosing a row in the picker that cannot run yet).
+  function openSetup(backend?: string) {
+    if (backend) setSetupBackend(backend);
+    setSetupOpen(true);
+  }
+
+  // A setup step settled while the dialog is open (or the dialog came back
+  // from a setup terminal): probe again so the Isolation text is fresh
+  // (D-R4-2). The choice is kept.
+  const onSetupSettled = useCallback(() => setProbeNonce((n) => n + 1), []);
+
+  // A setup row became ready: re-probe, then select it in the picker.
+  const onSetupReady = useCallback((backend: string) => {
+    readyChoice.current = backend;
+    setProbeNonce((n) => n + 1);
+  }, []);
 
   async function installTool() {
     if (!tool || installBusy) return;
     setInstallBusy(true);
     setErr(null);
     try {
-      const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-      const ctok = cfg.confirm_token ?? "";
-      if (!ctok) {
-        setErr("No confirm token - reload the page.");
-        return;
-      }
       const r = await fetchJSON<{ handle: string; tool: string; command: string }>(
         "/api/terminal/install",
         undefined,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Observer-Confirm": ctok },
+          headers: await localConfirmHeaders(),
           body: JSON.stringify({ tool }),
         },
       );
@@ -710,7 +942,7 @@ export function NewTerminalDialog({
       // route's statuses names one specific, fixable blocker — see
       // installErrorMessage's doc comment for why status dispatch is right here
       // and message dispatch is right on the launch path.
-      setErr(installErrorMessage(e));
+      setErr(errorNote(e, installErrorMessage));
     } finally {
       setInstallBusy(false);
     }
@@ -720,9 +952,11 @@ export function NewTerminalDialog({
   // Custom escape hatch is chosen, otherwise the selected project root ("" ==
   // let the launcher use the agent's own default cwd). Validation is unchanged
   // — the server still canonicalizes it against [terminal.launch].allowed_project_roots.
+  // Task mode fixes the folder to the task's project.
+  const taskRoot = task?.projectRoot;
   const effectiveRoot = useMemo(
-    () => (rootSel === CUSTOM_ROOT ? customRoot.trim() : rootSel.trim()),
-    [rootSel, customRoot],
+    () => (taskRoot != null ? taskRoot.trim() : rootSel === CUSTOM_ROOT ? customRoot.trim() : rootSel.trim()),
+    [taskRoot, rootSel, customRoot],
   );
 
   // Repository trust chip (security Phase B, component security.trust): the
@@ -861,19 +1095,22 @@ export function NewTerminalDialog({
   // vocabulary) and their ComboChip rendering. Each annotation is its own
   // field — name, kind badge, status badge, host list — instead of one long
   // native <option> string, so nothing can render wider than the dialog.
-  const pickerItems = useMemo(
-    () =>
-      buildToolPickerItems({
-        tools,
-        toolInfo,
-        gui: guiLaunchables,
-        shellEnabled,
-        shellTool: SHELL_TOOL,
-        labelFor: (id) => toolMeta(id).label,
-        unlaunchable,
-      }),
-    [tools, toolInfo, guiLaunchables, shellEnabled, unlaunchable],
-  );
+  // Task mode lists terminal agents only, each with its seed label (whether
+  // the task is typed in on start or has to be pasted).
+  const taskSeeds = task?.seeds;
+  const taskAllowedTools = task?.allowedTools;
+  const pickerItems = useMemo(() => {
+    const items = buildToolPickerItems({
+      tools,
+      toolInfo,
+      gui: guiLaunchables,
+      shellEnabled,
+      shellTool: SHELL_TOOL,
+      labelFor: (id) => toolMeta(id).label,
+      unlaunchable,
+    });
+    return taskSeeds ? taskPickerItems(items, taskSeeds, taskAllowedTools) : items;
+  }, [tools, toolInfo, guiLaunchables, shellEnabled, unlaunchable, taskSeeds, taskAllowedTools]);
   const pickerItemFor = useMemo(
     () => new Map(pickerItems.map((i) => [i.value, i])),
     [pickerItems],
@@ -937,6 +1174,9 @@ export function NewTerminalDialog({
   // A typed absolute folder the allow-list does not cover gets the inline
   // "Allow this folder" step (R4): the launch would be refused otherwise.
   const customFolderNeedsAllow = folderNeedsAllow(customRoot, allowedRoots, savedRoots);
+  // Task mode: the task's folder is not allow-listed yet (the server enforces
+  // allowed_project_roots), so the inline step offers to allow it.
+  const taskFolderNeedsAllow = task != null && metaLoaded && folderNeedsAllow(task.projectRoot, allowedRoots, savedRoots);
   // Honest reason placed on every disabled option so hovering explains the block.
   const blockedTitle = noAllowList
     ? "No project folders are allow-listed - add one in Terminals > Settings > Folder Selection"
@@ -956,10 +1196,10 @@ export function NewTerminalDialog({
     const opts: ComboOption[] = [
       {
         value: "",
-        label: "Agent's default directory (where SuperBased runs)",
+        label: "Agent's default directory (where superbased runs)",
         searchable: "agent's default directory where superbased runs",
         title:
-          "No project root: the fresh agent runs in the SuperBased daemon's own working directory (where observer start / observer dashboard was launched from).",
+          "No project root: the fresh agent runs in the superbased daemon's own working directory (where observer start / observer dashboard was launched from).",
       },
     ];
     for (const r of permittedRoots) {
@@ -999,24 +1239,103 @@ export function NewTerminalDialog({
     [tool, sandboxProbe, sandboxOn, isolationChoice],
   );
   const sandboxCheckboxDisabled = isolationPicker.disabled;
+  // Setup is offered when this build has the panel and the daemon answered
+  // the setup route; the one line counts setupCandidates' rows.
+  const setupOffered = !!SANDBOX_SETUP_PANEL && setupSummaries !== null;
+  const setupInfo = useMemo(() => setupCandidates(sandboxProbe, setupSummaries), [sandboxProbe, setupSummaries]);
   // A source the user has currently picked but that isn't actually available
   // (e.g. left on "clone-remote" after switching to a probe/tool where it's
   // gated off) blocks the client-side hint the same way an empty remote URL
   // does — the server re-validates regardless, this only prevents an
   // obviously-doomed submit.
   const selectedSourceAvail = sandboxProbe?.sources?.find((s) => s.id === workspaceSource);
+  // A hosted row whose model key cannot reach this tool's agent: said under
+  // the picker before Start, and Start is blocked with the same sentence
+  // (the daemon's own rule; docs/audits/hosted-sandbox-key-custody-2026-11-18.md).
+  // The row the picker resolves to: a hosted row takes only some workspace
+  // sources (the live tree uploaded, or its own deliveries).
+  const chosenRow = useMemo(
+    () => chosenBackendRow(sandboxProbe, sandboxOn, isolationPicker.value),
+    [sandboxProbe, sandboxOn, isolationPicker.value],
+  );
+  // Choosing a row that does not take the selected source moves the choice
+  // to the first source the row takes and this machine offers, so the
+  // dialog never sits on a source the launch would refuse.
+  useEffect(() => {
+    if (rowSourceOffered(chosenRow, workspaceSource)) return;
+    const next = chosenRow?.workspace_sources?.find((id) => sandboxProbe?.sources?.some((s) => s.id === id && s.available));
+    if (next) setWorkspaceSource(next);
+  }, [chosenRow, workspaceSource, sandboxProbe]);
+  // A held Start (its clone consent) is for one row, source and URL only.
+  const chosenRowID = chosenRow?.id;
+  useEffect(() => {
+    setCloneConsentHeld(false);
+  }, [chosenRowID, workspaceSource, workspaceRemote, effectiveRoot]);
+  const hostedKey = useMemo(
+    () => (sandboxCheckboxDisabled ? null : hostedKeyBlock(tool, sandboxProbe, sandboxOn, isolationPicker.value)),
+    [tool, sandboxProbe, sandboxOn, isolationPicker.value, sandboxCheckboxDisabled],
+  );
+  // A hosted row that cannot get this tool into its box (no template set,
+  // and no install way that can work there): the daemon's sentence before
+  // Start, and Start blocked (lane UX, item H4).
+  const hostedTool = useMemo(
+    () => (sandboxCheckboxDisabled ? null : hostedToolBlock(tool, sandboxProbe, sandboxOn, isolationPicker.value)),
+    [tool, sandboxProbe, sandboxOn, isolationPicker.value, sandboxCheckboxDisabled],
+  );
+  // The chosen hosted row's box network at the configured tier (lane UX,
+  // item H10): on the internet tier the provider's own network, with the
+  // cloud metadata address not known to be refused. Shown as served.
+  const networkNotes = useMemo(() => (sandboxCheckboxDisabled ? [] : hostedNetworkNotes(chosenRow)), [chosenRow, sandboxCheckboxDisabled]);
+  // Whether this machine's guard checks the agent's commands in the chosen
+  // hosted row's box for this tool, as served (lane HOOKS, SBXD-6).
+  const hookLine = useMemo(() => (sandboxCheckboxDisabled ? null : hostedHookLine(tool, chosenRow)), [tool, chosenRow, sandboxCheckboxDisabled]);
+  // A hosted row that uploads the chosen source takes only a git
+  // repository's own top folder: the daemon checks the chosen folder before
+  // Start with the launch's own rule (lane UX, item H8). Fail-silent like
+  // the trust chip: no route, a 404 or a failed read blocks nothing.
+  const uploadChecked = sandboxOn && !sandboxCheckboxDisabled && !trustRemote && !!effectiveRoot && hostedUploadNeedsRepo(chosenRow, workspaceSource);
+  const [workspaceReply, setWorkspaceReply] = useState<HostedWorkspaceReply | null>(null);
+  useEffect(() => {
+    if (!uploadChecked) {
+      setWorkspaceReply(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJSON<HostedWorkspaceReply>("/api/terminal/sandbox/hosted/workspace", { dir: effectiveRoot })
+      .then((d) => {
+        if (!cancelled) setWorkspaceReply(d);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceReply(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uploadChecked, effectiveRoot]);
+  const hostedWorkspace = useMemo(
+    () => (uploadChecked ? hostedWorkspaceBlock(chosenRow, workspaceSource, effectiveRoot, workspaceReply) : null),
+    [uploadChecked, chosenRow, workspaceSource, effectiveRoot, workspaceReply],
+  );
   const startBlock = sandboxStartBlock({
     sandboxOn,
     controlDisabled: sandboxCheckboxDisabled,
     source: workspaceSource,
     remote: workspaceRemote,
     sources: sandboxProbe?.sources,
+    hostedKey: hostedKey?.blocking ? hostedKey : null,
+    row: chosenRow,
+    hostedTool,
+    hostedWorkspace,
   });
   const sandboxRemoteURLMissing = startBlock.remoteURLMissing;
   const sandboxSourceUnavailable = startBlock.sourceUnavailable;
   const sandboxBranchProblem =
     sandboxOn && !sandboxCheckboxDisabled ? worktreeBranchProblem(workspaceSource, workspaceBranch) : null;
-  const sandboxBlocksStart = startBlock.blocks || sandboxBranchProblem !== null;
+  // A task whose route chooses the sandbox itself (a security assessment,
+  // lib/terminalTask.ts serverSandbox): the dialog's own sandbox controls are
+  // hidden and never block Start, and no sandbox fields are sent.
+  const sandboxManaged = !!task?.serverSandbox;
+  const sandboxBlocksStart = !sandboxManaged && (startBlock.blocks || sandboxBranchProblem !== null);
   const sandboxBranch = branchField(workspaceSource);
 
   // sshMode is the ONE predicate the rest of the dialog branches on. Everything
@@ -1029,14 +1348,15 @@ export function NewTerminalDialog({
   // visible by default, not hidden behind enabled/profile state. Whether the
   // picker itself is USABLE is a separate question, answered by
   // sshSystemDisabledReason below.
-  const showSystemPicker = sshProbed;
+  // Task mode runs on this machine only.
+  const showSystemPicker = sshProbed && !task;
   const sshSystemReason = sshSystemDisabledReason(sshEnabled, sshProfiles.length);
   const sshSystemDisabled = sshSystemReason !== null;
   const selectedSSH = sshProfiles.find((p) => p.name === sshProfile) ?? null;
   // Honest disabled copy, one string, reused by every control the remote path
   // switches off (CLAUDE.md honest-disabled-control convention).
   const SSH_NA_MSG =
-    "Not available for a remote system - the remote host's own SuperBased install owns project context, models, and sandboxing.";
+    "Not available for a remote system - the remote host's own superbased install owns project context, models, and sandboxing.";
 
   // A profile that vanishes from the server's list (config edited while the
   // dialog was open, or an installer-resumed draft naming a since-removed
@@ -1058,6 +1378,99 @@ export function NewTerminalDialog({
   useEffect(() => {
     if (sandboxOn && (sandboxCheckboxDisabled || isolationPicker.value === ISOLATION_NONE)) setSandboxOn(false);
   }, [sandboxCheckboxDisabled, sandboxOn, isolationPicker.value]);
+
+  // The launchpad's first-launch consent (door A, lib/launchpad.ts): an AI
+  // terminal tool that is not allowed yet, or fresh launch off, gets ONE
+  // previewed step here (allow the tool, fresh launches and the folder)
+  // instead of a trip to Terminals > Settings. GUI rows, Shell, SSH systems
+  // and task mode keep their own steps; a remote viewer cannot write the
+  // owner's launch policy, so it keeps the note.
+  const consentEligible =
+    !sshMode && !gui && !task && !!tool && tool !== SHELL_TOOL && metaLoaded && !isRemoteView();
+  const changes = useMemo(
+    () =>
+      consentChanges({
+        toolAllowed: selectedToolAllowed,
+        freshOn: freshEnabled === true,
+        folder: effectiveRoot,
+        folderPermitted: isPermittedRoot(effectiveRoot, allowedRoots) || savedRoots.includes(effectiveRoot),
+        folderMissing: !!playground?.path && effectiveRoot === playground.path && !playground.exists,
+      }),
+    [selectedToolAllowed, freshEnabled, effectiveRoot, allowedRoots, savedRoots, playground],
+  );
+  const consentShown = consentEligible && !consentDismissed && !consentDone && consentTriggers(changes);
+
+  // The first-launch folder (operator rule): the most recent project from
+  // history, else a new ~/observer-playground, created only on consent. Set
+  // once, when the consent first shows and the person has not chosen a
+  // folder; it stays editable like any other choice.
+  const suggestedFolder = useMemo(
+    () => firstLaunchFolder(projects, playground?.path ?? ""),
+    [projects, playground],
+  );
+  useEffect(() => {
+    if (folderDefaulted.current || !consentShown || !projectsLoaded || playground === null) return;
+    folderDefaulted.current = true;
+    if (rootSel !== "" || customRoot !== "") return;
+    const f = suggestedFolder.path;
+    if (!f) return;
+    if (permittedRoots.includes(f)) {
+      setRootSel(f);
+    } else {
+      setRootSel(CUSTOM_ROOT);
+      setCustomRoot(f);
+    }
+  }, [consentShown, projectsLoaded, playground, suggestedFolder, permittedRoots, rootSel, customRoot]);
+
+  // After the consent saved: remember the folder (the server may store
+  // another spelling), re-read the policy, then go on by itself.
+  async function afterConsent(saved: FirstLaunchSaved) {
+    setConsentDone(true);
+    const typed = effectiveRoot;
+    setSavedRoots((s) => Array.from(new Set([...s, ...(typed ? [typed] : []), ...(saved.folder ? [saved.folder] : [])])));
+    if (saved.folder_created) setPlayground((p) => (p ? { ...p, exists: true } : p));
+    await refreshLaunchMeta().catch(() => undefined);
+    setContinueMode("after_consent");
+  }
+
+  // Going on by itself (lib/launchpad.ts continueAction): a guided install
+  // when the tool is missing (only right after the consent), else the launch.
+  const installedNow =
+    preflightState === "ok" && preflight && preflight.tool === tool ? isInstalledVerdict(preflight.verdict) : null;
+  useEffect(() => {
+    // A request or step in flight is a wait, never a stop.
+    if (!continueMode || busy || installBusy || consentBusy || policyStepBusy) return;
+    const act = continueAction({
+      mode: continueMode,
+      allowed: selectedToolAllowed && freshEnabled !== false,
+      otherBlock: sshMode || gui || remoteBlocked || sandboxBlocksStart || preflightState === "error",
+      installed: installedNow,
+      verdictBlocks: launchBlockedByVerdict,
+      canInstall: !!preflight?.can_install,
+    });
+    if (act === "wait") return;
+    setContinueMode(null);
+    if (act === "install") void installTool();
+    else if (act === "launch") void submit();
+    // submit and installTool read this render's state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    continueMode,
+    busy,
+    installBusy,
+    selectedToolAllowed,
+    freshEnabled,
+    sshMode,
+    gui,
+    remoteBlocked,
+    sandboxBlocksStart,
+    policyStepBusy,
+    consentBusy,
+    preflightState,
+    installedNow,
+    launchBlockedByVerdict,
+    preflight,
+  ]);
 
   // A new tool, sandbox choice or row asks the sign-in question again.
   useEffect(() => {
@@ -1087,7 +1500,7 @@ export function NewTerminalDialog({
         // another machine, so the local Files/Git panels have nothing to browse.
         onLaunched(r.token, `ssh · ${r.label || r.profile || sshProfile}`, false);
       } catch (e) {
-        setErr(e instanceof Error ? e.message : String(e));
+        setErr(errorNote(e));
       } finally {
         setBusy(false);
       }
@@ -1122,13 +1535,13 @@ export function NewTerminalDialog({
           }),
         });
         // wrap_note is NOT shown: it is the launch planner's engineering
-        // explanation, not user copy. "routed through the SuperBased proxy"
+        // explanation, not user copy. "routed through the superbased proxy"
         // comes only from the launch's own structured verdict
         // (routing_reaches_app; wrap_applied on an older daemon).
         pushToast(guiLaunchedToast(r), "success");
         onClose();
       } catch (e) {
-        setErr(guiLaunchErrorMessage(e));
+        setErr(errorNote(e, guiLaunchErrorMessage));
       } finally {
         setBusy(false);
       }
@@ -1147,15 +1560,59 @@ export function NewTerminalDialog({
       // and fail-CLOSES; this is a UX hint, not authorization.
       // The row chosen in the Isolation picker (a beta row too) is sent as
       // `backend`; "Automatic" sends none (sandboxLaunchFields, B4).
-      const sandboxFields = sandboxLaunchFields({
-        sandboxOn,
-        isolationChoice,
-        workspaceSource,
-        workspaceRemote,
-        workspaceBranch,
-        branchApplies: sandboxBranch !== null,
-        signInSeed,
-      });
+      const sandboxFields = sandboxManaged
+        ? {}
+        : sandboxLaunchFields({
+            sandboxOn,
+            isolationChoice,
+            workspaceSource,
+            workspaceRemote,
+            workspaceBranch,
+            branchApplies: sandboxBranch !== null,
+            workspaceCloneWhere: workspaceSource === "clone-remote" ? cloneWhereLaunchValue(chosenRow?.clone_where, cloneWherePick) : undefined,
+            signInSeed,
+          });
+      // Task mode posts the task's fields plus the agent choice to the
+      // task's own route (lib/terminalTask.ts); the route derives the
+      // folder, so project_root is never sent.
+      if (task) {
+        const t = task;
+        const headers = t.confirmToken
+          ? { "Content-Type": "application/json", "X-Observer-Confirm": t.confirmToken }
+          : await localConfirmHeaders();
+        const req = taskLaunchRequest(t, { tool, model: modelSel || undefined, ...sandboxFields });
+        const out = await postLaunchAskingSignIn(() =>
+          fetchJSON<TaskLaunchResponse>(req.path, undefined, { method: "POST", headers, body: req.body }),
+        );
+        if ("consent" in out) {
+          setSignInConsent(out.consent);
+          setErr(null);
+          return;
+        }
+        const r = out.started;
+        t.onStarted?.(r);
+        const paste = taskPasteText(r);
+        if (paste !== null && onTaskStarted) {
+          // The terminal opens bare: dock it and keep the dialog on the
+          // task text so it can be copied into the terminal.
+          onTaskStarted(r.token, r.tool || tool, r.has_project_root);
+          setTaskPaste(paste);
+          return;
+        }
+        if (paste !== null) {
+          // No in-dialog step to keep: copy it now and say so.
+          void writeClipboard(paste).then((w) =>
+            pushToast(
+              w === "failed"
+                ? "The agent opened without the task and it could not be copied. Open the task again to copy it."
+                : "The agent opened without the task. It is on the clipboard: paste it into the terminal.",
+              w === "failed" ? "warn" : "info",
+            ),
+          );
+        }
+        onLaunched(r.token, r.tool || tool, r.has_project_root);
+        return;
+      }
       // A launch that can copy the tool's sign-in answers with the question
       // instead (lane BOXSIGNIN): the inline step asks, its answer submits
       // again.
@@ -1184,22 +1641,74 @@ export function NewTerminalDialog({
         setErr(null);
         return;
       }
+      // A hosted launch refused for its consent (lane CLONE2, and an upload
+      // whose scope changed since the agreement): the consent screen is shown
+      // inline (under the URL for a clone, under the workspace source for an
+      // upload) with what it sends now, and agreeing there starts the launch
+      // again (no trip to Settings). Read by the 409's code; the sentence
+      // match stays for a daemon that predates it.
+      if (
+        !sandboxManaged &&
+        chosenRow?.location === "remote" &&
+        (hostedConsentRefusalOf(e) !== null ||
+          isHostedConsentRefusal(e instanceof Error ? e.message : String(e)))
+      ) {
+        setCloneConsentHeld(true);
+        setCloneConsentRefresh((n) => n + 1);
+        setErr(null);
+        return;
+      }
+      // A task may have its own words for a refusal of its route.
+      const own = task?.refusalText?.(e) ?? null;
+      if (own) {
+        setErr(own);
+        return;
+      }
       // Swap the raw server body for actionable guidance on the two known
       // policy gates — the remote allow_terminal 403 and the allowed_project_roots
       // 400 — and keep the verbatim message for every other failure so it stays
-      // diagnosable.
+      // diagnosable. A refusal whose fix is a setting (the terminal stack off,
+      // a component off) keeps the server's sentence and its deep link.
       setErr(
-        isTerminalCapabilityError(e)
-          ? REMOTE_TERMINAL_OFF_MSG
-          : isProjectRootDeniedError(e)
-            ? PROJECT_ROOT_DENIED_MSG
-            : e instanceof Error
-              ? e.message
-              : String(e),
+        errorNote(e, (x) =>
+          isTerminalCapabilityError(x)
+            ? REMOTE_TERMINAL_OFF_MSG
+            : isProjectRootDeniedError(x)
+              ? PROJECT_ROOT_DENIED_MSG
+              : null,
+        ),
       );
     } finally {
       setBusy(false);
     }
+  }
+
+  // Task mode, after a launch whose agent was not started on the task: the
+  // terminal is open in the dock, and this step keeps the task for copying.
+  if (task && taskPaste !== null) {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title="Paste the task"
+        width={520}
+        zIndex={85}
+        bodyClassName="p-4"
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        }
+      >
+        <div className="space-y-2 text-[12px]" data-testid="new-terminal-task-paste">
+          <p className="m-0 text-fg-2">
+            The terminal is open, but this agent cannot take a first prompt on start. Copy the task and paste it into the
+            terminal.
+          </p>
+          <TaskPromptBlock text={taskPaste} />
+        </div>
+      </Modal>
+    );
   }
 
   return (
@@ -1230,6 +1739,10 @@ export function NewTerminalDialog({
               ? null
               : policyStepBusy
               ? POLICY_STEP_PENDING
+              : consentShown || consentBusy
+              ? FIRST_LAUNCH_PENDING
+              : taskFolderNeedsAllow
+              ? TASK_FOLDER_PENDING
               : remoteBlocked
               ? REMOTE_TERMINAL_OFF_MSG
               : launchBlockedByVerdict
@@ -1244,6 +1757,8 @@ export function NewTerminalDialog({
                 : sandboxBlocksStart
                   ? sandboxRemoteURLMissing
                     ? "Enter a remote URL to clone into the sandbox, or choose a different workspace"
+                    : startBlock.remoteURLProblem
+                      ? startBlock.remoteURLProblem
                     : startBlock.blocks
                       ? "The selected workspace source isn't available - choose a different one"
                       : sandboxBranchProblem
@@ -1262,7 +1777,14 @@ export function NewTerminalDialog({
                       // [remote].allow_terminal INBOUND tier - an orthogonal
                       // feature (the route is owner-local anyway).
                       !sshProfile
-                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart || policyStepBusy)
+                    : !tool ||
+                      remoteBlocked ||
+                      launchBlockedByVerdict ||
+                      sandboxBlocksStart ||
+                      policyStepBusy ||
+                      consentShown ||
+                      consentBusy ||
+                      taskFolderNeedsAllow)
                 }
                 onClick={() => void submit()}
               >
@@ -1298,9 +1820,44 @@ export function NewTerminalDialog({
         ; a launch outside them is refused. Changes apply to the next launch.
       </p>
 
+      {task && (
+        <div
+          data-testid="new-terminal-task"
+          className="mb-3 rounded-2 border border-accent/40 bg-accent/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg-2"
+        >
+          <div className="font-medium text-fg-1">{task.title}</div>
+          <div>{task.summary}</div>
+          {task.serverSandbox && (
+            <div className="mt-1 text-fg-2" data-testid="new-terminal-task-sandbox">
+              {task.serverSandbox}
+            </div>
+          )}
+          <div className="mt-1 flex items-center text-fg-3">
+            Each agent below says whether it starts on the task or the task has to be pasted.
+            <HelpInd id="glossary.task_seed" />
+          </div>
+        </div>
+      )}
+
       {remoteBlocked && (
         <div className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn">
           {REMOTE_TERMINAL_OFF_MSG}
+        </div>
+      )}
+
+      {launchSwitchesOff(freshEnabled, shellEnabled) && !consentShown && (
+        <div
+          data-testid="launch-switches-off"
+          className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn"
+        >
+          {LAUNCH_SWITCHES_OFF}{" "}
+          <Link
+            to={TERMINALS_LAUNCH_POLICY_HASH_PATH}
+            onClick={onClose}
+            className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
+          >
+            Open the launch policy
+          </Link>
         </div>
       )}
 
@@ -1315,7 +1872,7 @@ export function NewTerminalDialog({
           There is no PTY behind a GUI run — nothing here is resumable or
           attachable, it's purely "what's already running" context so a
           second launch of the same app isn't a surprise. */}
-      {guiRuns.length > 0 && (
+      {guiRuns.length > 0 && !task && (
         <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[10.5px] leading-relaxed text-fg-3">
           <div className="mb-1 font-medium text-fg-2">GUI apps launched this session</div>
           <ul className="space-y-0.5">
@@ -1350,7 +1907,7 @@ export function NewTerminalDialog({
             onChange={(e) => setSshProfile(e.target.value)}
             className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
           >
-            <option value={LOCAL_SYSTEM} title="Run on the machine SuperBased is running on">
+            <option value={LOCAL_SYSTEM} title="Run on the machine superbased is running on">
               This machine (local)
             </option>
             {/* Systems come from [[terminal.ssh.profiles]] in the operator's
@@ -1393,10 +1950,10 @@ export function NewTerminalDialog({
               {" "}using key <code className="font-mono">{selectedSSH.key_hint}</code>
             </>
           ) : null}
-          . If the host key is unknown, or a passphrase is needed, SuperBased
+          . If the host key is unknown, or a passphrase is needed, superbased
           does not answer for you - <strong>ssh asks in the terminal</strong> and
           you answer there. Sessions on this system are not captured here; the
-          remote host's own SuperBased install owns that.
+          remote host's own superbased install owns that.
         </div>
       )}
 
@@ -1480,7 +2037,20 @@ export function NewTerminalDialog({
           its Install button below stay fully live — installing is not
           launching (DI-21). One block for AI tools AND GUI rows: both read
           the same [terminal.launch].allowed_tools list (selectedToolAllowed). */}
-      {!sshMode && tool && tool !== SHELL_TOOL && !selectedToolAllowed && (
+      {consentShown && (
+        <FirstLaunchConsent
+          tool={tool}
+          toolLabel={pickerItemFor.get(tool)?.name ?? toolMeta(tool).label}
+          folder={effectiveRoot}
+          displayFolder={homeShortPath(effectiveRoot, playground?.path ?? "")}
+          changes={changes}
+          onBusy={setConsentBusy}
+          onAllowed={(saved) => void afterConsent(saved)}
+          onCancel={() => setConsentDismissed(true)}
+        />
+      )}
+
+      {!consentShown && !sshMode && tool && tool !== SHELL_TOOL && !selectedToolAllowed && (
         <div
           role="note"
           className="-mt-1 mb-3 flex gap-2 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-2 text-[11px] leading-relaxed text-fg-2"
@@ -1609,14 +2179,14 @@ export function NewTerminalDialog({
                 emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
                 buttonValueRender={(sel) => (
                   <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-                    {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+                    {sel?.label ?? "Agent's default directory (where superbased runs)"}
                   </span>
                 )}
               />
               {noAllowList && projects.length > 0 && (
                 <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
                   No project roots are allow-listed, so only the agent's
-                  default directory can launch - that's the SuperBased
+                  default directory can launch - that's the superbased
                   daemon's own working directory (where{" "}
                   <code className="font-mono">observer start</code> ran).{" "}
                   <Link
@@ -1675,6 +2245,28 @@ export function NewTerminalDialog({
         </>
       ) : (
       <>
+      {task ? (
+        <>
+          <label className="mb-1 block text-[11px] font-medium text-fg-2">Project folder</label>
+          <div data-testid="new-terminal-task-folder" className="break-all rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 font-mono text-[11px] text-fg-1">
+            {task.projectRoot}
+          </div>
+          <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">Fixed by the task: the agent runs in this project.</p>
+          {taskFolderNeedsAllow && (
+            <AllowFolderStep
+              path={task.projectRoot}
+              onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+              onConfirm={async (review) => {
+                const root = task.projectRoot;
+                await applyLaunchPolicyChange({ addRoot: root }, "Allow this folder for agent launches", review);
+                setSavedRoots((s) => (s.includes(root) ? s : [...s, root]));
+                await refreshAllowedRoots().catch(() => undefined);
+              }}
+            />
+          )}
+        </>
+      ) : (
+      <>
       <label className="mb-1 block text-[11px] font-medium text-fg-2">
         Project root <span className="text-fg-3">(optional)</span>
       </label>
@@ -1689,14 +2281,14 @@ export function NewTerminalDialog({
         emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
         buttonValueRender={(sel) => (
           <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-            {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+            {sel?.label ?? "Agent's default directory (where superbased runs)"}
           </span>
         )}
       />
       {noAllowList && projects.length > 0 && (
         <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
           No project roots are allow-listed, so only the agent's default
-          directory can launch - that's the SuperBased daemon's own working
+          directory can launch - that's the superbased daemon's own working
           directory (where <code className="font-mono">observer start</code> ran).{" "}
           <Link
             to={TERMINALS_FOLDERS_HASH_PATH}
@@ -1724,7 +2316,7 @@ export function NewTerminalDialog({
           </div>
         </Tooltip>
       ) : null}
-      {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && (
+      {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && !consentShown && (
         <AllowFolderStep
           path={customRoot.trim()}
           onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
@@ -1744,6 +2336,8 @@ export function NewTerminalDialog({
           <code className="font-mono">/mnt/c/…</code> form.
         </p>
       )}
+      </>
+      )}
       <div className="mb-3" />
 
       {/* Isolation picker (sandbox plan v2 section 9), a compgen feature
@@ -1751,7 +2345,7 @@ export function NewTerminalDialog({
           hidden while the module is not installed, so the dialog looks as it
           does without the module. Choosing a backend is today's sandboxed
           launch. */}
-      {!sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER && (
+      {!sandboxManaged && !sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER && (
         <Suspense fallback={null}>
           <SANDBOX_ISOLATION_PICKER
             options={isolationPicker.options}
@@ -1759,15 +2353,105 @@ export function NewTerminalDialog({
             disabled={isolationPicker.disabled}
             reason={isolationPicker.reason}
             chip={isolationPicker.chip}
+            notes={isolationPicker.notes}
+            unavailable={isolationPicker.unavailable}
+            onNavigate={onClose}
             onChange={(v) => {
               if (v !== ISOLATION_NONE) setIsolationChoice(v);
               setSandboxOn(v !== ISOLATION_NONE);
             }}
+            onSetup={setupOffered ? openSetup : undefined}
+            setupBackends={setupInfo.rows.map((r) => r.backend)}
+            setupBeta={setupInfo.rows.filter((r) => r.beta).map((r) => r.label)}
           />
         </Suspense>
       )}
 
-      {sandboxOn && !sandboxCheckboxDisabled && (
+      {/* The chosen hosted row cannot give this tool its model key: what is
+          missing and where to choose, before Start. */}
+      {!sandboxManaged && hostedKey && (
+        <div data-testid="new-terminal-hosted-key">
+          <NeedsSettingNotice
+            text={hostedKey.message}
+            technical={hostedKey.technical}
+            link={placeLink("terminal_sandbox")}
+            onNavigate={onClose}
+            className="mb-3"
+          />
+          <HostedKeyLineControls block={hostedKey} tool={tool} toolName={pickerItemFor.get(tool)?.name ?? toolMeta(tool).label} onChanged={() => setProbeNonce((n) => n + 1)} />
+        </div>
+      )}
+
+      {/* The chosen hosted row cannot get this tool into its box: what is
+          missing and what to do, before Start (no box is made). */}
+      {!sandboxManaged && hostedTool && (
+        <div data-testid="new-terminal-hosted-tool">
+          <NeedsSettingNotice
+            text={hostedTool.message}
+            technical={hostedTool.technical}
+            link={placeLink(hostedToolPlace(hostedTool))}
+            onNavigate={onClose}
+            className="mb-3"
+          />
+        </div>
+      )}
+
+      {/* The chosen folder cannot be uploaded to the hosted row (a refusal),
+          or it is not a git repository and is uploaded through Observer's
+          own listing (a note that blocks nothing, decision SBXD-8). */}
+      {!sandboxManaged && hostedWorkspace && (
+        <div data-testid="new-terminal-hosted-workspace" data-blocking={hostedWorkspace.blocking ? "true" : "false"}>
+          <NeedsSettingNotice
+            text={hostedWorkspace.message}
+            technical={hostedWorkspace.technical}
+            tone={hostedWorkspace.blocking ? "warn" : "info"}
+            className="mb-3"
+          />
+        </div>
+      )}
+
+      {/* Guard in the hosted box for this tool, as served (lane HOOKS). */}
+      {!sandboxManaged && sandboxOn && hookLine && (
+        <div data-testid="new-terminal-hosted-hooks">
+          <NeedsSettingNotice text={hookLine.message} technical={hookLine.technical} tone={hookLine.gated ? "info" : "warn"} className="mb-3" />
+        </div>
+      )}
+
+      {/* The hosted box's own network at the configured tier, as served. */}
+      {!sandboxManaged && sandboxOn && networkNotes.length > 0 && (
+        <div data-testid="new-terminal-hosted-network" className="mb-3 rounded-2 border border-line-2 bg-bg-2 p-2">
+          <p className="mb-1 text-[11px] font-medium text-fg-2">The box&apos;s network</p>
+          <ul className="list-disc pl-4 text-[10.5px] leading-relaxed text-fg-2">
+            {networkNotes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* The sandbox setup panel (sandbox installation lifecycle plan
+          section 3.7), a compgen row of the same module, inline under the
+          picker once the person asks. A setup step's terminal opens in the
+          dock with this dialog's draft, so the dialog reopens on the same
+          row with a fresh plan when it exits. */}
+      {!sandboxModuleAbsent && setupOffered && setupOpen && SANDBOX_SETUP_PANEL && (
+        <Suspense fallback={null}>
+          <SANDBOX_SETUP_PANEL
+            compact
+            backend={setupBackend}
+            initialSummaries={initialSetupSummaries}
+            initialPlan={initialSetupPlan}
+            onBackendChange={setSetupBackend}
+            onTerminal={(handle, label) => onLaunched(handle, label, false, currentDraft())}
+            onReady={onSetupReady}
+            onSettled={onSetupSettled}
+            resumed={resumedAfterInstall}
+            onNavigate={onClose}
+          />
+        </Suspense>
+      )}
+
+      {!sandboxManaged && sandboxOn && !sandboxCheckboxDisabled && (
         <div className="mb-3 mt-2 rounded-2 border border-line-2 bg-bg-2 p-2">
           <label
             htmlFor="new-terminal-sandbox-source"
@@ -1781,29 +2465,44 @@ export function NewTerminalDialog({
             onChange={(e) => setWorkspaceSource(e.target.value)}
             className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
           >
-            {(sandboxProbe?.sources ?? []).map((s) => (
-              // Native <option> - title= stays (React tooltip can't render
-              // inside the browser-owned select popup), same convention as
-              // the project-root optgroups above.
-              <option
-                key={s.id}
-                value={s.id}
-                disabled={!s.available}
-                title={
-                  s.available
-                    ? SANDBOX_SOURCE_LABELS[s.id] ?? s.id
-                    : s.reason || "not available"
-                }
-              >
-                {SANDBOX_SOURCE_LABELS[s.id] ?? s.id}
-                {s.available ? "" : " (unavailable)"}
+            {/* A source the chosen row does not take now reads with the
+                row's own reason (sandboxSourceOptions); one it never takes
+                reads as not offered there. Native <option> - title= stays
+                (React tooltip can't render inside the browser-owned select
+                popup), same convention as the project-root optgroups above. */}
+            {sandboxSourceOptions(chosenRow, sandboxProbe?.sources).map((o) => (
+              <option key={o.id} value={o.id} disabled={o.disabled} title={o.title}>
+                {o.label}
               </option>
             ))}
           </select>
+          {sandboxSourceNotes(chosenRow, sandboxProbe?.sources).map((line) => (
+            <p key={line} className="mt-1 text-[10.5px] leading-relaxed text-fg-3" data-testid="new-terminal-sandbox-source-note">
+              {line}
+            </p>
+          ))}
           {sandboxSourceUnavailable && (
             <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-              {selectedSourceAvail?.reason || "This workspace source isn't available."}
+              {rowSourceOffered(chosenRow, workspaceSource)
+                ? selectedSourceAvail?.reason || "This workspace source isn't available."
+                : startBlock.message}
             </p>
+          )}
+          {cloneConsentHeld && workspaceSource !== "clone-remote" && chosenRow?.location === "remote" && (
+            <>
+              <HostedUploadConsent
+                row={chosenRow}
+                folder={effectiveRoot}
+                refreshKey={cloneConsentRefresh}
+                onAgreed={() => {
+                  setCloneConsentHeld(false);
+                  void submit();
+                }}
+              />
+              <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="hosted-upload-consent-held">
+                Start is waiting for your agreement above; agreeing starts the terminal.
+              </p>
+            </>
           )}
           {workspaceSource === "clone-remote" && (
             <>
@@ -1823,8 +2522,35 @@ export function NewTerminalDialog({
               />
               {sandboxRemoteURLMissing && (
                 <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-                  Enter a remote URL - the daemon will run `git clone` with your
-                  ambient auth into a managed workspace.
+                  {chosenRow?.location === "remote"
+                    ? "Enter the address of the repository to clone."
+                    : "Enter a remote URL - the daemon will run `git clone` with your ambient auth into a managed workspace."}
+                </p>
+              )}
+              {startBlock.remoteURLProblem && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="new-terminal-sandbox-remote-invalid">
+                  {startBlock.remoteURLProblem}
+                </p>
+              )}
+              {chosenRow?.location === "remote" && (
+                <HostedCloneRemoteExtras
+                  row={chosenRow}
+                  url={workspaceRemote}
+                  folder={effectiveRoot}
+                  picked={cloneWherePick}
+                  onPick={setCloneWherePick}
+                  urlProblem={startBlock.remoteURLProblem}
+                  refreshKey={cloneConsentRefresh}
+                  onAgreed={() => {
+                    if (!cloneConsentHeld) return;
+                    setCloneConsentHeld(false);
+                    void submit();
+                  }}
+                />
+              )}
+              {cloneConsentHeld && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="hosted-clone-consent-held">
+                  Start is waiting for your agreement above; agreeing starts the terminal.
                 </p>
               )}
             </>
@@ -2116,11 +2842,15 @@ export function NewTerminalDialog({
           />
         </div>
       )}
-      {err && (
-        <div className="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
-          {err}
-        </div>
-      )}
+      {/* One renderer for every refusal (components/NeedsSettingNotice):
+          a "turn this on" refusal shows its sentence and a button to the
+          setting; the dialog closes as the dashboard navigates there. */}
+      <ApiErrorNotice
+        note={err}
+        onNavigate={onClose}
+        className="mb-3"
+        plainClassName="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger"
+      />
 
     </Modal>
   );

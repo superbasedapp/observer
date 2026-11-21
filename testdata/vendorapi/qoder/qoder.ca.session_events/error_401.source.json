@@ -1,0 +1,24 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-01",
+  "field_ledger": {
+    "error": "VerifiedSDK",
+    "error.code": "VerifiedSDK",
+    "error.message": "VerifiedSDK",
+    "error.type": "VerifiedSDK"
+  },
+  "fixture_sha256": "7542b6a86339bf6ef718fd28b0ee86c1d2d1945aaa88983894f97e9c87a96172",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/cloud/sessions/{session_id}/events",
+    "status": 401
+  },
+  "notes": "The SDK's error envelope {error: {type, code, message}} (qca/common/_exceptions.py reads error.code and error.type; tests/test_forward_realtime.py shows code TOKEN_INVALID on a 401); the type value and the message are synthesized.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "github.com/QoderAI/qoder-cloud-agents-sdk-python at commit 54e7a3140c51d76fd3143e993c5dfbf550bac082 (2026-10-29, qca-sdk; README: aligned with the official API documentation retrieved on 2026-10-27)",
+  "source_kind": "sdk_type",
+  "source_sha256": "3406f148315fa108ad0171eff98f2db04178a42531b920810202b9883f7a0ea2",
+  "source_url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python/blob/54e7a3140c51d76fd3143e993c5dfbf550bac082/src/qca/common/_exceptions.py",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "qoder.ca.session_events"
+}

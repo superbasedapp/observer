@@ -290,11 +290,14 @@ type purgeSessionDecision struct {
 
 // purgeSessionDecisions is THE reviewed per-column decision table of the
 // adapter purge (ledger MODPKG-10, T-678). Every column of the node schema
-// whose name contains session_id or thread_id has exactly one row here:
-// TestPurgeSessionDecisionsCoverTheSchema fails on a new one, so a new
-// session-keyed table cannot ship without a recorded purge decision. A JSON
-// list of session ids under another name (remove_from_list) is listed too,
-// and that test pins each such column by name. The order is the statement
+// whose name contains "session" or "thread" has either exactly one row here
+// or a reviewed "not a session id" entry in the test's exemption list, and
+// a session-keyed column whose name says neither (cloud_sync_checkpoints.
+// scope) is pinned by name: TestPurgeSessionDecisionsCoverTheSchema fails
+// on a new one, so a new session-keyed table cannot ship without a recorded
+// purge decision. A JSON list of session ids under another name
+// (remove_from_list) is listed too, and that test pins each such column by
+// name. The order is the statement
 // order inside a session's savepoint.
 var purgeSessionDecisions = []purgeSessionDecision{
 	// Capture rows: this adapter's are deleted by the tool selector before
@@ -304,6 +307,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "compaction_events", column: "session_id", kind: purgeKeepSession, otherSource: "tool <> ?", reason: "this adapter's compaction events are candidates; another tool's keep the session"},
 	{table: "failure_context", column: "session_id", kind: purgeKeepSession, otherSource: "action_id IN (SELECT id FROM actions WHERE tool <> ?)", reason: "deleted with its action (dependency protocol); one on another tool's action keeps the session"},
 	{table: "api_turns", column: "session_id", kind: purgeKeepSession, reason: "proxy capture is another source: the session it points at is kept"},
+	{table: "api_turns_planea_legacy", column: "session_id", kind: purgeKeepSession, reason: "AI Apps rows agent migration 256 moved out of api_turns: another source, so the session it points at is kept"},
 	{table: "otel_content", column: "session_id", kind: purgeKeepSession, reason: "OTel content capture is another source: the session it points at is kept"},
 	// Derived from the session's capture: they go with the session.
 	{table: "task_transitions", column: "session_id", kind: purgeDeleteWithSession, reason: "derived from the session's todo snapshots"},
@@ -318,6 +322,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "tool_account_observations", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "account identity observed in this adapter's capture"},
 	{table: "session_skill_snapshots", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "skills observed in this adapter's capture"},
 	{table: "claudecode_effort", column: "session_id", kind: purgeDeleteWithSession, reason: "effort level captured for the session's tool calls"},
+	{table: "process_capture_stats", column: "session_id", kind: purgeDeleteWithSession, reason: "the session's process capture counters only mean something with the session"},
 	{table: "hook_activity", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "hook liveness counts of this adapter's hooks for the session; the unattributed bucket has no session and is never purged with one"},
 	{table: "cache_events", column: "session_id", kind: purgeDeleteWithSession, reason: "cache observations derived from the session's turns"},
 	{table: "cache_segments", column: "session_id", kind: purgeDeleteWithSession, reason: "cache segments derived from the session's turns"},
@@ -327,11 +332,15 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "handoffs", column: "source_session_id", kind: purgeDeleteWithSession, reason: "a handoff is derived from its source session"},
 	{table: "session_annotations", column: "session_id", kind: purgeDeleteWithSession, reason: "the operator's note, rating and title of a session that no longer exists"},
 	{table: "session_tags", column: "session_id", kind: purgeDeleteWithSession, reason: "tags of a session that no longer exists"},
+	{table: "local_session_holds", column: "session_id", kind: purgeDeleteWithSession, reason: "a node-local retention hold (agent migration 251) protects the session from retention pruning, not from the user's explicit adapter purge; with the session gone the hold means nothing"},
 	{table: "session_pid_bridge", column: "session_id", kind: purgeDeleteWithSession, reason: "transient process to session map"},
 	{table: "terminal_run_session", column: "session_id", kind: purgeDeleteWithSession, reason: "launch to session correlation; the launch record itself stays"},
 	{table: "guard_prompt_presend", column: "session_id", kind: purgeDeleteWithSession, reason: "transient prompt dedup state"},
 	{table: "guard_prompt_reconsider", column: "session_id", kind: purgeDeleteWithSession, reason: "transient prompt warning state"},
 	{table: "cloud_enrich_skips", column: "session_id", kind: purgeDeleteWithSession, reason: "local enrichment retry state"},
+	{table: "cloud_session_links", column: "session_id", kind: purgeDeleteWithSession, reason: "the PRs and branches a cloud-agent vendor reported for the session (delivery credit, agent migration 246); they mean nothing without it"},
+	{table: "cloud_usage_ledger", column: "scope_session", kind: purgeDeleteWithSession, reason: "a cloud-agent vendor's usage figures scoped to the session (native units, agent migration 241); an adapter purge removes them with the session. Unlinking the ACCOUNT is different and keeps ledger history: Disconnect deletes only the account row and its checkpoints"},
+	{table: "cloud_sync_checkpoints", column: "scope", kind: purgeDeleteWithSession, reason: "a session_history checkpoint's scope is the session id: collection state that would otherwise keep the purged session owed a re-read. Account-wide streams use '' or a non-session token as scope and never equal a session id"},
 	{table: "cloud_outbox", column: "session_id", kind: purgeDeleteWithSession, reason: "a queued upload of a purged session must never send"},
 	{table: "cloud_results", column: "session_id", kind: purgeDeleteWithSession, reason: "enrichment results carry content derived from the session"},
 	{table: "org_intel_outbox", column: "session_id", kind: purgeDeleteWithSession, reason: "a queued org intelligence upload of a purged session must never send"},
@@ -339,6 +348,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	// Their own record: kept, unlinked.
 	{table: "process_runs", column: "session_id", kind: purgeNullLink, reason: "process observability is its own capture"},
 	{table: "process_events", column: "session_id", kind: purgeNullLink, reason: "process observability is its own capture"},
+	{table: "process_rollups", column: "session_id", kind: purgeNullLink, reason: "counted process runs, kept like process_runs; a NULL session is the machine rollup"},
 	{table: "summary_calls", column: "session_id", kind: purgeNullLink, reason: "Observer's own LLM spend stays counted"},
 	{table: "limit_snapshots", column: "session_id", kind: purgeNullLink, reason: "account-level provider rate-limit state"},
 	{table: "sec_findings", column: "session_id", kind: purgeNullLink, reason: "a security finding is a fact about the project's code, not capture; the purged session's lineage link is dropped"},
@@ -354,6 +364,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "mcp_relay_record", column: "coding_session_id", kind: purgeKeepDangling, reason: "hash-chained Agent Access relay record"},
 	{table: "remote_audit", column: "session_id", kind: purgeKeepDangling, reason: "remote access audit record; its session_id is a remote device session, not a coding session"},
 	{table: "terminal_run", column: "source_session_id", kind: purgeKeepDangling, reason: "dashboard launch record"},
+	{table: "terminal_run", column: "parent_session_id", kind: purgeKeepDangling, reason: "dashboard launch record: who started the run (lane cli-2, migration 220); a purged agent session reads as a dangling opaque id, its initiator stays agent"},
 	{table: "org_message_threads_local", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
 	{table: "org_messages_inbox", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
 	{table: "org_message_outbox", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
@@ -361,6 +372,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "benchmark_session_members", column: "session_id", kind: purgeKeepDangling, reason: "operator-authored benchmark result; its reader LEFT JOINs, so a purged member reads as absent"},
 	{table: "arena_candidates", column: "session_ids", kind: purgeKeepDangling, reason: "operator-authored arena result (a JSON id list, display only)"},
 	{table: "cloud_session_map", column: "local_session_id", kind: purgeKeepDangling, reason: "content-free pseudonym; the handle a hosted deletion request needs"},
+	{table: "sec_change_records", column: "sessions_json", kind: purgeKeepDangling, reason: "summary column of a signed AI change record (DSSE envelope, agent migration 191); rewriting it would make the row disagree with what was signed"},
 	{table: "sessions", column: "parent_thread_id", kind: purgeKeepDangling, reason: "opaque vendor lineage pointer, already tolerated dangling"},
 	// Another owner reconciles.
 	{table: "spend_verdict_dirty", column: "session_id", kind: purgeOwnerReconciles, reason: "spendverdict.Refresh is the one writer; the token_usage delete trigger queues the session"},
@@ -890,6 +902,70 @@ func (s *Store) ExecuteComponentPurgePlan(ctx context.Context, id string, rechec
 	}
 	if err := tx.Commit(); err != nil {
 		return PurgeResult{}, fmt.Errorf("store.ExecuteComponentPurgePlan: commit: %w", err)
+	}
+	return res, nil
+}
+
+// PurgeToolSessions removes named sessions of one tool with every row the
+// adapter purge assigns to a session (the same reviewed decision table,
+// purgeSessionDecisions, and the same executor as an adapter purge, scoped to
+// sessionIDs): their actions, token rows and compaction events of that tool,
+// then each session no other source still references, with its derived rows
+// (cloud_usage_ledger.scope_session, cloud_sync_checkpoints.scope,
+// cloud_session_links, ...). Ids that are not sessions of tool are skipped.
+//
+// Its caller is the cloud-agent member-scope correction (CLOUDAGENTS-6): a
+// session another organization member started was landed as this
+// developer's. That is a CORRECTION, not node-local ageing, so unlike
+// ExecuteComponentPurgePlan it does NOT run under db.WithRetentionDeletes:
+// the org push tombstones every pushed row it deletes (agent migration 141),
+// and the org drops its copy of the misattributed session.
+func (s *Store) PurgeToolSessions(ctx context.Context, tool string, sessionIDs []string) (PurgeResult, error) {
+	res := PurgeResult{Deleted: map[string]int{}, Skipped: map[string]int{}}
+	if tool == "" || len(sessionIDs) == 0 {
+		return res, nil
+	}
+	ids := append([]string(nil), sessionIDs...)
+	sort.Strings(ids)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return res, fmt.Errorf("store.PurgeToolSessions: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	cands := map[string][]string{}
+	for _, c := range []struct{ table, pk, sessionCol string }{
+		{"actions", "id", "session_id"},
+		{"token_usage", "id", "session_id"},
+		{"compaction_events", "id", "session_id"},
+		{"sessions", "id", "id"},
+	} {
+		for _, part := range purgeChunks(ids) {
+			in, inArgs := purgeInList(part)
+			//nolint:gosec // G202: table and columns are package literals; in is only bound placeholders.
+			rows, err := tx.QueryContext(ctx, `SELECT CAST(`+c.pk+` AS TEXT) FROM `+c.table+` WHERE tool = ? AND `+c.sessionCol+` IN (`+in+`)`,
+				append([]any{tool}, inArgs...)...)
+			if err != nil {
+				return res, fmt.Errorf("store.PurgeToolSessions: select %s: %w", c.table, err)
+			}
+			for rows.Next() {
+				var k string
+				if err := rows.Scan(&k); err != nil {
+					rows.Close()
+					return res, fmt.Errorf("store.PurgeToolSessions: scan %s: %w", c.table, err)
+				}
+				cands[c.table] = append(cands[c.table], k)
+			}
+			if err := rows.Close(); err != nil {
+				return res, err
+			}
+		}
+		sort.Slice(cands[c.table], func(i, j int) bool { return purgeLessKey(cands[c.table][i], cands[c.table][j]) })
+	}
+	if err := executeAdapterPurge(ctx, tx, cands, []any{tool}, &res); err != nil {
+		return PurgeResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PurgeResult{}, fmt.Errorf("store.PurgeToolSessions: commit: %w", err)
 	}
 	return res, nil
 }

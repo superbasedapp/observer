@@ -1,9 +1,11 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Select } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
-import type { ConfigKeyPatch, ConfigKeysDryRun, ConfigKeysError, ConfigKeysResponse } from "@/lib/configSchema";
+import type { ConfigKeysDryRun, ConfigKeysResponse } from "@/lib/configSchema";
+import { putConfigKeys } from "@/lib/configKeysPut";
 import {
   codeSecurityOptionLabel,
   codeSecurityParse,
@@ -19,32 +21,9 @@ import type { ComponentsView } from "@/lib/componentState";
 // plan section 6.5, Phase A). The node-dashboard home of the module's
 // [security.*] keys: one picker per settings-contract row, written through
 // PUT /api/config/keys (a dry run first, then the write under the same
-// etag). Rendered only while the `security` component is active; loaded as
-// its own chunk, so an inactive or omitted module adds nothing to the page.
-
-async function putKeys<T>(config: ConfigResponse, patches: ConfigKeyPatch[], dryRun: boolean): Promise<T> {
-  const res = await fetch("/api/config/keys", {
-    method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      ...(config.confirm_token ? { "X-Observer-Confirm": config.confirm_token } : {}),
-    },
-    body: JSON.stringify({ base_etag: config.config_etag ?? "", patches, ...(dryRun ? { dry_run: true } : {}) }),
-  });
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = null;
-  }
-  if (!res.ok) {
-    const e = (body ?? {}) as ConfigKeysError;
-    const keyMsg = e.key_errors?.find((k) => patches.some((p) => p.key === k.key))?.message;
-    throw new Error(keyMsg || e.message || text || `HTTP ${res.status}`);
-  }
-  return body as T;
-}
+// etag; lib/configKeysPut.ts). Rendered only while the `security`
+// component is active; loaded as its own chunk, so an inactive or omitted
+// module adds nothing to the page.
 
 function SettingRow({
   row,
@@ -68,8 +47,8 @@ function SettingRow({
     setBusy(true);
     setErr(null);
     try {
-      await putKeys<ConfigKeysDryRun>(config, [patch], true);
-      const out = await putKeys<ConfigKeysResponse>(config, [patch], false);
+      await putConfigKeys<ConfigKeysDryRun>(config, [patch], true);
+      const out = await putConfigKeys<ConfigKeysResponse>(config, [patch], false);
       if (out.restart_required_keys.length > 0) markRestartPending("guard", out.restart_required_keys);
       onSaved();
     } catch (e: unknown) {
@@ -87,7 +66,8 @@ function SettingRow({
     );
   }
   return (
-    <div>
+    // The row's config key is its element id, so a link can open the card on one switch (#security.assessments.probe_helper).
+    <div id={row.key}>
       <Select
         label={row.label}
         help={row.help}
@@ -120,13 +100,24 @@ export function CodeSecurityCard({
   readOnly?: boolean;
   onSaved: () => void;
 }) {
+  // A link to one setting (the fragment is the row's config key, lib/secAssess's ASSESS_HELPER_SETTING for one) scrolls that row into view and puts focus on its picker, once the daemon's config has loaded so the row is a picker and not a placeholder.
+  const { hash } = useLocation();
+  const loaded = config != null;
+  useEffect(() => {
+    const id = decodeURIComponent(hash.replace(/^#/, ""));
+    if (id === "" || !loaded) return;
+    const row = document.getElementById(id);
+    if (!row || !row.closest("[data-testid='code-security-card']")) return;
+    row.scrollIntoView({ block: "center" });
+    row.querySelector<HTMLElement>("select, input, button")?.focus({ preventScroll: true });
+  }, [hash, loaded]);
   return (
     <div className="mt-4 rounded-3 border border-line-2 bg-bg-2 p-4 text-[11.5px]" data-testid="code-security-card">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-[12px] font-semibold text-fg-1">Code security</div>
-        <Link to="/code-security" className="text-accent hover:underline">
+        <GatedLink to="/code-security" className="text-accent hover:underline">
           Open Code security
-        </Link>
+        </GatedLink>
       </div>
       <p className="m-0 mt-1 text-fg-3">
         Settings of the security module (component security). Changes take effect after the daemon restarts, except the custom scanner schedule rows, which apply within 15 minutes.

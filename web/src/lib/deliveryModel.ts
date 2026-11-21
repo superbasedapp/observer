@@ -452,7 +452,7 @@ export function sessionHeadline(
       title: "Pushed, no pull request.",
       body: opts.providerLinked
         ? `${n === 1 ? "The commit is" : `All ${n} commits are`} on a remote branch, not in a pull request yet.`
-        : `${n === 1 ? "The commit is" : `All ${n} commits are`} on a remote branch. PR state needs a code host connection.`,
+        : `${n === 1 ? "The commit is" : `All ${n} commits are`} on a remote branch. PR state needs a code host connection: connect one in Settings > Connected tools > Code hosts.`,
     };
   }
   if (evaluated.every((r) => status(r) === "local_only" || status(r) === "in_flight")) {

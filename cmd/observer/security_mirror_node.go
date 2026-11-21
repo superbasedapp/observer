@@ -227,54 +227,20 @@ func depsMirrorLines(st contentchan.Store, tr contentchan.Trust, floor time.Dura
 	return lines
 }
 
-// osvMirrorEntryName is the artifact name of one ecosystem's OSV export in
-// the security.osv_export kind: "<ecosystem>.zip", the ecosystem spelled as
-// the OSV bucket spells it (the names depscan.Ecosystems returns).
-func osvMirrorEntryName(eco string) string { return eco + ".zip" }
-
-// mirrorOSVRemote is an osvdb.Remote over the security.osv_export kind
-// installed from the org mirror: Head reports each export's CRC32C (what
-// osvdb's own checks key on) and Get streams the installed file, checking
-// its sha256 as it is read. It never makes a request of its own.
-type mirrorOSVRemote struct {
-	l contentchan.Loaded
-}
-
-func (r mirrorOSVRemote) entry(eco string) (string, content.Entry, error) {
-	if r.l.Freshness == content.Unknown {
-		return "", content.Entry{}, errors.New("the org mirror's OSV exports are past their age floor")
-	}
-	return r.l.ArtifactPath(osvMirrorEntryName(eco))
-}
-
-// Head implements osvdb.Remote.
-func (r mirrorOSVRemote) Head(_ context.Context, eco string) (osvdb.Meta, error) {
-	p, e, err := r.entry(eco)
+// fileCRC32CAndSHA256 reads a file once for its base64 CRC32C (the
+// spelling osvdb compares) and its hex sha256.
+func fileCRC32CAndSHA256(path string) (crc, sum string, err error) {
+	f, err := os.Open(path) //nolint:gosec // G703: reads the user's own local file with the user's own rights
 	if err != nil {
-		return osvdb.Meta{}, err
+		return "", "", err
 	}
-	sum, err := fileCRC32C(p)
-	if err != nil {
-		return osvdb.Meta{}, err
+	defer func() { _ = f.Close() }()
+	c := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(c, h), f); err != nil {
+		return "", "", err
 	}
-	return osvdb.Meta{LastModified: r.l.Manifest.IssuedAt, CRC32C: sum, Size: e.SizeBytes}, nil
-}
-
-// Get implements osvdb.Remote.
-func (r mirrorOSVRemote) Get(ctx context.Context, eco string) (osvdb.Meta, io.ReadCloser, error) {
-	meta, err := r.Head(ctx, eco)
-	if err != nil {
-		return osvdb.Meta{}, nil, err
-	}
-	p, e, err := r.entry(eco)
-	if err != nil {
-		return osvdb.Meta{}, nil, err
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		return osvdb.Meta{}, nil, err
-	}
-	return meta, newDigestReader(f, e.SHA256), nil
+	return osvdb.CRC32CString(c.Sum32()), hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // fileCRC32C is the base64 CRC32C (Castagnoli) of a file, the spelling

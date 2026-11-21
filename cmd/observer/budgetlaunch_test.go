@@ -285,10 +285,20 @@ func TestEnforceBudgetControlledLaunchUsesGovernancePinnedGuardPosture(t *testin
 func TestEnforceBudgetControlledLaunchReturnsStateReadErrors(t *testing.T) {
 	t.Parallel()
 
-	err := enforceBudgetControlledLaunch(context.Background(), filepath.Join(t.TempDir(), "missing.toml"),
+	// A config that cannot be read is a state read error on every OS. A
+	// MISSING config is not one: it loads the defaults, and the default
+	// database under the test home's ~/.observer (a file, TestMain's
+	// backstop) only failed the stat on Linux (ENOTDIR); on Windows the same
+	// stat is "path not found", so the launch fell through to the in-memory
+	// database and was admitted.
+	badCfg := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(badCfg, []byte("[observer\n"), 0o600); err != nil {
+		t.Fatalf("write unparseable config: %v", err)
+	}
+	err := enforceBudgetControlledLaunch(context.Background(), badCfg,
 		"muse", budgetLaunchEvidence{Route: budgetLaunchRouteDirect})
 	if err == nil || !strings.Contains(err.Error(), "cannot determine safe launch state") {
-		t.Fatalf("missing config error = %v, want safe-state read error", err)
+		t.Fatalf("unreadable config error = %v, want safe-state read error", err)
 	}
 
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")

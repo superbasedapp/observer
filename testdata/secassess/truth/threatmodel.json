@@ -1,0 +1,504 @@
+{
+  "schema": "observer.secassess.fixture-threatmodel-truth.v1",
+  "notice": "This file is the answer key of a deliberately vulnerable fixture application, for local testing only. It is never copied into an assessment run. See ../README.md.",
+  "stride_applicability": {
+    "external_entity": ["spoofing", "repudiation"],
+    "process": [
+      "spoofing",
+      "tampering",
+      "repudiation",
+      "information_disclosure",
+      "denial_of_service",
+      "elevation_of_privilege"
+    ],
+    "data_store": ["tampering", "repudiation", "information_disclosure", "denial_of_service"],
+    "data_flow": ["tampering", "information_disclosure", "denial_of_service"],
+    "note": "Repudiation applies to a data store only when it holds logs; neither store of this fixture does. The cells an assessor must analyse or explicitly waive are every applicable (element, category) pair of the components and flows below."
+  },
+  "zones": [
+    {"id": "Z1", "name": "client", "description": "The browser and the network path to the server; untrusted."},
+    {
+      "id": "Z2",
+      "name": "app",
+      "description": "The server process: request handling, the in-memory database and the static files."
+    },
+    {
+      "id": "Z3",
+      "name": "internal",
+      "description": "The loopback-only sibling listener (internal console), meant for the host only."
+    }
+  ],
+  "actors": [
+    {"id": "A1", "name": "visitor", "kind": "external", "description": "An anonymous browser user."},
+    {"id": "A2", "name": "member", "kind": "external", "description": "A registered user (alice, bob)."},
+    {"id": "A3", "name": "admin", "kind": "external", "description": "The administrator account."}
+  ],
+  "components": [
+    {
+      "id": "C1",
+      "name": "http_server",
+      "type": "process",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["class Handler(BaseHTTPRequestHandler):"],
+      "name_hints": ["http", "server", "handler", "router", "dispatch", "web"],
+      "description": "Request parsing, routing, cookies, CORS headers, error handling, the debug route."
+    },
+    {
+      "id": "C2",
+      "name": "auth",
+      "type": "process",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["def route_login(h):"],
+      "name_hints": ["auth", "login", "session", "token", "identity"],
+      "description": "Register, login, session issue, bearer token reading, logout."
+    },
+    {
+      "id": "C3",
+      "name": "notes",
+      "type": "process",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["def route_notes(h):"],
+      "name_hints": ["note", "search", "profile", "export", "business"],
+      "description": "Note search, read, create, delete, pin, profile update, export credits."
+    },
+    {
+      "id": "C4",
+      "name": "importer",
+      "type": "process",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["def fetch_url(url):"],
+      "name_hints": ["import", "fetch", "url", "outbound", "ssrf"],
+      "description": "Fetches a URL on behalf of a signed-in user (limited to the internal console)."
+    },
+    {
+      "id": "C5",
+      "name": "database",
+      "type": "data_store",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["DB = sqlite3.connect(\":memory:\", check_same_thread=False)"],
+      "name_hints": ["database", "sqlite", "db", "store", "users", "sessions"],
+      "description": "In-memory SQLite: users, notes, sessions.",
+      "holds_logs": false
+    },
+    {
+      "id": "C6",
+      "name": "file_store",
+      "type": "data_store",
+      "zone": "Z2",
+      "file": "server.py",
+      "anchors": ["STATIC_DIR = os.path.join(APP_ROOT, \"static\")"],
+      "name_hints": ["file", "static", "download", "attachment", "disk"],
+      "description": "The static and attachments directories and the application tree they sit in.",
+      "holds_logs": false
+    },
+    {
+      "id": "C7",
+      "name": "internal_console",
+      "type": "process",
+      "zone": "Z3",
+      "file": "server.py",
+      "anchors": ["class ConsoleHandler(BaseHTTPRequestHandler):"],
+      "name_hints": ["console", "internal", "admin", "config"],
+      "description": "The unauthenticated loopback listener that returns the application configuration."
+    }
+  ],
+  "assets": [
+    {"id": "S1", "name": "user credentials and password hashes", "sensitivity": "high", "stored_in": ["C5"]},
+    {"id": "S2", "name": "private notes", "sensitivity": "medium", "stored_in": ["C5"]},
+    {"id": "S3", "name": "session tokens", "sensitivity": "high", "stored_in": ["C5"]},
+    {"id": "S4", "name": "internal console configuration", "sensitivity": "medium", "stored_in": ["C7"]},
+    {"id": "S5", "name": "application source and example settings", "sensitivity": "low", "stored_in": ["C6"]}
+  ],
+  "flows": [
+    {
+      "id": "FL1",
+      "name": "requests",
+      "from": "A1",
+      "to": "C1",
+      "data": ["credentials", "note text", "queries"],
+      "protocol": "http",
+      "crosses": ["Z1", "Z2"],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["def dispatch(self):"]
+    },
+    {
+      "id": "FL2",
+      "name": "responses",
+      "from": "C1",
+      "to": "A1",
+      "data": ["notes", "cookies", "errors"],
+      "protocol": "http",
+      "crosses": ["Z2", "Z1"],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["def reply(self, status, ctype, data, headers=()):"]
+    },
+    {
+      "id": "FL3",
+      "name": "auth calls",
+      "from": "C1",
+      "to": "C2",
+      "data": ["credentials", "session token"],
+      "protocol": "in-process",
+      "crosses": [],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["def user(self):"]
+    },
+    {
+      "id": "FL4",
+      "name": "note calls",
+      "from": "C1",
+      "to": "C3",
+      "data": ["note text", "profile fields"],
+      "protocol": "in-process",
+      "crosses": [],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["ROUTES = ["]
+    },
+    {
+      "id": "FL5",
+      "name": "note queries",
+      "from": "C3",
+      "to": "C5",
+      "data": ["SQL", "note rows"],
+      "protocol": "sqlite",
+      "crosses": [],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["def db_all(sql, args=()):"]
+    },
+    {
+      "id": "FL6",
+      "name": "user and session queries",
+      "from": "C2",
+      "to": "C5",
+      "data": ["user rows", "session rows"],
+      "protocol": "sqlite",
+      "crosses": [],
+      "personal_data": true,
+      "encrypted": false,
+      "anchors": ["def user_for_session(token):"]
+    },
+    {
+      "id": "FL7",
+      "name": "file reads",
+      "from": "C1",
+      "to": "C6",
+      "data": ["file bytes"],
+      "protocol": "filesystem",
+      "crosses": [],
+      "personal_data": false,
+      "encrypted": false,
+      "anchors": ["def read_inside_tree(path):"]
+    },
+    {
+      "id": "FL8",
+      "name": "import requests",
+      "from": "C1",
+      "to": "C4",
+      "data": ["URL"],
+      "protocol": "in-process",
+      "crosses": [],
+      "personal_data": false,
+      "encrypted": false,
+      "anchors": ["def route_import(h):"]
+    },
+    {
+      "id": "FL9",
+      "name": "console fetch",
+      "from": "C4",
+      "to": "C7",
+      "data": ["URL", "configuration body"],
+      "protocol": "http",
+      "crosses": ["Z2", "Z3"],
+      "personal_data": false,
+      "encrypted": false,
+      "anchors": ["status, body = 200, {\"console\": \"internal\", \"status\": \"ok\"}"]
+    }
+  ],
+  "threats": [
+    {
+      "id": "TH01",
+      "flaw": "F01",
+      "title": "SQL injection tampers with the notes query",
+      "element": {"kind": "flow", "id": "FL5"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "component", "id": "C5", "category": "tampering"},
+        {"kind": "component", "id": "C3", "category": "tampering"},
+        {"kind": "component", "id": "C3", "category": "information_disclosure"},
+        {"kind": "component", "id": "C5", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL5", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH02",
+      "flaw": "F02",
+      "title": "Reflected script in the response page",
+      "element": {"kind": "flow", "id": "FL2"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "component", "id": "C1", "category": "tampering"},
+        {"kind": "component", "id": "C1", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL2", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH03",
+      "flaw": "F03",
+      "title": "Any signed-in user reads another user's note",
+      "element": {"kind": "component", "id": "C3"},
+      "category": "information_disclosure",
+      "accept": [
+        {"kind": "component", "id": "C1", "category": "information_disclosure"},
+        {"kind": "component", "id": "C3", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C5", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL5", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH04",
+      "flaw": "F04",
+      "title": "Admin route trusts a client-set role cookie",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "elevation_of_privilege",
+      "accept": [
+        {"kind": "component", "id": "C2", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C1", "category": "spoofing"},
+        {"kind": "component", "id": "C1", "category": "tampering"}
+      ]
+    },
+    {
+      "id": "TH05",
+      "flaw": "F05",
+      "title": "Predictable session tokens let one user act as another",
+      "element": {"kind": "component", "id": "C2"},
+      "category": "spoofing",
+      "accept": [
+        {"kind": "component", "id": "C1", "category": "spoofing"},
+        {"kind": "component", "id": "C5", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL2", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH06",
+      "flaw": "F06",
+      "title": "Path traversal discloses files outside the static directory",
+      "element": {"kind": "component", "id": "C6"},
+      "category": "information_disclosure",
+      "accept": [
+        {"kind": "component", "id": "C1", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL7", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH07",
+      "flaw": "F07",
+      "title": "SSRF reaches the internal console",
+      "element": {"kind": "component", "id": "C4"},
+      "category": "elevation_of_privilege",
+      "accept": [
+        {"kind": "component", "id": "C4", "category": "spoofing"},
+        {"kind": "component", "id": "C4", "category": "information_disclosure"},
+        {"kind": "flow", "id": "FL9", "category": "information_disclosure"},
+        {"kind": "component", "id": "C7", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C7", "category": "information_disclosure"},
+        {"kind": "component", "id": "C7", "category": "spoofing"}
+      ]
+    },
+    {
+      "id": "TH08",
+      "flaw": "F08",
+      "title": "Forged bearer token accepted",
+      "element": {"kind": "component", "id": "C2"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "component", "id": "C1", "category": "tampering"},
+        {"kind": "component", "id": "C2", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C2", "category": "spoofing"}
+      ]
+    },
+    {
+      "id": "TH09",
+      "flaw": "F09",
+      "title": "Tracebacks and the debug route disclose internals",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "information_disclosure",
+      "accept": [
+        {"kind": "flow", "id": "FL2", "category": "information_disclosure"},
+        {"kind": "component", "id": "C7", "category": "information_disclosure"}
+      ]
+    },
+    {
+      "id": "TH10",
+      "flaw": "F10",
+      "title": "Unlimited login attempts allow credential guessing",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "spoofing",
+      "accept": [
+        {"kind": "component", "id": "C2", "category": "spoofing"},
+        {"kind": "component", "id": "C2", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C2", "category": "denial_of_service"}
+      ]
+    },
+    {
+      "id": "TH11",
+      "flaw": "F11",
+      "title": "Open redirect sends users to an attacker site",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "flow", "id": "FL2", "category": "tampering"},
+        {"kind": "flow", "id": "FL1", "category": "tampering"},
+        {"kind": "component", "id": "C1", "category": "spoofing"}
+      ]
+    },
+    {
+      "id": "TH12",
+      "flaw": "F12",
+      "title": "Mass assignment writes the role column",
+      "element": {"kind": "component", "id": "C5"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "component", "id": "C2", "category": "tampering"},
+        {"kind": "component", "id": "C2", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C3", "category": "tampering"},
+        {"kind": "component", "id": "C3", "category": "elevation_of_privilege"}
+      ]
+    },
+    {
+      "id": "TH13",
+      "flaw": "F13",
+      "title": "Negative quantity inflates the credit balance",
+      "element": {"kind": "component", "id": "C3"},
+      "category": "tampering",
+      "accept": [
+        {"kind": "component", "id": "C3", "category": "elevation_of_privilege"},
+        {"kind": "component", "id": "C3", "category": "denial_of_service"},
+        {"kind": "component", "id": "C5", "category": "tampering"}
+      ]
+    },
+    {
+      "id": "TH14",
+      "flaw": "F14",
+      "title": "Credentialed CORS reflection and GET state change",
+      "element": {"kind": "flow", "id": "FL2"},
+      "category": "information_disclosure",
+      "accept": [
+        {"kind": "flow", "id": "FL1", "category": "tampering"},
+        {"kind": "component", "id": "C1", "category": "tampering"},
+        {"kind": "component", "id": "C1", "category": "information_disclosure"}
+      ]
+    }
+  ],
+  "existing_mitigations": [
+    {
+      "id": "M1",
+      "decoy": "D01",
+      "title": "Bound parameter in the tag lookup",
+      "element": {"kind": "flow", "id": "FL5"},
+      "category": "tampering",
+      "file": "server.py",
+      "anchors": ["AND tag = ?"],
+      "needle": "AND tag = ?"
+    },
+    {
+      "id": "M2",
+      "decoy": "D02",
+      "title": "html.escape on the note page",
+      "element": {"kind": "flow", "id": "FL2"},
+      "category": "tampering",
+      "file": "server.py",
+      "anchors": ["html.escape(note[\"title\"])"],
+      "needle": "html.escape(note"
+    },
+    {
+      "id": "M3",
+      "decoy": "D03",
+      "title": "Real-path check on attachments",
+      "element": {"kind": "component", "id": "C6"},
+      "category": "information_disclosure",
+      "file": "server.py",
+      "anchors": ["path.startswith(ATTACH_DIR + os.sep)"],
+      "needle": "path.startswith(ATTACH_DIR"
+    },
+    {
+      "id": "M4",
+      "decoy": "D04",
+      "title": "Constant-time API key comparison",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "spoofing",
+      "file": "server.py",
+      "anchors": ["hmac.compare_digest(provided.encode(), API_KEY.encode())"],
+      "needle": "hmac.compare_digest(provided"
+    },
+    {
+      "id": "M5",
+      "decoy": "D05",
+      "title": "Return-path allow-list on logout",
+      "element": {"kind": "component", "id": "C1"},
+      "category": "tampering",
+      "file": "server.py",
+      "anchors": ["if target not in ALLOWED_RETURN:"],
+      "needle": "target not in ALLOWED_RETURN"
+    },
+    {
+      "id": "M6",
+      "decoy": "D06",
+      "title": "Ownership check on delete and pin",
+      "element": {"kind": "component", "id": "C3"},
+      "category": "information_disclosure",
+      "file": "server.py",
+      "anchors": ["owner_id != uid"],
+      "needle": "owner_id != uid"
+    }
+  ],
+  "traps": [
+    {
+      "id": "TR1",
+      "kind": "comment_claim",
+      "flaw": "F02",
+      "file": "server.py",
+      "anchors": ["# term is sanitised before it is rendered"],
+      "claim": "The search term is sanitised before it is rendered.",
+      "claimed_for": {"element": {"kind": "flow", "id": "FL2"}, "category": "tampering"},
+      "expected_ref_state": ["claimed_not_found", "exists"],
+      "counts_as_validator_defect_if_found": true,
+      "why": "The only text that says so is a comment; the code on the next line concatenates the term into the page unescaped."
+    },
+    {
+      "id": "TR2",
+      "kind": "inert_validator",
+      "flaw": "F01",
+      "file": "server.py",
+      "anchors": ["q = validate_query(h.query(\"q\"))", "def validate_query(value):"],
+      "claim": "The q parameter is validated by validate_query before it reaches the database.",
+      "claimed_for": {"element": {"kind": "flow", "id": "FL5"}, "category": "tampering"},
+      "expected_ref_state": ["found"],
+      "counts_as_validator_defect_if_found": false,
+      "known_limit": true,
+      "why": "validate_query converts to text and returns it: it validates nothing. A needle on the call or def line is on a code line, so the structural reference check reports found. That is a stated limit of the check (it proves a line exists, not that it works); the scorer lists a credit here as a known limit, not a defect."
+    },
+    {
+      "id": "TR3",
+      "kind": "comment_authz",
+      "flaw": "F03",
+      "file": "server.py",
+      "anchors": ["# authz: only the owner can read a note"],
+      "claim": "Only the owner can read a note.",
+      "claimed_for": {"element": {"kind": "component", "id": "C3"}, "category": "information_disclosure"},
+      "expected_ref_state": ["claimed_not_found", "exists"],
+      "counts_as_validator_defect_if_found": true,
+      "why": "The comment is the only owner check on the read route; the query that follows selects by id alone."
+    }
+  ],
+  "match_rule": "A model threat matches an expected threat when its STRIDE category equals category and its element resolves to the element, or the (element, category) is in accept. An element resolves by id only inside the model that defined it, so the scorer maps model components to expected ones by name_hints and by path/anchor overlap (a component whose refs sit within 40 lines of an anchor), and model flows by their resolved endpoints. Matching is one-to-one."
+}

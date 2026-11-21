@@ -12,6 +12,11 @@
 // know"). A `live` / `next_spawn` save never marks anything pending.
 
 const KEY = "sb_restart_pending";
+
+/** RESTART_HINT names where a restart is done, for save notices that say a
+ *  value applies after one: the banner's Restart now button (it appears on
+ *  every page after such a save) or Settings > Health > Restart daemon. */
+export const RESTART_HINT = "use Restart now in the banner at the top, or Restart daemon in Settings > Health";
 // Window event fired on every mutation so the banner re-renders
 // without prop-drilling through the Settings tree.
 export const RESTART_PENDING_EVENT = "sb-restart-pending-changed";

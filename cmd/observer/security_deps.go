@@ -157,11 +157,14 @@ func decodeDepsHookSettings(b []byte) depsHookSettings {
 }
 
 // depsTrust is the key material the install gate verifies content with:
-// the vendor key compiled into this binary (a variable so tests can stand
-// in a key). The org countersignature is checked when the daemon installs
+// the vendor key compiled into this binary, plus the content-feed key for
+// feed-signed advisory sets (a variable so tests can stand in a key). The
+// org countersignature is checked when the daemon installs
 // content on a managed node; a reload in the hook re-checks the vendor
 // signature and every digest.
-var depsTrust = func() contentchan.Trust { return contentchan.Trust{VendorKeys: depsVendorKeys()} }
+var depsTrust = func() contentchan.Trust {
+	return contentchan.Trust{VendorKeys: depsVendorKeys(), FeedKeys: depsFeedKeys()}
+}
 
 // depsContentStore returns the content store for a resolved config path.
 func depsContentStore(resolvedConfig string) contentchan.Store {

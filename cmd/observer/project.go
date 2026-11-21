@@ -172,6 +172,9 @@ func printProjectDetail(w io.Writer, d dashapi.ProjectDetail) {
 	if d.Spend.UnpricedTurns > 0 {
 		fmt.Fprintf(w, "  (%d turns unpriced: no recorded cost and no pricing entry for their model - the total excludes them)\n", d.Spend.UnpricedTurns)
 	}
+	for _, line := range dashapi.SpendSplitLines(d.Spend.Locations) {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
 
 	fmt.Fprintln(w, "  by tool:")
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)

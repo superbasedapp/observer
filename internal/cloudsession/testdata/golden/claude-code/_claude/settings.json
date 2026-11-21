@@ -1,0 +1,122 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code SessionStart; exit 0 # sbo-cloud-session"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent claude-code --trigger start --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code UserPromptSubmit; exit 0 # sbo-cloud-session"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent claude-code --trigger prompt --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code PostToolUse; exit 0 # sbo-cloud-session"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent claude-code --trigger periodic --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code PostToolUseFailure; exit 0 # sbo-cloud-session"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code SubagentStop; exit 0 # sbo-cloud-session"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code Stop; exit 0 # sbo-cloud-session"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent claude-code --trigger final --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer hook claude-code SessionEnd; exit 0 # sbo-cloud-session"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ -x /usr/local/bin/observer ] && exec /usr/local/bin/observer cloud-session flush --agent claude-code --trigger final --destination org --share metadata_only --url https://org.example.com; exit 0 # sbo-cloud-session",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

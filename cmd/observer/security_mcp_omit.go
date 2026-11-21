@@ -12,3 +12,8 @@ import (
 // securityMCPTools adds nothing: the security module or the MCP server is
 // not in this build.
 func securityMCPTools(config.Config, *sql.DB, *slog.Logger) []securityMCPTool { return nil }
+
+// securityMCPToolsAt adds nothing either.
+func securityMCPToolsAt(config.Config, *sql.DB, *slog.Logger, string) []securityMCPTool {
+	return nil
+}

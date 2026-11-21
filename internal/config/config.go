@@ -21,8 +21,10 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/alertspec"
 	"github.com/marmutapp/superbased-observer/internal/notifycfg"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/proccapture"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcidr"
 	"github.com/marmutapp/superbased-observer/internal/sandboxenv"
 	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
@@ -75,6 +77,10 @@ type Config struct {
 	// ShellWrap is the opt-in [shell_wrap] "wrapped command" shell
 	// integration (backlog item 7); see ShellWrapConfig. Zero value = off.
 	ShellWrap ShellWrapConfig `toml:"shell_wrap"`
+	// Workspace is the [workspace] block: Observer's default workspace
+	// folder (see WorkspaceConfig). Zero value = the built-in
+	// <home>/observer-workspace.
+	Workspace WorkspaceConfig `toml:"workspace"`
 	// Security is the security pillar's [security] block (component
 	// `security`); see SecurityConfig. Validated only while the module is
 	// active (component_sections.go).
@@ -478,14 +484,6 @@ func (c CloudConfig) ResolvedCloudAutoEnrichQuietMinutes() int {
 	return CloudAutoEnrichQuietDefaultMinutes
 }
 
-// ObservabilityConfig is the [observability] surface — the generalized
-// observability subsystem (internal/obs; plan
-// docs/plans/generalized-observability-custom-app-plan-2026-06-27.md). It is
-// OPT-IN (default false): unlike CacheTrack/Guard/Advisor, the zero value is
-// the intended default, so no partial-merge entry is required — an install
-// with no [observability] section keeps the subsystem off and creates no
-// obs_* tables. The subsystem is additionally compiled out by the no_obs
-// build tag for minimal distributions (decision D2).
 // SelfObsConfig is the [selfobs] surface (P1-10 production retrofit,
 // docs/plans/plane-a-p1-10-production-retrofit-plan.md). LOCAL-ONLY.
 // Default OFF — emission is a credential-bearing OTLP call to the org
@@ -508,6 +506,14 @@ type SelfObsConfig struct {
 	RoutingSampleN int `toml:"routing_sample_n"`
 }
 
+// ObservabilityConfig is the [observability] surface — the generalized
+// observability subsystem (internal/obs; plan
+// docs/plans/generalized-observability-custom-app-plan-2026-06-27.md). It is
+// OPT-IN (default false): unlike CacheTrack/Guard/Advisor, the zero value is
+// the intended default, so no partial-merge entry is required — an install
+// with no [observability] section keeps the subsystem off and creates no
+// obs_* tables. The subsystem is additionally compiled out by the no_obs
+// build tag for minimal distributions (decision D2).
 type ObservabilityConfig struct {
 	// Enabled gates the whole subsystem: the OTLP /v1/traces receiver,
 	// the obs_* schema (applied only when true), ingestion, the
@@ -573,6 +579,32 @@ type ObservabilityConfig struct {
 	// CacheTrack partial-merge rule); it has no effect while Enabled is
 	// false.
 	ProxyTurnTraces bool `toml:"proxy_turn_traces"`
+
+	// StoreContent is the node-local Plane A content key (D8, D17, F07):
+	// when true, captured prompt, response and tool bodies of a hosted app's
+	// spans (and the matching eval-dataset snapshots and admission excerpts)
+	// are kept raw in this node's own obs_* tables, after mandatory secret
+	// scrubbing. When false only their content hashes are kept, and span
+	// events and links keep only their metadata attributes (names, ids,
+	// types, models, usage counters).
+	//
+	// It governs storage ON THIS NODE ONLY: node-local data never leaves the
+	// machine. Whether raw content is pushed to an org is a separate
+	// decision that stays with the existing raw-content predicate
+	// ([org_client.share] full_content / admin_managed or the signed
+	// enterprise grant); this key never widens it. It is also separate from
+	// those Plane B developer-privacy keys, which no longer decide whether a
+	// hosted app's own content is stored locally.
+	//
+	// Default true (Default() seeds it, so an [observability] section that
+	// only sets `enabled` keeps it on). No effect while Enabled is false.
+	StoreContent bool `toml:"store_content"`
+
+	// SDK is [observability.sdk]: where this machine tells the superbased
+	// SDKs to send an app's data by default (D18; the contract is
+	// docs/plans/plane-a-sdk-buildout/contracts/destination.md). Zero value =
+	// the default: local when not signed in, both when signed in.
+	SDK ObservabilitySDKConfig `toml:"sdk"`
 }
 
 // ObservabilityEgressConfig is the [observability.egress] surface (G22, design
@@ -669,6 +701,18 @@ type ObservabilityAlertsConfig struct {
 	EmailTo []string `toml:"email_to"`
 	// EvalIntervalMinutes is how often the evaluator ticks. 0 defaults to 5.
 	EvalIntervalMinutes int `toml:"eval_interval_minutes"`
+	// SlackWebhookURL is a Slack incoming-webhook URL every fired alert is
+	// also posted to (W3-5). A SECRET: never rendered or logged; written only
+	// through PUT /api/obs/alerts/slack or `observer obs alerts slack set`.
+	// Only https://hooks.slack.com/ and hooks.slack-gov.com URLs are
+	// accepted. Empty = no Slack delivery.
+	SlackWebhookURL string `toml:"slack_webhook_url"`
+	// PagerDutyRoutingKey is a PagerDuty Events API v2 routing (integration)
+	// key (W5-5): a fire triggers an incident and the rule's clear resolves
+	// it. A SECRET: never rendered or logged; written only through
+	// PUT /api/obs/alerts/pagerduty or `observer obs alerts pagerduty set`.
+	// Empty = no PagerDuty delivery.
+	PagerDutyRoutingKey string `toml:"pagerduty_routing_key"`
 	// Rules is the locally-authored rule table.
 	Rules []ObservabilityAlertRuleConfig `toml:"rules"`
 }
@@ -691,6 +735,13 @@ type ObservabilityAlertRuleConfig struct {
 	// CooldownMinutes is the minimum gap between fires of this rule (dedup). 0
 	// defaults to WindowMinutes (a full window must elapse before re-firing).
 	CooldownMinutes int `toml:"cooldown_minutes"`
+	// Model, User, Tag and Service narrow the rule to one slice of traffic
+	// (W3-5 dimensions, internal/alertspec): a span model, the app's end
+	// user, one trace tag, the resource service. Empty = any.
+	Model   string `toml:"model"`
+	User    string `toml:"user"`
+	Tag     string `toml:"tag"`
+	Service string `toml:"service"`
 }
 
 // ObservabilityJudgeConfig is one OpenAI-compatible /chat/completions judge
@@ -710,7 +761,11 @@ type ObservabilityJudgeConfig struct {
 	// need no key (the binding treats a loopback base_url as no-egress and
 	// allows an empty/unset key).
 	APIKeyEnv string `toml:"api_key_env"`
-	// TimeoutMS bounds a single judge call. 0 = the binding's default.
+	// TimeoutMS bounds a single judge call. 0 = the default for where the
+	// judge runs: 1500 ms for a loopback judge (the admission budget) and
+	// 8000 ms for a hosted one, whose first call (TLS set-up plus a reasoning
+	// model's thinking) outlasted 1.5 s live; an org-relay judge defaults to
+	// 10000 ms.
 	TimeoutMS int `toml:"timeout_ms"`
 	// MaxTokens caps the judge REPLY length (the reply is only a short JSON
 	// verdict). 0 = the binding's default. A tight cap bounds latency + cost
@@ -721,6 +776,20 @@ type ObservabilityJudgeConfig struct {
 	// fields, so it is never sent remotely). 0 = omit. Its effect depends on
 	// the local host honoring the field on its /v1/chat/completions endpoint.
 	NumCtx int `toml:"num_ctx"`
+	// RequestProfile is how the judge request is shaped: "auto" (or empty,
+	// the default) picks from the model id (bare OpenAI GPT-5 and o-series
+	// ids get "reasoning", everything else "chat"); "chat" sends max_tokens
+	// and temperature 0 (OpenAI-compatible chat models, local servers);
+	// "reasoning" sends max_completion_tokens, no temperature and a
+	// reasoning effort, which OpenAI's reasoning models require (they refuse
+	// max_tokens and temperature 0). Set it for a model id auto cannot
+	// recognise, such as an Azure deployment name.
+	RequestProfile string `toml:"request_profile"`
+	// ReasoningEffort overrides the reasoning effort a "reasoning" request
+	// sends (for example "minimal", "low"). Empty takes the model family's
+	// default (minimal for gpt-5 / -mini / -nano, low for later GPT-5 and the
+	// o-series). Ignored on the chat profile.
+	ReasoningEffort string `toml:"reasoning_effort"`
 	// UseOrgRelay routes the judge call through the org server's
 	// POST /api/agent/judge instead of an OpenAI-compatible endpoint held
 	// locally (C1 judge relay, docs/plans/c1-judge-relay-spec-2026-08-15.md
@@ -901,8 +970,21 @@ type GuardConfig struct {
 	Mode string `toml:"mode"`
 	// Strict inverts the Q2 fail-open default: a guard internal
 	// error then blocks instead of approving. Enterprise posture;
-	// default false.
+	// default false. It is NOT a strictness level (that is Level): the
+	// dashboard labels it "Fail closed when the guard itself errors".
 	Strict bool `toml:"strict"`
+	// Level is the guard recipe level applied to the whole machine: one of
+	// the catalog's level recipes ("none", "loose", "balanced", "strict",
+	// "lockdown") or a user level recipe from the guard-recipes directory.
+	// Empty (the default) means no level was applied: the built-in rules,
+	// the mode and the policy files decide alone, exactly as before levels
+	// existed. `observer guard recipe apply` and the Security page's
+	// Recipes card write it together with mode and [guard.prompt] mode and
+	// the recipe file beside the user policy (docs/guard-recipes.md);
+	// remove clears it. The rows a level sets live in that recipe file,
+	// not here, so a hand edit of this key changes no rule by itself
+	// (`observer guard recipe list` reports the mismatch).
+	Level string `toml:"level"`
 	// RetentionDays is the guard_events / expired-approvals prune
 	// horizon (spec §10.3). Default 365 — audit data wants ≥1y for
 	// compliance buyers. ≤0 disables the guard prune.
@@ -910,6 +992,8 @@ type GuardConfig struct {
 
 	Rules    GuardRulesConfig    `toml:"rules"`
 	Boundary GuardBoundaryConfig `toml:"boundary"`
+	Database GuardDatabaseConfig `toml:"database"`
+	Network  GuardNetworkConfig  `toml:"network"`
 	Taint    GuardTaintConfig    `toml:"taint"`
 	Proxy    GuardProxyConfig    `toml:"proxy"`
 	MCP      GuardMCPConfig      `toml:"mcp"`
@@ -979,6 +1063,37 @@ type GuardBoundaryConfig struct {
 	// (rule R-166): "tests", "ci" and "coverage". Empty, the default,
 	// leaves R-166 off, because ordinary test maintenance is common.
 	ProtectedPathClasses []string `toml:"protected_path_classes"`
+}
+
+// GuardDatabaseConfig is [guard.database]: the inputs of the database rule
+// family (R-120 to R-126, docs/guard.md "Database rules").
+type GuardDatabaseConfig struct {
+	// ProdPatterns names the production databases R-125 asks about: a
+	// database command whose host, connection string, database name or
+	// profile matches one of these. A pattern with no `*` or `?` matches
+	// as a case-insensitive substring ("prod" matches db.prod.example.com);
+	// one with them is a case-insensitive glob over the whole value
+	// ("*.prod.internal"). Empty, the default, leaves R-125 inert.
+	ProdPatterns []string `toml:"prod_patterns"`
+}
+
+// GuardNetworkConfig is [guard.network]: the host lists of the network rule
+// family (R-174 to R-179, docs/guard.md "Network rules"). A host pattern is a
+// host name ("example.com" also matches its subdomains, "*.example.com" only
+// them), an IP address or a CIDR block ("10.0.0.0/8"). The rules judge the
+// hosts a command names on its command line; they are not an egress
+// firewall (the sandboxed terminal's egress gateway is).
+type GuardNetworkConfig struct {
+	// AllowHosts is the allow-list R-176 compares against: a network
+	// command to a host not on it (loopback always passes) hits the rule.
+	// R-176 is silent until a level or pack raises it (lockdown, the
+	// networking pack); then an empty list means every non-loopback host.
+	AllowHosts []string `toml:"allow_hosts"`
+	// DenyHosts is the deny list of R-174 (the never-reach hosts, beside
+	// the cloud metadata endpoints): a network command to a host on it is
+	// flagged in observe and denied in enforce. Empty, the default, leaves
+	// that row inert.
+	DenyHosts []string `toml:"deny_hosts"`
 }
 
 // GuardTaintConfig is [guard.taint] (spec §4.5, §16).
@@ -1423,6 +1538,24 @@ type ProjectsConfig struct {
 	// Covers clock skew between the AI tool's clock and the repository's
 	// (e.g. a Windows tool and a WSL daemon). Default 120.
 	SkillHistorySkewSeconds int `toml:"skill_history_skew_seconds"`
+	// QualityMetrics gates the Projects page's quality metrics
+	// (docs/projects-page.md "Quality metrics", plan item 8 M3L-2 and
+	// M3L-4): line coverage read from the coverage report files a
+	// project's own test runs already wrote at their default locations
+	// (read under a byte cap, never through a symbolic link; only the
+	// numbers are stored), duplication rolled up from the codeintel
+	// near-clone index, complexity rolled up from the per-function
+	// cyclomatic complexity code intelligence counts at index time (both
+	// need [codeintel].enabled; counting is a second tree-sitter query
+	// pass, so the indexer runs it only while this is on, and turning it
+	// on re-parses each indexed file once at the next index pass), and one
+	// daily trend point per active project (internal/codequalitysvc).
+	// Default FALSE, opt-in as plan 14.13's editions table rules for item
+	// 8 (it is local, passive, read-only and network-free; Observer never
+	// runs a project's tests). False makes the Quality tab say "off",
+	// records no points and stops counting; stored history and counted
+	// figures stay.
+	QualityMetrics bool `toml:"quality_metrics"`
 }
 
 // DeliveryConfig is the [delivery] surface: commit to PR to merge tracking
@@ -2277,6 +2410,14 @@ type TerminalSandboxConfig struct {
 	// (full repo copies, not small). 0 (the default) keeps them forever —
 	// B7 needs workspaces to persist past run exit.
 	WorkspaceRetentionDays int `toml:"workspace_retention_days"`
+	// ReturnedCopyRetentionDays (decision SBXD-2) is how many days a
+	// sandboxed run's managed copy is kept once its work came home: past
+	// it, the daemon removes the copy only when the removal table would
+	// remove it on a click (its commits came back, nothing in it is
+	// uncommitted, the run is not live, the copy could be compared), one
+	// capped batch per pass. Default 30; 0 never removes a copy
+	// automatically; at most 3650. workspace_retention_days is unchanged.
+	ReturnedCopyRetentionDays int `toml:"returned_copy_retention_days"`
 	// MaskPaths lists extra paths to `--tmpfs`-mask inside the sandbox, on
 	// top of the auto-detected foreign-OS mount roots (e.g. /mnt/c on
 	// WSL). Empty by default.
@@ -2398,6 +2539,28 @@ type TerminalSandboxConfig struct {
 	// fleet-wide value for it and cannot pin it. A run that allows it says
 	// so in its posture.
 	AllowOSC52Clipboard bool `toml:"allow_osc52_clipboard"`
+	// Seccomp turns on Observer's syscall filter (internal/sandboxseccomp,
+	// the "observer_default" deny list answered with EPERM) for the bwrap
+	// and process_lite rows (gap G16, lane N2). Default FALSE (D7): opt-in
+	// until a clean live register across the tool matrix. When true, a
+	// launch on either row is refused if the filter cannot be built,
+	// applied or read back from /proc; it never runs unfiltered. Rows
+	// whose engine applies its own default filter (the OCI rows) are not
+	// affected. An absent key changes nothing.
+	Seccomp bool `toml:"seccomp"`
+	// SeccompAllowSeize lifts PTRACE_SEIZE from that filter, and nothing
+	// else, so `strace <cmd>` works inside a sandboxed terminal with strace
+	// 6.14 and later (lane ptrace, PT-96, operator ruling 2026-11-10).
+	// Default FALSE. Authority-expanding and set only from the dashboard
+	// (Terminals > Settings, the sandbox card's strace switch, POST
+	// /api/terminal/sandbox/ptrace-seize): `observer config set`, the
+	// generic keys route and the sandbox settings save never write it, and
+	// an organization can neither pin nor raise it. It takes effect only on
+	// a launch whose seize cannot reach a process outside the sandbox (the
+	// sandbox's own pid namespace, or Yama ptrace_scope 1 or more, read at
+	// launch); otherwise the launch keeps observer_default and says why.
+	// PTRACE_ATTACH stays denied either way. Read on the next launch.
+	SeccompAllowSeize bool `toml:"seccomp_allow_seize"`
 	// Backends is the backend preference order (sandbox plan v2 section 10),
 	// for example ["bwrap"]. When set it wins over Backend; empty means
 	// Backend as a one-element list. Each entry is a registry backend id; an
@@ -2455,11 +2618,38 @@ type TerminalSandboxConfig struct {
 	// Windows is [terminal.sandbox.windows]: the MXC tier floor (R-034).
 	Windows TerminalSandboxWindowsConfig `toml:"windows"`
 
+	// OpenShell is [terminal.sandbox.openshell], the OpenShell row
+	// (internal/config/sandbox_openshell.go; lane O1A; beta). Read only
+	// while the terminals.sandbox.openshell component is active AND
+	// "openshell" is in Backends.
+	OpenShell TerminalSandboxOpenShellConfig `toml:"openshell"`
+
 	// VM is [terminal.sandbox.vm], the Cloud Hypervisor microVM driver
 	// (sandbox plan v2 sections 10 and 10.1, lane SBX-P4; beta). Read only
 	// while the terminals.sandbox.vm component is active AND
 	// "cloud-hypervisor" is in Backends.
 	VM TerminalSandboxVMConfig `toml:"vm"`
+
+	// Setup is [terminal.sandbox.setup], the sandbox installation lifecycle
+	// (plan docs/plans/sandbox-installation-lifecycle-plan-2026-11-06.md):
+	// how far the setup steps of the New Terminal dialog, Settings and
+	// `observer sandbox setup` may go on this machine.
+	Setup TerminalSandboxSetupConfig `toml:"setup"`
+}
+
+// TerminalSandboxSetupConfig is the [terminal.sandbox.setup] block. Every
+// key is local and never distributed by an organization.
+type TerminalSandboxSetupConfig struct {
+	// AllowElevated lets a setup step that needs your password (sudo on
+	// Linux, WSL and macOS; a User Account Control prompt on Windows) run in
+	// a visible setup terminal, where you type the password yourself. Only
+	// allow-listed shapes are ever elevated: a named package from the host's
+	// own repositories, a vendor's documented registration command, a
+	// verified local package file and Windows optional features. Default
+	// FALSE (decision P-250): while it is off, every such step is shown as a
+	// command to run yourself. Observer never stores, reads or pipes a
+	// password, and never adds you to a group.
+	AllowElevated bool `toml:"allow_elevated"`
 }
 
 // TerminalSandboxVMConfig is the [terminal.sandbox.vm] block. Every key is
@@ -2513,11 +2703,33 @@ type TerminalSandboxHostedConfig struct {
 	// it (selection rule S13). Default 30, 5 to 1440, at most
 	// MaxRunMinutes (so a short max_run_minutes needs it lowered too).
 	MinSessionMinutes int `toml:"min_session_minutes"`
-	// KeyCustody is where the model credential sits: home_relay (the
-	// default; only the org gateway key or a routing key-pool key can stay
-	// home today), in_box_api_key, in_box_oauth_seed, or provider_injected
-	// (no hosted row offers it yet).
+	// KeyCustody is where the model credential sits: auto (the default,
+	// decision SBXD-1: per launch and per tool, the key stays on this
+	// machine when credential injection or the org AI gateway adds it for
+	// that tool, otherwise the tool's API key is put in the box; disclosed
+	// on the consent screen and in the New Terminal dialog), home_relay
+	// (the key always stays on this machine; a tool nothing here serves is
+	// refused), in_box_api_key, in_box_oauth_seed (not built), or
+	// provider_injected (no hosted row offers it yet).
 	KeyCustody string `toml:"key_custody"`
+	// KeyCustodyByTool sets the custody per tool (tool id -> auto,
+	// home_relay or in_box_api_key), taking precedence over KeyCustody for
+	// that tool's hosted launches. Default empty.
+	KeyCustodyByTool map[string]string `toml:"key_custody_by_tool"`
+	// ToolKeys opts a tool in (tool id -> true) to a third in-box key
+	// source (decision SBXD-4 (b)): under in-box custody, the keys the tool
+	// saved in its own key file (a grounded registry row; OpenCode's
+	// auth.json), read only when the run starts, after the daemon's
+	// environment and the stored keys. Default empty (off); disclosed on the
+	// consent screen by tool.
+	ToolKeys map[string]bool `toml:"tool_keys"`
+	// LoginSeed opts a tool in (tool id -> true) to copying its login into
+	// the box under in-box custody (decision SBXD-4 (c)): only the
+	// short-lived access token, never the refresh token, and only while it
+	// has not expired (a grounded registry row; Claude Code's
+	// .credentials.json). Default empty (off); disclosed on the consent
+	// screen by tool.
+	LoginSeed map[string]bool `toml:"login_seed"`
 	// MemoryImages is avoid (the default: a provider pause image is switched
 	// off where the vendor allows, disclosed and deleted at teardown) or
 	// refuse (a row whose provider could take one is dropped).
@@ -2538,10 +2750,77 @@ type TerminalSandboxHostedConfig struct {
 	// before the box is deleted, and swept after
 	// [terminal.sandbox].workspace_retention_days. Default false.
 	DBExport bool `toml:"db_export"`
+	// DiffAgainst (the smaller item "diff against the box's baseline" of
+	// the sandbox decisions) is what an upload run's saved diff is taken
+	// against: "baseline" (the default; also what "" means) diffs against
+	// the observer-baseline commit the upload made in the box, so commits
+	// the agent made are in the diff and a run from a clean, committed
+	// folder opens as a branch; "head" keeps the earlier capture (the box's
+	// HEAD, so the agent's own commits are left out and such a diff is
+	// offered as a file only). A row whose in-box guest keeps its own
+	// baseline (the organization's row) always uses the guest's capture.
+	DiffAgainst string `toml:"diff_against"`
+	// AllowPrivateRanges (decision SBXD-7): false (the default) has a hosted
+	// row's internet-tier create ask the vendor to refuse the cloud metadata
+	// address, link-local and private ranges (169.254.0.0/16, 10.0.0.0/8,
+	// 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10), on
+	// every vendor whose API takes deny rules; true asks for no deny, for a
+	// box that must reach a private network. A vendor that takes no deny rule
+	// is unaffected either way (disclosed). A provider table's own
+	// allow_private_ranges overrides it for that vendor. An organization may
+	// only pin it to false.
+	AllowPrivateRanges bool `toml:"allow_private_ranges"`
+	// GuardHooks is whether a hosted box gets guard's hook registration for
+	// the agent tool (lane HOOKS, decision SBXD-6): auto (the default; ""
+	// reads as auto) seeds it whenever guard enforcement is in force on this
+	// machine, on always, off never. Seeding writes the tool's user-scope
+	// settings file in the BOX home only, for a tool whose hook mechanism a
+	// box can be seeded for (internal/hook.BoxHooksCover); the in-box hooks
+	// ride the run's relay home, where guard decides, and a dropped relay
+	// blocks a gate hook.
+	GuardHooks string `toml:"guard_hooks"`
+	// CloneWhere is where a hosted row's "Clone a remote URL" source
+	// clones (decision SBXD-5): auto (the default) clones a repository
+	// that answers an anonymous listing in the box and any other on this
+	// machine; box always clones in the box (public repositories only,
+	// the internet tier only); home always clones on this machine with
+	// its own git login and uploads the clone's tracked files (any tier,
+	// private repositories included, no credential leaves). Only auto
+	// lets the New Terminal dialog choose per launch. A row whose box
+	// clone is its organization's own always clones in the box.
+	CloneWhere string `toml:"clone_where"`
+	// UploadNonGit (decision SBXD-8, audit item H8) uploads a folder that is
+	// not a git repository: its files are listed with git's own ignore
+	// machinery through a temporary git directory outside the folder (the
+	// folder is never written, never `git init`ed), honouring its
+	// .gitignore files, Observer's default ignore set (dependency, build
+	// and virtual-environment folders, version-control folders, .env files,
+	// operating-system clutter) and UploadIgnore, then the upload's usual
+	// credential-shaped exclusions and caps; the consent screen lists the
+	// files and the changes come back as a diff file only. Default true;
+	// false refuses such a folder before Start, as before. A folder inside
+	// a repository, the home folder and / stay refused either way. An org
+	// may only keep it off.
+	UploadNonGit bool `toml:"upload_non_git"`
+	// UploadIgnore are extra ignore patterns (gitignore syntax) for that
+	// listing, written after the default set, so a negated pattern
+	// ("!dist/") takes a default back out. At most 200, each at most 256
+	// characters on one line. An org may only add patterns.
+	UploadIgnore []string `toml:"upload_ignore"`
 	// E2B, Modal and Vercel are the per-provider tables.
 	E2B    TerminalSandboxHostedProviderConfig `toml:"e2b"`
 	Modal  TerminalSandboxHostedProviderConfig `toml:"modal"`
 	Vercel TerminalSandboxHostedProviderConfig `toml:"vercel"`
+	// Docker is the Docker Sandboxes table (lane SBX-DOCKER).
+	Docker TerminalSandboxHostedProviderConfig `toml:"docker"`
+	// OpenShellOrg is the org-hosted OpenShell row's block (lane G4).
+	OpenShellOrg TerminalSandboxHostedOrgShellConfig `toml:"openshell-org"`
+	// InstaBox is the InstaBox row's provider table (region, template and
+	// box_binary; InstaBox takes no region, so only the empty one resolves).
+	InstaBox TerminalSandboxHostedProviderConfig `toml:"instabox"`
+	// Daytona is the Daytona row's provider table (a hosted vendor;
+	// its template is a Daytona snapshot name).
+	Daytona TerminalSandboxHostedProviderConfig `toml:"daytona"`
 }
 
 // TerminalSandboxHostedProviderConfig is one provider's table.
@@ -2572,6 +2851,51 @@ type TerminalSandboxHostedProviderConfig struct {
 	// OrgPublished marks an Endpoint the org's managed pull set (never read
 	// from a file): only such an endpoint may leave the vendor's domain.
 	OrgPublished bool `toml:"-" json:"-"`
+	// BoxBinaryInImage marks a row whose box image already carries the in-box
+	// observer at the vendor's binary path, so nothing is uploaded and only
+	// its version is checked in the box (never read from a file: the
+	// organization's published box_binary = "image" sets it; FX3 item 2,
+	// live finding F-L3P4-6).
+	BoxBinaryInImage bool `toml:"-" json:"-"`
+	// AllowPrivateRanges overrides [terminal.sandbox.hosted]
+	// .allow_private_ranges for this vendor (nil follows it). Only a vendor
+	// whose API takes deny rules accepts it (HostedPrivateRangeDenyProviders);
+	// an organization pin of the shared key clears it.
+	AllowPrivateRanges *bool `toml:"allow_private_ranges"`
+}
+
+// HostedPrivateRangeDenyProviders are the provider tables whose vendor's
+// create request can deny address ranges (internal/sandboxremote's
+// DenyRanges rows; config stays a leaf, so this mirror is pinned equal to
+// that table by a test in cmd/observer).
+var HostedPrivateRangeDenyProviders = []string{"docker", "e2b", "vercel"}
+
+// ProviderTable returns the provider table named name (e2b, modal, vercel,
+// docker, instabox, daytona), or nil for any other name.
+func (c *TerminalSandboxHostedConfig) ProviderTable(name string) *TerminalSandboxHostedProviderConfig {
+	if get, ok := hostedProviderTables[name]; ok {
+		return get(c)
+	}
+	return nil
+}
+
+// hostedProviderTables maps a provider table name to its field.
+var hostedProviderTables = map[string]func(*TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig{
+	"e2b":      func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.E2B },
+	"modal":    func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Modal },
+	"vercel":   func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Vercel },
+	"docker":   func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Docker },
+	"instabox": func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.InstaBox },
+	"daytona":  func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Daytona },
+}
+
+// PrivateRangesAllowed is the effective allow_private_ranges for one
+// provider table: its own override when set, else the shared value.
+func (c TerminalSandboxHostedConfig) PrivateRangesAllowed(p TerminalSandboxHostedProviderConfig) bool {
+	if p.AllowPrivateRanges != nil {
+		return *p.AllowPrivateRanges
+	}
+	return c.AllowPrivateRanges
 }
 
 // TerminalSandboxSeatbeltConfig is the [terminal.sandbox.seatbelt] block.
@@ -3648,9 +3972,10 @@ type OrgClientShareConfig struct {
 	// manage.
 	MCPActivity bool `toml:"mcp_activity"`
 	// Security is the security pillar's share level on an INDIVIDUAL node
-	// (security plan 6.5 and 7.4, ruling Q7): "off" (the default, also what
-	// an empty or unknown value means), "posture" (the enum-and-count daily
-	// posture row) or "findings" (posture plus finding rows; their paths and
+	// (security plan 6.5 and 7.4, ruling Q7): "off" (also what an unknown
+	// value means), "posture" (the enum-and-count daily posture row; the
+	// default when the key is unset, ruling R1 of lane CODESEC-ORG,
+	// 2026-11-03) or "findings" (posture plus finding rows; their paths and
 	// redacted evidence still need full_content). Rows ship only while the
 	// security module is active. Node-side only, never raised remotely: a
 	// MANAGED node ignores it and follows the finding_share of its in-force
@@ -3660,12 +3985,10 @@ type OrgClientShareConfig struct {
 	// (docs/plans/plane-a-p0-6-effective-policy-state-plan.md §2.3) onto a
 	// dedicated POST /api/agent/policy-ack. CONTENT-FREE — the report carries
 	// only hash/version/enum/timestamp rows (attribution empty-on-wire,
-	// server-stamped). Its own consent toggle, default false. On an
-	// INDIVIDUAL node the org cannot raise it; on a MANAGED node whose grant
-	// carries the strict `extract.policy_state` authority the org's
-	// node.governance body MAY raise it (the enterprise default body does),
-	// and a directive may lower it off on either — see
-	// internal/govern/sharetiers.go and the Privacy card's source column.
+	// server-stamped). Its own consent toggle, default false, and it gates
+	// an INDIVIDUAL node only (the org cannot raise it there). A MANAGED node
+	// reports whatever this says (2026-11-12 ruling, govern
+	// managedpolicytiers.go).
 	PolicyState bool `toml:"policy_state"`
 	// --- Plane A: general observability of an admin/org-hosted LLM app ---
 	// Org-tier observability opt-ins live under the nested
@@ -4025,6 +4348,153 @@ type ProcessConfig struct {
 	Filesystem ProcessFilesystemConfig `toml:"filesystem"`
 	Metrics    ProcessMetricsConfig    `toml:"metrics"`
 	ETW        ProcessETWConfig        `toml:"etw"`
+	Capture    ProcessCaptureConfig    `toml:"capture"`
+}
+
+// ProcessCaptureConfig is the [observer.process.capture] surface: the process
+// capture budget (docs/process-observability.md §11 "Capture budget", plan
+// docs/plans/process-capture-budget-plan-2026-11-04.md §9.1). It bounds how
+// many process rows one session stores: every captured run goes through one
+// ordered decision table (internal/proccapture) that keeps it as a row, folds
+// it into its parent, tracks it under a service the agent started, rolls it up
+// into a counted group, or drops it (counted). Findings, failures and
+// tool-call links are always kept; counts stay exact either way.
+//
+// Partial-merge like the sibling process blocks: Default() seeds every value,
+// so a block that sets one key inherits the rest. LOCAL-ONLY, never
+// distributed. Restart-bound (read once at daemon start).
+type ProcessCaptureConfig struct {
+	// Enabled applies the capture budget. Default true. False restores the
+	// pre-budget behaviour: every captured process becomes its own row with a
+	// metric ring, which on a busy session is tens of thousands of rows a day
+	// (one measured session stored 92,428). With it on, the same session keeps
+	// a few thousand rows and the rest become a few hundred rollup rows.
+	Enabled bool `toml:"enabled"`
+
+	Budget       ProcessCaptureBudgetConfig       `toml:"budget"`
+	Services     ProcessCaptureServicesConfig     `toml:"services"`
+	Fold         ProcessCaptureFoldConfig         `toml:"fold"`
+	Metrics      ProcessCaptureMetricsConfig      `toml:"metrics"`
+	Rollups      ProcessCaptureRollupsConfig      `toml:"rollups"`
+	Unattributed ProcessCaptureUnattributedConfig `toml:"unattributed"`
+}
+
+// ProcessCaptureBudgetConfig is [observer.process.capture.budget]: how many
+// individual process rows (exemplars) are kept before further short-lived runs
+// are rolled up into counted groups. Findings, failures, tool-call roots and
+// runs alive 30 s or more never count against a full budget.
+type ProcessCaptureBudgetConfig struct {
+	// PerToolCall is the number of individual rows kept per tool call before
+	// the call's remaining short-lived children roll up. Default 200. Raising
+	// it stores more rows for big build or test fan-outs (each row is about
+	// 1.5 KB); 0 removes the cap.
+	PerToolCall int `toml:"per_tool_call"`
+	// PerSession is the number of individual rows kept per session. Default
+	// 5000. It is the ceiling on one session's process rows; 0 removes the
+	// cap (unbounded rows on a busy session).
+	PerSession int `toml:"per_session"`
+	// PerMinute is the burst guard: individual rows kept per session per
+	// minute. Default 300. Lower it to flatten bursts; 0 removes the cap.
+	PerMinute int `toml:"per_minute"`
+}
+
+// ProcessCaptureServicesConfig is [observer.process.capture.services]:
+// services and GUI apps the agent starts (Docker Desktop, an editor, a dev
+// server that outlives its tool call). They are tracked, not hidden: the
+// service's root row and its first exemplars are kept, the rest of its
+// subtree is rolled up under the root, and tracking stops a while after the
+// session's last activity.
+type ProcessCaptureServicesConfig struct {
+	// Track tracks services the agent spawns. Default true. False keeps only
+	// each service's root row and drops (counts) everything it starts, the
+	// smallest volume, at the cost of not seeing what the service did.
+	Track bool `toml:"track"`
+	// DetachAfterMinutes: a process that outlives the tool call that started
+	// it by this many minutes and keeps starting children becomes a service
+	// root, so its later children are capped like a service's. Default 10.
+	// Lower values cap long-running dev servers sooner; 0 disables the
+	// heuristic (only the built-in service list applies).
+	DetachAfterMinutes int `toml:"detach_after_minutes"`
+	// ExemplarsPerService is how many individual rows are kept under one
+	// service root before the rest roll up. Default 20. Each extra exemplar is
+	// one more stored row per service.
+	ExemplarsPerService int `toml:"exemplars_per_service"`
+	// TailMinutes stops tracking a service this many minutes after the
+	// session's last activity; later runs are dropped and counted. Default
+	// 30. A service polling every few seconds adds about one rollup row a
+	// minute until then; 0 tracks it for as long as it runs.
+	TailMinutes int `toml:"tail_minutes"`
+	// ExtraBasenames adds executables (for example "mydaemon.exe") to the
+	// built-in service list (Docker Desktop, com.docker.backend, Code,
+	// explorer, devenv, idea64). Matching ignores case and ".exe".
+	ExtraBasenames []string `toml:"extra_basenames"`
+}
+
+// ProcessCaptureFoldConfig is [observer.process.capture.fold]: helper
+// processes that carry no meaning of their own (console hosts, plugin
+// metadata probes, credential helpers) are folded into their parent row as a
+// count instead of being stored.
+type ProcessCaptureFoldConfig struct {
+	// Enabled applies the fold list. Default true. On Windows every console
+	// program has a conhost.exe child, so turning this off roughly doubles the
+	// stored rows of a Windows session.
+	Enabled bool `toml:"enabled"`
+	// ExtraBasenames adds executables that always fold into their parent row.
+	// Matching ignores case and ".exe".
+	ExtraBasenames []string `toml:"extra_basenames"`
+}
+
+// ProcessCaptureMetricsConfig is [observer.process.capture.metrics].
+type ProcessCaptureMetricsConfig struct {
+	// RingMinLifetimeSeconds keeps the CPU/memory chart samples only for
+	// processes alive at least this long; shorter ones keep their totals.
+	// Default 30. The samples are the largest column (about 165 bytes per
+	// stored row on the measured session), so 0 stores a ring for every row.
+	RingMinLifetimeSeconds int `toml:"ring_min_lifetime_seconds"`
+}
+
+// ProcessCaptureRollupsConfig is [observer.process.capture.rollups].
+type ProcessCaptureRollupsConfig struct {
+	// BucketSeconds is the rollup bucket width: runs of the same program and
+	// argument shape under the same parent are summed per bucket. Default 60.
+	// A wider bucket means fewer rollup rows and a coarser timeline.
+	BucketSeconds int `toml:"bucket_seconds"`
+}
+
+// ProcessCaptureUnattributedConfig is [observer.process.capture.unattributed]:
+// what happens to process rows that are stored without a session so a later
+// correlation pass can join them (the cross-OS bridge, AI-tool subtrees).
+type ProcessCaptureUnattributedConfig struct {
+	// PendingHours is how long an unattributed row waits for correlation
+	// before the policy below applies. Default 24. Longer waits keep more
+	// session-less rows on disk at any time.
+	PendingHours int `toml:"pending_hours"`
+	// Mode is what happens once the wait is over: "rollup" (default) sums the
+	// rows into a machine-level rollup and deletes them; "drop" deletes them
+	// without a rollup.
+	Mode string `toml:"mode"`
+}
+
+// CaptureConfig maps the block onto the pure proccapture.Config the decision
+// table runs on (the one boundary between the TOML and the capture core).
+func (c ProcessCaptureConfig) CaptureConfig() proccapture.Config {
+	return proccapture.Config{
+		Enabled:               c.Enabled,
+		PerToolCall:           c.Budget.PerToolCall,
+		PerSession:            c.Budget.PerSession,
+		PerMinute:             c.Budget.PerMinute,
+		TrackServices:         c.Services.Track,
+		DetachAfter:           time.Duration(c.Services.DetachAfterMinutes) * time.Minute,
+		ExemplarsPerService:   c.Services.ExemplarsPerService,
+		ServiceTail:           time.Duration(c.Services.TailMinutes) * time.Minute,
+		ExtraServiceBasenames: c.Services.ExtraBasenames,
+		FoldEnabled:           c.Fold.Enabled,
+		ExtraFoldBasenames:    c.Fold.ExtraBasenames,
+		RingMinLifetime:       time.Duration(c.Metrics.RingMinLifetimeSeconds) * time.Second,
+		Bucket:                time.Duration(c.Rollups.BucketSeconds) * time.Second,
+		PendingHours:          c.Unattributed.PendingHours,
+		UnattributedMode:      c.Unattributed.Mode,
+	}
 }
 
 // ProcessETWConfig is the [observer.process.etw] surface: the daemon-side
@@ -4530,6 +5000,17 @@ type DashboardConfig struct {
 	// that seed, adding the key would have silently disabled the rail
 	// for every install that had ever set a dashboard address.
 	OrgAnnouncements bool `toml:"org_announcements"`
+	// LiveRibbon shows the live ribbon in the local dashboard's shell: the
+	// top-bar chip ("No agent running · Start one", or "N live") and the
+	// slim strip under the top bar while an agent session is live
+	// (docs/plans/local-dashboard-first-run-options-2026-11-18.md §8).
+	// Default TRUE. Local-only: the node operator's own display switch,
+	// never distributed and with no org toggle (an org that hides the Live
+	// page hides the ribbon through page visibility instead). Read on each
+	// ribbon request, so a save applies without a restart. Off removes the
+	// chip and the strip; the nav's Live count stays. Seeded true in
+	// Default() for the same partial-merge reason as OrgAnnouncements.
+	LiveRibbon bool `toml:"live_ribbon"`
 }
 
 // CompressionConfig groups all four compression layers' toggles.
@@ -5020,7 +5501,7 @@ func Default() Config {
 				MaxFileSizeMB:       50,
 				HomeWalk:            true,
 				EnabledAdapters: []string{
-					"claude-code", "codex", "cline", "cline-cli", "roo-code", "zoo-code", "cursor", "copilot", "copilot-cli", "cowork", "opencode", "openclaw", "pi", "gemini-cli", "antigravity", "antigravity-cli", "hermes", "kilo-code", "kilo-code-cli", "qwen-code", "kiro-cli", "crush", "kimi-code", "grok", "devin", "qoder", "aider", "goose", "chatgpt-web", "claude-web", "perplexity-web", "gemini-web", "copilot-web", "droid", "open-interpreter", "command-code", "muse", "prime-agent", "deepseek", "junie", "zcode", "mistral-code", "freebuff", "grokbot", "kiro-crew", "poolside", "zed", "autohand", "ibm-bob", "cortex-code", "codebuddy", "deepagents-code", "dimcode", "dirac", "kimchi", "stakpak", "vtcode",
+					"claude-code", "codex", "cline", "cline-cli", "roo-code", "zoo-code", "cursor", "copilot", "copilot-cli", "cowork", "opencode", "openclaw", "pi", "gemini-cli", "antigravity", "antigravity-cli", "hermes", "kilo-code", "kilo-code-cli", "qwen-code", "kiro-cli", "crush", "kimi-code", "grok", "devin", "qoder", "aider", "goose", "chatgpt-web", "claude-web", "perplexity-web", "gemini-web", "copilot-web", "droid", "open-interpreter", "command-code", "muse", "prime-agent", "deepseek", "junie", "zcode", "mistral-code", "freebuff", "grokbot", "kiro-crew", "poolside", "zed", "autohand", "ibm-bob", "cortex-code", "codebuddy", "deepagents-code", "dimcode", "dirac", "kimchi", "stakpak", "vtcode", "custom-agent",
 				},
 			},
 			Freshness: FreshnessConfig{
@@ -5118,6 +5599,27 @@ func Default() Config {
 					AllowNonLoopback:   false,
 					HandshakeTimeoutMS: 10000,
 				},
+				// Process capture budget (plan §9.1 defaults). Seeded in
+				// full so a partial [observer.process.capture] block
+				// inherits the rest (the partial-merge rule).
+				Capture: ProcessCaptureConfig{
+					Enabled: true,
+					Budget: ProcessCaptureBudgetConfig{
+						PerToolCall: 200,
+						PerSession:  5000,
+						PerMinute:   300,
+					},
+					Services: ProcessCaptureServicesConfig{
+						Track:               true,
+						DetachAfterMinutes:  10,
+						ExemplarsPerService: 20,
+						TailMinutes:         30,
+					},
+					Fold:         ProcessCaptureFoldConfig{Enabled: true},
+					Metrics:      ProcessCaptureMetricsConfig{RingMinLifetimeSeconds: 30},
+					Rollups:      ProcessCaptureRollupsConfig{BucketSeconds: 60},
+					Unattributed: ProcessCaptureUnattributedConfig{PendingHours: 24, Mode: "rollup"},
+				},
 			},
 			// SQLite connection/pragma tuning (docs/plans/observer-disk-
 			// compute-remediation-plan-2026-08-26.md Phase 1, P0-B). These
@@ -5179,6 +5681,7 @@ func Default() Config {
 		// (the built-in 127.0.0.1:8081 default resolves in cmd).
 		Dashboard: DashboardConfig{
 			OrgAnnouncements: true,
+			LiveRibbon:       true,
 		},
 		// CacheTrack is default-ON per spec §11: local, passive,
 		// network-free, hashes/counts/enums only. An install with
@@ -5257,6 +5760,7 @@ func Default() Config {
 			AlignmentJudge:          "off",
 			SkillHistory:            true,
 			SkillHistorySkewSeconds: 120,
+			QualityMetrics:          false,
 		},
 		// Delivery (commit to PR to merge, D-689): local landing detection
 		// is default-ON for the same reasons as the commit scan (local,
@@ -5463,10 +5967,22 @@ func Default() Config {
 				AppleContainer:         TerminalSandboxAppleContainerConfig{MemoryMiB: 4096, CPUs: 4},
 				Landlock:               TerminalSandboxLandlockConfig{MinABI: 9},
 				VM:                     TerminalSandboxVMConfig{VMM: "cloud-hypervisor", VCPUs: 2, MemoryMB: 4096, WorkspaceDelivery: "virtiofs"},
+				// [terminal.sandbox.setup]: elevated setup steps stay guide
+				// steps until the person turns the key on (P-250).
+				Setup: TerminalSandboxSetupConfig{AllowElevated: false},
 				Hosted: TerminalSandboxHostedConfig{
-					MinSessionMinutes: 30, KeyCustody: "home_relay", MemoryImages: "avoid",
+					MinSessionMinutes: 30, KeyCustody: "auto", MemoryImages: "avoid",
 					CheckpointMinutes: 5, MaxRunMinutes: 60, DailyBoxMinutes: 240,
+					DiffAgainst: HostedDiffAgainstBaseline,
+					GuardHooks:  "auto",
+					// SBXD-5: the clone location is decided per launch.
+					CloneWhere: "auto",
+					// SBXD-8: a folder that is not a repository uploads.
+					UploadNonGit: true,
 				},
+
+				// SBXD-2: a returned, clean copy goes after 30 days.
+				ReturnedCopyRetentionDays: 30,
 			},
 			// [terminal.ssh] — default ON for VISIBILITY (2026-08-28 operator
 			// ruling); the surface still launches nothing without an
@@ -5561,6 +6077,9 @@ func Default() Config {
 		// rule) rather than silently landing on a zero-valued false.
 		Observability: ObservabilityConfig{
 			ProxyTurnTraces: true,
+			// Node-local Plane A content storage is on by default
+			// (D8/D17): node-local data never leaves the machine.
+			StoreContent: true,
 		},
 		// Guard (security & control layer, guard spec §16) is
 		// default-ON in OBSERVE mode (D2): local, deterministic,
@@ -6158,6 +6677,11 @@ func validateObservabilityJudges(cfg Config) error {
 		if jc.TimeoutMS < 0 || jc.MaxTokens < 0 || jc.NumCtx < 0 {
 			return errors.New("config: observability judge timeout_ms/max_tokens/num_ctx must be >= 0")
 		}
+		switch strings.ToLower(strings.TrimSpace(jc.RequestProfile)) {
+		case "", "auto", "chat", "reasoning":
+		default:
+			return fmt.Errorf("config: observability judge request_profile %q not in {auto, chat, reasoning}", jc.RequestProfile)
+		}
 		if jc.UseOrgRelay && (jc.BaseURL != "" || jc.APIKeyEnv != "") {
 			return errors.New("config: observability judge use_org_relay=true is ambiguous with base_url/api_key_env set on the same block - the relay ignores both")
 		}
@@ -6170,7 +6694,9 @@ func validateObservabilityJudges(cfg Config) error {
 	if cfg.Observability.Admission.JudgeRetries < 0 {
 		return errors.New("config: observability.admission.judge_retries must be >= 0")
 	}
-	return nil
+	// [observability.sdk] (D18) is validated here so Validate's own ladder
+	// stays the same length.
+	return validateObservabilitySDK(cfg.Observability.SDK)
 }
 
 func Validate(cfg Config) error {
@@ -6629,6 +7155,10 @@ func SSHOptions(c TerminalSSHConfig) sshspec.Options {
 	}
 }
 
+// maxReturnedCopyRetentionDays bounds returned_copy_retention_days (ten
+// years, the bound an organization's pin of workspace_retention_days has).
+const maxReturnedCopyRetentionDays = 3650
+
 // validateTerminalSandbox checks semantic constraints on the [terminal.sandbox]
 // block (B9). Not gated on Enabled, so a typo'd backend/home_mode is caught at
 // load time even before an operator flips the master switch on. It is gated
@@ -6653,6 +7183,9 @@ func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	}
 	if c.WorkspaceRetentionDays < 0 {
 		return errors.New("config: terminal.sandbox.workspace_retention_days must be >= 0")
+	}
+	if c.ReturnedCopyRetentionDays < 0 || c.ReturnedCopyRetentionDays > maxReturnedCopyRetentionDays {
+		return fmt.Errorf("config: terminal.sandbox.returned_copy_retention_days must be 0 (never remove a copy automatically) to %d", maxReturnedCopyRetentionDays)
 	}
 	if c.PrepTimeoutSeconds < 0 {
 		return errors.New("config: terminal.sandbox.prep_timeout_seconds must be >= 0")
@@ -6948,17 +7481,16 @@ func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
 	if c.CheckpointMinutes < 1 || c.CheckpointMinutes > 60 {
 		return errors.New("config: terminal.sandbox.hosted.checkpoint_minutes must be 1 to 60")
 	}
-	switch c.KeyCustody {
-	case "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected":
-	default:
-		return fmt.Errorf("config: terminal.sandbox.hosted.key_custody %q not in {home_relay, in_box_api_key, in_box_oauth_seed, provider_injected}", c.KeyCustody)
+	if err := validateHostedKeySources(c); err != nil {
+		return err
 	}
-	switch c.MemoryImages {
-	case "avoid", "refuse":
-	default:
-		return fmt.Errorf("config: terminal.sandbox.hosted.memory_images %q not in {avoid, refuse}", c.MemoryImages)
+	if err := validateHostedEnums(c); err != nil {
+		return err
 	}
-	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel} {
+	if err := validateHostedUploadIgnore(c.UploadIgnore); err != nil {
+		return err
+	}
+	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel, "docker": c.Docker, "instabox": c.InstaBox, "daytona": c.Daytona} {
 		if r := p.Region; r != "" && !hostedRegionRE.MatchString(r) {
 			return fmt.Errorf("config: terminal.sandbox.hosted.%s.region %q must be a region name (letters, digits and dashes)", name, r)
 		}
@@ -6976,6 +7508,89 @@ func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
 		}
 		if k := p.EndpointSPKISHA256; k != "" && !hostedSPKIRE.MatchString(k) {
 			return fmt.Errorf("config: terminal.sandbox.hosted.%s.endpoint_spki_sha256 must be 64 lowercase hex characters", name)
+		}
+		if p.AllowPrivateRanges != nil && !slices.Contains(HostedPrivateRangeDenyProviders, name) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.allow_private_ranges has no effect: this vendor's API takes no rule that would refuse private ranges, so its box can reach them whatever the setting says; remove the key", name)
+		}
+	}
+	return nil
+}
+
+// The values of [terminal.sandbox.hosted].diff_against ("" means baseline).
+const (
+	// HostedDiffAgainstBaseline diffs an upload run against the box's
+	// observer-baseline commit (the default).
+	HostedDiffAgainstBaseline = "baseline"
+	// HostedDiffAgainstHead diffs it against the box's HEAD (the earlier
+	// capture).
+	HostedDiffAgainstHead = "head"
+)
+
+// hostedEnumKeys are the closed-vocabulary keys of [terminal.sandbox.hosted],
+// one row each: the key, its value,
+// and the values it takes ("" where the empty value means the default).
+func hostedEnumKeys(c TerminalSandboxHostedConfig) []struct {
+	key, value string
+	allowed    []string
+} {
+	return []struct {
+		key, value string
+		allowed    []string
+	}{
+		{"key_custody", c.KeyCustody, []string{"auto", "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
+		{"memory_images", c.MemoryImages, []string{"avoid", "refuse"}},
+		{"diff_against", c.DiffAgainst, []string{"", HostedDiffAgainstBaseline, HostedDiffAgainstHead}},
+		{"guard_hooks", c.GuardHooks, []string{"", "auto", "on", "off"}},
+		// SBXD-5: the clone location (internal/workspace CloneWhere's
+		// vocabulary); an older file that names none gets the default, auto.
+		{"clone_where", c.CloneWhere, []string{"auto", "box", "home"}},
+	}
+}
+
+// validateHostedEnums walks hostedEnumKeys.
+func validateHostedEnums(c TerminalSandboxHostedConfig) error {
+	for _, k := range hostedEnumKeys(c) {
+		if !slices.Contains(k.allowed, k.value) {
+			named := make([]string, 0, len(k.allowed))
+			for _, a := range k.allowed {
+				if a != "" {
+					named = append(named, a)
+				}
+			}
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s %q not in {%s}", k.key, k.value, strings.Join(named, ", "))
+		}
+	}
+	return nil
+}
+
+// hostedUploadIgnoreMax and hostedUploadIgnoreLen bound
+// [terminal.sandbox.hosted].upload_ignore.
+const (
+	hostedUploadIgnoreMax = 200
+	hostedUploadIgnoreLen = 256
+)
+
+// validateHostedUploadIgnore checks the extra ignore patterns of a hosted
+// upload of a folder that is not a repository (SBXD-8): each a non-empty,
+// one-line gitignore pattern that is not a comment and not a bare "!" or
+// "/" (which would mean nothing or the whole folder).
+func validateHostedUploadIgnore(list []string) error {
+	if len(list) > hostedUploadIgnoreMax {
+		return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore holds %d patterns; at most %d", len(list), hostedUploadIgnoreMax)
+	}
+	for _, p := range list {
+		t := strings.TrimSpace(p)
+		switch {
+		case t == "":
+			return errors.New("config: terminal.sandbox.hosted.upload_ignore holds an empty pattern")
+		case len(t) > hostedUploadIgnoreLen:
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %.40q... is over %d characters", t, hostedUploadIgnoreLen)
+		case strings.ContainsFunc(t, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q holds a line break or control character", t)
+		case strings.HasPrefix(t, "#"):
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q is a comment; write \\# for a name that starts with #", t)
+		case t == "!" || t == "/" || t == "!/":
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q names nothing", t)
 		}
 	}
 	return nil
@@ -7329,6 +7944,12 @@ func validateObservabilityAlerts(a ObservabilityAlertsConfig) error {
 	if a.EvalIntervalMinutes < 0 {
 		return errors.New("config: observability.alerts.eval_interval_minutes must be >= 0")
 	}
+	if err := alertspec.ValidSlackWebhookURL(a.SlackWebhookURL); err != nil {
+		return fmt.Errorf("config: observability.alerts.slack_webhook_url: %w", err)
+	}
+	if err := alertspec.ValidPagerDutyRoutingKey(a.PagerDutyRoutingKey); err != nil {
+		return fmt.Errorf("config: observability.alerts.pagerduty_routing_key: %w", err)
+	}
 	for i, r := range a.Rules {
 		switch r.Metric {
 		case "error_rate", "cost_usd", "latency_p95_ms":
@@ -7345,6 +7966,9 @@ func validateObservabilityAlerts(a ObservabilityAlertsConfig) error {
 		}
 		if r.WindowMinutes < 0 || r.CooldownMinutes < 0 {
 			return fmt.Errorf("config: observability.alerts.rules[%d] window_minutes/cooldown_minutes must be >= 0", i)
+		}
+		if err := (alertspec.Dimensions{Model: r.Model, User: r.User, Tag: r.Tag, Service: r.Service}).Validate(); err != nil {
+			return fmt.Errorf("config: observability.alerts.rules[%d]: %w", i, err)
 		}
 	}
 	return nil
@@ -7443,7 +8067,30 @@ func validateGuidance(g GuidanceConfig) error {
 // (one hour): the A-613 tracker keeps that much history per session.
 const maxEvasionWindowSeconds = 3600
 
+// guardLevelNameRx is the shape of a [guard] level value: a recipe name
+// (internal/guardrecipe.NameRx carries the same pattern for recipe files).
+var guardLevelNameRx = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// validGuardHostPattern checks one [guard.network] host pattern's shape: a
+// host name (optionally "*." or "*"-prefixed), an IP address or a CIDR
+// block. The network rules own the matching and tolerate surrounding space,
+// a scheme and path, a :port, brackets and a trailing dot, so this refuses
+// only a value no rule could ever honour (guardHostPatternProblem): a
+// stricter check would fail config.Load, and with it the daemon, on upgrade.
+func validGuardHostPattern(h string) error {
+	if why := guardHostPatternProblem(h); why != "" {
+		return fmt.Errorf("host pattern %q %s", h, why)
+	}
+	return nil
+}
+
 func validateGuard(g GuardConfig) error {
+	// The keys guard recipes write or read are refused even while the
+	// guard is off: a recipe apply or a later enable would otherwise meet
+	// them first (sweep finding CFG-5).
+	if err := validateGuardRecipeInputs(g); err != nil {
+		return err
+	}
 	if !g.Enabled {
 		return nil
 	}
@@ -7496,6 +8143,33 @@ func validateGuard(g GuardConfig) error {
 	}
 	if err := validateGuardPrompt(g.Prompt); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateGuardRecipeInputs validates the keys guard recipes write or read:
+// [guard] level (a recipe name), [guard.database] prod_patterns (no empty
+// pattern, no credential) and the [guard.network] host lists (a host, an IP
+// or a CIDR). validateGuard runs it whether or not the guard is enabled.
+func validateGuardRecipeInputs(g GuardConfig) error {
+	if g.Level != "" && !guardLevelNameRx.MatchString(g.Level) {
+		return fmt.Errorf("config: guard.level %q is not a recipe name (lowercase letters, digits and dashes)", g.Level)
+	}
+	for i, p := range g.Database.ProdPatterns {
+		if strings.TrimSpace(p) == "" {
+			return errors.New("config: guard.database.prod_patterns has an empty pattern")
+		}
+		if guardProdPatternHasCredential(p) {
+			// The value is not repeated: it holds the credential.
+			return fmt.Errorf("config: guard.database.prod_patterns entry %d carries a credential (a user:password@ or a password= part): name the host, database or profile without it; config.toml keeps the value in plain text", i+1)
+		}
+	}
+	for key, hosts := range map[string][]string{"allow_hosts": g.Network.AllowHosts, "deny_hosts": g.Network.DenyHosts} {
+		for _, h := range hosts {
+			if err := validGuardHostPattern(h); err != nil {
+				return fmt.Errorf("config: guard.network.%s: %w", key, err)
+			}
+		}
 	}
 	return nil
 }

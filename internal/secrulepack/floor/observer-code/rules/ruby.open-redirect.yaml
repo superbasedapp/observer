@@ -1,0 +1,50 @@
+rules:
+  - id: ruby.open-redirect
+    languages: [ruby]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; redirect to a path or route helper, check the host against an allow-list, or pass allow_other_host false.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|query_string|headers|cookies|GET|POST|referer|referrer)$
+    pattern-sanitizers:
+      - pattern: url_for(...)
+      # Route helpers build a path on this site; a record looked up by an
+      # id is not a URL.
+      - patterns:
+          - pattern: $HELPER(...)
+          - metavariable-regex:
+              metavariable: $HELPER
+              regex: ^\w+_(path|url)$
+      - pattern: $M.find(...)
+      - pattern: $M.find_by(...)
+      - pattern: $M.find_by!(...)
+      - pattern: ERB::Util.url_encode(...)
+      - pattern: CGI.escape(...)
+      - pattern: $X.to_i
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: redirect_to($U, ...)
+              - pattern: 'redirect_back(..., fallback_location: $U, ...)'
+              - pattern: 'redirect_back_or_to($U, ...)'
+              # Sinatra and Roda.
+              - pattern: redirect($U, ...)
+              - pattern: redirect(to($U), ...)
+              - pattern: $R.redirect($U, ...)
+          - pattern-not: 'redirect_to(..., allow_other_host: false, ...)'
+          - pattern-not: 'redirect_to(..., only_path: true, ...)'
+          # A fixed path on this site or a fixed host before the input.
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^"(/[^/\\"#{]|https?://[^/"#?{}]+[/?#])
+          - focus-metavariable: $U

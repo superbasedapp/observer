@@ -3,11 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
 import {
+  ExecutionLocationBadge,
   PageHeader,
+  Pill,
   SlideOver,
   Tooltip,
   TruncatedPath,
 } from "@/components/primitives";
+import { groupCloudTwins, offMachineSessions } from "@/lib/cloudLane";
 import { ChartState } from "@/components/ChartState";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import { ProjectDetailPanel } from "@/components/ProjectDetailPanel";
@@ -100,7 +103,10 @@ export function ProjectsPage() {
       ? "Tool and model filters narrow sessions, actions and spend; AI code lines and commits stay project totals for the window."
       : "";
 
-  const rows = projects.data?.rows ?? [];
+  // A synthetic cloud project ("cloud:<remote>") lists right under the
+  // local project with the same remote (cloud-agents lane CA-B5); a header
+  // sort reorders freely, and the Project cell still names the twin.
+  const rows = useMemo(() => groupCloudTwins(projects.data?.rows ?? []), [projects.data]);
   const loading = projects.loading && !projects.data;
   const error = projects.error;
 
@@ -168,6 +174,41 @@ export function ProjectsPage() {
   );
 }
 
+// ProjectCell: the project path plus where its sessions ran (cloud-agents
+// lane CA-B5). A synthetic cloud project ("cloud:<remote>", a remote-only
+// session's home) carries a "cloud project" pill and, once a local checkout
+// of the same remote exists, is indented under it. A project with sessions
+// that ran in a vendor cloud or on a worker carries the badge and the count.
+function ProjectCell({ r }: { r: ProjectRow }) {
+  const off = offMachineSessions(r.execution_mix);
+  const twinned = r.cloud_twin_of != null;
+  return (
+    <span className={twinned ? "flex min-w-0 items-center gap-1.5 pl-4" : "flex min-w-0 items-center gap-1.5"}>
+      {twinned && (
+        <Tooltip content="Same repository as the project above, captured with no local checkout. Its sessions also show in that project's Where it ran lane.">
+          <span tabIndex={0} aria-label="grouped under the project above" className="text-fg-4 focus:outline-none">
+            ↳
+          </span>
+        </Tooltip>
+      )}
+      <TruncatedPath value={r.root_path} className="max-w-[360px] font-mono text-fg-1" />
+      {r.synthetic_cloud && (
+        <Pill case="none" title="A project named after its repository: sessions that ran in the cloud with no local checkout.">
+          cloud project
+        </Pill>
+      )}
+      {off > 0 && (
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <ExecutionLocationBadge
+            location={(r.execution_mix?.vendor_cloud ?? 0) > 0 ? "vendor_cloud" : "customer_worker"}
+          />
+          <span className="font-mono text-[10.5px] text-fg-3">{fmtInt(off)}</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 function ProjectTitle({ root }: { root: string }) {
   return (
     <TruncatedPath value={root} className="max-w-[640px] font-mono" />
@@ -197,12 +238,7 @@ function projectColumns(
       id: "project",
       header: "Project",
       accessorKey: "root_path",
-      cell: ({ row }) => (
-        <TruncatedPath
-          value={row.original.root_path}
-          className="max-w-[360px] font-mono text-fg-1"
-        />
-      ),
+      cell: ({ row }) => <ProjectCell r={row.original} />,
     },
     {
       id: "sessions",

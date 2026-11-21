@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
 // The sandbox posture aggregate (sandbox plan v2 section 8.4, phase P1a).
@@ -44,16 +45,18 @@ func (s *Store) SetSandboxCapabilityProvider(p SandboxCapabilityProvider) { s.sa
 
 // SelectSandboxPostureRows aggregates terminal_run's isolation evidence into
 // the per-day posture buckets. Runs that recorded no evidence (rows from
-// before migration 179) are left out.
+// before migration 179) are left out. Each bucket carries its runs split by
+// the seccomp state they recorded (migration 232, lane FU4) as counts, not
+// as a key, so the bucket is the one it always was.
 func (s *Store) SelectSandboxPostureRows(ctx context.Context) ([]orgcontract.SandboxPostureRow, error) {
 	since := time.Now().UTC().AddDate(0, 0, -sandboxPostureWindowDays)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT substr(launched_at, 1, 10) AS day, isolation_class, capture_level, capture_origin,
-		       verification, native_sandbox_state, key_custody, COUNT(*)
+		       verification, native_sandbox_state, key_custody, seccomp, COUNT(*)
 		FROM terminal_run
 		WHERE launched_at >= ? AND (isolation_class != '' OR capture_level != '' OR capture_origin != '')
-		GROUP BY day, isolation_class, capture_level, capture_origin, verification, native_sandbox_state, key_custody
-		ORDER BY day, isolation_class, capture_level, capture_origin, verification, native_sandbox_state, key_custody`,
+		GROUP BY day, isolation_class, capture_level, capture_origin, verification, native_sandbox_state, key_custody, seccomp
+		ORDER BY day, isolation_class, capture_level, capture_origin, verification, native_sandbox_state, key_custody, seccomp`,
 		timestamp(since))
 	if err != nil {
 		return nil, fmt.Errorf("store.SelectSandboxPostureRows: %w", err)
@@ -62,16 +65,50 @@ func (s *Store) SelectSandboxPostureRows(ctx context.Context) ([]orgcontract.San
 	out := []orgcontract.SandboxPostureRow{}
 	for rows.Next() {
 		var r orgcontract.SandboxPostureRow
+		var seccomp string
 		if err := rows.Scan(&r.Day, &r.IsolationClass, &r.CaptureLevel, &r.CaptureOrigin,
-			&r.Verification, &r.NativeSandboxState, &r.KeyCustody, &r.Runs); err != nil {
+			&r.Verification, &r.NativeSandboxState, &r.KeyCustody, &seccomp, &r.Runs); err != nil {
 			return nil, fmt.Errorf("store.SelectSandboxPostureRows: scan: %w", err)
 		}
-		out = append(out, r)
+		out = foldSandboxPostureSeccomp(out, r, seccomp)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store.SelectSandboxPostureRows: %w", err)
 	}
 	return out, nil
+}
+
+// foldSandboxPostureSeccomp adds one (bucket, seccomp) count to out: the
+// rows arrive ordered by bucket, so a row of the same bucket as the last
+// one adds to it. A recorded state goes into the split; "" (not recorded)
+// counts only in Runs.
+func foldSandboxPostureSeccomp(out []orgcontract.SandboxPostureRow, r orgcontract.SandboxPostureRow, seccomp string) []orgcontract.SandboxPostureRow {
+	// Only the closed vocabulary leaves the node; anything else in the
+	// column counts as not recorded.
+	if !sandboxvocab.SeccompRun(seccomp).Valid() {
+		seccomp = ""
+	}
+	if n := len(out); n > 0 && sameSandboxPostureBucket(out[n-1], r) {
+		out[n-1].Runs += r.Runs
+		if seccomp != "" {
+			if out[n-1].Seccomp == nil {
+				out[n-1].Seccomp = map[string]int64{}
+			}
+			out[n-1].Seccomp[seccomp] += r.Runs
+		}
+		return out
+	}
+	if seccomp != "" {
+		r.Seccomp = map[string]int64{seccomp: r.Runs}
+	}
+	return append(out, r)
+}
+
+// sameSandboxPostureBucket reports whether two rows share every key field.
+func sameSandboxPostureBucket(a, b orgcontract.SandboxPostureRow) bool {
+	return a.Day == b.Day && a.IsolationClass == b.IsolationClass && a.CaptureLevel == b.CaptureLevel &&
+		a.CaptureOrigin == b.CaptureOrigin && a.Verification == b.Verification &&
+		a.NativeSandboxState == b.NativeSandboxState && a.KeyCustody == b.KeyCustody
 }
 
 // composeSandboxPosture resolves the capability and, when the posture family

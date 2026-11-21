@@ -1,0 +1,94 @@
+rules:
+  - id: php.ssrf-request-url
+    languages: [php]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: urlencode(...)
+      - pattern: rawurlencode(...)
+      - pattern: http_build_query(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: curl_init($U)
+              - pattern: curl_setopt($C, CURLOPT_URL, $U)
+              - pattern: fsockopen($U, ...)
+              - pattern: stream_socket_client($U, ...)
+              - pattern: get_headers($U, ...)
+              - pattern: new SoapClient($U, ...)
+              - pattern: wp_remote_get($U, ...)
+              - pattern: wp_remote_post($U, ...)
+              - pattern: wp_remote_head($U, ...)
+              - pattern: wp_remote_request($U, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: Http::$M($U, ...)
+                      - pattern: Http::$W(...)->$M($U, ...)
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(get|post|put|patch|delete|head)$
+              # Guzzle and Symfony HttpClient.
+              - patterns:
+                  - pattern-either:
+                      - pattern: $CLIENT->request($METHOD, $U, ...)
+                      - pattern: $CLIENT->requestAsync($METHOD, $U, ...)
+                      - patterns:
+                          - pattern: $CLIENT->$M($U, ...)
+                          - metavariable-regex:
+                              metavariable: $M
+                              regex: ^(get|post|put|patch|delete|head|getAsync|postAsync)$
+                  - metavariable-regex:
+                      metavariable: $CLIENT
+                      regex: (?i)^\$(this->)?\w*(client|guzzle|http)\w*$
+              - pattern: "new Client([..., 'base_uri' => $U, ...])"
+          # A string that names a fixed host before the input: the input
+          # cannot pick the host.
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^["']https?://[^/"'#?{}$]+[/?#]
+          - focus-metavariable: $U

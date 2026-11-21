@@ -23,17 +23,24 @@ import (
 	"github.com/google/osv-scalibr/enricher/vulnmatch/osvlocal"
 	"github.com/google/osv-scalibr/extractor"
 	"github.com/google/osv-scalibr/extractor/filesystem"
-	"github.com/google/osv-scalibr/extractor/filesystem/language/dotnet/csproj"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/dart/pubspec"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/dotnet/packagesconfig"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/dotnet/packageslockjson"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/elixir/mixlock"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/golang/gobinary"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/golang/gomod"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/haskell/cabal"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/haskell/stacklock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/java/gradlelockfile"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/java/gradleverificationmetadataxml"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/java/gradleversioncatalog"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/java/pomxml"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/javascript/bunlock"
 	jsmeta "github.com/google/osv-scalibr/extractor/filesystem/language/javascript/metadata"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/javascript/packagejson"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/javascript/pnpmlock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/javascript/yarnlock"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/julia/manifesttoml"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/php/composerlock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/python/pdmlock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/python/pipfilelock"
@@ -41,8 +48,12 @@ import (
 	"github.com/google/osv-scalibr/extractor/filesystem/language/python/pylock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/python/requirements"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/python/uvlock"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/python/wheelegg"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/r/renvlock"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/ruby/gemfilelock"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/rust/cargoauditable"
 	"github.com/google/osv-scalibr/extractor/filesystem/language/rust/cargolock"
+	"github.com/google/osv-scalibr/extractor/filesystem/language/swift/packageresolved"
 	scalibrfs "github.com/google/osv-scalibr/fs"
 	"github.com/google/osv-scalibr/inventory"
 	scalibrlog "github.com/google/osv-scalibr/log"
@@ -62,45 +73,85 @@ const Compiled = true
 type tableRow struct {
 	info ExtractorInfo
 	new  func(*cpb.PluginConfig) (filesystem.Extractor, error)
+	// artifact is how the row reads build artifacts (artifacts.go);
+	// notArtifact for a lockfile or manifest row.
+	artifact artifactMode
 }
 
 // extractorTable is the closed list of extractors the facade links: the
 // ecosystems the install gate names (npm with package-lock, pnpm, yarn and
 // bun lockfiles and installed package.json files; PyPI lockfiles and
 // requirements files; crates.io, Go, RubyGems, Packagist and NuGet) plus
-// Maven and Gradle. Table order is display order.
+// Maven and Gradle, the six ecosystems of the 2026-11-06 coverage review
+// (Dart's Pub, Swift's SwiftURL, Elixir's Hex, Haskell's Hackage, Julia and
+// R's CRAN; docs/audits/dependency-coverage-benchmark-2026-11-06.md gap 3),
+// then the four build-artifact extractors (artifacts.go). Table order is
+// display order.
 //
 // Two of the spike's 22 rows are left out on purpose: pyproject.toml (the
 // extractor emits only the project's own package, with its dependency
 // list as metadata, so it adds nothing to match but noise) and Cargo.toml
 // (its first package is the crate itself and its dependencies are version
 // requirements, not resolved versions; Cargo.lock carries the resolved
-// set).
+// set). Of the coverage review's candidates, Swift's Podfile.lock is left
+// out too: OSV has no CocoaPods ecosystem (ecosystems.txt, read
+// 2026-11-06) and SCALIBR maps the CocoaPods PURL type to no ecosystem, so
+// its pods could only be matched against the wrong database.
+//
+// Three .NET rows and the gradle version catalog carry facade rules
+// (dotnet.go, versionshape.go): a PackageReference with no version takes it
+// from the nearest Directory.Packages.props, project.assets.json yields only
+// what NuGet restored, and a range or floating version is marked unpinned.
 var extractorTable = []tableRow{
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "package-lock.json, npm-shrinkwrap.json"}, newNPMLock},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "pnpm-lock.yaml"}, pnpmlock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "yarn.lock"}, yarnlock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "bun.lock"}, bunlock.New},
-	{ExtractorInfo{Kind: "manifest", Ecosystem: "npm", Files: "node_modules/**/package.json"}, packagejson.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "uv.lock"}, uvlock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "poetry.lock"}, poetrylock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "Pipfile.lock"}, pipfilelock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "pdm.lock"}, pdmlock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "pylock.toml"}, pylock.New},
-	{ExtractorInfo{Kind: "manifest", Ecosystem: "PyPI", Files: "requirements*.txt"}, requirements.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "crates.io", Files: "Cargo.lock"}, cargolock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Go", Files: "go.mod (with go.sum)"}, gomod.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "RubyGems", Files: "Gemfile.lock, gems.locked"}, gemfilelock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Packagist", Files: "composer.lock"}, composerlock.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "NuGet", Files: "packages.lock.json"}, packageslockjson.New},
-	{ExtractorInfo{Kind: "manifest", Ecosystem: "NuGet", Files: "*.csproj"}, csproj.New},
-	{ExtractorInfo{Kind: "manifest", Ecosystem: "NuGet", Files: "packages.config"}, packagesconfig.New},
-	{ExtractorInfo{Kind: "manifest", Ecosystem: "Maven", Files: "pom.xml"}, pomxml.New},
-	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Maven", Files: "gradle.lockfile, buildscript-gradle.lockfile"}, gradlelockfile.New},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "package-lock.json, npm-shrinkwrap.json"}, newNPMLock, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "pnpm-lock.yaml"}, pnpmlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "yarn.lock"}, yarnlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "npm", Files: "bun.lock"}, bunlock.New, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "npm", Files: "node_modules/**/package.json"}, packagejson.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "uv.lock"}, uvlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "poetry.lock"}, poetrylock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "Pipfile.lock"}, pipfilelock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "pdm.lock"}, pdmlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "PyPI", Files: "pylock.toml"}, pylock.New, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "PyPI", Files: "requirements*.txt"}, requirements.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "crates.io", Files: "Cargo.lock"}, cargolock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Go", Files: "go.mod (with go.sum)"}, gomod.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "RubyGems", Files: "Gemfile.lock, gems.locked"}, gemfilelock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Packagist", Files: "composer.lock"}, composerlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "NuGet", Files: "packages.lock.json"}, packageslockjson.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "NuGet", Files: "obj/project.assets.json (the packages NuGet restored, transitive ones included)"}, newProjectAssets, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "NuGet", Files: "*.csproj, *.fsproj, *.vbproj (a PackageReference with no version takes it from the nearest Directory.Packages.props)"}, newCSProj, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "NuGet", Files: "Directory.Packages.props, Directory.Build.props (PackageReference and GlobalPackageReference items)"}, newNuGetCPM, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "NuGet", Files: "packages.config"}, packagesconfig.New, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "Maven", Files: "pom.xml"}, pomxml.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Maven", Files: "gradle.lockfile, buildscript-gradle.lockfile"}, gradlelockfile.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Maven", Files: "gradle/verification-metadata.xml (every component Gradle verified, transitive ones included)"}, gradleverificationmetadataxml.New, notArtifact},
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "Maven", Files: "libs.versions.toml, gradle/*.versions.toml (declared versions)"}, gradleversioncatalog.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Pub", Files: "pubspec.lock"}, pubspec.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "SwiftURL", Files: "Package.resolved (format 2 and 3)"}, packageresolved.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Hex", Files: "mix.lock"}, mixlock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Hackage", Files: "cabal.project.freeze"}, cabal.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Hackage", Files: "stack.yaml.lock (extra-deps only, not the snapshot's packages)"}, stacklock.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "Julia", Files: "Manifest.toml (manifest format 2)"}, manifesttoml.New, notArtifact},
+	{ExtractorInfo{Kind: "lockfile", Ecosystem: "CRAN", Files: "renv.lock (packages from the CRAN repository)"}, renvlock.New, notArtifact},
+	// The facade's own: the actions a workflow uses (actions.go, S-779),
+	// listed by internal/secciwf, never SCALIBR's githubactions extractor.
+	{ExtractorInfo{Kind: "manifest", Ecosystem: "GitHub Actions", Files: ".github/workflows/*.yml, *.yaml"}, newActionsExtractor, notArtifact},
+	// Build artifacts (artifacts.go, plan 14.6): executables only under an
+	// artifact directory and detected by header; archives and wheel
+	// metadata by name; every file held to the artifact cap.
+	{ExtractorInfo{Kind: depscan.ArtifactKind, Ecosystem: "Go", Files: "executables under bin/, dist/, target/release/ and --artifacts directories (Go build info)"}, gobinary.New, artifactExecutable},
+	{ExtractorInfo{Kind: depscan.ArtifactKind, Ecosystem: "Maven", Files: "*.jar, *.war, *.ear and other Java archives"}, newJavaArchive, artifactByName},
+	{ExtractorInfo{Kind: depscan.ArtifactKind, Ecosystem: "PyPI", Files: "*.whl, *.egg, *.dist-info/METADATA, *.egg-info/PKG-INFO"}, wheelegg.New, artifactByName},
+	{ExtractorInfo{Kind: depscan.ArtifactKind, Ecosystem: "crates.io", Files: "executables under bin/, dist/, target/release/ and --artifacts directories (cargo auditable)"}, cargoauditable.New, artifactExecutable},
 }
 
 // purlTypes maps an OSV ecosystem to the PURL type a canary package is
-// built with (canaries only; extracted packages carry their own).
+// built with (canaries only; extracted packages carry their own). SCALIBR's
+// extractor.Package.Ecosystem maps each type back to exactly the OSV
+// spelling on the left (extractor/convert.go at v0.5.3), and its semantic
+// package has a comparator for every one of them; the facade test holds
+// both.
 var purlTypes = map[string]string{
 	"npm":       purl.TypeNPM,
 	"PyPI":      purl.TypePyPi,
@@ -110,6 +161,12 @@ var purlTypes = map[string]string{
 	"Packagist": purl.TypeComposer,
 	"NuGet":     purl.TypeNuget,
 	"Maven":     purl.TypeMaven,
+	"Pub":       purl.TypePub,
+	"SwiftURL":  purl.TypeSwift,
+	"Hex":       purl.TypeHex,
+	"Hackage":   purl.TypeHackage,
+	"Julia":     purl.TypeJulia,
+	"CRAN":      purl.TypeCran,
 }
 
 // Extractors returns the closed extractor table with each extractor's name
@@ -153,6 +210,16 @@ type ExtractOptions struct {
 	MaxInodes int
 	// MaxFileSize skips larger files; 0 means no cap.
 	MaxFileSize int
+	// ArtifactDirs are the artifact folders (relative to the root, forward
+	// slashes) the developer turned on: an executable is read only under
+	// one, and none is implied (artifacts.go).
+	ArtifactDirs []string
+	// ArtifactOff are the discovered candidate folders that are not turned
+	// on: a Java archive or a wheel under one is not read either.
+	ArtifactOff []string
+	// MaxArtifactBytes caps one artifact file; 0 is
+	// depscan.MaxArtifactBytes.
+	MaxArtifactBytes int64
 	// Log receives SCALIBR's log lines; nil discards them.
 	Log io.Writer
 }
@@ -161,11 +228,15 @@ type ExtractOptions struct {
 // the result are relative to root.
 func Extract(ctx context.Context, root string, opts ExtractOptions) (*Inventory, error) {
 	installLogger(opts.Log)
+	gate := newArtifactGate(root, opts.ArtifactDirs, opts.ArtifactOff, opts.MaxArtifactBytes)
 	exs := make([]filesystem.Extractor, 0, len(extractorTable)+1)
 	for _, row := range extractorTable {
 		ex, err := row.new(&cpb.PluginConfig{})
 		if err != nil {
 			return nil, fmt.Errorf("scalibrfacade.Extract: %w", err)
+		}
+		if row.artifact != notArtifact {
+			ex = &gatedExtractor{Extractor: ex, gate: gate, mode: row.artifact, eco: row.info.Ecosystem}
 		}
 		exs = append(exs, ex)
 	}
@@ -186,7 +257,8 @@ func Extract(ctx context.Context, root string, opts ExtractOptions) (*Inventory,
 	if err != nil {
 		return nil, fmt.Errorf("scalibrfacade.Extract: %w", err)
 	}
-	out := &Inventory{impl: inv.Packages, Unlocked: probe.result()}
+	unknownGo := repairArtifactPackages(inv.Packages)
+	out := &Inventory{impl: inv.Packages, Unlocked: probe.result(), TooLarge: gate.skipped()}
 	for _, s := range statuses {
 		if s.Name == probe.Name() {
 			continue
@@ -207,7 +279,9 @@ func Extract(ctx context.Context, root string, opts ExtractOptions) (*Inventory,
 	}
 	sort.Slice(out.Statuses, func(i, j int) bool { return out.Statuses[i].Extractor < out.Statuses[j].Extractor })
 	for _, p := range inv.Packages {
-		out.Packages = append(out.Packages, plainPackage(p))
+		row := plainPackage(p)
+		row.VersionUnknown = unknownGo[p]
+		out.Packages = append(out.Packages, row)
 	}
 	return out, nil
 }
@@ -222,6 +296,7 @@ func plainPackage(p *extractor.Package) Package {
 	}
 	if len(p.Plugins) > 0 {
 		row.Extractor = p.Plugins[0]
+		row.Artifact = artifactExtractorNames[row.Extractor]
 	}
 	switch m := p.Metadata.(type) {
 	case *jsmeta.JavascriptPackageMetadata:
@@ -233,6 +308,14 @@ func plainPackage(p *extractor.Package) Package {
 		row.LockfileTooLarge = true
 	case *requirements.Metadata:
 		row.Unpinned = unpinnedComparator(m.VersionComparator)
+	case *actionMetadata:
+		row.PinnedBySHA, row.NotAVersion, row.MovingTag, row.VersionFromComment = m.PinnedBySHA, m.NotAVersion, m.MovingTag, m.FromComment
+	}
+	if notOne, ok := notOneVersion[row.Extractor]; ok && notOne(row.Version) {
+		row.Unpinned = true
+	}
+	if d := p.Location.Descriptor; d != nil && d.File != nil {
+		row.Line = d.File.LineNumber
 	}
 	return row
 }
@@ -321,12 +404,19 @@ func hasLockfile(fsys fs.FS, dir string, patterns []string) bool {
 	}
 }
 
-// Match runs SCALIBR's own OSV matcher over one ecosystem's packages.
-// Observer writes no version-ordering code here. A missing local database
-// answers ErrNoDatabase; every other failure is an error.
+// Match runs SCALIBR's own OSV matcher over one ecosystem's packages, or,
+// for an ecosystem in ownMatchers (GitHub Actions), the facade's range walk
+// over SCALIBR's comparator (actionsmatch.go). Observer orders no version
+// here. A missing local database answers ErrNoDatabase; every other
+// failure is an error.
 func Match(ctx context.Context, inv *Inventory, req MatchRequest, opts MatchOptions) (MatchResult, error) {
 	if inv == nil {
 		return MatchResult{}, errors.New("scalibrfacade.Match: nil inventory")
+	}
+	// An ecosystem SCALIBR's semantic package cannot order never reaches
+	// osvlocal, which would panic on it (actionsmatch.go).
+	if own, ok := ownMatchers[req.Ecosystem]; ok {
+		return matchOwn(ctx, own, inv, req, opts)
 	}
 	all, _ := inv.impl.([]*extractor.Package)
 	sub := inventory.Inventory{}
@@ -354,6 +444,19 @@ func Match(ctx context.Context, inv *Inventory, req MatchRequest, opts MatchOpti
 	if len(sub.Packages) == 0 {
 		return MatchResult{}, nil
 	}
+	res, err := runEnrich(ctx, &sub, canary, index, opts)
+	if err != nil || req.Ecosystem != "Go" || opts.Online {
+		return res, err
+	}
+	// SECP-43: osvlocal never matches a Go module path with a capital
+	// letter; the facade matches those by raw path (gomatch.go).
+	return mergeGoMixedCase(ctx, res, inv, req, opts)
+}
+
+// runEnrich runs the matcher over sub (whose canary, when set, is reported
+// as CanaryHit and never as a Vuln) and maps the results back to the
+// inventory's indices. Match and MatchOS share it.
+func runEnrich(ctx context.Context, sub *inventory.Inventory, canary *extractor.Package, index map[*extractor.Package]int, opts MatchOptions) (MatchResult, error) {
 	e, err := newEnricher(opts)
 	if err != nil {
 		return MatchResult{}, fmt.Errorf("scalibrfacade.Match: %w", err)
@@ -368,7 +471,7 @@ func Match(ctx context.Context, inv *Inventory, req MatchRequest, opts MatchOpti
 		runCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	if err := e.Enrich(runCtx, &enricher.ScanInput{}, &sub); err != nil {
+	if err := enrichSafely(runCtx, e, sub); err != nil {
 		if !opts.Online && strings.Contains(err.Error(), "no offline version") {
 			return MatchResult{Matcher: e.Name()}, ErrNoDatabase
 		}
@@ -401,6 +504,22 @@ func Match(ctx context.Context, inv *Inventory, req MatchRequest, opts MatchOpti
 		return res.Vulns[a].ID < res.Vulns[b].ID
 	})
 	return res, nil
+}
+
+// enrichSafely runs the matcher and turns a panic into an error. osvlocal
+// orders versions with SCALIBR's semantic.MustParse, which panics on a
+// version its ecosystem's comparator rejects: a CRAN version that is not
+// numbers, a Hackage version with a build suffix, in a package or in an
+// advisory's range. Recovered, that one ecosystem's match fails (the child
+// reports it "not scanned", match_failed) and the scan child's other
+// ecosystems still run. No version is reordered or repaired here.
+func enrichSafely(ctx context.Context, e enricher.Enricher, inv *inventory.Inventory) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("matcher stopped on a version it could not order: %v", r)
+		}
+	}()
+	return e.Enrich(ctx, &enricher.ScanInput{}, inv)
 }
 
 // severityLabel reads the advisory's database_specific severity label.
@@ -479,6 +598,13 @@ func installLogger(w io.Writer) {
 	logOnce.Do(func() { scalibrlog.SetLogger(logSink) })
 	logSink.set(w)
 }
+
+// SetLog sends SCALIBR's log lines in this process to w (nil discards
+// them). A caller that matches in its own process (the SuperBased lookup
+// and online matching in cmd/observer, lane RM-2) calls it so SCALIBR's
+// default logger never prints a run directory's path to the daemon's or the
+// command's stderr; the scan child sets it through ExtractOptions.Log.
+func SetLog(w io.Writer) { installLogger(w) }
 
 // facadeLogger implements SCALIBR's Logger over one writer (nil discards).
 // Debug lines are always dropped.

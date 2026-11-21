@@ -17,6 +17,11 @@ const (
 	// DialectAnthropicMessages is the Anthropic Messages API (POST
 	// /v1/messages), one stateless call with strict structured output.
 	DialectAnthropicMessages Dialect = "anthropic_messages"
+	// DialectOpenAICompatible is the OpenAI chat-completions wire served by
+	// OVH AI Endpoints and other compatible servers (POST {base}/chat/completions).
+	// The wire code is internal/llmwire. It needs the route registry CHECK
+	// widened (cloud migration 0045, E1.3) before a route can store it.
+	DialectOpenAICompatible Dialect = "openai_compatible"
 )
 
 // Family names the provider (and therefore the credential) behind a dialect.
@@ -27,6 +32,8 @@ const (
 	FamilyFoundry Family = "foundry"
 	// FamilyAnthropic is the Anthropic API.
 	FamilyAnthropic Family = "anthropic"
+	// FamilyOpenAICompatible is any OpenAI-compatible endpoint (OVH AI Endpoints).
+	FamilyOpenAICompatible Family = "openai_compatible"
 )
 
 // Attestation names how a family's provider posture can be attested before a
@@ -60,14 +67,20 @@ type DialectSpec struct {
 	DeploymentIsModelID bool
 	// Attestation is how the family's provider posture is attested.
 	Attestation Attestation
+	// NeedsAPIVersion: a route of this dialect is callable only with an
+	// api_version on its binding (Foundry's api-version query parameter, the
+	// Anthropic-Version header). The openai_compatible dialect has none, so a
+	// bound route of it carries an empty api_version.
+	NeedsAPIVersion bool
 }
 
 // dialectTable is the closed set of dialects the service can execute. A
 // dialect absent from it is unsupported everywhere (fail closed).
 var dialectTable = []DialectSpec{
-	{Dialect: DialectChatCompletions, Family: FamilyFoundry, Attestation: AttestationContentLogging},
-	{Dialect: DialectResponsesStoreFalse, Family: FamilyFoundry, RequiresVerificationRecord: true, Attestation: AttestationContentLogging},
-	{Dialect: DialectAnthropicMessages, Family: FamilyAnthropic, DeploymentIsModelID: true, Attestation: AttestationDisclosedOnly},
+	{Dialect: DialectChatCompletions, Family: FamilyFoundry, Attestation: AttestationContentLogging, NeedsAPIVersion: true},
+	{Dialect: DialectResponsesStoreFalse, Family: FamilyFoundry, RequiresVerificationRecord: true, Attestation: AttestationContentLogging, NeedsAPIVersion: true},
+	{Dialect: DialectAnthropicMessages, Family: FamilyAnthropic, DeploymentIsModelID: true, Attestation: AttestationDisclosedOnly, NeedsAPIVersion: true},
+	{Dialect: DialectOpenAICompatible, Family: FamilyOpenAICompatible, DeploymentIsModelID: true, Attestation: AttestationDisclosedOnly},
 }
 
 // SpecFor returns the capability row for a stored dialect string.

@@ -12,6 +12,9 @@ func TestNoForbiddenImports(t *testing.T) {
 	importpin.Check(t, importpin.Spec{
 		Forbidden:         []string{"database/sql", "net/http", "github.com/fsnotify/fsnotify"},
 		ForbiddenPrefixes: []string{"github.com/marmutapp/superbased-observer/"},
-		Reason:            "netpolicy must not depend on any Observer package",
+		// The one allowed Observer import is the stdlib-only IP classifier,
+		// so classification has exactly one owner (internal/ipclass).
+		Except: []string{"github.com/marmutapp/superbased-observer/internal/ipclass"},
+		Reason: "netpolicy must not depend on any Observer package except the pure ipclass leaf",
 	})
 }

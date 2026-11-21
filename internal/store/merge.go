@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/turnmerge"
@@ -38,6 +39,14 @@ const (
 	// is removed they are simply unused strings; no edit is needed.
 	SourceObsSDK  = "sdk_otlp"
 	SourceObsOTLP = "otlp_trace"
+	// SourceAgentOTel is a developer's own agent's span turn (PT-55,
+	// internal/otlpvendor's own-agent row, docs/own-agents.md). The counts
+	// are what the developer's own instrumentation reported from the
+	// provider response, never computed by Observer, but they are not the
+	// provider's bytes as the proxy sees them, so they rank Approx: a proxy
+	// row for the same request id always wins, and a proxy insert for that
+	// id replaces the span row outright (supersededByProxyInsert).
+	SourceAgentOTel = "agent_otel"
 	// SourceProxyTurn mirrors internal/obs/span.SourceProxyTurn (the gateway
 	// rail, cmd/observer/obs_wire.go): a chat.completions span synthesized
 	// FROM an already-priced api_turns row. obsTurnSink.ReconcileLLMSpan
@@ -59,7 +68,7 @@ func fidelityForSource(source string) turnmerge.Fidelity {
 	switch source {
 	case SourceCCOTel, SourceNativeOTel:
 		return turnmerge.FidelityNativeExact
-	case SourceJSONL, SourceObsSDK, SourceObsOTLP:
+	case SourceJSONL, SourceObsSDK, SourceObsOTLP, SourceAgentOTel:
 		return turnmerge.FidelityApprox
 	case SourceProxyTurn:
 		return turnmerge.FidelityProxyExact
@@ -74,6 +83,9 @@ type mergeTurnRow struct {
 	id     int64
 	source string
 	turn   turnmerge.Turn
+	// upstreamLane is the row's /up/<id> lane, "" when it is not a
+	// gateway-rail turn (migration 260).
+	upstreamLane string
 }
 
 // UpsertTurnByRequestID records a turn observation, deduping against any
@@ -135,6 +147,136 @@ func (s *Store) UpsertTurnByRequestID(ctx context.Context, t models.APITurn) (tu
 	}
 }
 
+// planeATurnSources are the Plane A (hosted-app observability) source tags
+// (internal/obs; D6, F10). A hosted app's spend is not the developer's coding
+// spend, so these sources never CREATE an api_turns row
+// (MergeTurnByRequestID); the rows older nodes wrote were relocated by agent
+// migration 256, and a row that still carries one never ships on the Plane B
+// org push (PlaneATurnSourceSQL in orgpush.go). Data table, one row per
+// source; migration 256 names the same two values.
+var planeATurnSources = []string{SourceObsSDK, SourceObsOTLP}
+
+// IsPlaneATurnSource reports whether an api_turns source tag is a Plane A
+// (hosted-app observability) source.
+func IsPlaneATurnSource(source string) bool {
+	for _, s := range planeATurnSources {
+		if s == source {
+			return true
+		}
+	}
+	return false
+}
+
+// PlaneATurnSourceSQL is the SQL predicate "this api_turns row (alias) was
+// written by a Plane A source". Plane B reads that must not count a hosted
+// app's spend as coding spend exclude rows matching it. The values are the
+// in-package constants above, never user input.
+func PlaneATurnSourceSQL(alias string) string {
+	col := "source"
+	if alias != "" {
+		col = alias + ".source"
+	}
+	quoted := make([]string, len(planeATurnSources))
+	for i, s := range planeATurnSources {
+		quoted[i] = "'" + s + "'"
+	}
+	return "COALESCE(" + col + ",'') IN (" + strings.Join(quoted, ",") + ")"
+}
+
+// MergeTurnByRequestID is the MERGE-ONLY sibling of UpsertTurnByRequestID,
+// the seam Plane A LLM spans reconcile through (D6, F10). It enriches an
+// existing api_turns row for t.RequestID (a proxy, gateway, native-OTel or
+// own-agent turn) by the same turnmerge precedence, and NEVER inserts:
+//
+//   - t.RequestID == "" or no row for it: nothing happens (ActionNoChange,
+//     id 0). A hosted app's span must not create a Plane B row.
+//   - The existing row is itself a Plane A row (IsPlaneATurnSource, written
+//     before this rule): left untouched, so a re-merge can never relabel it
+//     through sourceForFidelity into a source the Plane B push would ship.
+//   - The existing row is not a gateway-rail turn (no upstream_lane: a
+//     coding agent's default-lane proxy turn, a transcript, native-OTel or
+//     own-agent row): left untouched (review E-23, plan principle 5). The
+//     loopback receiver takes spans from any local process without a token,
+//     and an app-chosen request id must not reach a coding agent's row.
+//   - Otherwise: the span may only ENRICH the row (time to first token,
+//     total response time, stop reason, each fill-if-absent). Its tokens and
+//     cost never replace or raise the row's, whatever the two ranks are
+//     (mergeOnlyRules, review R-A14): a hosted app's span carrying a
+//     developer's request id must not inflate that developer's Plane B
+//     spend, and at equal rank turnmerge would otherwise take the MAX.
+func (s *Store) MergeTurnByRequestID(ctx context.Context, t models.APITurn) (turnmerge.Action, int64, error) {
+	if t.RequestID == "" {
+		return turnmerge.ActionNoChange, 0, nil
+	}
+	existing, err := s.loadMergeTurn(ctx, t.RequestID)
+	if err != nil {
+		return turnmerge.ActionNoChange, 0, fmt.Errorf("store.MergeTurnByRequestID: %w", err)
+	}
+	if existing == nil {
+		return turnmerge.ActionNoChange, 0, nil
+	}
+	if IsPlaneATurnSource(existing.source) || existing.upstreamLane == "" {
+		return turnmerge.ActionNoChange, existing.id, nil
+	}
+	res := turnmerge.Merge(&existing.turn, mergeOnlyIncoming(existing.turn, turnFromAPITurn(t)))
+	if res.Action != turnmerge.ActionUpdate {
+		return turnmerge.ActionNoChange, existing.id, nil
+	}
+	// The row keeps its own rank and source tag: only enrichment changed.
+	res.Turn.Fidelity = existing.turn.Fidelity
+	if err := s.updateMergeTurnSource(ctx, existing.id, res.Turn, mergedSource(res.Turn.Fidelity, existing.source, existing.source)); err != nil {
+		return res.Action, existing.id, fmt.Errorf("store.MergeTurnByRequestID: %w", err)
+	}
+	return res.Action, existing.id, nil
+}
+
+// mergeOnlyRule is one row of the merge-only seam's decision table: for a
+// relation between the existing row's rank and the incoming span's, whether
+// the span may write the authoritative block (tokens, cost). Enrichment is
+// always fill-if-absent (turnmerge).
+type mergeOnlyRule struct {
+	relation      string
+	match         func(existing, incoming turnmerge.Fidelity) bool
+	authoritative bool
+}
+
+// mergeOnlyRules is walked top-down; the first matching row decides. No row
+// lets a Plane A span author Plane B tokens or cost: above it the row is
+// more exact already, at its rank turnmerge would take the MAX (raising an
+// own-agent or JSONL row from a hosted app's numbers, R-A14), and below it
+// the span would replace a Plane B observation with a hosted app's.
+var mergeOnlyRules = []mergeOnlyRule{
+	{"existing ranks higher", func(e, i turnmerge.Fidelity) bool { return e > i }, false},
+	{"equal rank", func(e, i turnmerge.Fidelity) bool { return e == i }, false},
+	{"existing ranks lower", func(e, i turnmerge.Fidelity) bool { return e < i }, false},
+}
+
+// mergeOnlyIncoming returns the incoming observation as the merge-only seam
+// may apply it: when the matching mergeOnlyRules row forbids the
+// authoritative block, the block is replaced by the existing row's values
+// and the rank by the existing rank, so turnmerge changes enrichment only.
+func mergeOnlyIncoming(existing, incoming turnmerge.Turn) turnmerge.Turn {
+	for _, r := range mergeOnlyRules {
+		if !r.match(existing.Fidelity, incoming.Fidelity) {
+			continue
+		}
+		if r.authoritative {
+			return incoming
+		}
+		out := incoming
+		out.Fidelity = existing.Fidelity
+		out.InputTokens = existing.InputTokens
+		out.OutputTokens = existing.OutputTokens
+		out.CacheReadTokens = existing.CacheReadTokens
+		out.CacheCreationTokens = existing.CacheCreationTokens
+		out.CacheCreation1hTokens = existing.CacheCreation1hTokens
+		out.WebSearchRequests = existing.WebSearchRequests
+		out.CostUSD = existing.CostUSD
+		return out
+	}
+	return incoming
+}
+
 // turnFromAPITurn projects a full models.APITurn into the merge view, assigning
 // fidelity from its source tag at the boundary.
 func turnFromAPITurn(t models.APITurn) turnmerge.Turn {
@@ -169,7 +311,7 @@ func (s *Store) loadMergeTurn(ctx context.Context, requestID string) (*mergeTurn
 		        COALESCE(cache_creation_1h_tokens,0), COALESCE(web_search_requests,0),
 		        COALESCE(cost_usd,0),
 		        COALESCE(time_to_first_token_ms,0), COALESCE(total_response_ms,0),
-		        COALESCE(stop_reason,'')
+		        COALESCE(stop_reason,''), COALESCE(upstream_lane,'')
 		   FROM api_turns
 		  WHERE request_id = ? ORDER BY id ASC LIMIT 1`, requestID).Scan(
 		&r.id, &src,
@@ -178,7 +320,7 @@ func (s *Store) loadMergeTurn(ctx context.Context, requestID string) (*mergeTurn
 		&r.turn.CacheCreation1hTokens, &r.turn.WebSearchRequests,
 		&r.turn.CostUSD,
 		&r.turn.TimeToFirstTokenMS, &r.turn.TotalResponseMS,
-		&r.turn.StopReason,
+		&r.turn.StopReason, &r.upstreamLane,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -229,7 +371,18 @@ func (s *Store) updateMergeTurnSource(ctx context.Context, id int64, merged turn
 // sourceForFidelity exactly as before T-475. native_otel needs it because it
 // shares the native-exact fidelity with cc_otel: mapping it back would
 // relabel any other tool's native turn as Claude Code's.
-var preservedSources = map[string]bool{SourceNativeOTel: true}
+// SourceAgentOTel needs it for the same reason: mapping Approx back would
+// relabel an own agent's span turn as a JSONL envelope.
+var preservedSources = map[string]bool{SourceNativeOTel: true, SourceAgentOTel: true}
+
+// supersededByProxyInsert lists the sources whose row a PROXY insert for the
+// same request id replaces instead of standing beside. The proxy writes its
+// rows with InsertAPITurn, not the request-id merge, so a lower-fidelity
+// row that landed first (an own agent's span exported before the proxy
+// finished writing the same call) would otherwise count the call twice. A
+// replaced row is deleted through the normal path, so the org push records
+// the deletion (org_push_delete_api_turns). Data table, one row per source.
+var supersededByProxyInsert = map[string]bool{SourceAgentOTel: true}
 
 // mergedSource names the source a merged row persists with.
 func mergedSource(merged turnmerge.Fidelity, existing, incoming string) string {
@@ -253,4 +406,21 @@ func sourceForFidelity(f turnmerge.Fidelity) string {
 	default:
 		return SourceProxy
 	}
+}
+
+// supersedeForProxyInsert deletes the rows the proxy's just-inserted row
+// (id) replaces (supersededByProxyInsert): rows with t's request id whose
+// source the table lists. It runs only for a proxy-fidelity insert that
+// carries a request id, so every other writer's insert is unchanged.
+func (s *Store) supersedeForProxyInsert(ctx context.Context, t models.APITurn, id int64) error {
+	if t.RequestID == "" || fidelityForSource(t.Source) != turnmerge.FidelityProxyExact {
+		return nil
+	}
+	for src := range supersededByProxyInsert {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM api_turns WHERE request_id = ? AND source = ? AND id <> ?`, t.RequestID, src, id); err != nil {
+			return fmt.Errorf("store.InsertAPITurn: supersede %s row: %w", src, err)
+		}
+	}
+	return nil
 }

@@ -36,7 +36,7 @@ func init() {
 // the probe-only refusal.
 func mxcWeakJudge(pin sandboxmxc.TierPin, res sandboxmxc.ProbeResult) sandboxselect.Probe {
 	if !sandboxmxc.PinAllowsRow(pin, sandboxbackend.BackendMXCAppContainer) {
-		return sandboxselect.Probe{Verdict: sandboxselect.VerdictBackendNotAllowed, Reason: "terminal.sandbox.windows.mxc_tier is " + string(pin) + " (set here or pinned by your organization), which keeps this machine off MXC's weaker AppContainer tier"}
+		return sandboxselect.Probe{Verdict: sandboxselect.VerdictBackendNotAllowed, Reason: "the MXC tier floor is " + string(pin) + ", which keeps this machine off MXC's weaker AppContainer tier (set under More Windows sandboxes in Terminals > Settings > Sandbox isolation, or pinned by your organization; terminal.sandbox.windows.mxc_tier)"}
 	}
 	if res.Tier == "" {
 		return sandboxselect.Probe{Verdict: res.Verdict.Code, Reason: res.Verdict.Reason}

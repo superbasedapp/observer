@@ -20,11 +20,24 @@ func main() {
 // short: the operator-facing explanation lives in doc.go and in the
 // README beside the private key, not in three screens of flag help.
 const usage = `usage:
-  vendorsign keygen         -out DIR
+  vendorsign keygen         -out DIR [-feed]
   vendorsign sign           -key FILE ARCHIVE...
   vendorsign manifest       -key FILE -dir DIR -version vX.Y.Z -channel stable -out FILE
   vendorsign index          -key FILE -dir DIR -version vX.Y.Z
-  vendorsign secindex       -key FILE -osv DIR -out DIR -manifest-version N [-epoch N] [-popular eco=FILE]...
+  vendorsign secindex       -kind security.malicious_packages -key FILE (-osv-export DIR | -osv DIR) -state DIR -out DIR
+                            [-min-reports N] [-source-url URL] [-manifest-version N] [-reissue-hours 20]
+  vendorsign secindex       -kind security.popular_names -key FILE -popular eco=FILE... -source TEXT -license SPDX
+                            -source-url URL -state DIR -out DIR [-min-names N] [-manifest-version N] [-reissue-hours 20]
+  vendorsign osvexport      -key FILE -in DIR -state DIR -out DIR [-manifest-version N] [-rebase-days 7]
+                            [-rebase-ratio 0.10] [-reissue-hours 20]
+  vendorsign osvosexport    -key FILE -in DIR -state DIR -out DIR [-manifest-version N] [-rebase-days 7]
+                            [-rebase-ratio 0.10] [-reissue-hours 20]
+  vendorsign osvshards      -key FILE (-lang DIR | -os DIR)... -state DIR -objects DIR -out DIR
+                            [-manifest-version N] [-reissue-hours 20]
+  vendorsign kev            -key FILE -in FILE -state DIR -out DIR [-source-url URL] [-min-entries 1000]
+                            [-manifest-version N] [-reissue-hours 20]
+  vendorsign epss           -key FILE -in FILE -state DIR -out DIR [-osv DIR]... [-source-url URL]
+                            [-min-rows 100000] [-manifest-version N] [-reissue-hours 20]
   vendorsign engine         -key FILE -out DIR -manifest-version N [-epoch N] [-valid-days N] [-revocation] [-revoke SHA256]... ENTRY.json...
   vendorsign sandboximage   -oci FILE -packages DIR -recipe FILE -repository R -version X.Y.Z -min-version X.Y.Z
                             -commit SHA -base REF@sha256:... -source-date-epoch N -out DIR
@@ -57,6 +70,16 @@ func run(args []string, out *os.File) error {
 		return runIndex(args[1:], out)
 	case "secindex":
 		return runSecIndex(args[1:], out)
+	case "osvosexport":
+		return runOSVOSExport(args[1:], out)
+	case "osvexport":
+		return runOSVExport(args[1:], out)
+	case "osvshards":
+		return runOSVShards(args[1:], out)
+	case "kev":
+		return runKEV(args[1:], out)
+	case "epss":
+		return runEPSS(args[1:], out)
 	case "engine":
 		return runEngine(args[1:], out)
 	case "sandboximage":
@@ -94,13 +117,18 @@ func runSchemaVersion(out *os.File) error {
 func runKeygen(args []string, out *os.File) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	dir := fs.String("out", "", "directory to write the private key into (required)")
+	feed := fs.Bool("feed", false, "mint the CONTENT-FEED key (content-feed.key; signs feed kinds only) instead of the release vendor key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *dir == "" {
 		return errors.New("vendorsign keygen: -out is required")
 	}
-	pub, path, err := generateKeypair(*dir)
+	name := vendorKeyFile
+	if *feed {
+		name = contentFeedKeyFile
+	}
+	pub, path, err := generateKeypairNamed(*dir, name)
 	if err != nil {
 		return err
 	}
@@ -108,6 +136,13 @@ func runKeygen(args []string, out *os.File) error {
 	fmt.Fprintf(out, "public key : %s\n", pub)
 	fmt.Fprintf(out, "key id     : %s\n", keyIDFromB64(pub))
 	fmt.Fprintln(out, "")
+	if *feed {
+		fmt.Fprintln(out, "Next: put the PUBLIC key in internal/update/contentfeedkey.go (moving the current")
+		fmt.Fprintln(out, "ContentFeedPublicKeyV1 into ContentFeedPublicKeyV0Previous) and ship one release with")
+		fmt.Fprintln(out, "both accepted. The private key stays on the publisher host (/etc/sbo-feed); it signs")
+		fmt.Fprintln(out, "feed kinds only (vendorsign osvexport).")
+		return nil
+	}
 	fmt.Fprintln(out, "Next: put the PUBLIC key in internal/update/vendorkey.go (moving the current")
 	fmt.Fprintln(out, "VendorPublicKeyV1 into VendorPublicKeyV0Previous), ship one release with both")
 	fmt.Fprintln(out, "accepted, and only then swap the OBSERVER_VENDOR_SIGNING_KEY secret.")

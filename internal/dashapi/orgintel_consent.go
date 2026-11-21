@@ -92,6 +92,15 @@ type OrgIntelStatus struct {
 	ManagedRail *OrgIntelRailView `json:"managed_rail,omitempty"`
 	// Note carries a non-fatal remark (a report that could not be sent).
 	Note string `json:"note,omitempty"`
+	// OrgDashboard is the team dashboard's origin (settingslink.
+	// OrgDashboardBase of the enrolment's server address), so a status that
+	// only the organization's admins can change links to the exact place.
+	// Omitted when the address is not one a button may open.
+	OrgDashboard string `json:"org_dashboard,omitempty"`
+	// DashboardKind is the online dashboard this machine is connected to:
+	// "personal" (the person is its only admin) or "team"; omitted when the
+	// node does not know (an enrolment made by invite reads as a team).
+	DashboardKind string `json:"dashboard_kind,omitempty"`
 }
 
 // OrgIntelManager is the cmd-wired org-plane seam (intel.go /

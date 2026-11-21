@@ -74,6 +74,24 @@ type SecurityManagedPolicyV1 struct {
 	Feedback string `json:"feedback,omitempty"`
 	// AIChangeRecord is where the AI change record goes.
 	AIChangeRecord string `json:"ai_change_record,omitempty"`
+	// PackageLookup is the org's package lookup posture for its managed
+	// nodes (OS and CI vulnerability scanning plan sections 13.5 and 13.10,
+	// lane RM-3): "off" (the default, also when absent: no managed node
+	// looks a package up anywhere) or "org_mirror" (each managed node looks
+	// the ecosystems its local databases do not cover up in the advisory
+	// shards the org server mirrors, sending the org server only the
+	// content-addressed digests of the shards its packages' hash prefixes
+	// fall in; it never contacts SuperBased's shard host). The org decides:
+	// there is no node-side switch on a managed node.
+	PackageLookup string `json:"package_lookup,omitempty"`
+	// PackageLookupPrivate is whether names the node cannot place as public
+	// are looked up too: "withhold" (the default, also when absent) or
+	// "send".
+	PackageLookupPrivate string `json:"package_lookup_private,omitempty"`
+	// PackageLookupKinds are the package kinds the lookup covers
+	// (SecurityManagedLookupKinds); absent means every kind this build
+	// looks up.
+	PackageLookupKinds []string `json:"package_lookup_kinds,omitempty"`
 	// Defaults are the managed DEFAULTS of the local experience settings
 	// (the U rows of plan 6.5): the developer may change each one locally.
 	Defaults *SecurityManagedDefaults `json:"defaults,omitempty"`
@@ -126,7 +144,17 @@ var (
 	SecurityManagedChangeRecords  = []string{"off", "local", "org"}
 	SecurityManagedCPUPriorities  = []string{"low", "normal"}
 	SecurityManagedCustomModes    = []string{"catalog_only", "require", "forbid"}
+	// SecurityManagedPackageLookups are package_lookup's values (lane RM-3).
+	SecurityManagedPackageLookups = []string{"off", "org_mirror"}
+	// SecurityManagedLookupPrivate are package_lookup_private's values.
+	SecurityManagedLookupPrivate = []string{"withhold", "send"}
+	// SecurityManagedLookupKinds are package_lookup_kinds' values: the
+	// node's [security.deps] remote_kinds this build looks up.
+	SecurityManagedLookupKinds = []string{"language", "actions"}
 )
+
+// SecurityPackageLookupOrgMirror is package_lookup's one enabling value.
+const SecurityPackageLookupOrgMirror = "org_mirror"
 
 var (
 	securityDedupeKeyRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -180,6 +208,7 @@ func ValidateSecurityManagedPolicy(p SecurityManagedPolicyV1) error {
 		{"components", p.Components, func(s string) bool { return slices.Contains(SecurityManagedComponents, s) }, SecurityManagedComponents},
 		{"drivers", p.Drivers, func(s string) bool { return slices.Contains(SecurityManagedDrivers, s) }, SecurityManagedDrivers},
 		{"custom_manifests", p.CustomManifests, securityManifestRe.MatchString, []string{"sha256:<64 hex>"}},
+		{"package_lookup_kinds", p.PackageLookupKinds, func(s string) bool { return slices.Contains(SecurityManagedLookupKinds, s) }, SecurityManagedLookupKinds},
 	}
 	for _, l := range lists {
 		if l.v != nil && len(l.v) == 0 {
@@ -205,6 +234,8 @@ func ValidateSecurityManagedPolicy(p SecurityManagedPolicyV1) error {
 		{"feedback", p.Feedback, SecurityManagedOnOff},
 		{"ai_change_record", p.AIChangeRecord, SecurityManagedChangeRecords},
 		{"custom_mode", p.CustomMode, SecurityManagedCustomModes},
+		{"package_lookup", p.PackageLookup, SecurityManagedPackageLookups},
+		{"package_lookup_private", p.PackageLookupPrivate, SecurityManagedLookupPrivate},
 	}
 	if p.Defaults != nil {
 		enums = append(enums, struct {
@@ -271,6 +302,7 @@ func CanonicalSecurityManagedPolicy(p SecurityManagedPolicyV1) ([]byte, error) {
 	p.Components = securitySortedUniq(p.Components)
 	p.Drivers = securitySortedUniq(p.Drivers)
 	p.CustomManifests = securitySortedUniq(p.CustomManifests)
+	p.PackageLookupKinds = securitySortedUniq(p.PackageLookupKinds)
 	if p.CustomCatalog != nil {
 		p.CustomCatalog = append([]SecurityCustomCatalogEntry(nil), p.CustomCatalog...)
 		sort.Slice(p.CustomCatalog, func(i, j int) bool { return p.CustomCatalog[i].ManifestSHA256 < p.CustomCatalog[j].ManifestSHA256 })
@@ -297,8 +329,26 @@ func SecurityManagedPolicyEnables(p SecurityManagedPolicyV1) []string {
 	if p.OnlineChecks == "on" {
 		why = append(why, "switches on the online package checks")
 	}
+	if p.PackageLookup == SecurityPackageLookupOrgMirror {
+		why = append(why, "switches on the package lookup through the org mirror")
+		if p.PackageLookupPrivate == "send" {
+			why = append(why, "looks private package names up too")
+		}
+	}
 	sort.Strings(why)
 	return why
+}
+
+// SecurityPackageLookupOn reports whether p turns the managed package
+// lookup on (package_lookup = org_mirror).
+func SecurityPackageLookupOn(p *SecurityManagedPolicyV1) bool {
+	return p != nil && p.PackageLookup == SecurityPackageLookupOrgMirror
+}
+
+// securityHasPackageLookup reports whether p carries any package lookup
+// field (the fields an older node does not know).
+func securityHasPackageLookup(p SecurityManagedPolicyV1) bool {
+	return p.PackageLookup != "" || p.PackageLookupPrivate != "" || p.PackageLookupKinds != nil
 }
 
 func securitySortedUniq(v []string) []string {

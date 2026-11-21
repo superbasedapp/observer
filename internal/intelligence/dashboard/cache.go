@@ -978,8 +978,9 @@ func loadCacheTimeseries(ctx context.Context, db *sql.DB, q cacheTimeseriesQuery
 // secondary checks (read:write consistency + cause concentration).
 // Mirrors a subset of the cache-health CLI report — only the fields
 // the headline tile + WARN banner need so the API surface stays
-// small + drift-resistant. The CLI command remains the source of
-// truth for full diagnostic output.
+// small + drift-resistant. ?full=1 adds Full, the per-session and
+// per-event detail the `observer cache-health` command prints (the
+// Cache page's "Full report" panel), from the same single read.
 type CacheHealthSummary struct {
 	// Headline rate signal — drives the Mispredict-rate tile.
 	GradedEvents int     `json:"graded_events"`
@@ -1066,6 +1067,11 @@ type CacheHealthSummary struct {
 	// "how often does the prefix survive turn-over-turn" view.
 	// 0 when the denominator is zero.
 	ImplicitCachePrefixChurnRate float64 `json:"implicit_cache_prefix_churn_rate,omitempty"`
+
+	// Full is the full cache-health report (per-session rows, the cause
+	// breakdown, the mispredict and inconsistent-rewrite events, the
+	// per-session bucket mismatches), present only with ?full=1.
+	Full *CacheHealthFull `json:"full,omitempty"`
 }
 
 // CacheHealthDominantCause names the over-firing non-baseline cause
@@ -1091,23 +1097,29 @@ type CacheHealthDominantCause struct {
 // the untracked-provider turns both carry their own model, so it is turn
 // grain (modelfilter.AndRowIs).
 func loadCacheHealthSummary(ctx context.Context, db *sql.DB, model string) (CacheHealthSummary, error) {
-	const (
-		defaultMinEvents     = 200
-		defaultMaxRate       = 0.05
-		defaultMaxRewriteRR  = 3.0
-		defaultMaxCauseShare = 0.80
-	)
+	return loadCacheHealth(ctx, db, model, defaultCacheHealthThresholds(), false)
+}
+
+// loadCacheHealth is loadCacheHealthSummary with the four thresholds the
+// cache-health command takes as flags, and, when full is set, the full
+// report (Full) collected in the same pass over cache_events.
+func loadCacheHealth(ctx context.Context, db *sql.DB, model string, thr CacheHealthThresholds, full bool) (CacheHealthSummary, error) {
 	s := CacheHealthSummary{
-		MinEvents: defaultMinEvents,
-		MaxRate:   defaultMaxRate,
+		MinEvents: thr.MinEvents,
+		MaxRate:   thr.MaxRate,
+	}
+	var fc *cacheHealthCollector
+	if full {
+		fc = newCacheHealthCollector(thr)
 	}
 
 	mWhere, mArgs := modelfilter.AndRowIs("model", model)
 	//nolint:gosec // G202: the model fragment is a code constant; its value is bound.
 	q := `SELECT kind, COALESCE(cause, ''), COALESCE(predicted_kind, ''),
-	           COALESCE(tokens_read, 0), COALESCE(tokens_written, 0)
+	           COALESCE(tokens_read, 0), COALESCE(tokens_written, 0),
+	           COALESCE(session_id, ''), COALESCE(timestamp, ''), COALESCE(model, '')
 	           FROM cache_events WHERE 1=1` + mWhere + ` ORDER BY id ASC`
-	rows, err := db.QueryContext(ctx, q, mArgs...)
+	rows, err := db.QueryContext(ctx, q, mArgs...) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	if err != nil {
 		return s, fmt.Errorf("loadCacheHealthSummary: query: %w", err)
 	}
@@ -1121,12 +1133,18 @@ func loadCacheHealthSummary(ctx context.Context, db *sql.DB, model string) (Cach
 	var implicitPredicted, implicitObserved []cachetrack.Kind
 	causeCounts := map[string]int{}
 	for rows.Next() {
-		var kind, cause, predicted string
+		var kind, cause, predicted, sid, ts, rowModel string
 		var read, written int64
-		if err := rows.Scan(&kind, &cause, &predicted, &read, &written); err != nil {
+		if err := rows.Scan(&kind, &cause, &predicted, &read, &written, &sid, &ts, &rowModel); err != nil {
 			return s, fmt.Errorf("loadCacheHealthSummary: scan: %w", err)
 		}
 		k := cachetrack.Kind(kind)
+		if fc != nil {
+			fc.add(cacheHealthRow{
+				SessionID: sid, Timestamp: ts, Model: rowModel, Kind: k,
+				Cause: cause, Predicted: cachetrack.Kind(predicted), Read: read, Written: written,
+			})
+		}
 		allKinds = append(allKinds, k)
 		allRead = append(allRead, read)
 		allWritten = append(allWritten, written)
@@ -1144,7 +1162,7 @@ func loadCacheHealthSummary(ctx context.Context, db *sql.DB, model string) (Cach
 		// cache invalidation (a real one rebuilds a cold prefix → read ≈ 0).
 		if isRewriteKindLocal(k) {
 			s.RewriteEvents++
-			if read > int64(defaultMaxRewriteRR*float64(written)) && read > 0 {
+			if rewriteInconsistent(read, written, thr.MaxRewriteReadRatio) {
 				s.InconsistentRewriteCount++
 			}
 		}
@@ -1197,24 +1215,15 @@ func loadCacheHealthSummary(ctx context.Context, db *sql.DB, model string) (Cach
 	}
 
 	// Cause-concentration check. suffix_growth is the healthy
-	// baseline; excluded by design. Share is computed against the
-	// rate denominator (graded events) so the gate signal and the
-	// WARN signal share a base.
-	if s.GradedEvents > 0 {
-		for cause, count := range causeCounts {
-			if cause == string(cachetrack.CauseSuffixGrowth) {
-				continue
-			}
-			share := float64(count) / float64(s.GradedEvents)
-			if share > defaultMaxCauseShare {
-				s.DominantCause = &CacheHealthDominantCause{
-					Cause: cause,
-					Count: count,
-					Share: share,
-				}
-				break
-			}
-		}
+	// baseline and handoff_rehydration a by-design cold write, both
+	// excluded (the cache-health command's rule). Share is computed
+	// against the rate denominator (graded events) so the gate signal
+	// and the WARN signal share a base; the causes are walked largest
+	// first, so the pick is deterministic at any threshold.
+	breakdown := sortedCauseCounts(causeCounts)
+	s.DominantCause = dominantCacheCause(breakdown, s.GradedEvents, thr.MaxCauseShare)
+	if fc != nil {
+		s.Full = fc.report(breakdown)
 	}
 
 	// Untracked-provider visibility. Count api_turns rows from
@@ -1247,7 +1256,7 @@ func loadCacheHealthSummary(ctx context.Context, db *sql.DB, model string) (Cach
 		  AND timestamp >= ?` + mWhere
 	since := time.Now().UTC().Add(-7 * 24 * time.Hour).Format(time.RFC3339Nano)
 	untrackedArgs := append(append(append([]any{since}, atArgs...), since), mArgs...)
-	_ = db.QueryRowContext(ctx, untrackedQ, untrackedArgs...).Scan(
+	_ = db.QueryRowContext(ctx, untrackedQ, untrackedArgs...).Scan( //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 		&s.UntrackedProviderTurns,
 		&s.UntrackedProviderSessions,
 		&s.UntrackedProviderTopTool,
@@ -1284,9 +1293,14 @@ func isRewriteKindLocal(k cachetrack.Kind) bool {
 
 // handleCacheHealth serves /api/cache/health. Always returns the
 // global summary regardless of TopBar filters — engine health is
-// not a windowed signal.
+// not a windowed signal. Optional query parameters (lane L5 B-R1, the
+// `observer cache-health` flags): full=1 adds the full report;
+// min_events, max_rate, max_rewrite_read_ratio and max_cause_share
+// override the gate and the two informational checks (clamped to their
+// valid ranges, defaults 200 / 0.05 / 3 / 0.80).
 func (s *Server) handleCacheHealth(w http.ResponseWriter, r *http.Request) {
-	summary, err := loadCacheHealthSummary(r.Context(), s.db(), modelParam(r))
+	thr := cacheHealthThresholdsFrom(r)
+	summary, err := loadCacheHealth(r.Context(), s.db(), modelParam(r), thr, boolArgTrue(r, "full"))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load cache health: %v", err), http.StatusInternalServerError)
 		return
@@ -1460,7 +1474,7 @@ func loadCacheEntryStates(ctx context.Context, db *sql.DB, model string) ([]Cach
 	//nolint:gosec // G202: the model fragment is a code constant; its value is bound.
 	q := `SELECT COALESCE(state, ''), COUNT(*)
 	           FROM cache_entries WHERE 1=1` + mWhere + ` GROUP BY 1 ORDER BY 1 ASC`
-	rows, err := db.QueryContext(ctx, q, mArgs...)
+	rows, err := db.QueryContext(ctx, q, mArgs...) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	if err != nil {
 		return nil, 0, fmt.Errorf("loadCacheEntryStates: query: %w", err)
 	}

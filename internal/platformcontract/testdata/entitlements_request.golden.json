@@ -1,0 +1,9 @@
+{
+  "tenant_id": "org_1",
+  "document": {
+    "version": 3,
+    "body": "Ym9keQ==",
+    "signature": "c2ln",
+    "key_id": "k1"
+  }
+}

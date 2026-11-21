@@ -100,7 +100,7 @@ var mxcDroppedEnv = map[string]bool{
 }
 
 // mxcBoxEnv is the inner launch's environment: the helper's own through the
-// box allow-list (sandboxBoxEnv, WINFIX2 R-167: before, the helper's whole
+// box allow-list (sandboxBoxEnv, WINFIX2, ledger SBX-WIN-ENV-1: before, the helper's whole
 // environment minus a short deny-list crossed) minus the daemon's internal
 // variables, the dropped ones and Windows' hidden "=" entries, plus the
 // run's markers, its box directory, its private temp directory, its inner
@@ -1026,7 +1026,11 @@ func mxcGatewayFor(plan mxcPlanFile, tier vocab.Tier) (*sandboxnet.Gateway, erro
 	if err != nil {
 		return nil, err
 	}
-	g := &sandboxnet.Gateway{Allow: allow, Hosts: hosts}
+	// Refusals go to the daemon's refusal audit on the relay link (lane
+	// N1). The helper serves one run for its whole life, so the sender
+	// lives as long as the process.
+	audit := sandboxEgressRefusalHooks(context.Background(), plan.ObserverDir, plan.RunID)
+	g := &sandboxnet.Gateway{Allow: allow, Hosts: hosts, Report: audit.Report, Closed: audit.Closed}
 	if plan.ProviderBlock {
 		g.Providers = sandboxnet.NewProviderBlock(plan.ProviderHosts)
 	}

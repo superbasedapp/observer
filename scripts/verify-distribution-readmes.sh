@@ -24,9 +24,14 @@ if [ ! -f "$BODY_PATH" ]; then
 fi
 
 fail=0
-for channel in npm pypi; do
+# One row per published README: <template name>:<package directory>.
+# npm-superbased is the unscoped short-name package (npm/superbased), whose
+# README is the npm one with its own title, install lines and short-name note.
+for pair in "npm:npm/observer" "pypi:pypi/observer" "npm-superbased:npm/superbased"; do
+    channel="${pair%%:*}"
+    pkgdir="${pair#*:}"
     template="docs/distribution/$channel-README.template.md"
-    committed="$channel/observer/README.md"
+    committed="$pkgdir/README.md"
     rebuilt="$tmpdir/$channel-README.md"
 
     if [ ! -f "$template" ]; then

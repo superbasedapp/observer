@@ -3,7 +3,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -177,9 +179,114 @@ func TestLandlockDenyListFollowsTheResolvedDashboard(t *testing.T) {
 	t.Cleanup(func() { noteDashboardListen(prev) })
 	cfg := config.Default()
 	cfg.Dashboard.Addr = ""
+	cfg.Observer.DBPath = filepath.Join(t.TempDir(), "observer.db") // no real records
 	d := &landlockDriver{full: cfg}
 	noteDashboardListen("127.0.0.1:9191")
-	if got := d.deniedPorts(); !slices.Contains(got, 9191) || slices.Contains(got, 8081) {
-		t.Fatalf("denied %v, want the resolved dashboard port 9191 and not the default", got)
+	if got, err := d.deniedPorts(); err != nil || !slices.Contains(got, 9191) || slices.Contains(got, 8081) {
+		t.Fatalf("denied %v (%v), want the resolved dashboard port 9191 and not the default", got, err)
+	}
+}
+
+// TestLandlockCLIPlanDeniesTheDaemonsDashboard (cli-1b fixes-3, A): a
+// sandboxed CLI launch builds its plan in its own process, where no
+// dashboard address was resolved. With the daemon on a non-default port
+// (a --dashboard-addr flag, or OBSERVER_DASHBOARD_ADDR only in the
+// daemon's environment), the plan denies the port the daemon recorded,
+// not this process's env, config or default; with no live record the
+// launch is refused.
+func TestLandlockCLIPlanDeniesTheDaemonsDashboard(t *testing.T) {
+	t.Setenv("OBSERVER_DASHBOARD_ADDR", "")
+	prev := resolvedDashboardListen()
+	noteDashboardListen("") // this process is the CLI: nothing resolved
+	t.Cleanup(func() { noteDashboardListen(prev) })
+	cfg := config.Default()
+	cfg.Dashboard.Addr = ""
+	cfg.Observer.DBPath = filepath.Join(t.TempDir(), "observer.db")
+	d := &landlockDriver{full: cfg}
+
+	if _, err := d.deniedPorts(); !errors.Is(err, errLandlockDashboardUnknown) {
+		t.Fatalf("no record: err = %v, want the launch refused", err)
+	}
+	remove, err := writeDashboardListenRecord(cfg.Observer.DBPath, "127.0.0.1:9393")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remove()
+	got, err := d.deniedPorts()
+	if err != nil || !slices.Contains(got, 9393) {
+		t.Fatalf("denied %v (%v), want the daemon's recorded port 9393", got, err)
+	}
+	if slices.Contains(got, 8081) {
+		t.Fatalf("denied %v: the CLI's default, not the daemon's port", got)
+	}
+	// The record of a daemon that is gone is not trusted.
+	if _, err := landlockDashboardAddrs("", cfg.Observer.DBPath, func(int) bool { return false }); !errors.Is(err, errLandlockDashboardUnknown) {
+		t.Fatalf("dead daemon's record: err = %v, want refused", err)
+	}
+}
+
+// TestLandlockPlanDeniesAStandaloneDashboard (cli-1b fixes-4): a
+// standalone `observer dashboard` records its own address (a per-process
+// file that leaves the daemon's record alone), and a CLI-built plan denies
+// it alongside the daemon's.
+func TestLandlockPlanDeniesAStandaloneDashboard(t *testing.T) {
+	t.Setenv("OBSERVER_DASHBOARD_ADDR", "")
+	prev := resolvedDashboardListen()
+	noteDashboardListen("")
+	t.Cleanup(func() { noteDashboardListen(prev) })
+	cfg := config.Default()
+	cfg.Dashboard.Addr = ""
+	cfg.Observer.DBPath = filepath.Join(t.TempDir(), "observer.db")
+	removeDaemon, err := writeDashboardListenRecord(cfg.Observer.DBPath, "127.0.0.1:9393")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer removeDaemon()
+	removeStandalone, err := writeStandaloneDashboardListenRecord(cfg.Observer.DBPath, "127.0.0.1:9494")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := readDashboardListenRecord(cfg.Observer.DBPath); !ok || rec.Addr != "127.0.0.1:9393" {
+		t.Fatalf("the standalone record replaced the daemon's: %+v %v", rec, ok)
+	}
+	got, err := (&landlockDriver{full: cfg}).deniedPorts()
+	if err != nil || !slices.Contains(got, 9393) || !slices.Contains(got, 9494) {
+		t.Fatalf("denied %v (%v), want the daemon's 9393 and the standalone 9494", got, err)
+	}
+	removeStandalone()
+	if got, _ := (&landlockDriver{full: cfg}).deniedPorts(); slices.Contains(got, 9494) {
+		t.Fatalf("a removed standalone record still denied: %v", got)
+	}
+	// A standalone dashboard alone is enough to know a port.
+	removeDaemon()
+	if _, err := writeStandaloneDashboardListenRecord(cfg.Observer.DBPath, "127.0.0.1:9595"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (&landlockDriver{full: cfg}).deniedPorts(); err != nil || !slices.Contains(got, 9595) {
+		t.Fatalf("denied %v (%v), want 9595", got, err)
+	}
+}
+
+// TestLandlockPlanRefusesPortZero (cli-1b fixes-4): a dashboard on port 0
+// listens on a port the operating system chose, which no record carries,
+// so the Landlock launch is refused rather than built without that port.
+func TestLandlockPlanRefusesPortZero(t *testing.T) {
+	alive := func(int) bool { return true }
+	dir := filepath.Join(t.TempDir(), "observer.db")
+	for _, noted := range []string{"127.0.0.1:0", "[::1]:0"} {
+		if _, err := landlockDashboardAddrs(noted, dir, alive); !errors.Is(err, errLandlockDashboardPortZero) {
+			t.Errorf("%s: err = %v, want refused", noted, err)
+		}
+	}
+	remove, err := writeDashboardListenRecord(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remove()
+	if _, err := landlockDashboardAddrs("", dir, alive); !errors.Is(err, errLandlockDashboardPortZero) {
+		t.Errorf("a recorded port 0: err = %v, want refused", err)
+	}
+	if got, err := landlockDashboardAddrs("127.0.0.1:8081", filepath.Join(t.TempDir(), "x.db"), alive); err != nil || len(got) != 1 {
+		t.Errorf("a fixed port: %v %v", got, err)
 	}
 }

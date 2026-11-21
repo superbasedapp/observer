@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/standin"
 )
 
 func TestBuildInstallManifestNativeAndRefresh(t *testing.T) {
@@ -58,7 +60,9 @@ func TestBuildInstallManifestNativeAndRefresh(t *testing.T) {
 func TestCodexInvocationSeparatesCLIFromSameExecutableService(t *testing.T) {
 	dir := t.TempDir()
 	launcher := filepath.Join(dir, "codex")
-	raw, err := os.ReadFile("/usr/bin/yes")
+	// A yes that keeps running as "codex" (a multi-call coreutils's
+	// /usr/bin/yes exits at once under that name; internal/testsupport/standin).
+	raw, err := os.ReadFile(standin.SingleProgramBinary(t, "yes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +180,8 @@ func TestCodexInvocationSeparatesCLIFromSameExecutableService(t *testing.T) {
 func TestInterpretedInvocationSeparatesCLIFromSameScriptService(t *testing.T) {
 	dir := t.TempDir()
 	interpreter := filepath.Join(dir, "node")
-	raw, err := os.ReadFile("/usr/bin/yes")
+	// A yes that keeps running as the "node" interpreter (standin).
+	raw, err := os.ReadFile(standin.SingleProgramBinary(t, "yes"))
 	if err != nil {
 		t.Fatal(err)
 	}

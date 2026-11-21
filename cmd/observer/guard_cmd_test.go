@@ -45,10 +45,12 @@ func runGuardCmd(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// TestGuardRulesCmd smoke-tests the catalog listing in both shapes.
+// TestGuardRulesCmd smoke-tests the catalog listing in both shapes
+// (--catalog: the effective default reads a config, which this test has
+// none of; TestGuardRulesListsOrgCustomRules covers that one).
 func TestGuardRulesCmd(t *testing.T) {
 	t.Parallel()
-	out, err := runGuardCmd(t, "rules")
+	out, err := runGuardCmd(t, "rules", "--catalog")
 	if err != nil {
 		t.Fatalf("guard rules: %v", err)
 	}
@@ -57,7 +59,7 @@ func TestGuardRulesCmd(t *testing.T) {
 			t.Errorf("catalog output missing %q", want)
 		}
 	}
-	out, err = runGuardCmd(t, "rules", "--json")
+	out, err = runGuardCmd(t, "rules", "--catalog", "--json")
 	if err != nil {
 		t.Fatalf("guard rules --json: %v", err)
 	}
@@ -309,17 +311,18 @@ func TestRewriteCachedBudgetFetchState(t *testing.T) {
 	t.Parallel()
 	fetchedAt := time.Date(2026, 9, 13, 6, 29, 22, 0, time.UTC)
 
+	capped := orgcontract.BudgetPolicyBody{Version: 5, Period: "month", Caps: []orgcontract.BudgetPolicyCap{{}}}
 	got := rewriteCachedBudgetFetchState(
 		"coverage=proxy_only fetch_state=unreachable from_org=true last_fetch_ok=false budget_required=false",
-		store.OrgBudgetCache{Have: true, Version: 5, FetchedAt: fetchedAt},
+		store.OrgBudgetCache{Have: true, Version: 5, FetchedAt: fetchedAt, Body: capped},
 	)
 	if strings.Contains(got, "fetch_state=unreachable") {
 		t.Errorf("still says unreachable over a primed cache: %s", got)
 	}
 	for _, want := range []string{
 		"fetch_state=cached",
-		"CLI read verified body v5 persisted at 2026-09-13T06:29:22Z",
-		"daemon fetch state unavailable here",
+		"verified body v5, last confirmed by the org at 2026-09-13T06:29:22Z",
+		"the daemon's live fetch state is not visible to this CLI",
 		"last_fetch_ok=unknown_to_cli",
 	} {
 		if !strings.Contains(got, want) {
@@ -352,6 +355,17 @@ func TestRewriteCachedBudgetFetchState(t *testing.T) {
 	)
 	if !strings.Contains(noTime, "an unknown time") {
 		t.Errorf("missing honest time fallback: %s", noTime)
+	}
+
+	// Demo bug #4: a signed empty body is "no org budgets", never a bare
+	// "body v0 persisted at ..." that reads as a stale fetch.
+	empty := rewriteCachedBudgetFetchState(
+		"coverage=proxy_only fetch_state=unreachable from_org=true last_fetch_ok=false budget_required=false",
+		store.OrgBudgetCache{Have: true, Version: 0, FetchedAt: fetchedAt},
+	)
+	if !strings.Contains(empty, "no org budgets (signed empty body v0), last confirmed by the org at 2026-09-13T06:29:22Z") ||
+		strings.Contains(empty, "persisted at") {
+		t.Errorf("empty body line: %s", empty)
 	}
 }
 
@@ -406,7 +420,7 @@ func TestGuardStatusOrgBudgetLineHonestAboutPrimedCache(t *testing.T) {
 	if strings.Contains(out, "fetch_state=unreachable") {
 		t.Errorf("a primed cache was rendered as unreachable:\n%s", out)
 	}
-	for _, want := range []string{"Org budget:", "fetch_state=cached", "CLI read verified body v5", "last_fetch_ok=unknown_to_cli"} {
+	for _, want := range []string{"Org budget:", "fetch_state=cached", "verified body v5, last confirmed by the org at", "last_fetch_ok=unknown_to_cli"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}

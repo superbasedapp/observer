@@ -371,6 +371,18 @@ type ParseResult struct {
 	// silently no-ops. The store write is first-wins-unless-empty so
 	// re-stamps are idempotent, and a malformed value is skipped.
 	SessionToolVersions []models.SessionToolVersion
+	// SessionExecutions carries cloud-execution attribution (cloud-agents
+	// arc, agent migration 240): where a session's agent ran
+	// (models.Execution*) and, when the on-disk record carries one, the
+	// vendor's cross-rail session reference. An adapter resolves its own
+	// grounded marker (Claude Code's `entrypoint` "remote" /
+	// "remote_desktop", ...) through a table at its boundary; nothing
+	// downstream infers a location from a tool name. The watcher plumbs
+	// them into store.IngestOptions; the store persists them via
+	// Store.SetSessionExecution (first-wins-unless-empty). Additive:
+	// adapters with no marker leave it nil and every stop on the path
+	// silently no-ops.
+	SessionExecutions []models.SessionExecution
 	// OutcomeUpdates carries outcomes for actions persisted by an
 	// EARLIER parse window. A tool_use and its tool_result are two
 	// separate records; a poll tick that ends between them persists

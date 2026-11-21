@@ -73,7 +73,7 @@ func recordSiblingGateOnce(tool string, b integration.HookBinding, spoolPath str
 		return persist
 	}
 	return func(v guard.ActionVerdict) {
-		now := time.Now()
+		now := siblingGateNow()
 		for _, ev := range siblings {
 			m := siblingGateMarker(dir, tool, ev, v)
 			fi, err := os.Stat(m)
@@ -91,9 +91,19 @@ func recordSiblingGateOnce(tool string, b integration.HookBinding, spoolPath str
 			}
 		}
 		persist(v)
-		markSiblingGateRecorded(siblingGateMarker(dir, tool, b.NativeEvent, v), now)
+		// The marker is dated when the record has landed, not when this
+		// firing started: the window is how long the marker waits for the
+		// sibling, and a slow persist (a first database open that runs the
+		// migration chain) must not spend it. Dated before the persist, a
+		// persist longer than the window left a marker the sibling already
+		// saw as stale, and both firings recorded.
+		markSiblingGateRecorded(siblingGateMarker(dir, tool, b.NativeEvent, v), siblingGateNow())
 	}
 }
+
+// siblingGateNow is the sibling marker clock (a seam for the persist-duration
+// regression test).
+var siblingGateNow = time.Now
 
 // markSiblingGateRecorded stamps a recorded verdict's marker (best effort:
 // without it the sibling firing records too, as before).

@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // checkProcessObservability reports the process-observability feature's
@@ -27,9 +28,10 @@ func checkProcessObservability(ctx context.Context, database *sql.DB, cfg config
 	p := cfg.Observer.Process
 	if !p.Enabled {
 		return Check{
-			Name:    "process observability",
-			Status:  StatusOK,
-			Message: "[observer.process] disabled (opt-in; OS-level process capture off)",
+			Name:         "process observability",
+			Status:       StatusOK,
+			Message:      "[observer.process] disabled (opt-in; OS-level process capture off; turn it on in Settings > Process capture)",
+			Remediations: []remedy.Remediation{remedy.Of(remedy.OpenSettings, "process")},
 		}
 	}
 
@@ -52,6 +54,12 @@ func checkProcessObservability(ctx context.Context, database *sql.DB, cfg config
 	now := time.Now()
 	health, haveHealth := LatestProcessHealth(ProcessHealthDir(cfg.Observer.DBPath))
 	details = append(details, processHealthDetails(health, haveHealth, now)...)
+	// No daemon has published health: a daemon started before capture was
+	// turned on needs a restart to pick it up (the detail lines say so).
+	var noHealthFix []remedy.Remediation
+	if !haveHealth {
+		noHealthFix = []remedy.Remediation{remedy.Of(remedy.RestartDaemon, "")}
+	}
 
 	// A dial-in capture transport whose every connection was refused is the
 	// single most actionable thing this check can report: something IS dialling
@@ -147,17 +155,19 @@ func checkProcessObservability(ctx context.Context, database *sql.DB, cfg config
 				health.PID, health.Backend)
 		}
 		return Check{
-			Name:    "process observability",
-			Status:  StatusWarn,
-			Message: msg,
-			Details: details,
+			Name:         "process observability",
+			Status:       StatusWarn,
+			Message:      msg,
+			Details:      details,
+			Remediations: noHealthFix,
 		}
 	}
 	return Check{
-		Name:    "process observability",
-		Status:  StatusOK,
-		Message: fmt.Sprintf("enabled (%s backend), %d process runs retained", p.Backend, runs),
-		Details: details,
+		Name:         "process observability",
+		Status:       StatusOK,
+		Message:      fmt.Sprintf("enabled (%s backend), %d process runs retained", p.Backend, runs),
+		Details:      details,
+		Remediations: noHealthFix,
 	}
 }
 
@@ -169,7 +179,8 @@ func processHealthDetails(h ProcessHealth, ok bool, now time.Time) []string {
 	if !ok {
 		return []string{
 			"daemon health: no running daemon has published process-observability health",
-			"               (start `observer start` with [observer.process].enabled to populate it;",
+			"               (a daemon started before capture was turned on needs a restart - Restart daemon",
+			"                in Settings > Health - and with none running, `observer start` populates it;",
 			"                the same record backs the observer_process_* live gauges on /metrics)",
 		}
 	}

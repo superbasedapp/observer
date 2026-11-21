@@ -43,6 +43,22 @@ var pep503 = regexp.MustCompile(`[-_.]+`)
 func lower(s string) string { return strings.ToLower(s) }
 
 // ecosystems is THE ecosystem table, one test case per row.
+//
+// The remote package lookup classifies names through this table and
+// privname.go's classifier, so an OSV ecosystem with no row here has every
+// name withheld from it. Maven, GitHub Actions, Pub, SwiftURL, Hex,
+// Hackage, Julia and CRAN have no row on purpose (reviewed 2026-11-06): the
+// registry configuration and environment the classifier reads do not prove
+// one of their names public (Maven's reactor and local repository resolve
+// before any remote; a private repository on github.com has an action's or
+// a Swift package's shape; the Pub, Hex, Hackage and Julia extractors emit
+// git and path packages under plain names; a private package manager is
+// often configured under the repository name CRAN). Pub, Hex and CRAN
+// lockfiles record each package's registry, so a classifier reading them
+// could prove a name; none is built. docs/dependency-scanning.md, "Remote
+// lookup", "Which ecosystems can send names", has the reasons and the
+// honest options; a row is added only with a classifier that proves the
+// name public.
 var ecosystems = []EcosystemSpec{
 	{Eco: EcoNpm, OSV: "npm", PublicHost: "registry.npmjs.org", MetadataHost: "registry.npmjs.org", Normalize: lower, NearMissMin: 4},
 	{Eco: EcoPyPI, OSV: "PyPI", PublicHost: "pypi.org", MetadataHost: "pypi.org", Normalize: func(s string) string { return lower(pep503.ReplaceAllString(s, "-")) }, NearMissMin: 4},

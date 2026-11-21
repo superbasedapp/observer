@@ -7,3 +7,10 @@ package managedconfig
 func Load(lastKnown *Ceiling) Result {
 	return Decide(probeOS(), lastKnown)
 }
+
+// LoadAttach reads this OS's fixed source (the same one Load reads, with the
+// same checks) and decides its attach policy (attach.go). The node's attach
+// and detach entry points call it.
+func LoadAttach() AttachResult {
+	return DecideAttach(probeOS())
+}

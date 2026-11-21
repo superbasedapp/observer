@@ -13,7 +13,7 @@ import {
 } from "@/components/primitives";
 import { KNOWN_ACTION_TYPES } from "@shared/lib/actions";
 import type { ConfigResponse } from "@/lib/types";
-import { markRestartPending } from "@/lib/restartPending";
+import { markRestartPending, RESTART_HINT } from "@/lib/restartPending";
 import { useApi } from "@/lib/useApi";
 import type { FieldDef, OptionSourceId, SectionGroup, SectionSpec } from "./sectionSpecs";
 import { keepSelected, type PickOption } from "@/lib/pickerOptions";
@@ -39,6 +39,8 @@ function specSources(spec: SectionSpec): Set<OptionSourceId> {
   return out;
 }
 import { saveConfigSection } from "@/lib/configSectionSave";
+import { DetectorOverrideExtras } from "./DetectorOverrideExtras";
+import { FreeListInput, NullableListInput } from "./NullableListInput";
 
 // GET /api/guard/prompt/detectors response shape (backend:
 // internal/intelligence/dashboard/guard_prompt.go's
@@ -77,6 +79,7 @@ export function StructuredConfigSection({
   footer,
   readOnly,
   icon,
+  onDraftChange,
 }: {
   spec: SectionSpec;
   /** The section glyph from the Settings SECTIONS table (card title). */
@@ -88,6 +91,10 @@ export function StructuredConfigSection({
   // Governance can lock a section read-only (docs/plane-a governance
   // posture). No-op / undefined on an ungoverned node.
   readOnly?: boolean;
+  // Called with the section's unsaved draft whenever it changes (null while
+  // the config has not loaded). The process section feeds its data-volume
+  // card from it; sections that pass nothing behave exactly as before.
+  onDraftChange?: (draft: Record<string, unknown> | null) => void;
 }) {
   // Dynamic select-option sources (D11): fields with `optionsFrom`
   // resolve their option list from the loaded config response, so
@@ -135,6 +142,7 @@ export function StructuredConfigSection({
     }
     return out;
   }, [detectorsApi.data]);
+  const detectorList = detectorsApi.data?.detectors ?? [];
   // The form payload mirrors the structure of the config section it
   // saves. For grouped sections (Compression has 7 sub-groups across
   // 3 levels of nesting) the draft is the full Compression object;
@@ -150,6 +158,11 @@ export function StructuredConfigSection({
   useEffect(() => {
     setDraft(initial);
   }, [initial]);
+  useEffect(() => {
+    onDraftChange?.(draft);
+    // The callback is the parent's state setter; its identity is not a trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -179,6 +192,17 @@ export function StructuredConfigSection({
     setSavedMsg(null);
   }
 
+  // Drop one key from the object at subPath (a detector override Remove).
+  function removeAt(subPath: string[], key: string) {
+    setDraft((cur) => {
+      const next = deepClone(cur) ?? {};
+      const sub = resolveSub(next, subPath);
+      if (sub) delete sub[key];
+      return next;
+    });
+    setSavedMsg(null);
+  }
+
   async function save() {
     if (!draft) return;
     setBusy(true);
@@ -200,8 +224,8 @@ export function StructuredConfigSection({
         const keys = out.restart_required_keys.length > 0 ? out.restart_required_keys : undefined;
         setSavedMsg(
           keys && keys.length > 0
-            ? `Saved. Restart the observer daemon to apply ${keys.join(", ")}.`
-            : "Saved. Restart the observer daemon to pick up the change.",
+            ? `Saved. ${keys.join(", ")} applies after a daemon restart: ${RESTART_HINT}.`
+            : `Saved. The change applies after a daemon restart: ${RESTART_HINT}.`,
         );
         // Feed the global restart-pending banner so the reminder
         // survives navigating away from Settings (P1.9) — with the KEYS
@@ -227,7 +251,7 @@ export function StructuredConfigSection({
     <ChartShell
       title={
         <span className="flex items-baseline gap-2">
-          {prettyTitle(spec.id)}
+          {spec.title ?? prettyTitle(spec.id)}
           {badge}
         </span>
       }
@@ -261,6 +285,7 @@ export function StructuredConfigSection({
               spec.path.length === 0
                 ? g.path
                 : g.path.slice(spec.path.length);
+            if (g.hideWhenAbsent && resolveSub(draft, rel) == null) return null;
             return (
               <GroupCard
                 key={g.id}
@@ -270,6 +295,9 @@ export function StructuredConfigSection({
                 onChange={(field, value) =>
                   setAt([...rel, field], value)
                 }
+                onRemoveKey={(key) => removeAt(rel, key)}
+                detectors={detectorList}
+                readOnly={readOnly}
                 dynamicOptions={dynamicOptions}
                 effectiveModes={effectiveModes}
                 pickers={pickers}
@@ -279,7 +307,7 @@ export function StructuredConfigSection({
         {!hasGroups && draft == null && (
           <p className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-3 py-2 text-[11.5px] text-fg-3">
             Section not present in the running config. Backend may not have
-            initialized the defaults yet - restart the daemon.
+            initialized the defaults yet - restart the daemon (Restart daemon in Settings &gt; Health).
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
@@ -315,6 +343,9 @@ function GroupCard({
   draft,
   relPath,
   onChange,
+  onRemoveKey,
+  detectors,
+  readOnly,
   dynamicOptions,
   effectiveModes,
   pickers,
@@ -323,6 +354,9 @@ function GroupCard({
   draft: Record<string, unknown> | null;
   relPath: string[];
   onChange: (field: string, value: unknown) => void;
+  onRemoveKey: (key: string) => void;
+  detectors: PromptDetectorEntry[];
+  readOnly?: boolean;
   dynamicOptions?: Record<string, string[] | undefined>;
   effectiveModes?: Record<string, string>;
   pickers?: PickerSources;
@@ -355,6 +389,17 @@ function GroupCard({
             pickers={pickers}
           />
         ))}
+        {group.id === "prompt-detectors" && (
+          <DetectorOverrideExtras
+            overrides={groupData}
+            fixedIds={group.fields.map((f) => f.id)}
+            detectors={detectors}
+            effectiveModes={effectiveModes ?? {}}
+            disabled={readOnly}
+            onSet={(id, mode) => onChange(id, mode)}
+            onRemove={onRemoveKey}
+          />
+        )}
       </div>
     </section>
   );
@@ -383,7 +428,7 @@ function FieldRow({
       label={field.label}
       help={field.help}
       status={
-        field.disabled && field.note ? (
+        (field.disabled || field.readOnly) && field.note ? (
           <span className="text-[11px] leading-snug text-warn">{field.note}</span>
         ) : undefined
       }
@@ -417,8 +462,9 @@ function FieldInput({
 }) {
   // A spec may mark a field `disabled` — a key the config still carries but
   // that no consumer reads. It renders inert rather than live, and
-  // FieldRow prints the field's `note` under it (honest-disabled-copy).
-  const disabled = Boolean(field.disabled);
+  // FieldRow prints the field's `note` under it (honest-disabled-copy). A
+  // `readOnly` field renders inert too, but keeps its value in the save.
+  const disabled = Boolean(field.disabled || field.readOnly);
 
   if (field.kind === "bool") {
     const on = Boolean(value);
@@ -492,6 +538,19 @@ function FieldInput({
     );
   }
 
+  if (field.kind === "list" && field.nullableList) {
+    return (
+      <NullableListInput
+        value={value}
+        onChange={onChange}
+        defaultsLabel={field.nullableList.defaultsLabel}
+        noneLabel={field.nullableList.noneLabel}
+        disabled={disabled}
+        ariaLabel={field.label}
+      />
+    );
+  }
+
   // A list or text field over a known set is a picker (D-571): a closed
   // `options` list or a daemon roster named by `optionSource`. A value the
   // list does not carry (set by hand in config.toml) stays visible.
@@ -532,23 +591,8 @@ function FieldInput({
   }
 
   if (field.kind === "list") {
-    const arr = Array.isArray(value) ? value : [];
-    return (
-      <Input
-        mono
-        type="text"
-        disabled={disabled}
-        value={arr.join(", ")}
-        placeholder="comma-separated"
-        onChange={(e) => {
-          const items = e.target.value
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          onChange(items);
-        }}
-      />
-    );
+    const arr = (Array.isArray(value) ? value : []).map(String);
+    return <FreeListInput value={arr} onChange={onChange} disabled={disabled} ariaLabel={field.label} />;
   }
 
   // text
@@ -557,6 +601,7 @@ function FieldInput({
       mono
       type="text"
       disabled={disabled}
+      placeholder={field.readOnly ? "none" : undefined}
       value={value == null ? "" : String(value)}
       onChange={(e) => onChange(e.target.value)}
     />

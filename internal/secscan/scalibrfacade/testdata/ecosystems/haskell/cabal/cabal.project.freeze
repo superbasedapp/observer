@@ -1,0 +1,6 @@
+active-repositories: hackage.haskell.org:merge
+constraints: any.aeson ==2.2.3.0,
+             any.aeson +ordered-keymap,
+             any.base ==4.19.1.0,
+             any.text ==2.1.1
+index-state: hackage.haskell.org 2026-01-01T00:00:00Z

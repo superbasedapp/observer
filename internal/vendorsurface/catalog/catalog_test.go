@@ -30,9 +30,13 @@ func TestCatalogLoadsAndValidates(t *testing.T) {
 		t.Fatalf("catalog has %d rows, want at least %d", len(rows), 1478+20)
 	}
 	// 30 research/v5 groups plus the three AP-135 groups (snowflake, ibm,
-	// castai; docs/plans/native-console-wave-2026-10-21-phase0.md).
-	if n := len(c.Groups()); n != 33 {
-		t.Fatalf("catalog has %d vendor groups, want 33 (research/v5 + AP-135)", n)
+	// castai; docs/plans/native-console-wave-2026-10-21-phase0.md) plus
+	// openhands (cloud agents arc lane CA-A4,
+	// docs/plans/cloud-agents/cloud-agent-integration-reference-2026-10-31.md)
+	// plus warp (lane CA-V1,
+	// docs/plans/cloud-agents/grounding/wave-c-vendors-2026-11-01.md).
+	if n := len(c.Groups()); n != 35 {
+		t.Fatalf("catalog has %d vendor groups, want 35 (research/v5 + AP-135 + openhands + warp)", n)
 	}
 	for _, g := range c.Groups() {
 		if len(c.GroupSurfaces(g)) == 0 {

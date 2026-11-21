@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -82,4 +84,53 @@ func TestSandboxCLIRunIsRecorded(t *testing.T) {
 		t.Fatalf("the exit is not recorded: %+v", got)
 	}
 	endSandboxCLIRun(ctx, cfg, "", 0, "") // nothing recorded: nothing to end
+}
+
+// TestRecordOrRefuseSandboxCLIRun (cli-1b fixes-3, D): a CLI launch whose
+// run row cannot be written refuses, so no box runs that the daemon's
+// loopback exposure gate could never see; a recorded run passes its id on.
+func TestRecordOrRefuseSandboxCLIRun(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	failing := func(context.Context, config.Config, string, string, termrun.Isolation) (string, error) {
+		return "", errors.New("database is locked")
+	}
+	if id, err := recordOrRefuseSandboxCLIRun(ctx, cfg, "claude-code", "/r", termrun.Isolation{}, failing); err == nil || id != "" || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a failed record: id %q err %v, want the launch refused", id, err)
+	}
+	empty := func(context.Context, config.Config, string, string, termrun.Isolation) (string, error) {
+		return "", nil
+	}
+	if _, err := recordOrRefuseSandboxCLIRun(ctx, cfg, "claude-code", "/r", termrun.Isolation{}, empty); err == nil {
+		t.Fatal("an empty run id was accepted")
+	}
+	ok := func(context.Context, config.Config, string, string, termrun.Isolation) (string, error) {
+		return "run-ok-1", nil
+	}
+	if id, err := recordOrRefuseSandboxCLIRun(ctx, cfg, "claude-code", "/r", termrun.Isolation{}, ok); err != nil || id != "run-ok-1" {
+		t.Fatalf("a recorded run: id %q err %v", id, err)
+	}
+}
+
+// TestEndRefusedSandboxCLIRun (lane callerid, L3): a launch refused after
+// its row was written (the marker step, the native switch) ends that row
+// with launch_refused, so it never reads as running.
+func TestEndRefusedSandboxCLIRun(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{}
+	cfg.Observer.DBPath = filepath.Join(t.TempDir(), "observer.db")
+	runID, err := recordSandboxCLIRun(ctx, cfg, "claude-code", t.TempDir(), termrun.Isolation{Class: "process", Stack: []string{"bwrap"}, EgressTier: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endRefusedSandboxCLIRun(ctx, cfg, runID)
+	database, closeDB, err := openDBForConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB()
+	got, ok, err := store.New(database).LoadTerminalRun(ctx, runID)
+	if err != nil || !ok || got.EndedAt == nil || got.EndReason != store.EndReasonLaunchRefused {
+		t.Fatalf("row %+v %v %v, want ended launch_refused", got, ok, err)
+	}
 }

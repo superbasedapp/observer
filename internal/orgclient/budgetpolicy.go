@@ -380,7 +380,7 @@ func (c *Client) budgetFetchRequest(ctx context.Context, enr *store.Enrolment, i
 	// banner's request link and the request picker need it) and send the
 	// offline-revert fields. A plain query marker, the ?policy_caps precedent:
 	// a server that predates it ignores it.
-	url := strings.TrimRight(enr.OrgServerURL, "/") + "/api/agent/budget?policy_caps=" + orgcontract.BudgetGrantCapability
+	url := strings.TrimRight(enr.OrgServerURL, "/") + "/api/agent/budget?policy_caps=" + orgcontract.BudgetGrantCapability + "," + orgcontract.BudgetAppCapability
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, empty, orgcontract.BudgetFetchUnreachable,
@@ -447,6 +447,13 @@ func (c *Client) classifyBudgetResponse(ctx context.Context, resp *http.Response
 		if !cached.have {
 			return budgetFetchOutcome(identity, orgcontract.BudgetFetchUnverified, orgcontract.BudgetPolicyBody{}, false, cached.witness), true,
 				errors.New("orgclient.FetchBudgetPolicy: 304 without a current enrollment-bound cache")
+		}
+		// The org re-confirmed the body: record when, so a status read in
+		// another process can say "last confirmed at" rather than the time
+		// the body first arrived (demo bug #4). Best effort - a failed touch
+		// leaves only an older timestamp, never a different cap.
+		if err := c.store.TouchOrgBudgetConfirmed(ctx, identity.Binding, c.budgetClock()); err != nil {
+			c.logger.Debug("org budget: record the 304 confirmation", "err", err)
 		}
 		return budgetFetchOutcome(identity, orgcontract.BudgetFetchOK, cached.body, true, cached.witness), true, nil
 	case resp.StatusCode == http.StatusNotFound:

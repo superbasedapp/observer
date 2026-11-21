@@ -89,8 +89,8 @@ func (h *harness) portalLogin(t *testing.T, subject string) *portalClient {
 	if !cookie.HttpOnly {
 		t.Fatalf("session cookie is not HttpOnly")
 	}
-	if cookie.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("session cookie SameSite=%v, want Strict", cookie.SameSite)
+	if cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("session cookie SameSite=%v, want Lax (ruling A7a)", cookie.SameSite)
 	}
 	var lr struct {
 		AccountID string `json:"account_id"`
@@ -149,8 +149,10 @@ func TestPortalLoginSetsCookieAndReadsOverview(t *testing.T) {
 		JobsTotal   int            `json:"jobs_total"`
 		Results     int            `json:"results_total"`
 		Allowance   struct {
-			DailyCap   int `json:"daily_cap"`
-			MonthlyCap int `json:"monthly_cap"`
+			DailyCap   int    `json:"daily_cap"`
+			MonthlyCap int    `json:"monthly_cap"`
+			BudgetUnit string `json:"budget_unit"`
+			Evidence   int    `json:"evidence_token_budget"`
 		} `json:"allowance"`
 	}
 	decode(t, resp, &ov)
@@ -160,8 +162,9 @@ func TestPortalLoginSetsCookieAndReadsOverview(t *testing.T) {
 	if ov.JobsTotal != 0 || ov.Results != 0 {
 		t.Fatalf("fresh account overview not empty: %+v", ov)
 	}
-	if ov.Allowance.DailyCap != 100 || ov.Allowance.MonthlyCap != 3000 {
-		t.Fatalf("unexpected allowance caps: %+v", ov.Allowance)
+	// Free v5 (ruling R-AI1): token budgets, no count caps enforced.
+	if ov.Allowance.DailyCap != 0 || ov.Allowance.MonthlyCap != 0 || ov.Allowance.BudgetUnit != "tokens" || ov.Allowance.Evidence != 4000 {
+		t.Fatalf("unexpected allowance: %+v", ov.Allowance)
 	}
 }
 
@@ -317,8 +320,22 @@ func TestPortalConsentsAndUsage(t *testing.T) {
 
 	var snap store.UsageSnapshot
 	decode(t, c.get("/portal/api/usage"), &snap)
-	if snap.DailyCap != 100 || snap.MonthlyCap != 3000 {
-		t.Fatalf("usage caps=%+v, want 100/3000 (free v3, migration 0041)", snap)
+	if snap.BudgetUnit != "tokens" || snap.DailyCap != 0 || snap.DailyTokenBudget <= 0 || snap.EvidenceTokenBudget != 4000 {
+		t.Fatalf("usage=%+v, want the free tier's token budgets (free v5, migration 0079)", snap)
+	}
+	// The remaining figures every reader shows: budget minus committed, and
+	// present (a pointer) even when nothing has been used yet.
+	if snap.DailyTokensRemaining == nil || *snap.DailyTokensRemaining != snap.DailyTokenBudget-snap.DailyTokensUsed ||
+		snap.MonthlyTokensRemaining == nil || *snap.MonthlyTokensRemaining != snap.MonthlyTokenBudget-snap.MonthlyTokensUsed {
+		t.Fatalf("usage remaining = %v / %v, want budget minus used (%+v)", snap.DailyTokensRemaining, snap.MonthlyTokensRemaining, snap)
+	}
+	var billing struct {
+		Plan *store.UsageSnapshot `json:"plan"`
+	}
+	decode(t, c.get("/portal/api/billing"), &billing)
+	if billing.Plan == nil || billing.Plan.BudgetUnit != "tokens" || billing.Plan.DailyTokenBudget != snap.DailyTokenBudget ||
+		billing.Plan.EvidenceTokenBudget != snap.EvidenceTokenBudget || billing.Plan.DailyTokensRemaining == nil {
+		t.Fatalf("billing plan = %+v, want the same token budgets as usage", billing.Plan)
 	}
 }
 

@@ -10,10 +10,13 @@ import (
 
 // TestReportMonthly pins the P6.6 statement data: month windowing,
 // project scoping, by-model/tool/project rollups with session counts,
-// proxy-dedup, savings totals, and the bad-month 400.
+// proxy-dedup, savings totals, and the bad-month 400. Fixtures are
+// built from a pinned mid-month instant: offsets from the wall clock
+// (now-3h) land in the prior month during the first hours of the 1st
+// (the v1.37.0 tag-run flake, FU-231).
 func TestReportMonthly(t *testing.T) {
 	server, _ := wizardTestServer(t)
-	now := time.Now().UTC()
+	now := pinServerClock(server, midMonthTestNow)
 	month := now.Format("2006-01")
 
 	// Two sessions in two projects this month; one last month.
@@ -137,7 +140,7 @@ func TestReportMonthly(t *testing.T) {
 // the fallback AND the mixed-aggregation case in one totals sum.
 func TestReportMonthly_DatedPricingLadder(t *testing.T) {
 	server, _ := wizardTestServer(t)
-	now := time.Now().UTC()
+	now := pinServerClock(server, midMonthTestNow)
 	month := now.Format("2006-01")
 	boundary := now.Add(-2 * time.Hour)
 	server.opts.CostEngine = newLadderTestEngine(t, boundary)

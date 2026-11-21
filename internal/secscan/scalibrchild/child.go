@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 
+	"github.com/marmutapp/superbased-observer/internal/secreachgovuln"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/scalibrfacade"
@@ -18,6 +19,21 @@ func Run(ctx context.Context, req depscan.ChildRequest, log io.Writer) depscan.C
 	resp := depscan.ChildResponse{Version: depscan.ProtocolVersion, Compiled: scalibrfacade.Compiled}
 	if req.Version != depscan.ProtocolVersion {
 		resp.Error = fmt.Sprintf("protocol version %d, want %d", req.Version, depscan.ProtocolVersion)
+		return resp
+	}
+	switch req.Kind {
+	case "":
+	case depscan.KindOSImage:
+		if req.Root == "" {
+			resp.Error = "no image root"
+			resp.Kind = req.Kind
+			return resp
+		}
+		return runOS(ctx, req, log, childGOOS(req))
+	case depscan.KindSBOM:
+		return runSBOM(ctx, req)
+	default:
+		resp.Error = fmt.Sprintf("unknown request kind %q", req.Kind)
 		return resp
 	}
 	if !scalibrfacade.Compiled {
@@ -43,7 +59,10 @@ func Run(ctx context.Context, req depscan.ChildRequest, log io.Writer) depscan.C
 		ecoOf[i.Name] = i.Ecosystem
 	}
 	row := depscan.ScalibrRow(names)
-	inv, err := scalibrfacade.Extract(ctx, req.Root, scalibrfacade.ExtractOptions{SkipDirs: req.SkipDirs, MaxInodes: req.MaxInodes, Log: log})
+	inv, err := scalibrfacade.Extract(ctx, req.Root, scalibrfacade.ExtractOptions{
+		SkipDirs: req.SkipDirs, MaxInodes: req.MaxInodes, Log: log,
+		ArtifactDirs: req.ArtifactDirs, ArtifactOff: req.ArtifactOff, MaxArtifactBytes: depscan.MaxArtifactBytes,
+	})
 	if err != nil {
 		resp.Error = err.Error()
 		return resp
@@ -62,9 +81,13 @@ func Run(ctx context.Context, req depscan.ChildRequest, log io.Writer) depscan.C
 		resp.Packages = append(resp.Packages, depscan.Package{
 			Ecosystem: p.Ecosystem, Name: p.Name, Version: p.Version, Path: p.Path,
 			Extractor: p.Extractor, Local: p.Local, Restored: p.Restored,
-			Unpinned: p.Unpinned, LockfileTooLarge: p.LockfileTooLarge,
+			Unpinned: p.Unpinned, LockfileTooLarge: p.LockfileTooLarge, Line: p.Line,
+			PinnedBySHA: p.PinnedBySHA, NotAVersion: p.NotAVersion, MovingTag: p.MovingTag, VersionFromComment: p.VersionFromComment,
+			Artifact: p.Artifact, VersionUnknown: p.VersionUnknown,
 		})
 	}
+	resp.Gaps = append(resp.Gaps, artifactGaps(inv.TooLarge)...)
+	resp.Gaps = append(resp.Gaps, unreadGaps(ctx, req)...)
 	for _, m := range inv.Unlocked {
 		resp.Unlocked = append(resp.Unlocked, depscan.Manifest{Ecosystem: m.Ecosystem, Path: m.Path})
 	}
@@ -72,6 +95,11 @@ func Run(ctx context.Context, req depscan.ChildRequest, log io.Writer) depscan.C
 	resp.Dropped = dropped
 	for _, eco := range depscan.SortedEcosystems(keep) {
 		resp.Ecosystems = append(resp.Ecosystems, matchOne(ctx, inv, eco, keep[eco], req, unsupported(row, goos, resp.Packages, keep[eco])))
+	}
+	// The Go symbol check (reach.go, component security.reach.go): only
+	// where it was asked for and x/vuln is linked.
+	if req.ReachGo && secreachgovuln.Compiled {
+		resp.Reach, resp.ReachRan = reachGo(ctx, req, resp), true
 	}
 	return resp
 }
@@ -120,4 +148,28 @@ func matchOne(ctx context.Context, inv *scalibrfacade.Inventory, eco string, idx
 		res.Advisories = nil
 	}
 	return res
+}
+
+// unreadGaps are the known dependency files no linked extractor reads
+// (scalibrfacade.UnreadFiles): gaps, so a project whose only Dart file is a
+// pubspec.lock reads "not scanned", never clean. A probe that could not
+// finish leaves one gap that names no file: what it did not see may hold
+// such a file, so the run is partial, never clean.
+func unreadGaps(ctx context.Context, req depscan.ChildRequest) []depscan.Gap {
+	gaps, err := scalibrfacade.UnreadFiles(ctx, req.Root, scalibrfacade.ExtractOptions{SkipDirs: req.SkipDirs, MaxInodes: req.MaxInodes})
+	if err != nil {
+		gaps = append(gaps, depscan.Gap{Reason: depscan.ReasonExtractorFailed})
+	}
+	return gaps
+}
+
+// artifactGaps turns the artifact files over the size cap into gaps: they
+// were not read, so the run is partial, never clean. An executable's gap
+// names no ecosystem (its language is unknown until it is read).
+func artifactGaps(skips []scalibrfacade.ArtifactSkip) []depscan.Gap {
+	out := make([]depscan.Gap, 0, len(skips))
+	for _, a := range skips {
+		out = append(out, depscan.Gap{Ecosystem: a.Ecosystem, Path: a.Path, Reason: depscan.ReasonArtifactTooLarge})
+	}
+	return out
 }

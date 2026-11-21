@@ -116,22 +116,40 @@ func iacStatusRows(ctx context.Context, configPath string) []iacStatusRow {
 			if r.Installed && in.Reason == "" {
 				r.Decision = in.Decision.String()
 			}
-			r.Line = iacStatusLine(e, in)
+			r.Line = iacStatusLine(e, in, iacInstallHintCLI)
 		}
 		rows = append(rows, r)
 	}
 	return rows
 }
 
-// iacStatusLine is one engine's status sentence.
-func iacStatusLine(e seciac.Engine, in seciac.Inspection) string {
+// iacInstallHint names an engine's guided install on one surface: the CLI
+// names its verb, the dashboard names its card, so the one status sentence
+// (iacStatusLine) reads right on both (dashboard CLI parity plan,
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md section 3, B-CS2).
+type iacInstallHint func(seciac.Engine) string
+
+// iacInstallHintCLI is `observer security iac status`'s pointer.
+func iacInstallHintCLI(e seciac.Engine) string {
+	return "`observer security iac install --engine " + string(e.ID) + "`"
+}
+
+// iacInstallHintDash is the Code security Scanners tab's pointer: the
+// engine's own install card on that tab.
+func iacInstallHintDash(e seciac.Engine) string {
+	return "install " + e.Title + " from the IaC scanners card on this tab"
+}
+
+// iacStatusLine is one engine's status sentence; hint names the guided
+// install where the engine has one (nil: none named).
+func iacStatusLine(e seciac.Engine, in seciac.Inspection, hint iacInstallHint) string {
 	switch {
 	case in.Reason == seciac.ReasonNotInstalled:
-		hint := "install it yourself"
-		if e.GuidedInstall() {
-			hint = "`observer security iac install --engine " + string(e.ID) + "` or install it yourself"
+		how := "install it yourself"
+		if e.GuidedInstall() && hint != nil {
+			how = hint(e) + " or install it yourself"
 		}
-		return e.Title + ": selected, not installed: no process starts and projects read not_scanned (" + hint + ")"
+		return e.Title + ": selected, not installed: no process starts and projects read not_scanned (" + how + ")"
 	case in.Reason != "":
 		return e.Title + ": selected, found at " + in.Binary + " but not usable (" + in.Reason + ")"
 	}

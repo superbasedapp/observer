@@ -23,7 +23,7 @@
 // observed verdict (observed_route: sessions per capture surface that did
 // or did not reach the proxy). "Active" needs proxied sessions; a routed
 // file with none reads "Routed (file only)"; a routable surface that ran
-// sessions around the proxy reads "Partly bypassed" or "Bypassed".
+// sessions around the proxy reads "Proxy partly bypassed" or "Proxy bypassed".
 // Table-driven (CLAUDE.md #5).
 
 import type { ObservedSurface, SetupClaude } from "./types";
@@ -65,13 +65,20 @@ type Facts = {
   unjudged: ObservedSurface[];
 };
 
-function surfaceName(s: ObservedSurface): string {
-  return s.host ? `${s.kind} (${s.host})` : s.kind;
-}
+// UNSTAMPED names sessions that carry no capture-surface stamp (older
+// captures, or a session imported or captured from another OS); the daemon
+// judges them at the tool level (P-172). Demo bug #11: the pill read the raw
+// placeholder "Bypassed: unstamped", which told a viewer nothing.
+const UNSTAMPED = "sessions with no surface stamp (older, imported or captured on another OS)";
 
-/** The pill text names surface KINDS once each, e.g. "desktop, ide". */
-function kindList(surfaces: ObservedSurface[]): string {
-  return [...new Set(surfaces.map((s) => s.kind || "unstamped"))].join(", ");
+// BYPASS_LEAD opens every bypass tooltip with what the verdict means, before
+// the counts.
+const BYPASS_LEAD =
+  "Some Claude Code sessions did not go through this machine's proxy, so their tokens and cost come from transcripts (estimates) and the proxy's guard checks, compression and limit readings did not see them.";
+
+function surfaceName(s: ObservedSurface): string {
+  if (!s.kind) return UNSTAMPED;
+  return s.host ? `${s.kind} (${s.host})` : s.kind;
 }
 
 function fileNote(f: Facts): string {
@@ -107,16 +114,18 @@ const ROWS: Row[] = [
   {
     when: (f) => f.bypassed.length > 0 && f.proxied > 0,
     view: (f) => ({
-      label: `Partly bypassed: ${kindList(f.bypassed)}`,
-      tooltip: `In the last ${f.windowDays} days ${f.proxied} of ${f.sessions} Claude Code sessions went through this machine's proxy, but ${bypassDetail(f)}. ${fileNote(f)} Route that surface too, or launch it through the observer wrapper.${unjudgedNote(f)}`,
+      // The label is the plain verdict; which surfaces is in the tooltip, so
+      // the header chip stays short (demo bugs #10 and #11).
+      label: "Proxy partly bypassed",
+      tooltip: `${BYPASS_LEAD} In the last ${f.windowDays} days ${f.proxied} of ${f.sessions} Claude Code sessions went through this machine's proxy, but ${bypassDetail(f)}. ${fileNote(f)} Route that surface too (Set up for Claude Code in Settings > Connected tools), or start it from a dashboard terminal (New terminal), which launches through the observer wrapper.${unjudgedNote(f)}`,
       state: "paused",
     }),
   },
   {
     when: (f) => f.bypassed.length > 0,
     view: (f) => ({
-      label: `Bypassed: ${kindList(f.bypassed)}`,
-      tooltip: `In the last ${f.windowDays} days no Claude Code session reached this machine's proxy: ${bypassDetail(f)}. ${fileNote(f)} A routed tool whose sessions still miss the proxy either ignores the route or ran while the proxy was down.${unjudgedNote(f)}`,
+      label: "Proxy bypassed",
+      tooltip: `${BYPASS_LEAD} In the last ${f.windowDays} days no Claude Code session reached this machine's proxy: ${bypassDetail(f)}. ${fileNote(f)} A routed tool whose sessions still miss the proxy either ignores the route or ran while the proxy was down.${unjudgedNote(f)}`,
       state: "paused",
     }),
   },

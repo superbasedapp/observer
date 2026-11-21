@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/clientwire"
+	"github.com/marmutapp/superbased-observer/internal/cloudsession"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/telemetrywire"
@@ -70,6 +71,47 @@ func runOTLPExportInit(out io.Writer, configPath string, tools []string, dryRun,
 	}
 	if failed {
 		return fmt.Errorf("--otlp-export completed with errors; see above")
+	}
+	return nil
+}
+
+// runOTLPCloudEnvironment prints the Settings text that points Claude Code
+// cloud sessions' own exporter at this node (cloud-agents lane CA-B4,
+// reworked by CA-C7: telemetrywire.CloudEnvironment). The whole export goes
+// in the organization's server-managed settings, never a cloud environment's
+// variables, because it carries a credential. It writes nothing and never
+// prints a token (operator ruling D-359): the header placeholder names
+// `observer cloud-session token mint`, the ship token the receiver accepts,
+// and the shared receiver token's file is named only to warn it off. A node
+// whose receiver is off or loopback-only gets the text plus a warning that
+// it cannot receive yet.
+func runOTLPCloudEnvironment(out io.Writer, configPath, endpoint string) error {
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	text, err := telemetrywire.CloudEnvironment(telemetrywire.CloudEnvironmentInput{
+		Endpoint: endpoint, TokenFile: otlpIngestTokenPath(cfg),
+	})
+	if err != nil {
+		return fmt.Errorf("--otlp-cloud-endpoint: %w", err)
+	}
+	if !cfg.Ingest.OTel.Enabled || !cfg.Ingest.OTel.AllowNonLoopback || strings.TrimSpace(cfg.Ingest.OTel.HTTPAddr) == "" {
+		fmt.Fprintln(out, "warning: this node's OTLP receiver is not open to the network yet ([ingest.otel] enabled, http_addr and allow_non_loopback); step 1 below does that.")
+	}
+	fmt.Fprintln(out, "Claude Code cloud sessions -> this node (Rail T telemetry, via server-managed settings). Nothing was written.")
+	fmt.Fprintln(out)
+	for i, step := range text.Steps {
+		fmt.Fprintf(out, "%d. %s\n", i+1, step)
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Server-managed settings (merge into the env block; never a cloud environment's variables):")
+	fmt.Fprint(out, text.ManagedSettingsJSON())
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Network access: "+fmt.Sprintf(cloudsession.ClaudeCodeNetwork.Summary, text.NetworkHost))
+	fmt.Fprintln(out)
+	for _, n := range text.Notes {
+		fmt.Fprintln(out, "note: "+n)
 	}
 	return nil
 }

@@ -5,8 +5,11 @@ import {
   ArrowUp,
   CircleHelp,
   Download,
+  ExternalLink,
   Menu,
   RefreshCw,
+  UserRound,
+  X,
 } from "lucide-react";
 import { NAV_GROUPS } from "@/lib/nav";
 import { exportTargetFor } from "@/lib/exportTarget";
@@ -17,11 +20,10 @@ import { useApi, useApiActivity } from "@/lib/useApi";
 import { fmtDuration } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
 import { ThemeToggle as SharedThemeToggle } from "@shared/primitives/ThemeToggle";
-import type { CloudStatusResponse, EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
+import type { EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
 import { npmUpdateCommand } from "@/lib/npmCommand";
 import { useHostOS } from "@/lib/keyPlatform";
-import { orgDisplayLabel } from "@/lib/orgName";
 import { Icon, LiveDot, Tooltip } from "@/components/primitives";
 import { DensityToggle } from "@shared/primitives/DensityToggle";
 import { PageLinkTools } from "@shared/primitives";
@@ -34,15 +36,16 @@ import {
   liveDotProps,
   withDotClass,
 } from "@/lib/liveSignals";
+import { topBarAccountView } from "@/lib/getStarted";
+import { useConnectHandoff } from "@/lib/useConnectHandoff";
+import { useAccount, useConnectFlow } from "@/lib/useConnectFlow";
 import { capturePillView, type CapturePillState } from "@/lib/capturePill";
-import { cloudChipShown } from "@/lib/cloudChip";
-import { isManaged, isSettingsHidden, useGovernance } from "@/lib/governance";
-import { absentSettingsSections } from "@/lib/componentState";
-import { useComponentState } from "@/lib/useComponents";
 import { InstanceSwitcher } from "@/components/InstanceSwitcher";
 import { RemoteMachineChip } from "@/components/RemoteMachineChip";
 import { NotificationBell } from "@/components/NotificationBell";
+import { avatarInitials, identityLabel, type MeMachine } from "@/lib/you";
 import { PhoneTerminalButton } from "@/components/LaunchDock";
+import { RibbonChip } from "@/components/ribbon/RibbonChip";
 
 // `dashboard-refresh` is a window-level CustomEvent that useApi
 // listens for to re-fire its fetch. TopBar's Refresh button is the
@@ -127,7 +130,12 @@ export function TopBar({
 
   return (
     <header className="flex h-[var(--header-h)] items-center justify-between gap-3 border-b border-line-1 bg-bg-1 px-3 sm:px-5">
-      <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-3">
+      {/* The breadcrumb side takes the room that is left and truncates
+          first; the status side never wraps or shrinks (demo bug #10: at
+          1,600 px the chips wrapped onto two lines - "last / activity",
+          "Enrolled in / localhost:8443" - while the breadcrumb was cut to
+          "Securi... / Prompt gu..."). */}
+      <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-fg-3">
         {onMenu && (
           <button
             type="button"
@@ -139,9 +147,13 @@ export function TopBar({
           </button>
         )}
         {group && (
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="hidden sm:inline">{group.label}</span>
-            <span className="hidden sm:inline">/</span>
+          <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+            {/* The group label waits for xl: below it the status chips
+                leave the breadcrumb a few dozen pixels, and "Your AI apps"
+                wrapped onto three lines beside them (U-32 follow-up, seen at
+                1,195 px). The page name always shows. */}
+            <span className="hidden xl:inline">{group.label}</span>
+            <span className="hidden xl:inline">/</span>
             {tabLabel ? (
               <>
                 <RouterLink to={pathname} className="truncate hover:text-fg-1">
@@ -157,14 +169,29 @@ export function TopBar({
         )}
         <RemoteMachineChip />
       </div>
-      <div className="flex items-center gap-2 text-[11px] text-fg-3">
+      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-fg-3 sm:gap-2">
+        {/* The live ribbon's chip (components/ribbon): "No agent running ·
+            Start one" when nothing is live, "N live" when the strip under
+            the bar is folded away. Renders nothing when the ribbon is off or
+            the org hid the Live page. Below sm the idle chip is hidden: the
+            phone's New terminal button beside the bell starts one, and at
+            375 px the chip pushed the bar about 60 px past the screen edge
+            (U-32). The live chip stays: it is the phone's way to /live. */}
+        <span className="contents max-sm:[&>[data-state=idle]]:hidden">
+          <RibbonChip />
+        </span>
         {/* Secondary status + Export — hidden on phones (< md) to keep
-            the header uncluttered; the drawer + Refresh stay reachable. */}
+            the header uncluttered; the drawer + Refresh stay reachable.
+            Between md and xl the column is too narrow for every chip (at
+            1,024 px they ran about 100 px past the edge and gave the page a
+            horizontal scrollbar, 2026-11-06), so the lowest-value ones
+            (last activity, the cloud chip, density, the link tools) wait
+            for xl. */}
         <div className="hidden items-center gap-2 md:flex">
-          <LastActivity iso={lastSeen} />
+          <span className="hidden xl:inline-flex">
+            <LastActivity iso={lastSeen} />
+          </span>
           <UpdateAvailablePill current={status.data?.version} />
-          <EnrolmentBadge />
-          <CloudAccountBadge />
           <CaptureStatePill setup={setup.data} />
           {/* Instance switcher — renders nothing unless the operator has
               configured [[terminal.ssh.profiles]], so a solo install's header
@@ -192,6 +219,11 @@ export function TopBar({
             </button>
           </Tooltip>
         </div>
+        {/* The account control (Getting started v2): Sign in, or where this
+            machine is connected with Open online, at EVERY width. It
+            replaced the widest-only sentence chip, the enrolment chip and
+            the cloud sign-in chip. */}
+        <AccountControl />
         <Tooltip content="Reload data on every visible card">
           <button
             type="button"
@@ -206,7 +238,7 @@ export function TopBar({
         </Tooltip>
         {/* Extra link tools: desktop only (low value on a phone). The
             shared PageLinkTools, the same pair the org top bar carries. */}
-        <div className="hidden items-center gap-2 md:flex">
+        <div className="hidden items-center gap-2 xl:flex">
           <div className="mx-1 h-4 w-px bg-line-2" />
           <PageLinkTools />
         </div>
@@ -223,7 +255,9 @@ export function TopBar({
             needs the room for the page title: below sm they live in the
             navigation drawer instead (Sidebar, DisplayControls). */}
         <span className="hidden items-center gap-2 sm:flex">
-          <TopBarDensity />
+          <span className="hidden xl:inline-flex">
+            <TopBarDensity />
+          </span>
           <ThemeToggle dataTour="topbar-theme" />
         </span>
         {onHelp && (
@@ -236,6 +270,7 @@ export function TopBar({
             </IconButton>
           </span>
         )}
+        <YouChip />
       </div>
     </header>
   );
@@ -341,83 +376,119 @@ function UpdateAvailablePill({ current }: { current?: string }) {
   );
 }
 
-// EnrolmentBadge shows "Enrolled in <Org>" when this agent is enrolled in a
-// Teams org, linking to the Settings → Enrolment page. It renders nothing when
-// not enrolled (or org mode is off), so a solo-local install's header is
-// byte-identical to a non-org build.
-function EnrolmentBadge() {
-  const status = useApi<EnrolmentStatus>("/api/enrolment/status", undefined, [], {
-    refreshMs: 30000,
+// AccountControl is the top bar's account control (Getting started v2,
+// lib/getStarted.ts topBarAccountView decides it): "Sign in" (or "Connect"
+// once signed in) starts the same connect flow as the Overview Get started
+// panel; while it waits it says so (the code is in the tooltip and on the
+// panel); once connected it names where this machine is connected, linking
+// to Settings > Account, plus an "Open online" button for the online
+// dashboard. The address itself is never printed. On a phone the labels
+// shrink to their icons.
+function AccountControl() {
+  const flow = useConnectFlow();
+  const { account, enrolment } = useAccount(flow);
+  const handoff = useConnectHandoff(account);
+  const view = topBarAccountView({
+    account,
+    available: flow.available,
+    progress: flow.progress,
+    managed: !!enrolment?.enrolled && enrolment.tenancy === "managed",
+    handoffWaiting: handoff.phase === "waiting",
   });
-  if (!status.data?.enrolled) return null;
-  const org = orgDisplayLabel(status.data.org_display);
-  return (
-    <Tooltip content={`Sharing content-free activity rollups with ${org}. Manage in Settings → Enrolment.`}>
-      <RouterLink
-        to="/settings"
-        className="flex h-6 items-center gap-1.5 rounded-pill border border-accent/40 bg-accent-soft px-2 text-[10.5px] font-medium text-accent hover:bg-accent/20"
-      >
-        <span className="h-1.5 w-1.5 rounded-pill bg-accent" />
-        Enrolled in {org}
-      </RouterLink>
-    </Tooltip>
-  );
-}
-
-// CloudAccountBadge is the compact "Cloud: signed in / not signed in"
-// indicator beside the enrolment chip, linking to Settings → Cloud
-// Intelligence where the Sign in button lives. It renders nothing when the
-// dashboard has no cloud-account seam wired (`sign_in` absent — an embedder
-// without `observer start`), so such a header stays byte-identical. The
-// state is a LOCAL keychain read the daemon does on our behalf; it never
-// reflects hosted-service state.
-function CloudAccountBadge() {
-  const status = useApi<CloudStatusResponse>("/api/cloud/status", undefined, [], {
-    refreshMs: 30000,
-  });
-  const gov = useGovernance();
-  const components = useComponentState();
-  const si = status.data?.sign_in;
-  if (!si) return null;
-  const signingIn = si.login_running;
-  const signedIn = si.known && si.signed_in;
-  // WINNODE2 16b: shown only where Cloud Intelligence is offered (the
-  // organization did not hide its section, this build carries it, and the
-  // node is not organization-managed, whose data the personal plane cannot
-  // take). lib/cloudChip.ts holds the rule.
-  const shown = cloudChipShown({
-    sectionOffered:
-      !isSettingsHidden(gov.data, "cloud") && !absentSettingsSections(components.data?.view).includes("cloud"),
-    managed: isManaged(gov.data),
-    signedIn,
-    signingIn,
-  });
-  if (!shown) return null;
-  const label = signingIn ? "Cloud: signing in…" : signedIn ? "Cloud: signed in" : "Cloud: not signed in";
-  const tip = signedIn
-    ? "A device-bound cloud credential is stored on this machine. Manage in Settings → Cloud Intelligence."
-    : "Optional cloud enrichment is off until you sign in. Sign in from Settings → Cloud Intelligence.";
-  return (
-    <Tooltip content={tip}>
-      <RouterLink
-        to="/settings?section=cloud"
-        className={
-          "flex h-6 items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium " +
-          (signedIn
-            ? "border-success/30 bg-success-soft text-success hover:bg-success/20"
-            : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3")
-        }
-      >
-        <LiveDot
-          {...withDotClass(
-            liveDotProps(CLOUD_SIGN_IN_DOT, signingIn ? "signing_in" : signedIn ? "signed_in" : "signed_out"),
-            "h-1.5 w-1.5 shrink-0",
+  switch (view.kind) {
+    case "hidden":
+      return null;
+    case "connected":
+      return (
+        <span className="flex min-w-0 shrink items-center gap-1" data-tour="topbar-account">
+          <Tooltip content={view.tooltip}>
+            <RouterLink
+              to="/settings?section=account"
+              data-testid="account-chip"
+              className={clsx(
+                "flex h-6 min-w-0 max-w-[96px] items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium sm:max-w-[140px] xl:max-w-[180px]",
+                view.managed
+                  ? "border-warn/40 bg-warn-soft text-warn hover:bg-warn/20"
+                  : "border-success/30 bg-success-soft text-success hover:bg-success/20",
+              )}
+            >
+              <LiveDot {...withDotClass(liveDotProps(CLOUD_SIGN_IN_DOT, "signed_in"), "h-1.5 w-1.5 shrink-0")} />
+              {/* Below sm the chip is its dot (the label stays the link's
+                  accessible name): the label is in the tooltip and on the
+                  Account page, and the bar needs the room (U-32). */}
+              <span className="sr-only sm:not-sr-only sm:truncate">{view.label}</span>
+            </RouterLink>
+          </Tooltip>
+          {view.onlineUrl && (
+            <Tooltip content={view.onlineTooltip}>
+              <a
+                href={view.onlineUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                data-testid="open-online"
+                aria-label="Open online"
+                className="flex h-6 shrink-0 items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2 text-[10.5px] font-medium text-fg-2 hover:bg-bg-3 hover:text-fg-0"
+              >
+                <Icon icon={ExternalLink} size={11} />
+                <span className="hidden xl:inline">Open online</span>
+              </a>
+            </Tooltip>
           )}
-        />
-        {label}
-      </RouterLink>
-    </Tooltip>
-  );
+        </span>
+      );
+    case "connecting":
+      // U-23: the waiting chip names the sign-in service and carries a
+      // Cancel (POST /api/connect/cancel with the confirm token) whenever
+      // this page owns the flow; the installer's terminal flow stops there.
+      return (
+        <span className="flex min-w-0 shrink-0 items-center gap-1" data-tour="topbar-account">
+          <Tooltip content={flow.error ?? view.tooltip}>
+            <RouterLink
+              to="/"
+              data-testid="account-connecting"
+              aria-label={view.service ? `${view.label} on ${view.service}` : view.label}
+              className="flex h-7 min-w-0 items-center gap-1.5 rounded-2 border border-info/30 bg-info-soft px-2 text-[11px] font-medium text-info"
+            >
+              <LiveDot {...withDotClass(liveDotProps(CLOUD_SIGN_IN_DOT, "signing_in"), "h-1.5 w-1.5 shrink-0")} />
+              <span className="hidden sm:inline">{view.label}</span>
+              {view.service && <span className="hidden truncate font-normal text-fg-3 xl:inline">on {view.service}</span>}
+            </RouterLink>
+          </Tooltip>
+          {view.cancelable && (
+            <Tooltip content="Stop signing in. Nothing is connected.">
+              <button
+                type="button"
+                data-testid="account-connect-cancel"
+                onClick={() => void flow.cancel()}
+                disabled={flow.busy}
+                aria-label="Cancel sign-in"
+                className="sb-press flex h-7 shrink-0 items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] font-medium text-fg-2 hover:bg-bg-3 hover:text-fg-0 disabled:opacity-60"
+              >
+                <Icon icon={X} size="xs" />
+                <span className="hidden sm:inline">Cancel</span>
+              </button>
+            </Tooltip>
+          )}
+        </span>
+      );
+    default:
+      return (
+        <Tooltip content={flow.error ?? view.tooltip}>
+          <button
+            type="button"
+            data-tour="topbar-account"
+            data-testid="account-sign-in"
+            onClick={() => void flow.start()}
+            disabled={flow.busy}
+            aria-label={view.label}
+            className="sb-press flex h-7 shrink-0 items-center gap-1.5 rounded-2 border border-accent/50 bg-accent-soft px-2.5 text-[11px] font-semibold text-accent hover:bg-accent/20 disabled:opacity-60"
+          >
+            <Icon icon={UserRound} size="xs" />
+            <span className="hidden min-[400px]:inline">{view.label}</span>
+          </button>
+        </Tooltip>
+      );
+  }
 }
 
 // The pill's tone per state (lib/capturePill.ts decides the state).
@@ -478,5 +549,24 @@ function RefreshGlyph() {
     <span className={busy ? "inline-flex animate-spin" : "inline-flex"} aria-hidden>
       <Icon icon={RefreshCw} size="xs" />
     </span>
+  );
+}
+
+// YouChip is the avatar at the far right of the bar: initials from the best
+// identity known (the org email, else the OS user) linking to the You page.
+function YouChip() {
+  const enrol = useApi<EnrolmentStatus>("/api/enrolment/status", undefined, [], { refreshMs: 30000 });
+  const me = useApi<MeMachine>("/api/me/machine");
+  const who = identityLabel(enrol.data?.enrolled ? enrol.data.user_email : undefined, me.data?.os_user);
+  return (
+    <Tooltip content={who ? `You: ${who}` : "You"}>
+      <RouterLink
+        to="/you"
+        aria-label={who ? `You: ${who}` : "You"}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-pill border border-line-2 bg-bg-2 text-[10.5px] font-semibold text-fg-1 hover:bg-bg-3 hover:text-fg-0"
+      >
+        {who ? avatarInitials(who) : "?"}
+      </RouterLink>
+    </Tooltip>
   );
 }

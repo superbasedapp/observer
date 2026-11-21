@@ -1,0 +1,4 @@
+# Exact versions this example ran green with (2026-11-20, Python 3.12).
+# Install the superbased SDK from a checkout first (it is not on PyPI yet):
+#   pip install "<repo>/sdk/python"
+anthropic==2.11.0

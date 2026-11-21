@@ -186,6 +186,7 @@ type planAccountUpdate struct {
 // handlePlanAccount serves the per-account routes:
 //
 //	GET  /api/plans/accounts/{id}/history  recent readings and runs
+//	GET  /api/plans/accounts/{id}/usage    daily usage reconciliation (?days=1..366, default 30)
 //	POST /api/plans/accounts/{id}          edit (label, params, secrets, enabled)
 //	POST /api/plans/accounts/{id}/remove   delete it and its keychain entries
 //	POST /api/plans/accounts/{id}/refresh  read it now
@@ -219,6 +220,18 @@ func (s *Server) handlePlanAccount(w http.ResponseWriter, r *http.Request) {
 			snaps = []planlimits.Snapshot{}
 		}
 		writeJSON(w, map[string]any{"snapshots": snaps, "runs": outRuns})
+		return
+	}
+	if r.Method == http.MethodGet && verb == "usage" {
+		if s.plansUnavailable(w) {
+			return
+		}
+		v, err := s.opts.Plans.Usage(r.Context(), id, intArg(r, "days", planlimitssvc.DefaultUsageDays, 1, 366))
+		if err != nil {
+			writePlansErr(w, err)
+			return
+		}
+		writeJSON(w, v)
 		return
 	}
 	if !requireConfirmToken(w, r) {

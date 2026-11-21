@@ -419,7 +419,9 @@ func TestCoverageGolden(t *testing.T) {
 		rows += c.Rows
 		t.Logf("%-17s %-10s rows=%4d verified=%4d writable=%4d secret=%3d dangerous=%3d", c.Tool, c.Status, c.Rows, c.Verified, c.Writable, c.Secret, c.Dangerous)
 	}
-	want := map[CoverageStatus]int{CoverageGenerated: 8, CoverageAuthored: 41, CoverageNoSurface: 6}
+	// custom-agent (P-228) joined no_surface: the developer's own code has no
+	// vendor settings file.
+	want := map[CoverageStatus]int{CoverageGenerated: 8, CoverageAuthored: 41, CoverageNoSurface: 7}
 	for s, n := range want {
 		if got[s] != n {
 			t.Errorf("%s: %d tools, want %d", s, got[s], n)

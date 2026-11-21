@@ -24,7 +24,7 @@ func TestProjectOnlyRuleIsOrgLockedOnAnIndividualNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.SetApprovalLookup(func(string, string, string) bool { return true })
+	g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 	av, _ := g.EvaluateHook(policy.Event{
 		Kind: policy.KindShellExec, ActionType: "run_command", Target: "curl https://billing.internal/x",
 		SessionID: "s", ProjectRoot: "/home/u/x", Caps: policy.Capabilities{PreExecution: true, CanBlock: true, CanAsk: true},

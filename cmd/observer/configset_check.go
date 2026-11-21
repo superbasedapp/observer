@@ -212,7 +212,7 @@ func planConfigSet(cfg config.Config, key, value string, gov configschema.KeyGov
 	if rhs, ok := configschema.TOMLScalar(leaf, v); ok && leaf.Path == key {
 		p.patch.RHS, p.patch.Scalar = rhs, true
 	}
-	if configschema.SecretShaped(v, agentconfigsvc.DefaultDetect) {
+	if configschema.SecretShapedLeaf(leaf, v, agentconfigsvc.DefaultDetect) {
 		p.secretShaped = true
 		p.warnings = append(p.warnings, key+" looks like a credential; config.toml is plain text, so prefer an environment-variable reference")
 	}

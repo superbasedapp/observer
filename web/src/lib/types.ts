@@ -35,6 +35,28 @@ export type SnapshotCounts = {
   // Sessions with activity in the last 15 minutes (the /api/live
   // definition, uncapped) — drives the sidebar Live badge.
   live_sessions?: number;
+  // The same activity definition over the last 24 hours — drives the
+  // sidebar Overview badge. The rest of this block are newer too, so all
+  // are optional: an older daemon omits them and the badge hides.
+  active_sessions_24h?: number;
+  // Rows of project_patterns / plan_accounts / benchmark_runs — the
+  // Patterns, Plans & limits and Benchmarks badges.
+  project_patterns?: number;
+  plan_accounts?: number;
+  benchmark_runs?: number;
+  // Open security issues as the Code security page header counts them
+  // (stamped by the dashboard handler). Absent from the CLI's status, a
+  // build without the security module, or when the read failed.
+  open_issues?: OpenIssueCounts;
+};
+
+// OpenIssueCounts mirrors internal/diag/status.go's OpenIssueCounts: open
+// security issues (findings grouped by issue, each issue once), with the
+// ones whose worst finding is critical or high split out.
+export type OpenIssueCounts = {
+  total: number;
+  critical: number;
+  high: number;
 };
 
 export type StatusSnapshot = {
@@ -260,7 +282,7 @@ export type ProjectCaptureInfo = {
   // Project detail only: the full scan health behind the banner.
   commit_scan?: CommitScanInfo;
   // "none": no editor-reported human LOC capture for this project (never
-  // render an AI share against it). "vscode": the SuperBased VS Code
+  // render an AI share against it). "vscode": the superbased VS Code
   // extension has reported saves for it.
   human_loc: "none" | "vscode";
 };
@@ -298,6 +320,78 @@ export type ProjectRow = {
   commits_30d?: number;
   last_commit_at?: string;
   capture?: ProjectCaptureInfo;
+  // Where it ran (cloud-agents lane CA-B5). execution_mix is the all-time
+  // session count per location ("unknown" = unstamped), absent when nothing
+  // on the project was ever stamped. synthetic_cloud marks a
+  // "cloud:<remote>" project (a remote-only session's home); cloud_twin_of
+  // is the local project it now groups under, cloud_twins the reverse.
+  execution_mix?: Partial<Record<"local" | "vendor_cloud" | "customer_worker" | "unknown", number>>;
+  synthetic_cloud?: boolean;
+  cloud_twin_of?: number;
+  cloud_twins?: number[];
+};
+
+// ---------- /api/project/<id>/cloud (where it ran, lane CA-B5) ----------
+// Mirrors internal/cloudlane.Lane plus the handler's envelope. A missing
+// figure is ABSENT (tokens / cost_usd), never 0: coverage says why.
+
+/** Coverage of one lane figure: the shared CoverageStatus vocabulary. */
+export type CloudLaneCoverage = "full" | "partial" | "none" | "unknown";
+
+export type CloudLaneTokens = {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  reasoning?: number;
+  total: number;
+};
+
+export type CloudLaneLedgerFigure = {
+  connector: string;
+  unit: string;
+  value_type: string;
+  measurement_source: string;
+  monetary_status: string;
+  rollup: "sum" | "latest_per_session" | "latest";
+  value: number;
+  entries: number;
+  sessions: number;
+  coverage: CloudLaneCoverage;
+};
+
+export type CloudLaneBucket = {
+  location: "local" | "vendor_cloud" | "customer_worker" | "unknown";
+  sessions: number;
+  sessions_with_tokens: number;
+  tokens?: CloudLaneTokens;
+  token_coverage: CloudLaneCoverage;
+  cost_usd?: number;
+  // Sessions with at least one turn; one without leaves cost partial.
+  sessions_with_turns: number;
+  turns: number;
+  unpriced_turns?: number;
+  cost_coverage: CloudLaneCoverage;
+  provenance?: { source: string; turns: number }[];
+  ledger?: CloudLaneLedgerFigure[];
+};
+
+export type CloudLaneProject = { id: number; root_path: string; synthetic?: boolean };
+
+export type CloudLaneResponse = {
+  buckets: CloudLaneBucket[];
+  off_machine_sessions: number;
+  unknown_sessions: number;
+  accounts?: { connector: string; provider: string; coverage_state?: string; last_error_class?: string }[];
+  projects: CloudLaneProject[];
+  folded_into?: CloudLaneProject;
+  ledger_truncated?: boolean;
+  // Turns the CA-D12 precedence set aside because a better rail reported
+  // the same session (lane CA-C1); absent when none.
+  superseded_turns?: number;
+  since: string;
+  until: string;
+  window_days: number;
 };
 
 // ProjectAuthoredSplit is the code-vs-comment split every Projects surface
@@ -331,6 +425,9 @@ export type ProjectCostBucketRow = {
   // /cost?by=session rows only: the session's AI code-vs-comment split
   // (code-category files only); absent with no AI-authored lines.
   ai_split?: ProjectAuthoredSplit;
+  // /cost?by=session rows only: where the session ran (lane CA-C1); absent
+  // when nothing stamped it (unknown, never local).
+  execution_location?: string;
 };
 
 export type ProjectSpendByDay = {
@@ -356,6 +453,21 @@ export type ProjectSpendBySession = {
   // 2026-09-22 rework finding S5: same honesty contract as
   // ProjectSpendByDay.unpriced_turns, scoped to this session.
   unpriced_turns?: number;
+  // Where the session ran; absent when nothing stamped it (lane CA-C1).
+  execution_location?: string;
+};
+
+// ProjectSpendLocations is the local/cloud split of the Spend figures
+// (decision CA-D21, lane CA-C1). Its buckets are built from the SAME folded
+// rows as total_usd (the project plus any folded "cloud:<remote>" twin), so
+// their dollars add up to it. Provider ledger figures stay in their own unit
+// beside the dollars and are never converted. Absent for a project that
+// never ran off this machine and folds no twin.
+export type ProjectSpendLocations = {
+  buckets: CloudLaneBucket[];
+  folded?: CloudLaneProject[];
+  superseded_turns?: number;
+  ledger_truncated?: boolean;
 };
 
 export type ProjectDetailSpend = {
@@ -366,6 +478,7 @@ export type ProjectDetailSpend = {
   by_model: ProjectCostBucketRow[];
   by_day: ProjectSpendByDay[];
   by_session: ProjectSpendBySession[];
+  locations?: ProjectSpendLocations;
 };
 
 // ProjectRoiTile is one row of the `roi[]` array — one proxy metric, always
@@ -495,9 +608,14 @@ export type ProjectCommitOwnerReason =
   | "most_code_lines"
   | "most_files"
   | "earliest_prompt"
-  | "session_id";
+  | "session_id"
+  // Cloud-agent credit (lane CA-C5): a cloud session's PR or branch
+  // produced the commit (docs/projects-page.md "Cloud-agent credit").
+  | "cloud_pr_commit"
+  | "cloud_pr_landing"
+  | "cloud_pr_subject";
 
-export type ProjectCommitShareBasis = "code_lines" | "files";
+export type ProjectCommitShareBasis = "code_lines" | "files" | "cloud_claim";
 
 export type ProjectCommitContributor = {
   session_id: string;
@@ -603,6 +721,9 @@ export type ProjectPromptGradeAvailable = {
   judge: boolean;
   cloud: boolean;
   reason?: string;
+  /** Where the judge tier is turned on while it is off (needsSetting.fixOf). */
+  settings?: string;
+  settings_label?: string;
 };
 
 export type ProjectPromptRow = {
@@ -875,6 +996,9 @@ export type ProjectPromptGradeRequest = {
 export type ProjectPromptGradeResponse = {
   status: "ok" | "not_available" | "queued";
   reason?: string;
+  /** Where the judge tier is turned on (read with needsSetting.fixOf). */
+  settings?: string;
+  settings_label?: string;
   alignment?: ProjectPromptAlignment;
 };
 
@@ -1054,6 +1178,13 @@ export type SessionRow = {
   // adapter read from disk. omitempty — ABSENT MEANS UNSTAMPED, never
   // fabricated.
   tool_version?: string;
+  // Where the session's agent ran (node migration 240, cloud-agents arc):
+  // local | vendor_cloud | customer_worker. omitempty: ABSENT MEANS UNKNOWN,
+  // never "local". Render through ExecutionLocationBadge.
+  execution_location?: string;
+  // The vendor's second native session id (cse_..., a run id), used to join
+  // capture rails. An opaque id, shown only in the badge tooltip.
+  vendor_session_ref?: string;
 };
 
 export type SessionsResponse = {
@@ -1623,6 +1754,10 @@ export type SessionDetail = {
   // must never be rendered as "cli" (see the shared SurfaceBadge).
   surface?: string;
   surface_host?: string;
+  // Where the session's agent ran and the vendor's second session id
+  // (migration 240). OMITTED when unstamped: absence means UNKNOWN.
+  execution_location?: string;
+  vendor_session_ref?: string;
   // Captured tool/CLI version (migration 125): the version-shaped token an
   // adapter read from disk (or the proxy read off a session-bound request's
   // User-Agent). Ships to the org as session metadata since server
@@ -1922,6 +2057,136 @@ export type PredictResponse = {
   estimate: PredictEstimate;
   reason?: string;
   limit: PredictLimitGauge;
+  // Run-out projection of the limit windows and of any budget in force
+  // (Go: dashboard.PredictProjection over predict.Projection). Optional:
+  // an older daemon does not send it.
+  projection?: PredictProjection;
+};
+
+// ---------- /api/session/<id>/predict projection ----------
+// Field names mirror internal/predict/projection.go's JSON tags.
+
+export type ProjectionState =
+  | "live"
+  | "reset_inferred"
+  | "reset"
+  | "no_reset_time"
+  | "rolling"
+  | "session";
+
+export type ProjectionNote =
+  | "not_enough_data"
+  | "capacity_too_small"
+  | "carried_forward"
+  | "local_only"
+  | "reading_stale"
+  | "window_reset"
+  | "window_inferred"
+  | "unpriced_usage"
+  | "timezone_assumed_utc"
+  | "other_machines"
+  | "exhausted"
+  | "no_message_estimate";
+
+export type ProjectionUsage = {
+  tokens: number;
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  reasoning: number;
+  cost_usd: number;
+  turns: number;
+  sessions: number;
+  unpriced?: boolean;
+};
+
+export type ProjectionContributor = { name: string; tokens: number; usd: number; share: number };
+
+export type Projection = {
+  kind: "limit" | "budget";
+  key: string;
+  state: ProjectionState;
+  unit: "fraction" | "usd" | "tokens";
+  token_def: "all" | "input_output";
+  source?: string;
+  origin?: "node" | "org";
+  scope?: string;
+  enforcement?: string;
+  subject?: string;
+  observed_at_unix?: number;
+  reading_age_sec?: number;
+  window_start_unix?: number;
+  resets_at_unix?: number;
+  window_inferred?: boolean;
+  length_sec?: number;
+  elapsed_frac?: number;
+  seconds_to_reset?: number;
+  used_frac?: number;
+  used_frac_est?: number;
+  used_frac_is_estimate?: boolean;
+  left_frac?: number;
+  cap?: number;
+  spent?: number;
+  used: ProjectionUsage;
+  capacity_tokens_est?: number;
+  capacity_usd_est?: number;
+  left_tokens?: number;
+  left_usd?: number;
+  left_tokens_is_estimate?: boolean;
+  left_usd_is_estimate?: boolean;
+  burn?: {
+    frac_per_hour: number;
+    frac_per_day: number;
+    tokens_per_hour: number;
+    tokens_per_day: number;
+    usd_per_hour: number;
+    usd_per_day: number;
+    basis_hours: number;
+  };
+  pace?: { elapsed_frac: number; used_frac: number; delta: number; verdict: "ahead" | "on_pace" | "behind" };
+  run_out?: {
+    exhausted?: boolean;
+    runs_out_at_unix?: number;
+    lasts_until_reset?: boolean;
+    projected_left_at_reset_frac?: number;
+    safe_per_hour_frac?: number;
+    safe_per_day_frac?: number;
+    safe_per_hour_tokens?: number;
+    safe_per_day_tokens?: number;
+    safe_per_hour_usd?: number;
+    safe_per_day_usd?: number;
+  };
+  sessions?: {
+    count: number;
+    this_tokens: number;
+    this_usd: number;
+    this_share?: number;
+    avg_tokens: number;
+    avg_usd: number;
+  };
+  more_sessions_est?: number;
+  more_prompts?: { low: number; mid: number; high: number; basis: "usd" | "tokens" };
+  trend?: {
+    prev_start_unix: number;
+    prev_end_unix: number;
+    prev_tokens: number;
+    prev_usd: number;
+    prev_sessions: number;
+    rate_change?: number;
+  };
+  mix?: { input: number; cache_read: number; cache_write: number; output: number; reasoning: number };
+  top_models?: ProjectionContributor[];
+  top_projects?: ProjectionContributor[];
+  five_hour_windows_left?: number;
+  confidence?: "" | "low" | "medium" | "high";
+  notes?: ProjectionNote[];
+};
+
+export type PredictProjection = {
+  limits: Projection[];
+  budgets: Projection[];
+  counted_tools?: string[];
 };
 
 // ---------- /api/session/<id>/tasks + /api/tasks (task tracking) ----------
@@ -2793,6 +3058,15 @@ export type SessionGuardEvent = {
   reason?: string;
   target_excerpt?: string;
   taint_origin?: string;
+  /** The session the row is stored under (the root for a sub-agent's hook verdict). */
+  session_id?: string;
+  /** The `<root>:agent:<agent>` session whose call a root-stored hook verdict judged. */
+  subagent_session_id?: string;
+  /** Policy layer that produced the verdict (org | local | project | pack | builtin | judge | other). */
+  layer?: string;
+  layer_label?: string;
+  overridable?: boolean;
+  org_locked?: boolean;
 };
 
 export type SessionGuardEventsResponse = {
@@ -3783,6 +4057,8 @@ export type EnrolmentStatus = {
   org_name?: string;
   /** Display name (never an id); see orgDisplayLabel in lib/orgName.ts. */
   org_display?: string;
+  /** "managed" | "individual": the connection kind (lib/getStarted.ts reads "managed"). Absent from an older daemon. */
+  tenancy?: string;
   org_server_url?: string;
   user_email?: string;
   enrolled_at?: string;
@@ -3973,6 +4249,35 @@ export type SessionProcessResponse = {
   roots: ProcessNode[];
   findings: ProcessFinding[];
   diagnostics: ProcessDiagnostics;
+  // Present on a daemon with the process capture budget (plan 9.3): the tree
+  // is the most recent window, capped by `limit`. An older daemon returns the
+  // whole tree and neither field.
+  truncated?: boolean;
+  window?: { from?: string; to?: string; limit?: number; returned?: number };
+};
+
+// ProcessSummaryService / ProcessSummaryRollup / ProcessSummaryResponse are
+// GET /api/session/<id>/processes/summary (process capture budget plan 9.3).
+// They live in shared/lib/processCaptureSummary.ts, the model the node System
+// tab and the org drawer's System panel share; re-exported here.
+export type {
+  ProcessSummaryResponse,
+  ProcessSummaryRollup,
+  ProcessSummaryService,
+} from "@shared/lib/processCaptureSummary";
+
+// GET /api/process/capture/estimate (plan 9.3): the data volume the capture
+// limits being edited would produce, from replaying recent stored runs.
+export type ProcessCaptureEstimate = {
+  basis: { days: number; sessions: number; observed_rows: number };
+  current: { rows_per_day: number; bytes_per_day: number };
+  projected: {
+    rows_per_day: number;
+    bytes_per_day: number;
+    rollup_rows_per_day: number;
+    org_rows_per_day: number;
+  };
+  by_setting: { key: string; rows_per_day: number }[];
 };
 
 export type ProcessDiagnostics = {
@@ -4129,7 +4434,7 @@ export type ToolPreflight = {
   // them). The dialog phrases its own copy from these and does not render
   // `notes`, which stay on the wire for observer adapters / doctor. ---
   /**
-   * GUI rows only: whether a launch would deliver the SuperBased proxy route
+   * GUI rows only: whether a launch would deliver the superbased proxy route
    * to the app — the launcher's own wrap verdict, dry-run. Absent = unknown.
    */
   routing_reaches_app?: boolean;
@@ -4354,6 +4659,9 @@ export type TerminalSessionsMeta = {
   launchable_tool_info?: LaunchableTool[];
   allowed_project_roots?: string[];
   shell_enabled?: boolean;
+  /** [terminal].enabled and [terminal.launch].allow_fresh_agent both on.
+   *  Absent (an older daemon): unknown, never read as off. */
+  fresh_enabled?: boolean;
   /** True only when the daemon runs inside WSL and so translates a Windows
    *  custom root (C:\...) to its /mnt/c form. Absent (an older daemon) or
    *  false: the dialog does not promise the translation. */
@@ -4369,7 +4677,7 @@ export type TerminalSessionsMeta = {
 
 // ModelSuggestion is one entry in ToolModels.models — either a model the tool
 // has actually been launched with before ("history", carrying the observed
-// count + last-used timestamp) or a model SuperBased knows the tool supports
+// count + last-used timestamp) or a model superbased knows the tool supports
 // but has no local usage for ("known"). `count`/`last_used` are present only
 // for source "history".
 export type ModelSuggestion = {
@@ -4408,6 +4716,67 @@ export type SandboxSourceAvail = {
 export type SandboxToolAvail = {
   available: boolean;
   reason?: string;
+  /**
+   * Set when a hosted sandbox launch of this tool meets something on its
+   * model key under the chosen key custody (the launch's own rule, said
+   * before Start): a refusal (severity blocking or absent) or a line that
+   * does not block (severity advisory). Absent when there is nothing to
+   * say, when no hosted row is listed, or from a daemon that predates it.
+   */
+  hosted_key?: SandboxKeyNotice;
+};
+
+/**
+ * SandboxHookNotice is one tool's hook line on a hosted row
+ * (dashapi.SandboxHookNotice): gated says guard checks the agent's
+ * commands in the box; code is the closed reason, technical the internal
+ * detail for "Technical details".
+ */
+export type SandboxHookNotice = {
+  gated: boolean;
+  code: string;
+  message: string;
+  technical?: string;
+};
+
+/**
+ * SandboxKeyNotice is a refusal a person reads before Start: the closed
+ * code, the plain sentence, and the technical detail (config keys and
+ * commands, shown only under "Technical details").
+ */
+export type SandboxKeyNotice = {
+  code: string;
+  message: string;
+  technical?: string;
+  /**
+   * "blocking" (a refusal the launch would meet) or "advisory" (said before
+   * Start, does not block it). Absent from a daemon that predates it, which
+   * sent only refusals: absent reads as blocking.
+   */
+  severity?: "blocking" | "advisory";
+  /**
+   * The settings place (lib/settingsPlaces PLACES id) where the fix is
+   * made; absent from a daemon that predates it, when the dialog links to
+   * its own default for the notice.
+   */
+  place?: string;
+  /**
+   * The key custody this launch resolved to ("home_relay" or
+   * "in_box_api_key"; decision SBXD-1), for "Technical details" and the
+   * line's controls. Absent from a daemon before it.
+   */
+  custody?: string;
+  /**
+   * Providers whose key, once stored on this machine, keeps the key here:
+   * the line's paste field. Set only while credential injection is on.
+   */
+  keep_home?: { id: string; label: string }[];
+  /**
+   * The tool's opt-in in-box key sources (decision SBXD-4), present when
+   * its registry row grounds one and the key goes in the box.
+   */
+  tool_keys?: { on: boolean };
+  login_seed?: { on: boolean };
 };
 
 // SandboxAvailability is the reply from GET /api/terminal/sandbox (B9) — the
@@ -4416,7 +4785,9 @@ export type SandboxToolAvail = {
 // closed vocabulary: "available" | "unsupported_platform" | "backend_missing"
 // | "backend_too_old" | "userns_denied" | "netns_denied" | "tool_unmapped" |
 // "disabled_by_config" | "runtime_init_failed" | "workspace_prep_failed" |
-// "not_in_build" (a build without terminals.sandbox, D-514). `reason` names the exact
+// "not_in_build" (a build without terminals.sandbox, D-514) | "probe_timed_out" |
+// "probe_failed" (the read route's own answers when the probe does not answer
+// in time or stops with an internal error; never a launch verdict). `reason` names the exact
 // gap in human terms (which sysctl is denied, which bwrap version was found,
 // …) so the dialog's disabled copy can quote it verbatim rather than being
 // generic.
@@ -4463,6 +4834,21 @@ export type SandboxOrgValue = {
   value: string;
 };
 
+// SandboxCloneWhere is a hosted row's clone location facts
+// (dashapi.SandboxCloneWhere, decision SBXD-5). Values: auto, box, home.
+export type SandboxCloneWhere = {
+  /** setting is [terminal.sandbox.hosted].clone_where in force. */
+  setting: string;
+  /** fixed: the setting is box or home, so a launch cannot choose. */
+  fixed: boolean;
+  /** choices are the values a launch on this row can take now. */
+  choices: string[];
+  /** notes say, per value not in choices, why (plain words). */
+  notes?: Record<string, string>;
+  /** rule is the setting's rule in plain words. */
+  rule: string;
+};
+
 // SandboxBackendAvail is one row of SandboxAvailability.backends
 // (dashapi.SandboxBackendAvail).
 export type SandboxBackendAvail = {
@@ -4476,6 +4862,16 @@ export type SandboxBackendAvail = {
   verdict?: string;
   rule?: string;
   reason?: string;
+  // enabled: the row is in the enabled backends list ([terminal.sandbox]
+  // .backends, after any organization pin; the master switch aside).
+  // Optional because an older daemon does not send it.
+  enabled?: boolean;
+  // For a row dropped only because it is not enabled (verdict
+  // disabled_by_config): whether it would run here once enabled, else the
+  // next rule's drop. Empty for every other row.
+  when_enabled_available?: boolean;
+  when_enabled_verdict?: string;
+  when_enabled_reason?: string;
   verification?: string;
   beta: boolean;
   register_ref?: string;
@@ -4483,10 +4879,72 @@ export type SandboxBackendAvail = {
   egress?: string[];
   capture_by_tier?: Record<string, string>;
   component: string;
+  /**
+   * The workspace sources this row takes (a hosted row: the live tree
+   * uploaded, or the vendor's own deliveries). Absent means every source
+   * the machine offers; a launch on the row with another source is refused.
+   */
+  workspace_sources?: string[];
+  /**
+   * How each source in workspace_sources reaches the box (a hosted row):
+   * "sync" (or a vendor row's "upload_snapshot") uploads a copy of a git repository's files, whose changes come
+   * back as a diff; "remote_clone" is a clone made in the box. The dialog
+   * labels and checks a source by it, never by the row id.
+   */
+  source_deliveries?: Record<string, string>;
+  /**
+   * Why, in plain words and keyed by source, a source the row delivers is
+   * not in workspace_sources now (a hosted box-side clone with the
+   * remote-clone switch off, on a tier with no route to the git host, or
+   * with no git hosts listed).
+   */
+  workspace_source_notes?: Record<string, string>;
+  /**
+   * Where the row's "Clone a remote URL" source may clone (decision SBXD-5):
+   * a hosted row that can clone in its box or on this machine. Absent on
+   * every other row and from a daemon that predates it.
+   */
+  clone_where?: SandboxCloneWhere;
+  /**
+   * Per tool name, the refusal a launch of that tool on this row meets
+   * before any box is made because the tool cannot reach the box (no
+   * template and no install way that can work there). Only refused tools.
+   */
+  tool_notices?: Record<string, SandboxKeyNotice>;
+  /**
+   * Per sandbox-launchable tool, whether this machine's guard checks the
+   * agent's commands in this row's box on a launch now, with the sentence
+   * shown before Start (lane HOOKS, SBXD-6). Where gating does not apply
+   * the sentence is the no_hook_gating disclosure's, said here per tool
+   * instead of in `disclosures`. A hosted row only; absent from an older
+   * daemon.
+   */
+  hook_notices?: Record<string, SandboxHookNotice>;
+  /**
+   * What the person is told before Start about the box's own network at
+   * the configured tier (a hosted row), the same sentences the consent
+   * screen shows. Shown as served.
+   */
+  network_notes?: string[];
   // hint is the driver's note about a known issue on this host that does
   // not make the row unavailable (sandboxoci's runtime hint table; empty
   // today).
   hint?: string;
+  // gateway_mode is the gateway that runs the row's boxes, for a row that
+  // has one ("managed_local" or "external"; OpenShell lane O4); absent for
+  // every other row and from an older daemon.
+  gateway_mode?: string;
+  // prerequisite is the driver's plain sentence of what the row needs on
+  // this host (the openshell row: the docker group, root-equivalent, or
+  // rootless Podman 5, which the probe still refuses). Shown as served.
+  prerequisite?: string;
+  // version_pins are the version pin values the row's driver serves for
+  // the Settings card's pin picker (the openshell row: its tested
+  // versions); absent when the row has no pin and from an older daemon.
+  version_pins?: string[];
+  // disclosures are what the user is told before first use, each with the
+  // daemon's own sentence for the row's gateway mode. Shown as served.
+  disclosures?: { id: string; text: string }[];
 };
 
 // LaunchIsolation is a sandboxed run's isolation evidence on a live
@@ -4505,6 +4963,12 @@ export type LaunchIsolation = {
   // hooks_drifted, heartbeat_missed).
   capture_degraded?: boolean;
   capture_causes?: string[];
+  // seccomp is what the syscall filter gave the run (the closed
+  // sandboxvocab.SeccompRun vocabulary: observer_default, the strace
+  // switch's observer_seize_pidns and observer_seize_yama, engine_default,
+  // off, not_applicable, none); absent from an older daemon or a run that
+  // recorded none.
+  seccomp?: string;
 };
 
 // SSHProfileInfo is one row of GET /api/terminal/ssh — an operator-authored
@@ -4872,12 +5336,18 @@ export type UpdateOrgRefusal = {
 // both read the same two endpoints — defined once here rather than forked
 // per component.
 
-// GuardRule is one /api/guard/rules catalog row — the rule's definition
-// (doc) and remediation hint (advice). Multi-row IDs (e.g. R-152's write +
-// read rows) arrive once per row. `source`/`enforced` are effective-view
-// extras (?effective=1): which policy layer defined the rule (builtin |
-// user | project | trusted_project | org) and whether it's per-rule
-// enforced even in observe mode.
+// GuardRule is one /api/guard/rules row — the rule's definition (doc) and
+// remediation hint (advice). Multi-row IDs (e.g. R-152's write + read rows)
+// arrive once per row, and a project-scoped org rule once per project.
+// `source`/`enforced`/`project`/`overridable`/`org_locked` are effective-view
+// fields (the default; ?catalog=1 is the built-in table): which policy layer
+// defined the rule (builtin | user | project | trusted_project | org), whether
+// it's per-rule enforced even in observe mode, the org project a
+// project-scoped org rule applies to, whether the org marked it overridable,
+// and whether the organization locks it on this node (no local disable or
+// override, pages/security/orgLock.ts). `org_named` says the organization's
+// bundle sets the rule itself; a rule locked but not named runs at its own
+// decision (every rule on a managed node is locked).
 export type GuardRule = {
   id: string;
   category?: string;
@@ -4888,6 +5358,10 @@ export type GuardRule = {
   advice?: string;
   source?: string;
   enforced?: boolean;
+  project?: string;
+  overridable?: boolean;
+  org_locked?: boolean;
+  org_named?: boolean;
 };
 
 export type GuardRulesResponse = { rules: GuardRule[] | null };

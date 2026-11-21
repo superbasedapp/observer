@@ -2,7 +2,10 @@ package orgcontract
 
 import (
 	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
 // SandboxPostureRow is one row of the sandbox posture aggregate (sandbox
@@ -37,6 +40,68 @@ type SandboxPostureRow struct {
 	KeyCustody         string `json:"key_custody"`
 	// Runs is how many terminal runs fell into the bucket.
 	Runs int64 `json:"runs"`
+	// Seccomp splits the bucket's runs by what the syscall filter gave them
+	// (tracker F-002, lane FU4): run counts keyed by the closed
+	// sandboxvocab.SeccompRun vocabulary (agent migration 232). Counts, not
+	// a bucket key, so an old server that ignores the field keeps its
+	// per-bucket counts right; runs with no recorded state (older rows) are
+	// Runs minus the sum. Optional both directions: an old agent omits it,
+	// an old server ignores it.
+	Seccomp map[string]int64 `json:"seccomp,omitempty"`
+}
+
+// ClampSandboxPostureSeccomp keeps the entries whose state is in the closed
+// vocabulary and whose count is positive; a split whose total exceeds runs
+// is dropped whole (it cannot be a split of the bucket). What the org
+// stores never carries anything else, whatever a node sends.
+func ClampSandboxPostureSeccomp(m map[string]int64, runs int64) map[string]int64 {
+	out := map[string]int64{}
+	var total int64
+	for k, n := range m {
+		if n <= 0 || !sandboxvocab.SeccompRun(k).Valid() {
+			continue
+		}
+		out[k] = n
+		total += n
+	}
+	if len(out) == 0 || total > runs {
+		return nil
+	}
+	return out
+}
+
+// EncodeSandboxPostureSeccomp renders a clamped split as the server
+// column's "state:runs,..." text, in vocabulary order ("" for none).
+func EncodeSandboxPostureSeccomp(m map[string]int64, runs int64) string {
+	c := ClampSandboxPostureSeccomp(m, runs)
+	var parts []string
+	for _, st := range sandboxvocab.SeccompRuns() {
+		if n, ok := c[string(st)]; ok {
+			parts = append(parts, string(st)+":"+strconv.FormatInt(n, 10))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// DecodeSandboxPostureSeccomp reads the server column back, dropping any
+// entry outside the closed vocabulary or with a bad count.
+func DecodeSandboxPostureSeccomp(col string) map[string]int64 {
+	if col == "" {
+		return nil
+	}
+	m := map[string]int64{}
+	for e := range strings.SplitSeq(col, ",") {
+		k, v, ok := strings.Cut(e, ":")
+		n, err := strconv.ParseInt(v, 10, 64)
+		if ok && err == nil {
+			m[k] += n
+		}
+	}
+	var runs int64
+	for _, n := range m {
+		runs += n
+	}
+	return ClampSandboxPostureSeccomp(m, runs)
 }
 
 // SandboxCapabilityRow is the node's sandbox capability: which floors this
@@ -91,6 +156,9 @@ var SandboxManagedKeys = []string{
 	"hosted.e2b.endpoint",
 	// The container sandboxes' install-script floor (lane LEFT-SBX, P-136).
 	"oci.install_scripts",
+	// The org-hosted gateway's composition row (lane G4, F-019): it never
+	// refuses today; listed so the set stays the node's.
+	SandboxManagedKeyOrgHosted,
 	// The org's sign-in seeding forbid (lane BOXSIGNIN), lowering only.
 	"sign_in_seed_tools",
 }
@@ -102,10 +170,15 @@ var SandboxNodeRefusalReasons = []string{
 	"pinned_by_org", "not_absolute", "bad_character", "dot_dot_segment", "leading_dash",
 	"whole_root_rw", "exposes_observer_dir", "cidr_not_allowable", string(SandboxRefusedSensitivePath),
 	"would_disable_pinned_enabled",
+	// A managed backend list naming an ExplicitOnly row the developer did
+	// not list (lane FU8, ledger OSH-45). An older server's clamp drops it.
+	"explicit_only_not_listed",
 }
 
-// maxSandboxManagedRefused bounds the refusal list (one per key at most).
-const maxSandboxManagedRefused = 16
+// maxSandboxManagedRefused bounds the refusal list: one row per key at
+// most, so it is the key count, derived (lane G4 fix round 2, G4-R4: a
+// constant equal to today's count would silently drop the next key's row).
+func maxSandboxManagedRefused() int { return len(SandboxManagedKeys) }
 
 // ClampSandboxManagedRefused keeps the rows whose key and reason are in
 // their closed sets, once per key, in order: what the org stores never
@@ -114,7 +187,7 @@ func ClampSandboxManagedRefused(rows []SandboxManagedRefusedKeyRow) []SandboxMan
 	var out []SandboxManagedRefusedKeyRow
 	seen := map[string]bool{}
 	for _, r := range rows {
-		if len(out) == maxSandboxManagedRefused {
+		if len(out) == maxSandboxManagedRefused() {
 			break
 		}
 		if seen[r.Key] || !slices.Contains(SandboxManagedKeys, r.Key) || !slices.Contains(SandboxNodeRefusalReasons, r.Reason) {

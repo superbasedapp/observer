@@ -216,3 +216,50 @@ func TestSandboxNativeVerdict(t *testing.T) {
 		t.Fatalf("a disable verdict must refuse until switches are applied: %v", err)
 	}
 }
+
+// TestSandboxBackendListEnabledAndWhenEnabled: each row says whether the
+// enabled list names it (the master switch aside), and a row dropped only
+// for not being enabled says what selection answers once it is, so the
+// Settings editor can tell "enable it and it runs" from "enabling it would
+// not help here".
+func TestSandboxBackendListEnabledAndWhenEnabled(t *testing.T) {
+	ok := sandbox.Availability{Available: true, Verdict: sandbox.VerdictAvailable, Backend: "bwrap", BackendVersion: "0.9.0"}
+	runsHere := sandboxHostKind() == sandboxbackend.HostLinux || sandboxHostKind() == sandboxbackend.HostWSL2
+	find := func(list []dashapi.SandboxBackendAvail, id string) dashapi.SandboxBackendAvail {
+		t.Helper()
+		for _, e := range list {
+			if e.ID == id {
+				return e
+			}
+		}
+		t.Fatalf("no %s row", id)
+		return dashapi.SandboxBackendAvail{}
+	}
+
+	// bwrap enabled (the default list): checked, no hypothetical.
+	on := find(sandboxBackendList(config.TerminalSandboxConfig{Enabled: true}, ok, []string{"live"}, vocab.TierInternet), sandboxbackend.BackendBwrap)
+	if !on.Enabled || on.WhenEnabledAvailable || on.WhenEnabledVerdict != "" {
+		t.Errorf("enabled bwrap: %+v", on)
+	}
+
+	// The master switch off keeps a listed row checked.
+	off := find(sandboxBackendList(config.TerminalSandboxConfig{}, ok, []string{"live"}, vocab.TierInternet), sandboxbackend.BackendBwrap)
+	if !off.Enabled || off.Available {
+		t.Errorf("bwrap with the master switch off: %+v", off)
+	}
+
+	// bwrap left out of the list: dropped at S2, unchecked, and the
+	// hypothetical says what enabling it would do on this host.
+	cfg := config.TerminalSandboxConfig{Enabled: true, Backends: []string{"not-bwrap"}}
+	out := find(sandboxBackendList(cfg, ok, []string{"live"}, vocab.TierInternet), sandboxbackend.BackendBwrap)
+	if out.Enabled || out.Available || out.Verdict != sandboxselect.VerdictDisabledByConfig {
+		t.Fatalf("bwrap not in the list: %+v", out)
+	}
+	if runsHere {
+		if !out.WhenEnabledAvailable || out.WhenEnabledVerdict != "" {
+			t.Errorf("bwrap would run here once enabled: %+v", out)
+		}
+	} else if out.WhenEnabledAvailable || out.WhenEnabledVerdict != sandboxselect.VerdictUnsupportedPlatform || out.WhenEnabledReason == "" {
+		t.Errorf("bwrap cannot run on %s even once enabled: %+v", sandboxHostKind(), out)
+	}
+}

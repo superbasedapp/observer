@@ -12,6 +12,16 @@
 //   - signed metadata: one manifest per kind, signed with the compiled-in
 //     vendor key (vendorkey.go) under its own domain tag, listing each
 //     artifact's name, size, SHA-256, upstream check and source;
+//   - a feed kind (ClassFeed) may instead be signed with the dedicated
+//     content-feed key (SignFeed, contentfeedkey.go, Envelope.Signer
+//     "feed") under its own domain, so the daily unattended publisher
+//     never holds the release key; Verify accepts that key for ClassFeed
+//     kinds only, so its compromise can freeze or poison advisory data
+//     (bounded by rollback, epochs and expiry) but never swap an engine or
+//     a sandbox artifact (static feed mirroring plan section 6.4);
+//   - an entry may be a cumulative delta over another entry of the same
+//     manifest (Entry.Delta, DeltaOf): one base plus the latest delta,
+//     never a chain, with the merged record count to check;
 //   - the org mirror adds its own countersignature (Countersign), so
 //     a managed node that requires it gets both and a compromised org server
 //     alone cannot substitute an artifact;

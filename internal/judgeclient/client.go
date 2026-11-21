@@ -1,16 +1,15 @@
 package judgeclient
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/dataauthority"
+	"github.com/marmutapp/superbased-observer/internal/llmwire"
 )
 
 // Client calls an OpenAI-compatible /chat/completions endpoint (OpenRouter by
@@ -46,6 +45,15 @@ type Client struct {
 	// latency + cost. Defaulted by New; overridable from config via
 	// WithTuning.
 	maxTokens int
+	// maxTokensSet is true when config set maxTokens (WithTuning); a
+	// reasoning-profile request then keeps it instead of raising it to
+	// reasoningMinReplyTokens.
+	maxTokensSet bool
+	// profile and effort are the [observability.judge] request_profile and
+	// reasoning_effort keys (WithRequestProfile); resolved per call against
+	// the model id by resolveShape (profile.go).
+	profile string
+	effort  string
 	// numCtx, when >0 AND the judge is loopback-local, is passed through as an
 	// Ollama-style context-window hint. It is NEVER sent to a remote judge (a
 	// hosted OpenAI-compatible API rejects unknown fields). 0 = omit.
@@ -72,6 +80,16 @@ const (
 	defaultJudgeRetries = 1
 	// judgeRetryBackoff is the pause between judge attempts (context-bounded).
 	judgeRetryBackoff = 400 * time.Millisecond
+	// judgeMaxResponseBytes caps the upstream body read.
+	judgeMaxResponseBytes = 1 << 20
+	// judgeSystemPrompt is the fixed judge instruction. It must not override
+	// the reply shape a caller's prompt asks for: the admission rubric asks
+	// for {"verdicts":[...]}, and a GPT-5 judge given a fixed {score,
+	// rationale} shape here followed the system message about one call in
+	// six, which admission could not read (live re-check of L-02). The
+	// {score, rationale} shape stays the default for a prompt that names
+	// none (an eval llm_judge prompt written by a user).
+	judgeSystemPrompt = "You are a strict evaluation judge. Reply with JSON only, nothing else. When the user message specifies a JSON reply format, use exactly that format. Otherwise reply with a JSON object {\"score\": <0..1>, \"rationale\": <short>}."
 )
 
 // New returns a judge client for baseURL with credential hv (the
@@ -97,10 +115,22 @@ func New(baseURL, hv string) Client {
 func (j Client) WithTuning(maxTokens, numCtx int) Client {
 	if maxTokens > 0 {
 		j.maxTokens = maxTokens
+		j.maxTokensSet = true
 	}
 	if numCtx > 0 {
 		j.numCtx = numCtx
 	}
+	return j
+}
+
+// WithRequestProfile sets the request profile (ProfileAuto, ProfileChat or
+// ProfileReasoning; "" is auto) and an optional reasoning-effort override
+// (sent only on the reasoning profile; "" takes the model family's default).
+// It is the config seam for [observability.judge] request_profile /
+// reasoning_effort. Returns a copy.
+func (j Client) WithRequestProfile(profile, effort string) Client {
+	j.profile = profile
+	j.effort = effort
 	return j
 }
 
@@ -147,98 +177,93 @@ func (j Client) Complete(ctx context.Context, model, prompt string) (string, err
 	if j.scrubPrompt != nil {
 		prompt = j.scrubPrompt(prompt)
 	}
-	reqBody := map[string]any{
-		"model":       model,
-		"temperature": 0,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a strict evaluation judge. Reply with a JSON object {\"score\": <0..1>, \"rationale\": <short>} and nothing else."},
-			{"role": "user", "content": prompt},
-		},
+	req := j.buildRequest(model, prompt)
+	// A transport error or 5xx is retried up to j.retries additional times with
+	// a short backoff (gap-audit §5.3); a 4xx returns at once. The context
+	// bounds every attempt and each backoff sleep.
+	cl, err := llmwire.NewClient(j.httpc,
+		llmwire.WithRetry(llmwire.RetryPolicy{
+			Retries: j.retries,
+			On:      llmwire.RetryTransport | llmwire.RetryServerError,
+			Backoff: judgeRetryBackoff,
+		}),
+		llmwire.WithMaxResponseBytes(judgeMaxResponseBytes),
+		llmwire.WithHeaders(map[string]string{
+			"X-SBO-Eval": "true",                     // attribution marker (plan §15 Q4)
+			"X-Title":    "superbased-observer eval", // OpenRouter etiquette
+		}),
+		llmwire.WithRawErrors(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("judge: %w", err)
 	}
-	if j.maxTokens > 0 {
-		reqBody["max_tokens"] = j.maxTokens
+	out, err := cl.Complete(ctx, j.baseURL, j.hv, req)
+	var se *llmwire.StatusError
+	var te *llmwire.TransportError
+	switch {
+	case errors.As(err, &se):
+		return "", &UpstreamError{StatusCode: se.StatusCode, Body: truncateJudge(se.Body, 300)}
+	case errors.As(err, &te):
+		return "", fmt.Errorf("judge: request: %w", te.Err)
+	case errors.Is(err, llmwire.ErrNoChoices):
+		return "", fmt.Errorf("judge: empty choices in response")
+	case errors.Is(err, llmwire.ErrDecode):
+		return "", fmt.Errorf("judge: decode response: %s", strings.TrimPrefix(err.Error(), llmwire.ErrDecode.Error()+": "))
+	case err != nil:
+		return "", fmt.Errorf("judge: %w", err)
+	}
+	return out.Content, nil
+}
+
+// buildRequest renders one judge turn in the wire shape the model's request
+// profile needs (profile.go): the chat profile sends max_tokens and
+// temperature 0; the reasoning profile sends max_completion_tokens, no
+// temperature and a reasoning effort, with a reply cap large enough for the
+// reasoning tokens unless config set one.
+func (j Client) buildRequest(model, prompt string) llmwire.Request {
+	shape := resolveShape(j.profile, j.effort, model)
+	req := llmwire.Request{
+		Model:           model,
+		System:          judgeSystemPrompt,
+		Messages:        []llmwire.Message{{Role: llmwire.RoleUser, Content: prompt}},
+		MaxTokens:       j.maxTokens,
+		MaxTokensParam:  shape.maxTokensParam,
+		ReasoningEffort: shape.effort,
+	}
+	if !shape.temperatureOff {
+		req.Temperature = new(float64)
+	}
+	if !j.maxTokensSet && req.MaxTokens < shape.minReplyTokens {
+		req.MaxTokens = shape.minReplyTokens
 	}
 	// num_ctx is an Ollama-specific knob: only a local host understands it, and
 	// only a local host tolerates an unknown field (a hosted API would 400), so
 	// it is gated on local.
 	if j.local && j.numCtx > 0 {
-		reqBody["num_ctx"] = j.numCtx
+		req.NumCtx = j.numCtx
 	}
-	raw, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("judge: marshal: %w", err)
-	}
-
-	body, status, err := j.doWithRetry(ctx, raw)
-	if err != nil {
-		return "", err
-	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("judge: upstream %d: %s", status, truncateJudge(string(body), 300))
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("judge: decode response: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("judge: empty choices in response")
-	}
-	return parsed.Choices[0].Message.Content, nil
+	return req
 }
 
-// doWithRetry posts the marshalled judge body, retrying on a retryable failure
-// — a transport error, a request timeout, or a 5xx upstream — up to j.retries
-// additional attempts with a short backoff between them (gap-audit §5.3: the
-// single Do() had no resilience to a transient blip). A 4xx is returned
-// immediately (a bad request will not fix itself on retry). The context bounds
-// every attempt AND each backoff sleep, so a cancelled/expired context ends the
-// loop promptly. Returns the (capped) response body + status of the final
-// attempt, or the last transport error.
-func (j Client) doWithRetry(ctx context.Context, raw []byte) ([]byte, int, error) {
-	attempts := j.retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, 0, fmt.Errorf("judge: request: %w", ctx.Err())
-			case <-time.After(judgeRetryBackoff):
-			}
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.baseURL+"/chat/completions", bytes.NewReader(raw))
-		if err != nil {
-			return nil, 0, fmt.Errorf("judge: new request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if j.hv != "" { // a loopback/local judge may run keyless
-			req.Header.Set("Authorization", "Bearer "+j.hv)
-		}
-		req.Header.Set("X-SBO-Eval", "true")                  // attribution marker (plan §15 Q4)
-		req.Header.Set("X-Title", "superbased-observer eval") // OpenRouter etiquette
+// UpstreamError is a judge endpoint's error status. Its message keeps the
+// "judge: upstream <code>: <body>" text verdict reasons already carry.
+type UpstreamError struct {
+	StatusCode int
+	Body       string
+}
 
-		resp, err := j.httpc.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("judge: request: %w", err)
-			continue // transport error / timeout — retryable
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		if resp.StatusCode >= 500 && attempt < attempts-1 {
-			lastErr = fmt.Errorf("judge: upstream %d: %s", resp.StatusCode, truncateJudge(string(body), 300))
-			continue // 5xx — retryable
-		}
-		return body, resp.StatusCode, nil
-	}
-	return nil, 0, lastErr
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("judge: upstream %d: %s", e.StatusCode, e.Body)
+}
+
+// JudgeRejected reports whether the endpoint refused the request itself (a
+// 4xx other than 408 Request Timeout and 429 Too Many Requests): a parameter
+// the model does not accept, a bad key, an unknown model. Retrying will not
+// help; the judge configuration has to change. Admission records such a
+// failure as degraded "judge-error" rather than "timeout-failopen" (L-02).
+func (e *UpstreamError) JudgeRejected() bool {
+	return e.StatusCode >= 400 && e.StatusCode < 500 &&
+		e.StatusCode != http.StatusRequestTimeout && e.StatusCode != http.StatusTooManyRequests
 }
 
 func truncateJudge(s string, n int) string {

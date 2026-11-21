@@ -33,16 +33,21 @@ var snapNaturalKeys = map[reflect.Type][]string{
 	reflect.TypeFor[orgcontract.RoutingDetailRow]():      {"Day", "OriginalModel", "SelectedModel", "TurnKind", "Mode"},
 	reflect.TypeFor[orgcontract.LimitGaugeRow]():         {"Day", "Provider"},
 	// Per-session wires.
-	reflect.TypeFor[orgcontract.SessionVerbosityRow]():      {"SessionID"},
-	reflect.TypeFor[orgcontract.SessionCacheRow]():          {"SessionID", "Model", "Tier", "Kind", "Cause", "ZeroUsage"},
-	reflect.TypeFor[orgcontract.SessionCacheEventRow]():     {"NodeEventID"},
-	reflect.TypeFor[orgcontract.SessionProcessRow]():        {"SessionID", "RunKey"},
-	reflect.TypeFor[orgcontract.SessionNetworkEventRow]():   {"SessionID", "EventKey"},
-	reflect.TypeFor[orgcontract.SessionTaskItemRow]():       {"SessionID", "Key"},
-	reflect.TypeFor[orgcontract.SessionTaskTransitionRow](): {"SessionID", "Key", "SourceEventID"},
-	reflect.TypeFor[orgcontract.SessionToolAccountRow]():    {"SessionID", "Tool", "BindingKind", "BindingID", "Role", "AccountKey", "Source", "Scope", "Stage"},
-	reflect.TypeFor[orgcontract.HookActivitySessionRow]():   {"SessionID", "Tool", "Event"},
-	reflect.TypeFor[orgcontract.SessionQualityRow]():        {"SessionID"},
+	reflect.TypeFor[orgcontract.SessionVerbosityRow]():    {"SessionID"},
+	reflect.TypeFor[orgcontract.SessionCacheRow]():        {"SessionID", "Model", "Tier", "Kind", "Cause", "ZeroUsage"},
+	reflect.TypeFor[orgcontract.SessionCacheEventRow]():   {"NodeEventID"},
+	reflect.TypeFor[orgcontract.SessionProcessRow]():      {"SessionID", "RunKey"},
+	reflect.TypeFor[orgcontract.SessionNetworkEventRow](): {"SessionID", "EventKey"},
+	// The process capture wire (processrolluporgrows.go): the rollup row's
+	// server key is the node's process_rollups group key; the stats row is
+	// one per session.
+	reflect.TypeFor[orgcontract.SessionProcessRollupRow]():       {"SessionID", "BucketStart", "GroupKind", "ParentProcessKey", "ServiceRootKey", "ExeBasename", "ArgvTemplateHash"},
+	reflect.TypeFor[orgcontract.SessionProcessCaptureStatsRow](): {"SessionID"},
+	reflect.TypeFor[orgcontract.SessionTaskItemRow]():            {"SessionID", "Key"},
+	reflect.TypeFor[orgcontract.SessionTaskTransitionRow]():      {"SessionID", "Key", "SourceEventID"},
+	reflect.TypeFor[orgcontract.SessionToolAccountRow]():         {"SessionID", "Tool", "BindingKind", "BindingID", "Role", "AccountKey", "Source", "Scope", "Stage"},
+	reflect.TypeFor[orgcontract.HookActivitySessionRow]():        {"SessionID", "Tool", "Event"},
+	reflect.TypeFor[orgcontract.SessionQualityRow]():             {"SessionID"},
 	// Lines of code, loc.go.
 	reflect.TypeFor[orgcontract.SessionLOCRow](): {"SessionID", "ProjectRootHash"},
 	reflect.TypeFor[orgcontract.LOCDayRow]():     {"Day", "ProjectRootHash"},
@@ -64,6 +69,8 @@ var snapNaturalKeys = map[reflect.Type][]string{
 	reflect.TypeFor[orgcontract.GuardPinRow]():         {"PinKey"},
 	reflect.TypeFor[orgcontract.GuardApprovalRow]():    {"ApprovalKey"},
 	reflect.TypeFor[orgcontract.SandboxPostureRow]():   {"Day", "IsolationClass", "CaptureLevel", "CaptureOrigin", "Verification", "NativeSandboxState", "KeyCustody"},
+	// The sandbox egress refusal counts (audit CG-15), ingest/sandboxegress.go.
+	reflect.TypeFor[orgcontract.SandboxEgressRefusalDayRow](): {"Day", "Tier", "Rule"},
 	// Security pillar, secorg.go.
 	reflect.TypeFor[orgcontract.SecurityPostureRow](): {"Day"},
 	reflect.TypeFor[orgcontract.SecurityFindingRow](): {"FindingRef"},

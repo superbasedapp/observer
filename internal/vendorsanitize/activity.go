@@ -61,6 +61,10 @@ var usageFlags = map[string][]string{
 	// booleans that describe how the call ran. The billing breakdown travels
 	// in typed columns (UsageBilling, T-630), never as a flag.
 	"cursor.usage": {"is_headless", "billing_basis"},
+	// cognition.devin_v3.org_sessions (cloud agents arc, lane CA-C3): the ACU
+	// row of a session carries no flag; the namespace is reviewed so the
+	// row lands (charged in ACUs, never converted, CA-D11).
+	"cognition.session": {},
 }
 
 // snapshotBody is the per-snapshot-class body allowlist.
@@ -100,6 +104,34 @@ var snapshotBody = map[string][]string{
 	"prime.wallet": {
 		"unit", "balance", "total_billings", "sandbox_credits_remaining", "credits_remaining_training",
 		"credits_remaining_sandboxes", "credits_remaining_inference",
+	},
+	// cursor.cloudagent.agents (cloud agents arc, lane CA-C3): one cloud
+	// agent's status, times, latest run id and environment type, what the
+	// org cloud-session projection reads. Never the agent's name (the
+	// vendor derives it from the prompt) and never its URL.
+	"cursor.cloud_agent": {"status", "created_at", "updated_at", "latest_run_id", "env_type"},
+	// cursor.cloudagent.meta (cloud agents arc, lane CA-C8): the key's kind
+	// (user or no_user) and, for a user key, the owner's numeric user id and
+	// folded e-mail, the identity the org projection attributes the key's
+	// agents to. Never the key name and never the user's names.
+	"cursor.cloud_agent_key": {"key_kind", "user_id", "user_email"},
+	// cursor.admin.cloud_agent_owners (cloud agents arc, lane CA-C8): one
+	// (cloud agent id, identity) pair the Admin API stated, the identity
+	// being a member's folded e-mail or a service account id. An identity
+	// value only: no token count, no cent amount and no conversation id is
+	// on the row.
+	"cursor.cloud_agent_owner": {"cloud_agent_id", "identity_kind", "identity"},
+	// cognition.devin_v3.org_sessions (cloud agents arc, lane CA-C3): one
+	// Devin session's status and status detail, times, origin, the org, the
+	// user or service user who ran it (the identity the projection resolves),
+	// lineage ids and counts, the first pull request's URL and state (the
+	// repository the projection files the session under) and the Teams-only
+	// on-demand USD figure in its own unit. Never the title and never the
+	// session URL.
+	"cognition.devin_session": {
+		"status", "status_detail", "created_at", "updated_at", "origin", "org_id", "user_id", "service_user_id",
+		"parent_session_id", "playbook_id", "automation_id", "child_session_count", "pull_request_count",
+		"pr_url", "pr_state", "on_demand_usage_usd",
 	},
 }
 

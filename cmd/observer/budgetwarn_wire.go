@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
 	"github.com/marmutapp/superbased-observer/internal/orgbudget"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
 // The budget-WARNING boundary (2026-10-02 budget-latency arc, operator
@@ -54,7 +55,10 @@ const budgetWarnMinGap = 2 * time.Second
 const budgetWarnIdleTick = 60 * time.Second
 
 type budgetWarnService struct {
-	path   string
+	path string
+	// fetch is the last organization budget pull (SetFetch), copied into
+	// every status file so the local dashboard can show a failing pull.
+	fetch  *budgetwarnfile.Fetch
 	spend  func() (guard.BudgetWindowSpend, bool)
 	notify func(title, body string)
 	// display resolves the node's developer cost display ("usd" or
@@ -65,16 +69,22 @@ type budgetWarnService struct {
 	// own accounting lookup (budgetwarn_subjects.go). Nil = subject caps are
 	// not measurable in this process. Set via SetSubjectSpend.
 	subjectSpend func(guard.BudgetCalendars) (guard.BudgetSnapshot, bool)
-	logger       *slog.Logger
-	now          func() time.Time
-	kick         chan struct{}
-	mu           sync.Mutex
-	origins      []orgbudget.Origin
-	subjects     []orgbudget.SubjectCap
-	calendars    guard.BudgetCalendars
-	state        budgetwarn.State
-	snapshot     budgetwarnfile.File
-	written      bool
+	// machine resolves what THIS node can do about a hard cap (its live
+	// guard mode, and whether the org's cap is authoritative here) at each
+	// evaluation, so every sentence says what the node will actually do
+	// (budget-enforcement honesty, 2026-11-18). Nil = nothing here can block:
+	// every hard cap renders warning only. Set via SetMachine.
+	machine   func() budgetMachine
+	logger    *slog.Logger
+	now       func() time.Time
+	kick      chan struct{}
+	mu        sync.Mutex
+	origins   []orgbudget.Origin
+	subjects  []orgbudget.SubjectCap
+	calendars guard.BudgetCalendars
+	state     budgetwarn.State
+	snapshot  budgetwarnfile.File
+	written   bool
 	// admission publishes the managed budget decision the hook path stops on
 	// (T-519, budget-admission.json). Nil = nothing is published (no guard
 	// in this process). Set via SetAdmission.
@@ -250,6 +260,62 @@ func (s *budgetWarnService) SetSubjectSpend(fn func(guard.BudgetCalendars) (guar
 	s.mu.Unlock()
 }
 
+// budgetMachine is what this node can do about an org cap, resolved live.
+type budgetMachine struct {
+	// GuardMode is the live guard's mode (off / observe / enforce).
+	GuardMode string
+	// OrgAuthoritative: a managed node whose grant holds enforce.budget,
+	// applying the org's budget ([guard.budget].from_org).
+	OrgAuthoritative bool
+}
+
+// SetMachine installs the machine resolver. Call before Run.
+func (s *budgetWarnService) SetMachine(fn func() budgetMachine) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.machine = fn
+	s.mu.Unlock()
+}
+
+// machineNow is the current machine facts (a nil resolver can block
+// nothing: guard mode off).
+func (s *budgetWarnService) machineNow() budgetMachine {
+	s.mu.Lock()
+	fn := s.machine
+	s.mu.Unlock()
+	if fn == nil {
+		return budgetMachine{GuardMode: "off"}
+	}
+	return fn()
+}
+
+// processBudgetMachine resolves the machine facts from the SHARED per-(process,
+// db) guard (lazily, like processGuardBudgetSpend) and the live governance
+// grant. No guard is mode off: there is no enforcement point at all.
+func processBudgetMachine(dbPath string, fromOrg bool, granted func() bool) func() budgetMachine {
+	return func() budgetMachine {
+		m := budgetMachine{GuardMode: "off"}
+		if g := lookupProcessGuard(dbPath); g != nil {
+			m.GuardMode = string(g.Mode())
+		}
+		m.OrgAuthoritative = fromOrg && granted != nil && granted()
+		return m
+	}
+}
+
+// withMachine stamps the machine facts onto every window: the guard mode and
+// the grant are node-wide, the baseline rule is per window (set by its
+// builder).
+func withMachine(windows []budgetwarn.Window, m budgetMachine) []budgetwarn.Window {
+	for i := range windows {
+		windows[i].GuardMode = m.GuardMode
+		windows[i].OrgAuthoritative = m.OrgAuthoritative
+	}
+	return windows
+}
+
 // SetDisplay installs the developer cost-display resolver every message is
 // rendered with (operator ruling 2026-10-02: in token mode a developer sees
 // "120% used of the budget", never a dollar figure). Call before Run.
@@ -277,6 +343,48 @@ func (s *budgetWarnService) displayMode() string {
 }
 
 // Kick requests an evaluation soon (non-blocking; bursts coalesce).
+// budgetFetchFailed is the closed set of pull states that mean the machine
+// did not get its organization budget this cycle (the node's own list,
+// orgclient budgetpolicy.go). disabled, not_enrolled and no_budget are
+// answers, not failures, and ok is the pull working.
+var budgetFetchFailed = map[string]bool{
+	orgcontract.BudgetFetchUnreachable: true,
+	orgcontract.BudgetFetchAuthFailed:  true,
+	orgcontract.BudgetFetchChannelOff:  true,
+	orgcontract.BudgetFetchUnverified:  true,
+}
+
+// SetFetch records this cycle's organization budget pull (budget enforce
+// consistency, 2026-11-19) and re-evaluates, so the status file and the
+// local dashboard's notice follow it within a cycle. It keeps when the pull
+// last worked and when the current run of failures began.
+func (s *budgetWarnService) SetFetch(state string, now time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	next := budgetwarnfile.Fetch{State: state}
+	if s.fetch != nil {
+		next.LastOKAt, next.FailingSince = s.fetch.LastOKAt, s.fetch.FailingSince
+	}
+	switch {
+	case state == orgcontract.BudgetFetchOK:
+		next.LastOKAt, next.FailingSince = now.UTC().Truncate(time.Second), time.Time{}
+	case budgetFetchFailed[state]:
+		if next.FailingSince.IsZero() {
+			next.FailingSince = now.UTC().Truncate(time.Second)
+		}
+	default:
+		next.FailingSince = time.Time{}
+	}
+	changed := s.fetch == nil || *s.fetch != next
+	s.fetch = &next
+	s.mu.Unlock()
+	if changed {
+		s.Kick()
+	}
+}
+
 func (s *budgetWarnService) Kick() {
 	if s == nil {
 		return
@@ -361,6 +469,7 @@ func (s *budgetWarnService) evaluate() {
 		windows = append(budgetWarnWindows(origins, sp), windows...)
 	}
 	now := s.now()
+	windows = withMachine(windows, s.machineNow())
 	st, next := budgetwarn.Evaluate(windows, prev, now)
 	// Every developer-facing sentence is rendered in the org's chosen
 	// display: the file's Active messages (the prompt-hook notice, `observer
@@ -372,12 +481,20 @@ func (s *budgetWarnService) evaluate() {
 	for i := range st.New {
 		st.New[i].Message = budgetwarn.RenderMessage(st.New[i], display)
 	}
+	s.mu.Lock()
+	var fetch *budgetwarnfile.Fetch
+	if s.fetch != nil {
+		f := *s.fetch
+		fetch = &f
+	}
+	s.mu.Unlock()
 	file := budgetwarnfile.File{
 		WrittenAt: now.UTC(),
 		Display:   display,
 		Windows:   fileWindows(st.Windows),
 		Active:    fileNotices(st.Active),
 		State:     fileState(next),
+		Fetch:     fetch,
 	}
 
 	s.mu.Lock()
@@ -458,25 +575,29 @@ func budgetWarnDesktopNotifier(enabled bool) func(title, body string) {
 }
 
 // budgetWarnWindows joins the adopted org windows with the measured spend.
+// When the org's cross-machine baseline may only warn (sp.BaselineFlagOnly),
+// a blocking cap is compared by the guard against this machine's own spend
+// (policy baselineWithheld), so the window carries that number too.
 func budgetWarnWindows(origins []orgbudget.Origin, sp guard.BudgetWindowSpend) []budgetwarn.Window {
 	out := make([]budgetwarn.Window, 0, len(origins))
 	for _, o := range origins {
-		var spent float64
+		var spent, local float64
 		switch o.Window + "|" + o.Unit {
 		case "daily|usd":
-			spent = sp.DailyUSD
+			spent, local = sp.DailyUSD, sp.LocalDailyUSD
 		case "monthly|usd":
-			spent = sp.MonthlyUSD
+			spent, local = sp.MonthlyUSD, sp.LocalMonthlyUSD
 		case "daily|tokens":
-			spent = float64(sp.DailyTokens)
+			spent, local = float64(sp.DailyTokens), float64(sp.LocalDailyTokens)
 		case "monthly|tokens":
-			spent = float64(sp.MonthlyTokens)
+			spent, local = float64(sp.MonthlyTokens), float64(sp.LocalMonthlyTokens)
 		default:
 			continue
 		}
 		out = append(out, budgetwarn.Window{
 			Window: o.Window, Unit: o.Unit, Cap: o.Cap, Spent: spent, Scope: o.Scope,
 			Enforcement: o.Enforcement, Thresholds: o.Thresholds, Timezone: o.Timezone,
+			DeniesOnLocal: sp.BaselineFlagOnly && o.Enforcement == "hard", LocalSpent: local,
 		})
 	}
 	return out
@@ -486,8 +607,9 @@ func fileWindows(in []budgetwarn.WindowStatus) []budgetwarnfile.Window {
 	out := make([]budgetwarnfile.Window, 0, len(in))
 	for _, w := range in {
 		out = append(out, budgetwarnfile.Window{
-			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: w.Period, Cap: w.Cap, Spent: round6(w.Spent),
+			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: w.Period, Timezone: w.Timezone, Cap: w.Cap, Spent: round6(w.Spent),
 			Ratio: round6(w.Ratio), Scope: w.Scope, Enforcement: w.Enforcement, Level: w.Level, Crossed: w.Crossed,
+			Effect: w.Effect, Blocked: w.Blocked, DeniesOnLocal: w.DeniesOnLocal,
 		})
 	}
 	return out
@@ -498,6 +620,7 @@ func fileNotice(n budgetwarn.Notice) budgetwarnfile.Notice {
 		ID: n.ID, Window: n.Window, Unit: n.Unit, Subject: n.Subject, Period: n.Period, Threshold: n.Threshold,
 		Ratio: round6(n.Ratio), Spent: round6(n.Spent), Cap: n.Cap, Scope: n.Scope, Enforcement: n.Enforcement,
 		CrossedAt: n.CrossedAt, Level: n.Level, Message: n.Message,
+		Effect: n.Effect, Blocked: n.Blocked, DeniesOnLocal: n.DeniesOnLocal,
 	}
 }
 
@@ -534,6 +657,7 @@ func stateFromFile(in map[string]budgetwarnfile.Notified) budgetwarn.State {
 			ID: n.ID, Window: n.Window, Unit: n.Unit, Subject: n.Subject, Period: n.Period, Threshold: n.Threshold,
 			Ratio: n.Ratio, Spent: n.Spent, Cap: n.Cap, Scope: n.Scope, Enforcement: n.Enforcement,
 			CrossedAt: n.CrossedAt, Level: n.Level, Message: n.Message,
+			Effect: n.Effect, Blocked: n.Blocked, DeniesOnLocal: n.DeniesOnLocal,
 		}}
 	}
 	return st

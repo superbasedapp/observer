@@ -158,7 +158,18 @@ func (s *Store) probeGuardPins(ctx context.Context) (string, error) {
 // no write at all. That was already the wire's documented model (an expired
 // approval "stops being re-shipped"; the server never deletes what it has), and
 // snapGate's maxSkipAge bounds the lag to an hour.
+//
+// IN-PLACE CHANGES (P-232): since agent migration 218 a repeated grant for
+// the same key EXTENDS the existing row (store.GrantGuardApproval) instead of
+// inserting, and re-granting an expired row rewrites its ts and expiry, so
+// neither moves MAX(id) or COUNT(*). The probe therefore also folds the
+// number of non-expiring rows and the summed expiry and grant times; any
+// extend or re-grant changes at least one of them.
 func (s *Store) probeGuardApprovals(ctx context.Context) (string, error) {
 	return s.snapProbeScalar(ctx, `
-		SELECT 'ga' || COALESCE(MAX(id), 0) || '/' || COUNT(*) FROM guard_approvals`)
+		SELECT 'ga' || COALESCE(MAX(id), 0) || '/' || COUNT(*) ||
+		       '/' || COALESCE(SUM(expires_at = ''), 0) ||
+		       '/' || printf('%.6f', total(julianday(NULLIF(expires_at, '')))) ||
+		       '/' || printf('%.6f', total(julianday(ts)))
+		  FROM guard_approvals`)
 }

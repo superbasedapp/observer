@@ -95,9 +95,9 @@ func TestGovernedFamilies_TableDriven(t *testing.T) {
 			want:      []string{familyNodeGovernance},
 		},
 		{
-			name:      "enforce.admission maps to admission.input",
+			name:      "enforce.admission maps to admission.input and planeb.admission",
 			authority: []string{AuthorityEnforceAdmission},
-			want:      []string{familyAdmissionInput},
+			want:      []string{familyAdmissionInput, familyPlaneBAdmission},
 		},
 		{
 			name:      "enforce.egress maps to egress.routing_guardrail",
@@ -122,7 +122,7 @@ func TestGovernedFamilies_TableDriven(t *testing.T) {
 		{
 			name:      "mixed authority set, deduplicated and sorted",
 			authority: []string{AuthorityExtractToolBodies, AuthorityEnforceAdmission},
-			want:      []string{familyAdmissionInput, familyNodeGovernance},
+			want:      []string{familyAdmissionInput, familyNodeGovernance, familyPlaneBAdmission},
 		},
 		{
 			name:      "two node.governance tokens dedupe to one family",
@@ -132,7 +132,7 @@ func TestGovernedFamilies_TableDriven(t *testing.T) {
 		{
 			name:      "all three enforce tokens plus a node.governance token",
 			authority: []string{AuthorityEnforceRouting, AuthorityEnforceAdmission, AuthorityEnforceEgress, AuthorityFeatureLock},
-			want:      []string{familyAdmissionInput, familyEgressGuardrail, familyGatewayProviders, familyNodeFeatures, familyNodeGovernance},
+			want:      []string{familyAdmissionInput, familyEgressGuardrail, familyGatewayProviders, familyNodeFeatures, familyNodeGovernance, familyPlaneBAdmission},
 		},
 		{
 			// C156-04 / T-354: feature locks, tools.disallow and the G8 tool

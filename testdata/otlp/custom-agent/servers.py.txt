@@ -1,0 +1,36 @@
+# Local mock OpenAI chat-completions endpoint (:18801) and OTLP/HTTP sink (:18802).
+import json, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+OUT = sys.argv[1]
+n = {"i": 0}
+
+class Mock(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        n["i"] += 1
+        body = {
+            "id": f"chatcmpl-mock-{n['i']}", "object": "chat.completion", "created": 1798000000,
+            "model": "gpt-5.5-mini-2026-10-01",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290,
+                      "prompt_tokens_details": {"cached_tokens": 1000},
+                      "completion_tokens_details": {"reasoning_tokens": 16}},
+        }
+        raw = json.dumps(body).encode()
+        self.send_response(200); self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+
+class Sink(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get("content-length", 0)))
+        with open(f"{OUT}/{self.path.strip('/').replace('/', '_')}.pb", "ab") as f:
+            f.write(raw)
+        self.send_response(200); self.send_header("content-type", "application/x-protobuf")
+        self.send_header("content-length", "0"); self.end_headers()
+
+for port, h in ((18801, Mock), (18802, Sink)):
+    threading.Thread(target=ThreadingHTTPServer(("127.0.0.1", port), h).serve_forever, daemon=True).start()
+threading.Event().wait()

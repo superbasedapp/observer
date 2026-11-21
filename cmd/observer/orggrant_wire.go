@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/accessgrant"
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -27,44 +31,299 @@ import (
 // SetApprovalLookup precedent.
 type orgGrantStoreOpener func(ctx context.Context) (*store.Store, func(), error)
 
-// newOrgGrantClaim builds the guard's org-grant claim over open. Any failure
-// (no database, a timeout) answers "no grant", so enforcement stands.
-func newOrgGrantClaim(open orgGrantStoreOpener, timeout time.Duration) guard.OrgGrantClaim {
-	return func(q guard.OrgGrantQuery) guard.OrgGrantResult {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		st, release, err := open(ctx)
-		if err != nil || st == nil {
-			return guard.OrgGrantResult{}
+// orgGrantBudget is how long the next grant question may take, asked when
+// the question is asked: a hook process sizes it from what is left on its own
+// watchdog (hookOrgGrantBudget), the daemon from a constant.
+type orgGrantBudget func() time.Duration
+
+// constOrgGrantBudget is a fixed per-question budget.
+func constOrgGrantBudget(d time.Duration) orgGrantBudget {
+	return func() time.Duration { return d }
+}
+
+// newOrgGrantSession builds the guard's org-grant conversation over open
+// (guard.OrgGrantSession): the questions one verdict asks (the peek, then the
+// claim) share ONE store from ONE open, released by done, so a hook process
+// does not open the database a second time right after the peek. Each
+// question runs under its own budget, read when it is asked. Any failure (a
+// database that cannot be opened or read in time) answers "no grant", so
+// enforcement stands, and says why in Failed, which the guard writes on the
+// verdict: "no grant covers this" and "the grants could not be read" are
+// different facts, and only the first should send a developer to request.
+func newOrgGrantSession(open orgGrantStoreOpener, budget orgGrantBudget) guard.OrgGrantSession {
+	return func() (guard.OrgGrantClaim, func()) {
+		var (
+			st      *store.Store
+			release func()
+			openErr error
+			opened  bool
+		)
+		claim := func(q guard.OrgGrantQuery) guard.OrgGrantResult {
+			ctx, cancel := context.WithTimeout(context.Background(), budget())
+			defer cancel()
+			if !opened || (openErr != nil && retryableOrgGrantOpen(openErr)) {
+				// A failed open is tried again by the next question only when
+				// it ran out of time or waited on a lock; any other answer
+				// stands for the whole conversation.
+				st, release, openErr = openOrgGrantStore(ctx, open)
+				opened = true
+			}
+			if errors.Is(openErr, fs.ErrNotExist) {
+				// No database yet: a node with no grant cache holds no grants,
+				// which is an answer, not a failure.
+				return guard.OrgGrantResult{}
+			}
+			if openErr != nil {
+				return guard.OrgGrantResult{Failed: "open: " + openErr.Error()}
+			}
+			if st == nil {
+				return guard.OrgGrantResult{}
+			}
+			aq := accessgrant.Query{
+				RuleID: q.RuleID, Lane: q.Lane, CommandClass: q.CommandClass, OperandHash: q.OperandHash,
+				ProjectRootHash: q.ProjectRootHash, Decision: q.Decision, RuleLocked: q.RuleLocked,
+			}
+			var c orgclient.GrantClaim
+			if q.Consume {
+				c = orgclient.ClaimAccessGrant(ctx, st, aq, time.Now())
+			} else {
+				c = orgclient.PeekAccessGrant(ctx, st, aq, time.Now())
+			}
+			out := guard.OrgGrantResult{
+				OK: c.OK, GrantID: c.Hit.GrantID, Effect: c.Hit.Effect, ExpiresAtNs: c.Hit.ExpiresAtNs,
+				UsesLeft: c.Hit.UsesLeft, LockRefused: c.LockRefused, Unverified: c.Unverified,
+				ScopeMissID: c.ScopeMissID,
+			}
+			if c.Err != nil {
+				out.Failed = c.Err.Error()
+			}
+			return out
 		}
-		defer release()
-		aq := accessgrant.Query{
-			RuleID: q.RuleID, Lane: q.Lane, CommandClass: q.CommandClass, OperandHash: q.OperandHash,
-			ProjectRootHash: q.ProjectRootHash, Decision: q.Decision, RuleLocked: q.RuleLocked,
+		done := func() {
+			if release != nil {
+				release()
+			}
 		}
-		var c orgclient.GrantClaim
-		if q.Consume {
-			c = orgclient.ClaimAccessGrant(ctx, st, aq, time.Now())
-		} else {
-			c = orgclient.PeekAccessGrant(ctx, st, aq, time.Now())
-		}
-		return guard.OrgGrantResult{
-			OK: c.OK, GrantID: c.Hit.GrantID, Effect: c.Hit.Effect, ExpiresAtNs: c.Hit.ExpiresAtNs,
-			UsesLeft: c.Hit.UsesLeft, LockRefused: c.LockRefused, Unverified: c.Unverified,
-		}
+		return claim, done
 	}
 }
 
-// hookOrgGrantOpener opens the daemon's database for one question (a hook
-// process is short-lived and holds no handle).
+// newOrgGrantClaim is newOrgGrantSession for a caller that asks one question
+// at a time (the daemon, whose opener hands out its long-lived handle): every
+// question is a conversation of its own.
+func newOrgGrantClaim(open orgGrantStoreOpener, timeout time.Duration) guard.OrgGrantClaim {
+	session := newOrgGrantSession(open, constOrgGrantBudget(timeout))
+	return func(q guard.OrgGrantQuery) guard.OrgGrantResult {
+		claim, done := session()
+		defer done()
+		return claim(q)
+	}
+}
+
+// orgGrantOpenRetryMin is the least time a retried open must have left; a
+// retry with less would fail the same way and only delay the reply.
+const orgGrantOpenRetryMin = 100 * time.Millisecond
+
+// openOrgGrantStore opens the grant store inside ctx with ONE bounded retry:
+// the first attempt gets two thirds of what is left, so an attempt that
+// stalls (a cold open on a loaded machine, a lock wait) leaves time for a
+// second one; the retry runs only for a timeout or a lock wait and only with
+// orgGrantOpenRetryMin or more left. Every other answer (no database, an
+// unreadable file) is final at once.
+func openOrgGrantStore(ctx context.Context, open orgGrantStoreOpener) (*store.Store, func(), error) {
+	first := ctx
+	if dl, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		first, cancel = context.WithTimeout(ctx, time.Until(dl)*2/3)
+		defer cancel()
+	}
+	st, release, err := open(first)
+	if err == nil || !retryableOrgGrantOpen(err) || ctx.Err() != nil {
+		return st, release, err
+	}
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < orgGrantOpenRetryMin {
+		return st, release, err
+	}
+	return open(ctx)
+}
+
+// retryableOrgGrantOpen reports an open failure worth one more attempt: it
+// ran out of time, or SQLite was busy or locked. Anything else would fail the
+// same way again.
+func retryableOrgGrantOpen(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"database is locked", "database table is locked", "sqlite_busy", "sqlite_locked"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// hookOrgGrantOpener opens the daemon's database for one grant conversation
+// (a hook process is short-lived and holds no handle).
+//
+// It used to be a full db.Open per question: a ping, the pragmas and the
+// migration plan against the node's whole database, twice per blocking
+// verdict (the peek, then the claim), each under the hook timeout, with any
+// overrun read as "no grant" and nothing recorded. That is the defect P-232
+// fixed for the local approval lookup (hook_approvals.go) and left here: on
+// a large busy node an in-force org grant was skipped now and then, and the
+// developer asked for the same grant again (operator report 2026-11-13:
+// S-793 asked 6 times in 152 calls under a perpetual grant). Now the open is
+// the same migration-free one, writable only because a use-limited grant
+// counts its use: a hook is never the process that migrates the node. The
+// busy wait is half of what is left on ctx (never below 20 ms), so a write
+// that cannot get the lock returns in time for the reply; the decision
+// itself needs no write (orgclient.ClaimAccessGrant).
+//
+// A database file that does not exist yet, or one the daemon has not
+// migrated yet (no grant cache table), is fs.ErrNotExist: a node with no
+// grant cache holds no grants, which is an answer and not a failure.
 func hookOrgGrantOpener(dbPath string) orgGrantStoreOpener {
 	return func(ctx context.Context) (*store.Store, func(), error) {
-		database, err := db.Open(ctx, db.Options{Path: dbPath})
+		if dbPath == "" {
+			return nil, nil, errors.New("no database path configured")
+		}
+		if _, err := os.Stat(dbPath); err != nil {
+			return nil, nil, err
+		}
+		database, err := sql.Open("sqlite", hookOrgGrantDSN(dbPath, hookApprovalBusy(ctxRemaining(ctx))))
 		if err != nil {
+			return nil, nil, err
+		}
+		database.SetMaxOpenConns(1)
+		var one int
+		err = database.QueryRowContext(ctx,
+			`SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'org_access_grant_state'`).Scan(&one)
+		if err != nil {
+			_ = database.Close()
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil, fs.ErrNotExist
+			}
 			return nil, nil, err
 		}
 		return store.New(database), func() { _ = database.Close() }, nil
 	}
+}
+
+// ctxRemaining is the time left on ctx's deadline (0 = no deadline, which
+// hookApprovalBusy reads as its default budget).
+func ctxRemaining(ctx context.Context) time.Duration {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	if r := time.Until(dl); r > 0 {
+		return r
+	}
+	return time.Nanosecond
+}
+
+// The org grant question's budget in a hook process (operator report
+// 2026-11-13, 14:19 UTC: S-793 enforced as an ask with "could not be
+// consulted (open: context deadline exceeded)" while a perpetual exempt
+// grant was in force, load average about 17). The question used to run under
+// the 500 ms [observer.hooks] timeout_ms, the local approval read's budget,
+// and it only runs on a call that would block or ask, after the quick scan,
+// so a cold open on a loaded machine overran it. It has its own budget now.
+const (
+	// defaultHookOrgGrantBudget is the most one grant question may take.
+	defaultHookOrgGrantBudget = 4 * time.Second
+	// hookOrgGrantReplyMargin is what a question leaves on the hook's
+	// watchdog for the rest of the evaluation and the reply.
+	hookOrgGrantReplyMargin = time.Second
+	// hookOrgGrantHostMargin is what a question leaves below the host's own
+	// hook timeout when no watchdog is armed.
+	hookOrgGrantHostMargin = 3 * time.Second
+	// hookOrgGrantMinBudget is the floor of an exhausted budget: the
+	// question fails at once and the verdict says so.
+	hookOrgGrantMinBudget = time.Millisecond
+)
+
+// hookOrgGrantBudgetRules sizes the grant question's budget, an ordered
+// table walked top down: the first row whose condition holds sizes it, and
+// the result is never more than defaultHookOrgGrantBudget.
+//
+//	| # | the invocation has                  | budget                               |
+//	|---|-------------------------------------|--------------------------------------|
+//	| 1 | a watchdog deadline (plan.Deadline) | left - 1 s; left/2 when that is <= 0 |
+//	| 2 | no watchdog, a known host timeout   | host - 3 s; host/3 when that is <= 0 |
+//	| 3 | neither                             | the default                          |
+//
+// Row 1 is every production invocation: the watchdog's deadline is fixed at
+// the start (30 s by default, at most the host's hook timeout minus 2 s for
+// a gate event, hookGateBudget) and already counts the time the payload
+// read and the quick scan spent, so the question always ends before the
+// watchdog writes its fail-closed block.
+var hookOrgGrantBudgetRules = []struct {
+	name  string
+	holds func(plan hookFailurePlan) bool
+	size  func(plan hookFailurePlan, now time.Time) time.Duration
+}{
+	{
+		"watchdog deadline",
+		func(p hookFailurePlan) bool { return !p.Deadline.IsZero() },
+		func(p hookFailurePlan, now time.Time) time.Duration {
+			left := p.Deadline.Sub(now)
+			if c := left - hookOrgGrantReplyMargin; c > 0 {
+				return c
+			}
+			return left / 2
+		},
+	},
+	{
+		"host timeout",
+		func(p hookFailurePlan) bool { return p.HostTimeout > 0 },
+		func(p hookFailurePlan, _ time.Time) time.Duration {
+			if c := p.HostTimeout - hookOrgGrantHostMargin; c > 0 {
+				return c
+			}
+			return p.HostTimeout / 3
+		},
+	},
+	{
+		"default",
+		func(hookFailurePlan) bool { return true },
+		func(hookFailurePlan, time.Time) time.Duration { return defaultHookOrgGrantBudget },
+	},
+}
+
+// hookOrgGrantBudget walks hookOrgGrantBudgetRules for plan at now.
+func hookOrgGrantBudget(plan hookFailurePlan, now time.Time) time.Duration {
+	b := defaultHookOrgGrantBudget
+	for _, r := range hookOrgGrantBudgetRules {
+		if r.holds(plan) {
+			if c := r.size(plan, now); c < b {
+				b = c
+			}
+			break
+		}
+	}
+	if b < hookOrgGrantMinBudget {
+		b = hookOrgGrantMinBudget
+	}
+	return b
+}
+
+// hookOrgGrantQuestionBudget is the hook process's orgGrantBudget: the
+// current invocation's plan, read when the question is asked.
+func hookOrgGrantQuestionBudget() time.Duration {
+	return hookOrgGrantBudget(currentHookPlan(), time.Now())
+}
+
+// hookOrgGrantDSN is the migration-free DSN of the hook's grant question:
+// mode=rw never creates a database file, the busy wait is the hook's, and
+// synchronous is the node's own setting (db.Open: NORMAL) for the one
+// counter write a use-limited grant makes.
+func hookOrgGrantDSN(dbPath string, busy time.Duration) string {
+	return fmt.Sprintf("file:%s?mode=rw&_pragma=busy_timeout(%d)&_pragma=synchronous(1)", sqlitedsn.Escape(dbPath), busy.Milliseconds())
 }
 
 // daemonOrgGrantOpener hands out the daemon's own store handle.

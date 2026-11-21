@@ -1,0 +1,97 @@
+rules:
+  - id: kotlin.ssrf-request-url
+    languages: [kotlin]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      # Spring and JAX-RS handler parameters that carry text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) = $E
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) = $E
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|List<String>|Set<String>|Collection<String>|Array<String>|CharSequence)\??$
+      # Servlet requests, by call or by Kotlin property.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.$GET(...)
+              - pattern: $REQ.$GET
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|getInputStream|getReader|parameterMap|queryString|cookies|pathInfo|requestURI|inputStream|reader)$
+      # Ktor.
+      - pattern: call.parameters
+      - pattern: call.request.queryParameters
+      - pattern: call.request.headers
+      - pattern: call.request.cookies
+      - pattern: call.request.uri
+      - pattern: call.receiveText()
+      - pattern: call.receiveParameters()
+      - pattern: call.receive<String>()
+    pattern-sanitizers:
+      - pattern: URLEncoder.encode(...)
+      - pattern: $X.toInt()
+      - pattern: $X?.toInt()
+      - pattern: $X.toLong()
+      - pattern: $X?.toLong()
+      - pattern: $X.toIntOrNull()
+      - pattern: $X?.toIntOrNull()
+      - pattern: $X.toLongOrNull()
+      - pattern: $X?.toLongOrNull()
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: URL($U)
+              - pattern: URI($U)
+              - pattern: URI.create($U)
+              - pattern: $RT.getForObject($U, ...)
+              - pattern: $RT.getForEntity($U, ...)
+              - pattern: $RT.postForObject($U, ...)
+              - pattern: $RT.postForEntity($U, ...)
+              - pattern: $RT.exchange($U, ...)
+              - pattern: HttpRequest.newBuilder($U)
+              - pattern: WebClient.create($U)
+              - pattern: $WC.get().uri($U, ...)
+              - pattern: $WC.post().uri($U, ...)
+              - pattern: Request.Builder().url($U)
+              - pattern: $B.url($U)
+              - pattern: HttpGet($U)
+              - pattern: HttpPost($U)
+              # The Ktor client.
+              - patterns:
+                  - pattern: $CLIENT.$M($U, ...)
+                  - metavariable-regex:
+                      metavariable: $CLIENT
+                      regex: (?i)^(this\.)?\w*client$
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(get|post|put|patch|delete|head|request|prepareGet|preparePost)$
+          # A string that names a fixed host before the input: the input
+          # cannot pick the host.
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^"https?://[^/"#?{}$]+[/?#]
+          - focus-metavariable: $U

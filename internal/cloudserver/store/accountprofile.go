@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer"
 )
 
 // accountprofile.go owns `account_profiles` (migration 0033): the DISPLAY-ONLY
@@ -147,4 +149,105 @@ func truncateRunes(s string, maxBytes int) string {
 		cut--
 	}
 	return s[:cut]
+}
+
+// --- the provider-asserted address (migration 0074, operator item A4) ------
+//
+// account_verified_emails is NOT display data: it is the address the platform
+// OIDC issuer signs into a tenant's ID token, with the identity provider's own
+// verification flag. It lives in this file only because this is the one store
+// file allowed to name an address (the no-merge-by-email tripwire); every
+// statement below is keyed by account_id and nothing reads an account back
+// out of it. Only the WorkOS sign-in leg writes it; account_profiles stays
+// display-only and is no longer read by the issuer.
+
+// UpsertVerifiedEmail records what the identity provider said, at a sign-in,
+// about accountID's address: the address as the provider sent it and the
+// provider's `email_verified` flag. It is called on every WorkOS sign-in, so
+// the row always reflects the latest provider statement. An empty address
+// (the provider sent none, or one the API layer refused to shape) DELETES the
+// row, so a stale verified address can never outlive a sign-in that did not
+// confirm it; the issuer then refuses for want of an address.
+//
+// Unlike UpsertAccountProfile this is an authentication input for tenants, so
+// the caller fails the sign-in when it fails. Like it, it fences the account
+// status inside the write and never logs or returns the address.
+func (s *Store) UpsertVerifiedEmail(ctx context.Context, accountID, email string, verified bool, now time.Time) error {
+	if accountID == "" {
+		return errors.New("cloudserver/store.UpsertVerifiedEmail: empty accountID")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if len(email) > AccountProfileMaxEmailBytes {
+		// Never truncated: a cut address is a different address.
+		email = ""
+	}
+	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		if e := fenceAccountActiveTx(ctx, tx, accountID); e != nil {
+			return e
+		}
+		if email == "" {
+			_, e := tx.Exec(ctx, `DELETE FROM account_verified_emails WHERE account_id = $1::uuid`, accountID)
+			return e
+		}
+		_, e := tx.Exec(ctx,
+			`INSERT INTO account_verified_emails (account_id, email, email_verified, updated_at)
+			 VALUES ($1::uuid, $2, $3, $4)
+			 ON CONFLICT (account_id) DO UPDATE
+			    SET email          = EXCLUDED.email,
+			        email_verified = EXCLUDED.email_verified,
+			        updated_at     = EXCLUDED.updated_at`,
+			accountID, email, verified, now)
+		return e
+	})
+	if err != nil {
+		return fmt.Errorf("cloudserver/store.UpsertVerifiedEmail: %w", err)
+	}
+	return nil
+}
+
+// setOIDCMemberVerifiedAddress fills m's address claim and its verification
+// flag for the OIDC issuer (M6.2) from account_verified_emails, keyed by
+// account_id only. A missing row leaves the address empty and the flag false;
+// the issuer's member rules refuse both (A4: never issue for an address the
+// provider did not verify).
+func setOIDCMemberVerifiedAddress(ctx context.Context, tx pgx.Tx, accountID string, m *oidcissuer.Member) error {
+	e := tx.QueryRow(ctx,
+		`SELECT email, email_verified FROM account_verified_emails
+		  WHERE account_id = $1::uuid`, accountID).Scan(&m.Email, &m.EmailVerified)
+	if errors.Is(e, pgx.ErrNoRows) {
+		m.Email, m.EmailVerified = "", false
+		return nil
+	}
+	if e != nil {
+		return fmt.Errorf("cloudserver/store.setOIDCMemberVerifiedAddress: %w", e)
+	}
+	return nil
+}
+
+// OrgCreateOwnerEmailHint returns the provider-asserted address of orgID's
+// owner, for the create_tenant request (W14-D2), through the 0093 definer
+// function, which answers for ONE org still being created and lists nothing.
+// It is a DISPLAY HINT only: the request marks it unverified (L-31 is
+// unruled), the host binds the owner by subject (OrgCreateOwnerSub,
+// orgcreate.go), and nothing looks anything up by it. ErrNotFound when the
+// function answers NULL (unknown or not provisioning org, no owner member, or
+// the owner has no recorded address). It never logs the address.
+func (s *Store) OrgCreateOwnerEmailHint(ctx context.Context, orgID string) (string, error) {
+	var hint *string
+	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		e := tx.QueryRow(ctx, `SELECT sbci_org_create_owner_email_hint($1::uuid)`, orgID).Scan(&hint)
+		if isInvalidUUIDErr(e) {
+			return ErrNotFound
+		}
+		return e
+	})
+	if err != nil {
+		return "", fmt.Errorf("cloudserver/store.OrgCreateOwnerEmailHint: %w", err)
+	}
+	if hint == nil || *hint == "" {
+		return "", fmt.Errorf("cloudserver/store.OrgCreateOwnerEmailHint: %w", ErrNotFound)
+	}
+	return *hint, nil
 }

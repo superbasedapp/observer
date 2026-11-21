@@ -1,0 +1,48 @@
+{
+  "_source": {
+    "target": "mcp",
+    "instrumentor": "@arizeai/openinference-instrumentation-mcp 0.2.39",
+    "library": "@modelcontextprotocol/sdk 1.32.2",
+    "grounding": "An MCP client calls a tool over streamable HTTP on loopback inside an SDK span 'client.call'; the server's tool handler opens withToolSpan('server.add'). The JS MCP SDK emits no spans of its own; the instrumentation carries the trace context in the request, so the handler's span joins the client's trace (without it the two are separate traces).",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "mcp",
+  "_gaps": [
+    "The JS MCP SDK (unlike mcp 2.x for Python) emits no tools/call or tools/list spans; only the context propagation is the instrumentation's."
+  ],
+  "spans": [
+    {
+      "name": "server.add",
+      "parent": "client.call",
+      "attrs": {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.call.arguments": "{\"a\":2,\"b\":3}",
+        "gen_ai.tool.call.result": "5",
+        "gen_ai.tool.name": "server.add",
+        "openinference.span.kind": "TOOL",
+        "tool.name": "server.add"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "operation": "execute_tool",
+        "tool_name": "server.add",
+        "tool_arguments": {
+          "a": 2,
+          "b": 3
+        },
+        "tool_result": "5"
+      }
+    },
+    {
+      "name": "client.call",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {
+        "span_kind": "CHAIN"
+      }
+    }
+  ]
+}

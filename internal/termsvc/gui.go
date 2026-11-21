@@ -109,6 +109,9 @@ type GUILauncher interface {
 type GUIRequest struct {
 	ID          string
 	ProjectRoot string
+	// Origin is who started the run (lane cli-2, migration 220), recorded
+	// on its terminal_run row. The zero value records nothing. Additive.
+	Origin termrun.Origin
 }
 
 // GUILaunchResult is what a GUI launch returns to the dashboard. There is no
@@ -220,6 +223,7 @@ func (s *Service) LaunchGUI(ctx context.Context, req GUIRequest) (GUILaunchResul
 		Kind:            termrun.KindGUI,
 		ProjectRootHash: termrun.HashProjectRoot(dir),
 		LaunchedAt:      s.now(),
+		Origin:          req.Origin,
 		// No CorrelationTokenHash: a GUI child is not an `observer <verb>`
 		// launcher, so there is no trusted out-of-band channel to echo a nonce
 		// on. An unusable nonce recorded as if it were live would be a lie.

@@ -1,0 +1,57 @@
+rules:
+  - id: ruby.sql-string-concat
+    languages: [ruby]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; pass the value as a bind parameter (where("name = ?", value) or a hash condition) instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|path_parameters|query_string|raw_post|body|headers|cookies|GET|POST)$
+    pattern-sanitizers:
+      - pattern: $X.to_i
+      - pattern: $X.to_f
+      - pattern: Integer(...)
+      - pattern: Float(...)
+      - pattern: $C.quote(...)
+      - pattern: $C.quote_column_name(...)
+      - pattern: $C.quote_table_name(...)
+      - pattern: sanitize_sql(...)
+      - pattern: sanitize_sql_array(...)
+      - pattern: sanitize_sql_like(...)
+      - pattern: $M.sanitize_sql(...)
+      - pattern: $M.sanitize_sql_array(...)
+      - pattern: $M.sanitize_sql_like(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: $M.$Q($SQL, ...)
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^(where|not|order|reorder|group|having|joins|from|select|pluck|find_by_sql|count_by_sql|find_by|exists\?|update_all|delete_all|lock)$
+          # A bind array (["a = ?", v]), another relation (.or(where(...)))
+          # and a whole parameter hash are conditions, not SQL text.
+          - metavariable-pattern:
+              metavariable: $SQL
+              patterns:
+                - pattern-not: '[...]'
+                - pattern-not: where(...)
+                - pattern-not: $R.where(...)
+                - pattern-not: params
+                - pattern-not: $P.permit(...)
+          - focus-metavariable: $SQL
+      - patterns:
+          - pattern: $DB.$EXEC($SQL, ...)
+          - metavariable-regex:
+              metavariable: $EXEC
+              regex: ^(execute|exec|exec_query|exec_params|query|select_all|select_one|select_value|select_values|select_rows|fetch|run)$
+          - metavariable-regex:
+              metavariable: $DB
+              regex: (?i)^(.*\.)?(connection|conn|con|db|database|client|pg|mysql|sqlite\w*)$
+          - focus-metavariable: $SQL

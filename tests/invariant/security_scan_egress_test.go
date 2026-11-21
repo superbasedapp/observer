@@ -1,6 +1,7 @@
 package invariant
 
 import (
+	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
+	"github.com/marmutapp/superbased-observer/internal/secscan/osvnet"
 )
 
 // security_scan_egress_test.go is the dedicated pin of the
@@ -93,29 +95,77 @@ func TestEgressSecurityScanImporters(t *testing.T) {
 }
 
 // TestEgressSecurityScanBucketDeclared pins milestone 1d of lane SEC-D2B:
-// both dependency drivers read the OSV database Observer downloads, so the
-// bucket is declared on both catalog rows and both registry rows, not only
-// on the SCALIBR child.
+// both dependency drivers read the OSV database Observer downloads, so its
+// hosts are declared on both catalog rows and both registry rows, not only
+// on the SCALIBR child: the bucket, and (static feed mirroring plan section
+// 8) SuperBased's signed mirror, the first source of the order.
 func TestEgressSecurityScanBucketDeclared(t *testing.T) {
-	const bucket = "osv-vulnerabilities.storage.googleapis.com"
-	for _, row := range []secscan.DriverRow{depscan.ScalibrRow(nil), depscan.OSVRow()} {
-		found := false
-		for _, e := range row.Egress {
-			found = found || e.Host == bucket
+	for _, host := range []string{"osv-vulnerabilities.storage.googleapis.com", "superbased.app"} {
+		for _, row := range []secscan.DriverRow{depscan.ScalibrRow(nil), depscan.OSVRow()} {
+			found := false
+			for _, e := range row.Egress {
+				found = found || e.Host == host
+			}
+			if !found {
+				t.Errorf("driver row %s does not declare %s", row.ID, host)
+			}
+			c, ok := components.Get(row.ComponentID)
+			if !ok {
+				t.Fatalf("no catalog row %s", row.ComponentID)
+			}
+			found = false
+			for _, e := range c.Surface.Egress {
+				found = found || e.Host == host
+			}
+			if !found {
+				t.Errorf("catalog row %s does not declare %s", row.ComponentID, host)
+			}
 		}
-		if !found {
-			t.Errorf("driver row %s does not declare %s", row.ID, bucket)
+	}
+}
+
+// TestEgressSecurityScanSubmoduleQueryCarriesOnlyTheCommit pins what the
+// lane's git submodule check sends (spike CPP-0, ledger SECP-53): the body
+// of a commit query is the commit id and, for a further page, OSV's own
+// page token; nothing else, and an id that is not a full SHA-1 commit (a
+// url, a path, an abbreviated id) is refused before anything is sent.
+func TestEgressSecurityScanSubmoduleQueryCarriesOnlyTheCommit(t *testing.T) {
+	const commit = "cacf7f1d4e3d44d871b605da3b647f07d718623f"
+	for _, token := range []string{"", "page-2"} {
+		b, err := osvnet.CommitQueryBody(commit, token)
+		if err != nil {
+			t.Fatal(err)
 		}
-		c, ok := components.Get(row.ComponentID)
-		if !ok {
-			t.Fatalf("no catalog row %s", row.ComponentID)
+		var fields map[string]any
+		if err := json.Unmarshal(b, &fields); err != nil {
+			t.Fatal(err)
 		}
-		found = false
-		for _, e := range c.Surface.Egress {
-			found = found || e.Host == bucket
+		for k := range fields {
+			if k != "commit" && (k != "page_token" || token == "") {
+				t.Errorf("a submodule query carries %q: %s", k, b)
+			}
 		}
-		if !found {
-			t.Errorf("catalog row %s does not declare %s", row.ComponentID, bucket)
+	}
+	for _, bad := range []string{"https://github.com/madler/zlib", "third_party/zlib", commit[:12], strings.ToUpper(commit)} {
+		if _, err := osvnet.CommitQueryBody(bad, ""); err == nil {
+			t.Errorf("%q would be sent", bad)
+		}
+	}
+}
+
+// TestEgressSecurityScanSubmoduleReaderIsPure: the package that reads the
+// submodule pins (and skips their urls) imports no network, exec or file
+// package, so it can never send or fetch anything itself.
+func TestEgressSecurityScanSubmoduleReaderIsPure(t *testing.T) {
+	toolchainTest(t)
+	imps, ok := moduleImports(t, "")["internal/secscan/gitmodules"]
+	if !ok {
+		t.Fatal("internal/secscan/gitmodules is not in the module; the guard would be vacuous")
+	}
+	allowed := map[string]bool{"path": true, "sort": true, "strings": true}
+	for _, imp := range imps {
+		if !allowed[imp] {
+			t.Errorf("internal/secscan/gitmodules imports %s; it is pure (path, sort, strings only)", imp)
 		}
 	}
 }

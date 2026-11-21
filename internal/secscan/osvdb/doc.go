@@ -21,6 +21,34 @@
 // records the failure. The network lives behind the injected Remote
 // (production: internal/secscan/osvnet, the declared egress lane).
 //
+// Incremental updates (static feed mirroring plan section 4, Layer A):
+// when the Remote is also a DeltaRemote, a full export installs with a
+// watermark (the earlier of its Last-Modified and the newest line of the
+// ecosystem's modified_id.csv, less WatermarkMargin), and later refreshes
+// list only the records changed since it, fetch each record, and
+// MergeExport them into a new export (unchanged entries copied raw, a
+// record the source no longer holds dropped) that passes the same zip
+// check and the same two renames. The full export is not even asked about
+// then: its CRC32C changes upstream all day. The ordered rebaseRules table
+// sends a refresh back to the full export (no watermark, a base or
+// watermark older than seven days, MaxDeltaFailures consecutive failures),
+// as does a change set larger than MaxDeltaRecords or a tenth of the
+// export. The epoch keeps the base's Last-Modified and CRC32C and gains
+// " delta=<watermark>" once records were applied, so a finding still names
+// the exact data. A Remote that is a LocalRemote (the org mirror's
+// installed artifacts) has its file hard-linked in rather than streamed,
+// under the same checks.
+//
+// RecordReader reads single records out of the installed exports for a
+// view (the dashboard's dependency-finding drawer): only the ecosystems
+// Installed names, only valid record ids, at most MaxViewRecordBytes per
+// record, never a network read. It caches one zip directory per
+// ecosystem, re-read when the file changes, and never holds the file open
+// between reads, so a refresh's rename is never blocked (Windows).
+//
+// MergeExport is pure (zip in, zip out through its arguments); the
+// listing and the records arrive only through the injected DeltaRemote.
+//
 // It belongs to security.deps (OSV matching, section 4.2) and is compiled
 // out with sbo_omit_security_deps.
 package osvdb

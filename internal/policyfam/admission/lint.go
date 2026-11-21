@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Issue is one policy-lint finding. Fatal issues make a policy invalid (lint
@@ -68,6 +69,11 @@ func Lint(in PolicyInput) []Issue {
 			if len(NormalizeTopics(c.Topics)) == 0 {
 				issues = append(issues, Issue{CriterionID: id, Message: "denied_topics criterion has no topics", Fatal: true})
 			}
+			for _, t := range NormalizeTopics(c.Topics) {
+				if msg := TopicProblem(t); msg != "" {
+					issues = append(issues, Issue{CriterionID: id, Message: msg, Fatal: true})
+				}
+			}
 		case TypeJailbreak:
 			// deterministic heuristic — no author content required.
 		default:
@@ -85,4 +91,20 @@ func HasFatal(issues []Issue) bool {
 		}
 	}
 	return false
+}
+
+// TopicProblem returns why a denied topic can never match, or "" when it
+// can. A topic with no letter or digit (once a trailing "*" is removed) has
+// no word to match, so it is refused at validation rather than left in a
+// policy where it silently never fires (FR-M03). The node matcher
+// (internal/obs/admission) and the org evaluator both match topics by word,
+// and both lint through this one rule.
+func TopicProblem(topic string) string {
+	body := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(topic), "*"))
+	for _, r := range body {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return ""
+		}
+	}
+	return fmt.Sprintf("denied topic %q has no letter or digit, so it can never match: use a word or phrase, or a word ending in * to match every word that starts with it", topic)
 }

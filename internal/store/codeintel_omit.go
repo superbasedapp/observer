@@ -26,3 +26,13 @@ func (s *Store) CodeIntelResolveCalls(context.Context, string) (int, error) {
 func (s *Store) CodeIntelBuildDerived(context.Context, string) error {
 	return errCodeIntelNotInBuild
 }
+
+// CodeIntelProjectImports refuses: the codeintel index is not linked.
+func (s *Store) CodeIntelProjectImports(context.Context, string, string, int) (CodeIntelImports, error) {
+	return CodeIntelImports{}, errCodeIntelNotInBuild
+}
+
+// CodeIntelProjectCalls refuses: the codeintel index is not linked.
+func (s *Store) CodeIntelProjectCalls(context.Context, string, string, []string, int) (CodeIntelCalls, error) {
+	return CodeIntelCalls{}, errCodeIntelNotInBuild
+}

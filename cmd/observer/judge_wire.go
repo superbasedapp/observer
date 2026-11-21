@@ -3,6 +3,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/judgeclient"
 )
@@ -19,9 +21,19 @@ type chatCompletionsJudge = judgeclient.Client
 // judgeMaxPromptBytes caps the prompt sent to a remote judge.
 const judgeMaxPromptBytes = judgeclient.RemoteMaxPromptBytes
 
-// newChatCompletionsJudge is judgeclient.New.
-func newChatCompletionsJudge(baseURL, hv string) chatCompletionsJudge {
-	return judgeclient.New(baseURL, hv)
+// newConfiguredJudge is judgeclient.New with the resolved [observability.judge]
+// tuning applied: the reply cap and local context hint (WithTuning) and the
+// request profile + reasoning effort (WithRequestProfile, L-02). Every judge
+// wiring point builds its client here so a new judge key reaches all of them.
+func newConfiguredJudge(baseURL, hv string, jc config.ObservabilityJudgeConfig) chatCompletionsJudge {
+	return judgeclient.New(baseURL, hv).
+		WithTuning(jc.MaxTokens, jc.NumCtx).
+		WithRequestProfile(jc.RequestProfile, jc.ReasoningEffort)
+}
+
+// judgeDefaultTimeout is judgeclient.DefaultTimeout (L-20).
+func judgeDefaultTimeout(baseURL string) time.Duration {
+	return judgeclient.DefaultTimeout(baseURL)
 }
 
 // secureJudgeEgress is judgeclient.SecureEgress.

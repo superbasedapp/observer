@@ -2,6 +2,7 @@ package ccotel
 
 import (
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/otelident"
 	"github.com/marmutapp/superbased-observer/internal/otlpvendor"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -20,9 +21,10 @@ const toolClaudeCode = models.ToolClaudeCode
 // it emits itself (internal/exporter/otel). The receiver drops these on the way
 // in (§3.2 echo guard); ParseLogs honors the same guard for logs (the guard
 // itself lives in internal/otlpvendor).
+// The marker's one owner is internal/otelident.
 const (
-	attrEmittedBy = "sbo.emitted_by"
-	emittedBySelf = "observer"
+	attrEmittedBy = otelident.EchoAttr
+	emittedBySelf = otelident.EchoValue
 )
 
 // ParseLogs maps an OTLP logs export to Claude Code API-turn observations. It

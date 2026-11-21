@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  apiErrorCode,
   apiErrorMessage,
   canSubmit,
   checkCode,
@@ -18,6 +19,7 @@ import {
   pushCadenceLine,
   resyncLine,
   shareModeLabel,
+  UNSENT_ROWS,
   tenancyLabel,
   type EnrolOutcome,
   type EnrolmentOverview,
@@ -76,6 +78,30 @@ test("enrolBody never sends a field the method does not use", () => {
   const f = { orgUrl: " https://o.example ", token: " a.b ", link: " https://o.example/enrol/a.b " };
   assert.deepEqual(enrolBody({ ...f, method: "code" }), { method: "code", org_url: "https://o.example", token: "a.b" });
   assert.deepEqual(enrolBody({ ...f, method: "link" }), { method: "link", link: "https://o.example/enrol/a.b" });
+});
+
+test("enrolBody adds drop_unsent only for the explicit Switch anyway (R3-78)", () => {
+  const f = { orgUrl: "https://o.example", token: "a.b", link: "https://o.example/enrol/a.b" };
+  assert.equal("drop_unsent" in enrolBody({ ...f, method: "code" }), false);
+  assert.deepEqual(enrolBody({ ...f, method: "code" }, true), {
+    method: "code",
+    org_url: "https://o.example",
+    token: "a.b",
+    drop_unsent: true,
+  });
+  assert.deepEqual(enrolBody({ ...f, method: "link" }, true), {
+    method: "link",
+    link: "https://o.example/enrol/a.b",
+    drop_unsent: true,
+  });
+});
+
+test("apiErrorCode reads the classified code, or nothing", () => {
+  assert.equal(apiErrorCode({ body: '{"error":"unsent_rows","message":"Not switched: 6 rows"}' }), UNSENT_ROWS);
+  assert.equal(apiErrorCode({ body: '{"message":"no code"}' }), "");
+  assert.equal(apiErrorCode({ body: "plain failure" }), "");
+  assert.equal(apiErrorCode(new Error("boom")), "");
+  assert.equal(apiErrorCode(null), "");
 });
 
 test("apiErrorMessage prefers the server sentence", () => {
@@ -157,4 +183,13 @@ test("resyncLine covers dry run, nothing to do and a confirmed run (T-642)", () 
   assert.match(resyncLine({ ...base, queued: 0, manifests: 0 }), /^Nothing to re-send/);
   assert.match(resyncLine({ ...base, queued: 1, manifests: 1, confirmed: true }), /^Queued 1 changed row and 1 session to reconcile/);
   for (const r of [base, { ...base, confirmed: true }]) assert.ok(!/[\u2013\u2014]/.test(resyncLine(r)));
+});
+
+test("reconsentPrompt shows only a known advisory on a connected machine", async () => {
+  const { reconsentPrompt, RECONSENT_PROMPTS } = await import("./enrolment.ts");
+  assert.equal(reconsentPrompt({ enrolled: true, reconsent: "owner_managed" }), RECONSENT_PROMPTS.owner_managed);
+  assert.match(RECONSENT_PROMPTS.owner_managed!.body, /Nothing changes until you do/);
+  assert.equal(reconsentPrompt({ enrolled: false, reconsent: "owner_managed" }), null);
+  assert.equal(reconsentPrompt({ enrolled: true, reconsent: "something_new" }), null);
+  assert.equal(reconsentPrompt({ enrolled: true }), null);
 });

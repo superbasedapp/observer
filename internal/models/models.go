@@ -816,6 +816,13 @@ const (
 	// .vtcode/{checkpoints,context,history,tasks,terminals}. Not related to
 	// any other adapter. See internal/adapter/vtcode.
 	ToolVTCode = "vtcode"
+	// ToolCustomAgent is a developer's OWN agent built on a raw provider API
+	// or SDK (P-228). It has no transcript, hook or launcher: its turns
+	// arrive only through the proxy's default provider lanes on a request
+	// carrying the X-Superbased-Agent header, which internal/ownagent
+	// resolves into a capture session (surface sdk, host "agent:<name>").
+	// See internal/adapter/customagent and docs/own-agents.md.
+	ToolCustomAgent = "custom-agent"
 )
 
 // Normalized action types. See spec §5. Adapters map their tool-specific
@@ -2061,6 +2068,12 @@ type APITurn struct {
 	// x-claude-code-request-class gateway hint). Node-local metadata - not
 	// on the org wire.
 	RequestClass string
+	// UpstreamLane is the /up/<id> proxy lane the turn arrived on (agent
+	// migration 260): the gateway rail a co-resident hosted app is pointed
+	// at. Empty for the default provider lanes and every non-proxy source.
+	// Only a turn with a lane may be enriched by an app's SDK span (review
+	// E-23, plan principle 5). Node-local metadata - not on the org wire.
+	UpstreamLane string
 }
 
 // Request classes for APITurn.RequestClass (migration 144). A closed,
@@ -2388,6 +2401,10 @@ const (
 	SurfaceSDK = "sdk"
 	// SurfaceWeb is a browser / web-app surface.
 	SurfaceWeb = "web"
+	// SurfaceMobile is a phone or tablet app driving the agent (the
+	// Claude mobile app starting a Claude Code cloud session, entrypoint
+	// "remote_mobile", grounded live 2026-10-31 for cloud-agents CA-D20).
+	SurfaceMobile = "mobile"
 )
 
 // SessionSurface is the per-session capture-surface attribution an
@@ -2461,7 +2478,7 @@ type SessionToolVersion struct {
 // than persist a vendor token as a kind.
 func KnownSurface(kind string) bool {
 	switch kind {
-	case SurfaceCLI, SurfaceIDE, SurfaceDesktop, SurfaceSDK, SurfaceWeb:
+	case SurfaceCLI, SurfaceIDE, SurfaceDesktop, SurfaceSDK, SurfaceWeb, SurfaceMobile:
 		return true
 	}
 	return false

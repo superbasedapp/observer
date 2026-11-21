@@ -19,6 +19,10 @@ import (
 const (
 	BucketHost = "osv-vulnerabilities.storage.googleapis.com"
 	APIHost    = "api.osv.dev"
+	// FeedHost serves SuperBased's signed mirror of the OSV exports (the
+	// security.osv_export content kind: a base and a cumulative delta per
+	// ecosystem, static feed mirroring plan sections 6 and 7).
+	FeedHost = "superbased.app"
 )
 
 // Options tunes New. The zero value is the production client.
@@ -28,12 +32,15 @@ type Options struct {
 	Transport http.RoundTripper
 	// BucketURL redirects the bucket host to a test server (tests only).
 	BucketURL string
+	// FeedURL redirects the feed host to a test server (tests only).
+	FeedURL string
 }
 
 // Client is the lane.
 type Client struct {
 	http      *http.Client
 	bucketURL string
+	feedURL   string
 }
 
 // New returns the lane's client.
@@ -53,19 +60,24 @@ func New(o Options) *Client {
 	if bucket == "" {
 		bucket = "https://" + BucketHost
 	}
+	feed := o.FeedURL
+	if feed == "" {
+		feed = "https://" + FeedHost
+	}
 	return &Client{
 		http: &http.Client{
-			Transport: allowList{base: base, test: o.BucketURL != ""},
+			Transport: allowList{base: base, test: o.BucketURL != "" || o.FeedURL != ""},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errors.New("osvnet: redirects are refused")
 			},
 		},
 		bucketURL: strings.TrimRight(bucket, "/"),
+		feedURL:   strings.TrimRight(feed, "/"),
 	}
 }
 
 // AllowedHosts is the exact host allow-list.
-func AllowedHosts() []string { return []string{BucketHost, APIHost} }
+func AllowedHosts() []string { return []string{BucketHost, APIHost, FeedHost} }
 
 // allowList refuses any request that is not HTTPS to an allow-listed host.
 type allowList struct {
@@ -94,18 +106,11 @@ func (a allowList) RoundTrip(r *http.Request) (*http.Response, error) {
 // only, by the allow-list).
 func (c *Client) HTTPClient() *http.Client { return c.http }
 
-// validEco keeps the ecosystem a plain path segment.
-func validEco(eco string) bool {
-	if eco == "" || len(eco) > 64 {
-		return false
-	}
-	for _, r := range eco {
-		if !(r == '.' || r == '-' || r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
-}
+// validEco keeps the ecosystem one path segment once escaped: the store's
+// one name rule (osvdb.ValidEcosystem), which admits the space of
+// "GitHub Actions" (sent as %20, url.PathEscape) and nothing that could
+// leave the segment.
+func validEco(eco string) bool { return osvdb.ValidEcosystem(eco) }
 
 func (c *Client) exportURL(eco string) (string, error) {
 	if !validEco(eco) {

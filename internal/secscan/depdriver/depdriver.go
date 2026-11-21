@@ -12,6 +12,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/extrun"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
+	"github.com/marmutapp/superbased-observer/internal/secreach"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 )
@@ -54,9 +55,21 @@ type Env struct {
 	Digest string
 	// SkipDirs are absolute directories the walk skips.
 	SkipDirs []string
+	// ArtifactDirs are the artifact folders the developer turned on or
+	// named for this scan (relative to the root, forward slashes); the
+	// child reads an executable only under one and adds none.
+	ArtifactDirs []string
+	// ArtifactOff are the discovered candidate folders that are not on
+	// (relative to the root, forward slashes): nothing under one is read.
+	ArtifactOff []string
 	// Online, when set, matches an ecosystem the local database could not
 	// (database_missing) against the OSV API; nil keeps matching local.
 	Online OnlineMatcher
+	// Submodules, when set, checks the project's git submodules online by
+	// their pinned commits after Online and folds the answer into the
+	// response (spike CPP-0; cmd/observer security_scan_submodules.go,
+	// depscan.ApplySubmodules); nil leaves them to the gap probe.
+	Submodules SubmoduleMatcher
 	// Isolate, when set, prepares one isolated run of the scan child for a
 	// project root (lane SEC-D2B milestone 2d): the isolation provider, the
 	// root and database directory the child reads inside it (outside
@@ -68,6 +81,22 @@ type Env struct {
 	// IsolatedRunner builds the runner that wraps the child in a provider
 	// (production: extrun/host.NewRunner with Options.Isolation).
 	IsolatedRunner func(extrun.IsolationProvider) *extrun.Runner
+	// ReachGo asks the child for the Go symbol check (plan section 14.5
+	// item 3b, component security.reach.go): set only while that component
+	// is selected and x/vuln is compiled in.
+	ReachGo bool
+	// ReachScratch prepares a writable directory for an unisolated child's
+	// symbol check (an isolated child gets Isolated.Scratch); nil, or an
+	// error, leaves the child the system temporary directory.
+	ReachScratch func() (dir string, cleanup func(), err error)
+	// ReachSink receives every parsed scan's symbol checks (ran false: the
+	// child did not run the step, so the project's stored binary checks are
+	// stale). nil drops them.
+	ReachSink func(root string, runs []secreach.SymbolRun, ran bool)
+	// InventorySink receives every parsed, non-failed scan's package
+	// inventory (security coverage gaps plan item 2: the project SBOM's
+	// source), with the driver id; nil keeps it nowhere.
+	InventorySink func(root, driver string, pkgs []depscan.Package)
 }
 
 // Isolated is one prepared isolated run (Env.Isolate). A nil Provider
@@ -83,6 +112,9 @@ type Isolated struct {
 	// DBDir is the database directory as the isolated child sees it,
 	// resolved through symlinks for the same reason.
 	DBDir string
+	// Scratch is a writable directory the isolated child may use (the
+	// run's cache directory), resolved the same way; empty when none.
+	Scratch string
 	// Cleanup removes what Isolate prepared; nil when nothing.
 	Cleanup func()
 }
@@ -103,6 +135,11 @@ func notIsolated(why string) string {
 // result stands.
 type OnlineMatcher func(ctx context.Context, eco string, pkgs []depscan.Package, idx []int) (depscan.EcoResult, bool)
 
+// SubmoduleMatcher checks a project's git submodules online (root is the
+// project root on this host) and returns the response with the answer
+// folded in, before the shared result path's Finalize.
+type SubmoduleMatcher func(ctx context.Context, root string, resp depscan.ChildResponse) depscan.ChildResponse
+
 // ApplyOnline replaces each ecosystem the local match left without a
 // database with the online matcher's answer.
 func ApplyOnline(ctx context.Context, resp depscan.ChildResponse, m OnlineMatcher) depscan.ChildResponse {
@@ -117,6 +154,11 @@ func ApplyOnline(ctx context.Context, resp depscan.ChildResponse, m OnlineMatche
 			continue
 		}
 		if r, ok := m(ctx, e.Ecosystem, resp.Packages, keep[e.Ecosystem]); ok {
+			// A remote lookup's failed shards (lane RM-2) become gaps, so
+			// the ecosystem is partial and closes no finding.
+			if r.LookupGaps > 0 {
+				out.Gaps = append(append([]depscan.Gap(nil), out.Gaps...), depscan.Gap{Ecosystem: r.Ecosystem, Reason: depscan.ReasonRemoteLookupFailed, Packages: r.LookupGaps})
+			}
 			out.Ecosystems[i] = r
 		}
 	}
@@ -178,7 +220,16 @@ func (d *Scalibr) Scan(ctx context.Context, t secscan.Target) (secscan.Result, e
 	if perr != nil {
 		return Result(Input{DriverID: depscan.ScalibrID, Target: t, Engine: engine, Failed: true, RunReason: failReason(run), Notes: notes}), nil
 	}
+	if d.env.ReachSink != nil {
+		d.env.ReachSink(t.ProjectRoot, resp.Reach, resp.ReachRan)
+	}
+	if d.env.InventorySink != nil && t.CheckoutRoot == "" {
+		d.env.InventorySink(t.ProjectRoot, depscan.ScalibrID, resp.Packages)
+	}
 	resp = ApplyOnline(ctx, resp, d.env.Online)
+	if d.env.Submodules != nil {
+		resp = d.env.Submodules(ctx, t.ProjectRoot, resp)
+	}
 	return Result(Input{DriverID: depscan.ScalibrID, Target: t, Engine: engine, Response: resp, Notes: notes}), nil
 }
 
@@ -191,14 +242,24 @@ func (d *Scalibr) Scan(ctx context.Context, t secscan.Target) (secscan.Result, e
 // Notes carry fixed text only, never an error's or the engine's own text
 // (item 6).
 func (d *Scalibr) runChild(ctx context.Context, root string) (run extrun.Result, notes []string, refused bool, err error) {
-	request := func(childRoot, dbDir string) (extrun.Request, error) {
+	request := func(childRoot, dbDir, scratch string) (extrun.Request, error) {
 		return ScalibrRequest(d.env.Executable, root, depscan.ChildRequest{
 			Version: depscan.ProtocolVersion, Root: childRoot, DBDir: dbDir, Epochs: d.env.Epochs,
-			SkipDirs: d.env.SkipDirs, GOOS: d.env.GOOS,
+			SkipDirs: d.env.SkipDirs, GOOS: d.env.GOOS, ArtifactDirs: d.env.ArtifactDirs, ArtifactOff: d.env.ArtifactOff,
+			ReachGo: d.env.ReachGo, ScratchDir: scratch,
 		})
 	}
 	plain := func() (extrun.Result, []string, bool, error) {
-		req, err := request(root, d.env.DBDir)
+		scratch := ""
+		if d.env.ReachGo && d.env.ReachScratch != nil {
+			if dir, cleanup, err := d.env.ReachScratch(); err == nil {
+				scratch = dir
+				if cleanup != nil {
+					defer cleanup()
+				}
+			}
+		}
+		req, err := request(root, d.env.DBDir, scratch)
 		if err != nil {
 			return extrun.Result{}, nil, false, err
 		}
@@ -221,7 +282,11 @@ func (d *Scalibr) runChild(ctx context.Context, root string) (run extrun.Result,
 	if iso.Root != "" {
 		childRoot = iso.Root
 	}
-	req, err := request(childRoot, iso.DBDir)
+	scratch := ""
+	if d.env.ReachGo {
+		scratch = iso.Scratch
+	}
+	req, err := request(childRoot, iso.DBDir, scratch)
 	if err != nil {
 		return extrun.Result{}, nil, false, err
 	}

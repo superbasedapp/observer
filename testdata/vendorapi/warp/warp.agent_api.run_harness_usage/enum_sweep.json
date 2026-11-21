@@ -1,0 +1,28 @@
+{
+  "run_id": "7c1e2a40-0000-4000-8000-000000000002",
+  "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c2",
+  "available": true,
+  "age_seconds": 5,
+  "usage": {
+    "metricsVersion": 1,
+    "harness": "CODEX",
+    "executionId": 7002,
+    "captureSequence": 3,
+    "capturedAt": "2026-10-30T09:17:55Z",
+    "snapshot": {
+      "coverage": {"tokenStatus": "partial", "toolStatus": "unavailable"},
+      "payload": {
+        "usage": {
+          "input_tokens": 64000,
+          "cached_input_tokens": 48000,
+          "cache_write_input_tokens": null,
+          "output_tokens": 3000,
+          "reasoning_output_tokens": 1200,
+          "total_tokens": 67000
+        },
+        "attribution": null,
+        "toolCalls": null
+      }
+    }
+  }
+}

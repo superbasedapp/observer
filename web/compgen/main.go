@@ -85,6 +85,16 @@ var pages = []page{
 	{"code-security", "code-security", "CodeSecurity", "CodeSecurityPage", "security"},
 	{"egress", "egress", "Egress", "EgressPage", "obs"},
 	{"policies", "policies", "Policies", "PoliciesPage", "obs"},
+	// Your apps (Plane A lane B5, plan W2-5, D17): read only /api/obs, so
+	// they leave a build without obs with Egress and Policies.
+	{"app-traces", "apps/traces", "AppTraces", "AppTracesPage", "obs"},
+	{"app-sessions", "apps/sessions", "AppSessions", "AppSessionsPage", "obs"},
+	{"app-analytics", "apps/analytics", "AppAnalytics", "AppAnalyticsPage", "obs"},
+	{"app-end-users", "apps/end-users", "AppEndUsers", "AppEndUsersPage", "obs"},
+	{"app-evals", "apps/evals", "AppEvals", "AppEvalsPage", "obs"},
+	{"app-scores", "apps/scores", "AppScores", "AppScoresPage", "obs"},
+	{"app-prompts", "apps/prompts", "AppPrompts", "AppPromptsPage", "obs"},
+	{"app-alerts", "apps/alerts", "AppAlerts", "AppAlertsPage", "obs"},
 	{"agent-config", "agent-config", "AgentConfig", "AgentConfigPage", "integration.agent-config"},
 	{"tools", "tools", "Tools", "ToolsPage", "core"},
 	{"compression", "compression", "Compression", "CompressionPage", "proxy.compression"},
@@ -94,6 +104,7 @@ var pages = []page{
 	{"benchmarks", "benchmarks", "Benchmarks", "BenchmarksPage", "benchmark"},
 	{"discovery", "discovery", "Discovery", "DiscoveryPage", "analytics"},
 	{"patterns", "patterns", "Patterns", "PatternsPage", "analytics"},
+	{"you", "you", "You", "YouPage", "core"},
 	{"privacy", "privacy", "Privacy", "PrivacyPage", "core"},
 	{"messages", "messages", "Messages", "MessagesPage", "org.client"},
 	{"requests", "requests", "Requests", "RequestsPage", "org.client"},
@@ -122,6 +133,12 @@ var features = []feature{
 	// Terminal dialog's Isolation picker (sandbox plan v2 section 11.1).
 	{"SANDBOX_SETTINGS_CARD", "components/SandboxSettingsCard", "SandboxSettingsCard", "terminals.sandbox"},
 	{"SANDBOX_ISOLATION_PICKER", "components/SandboxIsolationPicker", "SandboxIsolationPicker", "terminals.sandbox"},
+	// The sandbox setup checklist (sandbox installation lifecycle plan
+	// section 3.7), opened from the Isolation picker and the Settings card.
+	{"SANDBOX_SETUP_PANEL", "components/SandboxSetupPanel", "SandboxSetupPanel", "terminals.sandbox"},
+	// The Terminals page's refused connections card (OpenShell lane N5),
+	// the module's like the settings card.
+	{"SANDBOX_REFUSALS_CARD", "components/SandboxRefusals", "SandboxRefusalsCard", "terminals.sandbox"},
 }
 
 // packages maps an npm package that only a component's pages and features

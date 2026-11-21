@@ -16,26 +16,41 @@ import (
 // entries go (keystore.Namespace): another Observer home's are untouched.
 
 // observerKeystoreServices is every OS keychain service this binary writes,
-// as literals so the list compiles in every omit-tag build. The org
+// read from the one table in internal/keystore (literals there, so it compiles
+// in every omit-tag build; the dashboard You page reads it too). The org
 // enrolment's configured service (`[org_client].keychain_id`) is added at
-// run time. TestObserverKeystoreServicesAreListed keeps the list whole.
-var observerKeystoreServices = []string{
-	"sbo-change-record-v1",    // security provenance signing keys
-	"sbo-exec-evidence-v1",    // execution evidence seal key
-	"sbo-cloud-credential-v1", // Cloud Intelligence sign-in and device key
-	"sbo-delivery-v1",         // delivery tokens
-	"sbo-sandbox-cred-v1",     // sandbox provider credentials
-	"sbo-plans-v1",            // Plans and limits provider keys
-	"sbo-sandbox-e2b-v1",      // hosted sandbox: E2B
-	"sbo-sandbox-modal-v1",    // hosted sandbox: Modal
-	"sbo-sandbox-vercel-v1",   // hosted sandbox: Vercel
-	"sbo-org-bearer-v1",       // the org enrolment's default keychain id
+// run time, and the sandbox rows' services by staticKeystoreServices.
+// TestObserverKeystoreServicesAreListed keeps the list whole.
+var observerKeystoreServices = keystore.ServiceNames()
+
+// sandboxKeystoreServices returns the keychain services the sandbox
+// backend rows declare (their KeystoreServices capability field). It is a
+// seam: nil in an edition built without the sandbox, filled by
+// uninstall_keystore_sandbox.go where the sandbox is built, so this file,
+// built in every edition, imports no sandbox package (the
+// terminals.sandbox component's L1 absence) and names no driver.
+var sandboxKeystoreServices func() []string
+
+// staticKeystoreServices is observerKeystoreServices plus the sandbox
+// rows' services, so a sandbox driver's keychain entries are removed
+// whenever the sandbox is built, the driver itself compiled in or not.
+func staticKeystoreServices() []string {
+	svcs := append([]string(nil), observerKeystoreServices...)
+	if sandboxKeystoreServices == nil {
+		return svcs
+	}
+	for _, s := range sandboxKeystoreServices() {
+		if !slices.Contains(svcs, s) {
+			svcs = append(svcs, s)
+		}
+	}
+	return svcs
 }
 
-// uninstallKeystoreServices is observerKeystoreServices plus the configured
+// uninstallKeystoreServices is staticKeystoreServices plus the configured
 // org keychain id when it differs.
 func uninstallKeystoreServices() []string {
-	svcs := append([]string(nil), observerKeystoreServices...)
+	svcs := staticKeystoreServices()
 	if cfg, err := config.Load(config.LoadOptions{}); err == nil && cfg.OrgClient.KeychainID != "" && !slices.Contains(svcs, cfg.OrgClient.KeychainID) {
 		svcs = append(svcs, cfg.OrgClient.KeychainID)
 	}

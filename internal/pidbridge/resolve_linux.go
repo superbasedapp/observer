@@ -35,8 +35,42 @@ type ProcResolver struct {
 	cacheTTL time.Duration
 	now      func() time.Time
 
+	// toolBinaries names a tool's executables (the registry Binary rows),
+	// for the own-process check; nil answers the tool id alone.
+	toolBinaries func(tool string) []string
+
 	mu    sync.Mutex
 	cache map[string]cacheEntry
+}
+
+// SetToolBinaries installs the tool -> executable names lookup the
+// own-process check matches against (the daemon passes the integration
+// registry's Binary names). Call once at construction, before Resolve.
+func (r *ProcResolver) SetToolBinaries(names func(tool string) []string) {
+	r.toolBinaries = names
+}
+
+// ownProcess reports whether pid is itself one of tool's executables, by
+// exact executable identity (comm, exe basename, argv[0] basename, or the
+// script under an interpreter), never a substring of its arguments.
+func (r *ProcResolver) ownProcess(pid int, tool string) bool {
+	names := []string{tool}
+	if r.toolBinaries != nil {
+		names = append(names, r.toolBinaries(tool)...)
+	}
+	dir := filepath.Join(r.procDir, strconv.Itoa(pid))
+	comm, err := os.ReadFile(filepath.Join(dir, "comm"))
+	if err != nil {
+		return false
+	}
+	id := processIdentity{comm: string(comm)}
+	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
+		id.exe = exe
+	}
+	if cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		id.argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	}
+	return id.isOwnProcess(names)
 }
 
 type cacheEntry struct {
@@ -44,7 +78,13 @@ type cacheEntry struct {
 	tool      string
 	cwd       string
 	ok        bool
-	expires   time.Time
+	// own reports that the process holding the socket is itself the
+	// bridge hit's tool (ownProcess: its executable identity), not just
+	// a descendant of it: a script the developer started from the tool's
+	// shell resolves the tool's session through the ancestor walk but is
+	// not the tool (ResolveOwnTool).
+	own     bool
+	expires time.Time
 }
 
 // NewProcResolver constructs a ProcResolver. procDir defaults to "/proc"
@@ -113,6 +153,23 @@ func (r *ProcResolver) ResolveCWD(ctx context.Context, remoteAddr string) (strin
 	return e.cwd, e.cwd != "", nil
 }
 
+// ResolveOwnTool reports the bridge hit's tool only when the process that
+// opened the connection is itself that tool's binary (ownProcess: an exact
+// executable identity of the socket-owning pid against the tool's
+// executables, see SetToolBinaries), never when the tool is merely an
+// ancestor. The
+// proxy uses it to decide whether a request's own-agent header may claim
+// the turn: the tool's own process may not, a child it spawned may (P-228
+// fix round 2, N2). Same walk and per-addr cache as Resolve; "" with
+// ok=false on any miss.
+func (r *ProcResolver) ResolveOwnTool(ctx context.Context, remoteAddr string) (string, bool, error) {
+	e, err := r.resolveCached(ctx, remoteAddr)
+	if err != nil {
+		return "", false, err
+	}
+	return e.tool, e.ok && e.own && e.tool != "", nil
+}
+
 // resolveCached returns the cache entry for remoteAddr, filling it
 // with one uncached /proc walk on miss/expiry.
 func (r *ProcResolver) resolveCached(ctx context.Context, remoteAddr string) (cacheEntry, error) {
@@ -127,7 +184,7 @@ func (r *ProcResolver) resolveCached(ctx context.Context, remoteAddr string) (ca
 	}
 	r.mu.Unlock()
 
-	sessionID, tool, cwd, ok, err := r.resolveUncached(ctx, remoteAddr)
+	sessionID, tool, cwd, ok, own, err := r.resolveUncached(ctx, remoteAddr)
 	if err != nil {
 		return cacheEntry{}, err
 	}
@@ -136,6 +193,7 @@ func (r *ProcResolver) resolveCached(ctx context.Context, remoteAddr string) (ca
 		tool:      tool,
 		cwd:       cwd,
 		ok:        ok,
+		own:       own,
 		expires:   now.Add(r.cacheTTL),
 	}
 	r.mu.Lock()
@@ -144,28 +202,38 @@ func (r *ProcResolver) resolveCached(ctx context.Context, remoteAddr string) (ca
 	return e, nil
 }
 
-func (r *ProcResolver) resolveUncached(ctx context.Context, remoteAddr string) (string, string, string, bool, error) {
+func (r *ProcResolver) resolveUncached(ctx context.Context, remoteAddr string) (sessionID, tool, cwd string, ok, own bool, err error) {
 	ap, err := netip.ParseAddrPort(remoteAddr)
 	if err != nil {
-		return "", "", "", false, fmt.Errorf("pidbridge.Resolve: parse %q: %w", remoteAddr, err)
+		return "", "", "", false, false, fmt.Errorf("pidbridge.Resolve: parse %q: %w", remoteAddr, err)
 	}
 	inode, err := r.findSocketInode(ap)
 	if err != nil {
-		return "", "", "", false, err
+		return "", "", "", false, false, err
 	}
 	if inode == 0 {
-		return "", "", "", false, nil
+		return "", "", "", false, false, nil
 	}
 	pid, err := r.findPIDForInode(inode)
 	if err != nil {
-		return "", "", "", false, err
+		return "", "", "", false, false, err
 	}
 	if pid == 0 {
-		return "", "", "", false, nil
+		return "", "", "", false, false, nil
 	}
-	sessionID, tool, cwd, ok, err := r.walkAncestors(ctx, pid)
-	if err != nil || ok {
-		return sessionID, tool, cwd, ok, err
+	sessionID, tool, cwd, hitPID, ok, err := r.walkAncestors(ctx, pid)
+	if err != nil {
+		return "", "", "", false, false, err
+	}
+	if ok {
+		// The socket owner is the tool's own process when the bridge row
+		// was registered for that exact pid (a hook, adapter or terminal
+		// seed named it, and the walk validated it), or, for a hit on an
+		// ancestor, when its executable identity is one of the tool's
+		// executables (sdk-1f L4: an exact name, never a substring of a
+		// child script's path or arguments).
+		own = hitPID == pid || r.ownProcess(pid, tool)
+		return sessionID, tool, cwd, true, own, nil
 	}
 	// Clean bridge miss: the connection's owner has no hook-fed entry
 	// (hookless tools — codex exec, third-party clients). Best-effort
@@ -173,9 +241,9 @@ func (r *ProcResolver) resolveUncached(ctx context.Context, remoteAddr string) (
 	// project-overlay resolution still works; tool and session stay
 	// unresolved (ok=false) — only the cwd field is populated.
 	if link, lerr := os.Readlink(filepath.Join(r.procDir, strconv.Itoa(pid), "cwd")); lerr == nil && link != "" {
-		return "", "", link, false, nil
+		return "", "", link, false, false, nil
 	}
-	return "", "", "", false, nil
+	return "", "", "", false, false, nil
 }
 
 // findSocketInode reads /proc/net/tcp and /proc/net/tcp6 looking for an
@@ -305,7 +373,8 @@ func (r *ProcResolver) findPIDForInode(inode uint64) (int, error) {
 }
 
 // walkAncestors walks pid's PPid chain, looking up each pid in the bridge
-// table. The first hit wins. The walk stops at pid 2 (init-class: pid 1
+// table. The first hit wins; hitPID is the pid whose row hit (pid itself
+// when the socket owner was registered directly). The walk stops at pid 2 (init-class: pid 1
 // and WSL's distro init at pid 2 are system space — a bridge entry there
 // is registration poison, never a real AI tool; see the D17 record) or
 // on the first /proc read failure.
@@ -327,7 +396,7 @@ func (r *ProcResolver) findPIDForInode(inode uint64) (int, error) {
 // bridge hit, zero on the common miss path — and its verdict becomes
 // part of the per-remote-addr cacheEntry like the rest of the walk's
 // decision.
-func (r *ProcResolver) walkAncestors(ctx context.Context, pid int) (string, string, string, bool, error) {
+func (r *ProcResolver) walkAncestors(ctx context.Context, pid int) (sessionID, tool, cwd string, hitPID int, ok bool, err error) {
 	seen := map[int]struct{}{}
 	cur := pid
 	for cur > 2 {
@@ -335,22 +404,22 @@ func (r *ProcResolver) walkAncestors(ctx context.Context, pid int) (string, stri
 			break
 		}
 		seen[cur] = struct{}{}
-		e, hit, err := r.store.Lookup(ctx, cur)
-		if err != nil {
-			return "", "", "", false, err
+		e, hit, lerr := r.store.Lookup(ctx, cur)
+		if lerr != nil {
+			return "", "", "", 0, false, lerr
 		}
 		if hit && (!platformCanValidate || validateProcess(r.procDir, cur, e.Tool)) {
-			return e.SessionID, e.Tool, e.CWD, true, nil
+			return e.SessionID, e.Tool, e.CWD, cur, true, nil
 		}
 		// No row here — or a stale one whose pid is gone or was
 		// recycled onto a different binary. Either way climb past.
-		ppid, err := readPPid(filepath.Join(r.procDir, strconv.Itoa(cur), "status"))
-		if err != nil {
-			return "", "", "", false, nil
+		ppid, perr := readPPid(filepath.Join(r.procDir, strconv.Itoa(cur), "status"))
+		if perr != nil {
+			return "", "", "", 0, false, nil
 		}
 		cur = ppid
 	}
-	return "", "", "", false, nil
+	return "", "", "", 0, false, nil
 }
 
 // readPPid extracts the PPid field from /proc/<pid>/status.

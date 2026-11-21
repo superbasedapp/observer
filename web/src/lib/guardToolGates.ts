@@ -12,6 +12,8 @@ export type GuardToolGate = {
   current: boolean;
   installed: boolean;
   reason: string;
+  /** Setup would make the hook hold (missing or stale); absent from an older daemon. */
+  fixable?: boolean;
 };
 
 // CHANNEL_LABEL is the closed vocabulary of node channels a row can carry.

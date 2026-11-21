@@ -120,6 +120,7 @@ var apiTurnSourceReported = map[string]bool{
 	SourceJSONL:      true,
 	SourceObsSDK:     true,
 	SourceObsOTLP:    true,
+	SourceAgentOTel:  true,
 }
 
 // apiTurnCostIsSourceReported resolves one api_turns.source through

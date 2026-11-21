@@ -39,9 +39,12 @@ const (
 // restated here because this package must not import the org server; pinned
 // against rbac by the org-side vocab test.
 const (
-	KeyWriteBudgets    = "write:budgets"
-	KeyWritePolicy     = "write:policy"
-	KeyAdminDeployment = "admin:deployment"
+	KeyWriteBudgets = "write:budgets"
+	KeyWritePolicy  = "write:policy"
+	// KeyAdminFleet decides feature and component access: the org's own
+	// fleet, which a pooled tenant administers (managed-SaaS plan 07
+	// M1.4b). It replaced admin:deployment, which no tenant holds there.
+	KeyAdminFleet = "admin:fleet"
 	// KeyWriteSecurity decides finding exceptions (security plan 7.6, lane
 	// SEC-E3): triage and exceptions are one grant.
 	KeyWriteSecurity = "write:security"
@@ -182,7 +185,7 @@ var RequestTypes = []RequestType{
 		Max: MaxFixed, MaxDuration: 90 * day,
 	},
 	{
-		ID: TypeFeatureEnable, Label: "Feature access", ApproverKey: KeyAdminDeployment,
+		ID: TypeFeatureEnable, Label: "Feature access", ApproverKey: KeyAdminFleet,
 		Landing: LandGrantRail, Required: []Field{FieldTarget},
 		Max: MaxFixed, MaxDuration: 90 * day, LegacyKind: "enable_feature",
 	},
@@ -209,8 +212,8 @@ var RequestTypes = []RequestType{
 		// components.govern. It overrides the policy's unlisted rule and a
 		// deny entry marked grantable, never a non-grantable deny, the local
 		// ceiling or a component this build lacks (the one resolver
-		// decides). Approved by whoever may change the deployment.
-		ID: TypeComponentEnable, Label: "Component access", ApproverKey: KeyAdminDeployment,
+		// decides). Approved by whoever administers the org's fleet.
+		ID: TypeComponentEnable, Label: "Component access", ApproverKey: KeyAdminFleet,
 		Landing: LandGrantRail, Required: []Field{FieldTarget},
 		Max: MaxFixed, MaxDuration: 90 * day,
 	},

@@ -125,6 +125,36 @@ func gateRoutingRules(current config.RoutingConfig, rules []config.RoutingRuleCo
 	return issues, blocking
 }
 
+// newRoutingLintErrors is the shape editors' compiler gate
+// (routing_shapes.go applyRoutingShapes): the error-severity lint findings
+// of next that base did not already carry. A shape save is refused for what
+// it introduces (a path class removed under a custom rule that names it),
+// never for a finding the file already had: that one belongs to the rules
+// editor, and the daemon starts with it either way (lint fails open).
+func newRoutingLintErrors(base, next config.RoutingConfig) []string {
+	key := func(i routing.LintIssue) string { return i.Check + "\x00" + i.RuleName + "\x00" + i.Message }
+	_, before := routing.Compile(routingconfig.Spec(base))
+	had := map[string]bool{}
+	for _, i := range before {
+		if i.Severity == routing.LintError {
+			had[key(i)] = true
+		}
+	}
+	_, after := routing.Compile(routingconfig.Spec(next))
+	var out []string
+	for _, i := range after {
+		if i.Severity != routing.LintError || had[key(i)] {
+			continue
+		}
+		rule := i.RuleName
+		if rule == "" {
+			rule = "-"
+		}
+		out = append(out, fmt.Sprintf("lint [%s] rule=%s: %s", i.Check, rule, i.Message))
+	}
+	return out
+}
+
 // handleRoutingPolicy serves GET /api/routing/policy — the rules
 // editor's load payload: the current [[routing.rules]] as TOML (the
 // encoder dialect), counts, the active policy identity, and the

@@ -1852,6 +1852,40 @@ func TestDashboardOrgAnnouncementsDefaults(t *testing.T) {
 	}
 }
 
+// TestDashboardLiveRibbonDefaults pins the live ribbon switch: default ON,
+// kept ON by a partial [dashboard] section, and overridable to false.
+func TestDashboardLiveRibbonDefaults(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no dashboard section keeps it on", "[observer]\ndb_path = \"/tmp/x.db\"\n", true},
+		{"a partial dashboard section keeps it on", "[dashboard]\naddr = \"127.0.0.1:8099\"\n", true},
+		{"explicit false turns it off", "[dashboard]\nlive_ribbon = false\n", false},
+		{"explicit true keeps it on", "[dashboard]\nlive_ribbon = true\n", true},
+	}
+	if !Default().Dashboard.LiveRibbon {
+		t.Fatal("[dashboard].live_ribbon must default to true")
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(cfgPath, []byte(c.body), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(LoadOptions{GlobalPath: cfgPath})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Dashboard.LiveRibbon != c.want {
+				t.Fatalf("live_ribbon = %v, want %v", cfg.Dashboard.LiveRibbon, c.want)
+			}
+		})
+	}
+}
+
 // TestTerminalSandboxDefaults pins the B9 [terminal.sandbox] defaults (plan
 // §5): the master switch defaults OFF, but the mechanism knobs are seeded
 // to the documented v1 shape so flipping just `enabled = true` yields a

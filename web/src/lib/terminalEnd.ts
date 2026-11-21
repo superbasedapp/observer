@@ -10,6 +10,8 @@ export const TERMINAL_END_LINES: Readonly<Record<string, string>> = {
   child_exit: "the tool exited",
   console_closed: "the console window was closed",
   dashboard_stop: "stopped from the dashboard (Stop & close)",
+  cli_stop: "stopped with observer terminals stop",
+  launch_refused: "the launch was refused before the tool started",
   stopped_outside: "stopped from outside (for example Stop-Process, taskkill /F or a kill signal)",
   process_gone: "the run's process is gone (ended outside Observer); its exit code is not known",
   daemon_shutdown: "the Observer daemon stopped",

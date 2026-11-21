@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // StatusSnapshot is a point-in-time view of the observer's state. Exposed so
@@ -180,6 +181,41 @@ type SnapshotCounts struct {
 	// /api/live endpoint, without its 8-session display cap. Drives
 	// the sidebar "Live" badge.
 	LiveSessions int `json:"live_sessions"`
+	// ActiveSessions24h counts sessions with any activity (actions,
+	// api_turns, or token_usage rows) in the last 24 hours: the
+	// LiveSessions definition over a day-long window. Drives the sidebar
+	// "Overview" badge.
+	ActiveSessions24h int `json:"active_sessions_24h"`
+	// ProjectPatterns counts rows in project_patterns (migration 001), the
+	// learned per-project patterns the Patterns page lists. Drives the
+	// sidebar "Patterns" badge.
+	ProjectPatterns int `json:"project_patterns"`
+	// PlanAccounts counts rows in plan_accounts (migration 163), the coding
+	// plan and API balance accounts the user added on the Plans & limits
+	// page. Drives the sidebar "Plans & limits" badge.
+	PlanAccounts int `json:"plan_accounts"`
+	// BenchmarkRuns counts rows in benchmark_runs (migration 061), every
+	// benchmark run recorded on this machine. Drives the sidebar
+	// "Benchmarks" badge.
+	BenchmarkRuns int `json:"benchmark_runs"`
+	// OpenIssues is the Code security page header's open-issue count.
+	// Snapshot itself never sets it (this package stays a plain-SQL
+	// snapshot and does not group findings): the dashboard's /api/status
+	// handler stamps it, like Version and StartedAt. nil (omitted on the
+	// wire) when it was not computed: the CLI, a build without the
+	// security module, or a read that failed. nil is never a zero.
+	OpenIssues *OpenIssueCounts `json:"open_issues,omitempty"`
+}
+
+// OpenIssueCounts is how many security issues are open, counted the way
+// the Code security page header counts them: findings grouped by issue
+// (one rule on one dependency coordinate or one path), so twenty worktrees
+// repeating one advisory are one issue. Critical and High split out the
+// issues whose worst finding has that severity.
+type OpenIssueCounts struct {
+	Total    int `json:"total"`
+	Critical int `json:"critical"`
+	High     int `json:"high"`
 }
 
 // ToolActivity is one tool's most recent action.
@@ -198,6 +234,13 @@ type ToolActivity struct {
 // count is served from the migration-147 c0 index in milliseconds. Pinned by
 // TestSnapshotExcerptCountAvoidsFTSScan.
 const excerptCountTable = "action_excerpts_content"
+
+// liveSessionWindow is the LiveSessions window: the dashboard's /api/live
+// default. activeSessionWindow is the ActiveSessions24h window.
+const (
+	liveSessionWindow   = 15 * time.Minute
+	activeSessionWindow = 24 * time.Hour
+)
 
 // Snapshot returns a status snapshot of the observer DB. Errors loading
 // individual fields surface as zero values; the caller can render whatever's
@@ -248,11 +291,16 @@ func Snapshot(ctx context.Context, database *sql.DB, dbPath string) (StatusSnaps
 		}
 	}
 
+	// Projects counts what the Projects page lists: a row the worktree-roots
+	// backfill folded into its repository's project, with nothing filed
+	// under it since, is not a project of its own (store.FoldedProjectSQL).
+	note(database.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM projects p WHERE NOT ("+store.FoldedProjectSQL("p")+")").Scan(&snap.Counts.Projects))
+
 	tableCounts := []struct {
 		table string
 		dest  *int
 	}{
-		{"projects", &snap.Counts.Projects},
 		{"sessions", &snap.Counts.Sessions},
 		{"actions", &snap.Counts.Actions},
 		{"api_turns", &snap.Counts.APITurns},
@@ -263,26 +311,36 @@ func Snapshot(ctx context.Context, database *sql.DB, dbPath string) (StatusSnaps
 		{"cache_events", &snap.Counts.CacheEvents},
 		{"guard_events", &snap.Counts.GuardEvents},
 		{"router_decisions", &snap.Counts.RouterDecisions},
+		{"project_patterns", &snap.Counts.ProjectPatterns},
+		{"plan_accounts", &snap.Counts.PlanAccounts},
+		{"benchmark_runs", &snap.Counts.BenchmarkRuns},
 	}
 	for _, tc := range tableCounts {
 		note(database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+tc.table).Scan(tc.dest))
 	}
 
-	// Live sessions: distinct sessions with activity in the last 15
-	// minutes across the three activity tables — the /api/live
-	// definition (its default window), as a count instead of a feed.
-	liveSince := time.Now().UTC().Add(-15 * time.Minute).Format(time.RFC3339Nano)
+	// Live and day-active sessions: distinct sessions with activity across
+	// the three activity tables, the /api/live definition (its default
+	// 15-minute window) and the same definition over 24 hours, as counts
+	// instead of a feed. One pass over the day's rows answers both: the
+	// live window is the tail of the day window. The bounds compare as
+	// RFC3339Nano text, exactly as /api/live compares them.
+	now := time.Now().UTC()
+	liveSince := now.Add(-liveSessionWindow).Format(time.RFC3339Nano)
+	daySince := now.Add(-activeSessionWindow).Format(time.RFC3339Nano)
 	note(database.QueryRowContext(
 		ctx, `
-		SELECT COUNT(DISTINCT session_id) FROM (
-			SELECT session_id FROM actions WHERE timestamp >= ?
+		SELECT COUNT(DISTINCT CASE WHEN ts >= ? THEN session_id END),
+		       COUNT(DISTINCT session_id)
+		FROM (
+			SELECT session_id, timestamp AS ts FROM actions WHERE timestamp >= ?
 			UNION ALL
-			SELECT session_id FROM api_turns WHERE timestamp >= ?
+			SELECT session_id, timestamp AS ts FROM api_turns WHERE timestamp >= ?
 			UNION ALL
-			SELECT session_id FROM token_usage WHERE timestamp >= ?
+			SELECT session_id, timestamp AS ts FROM token_usage WHERE timestamp >= ?
 		) WHERE session_id IS NOT NULL AND session_id <> ''`,
-		liveSince, liveSince, liveSince,
-	).Scan(&snap.Counts.LiveSessions))
+		liveSince, daySince, daySince, daySince,
+	).Scan(&snap.Counts.LiveSessions, &snap.Counts.ActiveSessions24h))
 
 	// Advisor active-suggestion count from the digest snapshot (tolerant:
 	// table may not exist pre-migration-039, payload may lack the field).
@@ -373,6 +431,10 @@ func FormatStatus(s StatusSnapshot) string {
 	fmt.Fprintf(&b, "Guard events:     %d\n", s.Counts.GuardEvents)
 	fmt.Fprintf(&b, "Router decisions: %d\n", s.Counts.RouterDecisions)
 	fmt.Fprintf(&b, "Live sessions:    %d\n", s.Counts.LiveSessions)
+	fmt.Fprintf(&b, "Sessions (24h):   %d\n", s.Counts.ActiveSessions24h)
+	fmt.Fprintf(&b, "Patterns:         %d\n", s.Counts.ProjectPatterns)
+	fmt.Fprintf(&b, "Plan accounts:    %d\n", s.Counts.PlanAccounts)
+	fmt.Fprintf(&b, "Benchmark runs:   %d\n", s.Counts.BenchmarkRuns)
 	// Integrity (RES-3): silent when the probe has not run (a fresh install
 	// must not read as damaged) and when it last came back clean — a healthy
 	// status stays noise-free. Loud, with the remedy, otherwise.

@@ -11,3 +11,8 @@ import (
 // depsVendorKeys is the vendor key set compiled into this agent, the one
 // the signed content channel verifies the install index with.
 func depsVendorKeys() []ed25519.PublicKey { return update.VendorPublicKeys() }
+
+// depsFeedKeys is the content-feed key set compiled into this agent
+// (update.ContentFeedPublicKeys), accepted for the feed-signed advisory
+// kinds (the install index, the OSV exports) only.
+func depsFeedKeys() []ed25519.PublicKey { return update.ContentFeedPublicKeys() }

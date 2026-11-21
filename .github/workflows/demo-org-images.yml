@@ -673,13 +673,10 @@ jobs:
         run: |
           set -euo pipefail
           dst="${ENTERPRISE_REGISTRY}/agentgateway"
-          # Never `cosign copy -f` over an existing mirror: that would replace the
-          # .sig tag and drop earlier counter-signatures (the release mirror's too).
-          if docker buildx imagetools inspect "${dst}@${AGW_DIGEST}" >/dev/null 2>&1; then
-            echo "${dst}@${AGW_DIGEST} already mirrored; keeping its signatures"
-          else
-            cosign copy "${AGW_REPOSITORY}@${AGW_DIGEST}" "${dst}:${AGW_VERSION}"
-          fi
+          # Keeps an existing mirror (never `cosign copy -f` over its counter-
+          # signatures), resumes an interrupted one, retries GHCR's DENIED on a
+          # parallel manifest push, and refuses when it cannot tell which.
+          bash scripts/ci/mirror-by-digest.sh "${AGW_REPOSITORY}" "${AGW_DIGEST}" "${dst}" "${AGW_VERSION}"
           # The copy must carry the upstream signature and provenance unchanged.
           "$CHECK" upstream --ref "${dst}@${AGW_DIGEST}"
           {

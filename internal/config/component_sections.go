@@ -113,6 +113,12 @@ var componentSections = []componentSection{
 		reset:     func(c *Config) { c.Terminal.Sandbox.Landlock = Default().Terminal.Sandbox.Landlock },
 	},
 	{
+		component: "terminals.sandbox.openshell",
+		section:   "terminal.sandbox.openshell",
+		validate:  func(c *Config) error { return validateTerminalSandboxOpenShell(c.Terminal.Sandbox.OpenShell) },
+		reset:     func(c *Config) { c.Terminal.Sandbox.OpenShell = Default().Terminal.Sandbox.OpenShell },
+	},
+	{
 		component: "terminals.sandbox.vm",
 		section:   "terminal.sandbox.vm",
 		validate:  func(c *Config) error { return validateTerminalSandboxVM(c.Terminal.Sandbox.VM) },
@@ -130,6 +136,14 @@ var componentSections = []componentSection{
 		section:   "security.scanning",
 		validate:  func(c *Config) error { return validateSecurityScanning(c.Security.Scanning) },
 		reset:     func(c *Config) { c.Security.Scanning = Default().Security.Scanning },
+	},
+	{
+		// [security.assessments] (docs/plans/security-assessments-module-plan-2026-11-13.md
+		// section 13.3): the module root's own keys.
+		component: "security",
+		section:   "security.assessments",
+		validate:  func(c *Config) error { return validateSecurityAssessments(c.Security.Assessments) },
+		reset:     func(c *Config) { c.Security.Assessments = Default().Security.Assessments },
 	},
 	{
 		component: "security.trust",
@@ -162,6 +176,29 @@ var componentSections = []componentSection{
 			return validateSecurityIaC("security.scan.trivy", c.Security.Scan.Trivy.ScheduleHours)
 		},
 		reset: func(c *Config) { c.Security.Scan.Trivy = SecurityTrivyConfig{} },
+	},
+	{
+		// The Go source check's caps (3b-src).
+		component: "security.reach.go",
+		section:   "security.reach.go",
+		validate:  func(c *Config) error { return validateSecurityReachGo(c.Security.Reach.Go) },
+		reset:     func(c *Config) { c.Security.Reach.Go = SecurityReachGoConfig{} },
+	},
+	{
+		// The image OS package driver (lane OS-2 T): both drivers need
+		// security.deps, so the section is its own.
+		component: "security.deps",
+		section:   "security.scan.image",
+		validate:  func(c *Config) error { return validateSecurityImage(c.Security.Scan.Image) },
+		reset:     func(c *Config) { c.Security.Scan.Image = SecurityImageScanConfig{} },
+	},
+	{
+		// The licence policy (security coverage gaps plan section 5): read
+		// with the dependency scan, so security.deps owns it.
+		component: "security.deps",
+		section:   "security.licenses",
+		validate:  func(c *Config) error { return validateSecurityLicenses(c.Security.Licenses) },
+		reset:     func(c *Config) { c.Security.Licenses = DefaultSecurityLicensesConfig() },
 	},
 	{
 		component: "security.scan.kics",

@@ -2,6 +2,7 @@ package scalibrfacade
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"time"
 )
@@ -21,7 +22,7 @@ var ErrNoDatabase = errors.New("scalibrfacade: no local OSV database for this ec
 type ExtractorInfo struct {
 	// Name is SCALIBR's plugin name.
 	Name string
-	// Kind is "lockfile" or "manifest".
+	// Kind is "lockfile", "manifest" or "artifact" (depscan.ArtifactKind).
 	Kind string
 	// Ecosystem is the OSV ecosystem the extractor feeds.
 	Ecosystem string
@@ -46,12 +47,71 @@ type Package struct {
 	// Restored reports that the npm lockfile rule (npmlock.go) passed the
 	// entry on as a registry package.
 	Restored bool
-	// Unpinned reports a requirements line with a range, not one exact
-	// version (the extractor's version is the range's lowest bound).
+	// Unpinned reports a declared version that is not one exact version: a
+	// requirements line with a range (the extractor's version is the range's
+	// lowest bound), or a NuGet or version catalog range, floating version
+	// or MSBuild property (versionshape.go).
 	Unpinned bool
 	// LockfileTooLarge reports a LOCAL entry of a package-lock.json the
 	// npm lockfile rule could not read (over its size cap).
 	LockfileTooLarge bool
+	// Line is the 1-based line the package is named on (a workflow's uses:
+	// line), 0 when the extractor names none.
+	Line int
+	// PinnedBySHA, NotAVersion, MovingTag and VersionFromComment say how a
+	// GitHub Actions reference's version was known (actions.go).
+	PinnedBySHA        bool
+	NotAVersion        bool
+	MovingTag          bool
+	VersionFromComment bool
+	// For an image's OS package (ExtractOS): Name is the name the matcher
+	// uses (the dpkg source or apk origin name, else the binary name),
+	// Binary the binary package's own name when it differs, and
+	// OSEcosystem the full ecosystem SCALIBR derived after the facade's
+	// repairs ("Debian:12", "Ubuntu:24.04:LTS"); Ecosystem is its base.
+	Binary      string
+	OSEcosystem string
+	// Artifact reports a package read out of a build artifact (an
+	// executable, a Java archive, a wheel or egg; artifacts.go).
+	Artifact bool
+	// VersionUnknown reports a Go binary's toolchain row whose version is a
+	// development build or unreadable (depscan.NormalizeGoVersion): Version
+	// is then empty.
+	VersionUnknown bool
+}
+
+// ArtifactSkip is an artifact file over the size cap, not read
+// (Inventory.TooLarge). Ecosystem is "" for an executable (its language is
+// unknown until it is read). Path is relative to the scanned root.
+type ArtifactSkip struct {
+	Ecosystem string
+	Path      string
+}
+
+// OSCanary is an image run's self-test package (depscan.OSCanary): built
+// with the image's own os-release and repaired like its packages, so a hit
+// proves both the release's database and the facade's ecosystem repair.
+type OSCanary struct {
+	// Kind is "deb", "apk" or "rpm".
+	Kind string
+	// Name is the binary name, Source the dpkg source or apk origin name.
+	Name, Source, Version string
+}
+
+// OSMatchRequest is an image's match: one release, one call.
+type OSMatchRequest struct {
+	// Indices are the Inventory.Packages to match.
+	Indices []int
+	// Canary, when set, is matched with them and reported as CanaryHit.
+	Canary *OSCanary
+}
+
+// OSExtractOptions tunes ExtractOS.
+type OSExtractOptions struct {
+	// MaxInodes caps the walk; 0 means no cap.
+	MaxInodes int
+	// Log receives SCALIBR's log lines; nil discards them.
+	Log io.Writer
 }
 
 // Manifest is a dependency manifest found with no lockfile beside or above
@@ -80,6 +140,8 @@ type Inventory struct {
 	// Unlocked are the manifests found with no lockfile that declare
 	// dependencies (a Cargo.toml or a pyproject.toml): not scanned.
 	Unlocked []Manifest
+	// TooLarge are the artifact files over the size cap, not read: gaps.
+	TooLarge []ArtifactSkip
 	// impl holds SCALIBR's own package values in the linked build, for
 	// Match; nil in the omitted build.
 	impl any

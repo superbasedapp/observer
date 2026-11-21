@@ -15,9 +15,12 @@ import {
   type OrgIntelEnrichResult,
   type OrgIntelPreview,
   type OrgIntelSessionResponse,
+  type OrgIntelSessionView,
 } from "@/lib/orgIntel";
 import type { OrgIntelResultRow } from "@/lib/types";
 import { orgDisplayLabel } from "@/lib/orgName";
+import { fixOf } from "@/lib/needsSetting";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 
 // OrgIntelCard is the ORG-PLANE Cloud Intelligence row on the session Overview
 // tab (parity phase 3, design 3.2). It reads GET /api/intel/session/{id}: the
@@ -126,10 +129,10 @@ export function OrgIntelCard({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <section className="rounded-2 border border-line-2 bg-bg-1 p-3" aria-label="Org enrichment">
+      <section className="rounded-2 border border-line-2 bg-bg-1 p-3" aria-label="Team AI summaries">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <h4 className="text-body font-medium text-fg-1">Org enrichment</h4>
+            <h4 className="text-body font-medium text-fg-1">Team AI summaries</h4>
             {latestState && <Pill variant={latestState.tone} case="none">{latestState.label}</Pill>}
           </div>
           {mode === "actions" && (v.actions.preview || button.show) && (
@@ -148,14 +151,14 @@ export function OrgIntelCard({ sessionId }: { sessionId: string }) {
             </div>
           )}
         </div>
-        <p className="mt-1 text-caption text-fg-3">
-          {mode === "unavailable"
-            ? v.actions.reason_text
-            : `Run by ${org} on its own server and model. ${v.class === "managed" ? "Your organization decides what is sent; you can preview it." : "Only what you preview and confirm is sent."}`}
-        </p>
-        {mode === "actions" && v.actions.reason_text && (
-          <p className="mt-1 text-caption text-fg-3">{v.actions.reason_text}</p>
+        {mode === "unavailable" ? (
+          <ReasonNotice actions={v.actions} />
+        ) : (
+          <p className="mt-1 text-caption text-fg-3">
+            {`Run by ${org} on its own server and model. ${v.class === "managed" ? "Your organization decides what is sent; you can preview it." : "Only what you preview and confirm is sent."}`}
+          </p>
         )}
+        {mode === "actions" && v.actions.reason_text && <ReasonNotice actions={v.actions} />}
         {button.show && button.hint && <p className="mt-1 text-caption text-fg-4">{button.hint}</p>}
         {latest && (
           <p className="mt-1 text-[11px] text-fg-3">
@@ -184,5 +187,16 @@ export function OrgIntelCard({ sessionId }: { sessionId: string }) {
       </section>
       {result && <IntelResultCard result={result} emptyMessage="No enrichment for this session." generatedAtLabel="fetched" />}
     </div>
+  );
+}
+
+// ReasonNotice is why an action is not offered, with the way forward the
+// daemon named (a place on this machine, or the team-dashboard place only
+// the organization's admins change), through the one renderer.
+function ReasonNotice({ actions }: { actions: OrgIntelSessionView["actions"] }) {
+  if (!actions.reason_text) return null;
+  const fix = fixOf(actions);
+  return (
+    <NeedsSettingNotice variant="inline" className="mt-1" text={actions.reason_text} link={fix.settings} org={fix.org} />
   );
 }

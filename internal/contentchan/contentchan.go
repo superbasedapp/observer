@@ -32,6 +32,11 @@ type Trust struct {
 	// VendorKeys are the accepted vendor keys (the caller passes the set
 	// compiled into the agent); none verifies nothing.
 	VendorKeys []ed25519.PublicKey
+	// FeedKeys are the accepted content-feed keys
+	// (internal/update.ContentFeedPublicKeys). content.Verify accepts them
+	// only for a feed-signed envelope of a ClassFeed kind; none means a
+	// feed-signed set verifies nowhere (fail closed).
+	FeedKeys []ed25519.PublicKey
 	// RequireOrg and OrgKey: a managed node accepts only countersigned
 	// content from its org mirror.
 	RequireOrg bool
@@ -136,7 +141,7 @@ func (s Store) Install(kind content.Kind, envelope []byte, artifacts map[string]
 	}
 	now := s.now()
 	res, verr := content.Verify(content.VerifyInput{
-		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys,
+		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys, FeedKeys: tr.FeedKeys,
 		RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey, Accepted: prev.Accepted, Now: now,
 	})
 	var write map[string][]byte
@@ -310,7 +315,7 @@ func (s Store) Load(kind content.Kind, tr Trust, floor time.Duration) (Loaded, e
 	}
 	now := s.now()
 	res, err := content.Verify(content.VerifyInput{
-		Envelope: env, Kind: kind, VendorKeys: tr.VendorKeys, RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey,
+		Envelope: env, Kind: kind, VendorKeys: tr.VendorKeys, FeedKeys: tr.FeedKeys, RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey,
 		Accepted: st.Accepted, Now: now, AllowExpired: true,
 	})
 	if err != nil {
@@ -429,7 +434,7 @@ func (s Store) InstallFiles(kind content.Kind, envelope []byte, files map[string
 	}
 	now := s.now()
 	res, verr := content.Verify(content.VerifyInput{
-		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys,
+		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys, FeedKeys: tr.FeedKeys,
 		RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey, Accepted: prev.Accepted, Now: now,
 	})
 	var write map[string]string
@@ -568,6 +573,30 @@ func moveInto(src, dst string) error {
 	}
 	_ = os.Remove(src)
 	return nil
+}
+
+// InstalledArtifact returns the path of the file installed in kind's
+// directory under e's name when e applies to this store's platform for kind
+// and that file is a regular file of exactly e's size whose sha256 is e's
+// digest; ok is false otherwise (nothing installed, another version, a
+// changed file, an entry name that is not a plain file name). A fetch of a
+// new manifest reuses such a file instead of downloading the same bytes
+// again (internal/orgclient's org mirror fetch); InstallFiles still checks
+// it like any other file.
+func (s Store) InstalledArtifact(kind content.Kind, e content.Entry) (path string, ok bool) {
+	dir, err := s.KindDir(kind)
+	if err != nil || e.Name == "" || e.Name == "." || e.Name == ".." || e.Name == ManifestFile || e.Name == StateFile || strings.ContainsAny(e.Name, `/\`) {
+		return "", false
+	}
+	goos, goarch := s.platformFor(kind)
+	if !content.EntryApplies(e, goos, goarch) {
+		return "", false
+	}
+	p := filepath.Join(dir, e.Name)
+	if checkFile(e, p) != nil {
+		return "", false
+	}
+	return p, true
 }
 
 // ArtifactPath returns the on-disk path of a covered artifact, after

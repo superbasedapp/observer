@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -62,6 +63,16 @@ type ociReaper struct {
 	// projected state lives (<managed>/<run>.state); set by ensure before
 	// the sweep goroutine starts.
 	managedRoot string
+	// logger is the daemon's logger, for the lines a sweep step writes (the
+	// re-adoption decisions, F-046); nil logs nothing.
+	logger atomic.Pointer[slog.Logger]
+}
+
+// useLogger sets the logger the sweep's steps write to (nil is ignored).
+func (rp *ociReaper) useLogger(l *slog.Logger) {
+	if l != nil {
+		rp.logger.Store(l)
+	}
 }
 
 // processOCIReaper is the daemon's reaper.

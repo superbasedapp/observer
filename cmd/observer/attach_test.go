@@ -131,15 +131,18 @@ type fakeAttachLauncher struct {
 
 	mu          sync.Mutex
 	launchCalls int
-	ended       []struct {
+	// lastReq is the last request LaunchAttachable received (lane cli-2).
+	lastReq termsvc.AttachRequest
+	ended   []struct {
 		handle string
 		code   int
 	}
 }
 
-func (f *fakeAttachLauncher) LaunchAttachable(context.Context, termsvc.AttachRequest) (termsvc.LaunchResult, error) {
+func (f *fakeAttachLauncher) LaunchAttachable(_ context.Context, req termsvc.AttachRequest) (termsvc.LaunchResult, error) {
 	f.mu.Lock()
 	f.launchCalls++
+	f.lastReq = req
 	f.mu.Unlock()
 	if f.launchErr != nil {
 		return termsvc.LaunchResult{}, f.launchErr

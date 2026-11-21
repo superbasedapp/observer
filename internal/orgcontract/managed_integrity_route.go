@@ -52,6 +52,7 @@ var unroutedSurfaceKinds = map[string]bool{
 	"cli":     true,
 	"desktop": true,
 	"ide":     true,
+	"mobile":  true,
 	"sdk":     true,
 	"web":     true,
 }

@@ -53,7 +53,11 @@ func TestSandboxRecordSitesCallTheOwnerHelper(t *testing.T) {
 		want []string
 	}{
 		{"cli-end watch marker (watchSandboxCLIEnd)", func(t *testing.T) {
-			_, stopWatch = watchSandboxCLIEnd(obs, runID, make(chan os.Signal, 2), io.Discard)
+			var werr error
+			_, stopWatch, werr = watchSandboxCLIEnd(obs, runID, make(chan os.Signal, 2), io.Discard)
+			if werr != nil {
+				t.Fatal(werr)
+			}
 			if _, err := os.Stat(watch); err != nil {
 				t.Fatal(err)
 			}

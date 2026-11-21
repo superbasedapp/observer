@@ -460,6 +460,15 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 		}
 		res.PromptReconsiderRowsDeleted = n
 	}
+	// Sandbox egress refusal audit sweep (OpenShell lane N1, migrations 230,
+	// 231, 233; tracker F-009, audit finding N1-A5): the relay's own loop
+	// prunes only while sandboxed terminals are served, so the startup pass
+	// and the interval tick prune too. Unconditional: the table's horizon is
+	// store.SandboxEgressRefusalRetention, and an empty table costs one
+	// indexed delete.
+	if _, perr := store.New(database).PruneSandboxEgressRefusals(ctx, time.Now().Add(-store.SandboxEgressRefusalRetention)); perr != nil {
+		return res, fmt.Errorf("runRetention: prune sandbox egress refusals: %w", perr)
+	}
 	// Process-observability sweep ([observer.process].retention_days,
 	// docs/process-observability.md §11) — same composition rationale.
 	// ≤ 0 (incl. the feature being disabled with the default 30 but no
@@ -489,6 +498,20 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 			return res, fmt.Errorf("runRetention: prune process rows: %w", perr)
 		}
 		res.ProcessRowsDeleted = n
+	}
+	// Process capture budget (plan docs/plans/process-capture-budget-plan-
+	// 2026-11-04.md §8.3, §9.4): the unattributed policy rolls session-less
+	// rows older than unattributed.pending_hours into the machine rollup (or
+	// drops them), ONE capped batch per pass (the archival invariant: never
+	// loop until done), and the rollup / stats tables age out on the same
+	// retention_days as the runs. Both run whether or not archival is on: the
+	// two tables are never archived. Counted into ProcessRowsDeleted.
+	if cfg.Observer.Process.Enabled || cfg.Observer.Process.RetentionDays > 0 {
+		n, err := pruneProcessCapture(ctx, cfg, store.New(database))
+		if err != nil {
+			return res, err
+		}
+		res.ProcessRowsDeleted += n
 	}
 	// Session-handoff sweep ([handoff].retention_days, plan §15 P4) — same
 	// composition rationale as the cachetrack sweep: the retention package
@@ -800,4 +823,23 @@ func retentionTickLoop(ctx context.Context, configPath string) {
 			}
 		}
 	}
+}
+
+// pruneProcessCapture runs one retention pass of the process capture budget:
+// the unattributed policy (when capture limits are on) and the age-out of the
+// rollup and stats tables. It returns the rows it removed or rolled up.
+func pruneProcessCapture(ctx context.Context, cfg config.Config, s *store.Store) (int, error) {
+	var total int
+	if capCfg := cfg.Observer.Process.Capture.CaptureConfig(); capCfg.Enabled {
+		ur, err := s.ApplyUnattributedPolicy(ctx, capCfg, time.Now().UTC(), store.UnattributedPolicyBatch)
+		if err != nil {
+			return 0, fmt.Errorf("runRetention: process unattributed policy: %w", err)
+		}
+		total += ur.RowsProcessed
+	}
+	n, err := s.PruneProcessCaptureRows(ctx, cfg.Observer.Process.RetentionDays)
+	if err != nil {
+		return 0, fmt.Errorf("runRetention: prune process capture rows: %w", err)
+	}
+	return total + n, nil
 }

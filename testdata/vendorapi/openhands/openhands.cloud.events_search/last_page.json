@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "id": "evt-synth-0004",
+      "timestamp": "2026-10-30T09:13:30.000000",
+      "source": "agent",
+      "kind": "MessageEvent",
+      "llm_message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "The repository is a small widget library with a test suite."
+          }
+        ]
+      }
+    },
+    {
+      "id": "evt-synth-0005",
+      "timestamp": "2026-10-30T09:13:31.000000",
+      "source": "environment",
+      "kind": "ConversationStateUpdateEvent"
+    }
+  ],
+  "next_page_id": null
+}

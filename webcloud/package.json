@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc --noEmit && vite build && vite build --config vite.staff.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/staff/lib/*.test.ts && node scripts/test-components.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

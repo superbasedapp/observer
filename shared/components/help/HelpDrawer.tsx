@@ -61,6 +61,7 @@ export function HelpDrawer({
   entries,
   categories,
   onTour,
+  zIndex,
 }: {
   open: boolean;
   onClose: () => void;
@@ -69,6 +70,13 @@ export function HelpDrawer({
   categories: readonly HelpDrawerCategory[];
   /** Starts the app's guided tour; the button is omitted without it. */
   onTour?: () => void;
+  /**
+   * The drawer's stacking level (SlideOver's zIndex). An app whose help can
+   * be opened from inside a dialog or another overlay passes a level above
+   * them, so the drawer never opens behind the control that asked for it;
+   * omitted, the page level every slide-over uses.
+   */
+  zIndex?: number;
 }) {
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -106,6 +114,7 @@ export function HelpDrawer({
       title="Help"
       subtitle={`${entries.length} entries · search anything · press ? to toggle`}
       width={560}
+      zIndex={zIndex}
     >
       <div className="flex h-full flex-col">
         {onTour && (

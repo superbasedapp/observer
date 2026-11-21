@@ -3,9 +3,12 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -937,5 +940,162 @@ func TestForEachBucketOverlap(t *testing.T) {
 				t.Errorf("overlap sum = %v ms, want %v ms", total, tc.wantTotalSum)
 			}
 		})
+	}
+}
+
+// referenceSeries is the pre-bounded projection of the handler: every row of
+// the session, read whole through ProcessRunsForSession, rings re-sorted.
+// The bounded path must aggregate to exactly what this does.
+func referenceSeries(runs []store.ProcessRunRow) []procMetricSeries {
+	out := make([]procMetricSeries, 0, len(runs))
+	for _, r := range runs {
+		samples := append([]procmodel.MetricSample(nil), r.MetricSamples...)
+		sort.SliceStable(samples, func(i, j int) bool { return samples[i].T.Before(samples[j].T) })
+		out = append(out, procMetricSeries{Key: r.ProcessKey, StartedAt: r.StartedAt, Exited: r.Exited, Samples: samples})
+	}
+	return out
+}
+
+// seedLongMetricsSession stores a session shaped like a long live one: many
+// short processes that ran and exited two hours before the newest sighting,
+// one with a truncated ring, a few ring-less rows, and a handful of live
+// processes sampled every 2s up to now. It returns how many live ring rows it
+// stored.
+func seedLongMetricsSession(t *testing.T, st *store.Store, now time.Time) int {
+	t.Helper()
+	var runs []procmodel.ProcessRun
+	old := now.Add(-2 * time.Hour)
+	for i := range 400 {
+		start := old.Add(time.Duration(i) * 3 * time.Second)
+		r := dashProcRun(fmt.Sprintf("old-%03d", i), "", "sA", 1000+i, "git", "git status", start)
+		r.LastSeenAt = start.Add(4 * time.Second)
+		n := 1 + i%3 // one to three samples: the single-sample majority of a real session
+		for k := range n {
+			r.MetricSamples = append(r.MetricSamples, procmodel.MetricSample{
+				T: start.Add(time.Duration(k) * 2 * time.Second), CPUMs: int64(k) * 300,
+				WorkingSet: int64(8+i%5) << 20, ReadBytes: int64(k) * 4096,
+			})
+		}
+		if i == 7 { // a ring that evicted its head: truncation evidence from settled history
+			for k := range r.MetricSamples {
+				r.MetricSamples[k].T = r.MetricSamples[k].T.Add(time.Minute)
+			}
+			r.LastSeenAt = r.LastSeenAt.Add(time.Minute)
+		}
+		if i%50 == 0 { // ring-less rows still count as processes
+			r.MetricSamples = nil
+		}
+		runs = append(runs, r)
+	}
+	live := 0
+	for i := range 4 {
+		start := now.Add(-time.Duration(20+i*3) * time.Minute)
+		r := dashProcRun(fmt.Sprintf("live-%d", i), "", "sA", 5000+i, "node", "node server.js", start)
+		r.Exited = false
+		r.LastSeenAt = now
+		// The live ring holds the last 3 minutes at the 2s cadence, offset per
+		// process so the timestamps are unaligned across the tree.
+		for k := 0; k <= 90; k++ {
+			ts := now.Add(-3*time.Minute + time.Duration(k)*2*time.Second + time.Duration(i)*300*time.Millisecond)
+			if ts.After(now) {
+				break
+			}
+			r.MetricSamples = append(r.MetricSamples, procmodel.MetricSample{
+				T: ts, CPUMs: int64(k) * int64(500+i*250), WorkingSet: int64(100+i*10) << 20,
+				ReadBytes: int64(k) * 10000, WriteBytes: int64(k) * 2000,
+			})
+		}
+		runs = append(runs, r)
+		live++
+	}
+	if _, err := st.PersistRuns(context.Background(), runs); err != nil {
+		t.Fatalf("PersistRuns: %v", err)
+	}
+	return live
+}
+
+// TestLoadSessionMetricSeriesMatchesFullRead pins the bounded metrics read:
+// across repeated polls of a long session, the response aggregates to exactly
+// what reading every row whole did, while every poll after the first decodes
+// only the unsettled tail. A bucket wide enough to reach back into the
+// settled history falls back to a full read, with the same result.
+func TestLoadSessionMetricSeriesMatchesFullRead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bucket time.Duration
+		// tailOnly is the expected tail-only flag of polls 1, 2 and 3.
+		tailOnly [3]bool
+		// liveOnly: a tail-only poll decodes just the live rows.
+		liveOnly bool
+	}{
+		{name: "derived bucket", bucket: 0, tailOnly: [3]bool{false, true, true}, liveOnly: true},
+		{name: "explicit 10s bucket", bucket: 10 * time.Second, tailOnly: [3]bool{false, true, true}, liveOnly: true},
+		// A 1h grid covers the whole session: the second poll finds the settled
+		// rows inside the grid and re-reads everything at an age that settles
+		// nothing; the third poll's (empty) mark holds, so its tail is the lot.
+		{name: "1h bucket reaching into history", bucket: time.Hour, tailOnly: [3]bool{false, false, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newTestServer(t)
+			ctx := context.Background()
+			st := store.New(s.db())
+			now := time.Now().UTC().Truncate(time.Second)
+			live := seedLongMetricsSession(t, st, now)
+
+			runs, err := st.ProcessRunsForSession(ctx, "sA")
+			if err != nil {
+				t.Fatalf("ProcessRunsForSession: %v", err)
+			}
+			want := aggregateProcessMetrics(referenceSeries(runs), tc.bucket)
+			if len(want.Points) == 0 || !want.Series.CPU || !want.WindowTruncated {
+				t.Fatalf("fixture too weak: points=%d series=%+v truncated=%v", len(want.Points), want.Series, want.WindowTruncated)
+			}
+			for poll := range 3 {
+				in, err := loadSessionMetricSeries(ctx, s.db(), "sA", tc.bucket)
+				if err != nil {
+					t.Fatalf("poll %d: %v", poll+1, err)
+				}
+				if in.total != int64(len(runs)) {
+					t.Errorf("poll %d: total = %d, want %d", poll+1, in.total, len(runs))
+				}
+				if in.tailOnly != tc.tailOnly[poll] {
+					t.Errorf("poll %d: tailOnly = %v, want %v", poll+1, in.tailOnly, tc.tailOnly[poll])
+				}
+				if in.tailOnly && tc.liveOnly && len(in.series) != live {
+					t.Errorf("poll %d: decoded %d series, want only the %d live ones", poll+1, len(in.series), live)
+				}
+				if got := aggregateWithFacts(in.series, in.facts, tc.bucket); !reflect.DeepEqual(got, want) {
+					t.Errorf("poll %d: bounded aggregate differs from the full read:\n got  bucket=%d interval=%d sampled=%d rated=%d trunc=%v series=%+v points=%d from=%s\n want bucket=%d interval=%d sampled=%d rated=%d trunc=%v series=%+v points=%d from=%s",
+						poll+1, got.BucketMs, got.SampleIntervalMs, got.SampledProcesses, got.RateProcesses, got.WindowTruncated, got.Series, len(got.Points), got.From,
+						want.BucketMs, want.SampleIntervalMs, want.SampledProcesses, want.RateProcesses, want.WindowTruncated, want.Series, len(want.Points), want.From)
+				}
+			}
+		})
+	}
+}
+
+// TestMetricsFactsMerge pins the property the settled cache rests on: the
+// facts of a whole set of series are the merge of the facts of any split of
+// it, in either order.
+func TestMetricsFactsMerge(t *testing.T) {
+	series := []procMetricSeries{
+		{Key: "a", StartedAt: metricsBase, Samples: []procmodel.MetricSample{sampleAt(0, 0, 10, 0, 0), sampleAt(10, 500, 10, 0, 0), sampleAt(20, 900, 10, 0, 0)}},
+		{Key: "b", StartedAt: metricsBase.Add(-time.Minute), Samples: []procmodel.MetricSample{sampleAt(5, 0, 20, 100, 0), sampleAt(9, 0, 20, 300, 0)}},
+		{Key: "c", Samples: []procmodel.MetricSample{sampleAt(40, 7, 30, 0, 0)}},
+		{Key: "d"},
+		{Key: "e", StartedAt: metricsBase, Samples: []procmodel.MetricSample{sampleAt(60, 0, 0, 0, 50), sampleAt(63, 0, 0, 0, 90)}},
+	}
+	whole := factsOf(series)
+	for split := 0; split <= len(series); split++ {
+		a, b := factsOf(series[:split]), factsOf(series[split:])
+		if got := a.merge(b); !reflect.DeepEqual(got, whole) {
+			t.Errorf("split %d: a.merge(b) = %+v, want %+v", split, got, whole)
+		}
+		if got := b.merge(a); !reflect.DeepEqual(got, whole) {
+			t.Errorf("split %d: b.merge(a) = %+v, want %+v", split, got, whole)
+		}
+	}
+	if !whole.truncated(whole.sampleInterval()) {
+		t.Error("series b starts a minute before its first sample: want truncated")
 	}
 }

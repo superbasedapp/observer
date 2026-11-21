@@ -1,0 +1,57 @@
+{
+  "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c1",
+  "steps": [
+    {
+      "id": "step-synth-0001",
+      "description": "Fix the flaky auth test",
+      "started_at": "2026-10-30T09:01:10Z",
+      "completed_at": "2026-10-30T09:21:00Z",
+      "messages": [
+        {
+          "message_ids": ["msg-synth-0001"],
+          "role": "user",
+          "timestamp": "2026-10-30T09:01:10Z",
+          "content": [{"type": "text", "text": "Fix the flaky auth test in auth_test.go"}]
+        },
+        {
+          "message_ids": ["msg-synth-0002"],
+          "request_id": "req-synth-0001",
+          "role": "assistant",
+          "timestamp": "2026-10-30T09:01:30Z",
+          "content": [
+            {"type": "text", "text": "I will run the test first."},
+            {"type": "action", "id": "act-synth-0001", "category": "command", "name": "run_command", "input": {"command": "go test ./auth/..."}}
+          ]
+        },
+        {
+          "message_ids": ["msg-synth-0003"],
+          "role": "tool",
+          "timestamp": "2026-10-30T09:02:10Z",
+          "content": [
+            {"type": "action_result", "action_id": "act-synth-0001", "category": "command", "name": "run_command", "state": "failed", "output": {"exit_code": 1}}
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "id": "step-synth-0002",
+          "description": "Inspect the test helper",
+          "started_at": "2026-10-30T09:03:00Z",
+          "completed_at": "2026-10-30T09:05:00Z",
+          "messages": [
+            {
+              "message_ids": ["msg-synth-0004"],
+              "role": "assistant",
+              "timestamp": "2026-10-30T09:03:00Z",
+              "content": [
+                {"type": "action", "id": "act-synth-0002", "category": "files", "name": "edit_files", "input": {"path": "auth/helper_test.go"}},
+                {"type": "event", "name": "context_compaction", "data": {"reason": "window"}}
+              ]
+            }
+          ],
+          "steps": []
+        }
+      ]
+    }
+  ]
+}

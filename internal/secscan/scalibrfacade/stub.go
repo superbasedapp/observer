@@ -16,10 +16,13 @@ const Compiled = false
 
 // ExtractOptions tunes one extraction pass (unused in this build).
 type ExtractOptions struct {
-	SkipDirs    []string
-	MaxInodes   int
-	MaxFileSize int
-	Log         io.Writer
+	SkipDirs         []string
+	MaxInodes        int
+	MaxFileSize      int
+	ArtifactDirs     []string
+	ArtifactOff      []string
+	MaxArtifactBytes int64
+	Log              io.Writer
 }
 
 // Extractors answers ErrNotCompiled.
@@ -43,3 +46,6 @@ func NewInventory(pkgs []Package) *Inventory {
 
 // RegistryEntries answers nothing in this build.
 func RegistryEntries([]byte) map[string]bool { return nil }
+
+// SetLog does nothing: SCALIBR is not linked.
+func SetLog(io.Writer) {}

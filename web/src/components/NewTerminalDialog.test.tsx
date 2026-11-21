@@ -11,10 +11,11 @@ import type { ReactElement } from "react";
 import { renderToPipeableStream, renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { SandboxIsolationPicker } from "@/components/SandboxIsolationPicker";
-import { NewTerminalDialog, branchField, worktreeBranchProblem, type NewTerminalDraft } from "@/components/NewTerminalDialog";
+import { NewTerminalDialog, branchField, withSetupBackend, worktreeBranchProblem, type NewTerminalDraft } from "@/components/NewTerminalDialog";
 import { ISOLATION_AUTO, ISOLATION_NONE, isolationOptions } from "@/lib/sandboxIsolation";
 import { isolationPickerProps, sandboxLaunchFields } from "@/lib/newTerminalSandbox";
 import type { SandboxAvailability } from "@/lib/types";
+import type { SandboxSetupPlan, SandboxSetupSummary } from "@/lib/sandboxSetupTypes";
 
 // React warns that a layout effect does nothing on the server; the dialog's
 // chips use one, and the warning says nothing about these tests.
@@ -82,6 +83,44 @@ test("the Isolation picker lists None and every offered backend, an unavailable 
   assert.match(html, /<option value="oci-runc" disabled="" title="no container runtime found">Docker or Podman - container \(beta\) \(unavailable\)<\/option>/);
   assert.match(html, /process sandbox, egress none/);
   assert.doesNotMatch(html, /<select[^>]*disabled/);
+});
+
+test("a backend that only needs enabling reads not enabled, with a link to the Backends setting", () => {
+  const options = isolationOptions({
+    ...probe,
+    backends: [
+      ...(probe.backends ?? []),
+      { id: "landlock", label: "Landlock only", class: "process", location: "local", maturity: "beta", available: false, verdict: "disabled_by_config", when_enabled_available: true, beta: true, capture_by_tier: {}, component: "terminals.sandbox" },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <SandboxIsolationPicker options={options} value="bwrap" disabled={false} reason={null} chip={null} onChange={() => {}} />
+    </MemoryRouter>,
+  );
+  assert.match(html, /<option value="landlock" disabled=""[^>]*>Landlock only - process sandbox \(beta\) \(not enabled\)<\/option>/);
+  assert.match(html, /Docker or Podman - container \(beta\) \(unavailable\)/);
+  assert.match(html, /1 backend can run here once enabled/);
+  assert.match(html, /href="\/terminals#sandbox-backends"/);
+  assert.doesNotMatch(html, /module installed/);
+});
+
+test("a backend whose module is not installed says so, with a link to Settings > Components", () => {
+  const options = isolationOptions({
+    ...probe,
+    backends: [
+      ...(probe.backends ?? []),
+      { id: "oci-runsc", label: "Docker with gVisor", class: "userspace_kernel", location: "local", maturity: "beta", available: false, verdict: "disabled_by_config", when_enabled_verdict: "module_inactive", when_enabled_reason: "the terminals.sandbox.oci component is not selected on this node", beta: true, capture_by_tier: {}, component: "terminals.sandbox" },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <SandboxIsolationPicker options={options} value="bwrap" disabled={false} reason={null} chip={null} onChange={() => {}} />
+    </MemoryRouter>,
+  );
+  assert.match(html, /Docker with gVisor - user-space kernel \(beta\) \(module not installed\)<\/option>/);
+  assert.match(html, /1 backend needs its module installed/);
+  assert.match(html, /href="\/settings\/components"/);
 });
 
 test("a disabled Isolation picker shows its reason instead of the chip", () => {
@@ -277,4 +316,207 @@ test("branchField and worktreeBranchProblem follow the daemon's rules", () => {
   }
   // Only the worktree source is checked here; git checks a clone's branch.
   assert.equal(worktreeBranchProblem("clone-remote", "a..b"), null);
+});
+
+// Sandbox installation lifecycle plan section 3.7 (lane sbxinstall-ui): the
+// picker's one setup line, the inline setup panel and the resume draft.
+const setupProbe: SandboxAvailability = {
+  ...probe,
+  tools: { "claude-code": { available: true } },
+  sources: [{ id: "live", available: true }],
+  backends: [
+    ...(probe.backends ?? []),
+    { ...probe.backends![0], id: "landlock", label: "Landlock only", available: false, verdict: "disabled_by_config", when_enabled_available: true, beta: true },
+  ],
+};
+
+const setupRows: SandboxSetupSummary[] = [
+  { backend: "bwrap", label: "Bubblewrap", ready: true },
+  { backend: "oci-runc", label: "Docker or Podman", ready: false, next: "Docker Engine" },
+  { backend: "landlock", label: "Landlock only", ready: false, next: "Turn on Landlock only" },
+  { backend: "openshell", label: "OpenShell", ready: false, blocked: "OpenShell does not run in WSL2" },
+];
+
+const landlockPlan: SandboxSetupPlan = {
+  backend: "landlock",
+  label: "Landlock only",
+  next: 0,
+  ready: false,
+  checked: false,
+  fingerprint: "fp-l",
+  steps: [
+    { prereq: "enable", kind: "enable", label: "Turn on Landlock only", state: "missing", class: "auto", channel: "sandbox_enable", can_run: true, can_undo: false },
+  ],
+};
+
+function setupDialog(
+  draft: NewTerminalDraft,
+  summaries?: SandboxSetupSummary[],
+  plan?: SandboxSetupPlan,
+  switches?: { fresh: boolean; shell: boolean },
+): ReactElement {
+  return (
+    <MemoryRouter>
+      <NewTerminalDialog
+        onClose={() => {}}
+        onLaunched={() => {}}
+        initialDraft={draft}
+        initialSandboxProbe={setupProbe}
+        initialSetupSummaries={summaries}
+        initialSetupPlan={plan}
+        initialLaunchSwitches={switches}
+      />
+    </MemoryRouter>
+  );
+}
+
+const liveDraft: NewTerminalDraft = { ...sandboxDraft, workspaceSource: "live" };
+
+test("with setup offered, the picker shows one setup line with the count instead of the two lines", async () => {
+  const html = await renderAll(setupDialog(liveDraft, setupRows));
+  assert.match(html, /data-testid="isolation-setup"/);
+  assert.match(html, /Set up a sandbox backend \((<!-- -->)?2(<!-- -->)? available to set up\)/);
+  assert.doesNotMatch(html, /can run here once enabled/);
+  assert.doesNotMatch(html, /module installed/);
+  // A row setup can move forward is choosable (it opens the panel); the
+  // panel itself is not open until the person asks.
+  assert.match(html, /<option value="landlock"[^>]*>Landlock only - process sandbox(<!-- -->)? \(beta\)(<!-- -->)? \(set up\)<\/option>/);
+  assert.doesNotMatch(html, /<option value="landlock" disabled/);
+  assert.doesNotMatch(html, /data-testid="sandbox-setup-panel"/);
+});
+
+test("the picker without onSetup keeps today's two lines and links", () => {
+  const options = isolationOptions(setupProbe);
+  const html = renderToStaticMarkup(
+    <MemoryRouter>
+      <SandboxIsolationPicker options={options} value="bwrap" disabled={false} reason={null} chip={null} onChange={() => {}} />
+    </MemoryRouter>,
+  );
+  assert.match(html, /1 backend can run here once enabled/);
+  assert.doesNotMatch(html, /Set up a sandbox backend/);
+  assert.match(html, /<option value="landlock" disabled=""/);
+});
+
+test("a draft naming a setup row opens the panel there, rendered from its plan", async () => {
+  const html = await renderAll(setupDialog({ ...liveDraft, setupBackend: "landlock" }, setupRows, landlockPlan));
+  assert.match(html, /data-testid="sandbox-setup-panel"/);
+  assert.match(html, /<option value="landlock" selected="">Landlock only \(next: Turn on Landlock only\)<\/option>/);
+  assert.match(html, /Landlock only is not set up yet\. Next: Turn on Landlock only\./);
+  assert.match(html, /<li data-step="enable"/);
+  assert.match(html, /Turn on<\/button>|>Turn on</);
+});
+
+test("the resume draft carries setupBackend only while the panel is open", () => {
+  assert.deepEqual(withSetupBackend(liveDraft, true, "landlock"), { ...liveDraft, setupBackend: "landlock" });
+  assert.deepEqual(withSetupBackend({ ...liveDraft, setupBackend: "landlock" }, false, "landlock"), liveDraft);
+  assert.deepEqual(withSetupBackend(liveDraft, true, undefined), liveDraft);
+});
+
+test("nothing setup-shaped renders when the setup routes are absent", async () => {
+  // No summaries: the daemon answered 404 or 501 (or this build has no
+  // panel), so the picker reads as before and a resumed setup draft opens
+  // no panel.
+  const html = await renderAll(setupDialog({ ...liveDraft, setupBackend: "landlock" }));
+  assert.doesNotMatch(html, /Set up a sandbox backend/);
+  assert.doesNotMatch(html, /data-testid="sandbox-setup-panel"/);
+  assert.match(html, /1 backend can(<!-- -->)? run here once enabled/);
+});
+
+// D-12: with fresh launch and plain shell both off nothing can start from the
+// dialog. It still opens (it holds the sandbox setup line), and it says why
+// and names the Settings path, with a link to the launch policy.
+test("with both launch switches off the dialog says so and keeps the setup line", async () => {
+  const html = await renderAll(setupDialog(liveDraft, setupRows, undefined, { fresh: false, shell: false }));
+  assert.match(html, /data-testid="launch-switches-off"/);
+  assert.match(html, /Fresh launch and plain shell terminals are both off/);
+  assert.match(html, /Terminals &gt; Settings &gt; Fresh-agent launch policy/);
+  assert.match(html, /Open the launch policy/);
+  assert.match(html, /Set up a sandbox backend/);
+});
+
+test("with either launch switch on, or unknown, the dialog says nothing about them", async () => {
+  for (const switches of [{ fresh: true, shell: false }, { fresh: false, shell: true }, undefined]) {
+    const html = await renderAll(setupDialog(liveDraft, setupRows, undefined, switches));
+    assert.doesNotMatch(html, /data-testid="launch-switches-off"/);
+  }
+});
+
+// D-R4-4: the Isolation section wraps a long unbroken token (an image digest
+// reference) instead of widening the dialog.
+test("the Isolation section wraps long tokens", async () => {
+  const html = await renderAll(setupDialog(liveDraft, setupRows));
+  assert.match(html, /class="mb-1 \[overflow-wrap:anywhere\]" data-testid="isolation-picker"/);
+});
+
+// The hosted model key line (docs/audits/hosted-sandbox-key-custody-2026-11-18.md):
+// when the row a launch resolves to runs on the provider's machines and the
+// daemon says this tool's model key cannot reach the agent there, the
+// dialog says so under the picker, in plain words with the place to choose,
+// before Start.
+const hostedKeyProbe: SandboxAvailability = {
+  available: true,
+  default_on: true,
+  backend: "daytona",
+  tools: {
+    "claude-code": {
+      available: true,
+      hosted_key: {
+        code: "nothing_serves_home_key",
+        message: "The agent's model key is set to stay on this machine, but nothing here can add it to the agent's requests, so a hosted sandbox cannot start. Choose how the agent gets its model key.",
+        technical: "key custody home_relay needs a key the proxy adds itself",
+      },
+    },
+  },
+  sources: [{ id: "live", available: true }],
+  backends: [
+    { id: "daytona", label: "Daytona", class: "container", location: "remote", maturity: "preview", available: true, beta: false, capture_by_tier: {}, component: "terminals.sandbox.daytona" },
+  ],
+};
+
+test("a hosted row that cannot give the tool its model key says so before Start", async () => {
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, hostedKeyProbe));
+  assert.match(html, /data-testid="new-terminal-hosted-key"/);
+  assert.match(html, /nothing here can add it to the agent(&#x27;|')s requests/);
+  assert.match(html, /href="\/terminals\?tab=settings#sandbox-backends"/);
+  assert.match(html, /aria-label="Technical details for this refusal"/);
+  // The internal names stay in the technical detail, never in the sentence.
+  const sentence = html.slice(html.indexOf('data-testid="new-terminal-hosted-key"'));
+  assert.doesNotMatch(sentence.slice(0, sentence.indexOf("aria-label")), /home_relay/);
+});
+
+test("without the line the dialog shows no key notice", async () => {
+  const probeNoLine: SandboxAvailability = { ...hostedKeyProbe, tools: { "claude-code": { available: true } } };
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, probeNoLine));
+  assert.doesNotMatch(html, /new-terminal-hosted-key/);
+});
+
+// Lane UX (items H4, H5, H10): on a hosted row the dialog names the upload
+// for what it is, says the box's own network, and blocks a tool the row
+// cannot get into its box, all before Start and from the row's own facts.
+const hostedUXProbe: SandboxAvailability = {
+  available: true,
+  default_on: true,
+  backend: "daytona",
+  tools: { "claude-code": { available: true } },
+  sources: [{ id: "live", available: true }],
+  backends: [
+    {
+      id: "daytona", label: "Daytona", class: "container", location: "remote", maturity: "preview", available: true, beta: false, capture_by_tier: {}, component: "terminals.sandbox.daytona",
+      workspace_sources: ["live"], source_deliveries: { live: "sync" },
+      tool_notices: { "claude-code": { code: "image_lacks_installer", message: "Daytona's default image has no npm, which every way Observer knows to install Claude Code needs, and no template is set.", technical: "tool_unavailable_in_image: the default image lacks npm" } },
+      network_notes: ["On the internet setting the box reaches the network through Daytona's own network, not through Observer."],
+    },
+  ],
+};
+
+test("a hosted row says the upload, its network and a tool it cannot install, before Start", async () => {
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, hostedUXProbe));
+  assert.match(html, /Upload a copy of the project \(changes come back as a diff\)/);
+  assert.doesNotMatch(html, />Live project directory</);
+  assert.match(html, /data-testid="new-terminal-hosted-network"/);
+  assert.match(html, /through Daytona(&#x27;|')s own network/);
+  assert.match(html, /data-testid="new-terminal-hosted-tool"/);
+  assert.match(html, /default image has no npm/);
+  const sentence = html.slice(html.indexOf('data-testid="new-terminal-hosted-tool"'));
+  assert.doesNotMatch(sentence.slice(0, sentence.indexOf("aria-label")), /tool_unavailable/);
 });

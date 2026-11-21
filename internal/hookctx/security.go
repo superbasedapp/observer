@@ -2,6 +2,7 @@ package hookctx
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -75,11 +76,44 @@ const (
 // gate rules decide on; Findings are the blocking hits it found (never a
 // matched value); DirtyCovered is the dirty counter value a clean answer
 // covered, which the daemon records in the posture so the next commit is
-// clean without a wait.
+// clean without a wait. Detail says why an unknown answer is unknown
+// (policy.QuickScanDetail: a closed reason code and the scan's numbers), so
+// the commit gate's verdict can say it.
 type QuickScanResult struct {
 	Verdict      QuickScanVerdict
 	Findings     []policy.SecurityHit
 	DirtyCovered uint64
+	Detail       policy.QuickScanDetail
+}
+
+// QuickScanReasoner is implemented by a quick-scan provider error that
+// knows its policy.QuickScanReason value: Fill records it on the unknown
+// answer it substitutes for the failure. Any other error reads as
+// policy.QuickScanReasonNoAnswer.
+type QuickScanReasoner interface {
+	QuickScanReason() string
+}
+
+// QuickScanDetailer is implemented by a provider error that also knows
+// its numbers (the budget it had, how long it waited).
+type QuickScanDetailer interface {
+	QuickScanDetail() policy.QuickScanDetail
+}
+
+// QuickScanFailure is the unknown answer Fill records for a provider that
+// failed with err: the detail err carries (QuickScanDetailer), else its
+// reason (QuickScanReasoner), else no_answer.
+func QuickScanFailure(err error) QuickScanResult {
+	var d QuickScanDetailer
+	if errors.As(err, &d) && d.QuickScanDetail().Reason != "" {
+		return QuickScanResult{Verdict: QuickScanUnknown, Detail: d.QuickScanDetail()}
+	}
+	reason := policy.QuickScanReasonNoAnswer
+	var r QuickScanReasoner
+	if errors.As(err, &r) && r.QuickScanReason() != "" {
+		reason = r.QuickScanReason()
+	}
+	return QuickScanResult{Verdict: QuickScanUnknown, Detail: policy.QuickScanDetail{Reason: reason}}
 }
 
 // InstallRequest asks for the install-time package check (security plan

@@ -2,7 +2,9 @@ package deletionjournal_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,5 +58,41 @@ func TestFileJournalAppendReadRoundTrip(t *testing.T) {
 func TestNewFileJournalRejectsEmptyPath(t *testing.T) {
 	if _, err := deletionjournal.NewFileJournal(""); err == nil {
 		t.Fatal("NewFileJournal(\"\") should error")
+	}
+}
+
+// TestAcceptedByKind pins the kind split (M6.9): account records feed
+// deletionjournal.AcceptedAccounts, org records feed deletionjournal.AcceptedOrgs, done records feed neither,
+// and a pre-kind line (no kind field) still reads as an account.
+func TestAcceptedByKind(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	records := []deletionjournal.Record{
+		{Event: deletionjournal.EventAccepted, AccountID: "acct-1", At: at},
+		{Event: deletionjournal.EventAccepted, Kind: deletionjournal.KindOrg, OrgID: "org-1", RequestID: "r1", At: at},
+		{Event: deletionjournal.EventDone, Kind: deletionjournal.KindOrg, OrgID: "org-2", At: at},
+		{Event: deletionjournal.EventAccepted, Kind: deletionjournal.KindOrg, OrgID: "org-1", RequestID: "r1", At: at},
+		{Event: deletionjournal.EventAccepted, Kind: deletionjournal.KindOrg, At: at}, // no org id: ignored
+		{Event: deletionjournal.EventDone, AccountID: "acct-2", At: at},
+	}
+	if got := deletionjournal.AcceptedAccounts(records); len(got) != 1 || got[0] != "acct-1" {
+		t.Errorf("deletionjournal.AcceptedAccounts = %v, want [acct-1]", got)
+	}
+	if got := deletionjournal.AcceptedOrgs(records); len(got) != 1 || got[0] != "org-1" {
+		t.Errorf("deletionjournal.AcceptedOrgs = %v, want [org-1]", got)
+	}
+	var old deletionjournal.Record
+	if err := json.Unmarshal([]byte(`{"event":"accepted","account_id":"a","request_id":"","at":"2026-11-16T00:00:00Z"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.Kind != deletionjournal.KindAccount {
+		t.Errorf("a pre-kind line reads as kind %q, want the account kind", old.Kind)
+	}
+	raw, err := json.Marshal(deletionjournal.Record{Event: deletionjournal.EventAccepted, AccountID: "a", At: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "kind") || strings.Contains(string(raw), "org_id") {
+		t.Errorf("an account record carries the org fields: %s", raw)
 	}
 }

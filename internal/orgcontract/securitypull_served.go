@@ -32,6 +32,13 @@ const (
 	// SecurityCapabilityOrgDedupe: the node keeps the org dedupe key and
 	// computes org_key (reads org_dedupe).
 	SecurityCapabilityOrgDedupe = "security.org_dedupe"
+	// SecurityCapabilityPackageLookup: the node reads the authored package
+	// lookup fields (package_lookup, package_lookup_private,
+	// package_lookup_kinds; lane RM-3). They are authored, not served, but
+	// the body is closed, so a node that does not name this token is served
+	// the body with those fields removed: an older node keeps decoding its
+	// pull, and it never looks a package up anyway.
+	SecurityCapabilityPackageLookup = "security.package_lookup"
 )
 
 // MaxSecurityApprovedBaselines bounds the approvals served to one node.
@@ -149,10 +156,21 @@ type SecurityServedInput struct {
 // that advertised none gets the authored body back unchanged, byte for
 // byte, so an older node is served exactly what it was before; so is a
 // caller with nothing to serve. Approvals past the cap keep the newest.
+//
+// The package lookup fields (lane RM-3) go the other way: a caller that did
+// not name SecurityCapabilityPackageLookup is served the body without them
+// (an older node's closed decoder would refuse the whole body otherwise),
+// so for such a caller a body that carries them is never byte for byte.
 func ComposeSecurityServed(body []byte, caps []string, in SecurityServedInput) ([]byte, error) {
 	approvals := slices.Contains(caps, SecurityCapabilityBaselineApprovals) && len(in.Approvals) > 0
 	dedupe := slices.Contains(caps, SecurityCapabilityOrgDedupe) && in.Dedupe != nil
-	if !approvals && !dedupe {
+	strip := false
+	if !slices.Contains(caps, SecurityCapabilityPackageLookup) {
+		if p, ok, err := DecodeSecurityManagedPolicy(body); err == nil && ok && securityHasPackageLookup(p) {
+			strip = true
+		}
+	}
+	if !approvals && !dedupe && !strip {
 		return body, nil
 	}
 	p, ok, err := DecodeSecurityManagedPolicy(body)
@@ -161,6 +179,9 @@ func ComposeSecurityServed(body []byte, caps []string, in SecurityServedInput) (
 	}
 	if !ok {
 		p = SecurityManagedPolicyV1{Version: SecurityManagedPolicyVersion}
+	}
+	if strip {
+		p.PackageLookup, p.PackageLookupPrivate, p.PackageLookupKinds = "", "", nil
 	}
 	if approvals {
 		list := append([]SecurityBaselineApproval(nil), in.Approvals...)

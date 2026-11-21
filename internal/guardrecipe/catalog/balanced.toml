@@ -1,0 +1,16 @@
+# Level "balanced": the recommended posture and the built-in defaults.
+#
+# The mode is enforce and every rule keeps its catalog decision: destructive
+# commands ask, a force push to a protected branch and DROP or TRUNCATE deny,
+# writes outside the project ask, uploads ask, MCP registry changes deny,
+# cloud metadata endpoints deny, and the prompt guard asks once before a
+# secret or personal data reaches the model.
+
+name = "balanced"
+kind = "level"
+title = "Balanced"
+summary = "The recommended set: destructive commands ask, protected-branch force pushes and DROP/TRUNCATE deny, writes outside the project and uploads ask, and the prompt guard asks once."
+version = 1
+order = 30
+mode = "enforce"
+prompt_mode = "ask-once"

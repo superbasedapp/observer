@@ -1,0 +1,43 @@
+# Pack "frontend": web and JavaScript work.
+#
+# Publishing denies, a one-shot `npx -y` of an unpinned package asks, and an
+# agent may not write .env files. Loopback dev servers stay allowed (no
+# network rule here touches localhost). Typosquat installs already ask in
+# every mode through the package checks (S-742) when Code security is on.
+
+name = "frontend"
+kind = "pack"
+title = "Frontend & web"
+summary = "Package publishing denies, npx -y of an unpinned package asks, agent writes to .env files deny."
+version = 1
+
+[[override]]
+rule = "R-140"
+decision = "deny"
+enforce = true
+note = "publishing to npm or another registry needs a person"
+
+# `npx -y pkg` (or bunx) runs whatever the registry serves today; a pinned
+# `pkg@1.2.3` passes.
+[[rule]]
+id = "RC-FE-01"
+doc = "npx -y of an unpinned package (frontend pack)"
+advice = "Pin the version (npx -y pkg@1.2.3) or install it as a dev dependency."
+category = "boundary"
+severity = "warn"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(npx|bunx)\s+(--yes|-y)\s+(@[\w.-]+/)?[\w.-]+(\s|$)'
+
+[[rule]]
+id = "RC-FE-02"
+doc = "agent write to a .env file (frontend pack)"
+advice = "Ask the developer to set the value; .env files hold secrets and stay theirs."
+category = "boundary"
+severity = "high"
+decision = "deny"
+enforce = true
+[rule.match]
+access = "write"
+path_glob = ["**/.env", "**/.env.*"]

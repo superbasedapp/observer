@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcidr"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -152,7 +153,9 @@ func (o *sandboxManagedOverlay) changed() <-chan struct{} {
 func (o *sandboxManagedOverlay) snapshot(ctx context.Context, now time.Time) (*orgcontract.SandboxManagedPolicyV1, map[string]any) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	if o.policy == nil || !o.outcome.InForce || o.outcome.ExpiresAt <= now.Unix() {
+	// Version 0 is a stored document that no longer verifies (the rail
+	// status's unverified row); it never composes (FX1-A5).
+	if o.policy == nil || !o.outcome.InForce || o.outcome.Version == 0 || o.outcome.ExpiresAt <= now.Unix() {
 		return nil, nil
 	}
 	var pins map[string]any
@@ -170,10 +173,34 @@ func effectiveSandboxConfig(full config.Config) config.TerminalSandboxConfig {
 	now := time.Now()
 	p, pins := processSandboxManaged.snapshot(context.Background(), now)
 	if p == nil {
-		return full.Terminal.Sandbox
+		cfg := full.Terminal.Sandbox
+		sandboxManagedNoteAuthority(&cfg, processSandboxManaged.lacksSandboxAuthority(context.Background()))
+		return cfg
 	}
 	cfg, _ := composeSandboxManaged(full.Terminal.Sandbox, *p, sandboxManagedEnvFor(full, pins))
 	return cfg
+}
+
+// lacksSandboxAuthority reports whether the bound governance is a live
+// managed enrolment whose grant does not hold the sandbox rail's authority
+// (enforce.sandbox), so no sandbox body can apply (FX1 item 7, live finding
+// F-B2). False when no governance is bound or the node is not managed.
+func (o *sandboxManagedOverlay) lacksSandboxAuthority(ctx context.Context) bool {
+	o.mu.RLock()
+	gov := o.gov
+	o.mu.RUnlock()
+	if gov == nil {
+		return false
+	}
+	return sandboxAuthorityMissing(gov.Effective(ctx))
+}
+
+// sandboxAuthorityMissing is the one rule both compositions (the daemon's
+// overlay and the CLI's stored-document read) use: a live, managed
+// governance whose grant lacks the sandbox rail's authority token.
+func sandboxAuthorityMissing(eff govern.Effective) bool {
+	rail, ok := orgcontract.LookupManagedPullRail(sandboxManagedRail)
+	return ok && eff.Active && eff.Managed && !slices.Contains(eff.Authority, rail.Authority)
 }
 
 // sandboxManagedChanged reports (and records) whether the overlay moved
@@ -244,6 +271,10 @@ type sandboxManagedEnv struct {
 type SandboxManagedRefusedKey struct {
 	Key    string `json:"key"`
 	Reason string `json:"reason"`
+	// Partial is set when the key still applied in part (a managed backend
+	// list with an ExplicitOnly row left off, lane FU8). Node-local only:
+	// the push wire carries Key and Reason.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // The closed refusal reasons.
@@ -262,7 +293,35 @@ const (
 	// sandboxRefusedPinnedEnabled is an empty managed backend list, which
 	// would switch the sandbox off, while the org pins enabled.
 	sandboxRefusedPinnedEnabled = "would_disable_pinned_enabled"
+	// sandboxRefusedExplicitOnly is a managed backend list naming an
+	// ExplicitOnly row (openshell and the other opt-in rows) the developer's
+	// own list does not name: a body may only filter such a row, never add
+	// it (lane FU8, ledger OSH-45). The row is left off and the rest of the
+	// list applies; a list left with nothing is refused whole.
+	sandboxRefusedExplicitOnly = "explicit_only_not_listed"
 )
+
+// sandboxPartialMark ends a row's refusal reason when the row still applied
+// what it could (the filtered backend list): composition records the reason
+// without the mark, flags the refusal Partial and keeps the trial. Every
+// other reason refuses the whole key.
+const sandboxPartialMark = "+partial"
+
+// filterManagedBackends drops from a managed backend list every ExplicitOnly
+// registry row (a capability, never a backend name) the developer's own list
+// does not name. It returns the list kept and whether it dropped anything.
+func filterManagedBackends(managed, local []string, mayAdd func(id string) bool) ([]string, bool) {
+	kept := make([]string, 0, len(managed))
+	dropped := false
+	for _, id := range managed {
+		if row, ok := sandboxbackend.Get(id); ok && row.ExplicitOnly && !slices.Contains(local, id) && (mayAdd == nil || !mayAdd(id)) {
+			dropped = true
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept, dropped
+}
 
 // sandboxManagedField is one body key: its full config key and how it
 // applies. apply returns a refusal reason, or "" when it applied (or the
@@ -337,7 +396,18 @@ var sandboxManagedFields = []sandboxManagedField{
 			dst.Backends, dst.Enabled = nil, false
 			return true, ""
 		}
-		dst.Backends = append([]string{}, (*p.Backends)...)
+		// The one exception to the filter rule (g1-design.md section 8.3,
+		// lane G4): a row the same verified body publishes (the org-hosted
+		// gateway) may be added; it stays ExplicitOnly.
+		kept, dropped := filterManagedBackends(*p.Backends, dst.Backends, func(id string) bool { return sandboxManagedPublishesRow(p, id) })
+		if len(kept) == 0 {
+			// Only rows the body may not add: the developer's own list stays.
+			return true, sandboxRefusedExplicitOnly
+		}
+		dst.Backends = kept
+		if dropped {
+			return true, sandboxRefusedExplicitOnly + sandboxPartialMark
+		}
 		return true, ""
 	}},
 	{"terminal.sandbox.default_on", setBool(func(p orgcontract.SandboxManagedPolicyV1) *bool { return p.DefaultOn },
@@ -414,6 +484,9 @@ var sandboxManagedFields = []sandboxManagedField{
 	// 6): lowering only. true clears the developer's remembered consent
 	// and refuses a per-launch one by name; false or absent leaves the
 	// node's own choice (it can never turn seeding on).
+	// The org-hosted gateway (lane G4, g1-design.md section 8.1): data only,
+	// it never adds the row to backends by itself.
+	{sandboxManagedPublishedKey, sandboxManagedComposePublished},
 	{"terminal.sandbox.sign_in_seed_tools", func(dst *config.TerminalSandboxConfig, p orgcontract.SandboxManagedPolicyV1, _ sandboxManagedEnv) (bool, string) {
 		if p.SignInSeedForbidden == nil || !*p.SignInSeedForbidden {
 			return false, ""
@@ -459,8 +532,11 @@ func composeSandboxManaged(local config.TerminalSandboxConfig, p orgcontract.San
 			continue
 		}
 		if why != "" {
-			refused = append(refused, SandboxManagedRefusedKey{Key: f.key, Reason: why})
-			continue
+			reason, partial := strings.CutSuffix(why, sandboxPartialMark)
+			refused = append(refused, SandboxManagedRefusedKey{Key: f.key, Reason: reason, Partial: partial})
+			if !partial {
+				continue
+			}
 		}
 		out = trial
 	}
@@ -714,6 +790,8 @@ type sandboxRailFacts struct {
 	outcome   orgclient.ManagedPullOutcome
 	bodyErr   string
 	now       int64
+	// lacksAuthority: a managed grant without enforce.sandbox (F-B2).
+	lacksAuthority bool
 }
 
 // sandboxRailStatusRows decides the shown state, top-down (CLAUDE.md #5).
@@ -778,11 +856,13 @@ func sandboxManagedStatus(ctx context.Context, cfg config.Config, pins map[strin
 }
 
 // sandboxManagedApplied lists the full keys body p sets that composition did
-// not refuse, in table order.
+// not refuse, in table order (a key applied in part, with a partial
+// refusal reason, is listed too).
 func sandboxManagedApplied(p orgcontract.SandboxManagedPolicyV1, env sandboxManagedEnv, refused []SandboxManagedRefusedKey) []string {
 	skip := map[string]bool{}
 	for _, r := range refused {
-		skip[r.Key] = true
+		// A partial refusal (the filtered backends row) still applied.
+		skip[r.Key] = skip[r.Key] || !r.Partial
 	}
 	var out []string
 	for _, f := range sandboxManagedFields {
@@ -816,7 +896,9 @@ func cliEffectiveSandbox(ctx context.Context, cfg config.Config, pins map[string
 	defer cleanup()
 	out, facts := loadSandboxManagedFacts(ctx, cfg, st)
 	if decideSandboxRailState(facts) != sandboxRailInForce {
-		return cfg.Terminal.Sandbox, sandboxOrgBinds{}
+		eff := cfg.Terminal.Sandbox
+		sandboxManagedNoteAuthority(&eff, facts.lacksAuthority)
+		return eff, sandboxOrgBinds{}
 	}
 	p, err := orgcontract.DecodeSandboxManagedPolicy(out.Body)
 	if err != nil {
@@ -853,6 +935,7 @@ func loadSandboxManagedFacts(ctx context.Context, cfg config.Config, st *store.S
 			eff = govern.Resolve(govern.Delivered{}, grant, live, time.Now().UTC())
 		}
 	}
+	facts.lacksAuthority = sandboxAuthorityMissing(eff)
 	client := orgclient.New(cfg.OrgClient, st, nil, "", nil, nil)
 	out, err := client.LoadPersistedManagedPull(ctx, sandboxManagedRail, managedPullConsent(eff, rail))
 	if err != nil {

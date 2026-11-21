@@ -308,13 +308,13 @@ func classifyCodexStatus(s codexSetupSnapshot, desired string) (status string, w
 	}
 	if s.HasReservedBlock {
 		return "reserved_block_present", false,
-			"~/.codex/config.toml contains [model_providers.openai] which codex 0.128.0+ rejects (reserved built-in); pass force=true to remove it"
+			"~/.codex/config.toml contains [model_providers.openai] which codex 0.128.0+ rejects (reserved built-in); use Force overwrite to remove it"
 	}
 	if s.CurrentBaseURL == "" {
 		// No observer provider yet.
 		if s.CurrentModelProvider != "" && s.CurrentModelProvider != proxyroute.ProviderName {
 			return "foreign_provider", false,
-				"top-level model_provider is set to " + s.CurrentModelProvider + "; pass force=true to switch to " + proxyroute.ProviderName
+				"top-level model_provider is set to " + s.CurrentModelProvider + "; use Force overwrite to switch to " + proxyroute.ProviderName
 		}
 		return "not_configured", true, ""
 	}
@@ -332,7 +332,7 @@ func classifyCodexStatus(s codexSetupSnapshot, desired string) (status string, w
 		return "routed_to_other_observer", true, ""
 	default:
 		return "non_loopback", false,
-			"the openai-observer provider is set to " + s.CurrentBaseURL + " which is non-loopback; pass force=true to overwrite"
+			"the openai-observer provider is set to " + s.CurrentBaseURL + " which is non-loopback; use Force overwrite to replace it"
 	}
 }
 
@@ -548,7 +548,7 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 			out.RoutedBaseURL = res.BaseURL
 			out.RoutedToObserver = proxyauth.SameRoute(res.BaseURL, proxyURL)
 			if !out.RoutedToObserver {
-				out.WouldRegisterError = "ANTHROPIC_BASE_URL points at another local observer (" + res.BaseURL + "); POST with force=true to switch it here"
+				out.WouldRegisterError = "ANTHROPIC_BASE_URL points at another local observer (" + res.BaseURL + "); use Force overwrite to switch it here"
 			}
 		case res.Added:
 			out.WouldRegister = true

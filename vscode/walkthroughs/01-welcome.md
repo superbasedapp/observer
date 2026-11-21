@@ -1,7 +1,7 @@
 # SuperBased
 
-**See and control exactly what your AI coding agents cost — across every
-tool, 100% local.**
+**See and control exactly what your AI coding tools cost, across every
+tool, on your own machine.**
 
 SuperBased captures, normalises, and analyses tool-call activity from
 Claude Code, Codex, Cursor, Cline (and forks like Roo Code), Copilot,
@@ -10,6 +10,8 @@ your machine. Your session content never leaves your machine without your consen
 
 This walkthrough takes about **5 minutes** and covers:
 
+- Signing in and connecting this machine to your personal dashboard or
+  your team (recommended; no account needed for anything else)
 - Verifying the binary is installed and healthy
 - Picking how the extension manages the observer daemon
 - Opening the dashboard inside VS Code

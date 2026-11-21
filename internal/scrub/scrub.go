@@ -73,14 +73,36 @@ var defaultPatterns = []pattern{
 	// header-length value gets the bearer_token marker, a short one
 	// ("Bearer token auth", "Bearer of") stays a bare redaction exactly as
 	// before, so prose is never promoted to a finding.
-	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{8,}=*`), replace: TypedRedactedMarker("bearer_token")},
-	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`)},
+	// A match whose whole value is one English word ("Bearer tokens are
+	// accepted", "Bearer authentication") is prose and stays
+	// (bearerprose.go, operator ruling 2026-11-15).
+	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{8,}=*`), replace: TypedRedactedMarker("bearer_token"), validate: bearerNotProse},
+	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`), validate: bearerNotProse},
 	// Common API key prefixes: sk-..., pk-..., ak-..., api_key=..., etc.
 	// Allow underscores AND hyphens inside the body: pk_test_abc123... and
 	// Anthropic's sk-ant-api03-... both carry separators past the prefix.
 	// Without `-` the match died at `sk-ant`, passing the key through
 	// unredacted (grokbot Phase-0 finding, 2026-08-29).
 	{re: regexp.MustCompile(`(?i)(?:sk|pk|ak)[_-][A-Za-z0-9_-]{16,}`), replace: TypedRedactedMarker("api_key_prefixed")},
+	// Claude Code's "Detected a custom API key" prompt shows the key's
+	// last 20 characters after a truncation mark ("sk-ant-..." beside the
+	// ANTHROPIC_API_KEY label), and a terminal capture of that screen
+	// carries them into whatever reads it, an agent's tool output among
+	// them (build tracker F-058). The row above cannot see a suffix (the
+	// dots end its match at "sk-ant"), and the api_key row below cannot
+	// either when terminal colour codes sit between the label and its
+	// colon. This row keys on the prompt's own rendering: "sk-ant-"
+	// followed by the dots or an ellipsis, or the label whose value starts
+	// with them, then a suffix of 8 to 64 key characters (so prose such as
+	// "ANTHROPIC_API_KEY: ...see below" keeps its word, audit FU12-A3).
+	// Colour codes (SGR, raw or JSON-escaped as \u001b) are allowed around
+	// the label's colon, after "sk-ant-" and after the mark (FU12-A2). It
+	// never matches a bare run of characters and rewrites only the suffix,
+	// so a JSON body stays valid. A context row: the bare marker.
+	{
+		re:      apiKeyPromptSuffixRE,
+		replace: `$1` + Redacted,
+	},
 	{re: regexp.MustCompile(`(?i)api[_-]?key[_-]?[A-Za-z0-9_]{20,}`), replace: TypedRedactedMarker("api_key_named")},
 	// AWS access key IDs
 	{re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`), replace: TypedRedactedMarker("aws_access_key")},
@@ -166,6 +188,18 @@ var defaultPatterns = []pattern{
 	},
 	{re: pemKeyBlockRE, replace: TypedRedactedMarker("private_key_block")},
 }
+
+// apiKeyPromptSuffixRE is the F-058 row's pattern: Claude Code's custom API
+// key prompt ("sk-ant-..." and the key's last 20 characters, beside the
+// ANTHROPIC_API_KEY label), with SGR colour codes, raw or JSON-escaped,
+// allowed between its parts. Group 1 is everything before the suffix.
+var apiKeyPromptSuffixRE = func() *regexp.Regexp {
+	const sgr = `(?:(?:\x1b|\\u001b)\[[0-9;]*m)*`
+	const mark = `(?:\.\.\.|…)`
+	return regexp.MustCompile(`(sk-ant-` + sgr + mark + sgr +
+		`|ANTHROPIC_API_KEY` + sgr + `:[ \t]*` + sgr + `[ \t]*` + mark + sgr +
+		`)[A-Za-z0-9_-]{8,64}`)
+}()
 
 // pemKeyBlockRE matches a PEM private-key block for the storage table:
 // the BEGIN line; optional Proc-Type / DEK-Info header lines (an
@@ -418,6 +452,15 @@ func paddedIdx(n int) string {
 // Non-string values are returned unchanged.
 func (s *Scrubber) JSONValue(v any) any {
 	return s.jsonValue(v, "")
+}
+
+// IsSensitiveKey reports whether a JSON or attribute key names a secret
+// (password, token, api key, ...): the rule JSONValue applies to decide that
+// a string value under the key is redacted whatever its content. Exported so
+// a caller that handles some values outside JSONValue (numbers) applies the
+// same rule.
+func IsSensitiveKey(key string) bool {
+	return key != "" && sensitiveKeyRE.MatchString(key)
 }
 
 func (s *Scrubber) jsonValue(v any, parentKey string) any {

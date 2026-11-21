@@ -10,7 +10,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import { Summary } from "@/components/Summary";
 import { Button, ChartShell, ConfirmButton, Pill, Table, Tooltip } from "@/components/primitives";
-import { markRestartPending } from "@/lib/restartPending";
+import { markRestartPending, RESTART_HINT } from "@/lib/restartPending";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { localConfirmHeaders } from "@/lib/api";
@@ -27,6 +27,7 @@ import type {
 import { SetupWizard } from "./SetupWizard";
 import { WindowsHomesCard } from "./WindowsHomesCard";
 import { CodeHostsCard } from "./CodeHostsCard";
+import { CloudAgentsCard } from "./CloudAgentsCard";
 import { DashboardInstallsList } from "./DashboardInstallsList";
 import { ToolDoctorPanel } from "./ToolDoctorPanel";
 
@@ -84,6 +85,10 @@ export function ConnectedToolsSection({ icon }: { icon?: LucideIcon }) {
             state, manage Observer-owned mirrors. `?section=tools&open=code-hosts`
             (every "Connect a code host" button) scrolls here. */}
         <CodeHostsCard focus={linkOpen === "code-hosts"} />
+        {/* Cloud agents (cloud-agents lane CA-B5): connect a vendor cloud
+            account, sync, disconnect, choose your user. Same governance key
+            as this section; `?section=tools&open=cloud-agents` scrolls here. */}
+        <CloudAgentsCard focus={linkOpen === "cloud-agents"} />
         {/* Tools THIS dashboard installed, with their Uninstall (owner-local;
             renders nothing when there are none or the read is refused). */}
         <div className="mt-3">
@@ -181,7 +186,7 @@ function AdoptDefaultsBanner({ missing, onAdopted }: { missing: string[]; onAdop
         >
           {busy ? "Adding…" : `Enable ${many ? "them" : "it"}`}
         </ConfirmButton>
-        {done && <span className="text-fg-2">Added. Restart the daemon to start capturing.</span>}
+        {done && <span className="text-fg-2">Added. Capture starts after a daemon restart: {RESTART_HINT}.</span>}
         {err && <span className="text-danger">{err}</span>}
       </div>
     </div>
@@ -309,7 +314,7 @@ function ToolRow({
             <Pill
               variant="warn"
               className="ml-2"
-              title="A compiled-in default adapter is missing from your enabled_adapters list. Add it with the banner above, then restart the daemon."
+              title="A compiled-in default adapter is missing from your Enabled adapters list. Add it with the banner above, then restart the daemon (Restart now in the banner at the top, or Restart daemon in Settings > Health)."
             >
               not enabled (new default)
             </Pill>

@@ -52,6 +52,12 @@ const (
 	// unjudged (review M2-12). Rate-limited per (tool, event, native tool)
 	// by AllowOnce; Record.Native names the tool.
 	KindUnclassified = "unclassified"
+	// KindPromptJudge is not a hook FAILURE either: the hook ran, but the
+	// organization's prompt judge (lane adm-2) could not answer (no daemon,
+	// a timeout, a bad answer), so the prompt went through unjudged
+	// (OutcomeFailOpen) or, under a strict enforced policy, was refused
+	// (OutcomeFailClosed). The daemon's drain records it as a guard_error.
+	KindPromptJudge = "prompt_judge"
 )
 
 // FailureKinds returns the closed set of failure kinds, the degraded_from
@@ -136,6 +142,18 @@ type Posture struct {
 	// no floor. Covered by the MAC; false while the module is not active or
 	// the node is not managed.
 	CommitGateFloorHeld bool `json:"commit_gate_floor_held,omitempty"`
+	// PromptJudgeActive says the organization's coding-agent prompt judge
+	// runs on this node (P-228 phase 2, lane adm-2): a verified
+	// planeb.admission body with node_lane, mode not off, on a managed node
+	// holding enforce.admission. A prompt-gate hook asks the daemon over the
+	// owner-only ask channel (internal/promptjudgeipc) only while this is
+	// set, so an individual node never dials it. Covered by the MAC.
+	PromptJudgeActive bool `json:"prompt_judge_active,omitempty"`
+	// PromptJudgeFailClosed says a hook that cannot get the judge's answer
+	// (no daemon, a timeout, a bad answer) must refuse the prompt: the
+	// policy is strict and enforced here. Covered by the MAC; only
+	// meaningful with PromptJudgeActive.
+	PromptJudgeFailClosed bool `json:"prompt_judge_fail_closed,omitempty"`
 	// WrittenAt is when the daemon wrote the file.
 	WrittenAt time.Time `json:"written_at"`
 	// MAC is the daemon's HMAC-SHA256 over every other field (auth.go,

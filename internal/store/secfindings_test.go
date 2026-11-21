@@ -159,8 +159,10 @@ func TestSecTablesHaveOneWriter(t *testing.T) {
 		// secchange_facts.go) likewise only read them, as does the
 		// box-ref walk's read of box commit runs (lane sec-box, secbox.go).
 		// The project-root repair's count of root-keyed rows (WINNODE2
-		// merge, projectrootrepair_sec.go) only names them.
-		if f == "secorgrows_reads.go" || f == "secchange_facts.go" || f == "secbox.go" || f == "projectrootrepair_sec.go" {
+		// merge, projectrootrepair_sec.go) only names them. The Code
+		// security page's facets, groups and coverage reads (the 2026-11-06
+		// redesign, secfindings_facets.go) only read them too.
+		if f == "secorgrows_reads.go" || f == "secchange_facts.go" || f == "secbox.go" || f == "projectrootrepair_sec.go" || f == "secfindings_facets.go" {
 			if regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|REPLACE)\b`).Match(b) {
 				t.Errorf("%s writes a sec_* table; it may only read them", f)
 			}

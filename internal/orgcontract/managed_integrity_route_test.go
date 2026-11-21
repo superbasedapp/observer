@@ -52,7 +52,7 @@ func TestUnroutedSurfaceKindsMatchModels(t *testing.T) {
 			t.Errorf("kind %q is not a models.Surface* kind", kind)
 		}
 	}
-	for _, kind := range []string{models.SurfaceCLI, models.SurfaceIDE, models.SurfaceDesktop, models.SurfaceSDK, models.SurfaceWeb} {
+	for _, kind := range []string{models.SurfaceCLI, models.SurfaceIDE, models.SurfaceDesktop, models.SurfaceSDK, models.SurfaceWeb, models.SurfaceMobile} {
 		if !unroutedSurfaceKinds[kind] {
 			t.Errorf("models kind %q has no unroutedSurfaceKinds row", kind)
 		}

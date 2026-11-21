@@ -141,6 +141,13 @@ func Import(in Input) (secscan.Result, error) {
 	for _, run := range log.Runs {
 		results += len(run.Results) + run.Dropped
 		kept := sarif.Run{Tool: run.Tool, Dropped: run.Dropped, RulesDropped: run.RulesDropped}
+		// The kept results carry the rewritten rule id (tool/id), so the adapter
+		// would never find the file's own rule entry by it: keep the rule tags,
+		// and nothing else of the rule, under the rewritten id (the CWE tags of a
+		// rule reach References.CWE; severity and level stay what they were).
+		kept.Tool.Rules = nil
+		rules := ruleTags(run.Tool.Rules)
+		tagged := map[string]bool{}
 		for _, r := range run.Results {
 			id := r.RuleID
 			if id == "" && r.RuleIndex >= 0 && r.RuleIndex < len(run.Tool.Rules) {
@@ -168,6 +175,10 @@ func Import(in Input) (secscan.Result, error) {
 				continue
 			}
 			r.RuleID, r.RuleIndex = in.Tool+"/"+id, -1
+			if tags := rules[id]; len(tags) > 0 && !tagged[r.RuleID] {
+				tagged[r.RuleID] = true
+				kept.Tool.Rules = append(kept.Tool.Rules, sarif.Rule{ID: r.RuleID, Tags: tags})
+			}
 			r.Locations = []sarif.Location{{URI: l.URI, StartLine: sl, EndLine: el}}
 			kept.Results = append(kept.Results, r)
 		}
@@ -256,4 +267,17 @@ func (d Driver) Scan(ctx context.Context, t secscan.Target) (secscan.Result, err
 		return secscan.Result{Coverage: secscan.Coverage{Outcome: secscan.OutcomeFailed, Reason: "unreadable_file"}}, err
 	}
 	return Import(Input{Data: data, Tool: d.Tool, ProjectRoot: t.ProjectRoot, ProjectRootHash: d.RootHash(t.ProjectRoot), Lineage: d.Lineage})
+}
+
+// ruleTags maps each rule id of a run to the tags of its first entry that has
+// any; a rule with no tags is not in the map.
+func ruleTags(rules []sarif.Rule) map[string][]string {
+	out := map[string][]string{}
+	for _, r := range rules {
+		if _, dup := out[r.ID]; dup || len(r.Tags) == 0 {
+			continue
+		}
+		out[r.ID] = r.Tags
+	}
+	return out
 }

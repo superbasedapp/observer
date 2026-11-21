@@ -48,6 +48,7 @@ func TestT519BudgetHookStopMatrix(t *testing.T) {
 		"autohand": BudgetHookStopPromptAndTool, "ibm-bob": BudgetHookStopPromptAndTool, "cortex-code": BudgetHookStopPromptAndTool,
 		"codebuddy": BudgetHookStopPromptAndTool, "deepagents-code": BudgetHookStopPromptAndTool, "dimcode": BudgetHookStopPromptAndTool,
 		"dirac": BudgetHookStopPromptAndTool, "kimchi": BudgetHookStopPromptAndTool, "stakpak": BudgetHookStopNone, "vtcode": BudgetHookStopPromptAndTool,
+		"custom-agent": BudgetHookStopNone,
 	}
 	for _, tool := range Tools() {
 		c, ok := For(tool)

@@ -455,6 +455,30 @@
     "prompt_lane_only": false,
     "receiver_registered_for_id": true
   },
+  "custom-agent": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "recorded_acceptance",
+    "hook_supported": false,
+    "prompt_lane": "proxy_only",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": false
+  },
+  "custom-agent-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "recorded_acceptance",
+    "hook_supported": false,
+    "prompt_lane": "proxy_only",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": false
+  },
   "deepagents-code": {
     "advertised_is_windows": false,
     "advertised_ok": true,

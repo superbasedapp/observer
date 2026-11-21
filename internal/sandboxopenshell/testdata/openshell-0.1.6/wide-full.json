@@ -1,0 +1,50 @@
+{
+  "active_version": 3,
+  "config_revision": 8538364632921170013,
+  "hash": "21b659dbcc6669d04662850dfa039e17077a3ce8488165109f45935945024e53",
+  "policy": {
+    "filesystem_policy": {
+      "include_workdir": false,
+      "read_only": [
+        "/usr",
+        "/lib",
+        "/bin",
+        "/etc",
+        "/proc"
+      ],
+      "read_write": [
+        "/tmp",
+        "/dev/null"
+      ]
+    },
+    "landlock": {
+      "compatibility": "best_effort"
+    },
+    "network_policies": {
+      "observer_egress_allow_hosts": {
+        "endpoints": [
+          {
+            "enforcement": "enforce",
+            "host": "github.com",
+            "port": 443
+          },
+          {
+            "enforcement": "enforce",
+            "host": "pastebin.com",
+            "ports": [
+              443,
+              8443
+            ]
+          }
+        ],
+        "name": "observer_egress_allow_hosts"
+      }
+    },
+    "version": 1
+  },
+  "policy_source": "sandbox",
+  "sandbox": "fu8-net",
+  "scope": "sandbox",
+  "status": "effective",
+  "version": 3
+}

@@ -220,6 +220,8 @@ func Attach(ctx context.Context, conn net.Conn, spawn SpawnRequest, cio ClientIO
 		AutoResumeCapable: cio.Correlated != nil,
 		ResumeSession:     spawn.ResumeSession,
 		AutoResume:        spawn.AutoResume,
+		AgentEnv:          spawn.AgentEnv,
+		AgentEnvSession:   spawn.AgentEnvSession,
 	}); err != nil {
 		// A watchdog conn-close during the initial spawn write (ctx canceled
 		// mid-handshake) fails this send. That is a clean ctx-cancel detach —

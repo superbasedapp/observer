@@ -51,7 +51,10 @@ type SandboxManagedPolicyV1 struct {
 	// Enabled is [terminal.sandbox].enabled.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Backends is the backend preference order (registry ids). An empty
-	// list enables no backend.
+	// list enables no backend. It may only filter an ExplicitOnly registry
+	// row (openshell and the other opt-in rows), never add one: a node
+	// leaves such a row off unless its own list names it, with refusal
+	// reason explicit_only_not_listed (lane FU8, ledger OSH-45).
 	Backends *[]string `json:"backends,omitempty"`
 	// DefaultOn pre-checks the "Run in sandbox" toggle.
 	DefaultOn *bool `json:"default_on,omitempty"`
@@ -105,6 +108,10 @@ type SandboxManagedPolicyV1 struct {
 	// SandboxCapabilitySignInSeedForbid (the body is closed, so an older
 	// node would refuse the whole body for it).
 	SignInSeedForbidden *bool `json:"sign_in_seed_forbidden,omitempty"`
+	// OrgOpenShell is the org-hosted OpenShell gateway (tracker F-019,
+	// openshellorg.go): DATA only, built by the server per caller, served
+	// only to a node that advertised SandboxCapabilityOrgOpenShell.
+	OrgOpenShell *SandboxManagedOrgOpenShellV1 `json:"org_openshell,omitempty"`
 }
 
 // SandboxCapabilitySignInSeedForbid is the token a node sends when it
@@ -560,6 +567,11 @@ func (p SandboxManagedPolicyV1) Validate() error {
 			return err
 		}
 	}
+	if o := p.OrgOpenShell; o != nil {
+		if err := o.validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -625,15 +637,15 @@ func (n SandboxManagedNodeV1) validate() error {
 
 func checkList(name string, list []string, ok func(string) bool) error {
 	if len(list) > sandboxManagedMaxList {
-		return fmt.Errorf("%w: %s has more than %d entries", ErrSandboxManagedBody, name, sandboxManagedMaxList)
+		return fieldErr(name, FieldClassTooMany, "%s has more than %d entries", name, sandboxManagedMaxList)
 	}
 	seen := map[string]bool{}
 	for _, e := range list {
 		if len(e) > sandboxManagedMaxString || !ok(e) {
-			return fmt.Errorf("%w: %s entry %q is not valid", ErrSandboxManagedBody, name, e)
+			return fieldErr(name, FieldClassInvalid, "%s entry %q is not valid", name, e)
 		}
 		if seen[e] {
-			return fmt.Errorf("%w: %s lists %q twice", ErrSandboxManagedBody, name, e)
+			return fieldErr(name, FieldClassDuplicate, "%s lists %q twice", name, e)
 		}
 		seen[e] = true
 	}

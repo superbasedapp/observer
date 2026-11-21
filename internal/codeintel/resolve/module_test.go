@@ -97,6 +97,12 @@ func TestSplitCallGeneric(t *testing.T) {
 		{"this.foo()", "foo", "this", true}, // qualified (won't match any ns -> no bind)
 		{"a().foo()", "foo", "_complex", false},
 		{"arr[i].foo()", "foo", "_complex", false},
+		// The tree-sitter excerpt shapes for a non-identifier receiver
+		// (treesitter.callQualifier keeps only its closing character) and
+		// optional chaining: both complex, never bare.
+		{").foo(x)", "foo", "_complex", false},
+		{"].foo(x)", "foo", "_complex", false},
+		{"ns?.foo(x)", "foo", "_complex", false},
 	}
 	for _, c := range cases {
 		q, ok := splitCallGeneric(c.callee, c.raw)

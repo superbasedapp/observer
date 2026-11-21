@@ -100,7 +100,7 @@ const cloudLoginPageTemplate = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>%s - SuperBased</title>
+<title>%s - superbased</title>
 <style>
   :root {
     --base: #0D0D12;
@@ -206,7 +206,7 @@ const cloudLoginPageTemplate = `<!doctype html>
     <p class="eyebrow">%s</p>
     <h1>%s</h1>
     <p class="detail">%s</p>
-    <div class="brand"><span class="dot"></span>SuperBased Observer</div>
+    <div class="brand"><span class="dot"></span>superbased Observer</div>
   </main>
 </body>
 </html>

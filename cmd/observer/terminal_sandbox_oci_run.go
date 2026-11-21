@@ -507,7 +507,7 @@ func (r *ociRun) remove() {
 // launcher channel's descriptor and secret (no descriptor crosses into a
 // container). The sandbox marker is set.
 func ociContainerEnv(environ []string, planDrop ...string) []string {
-	// The allow-list first (WINFIX2 R-167), less the plan's drops
+	// The allow-list first (WINFIX2, ledger SBX-WIN-ENV-1), less the plan's drops
 	// (ociPlanFile.DropEnv); the drops below stay.
 	environ = sandboxBoxEnv("linux", environ, planDrop...)
 	drop := map[string]bool{"XDG_RUNTIME_DIR": true, envOOBFD: true, envOOBAuth: true, sandboxEnvMarker: true}
@@ -622,7 +622,7 @@ func runOCIHostWith(args []string, t ociTerm, checkSocket func(plan ociPlanFile)
 		return helperFail("observer sandbox (%s): %v", ociRowLabel(plan), err)
 	}
 	// The tier comes from this helper's own flags (withSandboxTier, R3).
-	env := withSandboxTier(ociContainerEnv(os.Environ(), plan.DropEnv...), h)
+	env := localCredBoxEnv(h, withSandboxTier(ociContainerEnv(os.Environ(), plan.DropEnv...), h))
 	if plan.PathPrefix != "" {
 		env = ociPrependPath(env, plan.PathPrefix)
 	}

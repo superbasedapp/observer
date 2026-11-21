@@ -208,6 +208,16 @@ type ProxyRoute struct {
 	// on the proxy (T-035, PROVIDER-SWITCH-1). Nil = the route carries every
 	// turn already, or the tool has no overridable built-in providers.
 	ProviderOverrides []ProviderOverride
+	// CarriesProviders, when non-nil, names the provider families (the
+	// model catalogue's ids: "openai", "anthropic", "google", ...) whose
+	// requests this route carries to the proxy, for a route that sets ONE
+	// provider's base URL (OPENAI_BASE_URL, GOOGLE_GEMINI_BASE_URL) while
+	// the tool can also call other providers directly. Credential injection
+	// binds only these, so a box never holds a placeholder for a provider
+	// whose requests bypass the proxy (audit sandbox-terminal-gaps-2026-11-18,
+	// H2). Nil = the registry does not say (a lane's host or the covered
+	// ProviderOverrides may still name them).
+	CarriesProviders []string
 	// ForeignLane, when non-nil, says this persisted route can ALSO carry a
 	// third-party OpenAI-compatible provider the developer configured (a host
 	// other than the route's fixed upstream) through a proxy `/up/<id>/` lane
@@ -345,6 +355,14 @@ type Capability struct {
 	// surface relation (invariant I2).
 	Enterprise EnterpriseAnswer
 	TokenTier  TokenTier
+	// ProxyOnlyCapture marks a row whose turns arrive ONLY through the
+	// node's own listeners (the proxy, and for custom-agent since PT-55 the
+	// OTLP receiver): there is no transcript or store to tail and no vendor
+	// process to attribute, because the "tool" is the developer's own code
+	// (custom-agent, P-228). Consumers that would otherwise expect a
+	// post-hoc watcher channel or a process basename skip a row carrying
+	// it. Zero value = the row has some non-proxy capture surface.
+	ProxyOnlyCapture bool
 	// Limit records an AUDITED negative finding for the 5h/weekly usage-
 	// limit gauge (docs/cost-predictor.md; LimitCapability's doc comment).
 	// Zero value = not audited, falls through to the existing proxy/
@@ -614,9 +632,25 @@ var registry = map[string]Capability{
 				Grounding: "code.claude.com/docs/en/authentication, Credential management (read 2026-10-27): on Linux ~/.claude/.credentials.json (mode 0600), on Windows .claude/.credentials.json under %USERPROFILE%, on macOS the encrypted macOS Keychain (a file only when the Keychain rejects the write); CLAUDE_CONFIG_DIR moves the file",
 				DocURL:    "https://code.claude.com/docs/en/authentication",
 			},
+			// Login seed (decision SBXD-4 (c)): the same file as SignIn,
+			// narrowed to the access token. The fields are the ones this
+			// repo already reads from it: cmd/observer/claude.go
+			// readOAuthAccessToken (claudeAiOauth.accessToken, expiresAt in
+			// epoch milliseconds) and internal/planlimits/drv_borrowed.go
+			// parseClaudeCreds (scopes, subscriptionType, rateLimitTier).
+			LoginSeed: &SandboxLoginSeed{
+				File: ".claude/.credentials.json", Artifact: "claude-code/credentials", KeychainOn: []string{"darwin"},
+				Object: "claudeAiOauth", Access: "accessToken", Expiry: "expiresAt", ExpiryMillis: true,
+				Keep:      []string{"scopes", "subscriptionType", "rateLimitTier"},
+				Grounding: "read 2026-11-18 from this repository's own readers of the file (cmd/observer/claude.go readOAuthAccessToken, internal/planlimits/drv_borrowed.go parseClaudeCreds) and the SignIn row's vendor page (code.claude.com/docs/en/authentication, read 2026-10-27: the macOS login is in the Keychain)",
+			},
 			ConfigHome: &SandboxConfigHome{
 				Env: "CLAUDE_CONFIG_DIR", Dir: ".claude", StateFile: ".claude.json", RelocatedStateFile: ".claude.json",
 				OnboardedKey: "hasCompletedOnboarding", SeedKeys: []string{"hasCompletedOnboarding", "theme"},
+				KeyApproval: &SandboxKeyApproval{
+					Env: "ANTHROPIC_API_KEY", Key: "customApiKeyResponses", Suffix: 20,
+					Grounding: "Claude Code asks \"Do you want to use this API key?\" (No preselected) for an ANTHROPIC_API_KEY it has no answer for, and records the answer in ~/.claude.json customApiKeyResponses {approved, rejected} by the key's last 20 characters; the screen seen live in hosted boxes on every interactive start (FX3-L5, FU12-L1 capture); the 20-character record to be confirmed live (FX4 fix round 1 re-check)",
+				},
 				Grounding: "Windows 11 Pro rerun 2026-10-25 D3 debug logs (raw win8b-diag-debug2/3): exit 1 at showSetupScreens without the flag, a running session with it",
 			},
 			// A call that ran has a tool_result block (keyed by the call's
@@ -852,6 +886,10 @@ var registry = map[string]Capability{
 			ClientAuth: ClientAuthPathToken,
 			Kind:       RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1",
 			Launcher: "observer opencode", Proof: RouteProofLauncherRoute,
+			// The route is the openai provider entry (OPENAI_BASE_URL, above);
+			// another provider's requests (anthropic, google, ...) go to that
+			// provider directly. The Zen lane carries no provider key.
+			CarriesProviders: []string{"openai"},
 			// CLI-2: a project opencode.json provider.openai.options.baseURL
 			// beats OPENAI_BASE_URL, so since Wave 4 the launcher also puts
 			// the openai route in OPENCODE_CONFIG_CONTENT, which opencode
@@ -968,6 +1006,21 @@ var registry = map[string]Capability{
 			StateRWByOS: map[string][]string{"darwin": {".local/state/opencode", ".cache/opencode"}},
 			// opencode.json carries the MCP servers (internal/mcp/locate).
 			ProtectRO: []string{".config/opencode/opencode.json"},
+			// The keys OpenCode saved itself (decision SBXD-4 (b)): its
+			// auth.json in the data dir, keyed by provider id, an API key
+			// entry {"type":"api","key":...} beside OAuth logins
+			// {"type":"oauth",...}, which are never read.
+			SavedKeys: &SandboxSavedKeys{
+				Files: map[string]string{"": ".local/share/opencode/auth.json"},
+				Keys: []SandboxSavedKey{
+					{Provider: "anthropic", Pointer: "/anthropic/key", TypePointer: "/anthropic/type", TypeValue: "api"},
+					{Provider: "openai", Pointer: "/openai/key", TypePointer: "/openai/type", TypeValue: "api"},
+					{Provider: "google", Pointer: "/google/key", TypePointer: "/google/type", TypeValue: "api"},
+					{Provider: "xai", Pointer: "/xai/key", TypePointer: "/xai/type", TypeValue: "api"},
+					{Provider: "openrouter", Pointer: "/openrouter/key", TypePointer: "/openrouter/type", TypeValue: "api"},
+				},
+				Grounding: "read 2026-11-18: the path from internal/adapter/opencode defaultRoots (~/.local/share/opencode, the XDG data dir OpenCode uses on every OS) and docs/audits/vultr-teams-opencode.md (credentials stored at ~/.local/share/opencode/auth.json); the entry shape from @opencode-ai/sdk 1.19.6 dist/v2/gen/types.gen.d.ts (Auth = OAuth {type:\"oauth\",refresh,access,expires} | ApiAuth {type:\"api\",key} | WellKnownAuth, set per provider id by PUT /auth/{providerID}; that the file is keyed by provider id is read from that route, not from a live file)",
+			},
 		},
 		// GUI launch row (plan §2.2): OpenCode Desktop writes the SAME
 		// opencode.db this row's watcher reads (inventory §2.12,
@@ -2076,6 +2129,8 @@ var registry = map[string]Capability{
 		// saved Google sign-in with a key exported is named by RoutedCaveat.
 		Proxy: &ProxyRoute{
 			Kind: RouteLauncher, EnvVar: "GOOGLE_GEMINI_BASE_URL", Suffix: "", Launcher: "observer gemini",
+			// The route is the Gemini API's base URL: google only.
+			CarriesProviders: []string{"google"},
 			Gate: &RouteGate{
 				CredentialEnv:   []string{"GEMINI_API_KEY"},
 				UnroutedBecause: "Gemini CLI has no GEMINI_API_KEY in this environment, so it uses your Google sign-in (or Vertex AI), which talks to Google directly",
@@ -3646,7 +3701,10 @@ var registry = map[string]Capability{
 		Proxy: &ProxyRoute{
 			ClientAuth: ClientAuthPathToken,
 			Kind:       RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1",
-			Launcher: "observer aider",
+			// OPENAI_API_BASE moves only the openai provider; another
+			// provider's model (an anthropic one) is called directly.
+			CarriesProviders: []string{"openai"},
+			Launcher:         "observer aider",
 			// CLI-7: aider calls load_dotenv(override=True) over these files
 			// (and --env-file), so a base-URL variable in one beats the
 			// launcher's OPENAI_API_BASE; `openai-api-base` in a
@@ -3838,7 +3896,7 @@ var registry = map[string]Capability{
 		// model gpt-4o-mini; 401 upstream on a throwaway key = wire proven).
 		// OPERATOR NOTE: unset your ambient OPENAI_HOST (shell profile) when
 		// using `observer goose --proxy`, or accept that yours wins.
-		Proxy: &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", LaunchFlag: "--proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design.", SharesCredentialFile: true, CredentialFileReason: routeCredGoose, PersistedDefault: &PersistedDefault{
+		Proxy: &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", CarriesProviders: []string{"openai"}, LaunchFlag: "--proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design.", SharesCredentialFile: true, CredentialFileReason: routeCredGoose, PersistedDefault: &PersistedDefault{
 			Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(goose) persists OPENAI_HOST = proxy root in ~/.config/goose/config.yaml when the active provider is openai (active_provider or GOOSE_PROVIDER), so a bare goose routes; YAML member edit, never a key",
 			LiveGate: "LC25",
 		}},
@@ -4732,7 +4790,7 @@ var registry = map[string]Capability{
 			// command"). WSL2 works because uname -s reports Linux there.
 			WindowsNote:     "macOS/Linux only per vendor (muse-launcher.sh detect_platform dies on any uname -s other than Darwin/Linux); runs under WSL2 because uname -s = Linux there",
 			InstallNote:     "no Windows install channel - install inside WSL2 and run the observer daemon there",
-			UserInstallHint: "Muse runs on macOS and Linux only. On Windows, install it inside WSL and run SuperBased there.",
+			UserInstallHint: "Muse runs on macOS and Linux only. On Windows, install it inside WSL and run superbased there.",
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `muse --help` lists
 		// `--model <MODEL>` — "Model id for non-echo providers" — under
@@ -6560,6 +6618,42 @@ var registry = map[string]Capability{
 		Model:   ModelSpec{Kind: ModelNone},
 		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher (capture-only)"},
 	},
+	// A developer's OWN agent on a raw provider API or SDK (P-228, docs/
+	// own-agents.md, design docs/plans/discovery-sdk-2026-11-03.md section
+	// 4.1). Proxy-only capture: the agent sets its provider base URL to the
+	// node proxy and sends X-Superbased-Agent (and optionally X-Session-Id);
+	// internal/ownagent turns the header into a capture session. Every other
+	// cell is an honest zero: there is no transcript, hook surface, MCP
+	// writer, launcher or binary, because the "tool" is the developer's code.
+	"custom-agent": {
+		Tool: "custom-agent",
+		// The proxy request-path prompt scan runs on every proxied request,
+		// and the proxy is this tool's only capture path, so it is the one
+		// prompt-submit lever (no hook exists).
+		PromptLane: PromptLaneProxyOnly,
+		Vocabulary: Vocabulary{Note: "no native tool vocabulary: an own agent's tools run inside the developer's code; only its model turns cross the proxy, so tooltax carries no rows for it"},
+		// Observer drives no route (Proxy nil): it never edits the
+		// developer's code. The developer sets the provider client's base
+		// URL to the node proxy themselves (Anthropic http://127.0.0.1:8820,
+		// OpenAI http://127.0.0.1:8820/v1, Gemini http://127.0.0.1:8820) and
+		// sends X-Superbased-Agent; the Sessions page's Own agents view and
+		// docs/own-agents.md print the snippet. The default provider lanes
+		// carry it, no /up lane. Every session of this tool came through the
+		// proxy by construction, so it has no bypass to detect.
+		Proxy:       nil,
+		Routability: RouteStatusRoutableNow,
+		Hook:        HookSpec{Mechanism: HookNone, Note: "no hook surface: an own agent is the developer's code; capture is the proxy turn only"},
+		MCP:         nil,
+		Native:      NativeRails{},
+		TokenTier:   TokenTier{Best: "proxy", Gap: "no transcript: a call sent neither through the proxy nor as an OTLP GenAI span with usage is not seen; span-reported tokens are self-reported and rank below the proxy row for the same call; tool-call rows come only from OTLP execute_tool spans"},
+		// No transcript, store or vendor process: capture is the proxy
+		// turn, and since PT-55 the agent's own OTLP spans (the OTLP
+		// column, otlpexport.go).
+		ProxyOnlyCapture: true,
+		Handoff:          HandoffCapability{},
+		Model:            ModelSpec{Kind: ModelNone},
+		Sandbox:          SandboxSpec{Note: "not sandbox-launchable: the developer runs their own agent; observer spawns no process"},
+	},
 }
 
 // RegistryVersion is the version of the adapter capability registry's
@@ -6580,8 +6674,10 @@ var registry = map[string]Capability{
 // on 2026-09-06 (zed, Zed's own native coding agent, joined the
 // vocabulary). Bumped 6 -> 7 on 2026-10-21 (the capture-only wave:
 // autohand, ibm-bob, cortex-code, codebuddy, deepagents-code, dimcode,
-// dirac, kimchi, stakpak and vtcode joined the vocabulary).
-const RegistryVersion = 7
+// dirac, kimchi, stakpak and vtcode joined the vocabulary). Bumped 7 -> 8
+// on 2026-11-03 (custom-agent, a developer's own proxy-captured agent,
+// joined the vocabulary, P-228).
+const RegistryVersion = 8
 
 // Tools returns every registered tool name, sorted. It is the canonical,
 // closed tool vocabulary (NOT config.EnabledAdapters, which is a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -476,6 +477,31 @@ func TestListTerminalRuns(t *testing.T) {
 	for _, r := range got {
 		if r.RunID == "run-new" && (r.BestSessionID != "" || r.BestConfidence != 0) {
 			t.Errorf("run-new should have no correlation, got %q/%v", r.BestSessionID, r.BestConfidence)
+		}
+	}
+
+	// The recorded isolation evidence rides along (migration 179), and a
+	// run that recorded none reads as empty, never a default.
+	if err := st.InsertTerminalRun(ctx, TerminalRun{
+		RunID: "run-boxed", Tool: "codex", Kind: "fresh", LaunchedAt: base.Add(-time.Hour),
+		Isolation: TerminalRunIsolation{Class: "process", Stack: []string{"bwrap"}, EgressTier: "host", CaptureLevel: "full"},
+	}); err != nil {
+		t.Fatalf("InsertTerminalRun boxed: %v", err)
+	}
+	all, err := st.ListTerminalRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListTerminalRuns: %v", err)
+	}
+	for _, r := range all {
+		switch r.RunID {
+		case "run-boxed":
+			if r.IsolationClass != "process" || r.Stack != "bwrap" || r.EgressTier != "host" || r.CaptureLevel != "full" {
+				t.Errorf("boxed isolation = %+v", r)
+			}
+		case "run-new":
+			if r.IsolationClass != "" || r.Stack != "" || r.EgressTier != "" || r.CaptureLevel != "" {
+				t.Errorf("unrecorded isolation = %+v", r)
+			}
 		}
 	}
 
@@ -1180,5 +1206,56 @@ func TestEndTerminalRunOwnedOutlivesADaemonStop(t *testing.T) {
 		if id == "cli" && (!code.Valid || code.Int64 != 3) {
 			t.Errorf("cli: exit code %v, want 3", code)
 		}
+	}
+}
+
+// TestSandboxedTerminalRunsByID: the rows of exactly the asked runs that
+// recorded a sandbox, ended or not, with their end facts, past any history
+// window; a run that recorded no sandbox and an unknown id are absent.
+func TestSandboxedTerminalRunsByID(t *testing.T) {
+	t.Parallel()
+	st, ctx := openTermRunTestStore(t)
+	base := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	box := TerminalRunIsolation{Class: "process", Stack: []string{"bwrap"}, EgressTier: "host", CaptureLevel: "full"}
+	if err := st.InsertTerminalRun(ctx, TerminalRun{RunID: "box-live", Tool: "codex", Kind: "fresh", LaunchedAt: base, Isolation: box}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 60; i++ {
+		if err := st.InsertTerminalRun(ctx, TerminalRun{
+			RunID: "plain-" + strconv.Itoa(100+i), Tool: "codex", Kind: "fresh",
+			LaunchedAt: base.Add(time.Duration(i+1) * time.Minute), Isolation: TerminalRunIsolation{Class: "none"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.InsertTerminalRun(ctx, TerminalRun{RunID: "box-shutdown", Tool: "codex", Kind: "fresh", LaunchedAt: base.Add(time.Hour), Isolation: box}); err != nil {
+		t.Fatal(err)
+	}
+	// A graceful daemon stop stamps the live non-attach rows (P-074).
+	if _, err := st.StampLiveNonAttachRunsShutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertTerminalRun(ctx, TerminalRun{RunID: "box-after", Tool: "codex", Kind: "fresh", LaunchedAt: base.Add(2 * time.Hour), Isolation: box}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.SandboxedTerminalRunsByID(ctx, []string{"box-live", "box-shutdown", "box-after", "plain-100", "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]TerminalRunSummary{}
+	for _, r := range got {
+		byID[r.RunID] = r
+	}
+	if len(byID) != 3 || byID["plain-100"].RunID != "" {
+		t.Fatalf("rows = %+v, want the three boxes only", got)
+	}
+	if r := byID["box-shutdown"]; r.EndedAt == nil || r.EndReason != EndReasonDaemonShutdown || r.EgressTier != "host" || r.Stack != "bwrap" {
+		t.Fatalf("shutdown-ended box = %+v", r)
+	}
+	if r := byID["box-after"]; r.EndedAt != nil || r.EndReason != "" {
+		t.Fatalf("live box = %+v", r)
+	}
+	if none, err := st.SandboxedTerminalRunsByID(ctx, nil); err != nil || len(none) != 0 {
+		t.Fatalf("no ids: %+v %v", none, err)
 	}
 }

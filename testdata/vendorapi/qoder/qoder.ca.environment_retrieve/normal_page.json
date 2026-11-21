@@ -1,0 +1,13 @@
+{
+  "id": "env_synth01",
+  "type": "environment",
+  "name": "synthetic-env",
+  "config": {
+    "type": "self_hosted",
+    "setup_script": "echo synthetic"
+  },
+  "created_at": "2026-10-20T00:00:00Z",
+  "updated_at": "2026-10-20T00:00:00Z",
+  "archived_at": null,
+  "scope": "personal"
+}

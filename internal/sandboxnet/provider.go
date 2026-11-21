@@ -102,7 +102,7 @@ func (b *ProviderBlock) checkTarget(host string) string {
 	if b == nil || parseLiteral(host) != nil {
 		return ""
 	}
-	if sandboxvocab.MatchesHost(host, b.hosts) {
+	if sandboxvocab.MatchesProvider(host, b.hosts) {
 		b.refused.Add(1)
 		return RuleModelProviderHost
 	}

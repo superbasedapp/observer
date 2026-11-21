@@ -25,15 +25,22 @@ var update = flag.Bool("update", false, "rewrite golden files instead of compari
 // must not move when org-mode code lands. Params are fixed so the golden
 // is a pure function of the seeded corpus; days windows are wide enough
 // that the (recent) seed always falls inside them.
+//
+// The overview golden is edition-aware: /api/status carries
+// counts.open_issues only when the security module is compiled in
+// (status_open_issues.go / status_open_issues_omit.go), so a build with
+// sbo_omit_security (the minimal edition) compares against its own golden
+// (overviewGolden, set by the build-tagged golden_security*_test.go pair).
 var endpoints = []struct {
-	name string // golden file base name
-	path string
+	name   string // subtest name
+	golden string // golden file base name
+	path   string
 }{
-	{"overview", "/api/status"},
-	{"sessions", "/api/sessions?limit=50&days=30"},
-	{"actions", "/api/actions?limit=100&days=30"},
-	{"tools", "/api/tools?days=30"},
-	{"cost", "/api/cost?days=30&group_by=model"},
+	{"overview", overviewGolden, "/api/status"},
+	{"sessions", "sessions", "/api/sessions?limit=50&days=30"},
+	{"actions", "actions", "/api/actions?limit=100&days=30"},
+	{"tools", "tools", "/api/tools?days=30"},
+	{"cost", "cost", "/api/cost?days=30&group_by=model"},
 }
 
 func TestSingleUserDashboardInvariant(t *testing.T) {
@@ -66,7 +73,7 @@ func TestSingleUserDashboardInvariant(t *testing.T) {
 			assertSchemaVersionIsHead(t, rec.Body.Bytes())
 			got := canonicalize(t, rec.Body.Bytes())
 
-			golden := filepath.Join("golden", ep.name+".json")
+			golden := filepath.Join("golden", ep.golden+".json")
 			if *update {
 				if err := os.WriteFile(golden, got, 0o644); err != nil {
 					t.Fatalf("write golden %s: %v", golden, err)

@@ -1,0 +1,62 @@
+rules:
+  - id: js.open-redirect
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: A redirect target is taken from web request input or the page URL, so a link can send users to any site; redirect only to a path on this site or a host on an allow-list.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request|ctx)$
+      - pattern: location.hash
+      - pattern: location.search
+      - pattern: window.location.hash
+      - pattern: window.location.search
+      - pattern: document.location.hash
+      - pattern: document.location.search
+      - pattern: document.URL
+    pattern-sanitizers:
+      - pattern: encodeURIComponent(...)
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      # A fixed origin, or a fixed path on this site ("/x..." but never "/"
+      # alone, which "/evil.example" turns into a host), comes first.
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: '"$LIT" + $X + $Y'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^(https?://[^/?#]+[/?#]|/[^/\\])
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern-either:
+                      - pattern: $RES.redirect($U)
+                      - pattern: $RES.redirect($CODE, $U)
+                      - pattern: $RES.location($U)
+                      - pattern: $RES.setHeader("Location", $U)
+                      - pattern: $RES.set("Location", $U)
+                      - pattern: $RES.header("Location", $U)
+                  - metavariable-regex:
+                      metavariable: $RES
+                      regex: ^(res|response|reply|ctx|this\.ctx)$
+              - pattern: location.href = $U
+              - pattern: window.location.href = $U
+              - pattern: window.location = $U
+              - pattern: document.location = $U
+              - pattern: document.location.href = $U
+              - pattern: location.assign($U)
+              - pattern: location.replace($U)
+              - pattern: window.location.assign($U)
+              - pattern: window.location.replace($U)
+          - focus-metavariable: $U

@@ -98,7 +98,7 @@ func ociInstall(ctx context.Context, c *sandboxengine.Client, id sandboxoci.Iden
 	if err != nil {
 		return fmt.Errorf("create the cache volume: %w", err)
 	}
-	stopGW, sockDir, err := ociStartInstallGateway(step, t)
+	stopGW, sockDir, err := ociStartInstallGateway(ctx, step, t, observerDir, plan.Create.RunID)
 	if err != nil {
 		return err
 	}
@@ -236,28 +236,42 @@ func ociReadLine(r io.Reader) string {
 
 // ociStartInstallGateway serves the install gateway on an owner-only socket
 // directory: only the step's hosts (sandboxnet.HostRules), no private
-// destination, refusals as one plain line on the terminal.
-func ociStartInstallGateway(step *ociInstallStep, t ociTerm) (func(), string, error) {
+// destination, refusals as one plain line on the terminal. Its refusals
+// also reach the daemon's refusal audit on the run's relay link, under the
+// install list's own key (sandboxnet.KeyInstallHosts), and a lost link
+// closes it under require_refusal_audit like the agent's gateway (tracker
+// F-009, audit finding N1-A11; F-012). A run with no relay record reports
+// nothing, as before.
+func ociStartInstallGateway(ctx context.Context, step *ociInstallStep, t ociTerm, observerDir, runID string) (func(), string, error) {
 	rules, err := sandboxnet.ParseHostRules(step.Hosts)
 	if err != nil {
 		return func() {}, "", err
 	}
+	rules = rules.WithKey(sandboxnet.KeyInstallHosts)
+	gctx, cancel := context.WithCancel(ctx)
+	audit := sandboxEgressRefusalHooks(gctx, observerDir, runID)
 	dir, err := os.MkdirTemp("", "observer-sbx-inst-")
 	if err != nil {
+		cancel()
 		return func() {}, "", err
 	}
 	ln, err := net.Listen("unix", filepath.Join(dir, sandbox.GatewaySocketName))
 	if err != nil {
+		cancel()
 		_ = os.RemoveAll(dir)
 		return func() {}, "", fmt.Errorf("listen for the install gateway: %w", err)
 	}
 	srv := &http.Server{
-		Handler:           &sandboxnet.Gateway{Hosts: rules, Logger: ociInstallGatewayLogger(t)},
+		Handler: &sandboxnet.Gateway{
+			Hosts: rules, Logger: ociInstallGatewayLogger(t),
+			Report: audit.Report, Closed: audit.Closed,
+		},
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
 	return func() {
 		_ = srv.Close()
+		cancel()
 		_ = os.RemoveAll(dir)
 	}, dir, nil
 }

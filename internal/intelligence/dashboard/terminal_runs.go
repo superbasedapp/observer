@@ -39,6 +39,10 @@ func (s *Server) handleTerminalRuns(w http.ResponseWriter, r *http.Request) {
 		BestSessionID  string  `json:"best_session_id,omitempty"`
 		BestConfidence float64 `json:"best_confidence,omitempty"`
 		CommandCount   int     `json:"command_count"`
+		// Who started the run and, for an agent, its parent session (lane
+		// cli-2, migration 220); omitted when not recorded.
+		Initiator       string `json:"initiator,omitempty"`
+		ParentSessionID string `json:"parent_session_id,omitempty"`
 	}
 	// A daemon-death terminal orphan keeps ended_at NULL on purpose so
 	// resilient-attach can re-adopt it at startup — so the reconciliation here
@@ -65,16 +69,18 @@ func (s *Server) handleTerminalRuns(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		item := row{
-			RunID:          rn.RunID,
-			Tool:           rn.Tool,
-			Kind:           rn.Kind,
-			LaunchedAt:     rn.LaunchedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			ExitCode:       rn.ExitCode,
-			Running:        running,
-			State:          state,
-			BestSessionID:  rn.BestSessionID,
-			BestConfidence: rn.BestConfidence,
-			CommandCount:   rn.CommandCount,
+			RunID:           rn.RunID,
+			Tool:            rn.Tool,
+			Kind:            rn.Kind,
+			LaunchedAt:      rn.LaunchedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			ExitCode:        rn.ExitCode,
+			Running:         running,
+			State:           state,
+			BestSessionID:   rn.BestSessionID,
+			BestConfidence:  rn.BestConfidence,
+			CommandCount:    rn.CommandCount,
+			Initiator:       rn.Initiator,
+			ParentSessionID: rn.ParentSessionID,
 		}
 		if rn.EndedAt != nil {
 			item.EndedAt = rn.EndedAt.UTC().Format("2006-01-02T15:04:05Z07:00")

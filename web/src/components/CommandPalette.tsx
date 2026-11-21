@@ -9,6 +9,7 @@ import { NODE_TAB_ROUTES, nodeTabJumps } from "@/lib/pageTabRoutes";
 import { useGovernanceVisibility } from "@/lib/governance";
 import { hiddenNavIds, withoutHiddenPaths } from "@/lib/visibility";
 import { useInactiveNavIds } from "@/lib/useComponents";
+import { useAppsNavHidden } from "@/lib/useObsRoutesUp";
 import { hiddenTabIds, withoutHiddenTabPaths } from "@/lib/tabVisibility";
 import { useTour } from "@/components/tour/TourProvider";
 import { openFirstRun } from "@/lib/firstRun";
@@ -162,9 +163,11 @@ export function CommandPalette({
   const inactiveNav = useInactiveNavIds();
   // Messages is offered only on an enrolled node (D-695), like the nav.
   const messagesShown = showMessagesNav(useMessagesSummary().data);
+  // Your apps is offered once app observability answers here, like the nav.
+  const appsHidden = useAppsNavHidden();
   const hiddenPages = useMemo(
-    () => [...hiddenNavIds(gov.gov), ...inactiveNav, ...(messagesShown ? [] : ["messages"])],
-    [gov.gov, inactiveNav, messagesShown],
+    () => [...hiddenNavIds(gov.gov), ...inactiveNav, ...(messagesShown ? [] : ["messages"]), ...appsHidden],
+    [gov.gov, inactiveNav, messagesShown, appsHidden],
   );
   const hiddenTabs = hiddenTabIds(gov.gov);
 

@@ -329,7 +329,7 @@ func (r *Registry) registerClaudeCodeAt(tool, settingsDir, errPrefix string) Reg
 		// of those still need quoting, just with whatever quote style
 		// survives without escape interpretation.
 		binPath := forwardSlashPath(r.opts.BinaryPath)
-		cmd := shellQuoteIfNeeded(binPath) + " hook claude-code " + hookEventArg(event) + r.configFlagSuffixForwardSlash()
+		cmd := claudeCodeHookCommand(binPath, event, r.configFlagSuffixForwardSlash())
 		var groups []claudeHookGroupRaw
 		if raw, ok := hooksRaw[event]; ok && len(raw) > 0 {
 			if err := json.Unmarshal(raw, &groups); err != nil {
@@ -364,15 +364,12 @@ func (r *Registry) registerClaudeCodeAt(tool, settingsDir, errPrefix string) Reg
 			res.Error = hookConflictError(errPrefix, event)
 			return res
 		}
-		entryJSON, err := json.Marshal(claudeHookCommand{Type: "command", Command: cmd})
+		group, err := claudeObserverGroup(cmd)
 		if err != nil {
 			res.Error = fmt.Errorf(errPrefix+": marshal entry: %w", err)
 			return res
 		}
-		groups = append(groups, claudeHookGroupRaw{
-			Matcher: "*",
-			Hooks:   []json.RawMessage{entryJSON},
-		})
+		groups = append(groups, group)
 		groupsJSON, err := json.Marshal(groups)
 		if err != nil {
 			res.Error = fmt.Errorf(errPrefix+": marshal hooks[%s]: %w", event, err)

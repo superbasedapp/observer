@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudagents"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -245,5 +246,43 @@ func TestAPIToolsBreakdownSurfaceSumsToTotal(t *testing.T) {
 		if got := sumBuckets(bySurface); got != total {
 			t.Errorf("%v: by_surface %v sums to %d; want total %d", row["tool"], bySurface, got, total)
 		}
+	}
+}
+
+// TestAPIToolsBreakdownCloudAgentSurfaces is the Cline Cloud surface gap
+// at the API boundary: a cline-cloud session lands under tool cline, and
+// its tool calls (cline-cli names, written with the connector's
+// source_file) must resolve to a surface instead of "unresolved", while a
+// local cline row with the same raw name in the same window stays
+// unresolved. sum(by_surface) == total still holds.
+func TestAPIToolsBreakdownCloudAgentSurfaces(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now().UTC()
+	cloud := cloudagents.SourceFile(cloudagents.ConnectorClineCloud)
+	var events []models.ToolEvent
+	add := func(sourceFile, session, actionType, rawName string) {
+		i := len(events)
+		events = append(events, models.ToolEvent{
+			SourceFile: sourceFile, SourceEventID: fmt.Sprintf("e%d", i), SessionID: session,
+			ProjectRoot: root, Timestamp: now.Add(-time.Duration(i+1) * time.Minute),
+			Tool: models.ToolCline, ActionType: actionType, RawToolName: rawName,
+			Target: "t.go", Success: true,
+		})
+	}
+	add(cloud, "ses-cloud", models.ActionRunCommand, "run_commands")
+	add(cloud, "ses-cloud", models.ActionRunCommand, "run_commands")
+	add(cloud, "ses-cloud", models.ActionEditFile, "editor")
+	add("local-task.json", "ses-local", models.ActionUnknown, "run_commands")
+
+	row := breakdownRow(t, breakdownFixture(t, events), models.ToolCline)
+	bySurface, _ := row["by_surface"].(map[string]any)
+	if got := breakdownNum(bySurface, string(tooltax.SurfaceBuiltin)); got != 3 {
+		t.Errorf("by_surface[builtin] = %d, want 3 (the cline-cloud calls); full %v", got, bySurface)
+	}
+	if got := breakdownNum(bySurface, SurfaceUnresolved); got != 1 {
+		t.Errorf("by_surface[unresolved] = %d, want 1 (the local row); full %v", got, bySurface)
+	}
+	if got, total := sumBuckets(bySurface), breakdownNum(row, "total"); got != total {
+		t.Errorf("by_surface sums to %d, want total %d", got, total)
 	}
 }

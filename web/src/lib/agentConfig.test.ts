@@ -18,6 +18,8 @@ import {
   sortFindings,
   writableFiles,
   LAYER_LABEL,
+  orgNotice,
+  orgStatusOf,
   type Finding,
   type FileView,
   type SettingView,
@@ -230,4 +232,49 @@ test("commonScope: user, project personal, project shared", () => {
   assert.equal(shared.tracked, true);
   assert.match(shared.where, /committed with the repo/);
   for (const s of [local, shared, commonScope("", "local_only")]) assert.doesNotMatch(s.where, /[–—]/);
+});
+
+// The Organization tab's states (operator report 2026-11-02: an enrolled,
+// individual-tenancy node read "Not managed by an organization" and was told
+// to enrol).
+test("orgNotice: not enrolled points at enrolment", () => {
+  const n = orgNotice({ managed: false, status: "not_enrolled", has_policy: false });
+  assert.equal(n?.title, "Not enrolled with an organization");
+  assert.match(n!.body, /enrol this machine in Settings > Enrolment/);
+  assert.equal(n?.to, "/settings?section=enrolment");
+});
+
+test("orgNotice: an individual enrolment names its org and how management turns on", () => {
+  const n = orgNotice({ managed: false, status: "unmanaged", org_name: "localhost:8443", has_policy: false });
+  assert.equal(n?.title, "Enrolled with localhost:8443, not managed");
+  assert.match(n!.body, /enrolled with localhost:8443 with an individual \(teams\) enrolment/);
+  assert.match(n!.body, /switches the organization to enterprise/);
+  assert.match(n!.body, /managed enrolment code/);
+  assert.doesNotMatch(n!.body, /not enrolled/);
+});
+
+test("orgNotice: an unnamed org reads as your organization", () => {
+  assert.equal(orgNotice({ managed: false, status: "unmanaged", has_policy: false })?.title, "Enrolled with your organization, not managed");
+});
+
+test("orgNotice: managed with the grant not in force says why", () => {
+  const n = orgNotice({ managed: false, status: "managed_inactive", org_name: "Acme", grant_state: "grant_expired", has_policy: false });
+  assert.equal(n?.title, "Managed by Acme, not in force");
+  assert.match(n!.body, /its management grant has expired/);
+  const unknown = orgNotice({ managed: false, status: "managed_inactive", grant_state: "something_new", has_policy: false });
+  assert.match(unknown!.body, /its management grant is not in force/);
+});
+
+test("orgNotice: managed with no policy yet, and nothing once a policy is in force", () => {
+  const n = orgNotice({ managed: true, status: "managed", org_name: "Acme", has_policy: false });
+  assert.equal(n?.title, "No AI tool policy yet");
+  assert.match(n!.body, /^Acme manages this machine/);
+  assert.match(orgNotice({ managed: true, status: "managed", has_policy: false })!.body, /^Your organization manages/);
+  assert.equal(orgNotice({ managed: true, status: "managed", has_policy: true }), null);
+});
+
+test("orgStatusOf: an older daemon without status falls back on managed", () => {
+  assert.equal(orgStatusOf({ managed: true }), "managed");
+  assert.equal(orgStatusOf({ managed: false }), "not_enrolled");
+  assert.equal(orgStatusOf({ managed: false, status: "unmanaged" }), "unmanaged");
 });

@@ -449,6 +449,24 @@ export const GUARD_TOOL_COVERAGE: readonly GuardToolCoverage[] = [
     }
   },
   {
+    "tool": "custom-agent",
+    "name": "Own agent",
+    "prompt": {
+      "seam": "capture",
+      "flag": "records_only",
+      "ask": "records_only",
+      "deny": "records_only",
+      "caveats": []
+    },
+    "toolCall": {
+      "seam": "capture",
+      "flag": "records_only",
+      "ask": "records_only",
+      "deny": "records_only",
+      "caveats": []
+    }
+  },
+  {
     "tool": "deepagents-code",
     "name": "Deep Agents Code",
     "prompt": {

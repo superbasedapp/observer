@@ -5,6 +5,13 @@
 // the finding. The button shows only while security.feedback is SELECTED
 // (GET /api/components/state's security_selected, the daemon's one opt-in
 // rule): an unknown selection shows no button (fail closed).
+//
+// "Suggest a fix" is the same route with the body {"fix":true} (the
+// dashboard form of `observer security explain --fix`, OS and CI plan
+// section 14.8): the judge also gets the rule's fix hint and, for a
+// dependency finding, the installed and smallest fixed versions (versions
+// only, never advisory prose). Same caps, advisory label and judge routing;
+// it changes nothing on the finding either.
 
 /** The component that owns the explain flow. */
 export const EXPLAIN_COMPONENT = "security.feedback";
@@ -42,4 +49,22 @@ export function explainView(ex: SecurityExplanation): { body: string; note: stri
   const who = [ex.model, ex.hosting].filter(Boolean).join(", ");
   const label = ex.label || "Advisory: it does not change this finding.";
   return { body: ex.text, note: who ? `${label} (${who})` : label };
+}
+
+/** The two asks the drawer offers. */
+export type ExplainMode = "explain" | "fix";
+
+/** explainBody is the POST body for a mode: {"fix":true} only for a fix suggestion. */
+export function explainBody(mode: ExplainMode): { fix?: true } {
+  return mode === "fix" ? { fix: true } : {};
+}
+
+/** explainAskingLabel is the busy button's words for a mode. */
+export function explainAskingLabel(mode: ExplainMode): string {
+  return mode === "fix" ? "Asking for a fix..." : "Asking the judge...";
+}
+
+/** explainHeading heads a shown answer: a fix suggestion says so. */
+export function explainHeading(mode: ExplainMode): string {
+  return mode === "fix" ? "Suggested fix" : "Explanation";
 }

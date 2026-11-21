@@ -6,6 +6,10 @@ import type { ProjectDetail, ProjectRoiTile } from "@/lib/types";
 import { CommitCaptureBanner } from "@/components/projectdetail/CommitCaptureBanner";
 import { MetricIcon } from "@/components/MetricIcon";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
+import { CloudLane } from "@/components/projectdetail/CloudLane";
+import { SpendSplitLine } from "@/components/projectdetail/SpendSplit";
+import { spendSplit } from "@/lib/cloudLane";
+import type { WindowParams } from "@/lib/projectDrawer";
 
 // OverviewTab — the Projects-detail landing tab (plan §3.5 OverviewTab).
 // KPI band + the ROI proxy tiles, each carrying its own formula and caveat
@@ -13,12 +17,13 @@ import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 // ungraded and uncoloured — these are proxies for delivered value, not a
 // score, so no tile uses a warn/danger tone to imply "bad".
 
-export function OverviewTab({ d, onReload }: { d: ProjectDetail; onReload?: () => void }) {
+export function OverviewTab({ d, onReload, win }: { d: ProjectDetail; onReload?: () => void; win?: WindowParams }) {
   const aiLines = d.loc.ai_added + d.loc.ai_modified;
   const captureNotOk = d.capture.commits !== "ok";
   // A dollar-denominated proxy (usd, usd_per_line, usd_per_commit) has no
   // token form; the count / percent proxies stay.
   const roi = withoutDollars(d.roi, (t) => t.unit.startsWith("usd"));
+  const split = spendSplit(d.spend.locations);
 
   return (
     <div className="space-y-5">
@@ -42,9 +47,16 @@ export function OverviewTab({ d, onReload }: { d: ProjectDetail; onReload?: () =
             icon={<MetricIcon metric="spend" />}
             value={fmtUSD(d.spend.total_usd)}
             sub={
-              d.spend.unpriced_turns
-                ? `over ${d.window_days}d; ${fmtInt(d.spend.unpriced_turns)} turns unpriced (unknown model), excluded`
-                : `over ${d.window_days}d`
+              <span className="flex flex-col gap-0.5">
+                <span>
+                  {d.spend.unpriced_turns
+                    ? `over ${d.window_days}d; ${fmtInt(d.spend.unpriced_turns)} turns unpriced (unknown model), excluded`
+                    : `over ${d.window_days}d`}
+                </span>
+                {/* CA-D21: one total, split by where it ran (folded cloud
+                    twin included); absent for a project that only ran here. */}
+                {split && <SpendSplitLine split={split} showDollars />}
+              </span>
             }
           />
         )}
@@ -73,9 +85,14 @@ export function OverviewTab({ d, onReload }: { d: ProjectDetail; onReload?: () =
       {d.loc.human_capture === "none" && (
         <p className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2 text-[11px] text-fg-3">
           Human lines unmeasured for this project (no editor-reported saves) - no AI share is shown
-          against it. Install the SuperBased VS Code extension to measure human-authored lines.
+          against it. Install the superbased VS Code extension to measure human-authored lines.
         </p>
       )}
+
+      {/* Where it ran (cloud-agents lane CA-B5): renders nothing unless
+          something on this project ran off this machine or a cloud project
+          folds in. */}
+      {win && <CloudLane projectId={d.project.id} win={win} view="overview" />}
 
       <div>
         <h3 className="mb-2 flex items-center text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">

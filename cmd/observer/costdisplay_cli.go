@@ -42,6 +42,7 @@ var costReportCommands = []struct {
 	why  string
 }{
 	{"cost", "per-key cost rollup; renders the token view natively (no COST column)"},
+	{"chart", "terminal charts; renders the token view natively (spend drawn in tokens, no dollar fields in --json)"},
 	{"predict", "next-message estimate; renders the token band natively"},
 	{"advise", "avoidable-spend suggestions"},
 	{"aggregate", "aggregate preview and status totals"},

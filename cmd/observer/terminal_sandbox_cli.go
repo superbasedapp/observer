@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/marmutapp/superbased-observer/internal/agentlaunch"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -37,7 +38,8 @@ import (
 // through the same lifecycle seam (Create then Attach), so a CLI launch no
 // longer has to be refused and sent to the dashboard when an org requires
 // a sandbox. It runs before cobra, like the sandbox helpers: it strips its
-// own flag, prepares the run in the current directory (the live source) and
+// own flags, prepares the run in the current directory (the source chosen by
+// terminal_sandbox_cli_source.go: live wherever the row can share it) and
 // runs bwrap around `observer <verb> <the remaining args>` with the sandbox
 // marker set, so the inner launcher routes, hooks and gates exactly as it
 // does in a dashboard sandbox.
@@ -51,7 +53,11 @@ const (
 // sandboxCLIRequest is the parsed `--observer-sandbox` launch.
 type sandboxCLIRequest struct {
 	Verb, Tool, Profile, ConfigPath string
-	// Rest is the verb's own arguments with the --observer-sandbox flag removed.
+	// Source and Remote are --observer-sandbox-source (one of the closed
+	// workspace sources) and --observer-sandbox-remote (the repository of
+	// a clone-remote source); "" when not given (F-L3R-1).
+	Source, Remote string
+	// Rest is the verb's own arguments with Observer's sandbox flags removed.
 	Rest []string
 }
 
@@ -74,6 +80,13 @@ func parseSandboxCLI(args []string) (sandboxCLIRequest, bool, error) {
 		if a == "--" {
 			req.Rest = append(req.Rest, rest[i:]...)
 			break
+		}
+		if n, matched, err := sandboxCLIValueFlag(&req, rest, i); matched {
+			if err != nil {
+				return sandboxCLIRequest{}, true, err
+			}
+			i += n
+			continue
 		}
 		switch {
 		case a == "--observer-sandbox":
@@ -98,7 +111,13 @@ func parseSandboxCLI(args []string) (sandboxCLIRequest, bool, error) {
 		req.Rest = append(req.Rest, a)
 	}
 	if !found {
+		if req.Source != "" || req.Remote != "" {
+			return sandboxCLIRequest{}, true, errors.New("--observer-sandbox-source and --observer-sandbox-remote choose the workspace of a sandboxed launch; add --observer-sandbox <profile>")
+		}
 		return sandboxCLIRequest{}, false, nil
+	}
+	if err := sandboxCLICheckSource(req.Source, req.Remote); err != nil {
+		return sandboxCLIRequest{}, true, err
 	}
 	return req, true, nil
 }
@@ -143,7 +162,15 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 		return fail(sandboxCLIUnavailable, "the Sandboxes and VMs component is not active; turn it on in Settings > Components")
 	}
 	if !cfg.Terminal.Sandbox.Enabled {
-		return fail(sandboxCLIUnavailable, "[terminal.sandbox].enabled is false; turn sandboxed terminals on in Settings > Terminal")
+		return fail(sandboxCLIUnavailable, "[terminal.sandbox].enabled is false; turn sandboxed terminals on in Terminals > Settings > Sandbox isolation")
+	}
+	// The organization's isolation floors (gateway_modes, allowed_backends,
+	// min_isolation and the rest) are judged here as in the daemon: this
+	// process reads the verified cache the daemon installed from, and a
+	// floor that may be in force but cannot be read refuses (O5 sweep
+	// G-H1; R-035's reader, until now used only by re-adoption).
+	if err := installCLIIsolationFloors(ctx, cfg); err != nil {
+		return fail(sandboxCLIUnavailable, "%v", err)
 	}
 	if spec, _ := integration.For(req.Tool); len(spec.Sandbox.StateRW) == 0 {
 		return fail(sandboxCLIUnavailable, "%s is not sandbox-launchable yet", req.Tool)
@@ -159,13 +186,28 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 	if real, rerr := filepath.EvalSymlinks(cwd); rerr == nil {
 		cwd = real
 	}
-	// The same observer directory the dashboard's runtime uses (P-017 (c)):
-	// the directory of the configured DB, not a fixed ~/.observer.
-	rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, cfg.Launch.Tools, sandboxObserverDirFor(cfg), exe, slog.New(slog.DiscardHandler))
+	// The workspace source (F-L3R-1): the flag, else the row's default from
+	// its declared deliveries (live wherever the row can share it). It is
+	// resolved BEFORE validation, so the source agentlaunch validates is
+	// the source the launch uses (fold audit M2, lane FX5).
+	src, srcNote, err := sandboxCLIWorkspaceSource(req.Source, sandboxCLIRowDeliveries(backend))
 	if err != nil {
 		return fail(sandboxCLIUnavailable, "%v", err)
 	}
-	rt.applyDaemonConfig(cfg)
+	// The daemon's own request rows (lane cli-2, discovery section 7 "Two
+	// launch paths"): the foreground launch is a thin client of the same
+	// internal/agentlaunch validation `observer launch` and the daemon
+	// walk, so the two paths cannot disagree about what a valid request is.
+	normalized, nerr := agentlaunch.Normalize(sandboxCLIAgentRequest(req, cwd, src))
+	if nerr != nil {
+		return fail(sandboxCLICodeExit(nerr), "%v", nerr)
+	}
+	// The same observer directory the dashboard's runtime uses (P-017 (c)):
+	// the directory of the configured DB, not a fixed ~/.observer.
+	rt, err := newComposedSandboxRuntime(cfg, cfg.Terminal.Sandbox, false, sandboxObserverDirFor(cfg), exe, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return fail(sandboxCLIUnavailable, "%v", err)
+	}
 	rt.orgRWBinds, rt.orgSkipScan = orgBinds.rw, orgBinds.skipScan
 	// The launcher's own binary-path flag (`--claude-path`) names the tool
 	// the inner launcher runs, so the plan grants that binary's directory
@@ -181,19 +223,90 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 	// "Routed" comes from a live daemon and proxy, not from config
 	// (P-017 (b)).
 	rt.requireLiveProxy(func(port int) bool { return proxyServing(ctx, port) })
-	av := rt.ProbeSandbox(ctx)
+	av := sandboxCLIProbe(ctx, rt)
 	// The refusal names the backend its reason belongs to: a legacy answer
 	// that gave way to the first enabled row (legacyWithinEnabled) carries
 	// that row's id, not the auto name (P-111).
 	if !av.Available {
 		return fail(sandboxCLIUnavailable, "%s", sandboxCLIRefusal(backend, req.Profile != "auto", av))
 	}
-	backend = sandboxCLIProbedBackend(backend, av.Backend)
+	// The daemon's backend choice table over this runtime's own probe
+	// (lane cli-2): an explicit row must be offered and available here,
+	// auto never takes a beta row, and the live source and the tool's
+	// sandbox row must be available, exactly as for `observer launch`.
+	choice, cerr := agentlaunch.Choose(normalized, probeRows(av))
+	if cerr != nil {
+		return fail(sandboxCLICodeExit(cerr), "%v", cerr)
+	}
+	// The backend this launch uses is the one Choose decided: the named
+	// row, or for auto the selection's own pick (audit M3: the path used to
+	// discard Choose's answer).
+	requested := backend
+	backend = sandboxCLIChosenBackend(choice, backend, av.Backend)
+	if err := sandboxCLISourceKept(req.Source, src, requested, backend, sandboxCLIRowDeliveries); err != nil {
+		return fail(sandboxCLIUnavailable, "%v", err)
+	}
+	return sandboxCLIStart(ctx, sandboxCLILaunch{
+		req: req, cfg: cfg, rt: rt, cwd: cwd, exe: exe, backend: backend, stderr: stderr,
+		source: workspace.Source(normalized.Workspace), sourceNote: srcNote,
+	})
+}
+
+// sandboxCLILaunch is everything the launch step of a foreground sandboxed
+// launch needs, once runSandboxCLI's checks have all passed.
+type sandboxCLILaunch struct {
+	req     sandboxCLIRequest
+	cfg     config.Config
+	rt      *sandboxRuntime
+	cwd     string
+	exe     string
+	backend string
+	stderr  io.Writer
+	// source is the workspace source agentlaunch validated, the one the
+	// launch prepares (fold audit M2); sourceNote is the line printed when
+	// it was chosen for the user ("" when the flag chose it, or live).
+	source     workspace.Source
+	sourceNote string
+}
+
+// sandboxCLIProbe is the runtime's sandbox probe (a var so a test drives
+// runSandboxCLI with a probe of its own; lane cli-2 fixes-1, M3).
+var sandboxCLIProbe = func(ctx context.Context, rt *sandboxRuntime) dashapi.SandboxAvailability {
+	return rt.ProbeSandbox(ctx)
+}
+
+// sandboxCLIStart is the launch step (a var so a test drives
+// runSandboxCLI up to the launch with an injected launcher).
+var sandboxCLIStart = runSandboxCLIStart
+
+// sandboxCLIChosenBackend is the backend a launch uses: the row Choose
+// named, else (auto) the selection's pick as the probe reports it, else the
+// requested name.
+func sandboxCLIChosenBackend(c agentlaunch.Choice, requested, probed string) string {
+	if c.Backend != "" {
+		return c.Backend
+	}
+	return sandboxCLIProbedBackend(requested, probed)
+}
+
+// runSandboxCLIStart prepares the run and executes the chosen backend's
+// wrap around the inner launch.
+func runSandboxCLIStart(ctx context.Context, l sandboxCLILaunch) int {
+	req, cfg, rt, cwd, exe, backend, stderr := l.req, l.cfg, l.rt, l.cwd, l.exe, l.backend, l.stderr
+	fail := func(code int, format string, a ...any) int {
+		fmt.Fprintf(stderr, "observer %s --observer-sandbox: "+format+"\n", append([]any{req.Verb}, a...)...)
+		return code
+	}
 	if err := sandboxCLIRelayGate(rt.observerDir); err != nil {
 		return fail(sandboxCLIUnavailable, "%v", err)
 	}
+	// The workspace source runSandboxCLI resolved and agentlaunch validated
+	// (fold audit M2): never resolved a second time here.
+	if l.sourceNote != "" {
+		fmt.Fprintf(stderr, "observer %s --observer-sandbox: %s\n", req.Verb, l.sourceNote)
+	}
 	preq := termsvc.PrepareRequest{
-		Tool: req.Tool, ProjectRoot: cwd, WorkspaceSource: string(workspace.SourceLive), ToolArgs: req.Rest,
+		Tool: req.Tool, ProjectRoot: cwd, WorkspaceSource: string(l.source), WorkspaceRemote: req.Remote, ToolArgs: req.Rest,
 		// Sign-in seeding (lane BOXSIGNIN): asked on a terminal only; with
 		// no terminal and no remembered consent nothing is copied.
 		SignInAsk: sandboxCLICanAsk(),
@@ -220,24 +333,34 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 	// The run's terminal_run row (lane sbx-p2d): the same store seam a
 	// dashboard launch records through, bound to the relay run, so what
 	// lowers the run's capture (capture_degraded, the causes, transcript
-	// drift) lands somewhere durable. A row that cannot be written leaves
-	// the lowering in the daemon log only; it does not stop the launch.
-	runID, rerr := recordSandboxCLIRun(ctx, cfg, req.Tool, cwd, iso)
+	// drift) lands somewhere durable. A row that cannot be written refuses
+	// the launch (cli-1b fixes-3, D): the daemon's loopback exposure gate
+	// finds a CLI box through its row, so an unrecorded box is one it could
+	// never see.
+	runID, rerr := recordOrRefuseSandboxCLIRun(ctx, cfg, req.Tool, cwd, iso, recordSandboxCLIRun)
 	if rerr != nil {
-		fmt.Fprintf(stderr, "observer %s: the run is not recorded (its capture health will reach the daemon log only): %v\n", req.Verb, rerr)
-	} else {
-		bindSandboxRelayRun(prepared.WrapArgv, runID)
+		return fail(sandboxCLIUnavailable, "%v", rerr)
+	}
+	bindSandboxRelayRun(prepared.WrapArgv, runID)
+	// From here a refusal also ends the row it just wrote, so a launch that
+	// never started does not read as a running run (lane callerid, L3).
+	refuseRecorded := func(format string, a ...any) int {
+		endRefusedSandboxCLIRun(ctx, cfg, runID)
+		return fail(sandboxCLIUnavailable, format, a...)
 	}
 	fmt.Fprintf(stderr, "observer %s: sandboxed by %s (%s, network %s, capture %s%s)\n",
 		req.Verb, backend, iso.Class, iso.EgressTier, sandboxselect.CaptureLabel(sandboxselect.CaptureResult{
 			Level: vocab.CaptureLevel(iso.CaptureLevel), GatewayGuarded: iso.CaptureRule == "C6" && iso.CaptureLevel == string(vocab.CaptureFull),
-		}), sandboxCLIPassEnvLabel(cfg.Terminal.Sandbox.PassEnv)+sandboxCLIOSC52Label(cfg.Terminal.Sandbox.AllowOSC52Clipboard))
+		}), sandboxCLIPassEnvLabel(cfg.Terminal.Sandbox.PassEnv)+sandboxCLIOSC52Label(cfg.Terminal.Sandbox.AllowOSC52Clipboard)+sandboxCLISeccompLabel(iso.Seccomp))
+	if msg := sandboxCLISeizeRefusal(cfg.Terminal.Sandbox, iso.Seccomp, iso.Stack); msg != "" {
+		fmt.Fprintf(stderr, "observer %s: %s\n", req.Verb, msg)
+	}
 	// The agent's own sandbox: the same rule the dashboard launch applies
 	// (termsvc, lane SBX-P3D), from the same recorded state, so the CLI and
 	// the dashboard give the same argv.
 	switchArgs, serr := integration.NativeSwitchArgsForState(req.Tool, vocab.NativeSandboxState(iso.NativeSandboxState))
 	if serr != nil {
-		return fail(sandboxCLIUnavailable, "%v", serr)
+		return refuseRecorded("%v", serr)
 	}
 	argv := sandboxCLIInnerArgv(prepared.WrapArgv, exe, req.Verb, integration.AppendNativeArgs(req.Rest, switchArgs))
 	//nolint:gosec // argv is the planner's bwrap prefix plus this binary and the operator's own arguments
@@ -245,7 +368,7 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, stderr
 	cmd.Dir = prepared.Dir
 	// The box's environment is the allow-list; the launch names what it
-	// adds (WINFIX2 R-167).
+	// adds (WINFIX2, ledger SBX-WIN-ENV-1).
 	cmd.Env = withSandboxSignInShared(withSandboxEnvAllow(sandboxTierChildEnv(os.Environ(), prepared.WrapArgv),
 		sandboxEnvAllowNames(req.Tool, cfg.Terminal.Sandbox.PassEnv), cfg.Terminal.Sandbox.PassEnv), prepared.SignInShared)
 	// The child shares the terminal's foreground group and gets Ctrl-C
@@ -261,7 +384,10 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 	// Under the org's require_full_capture floor the daemon ends a drifted
 	// run; for this launch it leaves an end request this process acts on
 	// (watchSandboxCLIEnd), the way it closes a dashboard terminal.
-	endReason, stopWatch := watchSandboxCLIEnd(rt.observerDir, runID, sigs, stderr)
+	endReason, stopWatch, werr := watchSandboxCLIEnd(rt.observerDir, runID, sigs, stderr)
+	if werr != nil {
+		return refuseRecorded("%v", werr)
+	}
 	defer stopWatch()
 	// The first signal the launch gets (its console window closed, a stop
 	// from outside) names the run's end; the run's row records the reason
@@ -292,6 +418,49 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 		return fail(sandboxCLIUnavailable, "run: %v", runErr)
 	}
 	return finish(code)
+}
+
+// sandboxCLIAgentRequest is the foreground launch as internal/agentlaunch's
+// request: the resolved workspace source src (the one
+// --observer-sandbox-source names, with its --observer-sandbox-remote, else
+// the row's own default from sandboxCLIWorkspaceSource), in the launch
+// directory, the named profile or auto (lane cli-2; the source flags are
+// OpenShell lane FX2's, F-L3R-1). The source validated here is the source
+// the launch prepares (fold audit M2, lane FX5).
+func sandboxCLIAgentRequest(req sandboxCLIRequest, dir string, src workspace.Source) agentlaunch.Request {
+	return agentlaunch.Request{
+		Tool: req.Tool, Project: dir, Sandbox: req.Profile,
+		Workspace: string(src), Remote: req.Remote,
+	}
+}
+
+// sandboxCLISourceKept refuses a launch whose chosen backend would take a
+// different default source than the one validated: the source was resolved
+// from the requested backend before validation, and auto may choose
+// another row. No source flag and a different chosen row is the only case
+// that can disagree; the launch then names the flag rather than prepare a
+// source agentlaunch never validated (fold audit M2). A chosen row with no
+// flag-free source refuses too. deliveries is the row's declared
+// deliveries (sandboxCLIRowDeliveries; a test injects its own).
+func sandboxCLISourceKept(flag string, validated workspace.Source, requested, chosen string, deliveries func(string) []string) error {
+	if flag != "" || chosen == requested {
+		return nil
+	}
+	src, _, err := sandboxCLIWorkspaceSource("", deliveries(chosen))
+	if err == nil && src == validated {
+		return nil
+	}
+	return fmt.Errorf("%s was chosen, whose workspace source is not the %s source this launch validated; name one with --observer-sandbox-source", chosen, validated)
+}
+
+// sandboxCLICodeExit maps an agentlaunch refusal onto this path's exit
+// codes: a malformed request is a usage error (2), anything else is "not
+// available here" (3), as `observer launch` maps them.
+func sandboxCLICodeExit(err error) int {
+	if agentlaunch.CodeOf(err) == agentlaunch.CodeInvalid {
+		return sandboxCLIUsage
+	}
+	return sandboxCLIUnavailable
 }
 
 // sandboxCLIForwardedSignals are the signals a sandboxed CLI launch passes
@@ -329,6 +498,21 @@ func superviseSandboxCLIChild(cmd *exec.Cmd, sigs <-chan os.Signal, end func(exi
 	}
 }
 
+// recordOrRefuseSandboxCLIRun records the launch's run through record and
+// refuses (a non-nil error, nothing started) when it cannot: no row, no box.
+func recordOrRefuseSandboxCLIRun(ctx context.Context, cfg config.Config, tool, dir string, iso termrun.Isolation,
+	record func(context.Context, config.Config, string, string, termrun.Isolation) (string, error),
+) (string, error) {
+	runID, err := record(ctx, cfg, tool, dir, iso)
+	if err == nil && runID == "" {
+		err = errors.New("no run id")
+	}
+	if err != nil {
+		return "", fmt.Errorf("the run cannot be recorded (%w), and an unrecorded box is one the daemon cannot see (its capture health, and the dashboard's loopback exposure gate); the launch is refused and nothing was started", err)
+	}
+	return runID, nil
+}
+
 // recordSandboxCLIRun writes a sandboxed CLI launch's terminal_run row
 // through the dashboard launch's recorder (termRunRecorder: the same row
 // shape and the same sealed isolation evidence) and returns its id. The
@@ -347,6 +531,9 @@ func recordSandboxCLIRun(ctx context.Context, cfg config.Config, tool, dir strin
 	run := termrun.Run{
 		RunID: runID, Tool: tool, Kind: termrun.KindFresh,
 		ProjectRootHash: termrun.HashProjectRoot(dir), LaunchedAt: time.Now().UTC(), Isolation: iso,
+		// Who started it (lane cli-2): this process, by its ancestry and
+		// its own agent-session marker.
+		Origin: selfLaunchOrigin(ctx, database),
 	}
 	if err := (termRunRecorder{st: store.New(database)}).RecordRun(ctx, run); err != nil {
 		return "", err
@@ -375,6 +562,13 @@ func endSandboxCLIRun(ctx context.Context, cfg config.Config, runID string, exit
 	_ = store.New(database).EndTerminalRunOwned(ctx, runID, time.Now().UTC(), exit, reason)
 	// The daemon logs one line for the end (logSandboxCLIEnded).
 	writeSandboxCLIEnded(sandboxObserverDirFor(cfg), runID, reason, exit)
+}
+
+// endRefusedSandboxCLIRun ends the row of a launch refused after the row
+// was written and before the tool started (launch_refused, exit 3), so it
+// never reads as a running run (lane callerid, L3).
+func endRefusedSandboxCLIRun(ctx context.Context, cfg config.Config, runID string) {
+	endSandboxCLIRun(ctx, cfg, runID, sandboxCLIUnavailable, store.EndReasonLaunchRefused)
 }
 
 // sandboxObserverDirFor is the observer directory a runtime is built over:
@@ -437,7 +631,12 @@ func sandboxCLIRefusal(requested string, named bool, av dashapi.SandboxAvailabil
 			case b.Verdict != "":
 				head += " (" + b.Verdict + ")"
 			}
-			if av.Reason == "" {
+			// The probe's whole answer follows only when it is the list of
+			// every row of this host (ReasonListsRows, a structured field,
+			// FX1-A4); a reason that is another row's own (the legacy bwrap
+			// probe's uid-map refusal under a launch of the org-hosted row,
+			// live finding F-L3-4) is not appended.
+			if av.Reason == "" || !av.ReasonListsRows {
 				return head
 			}
 			return head + ". " + av.Reason

@@ -23,6 +23,7 @@ func TestCheckKey(t *testing.T) {
 		{"plain leaf", "observer.log_level", nil, KeyOK, false, "observer.log_level"},
 		{"sensitive leaf needs confirm", "observer.secrets.enable_scrubbing", nil, KeyOK, true, "observer.secrets.enable_scrubbing"},
 		{"secret refused", "email.password", nil, KeySecret, false, "email.password"},
+		{"Plane A content key is settable and sensitive", "observability.store_content", nil, KeyOK, true, "observability.store_content"},
 		{"secret table refused", "routing.key_pool", nil, KeySecret, false, "routing.key_pool"},
 		{"owner elsewhere", "org_client.enabled", nil, KeyOwnerElsewhere, false, "org_client.enabled"},
 		{"unknown", "no.such.key", nil, KeyUnknown, false, ""},

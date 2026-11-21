@@ -174,6 +174,7 @@ func sandboxPostureSettings(cfg config.Config) sandboxselect.PostureSettings {
 		AllowWorktreeSource:   ts.AllowWorktreeSource,
 		AllowToolConfigWrites: ts.AllowToolConfigWrites,
 		DefaultOn:             ts.DefaultOn,
+		Seccomp:               ts.Seccomp,
 		HomeMode:              ts.HomeMode,
 		RetentionDays:         int64(ts.WorkspaceRetentionDays),
 		RootfulEngineAllowed:  ts.OCI.AllowRootful,
@@ -265,6 +266,8 @@ func sandboxFloorsFromSpec(spec terminalsisolation.PolicySpec, ok bool) sandboxs
 		RequireFullCapture:   spec.RequireFullCapture,
 		AllowedRegions:       spec.AllowedRegions,
 		ForbidProviderInject: spec.ForbidProviderKeyInjection,
+		RequireRefusalAudit:  spec.RequireRefusalAudit,
+		AllowedGatewayModes:  sandboxGatewayModes(spec.GatewayModes),
 		// AllowRemote (lane SBX-P7): true only while a hosted row is in the
 		// local backends and no org floor sets allow_remote = false (a floor
 		// can never turn hosted sandboxes on: false is the only value the
@@ -283,6 +286,8 @@ var isolationFloorVerdictKey = map[string]string{
 	sandboxselect.VerdictReducedCaptureNotAllowed: "require_full_capture",
 	sandboxselect.VerdictRegionNotAllowed:         "allowed_regions",
 	sandboxselect.VerdictCustodyNotAllowed:        "provider_key_injection",
+	sandboxselect.VerdictRefusalAuditRequired:     "require_refusal_audit",
+	sandboxselect.VerdictGatewayModeNotAllowed:    "gateway_modes",
 }
 
 // isolationFloorRefusal is the launch's answer when the org floors in force
@@ -315,6 +320,23 @@ func isolationFloorRefusal(cfg config.TerminalSandboxConfig) error {
 		return nil
 	}
 	return sandboxRefusalError{msg: isolationFloorMessage(d)}
+}
+
+// sandboxDropReason is the reason a row's drop is shown with (the probe's
+// per-row reason, so the CLI refusal headline, `observer sandbox status` and
+// the dashboard): a floor rule's reason that names the organization's floor
+// by its wire key names it by its admin label instead, with the key in
+// parentheses as the lint's refusals do, from the one floor table
+// (terminalsisolation.FloorLabelWithKey; lane FU10, F-050: the N4-L1 live
+// pass printed `floor require_refusal_audit` where the row and the
+// link-loss 503 say "Require refusal audit"). Every other reason is kept.
+func sandboxDropReason(d sandboxselect.Drop) string {
+	key, ok := isolationFloorVerdictKey[d.Verdict]
+	if !ok {
+		return d.Reason
+	}
+	return strings.Replace(d.Reason, sandboxselect.OrgFloorPhrase(key),
+		"your organization's sandbox setting "+terminalsisolation.FloorLabelWithKey(key), 1)
 }
 
 // isolationFloorMessage renders one floor drop as the org_disallow copy.
@@ -528,12 +550,27 @@ func isolationFloorValue(s terminalsisolation.PolicySpec, key string) string {
 		return string(s.MinEgress)
 	case "allowed_regions":
 		return strings.Join(s.AllowedRegions, ", ")
+	case "gateway_modes":
+		return strings.Join(s.GatewayModes, ", ")
 	case "allow_remote":
 		return "false"
 	case "provider_key_injection", "provider_memory_images":
 		return terminalsisolation.Forbidden
 	}
 	return "true"
+}
+
+// sandboxGatewayModes maps the floor's compiled list onto the closed
+// vocabulary (nil stays nil: no floor).
+func sandboxGatewayModes(in []string) []vocab.GatewayMode {
+	if in == nil {
+		return nil
+	}
+	out := make([]vocab.GatewayMode, 0, len(in))
+	for _, m := range in {
+		out = append(out, vocab.GatewayMode(m))
+	}
+	return out
 }
 
 func displayValue(v any) string {

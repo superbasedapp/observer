@@ -400,7 +400,7 @@ func TestApprovals_OrgLockGate(t *testing.T) {
 		t.Fatalf("guard.New: %v", err)
 	}
 	// Every rule has a grant: only an org-granted one may use it.
-	g.SetApprovalLookup(func(string, string, string) bool { return true })
+	g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 
 	// R-101 is a built-in deny the org bundle never marked
 	// overridable, so the bundle's mere presence locks it.
@@ -553,7 +553,7 @@ func TestApprovals_BlastRadiusAtEvaluation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("guard.New: %v", err)
 			}
-			g.SetApprovalLookup(func(string, string, string) bool { return true })
+			g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 
 			// R-101 (rm -rf ~) is a built-in the bundle never names.
 			av, _ := g.EvaluateHook(policy.Event{
@@ -591,9 +591,9 @@ func TestApprovals_ProjectScopeOnALaneWithNoProjectRoot(t *testing.T) {
 		cfg.Mode = "enforce"
 		g := newTestGuard(t, cfg, nil)
 		seen := &[]string{}
-		g.SetApprovalLookup(func(_, _, rootHash string) bool {
+		g.SetApprovalLookup(func(_, _, rootHash string) (bool, error) {
 			*seen = append(*seen, rootHash)
-			return rootHash == wantHash
+			return rootHash == wantHash, nil
 		})
 		if resolver != nil {
 			g.SetSessionProjectRootLookup(resolver)
@@ -670,4 +670,71 @@ func TestApprovals_ProjectScopeOnALaneWithNoProjectRoot(t *testing.T) {
 // applied" bool these tests were written against.
 func approvedOf(v policy.Verdict, o approvalOutcome) (policy.Verdict, bool) {
 	return v, o.approved()
+}
+
+// TestApprovals_OrgLockedNoteNamesTheCause pins orgLockCause: the note a
+// refused local approval leaves says WHY the rule is locked. A rule the
+// bundle never names is locked on a managed node by the tenancy, and the
+// note must not claim an org policy names it (2026-11-10: the commit gate
+// S-793 read "an org policy locks S-793" on a node whose org bundle only
+// held enforce=false overrides).
+func TestApprovals_OrgLockedNoteNamesTheCause(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		tenancy  func() bool
+		target   string
+		rule     string
+		wantNote string
+	}{
+		{"managed, rule the bundle never names", func() bool { return true }, "rm -rf ~", "R-101", "this node is managed by its organization, which locks every rule here, R-101 included, although its guard bundle does not name it"},
+		{"unresolved tenancy, rule the bundle never names", nil, "rm -rf ~", "R-101", "could not read whether the node is managed"},
+		{"individual, rule the bundle names", func() bool { return false }, "git push --force origin main", "R-110", "the organization's guard bundle names R-110"},
+		{"managed, rule the bundle names", func() bool { return true }, "git push --force origin main", "R-110", "the organization's guard bundle names R-110"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, pin := signedEnvelope(t, 13, orgOverridableBundleTOML)
+			cfg := guardCfgOrg()
+			cfg.Mode = "enforce"
+			g, err := New(Options{
+				Config: cfg, Home: "/home/u", KnownProjectRoots: []string{"/home/u/proj"},
+				ReadFile:      fsMap(map[string]string{orgBundlePath: env}),
+				OrgKeyPinHash: pin, ManagedTenancy: tc.tenancy,
+			})
+			if err != nil {
+				t.Fatalf("guard.New: %v", err)
+			}
+			g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
+			av, _ := g.EvaluateHook(policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: tc.target, SessionID: "sA", ProjectRoot: "/home/u/proj", Cwd: "/home/u/proj",
+				Caps: policy.Capabilities{PreExecution: true, CanBlock: true, CanAsk: true},
+			})
+			if av.Verdict.RuleID != tc.rule {
+				t.Fatalf("fixture rule = %q (%v), want %s", av.Verdict.RuleID, av.Verdict.Decision, tc.rule)
+			}
+			if !strings.Contains(av.Verdict.Reason, "[org_locked: ") || !strings.Contains(av.Verdict.Reason, tc.wantNote) {
+				t.Fatalf("reason = %q, want an [org_locked note containing %q", av.Verdict.Reason, tc.wantNote)
+			}
+			if tc.rule == "R-101" && strings.Contains(av.Verdict.Reason, "bundle names") {
+				t.Fatalf("reason claims the bundle names a rule it never mentions: %q", av.Verdict.Reason)
+			}
+		})
+	}
+}
+
+// TestOrgLockedNoteTable pins the note rendering per cause.
+func TestOrgLockedNoteTable(t *testing.T) {
+	t.Parallel()
+	for cause := range orgLockedNotes {
+		n := orgLockedNote(cause, "S-793")
+		if !strings.HasPrefix(n, " [org_locked: ") || !strings.Contains(n, "S-793") || strings.Contains(n, "%!") {
+			t.Errorf("note for %q = %q", cause, n)
+		}
+	}
+	if n := orgLockedNote(orgLockNone, "S-793"); !strings.Contains(n, "an org policy locks S-793") {
+		t.Errorf("fallback note = %q", n)
+	}
 }

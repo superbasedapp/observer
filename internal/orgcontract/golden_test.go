@@ -114,6 +114,12 @@ func TestWireEncodingGolden(t *testing.T) {
 				// METADATA like ToolVersion above — ships in the DEFAULT
 				// posture. See docs/security.md ledger row LINEAGE-1.
 				ParentThreadID: "sess-0",
+				// Cloud-agents arc (agent 240 / server 300 / pg 0170): where
+				// the session ran (closed vocabulary) and the vendor's
+				// cross-rail session reference (opaque id), both METADATA
+				// that ships in the DEFAULT posture.
+				ExecutionLocation: "vendor_cloud",
+				VendorSessionRef:  "cse_01golden",
 			}},
 			Actions: []ActionRow{{
 				SessionID: "sess-1", SourceEventID: "evt-9",

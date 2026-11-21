@@ -229,6 +229,7 @@ func TestRunProbeHook_EndToEnd(t *testing.T) {
 	guardOnBlockConfig := func(t *testing.T, dir string) string {
 		t.Helper()
 		cfgPath := filepath.Join(dir, "config.toml")
+		seedNodeDB(t, filepath.Join(dir, "observer.db"))
 		cfgBody := "[observer]\ndb_path = " + quoteTOMLPath(filepath.Join(dir, "observer.db")) + "\n\n" +
 			"[guard]\nenabled = true\nmode = \"observe\"\n\n" +
 			"[guard.prompt]\nenabled = true\nmode = \"block\"\nhook_lane = true\nenforce_independent = true\n"
@@ -240,6 +241,7 @@ func TestRunProbeHook_EndToEnd(t *testing.T) {
 	guardOffConfig := func(t *testing.T, dir string) string {
 		t.Helper()
 		cfgPath := filepath.Join(dir, "config.toml")
+		seedNodeDB(t, filepath.Join(dir, "observer.db"))
 		cfgBody := "[observer]\ndb_path = " + quoteTOMLPath(filepath.Join(dir, "observer.db")) + "\n\n" +
 			"[guard]\nenabled = false\n"
 		if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {

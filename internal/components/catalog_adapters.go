@@ -69,6 +69,10 @@ var adapterSpecs = []adapterSpec{
 	{tool: "copilot-web", title: "Microsoft Copilot (web)", pkg: "internal/adapter/browserchat", bundles: []string{"chatgpt-web", "claude-web", "perplexity-web", "gemini-web"}, alsoRequires: []string{"capture.browser"}},
 	{tool: "cowork", title: "Claude Cowork", pkg: "internal/adapter/cowork"},
 	{tool: "crush", title: "Crush", pkg: "internal/adapter/crush"},
+	{
+		tool: "custom-agent", title: "Own agents (custom-agent)", pkg: "internal/adapter/customagent",
+		note: "Proxy-only: an agent you build on a raw provider API or SDK, captured when it sends X-Superbased-Agent through the node proxy's default lanes. No watch roots, hooks or launcher.",
+	},
 	{tool: "cursor", title: "Cursor", pkg: "internal/adapter/cursor"},
 	{tool: "deepagents-code", title: "Deep Agents Code", pkg: "internal/adapter/deepagents"},
 	{tool: "deepseek", title: "DeepSeek Harness", pkg: "internal/adapter/deepseek"},
@@ -161,7 +165,7 @@ var adapterL1 = map[string]bool{
 	"pi": true, "poolside": true, "prime-agent": true, "qoder": true, "qwen-code": true,
 	"zcode": true, "zed": true,
 	"autohand": true, "ibm-bob": true, "cortex-code": true, "codebuddy": true, "deepagents-code": true, "dimcode": true,
-	"dirac": true, "kimchi": true, "stakpak": true, "vtcode": true,
+	"dirac": true, "kimchi": true, "stakpak": true, "vtcode": true, "custom-agent": true,
 	"chatgpt-web": true, "claude-web": true, "perplexity-web": true, "gemini-web": true, "copilot-web": true,
 }
 

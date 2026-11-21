@@ -1,0 +1,57 @@
+rules:
+  - id: ruby.nosql-injection
+    languages: [ruby]
+    severity: ERROR
+    message: Web request input reaches a MongoDB query filter as it is; a parameter such as user[name][$ne]= arrives as a hash, so a caller can send an operator in place of a value. Convert each value to a string or id first, or permit only scalars.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|raw_post|body|GET|POST)$
+    pattern-sanitizers:
+      - pattern: $X.to_s
+      - pattern: $X.to_i
+      - pattern: $X.to_f
+      - pattern: String(...)
+      - pattern: Integer(...)
+      - pattern: BSON::ObjectId(...)
+      - pattern: BSON::ObjectId.from_string(...)
+    pattern-sinks:
+      # The mongo driver's collection calls; a Mongoid or ActiveRecord where
+      # is not one (the same call is safe on ActiveRecord).
+      - patterns:
+          - pattern-either:
+              - pattern: $COLL.$F($Q, ...)
+              - pattern: '$COLL.$F(..., $KEY: $Q, ...)'
+              - pattern: '$COLL.$F(..., $KEY => $Q, ...)'
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(find|find_one_and_update|find_one_and_delete|find_one_and_replace|update_one|update_many|delete_one|delete_many|replace_one|count_documents|count|distinct|aggregate)$
+          # A collection by its name, or a variable assigned one.
+          - pattern-either:
+              - patterns:
+                  - pattern: $COLL.$F(...)
+                  - metavariable-regex:
+                      metavariable: $COLL
+                      regex: ^(.*\bdb\b.*|.*\bmongo\w*\b.*|(@|self\.)?\w*(collection|coll|_col)s?|.*\[\s*(:\w+|["'][\w.-]+["'])\s*\])$
+              - pattern-inside: |
+                  $COLL = $CLIENT[$NAME]
+                  ...
+              - pattern-inside: |
+                  $COLL = $DB.collection($NAME)
+                  ...
+          - focus-metavariable: $Q
+      # A server-side JavaScript condition.
+      - patterns:
+          - pattern-either:
+              - pattern: '{..., "$where" => $X, ...}'
+              - pattern: "{..., '$where' => $X, ...}"
+              - pattern: '{..., "$where": $X, ...}'
+          - focus-metavariable: $X

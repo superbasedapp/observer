@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/marmutapp/superbased-observer/internal/update/content"
 )
@@ -21,6 +22,19 @@ import (
 
 // MaxOSVRecordBytes caps one OSV record.
 const MaxOSVRecordBytes = 1 << 20
+
+// The builder's caps on one malicious-list item, so EncodeMalicious can
+// always fit an entry into index lines (maliciousLines): a longer report
+// id or package name is counted malformed and dropped, and a longer
+// version is dropped from the entry's list, which then reads as ranged
+// (some versions listed, which ones not known offline: S-749, never a
+// clean answer). No registry or OSV id comes near them (an npm name is at
+// most 214 bytes; a MAL- id is about 15).
+const (
+	maxMaliciousID      = 64
+	maxMaliciousName    = 1024
+	maxMaliciousVersion = 256
+)
 
 // osvRecord is the subset of the OSV schema the builder reads.
 type osvRecord struct {
@@ -115,72 +129,117 @@ type BuildStats struct {
 // MaliciousFromOSV reads OSV records (one JSON document each) and keeps
 // only MAL- reports (the authenticated source of S-741's deny, section
 // 8.5): a GHSA or CVE id never enters the malicious list, and a withdrawn
-// report is dropped. Entries for one package merge.
+// report is dropped. Entries for one package merge. It is MaliciousBuilder
+// over a slice; a caller reading a whole OSV export (hundreds of MB of
+// records) feeds the builder one record at a time instead.
 func MaliciousFromOSV(records [][]byte) ([]MaliciousEntry, BuildStats) {
-	var st BuildStats
-	type key struct {
-		eco  Ecosystem
-		name string
-	}
-	merged := map[key]*MaliciousEntry{}
-	allVersions := map[key]bool{}
+	b := NewMaliciousBuilder()
 	for _, raw := range records {
-		st.Records++
-		var r osvRecord
-		if len(raw) > MaxOSVRecordBytes || json.Unmarshal(raw, &r) != nil || r.ID == "" {
-			st.Malformed++
-			continue
-		}
-		if !strings.HasPrefix(r.ID, "MAL-") {
-			st.NotMAL++
-			continue
-		}
-		if r.Withdrawn != "" {
-			st.Withdrawn++
-			continue
-		}
-		kept := false
-		for _, a := range r.Affected {
-			eco, ok := EcosystemFromOSV(a.Package.Ecosystem)
-			if !ok {
-				st.UnknownEco++
-				continue
-			}
-			name := Normalize(eco, a.Package.Name)
-			if name == "" || strings.ContainsAny(name, "\t\n\r") {
-				st.Malformed++
-				continue
-			}
-			k := key{eco, name}
-			e := merged[k]
-			if e == nil {
-				e = &MaliciousEntry{Eco: eco, Name: name}
-				merged[k] = e
-			}
-			if !containsString(e.IDs, r.ID) {
-				e.IDs = append(e.IDs, r.ID)
-			}
-			all, ranged := coverage(a.Versions, a.Ranges)
-			if all {
-				allVersions[k] = true
-			}
-			if ranged {
-				e.Ranged = true
-			}
-			for _, v := range a.Versions {
-				if v != "" && !strings.ContainsAny(v, ",\t\n") && !containsString(e.Versions, v) {
-					e.Versions = append(e.Versions, v)
-				}
-			}
-			kept = true
-		}
-		if kept {
-			st.Kept++
-		}
+		b.Add(raw)
 	}
-	out := make([]MaliciousEntry, 0, len(merged))
-	for k, e := range merged {
-		if allVersions[k] {
+	return b.Entries()
+}
+
+// maliciousKey is one listed package.
+type maliciousKey struct {
+	eco  Ecosystem
+	name string
+}
+
+// MaliciousBuilder merges OSV records into the malicious list one record
+// at a time, so a builder reading an export never holds every record (the
+// npm export carried 223,008 MAL- reports, 364 MB of JSON, on 2026-11-06).
+// The rules are MaliciousFromOSV's.
+type MaliciousBuilder struct {
+	st          BuildStats
+	merged      map[maliciousKey]*MaliciousEntry
+	allVersions map[maliciousKey]bool
+}
+
+// NewMaliciousBuilder returns an empty builder.
+func NewMaliciousBuilder() *MaliciousBuilder {
+	return &MaliciousBuilder{merged: map[maliciousKey]*MaliciousEntry{}, allVersions: map[maliciousKey]bool{}}
+}
+
+// Add reads one OSV record.
+func (b *MaliciousBuilder) Add(raw []byte) {
+	b.st.Records++
+	var r osvRecord
+	if len(raw) > MaxOSVRecordBytes || json.Unmarshal(raw, &r) != nil || r.ID == "" {
+		b.st.Malformed++
+		return
+	}
+	if !strings.HasPrefix(r.ID, "MAL-") {
+		b.st.NotMAL++
+		return
+	}
+	if len(r.ID) > maxMaliciousID || strings.ContainsAny(r.ID, ",\t\n\r ") {
+		b.st.Malformed++
+		return
+	}
+	if r.Withdrawn != "" {
+		b.st.Withdrawn++
+		return
+	}
+	kept := false
+	for _, a := range r.Affected {
+		eco, ok := EcosystemFromOSV(a.Package.Ecosystem)
+		if !ok {
+			b.st.UnknownEco++
+			continue
+		}
+		name := Normalize(eco, a.Package.Name)
+		if name == "" || len(name) > maxMaliciousName || strings.ContainsAny(name, "\t\n\r") {
+			b.st.Malformed++
+			continue
+		}
+		k := maliciousKey{eco, name}
+		e := b.merged[k]
+		if e == nil {
+			e = &MaliciousEntry{Eco: eco, Name: name}
+			b.merged[k] = e
+		}
+		if !containsString(e.IDs, r.ID) {
+			e.IDs = append(e.IDs, r.ID)
+		}
+		all, ranged := coverage(a.Versions, a.Ranges)
+		if all {
+			b.allVersions[k] = true
+		}
+		if ranged {
+			e.Ranged = true
+		}
+		for _, v := range a.Versions {
+			switch {
+			case v == "" || containsString(e.Versions, v):
+			case len(v) > maxMaliciousVersion || strings.ContainsAny(v, ",\t\n\r"):
+				// A listed version the index cannot carry: the entry lists
+				// some versions it does not name, which is what ranged
+				// means (S-749), never a silently dropped listing.
+				e.Ranged = true
+			default:
+				e.Versions = append(e.Versions, v)
+			}
+		}
+		kept = true
+	}
+	if kept {
+		b.st.Kept++
+	}
+}
+
+// Stats returns the counts so far.
+func (b *MaliciousBuilder) Stats() BuildStats { return b.st }
+
+// Len returns the number of packages listed so far.
+func (b *MaliciousBuilder) Len() int { return len(b.merged) }
+
+// Entries returns the merged list, sorted by ecosystem and name, and the
+// counts so far. Call it once, after the last Add.
+func (b *MaliciousBuilder) Entries() ([]MaliciousEntry, BuildStats) {
+	out := make([]MaliciousEntry, 0, len(b.merged))
+	for k, e := range b.merged {
+		if b.allVersions[k] {
 			// One report covers every version: the entry does too.
 			e.Versions, e.Ranged = nil, false
 		}
@@ -194,7 +253,7 @@ func MaliciousFromOSV(records [][]byte) ([]MaliciousEntry, BuildStats) {
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out, st
+	return out, b.st
 }
 
 // PopularFromList reads one name per line (blank lines and # comments
@@ -203,8 +262,7 @@ func PopularFromList(eco Ecosystem, list []byte) ([]string, error) {
 	if _, ok := EcosystemOf(eco); !ok {
 		return nil, fmt.Errorf("secfeed.PopularFromList: unknown ecosystem %q", eco)
 	}
-	seen := map[string]bool{}
-	var out []string
+	var names []string
 	sc := bufio.NewScanner(bytes.NewReader(list))
 	sc.Buffer(make([]byte, 0, 4096), MaxIndexLineLen)
 	for sc.Scan() {
@@ -212,21 +270,46 @@ func PopularFromList(eco Ecosystem, list []byte) ([]string, error) {
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
-		n := Normalize(eco, t)
-		if n == "" || strings.ContainsAny(n, "\t ") || seen[n] {
+		names = append(names, t)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("secfeed.PopularFromList: %w", err)
+	}
+	return PopularFromNames(eco, names)
+}
+
+// PopularFromNames normalizes and deduplicates a list of names already
+// split (a line list, or a ranked JSON array of names as a popularity
+// source serves it), capped at MaxPopularPer, sorted. A name that is empty
+// after normalization, or holds whitespace or a control character, is
+// skipped: no registry names a package that way, and such a name could
+// break the index's line format.
+func PopularFromNames(eco Ecosystem, names []string) ([]string, error) {
+	if _, ok := EcosystemOf(eco); !ok {
+		return nil, fmt.Errorf("secfeed.PopularFromNames: unknown ecosystem %q", eco)
+	}
+	// The longest line the index carries: "<eco>\t<name>".
+	maxName := MaxIndexLineLen - len(eco) - 1
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range names {
+		n := Normalize(eco, raw)
+		if n == "" || len(n) > maxName || strings.ContainsFunc(n, isSpaceOrControl) || seen[n] {
 			continue
 		}
 		seen[n] = true
 		out = append(out, n)
 		if len(out) > MaxPopularPer {
-			return nil, fmt.Errorf("secfeed.PopularFromList: more than %d names for %s", MaxPopularPer, eco)
+			return nil, fmt.Errorf("secfeed.PopularFromNames: more than %d names for %s", MaxPopularPer, eco)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("secfeed.PopularFromList: %w", err)
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// isSpaceOrControl reports a rune no package name holds.
+func isSpaceOrControl(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
 // ManifestInput is one artifact's publication.

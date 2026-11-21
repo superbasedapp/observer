@@ -1,0 +1,53 @@
+rules:
+  - id: java.open-redirect
+    languages: [java]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; redirect only to a path on this site or a host on an allow-list.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletRequest $R).$M(...)
+              - patterns:
+                  - pattern: $R.$M(...)
+                  - metavariable-regex:
+                      metavariable: $R
+                      regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getQueryString)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $FN(..., @$A $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RT $FN(..., @$A(...) $T $P, ...) { ... }
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|RequestHeader|CookieValue|QueryParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|Optional<String>|CharSequence)$
+    pattern-sanitizers:
+      - pattern: URLEncoder.encode(...)
+      - pattern: UriUtils.encode(...)
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+      - patterns:
+          - pattern: '"$LIT" + $X'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^(https?://[^/?#]+[/?#]|/[^/\\]|redirect:/[^/\\]|redirect:https?://[^/?#]+[/?#])
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RESP.sendRedirect($U)
+              - pattern: $RESP.setHeader("Location", $U)
+              - pattern: $RESP.addHeader("Location", $U)
+              - pattern: new RedirectView($U, ...)
+              - pattern: '"redirect:" + $U'
+          - focus-metavariable: $U

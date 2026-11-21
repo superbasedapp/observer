@@ -23,6 +23,11 @@ func TestCrossOSBasenamesCoverEveryEnabledAdapter(t *testing.T) {
 		if cap, ok := integration.For(tool); ok && cap.Hook.Mechanism == integration.HookBrowserExtension {
 			continue
 		}
+		// A proxy-only row (custom-agent) is the developer's own program
+		// with no vendor binary, so there is no basename to anchor on.
+		if cap, ok := integration.For(tool); ok && cap.ProxyOnlyCapture {
+			continue
+		}
 		set := DefaultCrossOSToolBasenames[tool]
 		if len(set) == 0 {
 			t.Errorf("adapter %q is enabled by default but has no DefaultCrossOSToolBasenames entry — Windows process attribution will silently no-op for it; add a basename set (node.exe/node at minimum)", tool)

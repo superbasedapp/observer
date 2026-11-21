@@ -101,7 +101,8 @@ func checkCursorHooksWith(homeDir, homeOverride string, enterprise hook.ManagedH
 		}
 		return Check{
 			Name: name, Status: StatusWarn, Details: details,
-			Message: "some Cursor hook events have no observer entry - run `observer init --cursor` to register them",
+			Message:      "some Cursor hook events have no observer entry - run `observer init --cursor` to register them",
+			Remediations: []remedy.Remediation{remedy.Of(remedy.InitTool, "cursor")},
 		}
 	}
 	var droppedFrom []string
@@ -178,10 +179,11 @@ func checkCursorHooksWith(homeDir, homeOverride string, enterprise hook.ManagedH
 	if len(incomplete) > 0 {
 		details = append(details, incomplete...)
 		return Check{
-			Name:    name,
-			Status:  StatusWarn,
-			Message: "some Cursor hook events have no observer entry - run `observer init --cursor` to register them",
-			Details: details,
+			Name:         name,
+			Status:       StatusWarn,
+			Message:      "some Cursor hook events have no observer entry - run `observer init --cursor` to register them",
+			Remediations: []remedy.Remediation{remedy.Of(remedy.InitTool, "cursor")},
+			Details:      details,
 		}
 	}
 

@@ -28,7 +28,7 @@ func newComponentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "components",
 		Short: "Show the component catalog: what this build contains and what each component adds",
-		Long: "Lists the named components of SuperBased Observer (features, adapters,\n" +
+		Long: "Lists the named components of superbased Observer (features, adapters,\n" +
 			"integrations that write other tools' config, org server modules, and the\n" +
 			"artifacts installed outside the binary), whether this binary was built\n" +
 			"with each one, and what each adds to a machine: listeners, outbound\n" +

@@ -58,6 +58,13 @@ func runSandboxHost(args []string) int {
 		return helperFail("observer sandbox: %v", err)
 	}
 	defer gate.close()
+	// The seccomp filter, when planned (lane N2, sandbox_seccomp_linux.go):
+	// the program bwrap reads from sandbox.SeccompFD, and the read-back.
+	sc, err := newHostSeccomp(h)
+	if err != nil {
+		return helperFail("observer sandbox: %v", err)
+	}
+	defer sc.close()
 	// bwrap's namespace re-check, or the re-check of the observer helper
 	// the host helper runs in its place (the process_lite exec step).
 	recheck := func(pid int) error { return sandboxRecheck(h.PrivateNet, pid) }
@@ -76,12 +83,12 @@ func runSandboxHost(args []string) int {
 		if err := recheckNoticeFor(err, matched, os.Stderr); err != nil {
 			return err
 		}
-		return gate.release()
+		return sc.release(pid, gate.release)
 	}
 	// The tier variable comes from this helper's own network flags, the one
 	// tier table, for every row whose wrap runs it (R3).
-	// The layer's environment is the allow-list (WINFIX2 R-167).
-	return runSupervisedChild(gate.argv(h.Command), sandboxHostChildEnv(os.Environ(), h), gate.files(), release)
+	// The layer's environment is the allow-list (WINFIX2, ledger SBX-WIN-ENV-1).
+	return runSupervisedChild(gate.argv(h.Command), localCredBoxEnv(h, sandboxHostChildEnv(os.Environ(), h)), sc.files(gate.files()), release)
 }
 
 // startHostServices starts what the host helper owns around ANY isolation
@@ -161,21 +168,16 @@ func startHostServices(h sandbox.HostArgs) (func(), error) {
 			if lerr != nil {
 				return stop, fmt.Errorf("listen for the model proxy: %w", lerr)
 			}
-			undo = append(undo, func() { _ = ln.Close() })
-			target := h.ProxyAddr
-			go func() {
-				_ = sandboxnet.ServeForward(ctx, ln, func(ctx context.Context) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "tcp", target)
-				})
-			}()
+			// The raw pipe, or the run's stamping hop when this helper set
+			// up a credential lane (sandbox_helpers_credlane_linux.go).
+			undo = append(undo, serveModelProxyForward(ctx, ln, h))
 		} else {
 			fmt.Fprintf(os.Stderr, "observer sandbox: the model proxy is not reachable at %s; the sandboxed tool will see it as down\n", h.ProxyAddr)
 		}
 	}
 
 	if h.Gateway {
-		gw, err := hostEgressGateway(h, allow)
+		gw, err := hostEgressGateway(ctx, h, allow)
 		if err != nil {
 			return stop, err
 		}
@@ -200,16 +202,22 @@ func startHostServices(h sandbox.HostArgs) (func(), error) {
 // without the run's host list (OSH-R-153). The agent-run host allow-list
 // (lane LEFT-SBX), one rule for every row, is read from the daemon config
 // the run record names; a record or config that cannot be read refuses the
-// gateway (fail closed: the list could be set).
-func hostEgressGateway(h sandbox.HostArgs, allow []netip.Prefix) (*sandboxnet.Gateway, error) {
+// gateway (fail closed: the list could be set). Its refusals go to the
+// daemon's refusal audit on the run's relay link (lane N1), from a sender
+// that ends with ctx.
+func hostEgressGateway(ctx context.Context, h sandbox.HostArgs, allow []netip.Prefix) (*sandboxnet.Gateway, error) {
 	hosts, err := sandboxAgentEgressRules(h.ObserverDir, h.RelayRun)
 	if err != nil {
 		return nil, err
 	}
 	// The helper's stderr IS the sandboxed tool's terminal: a log line there
 	// would corrupt a full-screen TUI. Refusals still reach the client in
-	// the 403 body, which names the rule.
-	return &sandboxnet.Gateway{Allow: allow, Hosts: hosts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Providers: providerBlockFor(h)}, nil
+	// the 403 body, which names the rule, and the daemon through Report.
+	audit := sandboxEgressRefusalHooks(ctx, h.ObserverDir, h.RelayRun)
+	return &sandboxnet.Gateway{
+		Allow: allow, Hosts: hosts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Providers: providerBlockFor(h),
+		Report: audit.Report, Closed: audit.Closed,
+	}, nil
 }
 
 // startGateFD is the descriptor the release pipe lands on in bwrap: fd 3
@@ -373,6 +381,11 @@ func (g *startGate) close() {
 	}
 }
 
+// guestExtraVerbs are in-box verbs a driver registers from its own file's
+// init (lane G4: the org-hosted row's keeper, paced stdin and return
+// verbs), so a driver adds verbs without touching this dispatch.
+var guestExtraVerbs = map[string]func(args []string) int{}
+
 // runSandboxGuest is the in-sandbox helper: forward the in-namespace loopback
 // ports to the host sockets, point the inner command's HTTP(S)_PROXY at the
 // gateway port, then run the inner command and exit with its status.
@@ -388,6 +401,11 @@ func runSandboxGuest(args []string) int {
 	}
 	if len(args) > 0 && args[0] == guestAttachVerb { // the hosted guest PTY's reattach (lane SBX-UPD)
 		return runGuestAttach(args[1:])
+	}
+	if len(args) > 0 {
+		if f, ok := guestExtraVerbs[args[0]]; ok { // a driver's own in-box verbs (lane G4)
+			return f(args[1:])
+		}
 	}
 	g, err := sandbox.ParseGuestArgs(args)
 	if err != nil {

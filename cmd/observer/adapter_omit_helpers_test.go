@@ -23,8 +23,10 @@ func adapterCompiledOut(tool string) bool {
 // requireAdapter skips a test that exercises tool's adapter (its hook
 // receiver, parser or backfill pass) in a build that compiled it out. The
 // omit-tag CI job (scripts/omit-tag-check.sh) runs this package's tests
-// under every adapter tag; there the adapter's own behaviour is absent by
-// design, and what the build does instead is pinned by the omit tests.
+// under the edition tag sets, which compile adapters out, and vets them
+// under every single adapter tag (since 2026-11-01 a single tag gets vet
+// only); there the adapter's own behaviour is absent by design, and what
+// the build does instead is pinned by the omit tests.
 func requireAdapter(t *testing.T, tools ...string) {
 	t.Helper()
 	for _, tool := range tools {

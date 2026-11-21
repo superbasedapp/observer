@@ -22,14 +22,25 @@ import (
 // DisclosureVersion is bumped when the text changes materially; a node
 // that saw an older version is shown the new one before its next query.
 // Version 2 (lane sec-d1fix) names superbased.app and the control that
-// exists.
-const DisclosureVersion = 2
+// exists. Version 3 (spike CPP-0, 2026-11-06) adds a data class: when you
+// run `observer security scan --online`, the commit ids your git
+// submodules are pinned to; an accept of version 2 no longer counts, so
+// the text is shown and accepted again before any query (the install
+// gate's included) is sent. On 2026-11-06 (dashboard CLI parity, decision
+// P-1) the dashboard's scan dialog gained an "Also check online" option, so
+// the text names it beside the CLI flag. That is not a material change: the
+// same data class goes to the same service, still only on an explicit
+// request, so the version stays 3.
+const DisclosureVersion = 3
 
 // DisclosureText is the individual-node text.
 const DisclosureText = "Observer checks packages your AI agent tries to install, and the packages your projects use, " +
 	"against public vulnerability and malware databases, so it can warn you about bad packages with the latest data. " +
 	"To do that it sends the package's ecosystem, name and version to the OSV database (api.osv.dev) and to the " +
-	"package's public registry. It never sends file paths, repository names, your organization, your name, or the " +
+	"package's public registry. When you ask for an online scan (\"Also check online\" in the Code security scan " +
+	"dialog, or `observer security scan --online`), it also sends api.osv.dev the commit " +
+	"ids your project's git submodules are pinned to, and only those ids: never a submodule's URL, path or name. " +
+	"It never sends file paths, repository names, your organization, your name, or the " +
 	"names of packages from private registries. The services can see your IP address and the time of the check. " +
 	"Separately, Observer downloads its signed lists of malicious and popular package names from superbased.app; " +
 	"that download sends nothing about your packages. You can turn the online checks off at any time on the " +

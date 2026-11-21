@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
+	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
@@ -116,10 +117,10 @@ func sessionTool(ctx context.Context, db *sql.DB, sessionID string) (string, err
 func sessionRawSourceFiles(ctx context.Context, db *sql.DB, sessionID string) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT DISTINCT source_file FROM token_usage
-		  WHERE session_id = ? AND source_file LIKE '/%'
+		  WHERE session_id = ? AND source_file != ''
 		 UNION
 		 SELECT DISTINCT source_file FROM actions
-		  WHERE session_id = ? AND source_file LIKE '/%'
+		  WHERE session_id = ? AND source_file != ''
 		 ORDER BY 1`, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard.rawEvents.sourceFiles: %w", err)
@@ -138,7 +139,19 @@ func sessionRawSourceFiles(ctx context.Context, db *sql.DB, sessionID string) ([
 	return out, rows.Err()
 }
 
+// isRawJSONLSource reports whether a stored source_file is a transcript this
+// tab can read: a local absolute path on the daemon's OS with a JSON/JSONL
+// extension. Absoluteness is not a leading "/": a Windows daemon stores
+// C:\Users\... paths, which a SQL `LIKE '/%'` filter dropped, so every
+// session showed zero raw events there. The check is
+// pathnorm.IsLocalAbsPath, the one stored-path open gate (ledger
+// CLOUDSESS-12), so a UNC, device or extended-length path is never opened (a
+// Windows UNC open sends the owner's NTLM hash to the named host). A
+// non-path marker in source_file is not absolute and stays excluded.
 func isRawJSONLSource(path string) bool {
+	if !pathnorm.IsLocalAbsPath(path) {
+		return false
+	}
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".jsonl" || ext == ".json"
 }

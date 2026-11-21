@@ -72,6 +72,9 @@ func meets(s PolicySpec, r sandboxbackend.Capability) bool {
 	if s.ForbidRemote && r.Iso.Location == vocab.LocationRemote {
 		return false
 	}
+	if s.RequireRefusalAudit && !r.Net.AuditsRefusals() {
+		return false
+	}
 	if s.MinEgress != "" && r.Offered() {
 		ok := false
 		for _, t := range r.Net.Egress {
@@ -142,10 +145,15 @@ func UnmetLocallyWarnings(s PolicySpec, rows []sandboxbackend.Capability) []stri
 }
 
 // offeredLocalMeets reports whether an offered local row running on host
-// meets s.
+// meets s. An explicit-only row (process_lite, openshell and the other
+// ExplicitOnly rows) never counts (tracker F-020 A14): a floor that implies
+// a sandbox makes the node require one, and neither the guard's enforce
+// upgrade nor an automatic choice ever picks an explicit-only row
+// (sandboxselect rule S1b), so a host whose only meeting rows are
+// explicit-only still refuses every terminal that does not name one.
 func offeredLocalMeets(s PolicySpec, rows []sandboxbackend.Capability, host sandboxbackend.HostKind) bool {
 	for _, r := range rows {
-		if r.Offered() && r.Iso.Location != vocab.LocationRemote && r.RunsOn(host) && meets(s, r) {
+		if r.Offered() && !r.ExplicitOnly && r.Iso.Location != vocab.LocationRemote && r.RunsOn(host) && meets(s, r) {
 			return true
 		}
 	}
@@ -153,7 +161,13 @@ func offeredLocalMeets(s PolicySpec, rows []sandboxbackend.Capability, host sand
 }
 
 // floorLabel is a floor's admin label with its key, as the refusals name it.
-func floorLabel(key string) string {
+func floorLabel(key string) string { return FloorLabelWithKey(key) }
+
+// FloorLabelWithKey is a floor's admin label, quoted, with its wire key in
+// parentheses (`"Require refusal audit" (require_refusal_audit)`), read from
+// the one floor table, so every refusal that names a floor names it the same
+// way (lane FU10, F-050). An unknown key is returned as it is.
+func FloorLabelWithKey(key string) string {
 	if k, ok := LookupFloorKey(key); ok {
 		return fmt.Sprintf("%q (%s)", k.Label, key)
 	}

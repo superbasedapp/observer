@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/secfeed/online"
+	"github.com/marmutapp/superbased-observer/internal/secscan/osvshard/shardnet"
 )
 
 // server_egress_lanes_test.go is the ONE owner of the org server's
@@ -76,8 +77,14 @@ var serverEgressLanes = []serverEgressLane{
 	{
 		ID: "org.security.relay", Pkg: "internal/secfeed/online", Kind: egressRemote,
 		Reaches:  "api.osv.dev, crates.io, proxy.golang.org, pypi.org, registry.npmjs.org, api.nuget.org, rubygems.org, repo.packagist.org, superbased.app (HTTPS, exact host allow-list, no redirects, capped answers; ecosystem, public package name and version only, with the server's IP and a User-Agent of superbased-observer)",
-		Triggers: []serverEgressTrigger{srvTrigNode, srvTrigOperator},
-		Gate:     "component org.security.relay ([security.relay].enabled, off until configured) with the relay mode set to relay by the org's super admin; queries only for a managed enrolment's lookup cache miss, public names only (private names refused at the server too); `observer-org security mirror sync` fetches the vendor's signed content from superbased.app only when the operator runs it; never in mirror mode",
+		Triggers: []serverEgressTrigger{srvTrigNode, srvTrigOperator, srvTrigBackground},
+		Gate:     "component org.security.relay ([security.relay].enabled, off until configured) with the relay mode set to relay by the org's super admin; queries only for a managed enrolment's lookup cache miss, public names only (private names refused at the server too); `observer-org security mirror sync` fetches the vendor's signed content from superbased.app when the operator runs it, and the leader's scheduled mirror sync does the same only when [security.relay].mirror_sync_interval is set (default off, at least 1h); no relayed lookup in mirror mode",
+	},
+	{
+		ID: "org.security.shards", Pkg: "internal/secscan/osvshard/shardnet", Kind: egressRemote,
+		Reaches:  "shards.superbased.app only (HTTPS, exact host, no redirects, every body capped at the size the verified descriptor or index file lists): GETs of <Set>/index/<sha256>.json and <Set>/obj/<sha256>.json.gz, the SuperBased package lookup's advisory shards, which the org mirror stores for its managed nodes (lane RM-3); the paths are the digests the vendor-signed security.osv_shards descriptors pin, the same for every org, so nothing about a node, a project or a package is sent; User-Agent superbased-observer",
+		Triggers: []serverEgressTrigger{srvTrigOperator, srvTrigBackground},
+		Gate:     "component org.security.relay ([security.relay].enabled, off until configured); `observer-org security mirror shards sync` when the operator runs it, and the leader's scheduled mirror sync only with [security.relay].mirror_sync_interval set AND [security.relay].mirror_shards = true (both default off); only objects the mirror does not already hold verified; an air-gapped org uses `observer-org security mirror shards import <dir>` and this lane sends nothing. Never on a node request: a managed node's shard fetch is served from the mirror, never relayed",
 	},
 	{
 		ID: "org.updates", Pkg: "internal/orgserver/updateartifact", Kind: egressRemote,
@@ -152,6 +159,12 @@ var serverEgressLanes = []serverEgressLane{
 		Gate:     "a model provider configured by an admin",
 	},
 	{
+		ID: "org.llmwire", Pkg: "internal/llmwire", Kind: egressRemote,
+		Reaches:  "the OpenAI-compatible model endpoints its callers name (the org.llm providers and the bridge agent), through the caller's netguard client",
+		Triggers: []serverEgressTrigger{srvTrigAdmin, srvTrigBackground},
+		Gate:     "a caller lane's configured provider (each caller's own row states its gate); the package builds no HTTP client and dials nothing on its own (E1.1c)",
+	},
+	{
 		ID: "org.harness", Pkg: "internal/orgserver/harness", Kind: egressRemote,
 		Reaches:  "the configured harness gateway (insight agents)",
 		Triggers: []serverEgressTrigger{srvTrigAdmin, srvTrigBackground},
@@ -165,9 +178,9 @@ var serverEgressLanes = []serverEgressLane{
 	},
 	{
 		ID: "org.obs.alerts", Pkg: "internal/orgserver/obsalert", Kind: egressRemote,
-		Reaches:  "admin-configured alert webhooks",
+		Reaches:  "admin-configured alert webhooks, the Slack incoming webhook a rule names (hooks.slack.com / hooks.slack-gov.com only, sealed in org_secret, never logged; Plane A W3-5), and the PagerDuty Events API v2 (events.pagerduty.com/v2/enqueue only, the rule's routing key sealed in org_secret, never logged; Plane A W5-5)",
 		Triggers: []serverEgressTrigger{srvTrigBackground},
-		Gate:     "an alert rule with a webhook configured by an admin",
+		Gate:     "an alert rule with a webhook, a Slack webhook or a PagerDuty routing key configured by an admin",
 	},
 	{
 		ID: "org.budget.delivery", Pkg: "internal/orgserver/budget", Kind: egressRemote,
@@ -198,6 +211,12 @@ var serverEgressLanes = []serverEgressLane{
 		Reaches:  "admin-configured trust issuers' JWKS and hosted key endpoints",
 		Triggers: []serverEgressTrigger{srvTrigAdmin, srvTrigGateway},
 		Gate:     "component org.agentaccess",
+	},
+	{
+		ID: "org.netguard", Pkg: "internal/netguard", Kind: egressRemote,
+		Reaches:  "the customer- or admin-supplied URLs its callers name (alert and budget webhooks, SAML metadata, OIDC discovery, token and JWKS, the vendor analytics pollers, the model providers) through the one SSRF-guarded client (MS-R-001): never cloud metadata, link-local, multicast or unspecified; loopback and private space only inside [outbound] allow_private_cidrs; bounded redirects re-checked; a target is resolved and checked before it is handed to an environment proxy",
+		Triggers: []serverEgressTrigger{srvTrigBackground, srvTrigAdmin, srvTrigSignIn},
+		Gate:     "a caller lane's configured URL (each caller's own row states its gate); the package dials nothing on its own",
 	},
 	{
 		ID: "org.mcp.egress", Pkg: "internal/mcpegress", Kind: egressRemote,
@@ -266,6 +285,18 @@ var serverEgressLanes = []serverEgressLane{
 		Gate:     "component org.selfobs",
 	},
 	{
+		ID: "org.openshell.front", Pkg: "internal/orgserver/openshellfront", Kind: egressRemote,
+		Reaches:  "the org's own OpenShell gateway at [openshell].gateway_url (private network, TLS, the optional gateway_tls_spki_sha256 pin, the member gateway token the api role issued) and the api role's internal decision API at api_internal_url (loopback or https with api_internal_ca_file, every request signed by the front service key); it serves the developers' gRPC on front_listen",
+		Triggers: []serverEgressTrigger{srvTrigNode},
+		Gate:     "component org.openshell with [openshell].enabled, in a process started with --role openshell-front only (never part of all); every forwarded call needs a run token the api role's decide allows",
+	},
+	{
+		ID: "org.openshell.gateway", Pkg: "internal/orgserver/openshellgw/gwclient", Kind: egressRemote,
+		Reaches:  "the org's own OpenShell gateway at [openshell].gateway_url (private network, TLS, the optional gateway_tls_spki_sha256 pin); the generated openshellv1 client of the tagged SDK",
+		Triggers: []serverEgressTrigger{srvTrigBackground, srvTrigAdmin, srvTrigNode},
+		Gate:     "component org.openshell with [openshell].enabled: the worker's sync, reaper, drain and collect (sync admin token), and the front's forwarding (member gateway token)",
+	},
+	{
 		ID: "org.server", Pkg: "internal/orgserver", Kind: egressRemote,
 		Reaches:  "the composition layer: its own listeners, admin-supplied endpoints it tests on request (connection tests), and every lane above it composes",
 		Triggers: []serverEgressTrigger{srvTrigAdmin, srvTrigBackground, srvTrigNode},
@@ -279,23 +310,56 @@ var serverEgressLanes = []serverEgressLane{
 	},
 
 	// --- listen-only: serves, never dials ---------------------------------
-	{ID: "org.security.relay.http", Pkg: "internal/orgserver/secrelay", Kind: egressListen, Reaches: "POST /api/agent/security/lookup, the agent content route and the relay admin API (its upstream is injected: org.security.relay)"},
+	{ID: "org.security.relay.http", Pkg: "internal/orgserver/secrelay", Kind: egressListen, Reaches: "POST /api/agent/security/lookup, the agent content and shard routes and the relay admin API (its upstream and its shard source are injected: org.security.relay, org.security.shards)"},
 	{ID: "org.security.managed", Pkg: "internal/orgserver/secmanaged", Kind: egressListen, Reaches: "the security managed pull's admin API"},
 	{ID: "org.security.manifests", Pkg: "internal/orgserver/secmanifests", Kind: egressListen, Reaches: "the custom driver manifest catalog's admin API"},
 	{ID: "org.security.fleet", Pkg: "internal/orgserver/secorg", Kind: egressListen, Reaches: "the security fleet views' admin API (findings, rollup, coverage, exceptions, settings, triage, evidence export)"},
 	{ID: "org.sandbox.managed", Pkg: "internal/orgserver/sandboxmanaged", Kind: egressListen, Reaches: "the sandbox managed pull's admin API"},
 	{ID: "org.managedpull", Pkg: "internal/orgserver/managedpull", Kind: egressListen, Reaches: "the module managed-pull kit's agent routes"},
+	{ID: "org.signininvite.http", Pkg: "internal/orgserver/signininvite/adminhttp", Kind: egressListen, Reaches: "the sign-in invitation admin API (create, list, revoke; inbound only, no outbound call)"},
+	{ID: "org.intelplatform.consent.http", Pkg: "internal/orgserver/intelplatform/consentapi", Kind: egressListen, Reaches: "the member's consent at login, GET/PUT/DELETE /api/org/me/intel-consent (plan 07 M9.2; inbound only, no outbound call)"},
 	{ID: "org.api", Pkg: "internal/orgserver/api", Kind: egressListen, Reaches: "the agent API handlers"},
+	{ID: "org.noderail", Pkg: "internal/orgserver/noderail", Kind: egressListen, Reaches: "the node rail's host-to-org binding middleware on the /api/agent/* routes (inbound only, no outbound call)"},
 	{ID: "org.api.gen", Pkg: "internal/orgserver/api/gen", Kind: egressListen, Reaches: "generated agent API handlers"},
 	{ID: "org.dashboard", Pkg: "internal/orgserver/dashboard", Kind: egressListen, Reaches: "the admin dashboard API"},
 	{ID: "org.dashboard.gen", Pkg: "internal/orgserver/dashboard/gen", Kind: egressListen, Reaches: "generated dashboard API handlers"},
 	{ID: "org.dashboard.webapp", Pkg: "internal/orgserver/dashboard/webapp", Kind: egressListen, Reaches: "the embedded web app"},
-	{ID: "org.gateway", Pkg: "internal/orgserver/gateway", Kind: egressListen, Reaches: "the Plane A OTLP gateway receivers"},
+	{ID: "org.gateway", Pkg: "internal/orgserver/gateway", Kind: egressListen, Reaches: "the Plane A OTLP gateway receivers (POST /v1/{traces,logs,metrics} and /api/public/otel/v1/traces, the Langfuse SDK exporter's traces path, behind the same ingest credential; inbound only)"},
+	{ID: "org.runtimesettings.http", Pkg: "internal/orgserver/runtimesettings/settingsapi", Kind: egressListen, Reaches: "GET/PUT /api/org/runtime-settings, the admin runtime-settings API (inbound only, no outbound call)"},
+	{ID: "org.sdkapi", Pkg: "internal/orgserver/sdkapi", Kind: egressListen, Reaches: "the versioned /v1/sdk/* control API on the gateway listener (Plane A W1c-5)"},
+	{ID: "org.evalroutes", Pkg: "internal/orgserver/evalroutes", Kind: egressListen, Reaches: "the dashboard's Plane A score, online-eval, snapshot and review-queue routes (lane B7)"},
+	{ID: "org.crossplaneroutes", Pkg: "internal/orgserver/crossplaneroutes", Kind: egressListen, Reaches: "the cross-plane link's admin reads /api/org/crossplane/services* (Plane A W4-3/W5-8, lane C3; inbound only, no outbound call; reads through the request seam)"},
+	{ID: "org.promptstore", Pkg: "internal/orgserver/promptstore", Kind: egressListen, Reaches: "the prompt registry's admin routes /api/org/obs/prompts* and /api/org/obs/prompt-* (W5-3, lane C8) and its SDK fetch handlers (Plane A W3-3, lane B8; inbound only, no outbound call; reads and writes through the request seam)"},
+	{ID: "org.obsviews", Pkg: "internal/orgserver/obsviews", Kind: egressListen, Reaches: "the explorer's saved views and live tail routes /api/org/obs/views* and /api/org/obs/live-tail (Plane A W5-4, lane C9; inbound only, no outbound call; reads and writes through the request seam)"},
+	{ID: "org.sdkcred", Pkg: "internal/orgserver/sdkcred", Kind: egressListen, Reaches: "a member's own machine minting or revoking its SDK key, POST/DELETE /api/agent/sdk-credential (Plane A W2-7; inbound only, no outbound call)"},
 	{ID: "org.machinekey", Pkg: "internal/orgserver/machinekey", Kind: egressListen, Reaches: "machine key routes"},
 	{ID: "org.mcpgwadmin", Pkg: "internal/orgserver/mcpgwadmin", Kind: egressListen, Reaches: "Agent Access admin routes"},
+	// The org-hosted OpenShell gateway's control half (lane G2): it serves
+	// and never dials (the front-to-gateway and sync lanes are lane G3's).
+	{ID: "org.openshell.control", Pkg: "internal/orgserver/openshellctl", Kind: egressListen, Reaches: "the org-hosted OpenShell agent routes, the device-approval page and the front's internal decision API on internal_listen"},
+	{ID: "org.openshell.admin", Pkg: "internal/orgserver/openshellgw", Kind: egressListen, Reaches: "the org-hosted OpenShell admin routes /api/org/openshell/* and the member's collect fetch (its gateway calls go through org.openshell.gateway)"},
+	{ID: "org.openshell.issuer", Pkg: "internal/orgserver/openshellidp", Kind: egressListen, Reaches: "the org-hosted OpenShell issuer's public discovery document and JWKS"},
 	{ID: "org.orgmsg", Pkg: "internal/orgserver/orgmsg", Kind: egressListen, Reaches: "messaging routes"},
 	{ID: "org.scim", Pkg: "internal/orgserver/scim", Kind: egressListen, Reaches: "SCIM provisioning routes"},
+	{ID: "org.tenantroute", Pkg: "internal/orgserver/tenantroute", Kind: egressListen, Reaches: "the pooled host router middleware (inbound only: it reads the request Host and binds the org; its tenant_hosts lookup is SQL)"},
+	{ID: "org.signinseam", Pkg: "internal/orgserver/signinseam", Kind: egressListen, Reaches: "the sign-in gates, the session generation source and /auth/logout (inbound only; their reads go through the request seam, SQL)"},
+	{ID: "org.authrails", Pkg: "internal/orgserver/authrails", Kind: egressListen, Reaches: "the per-organization sign-in rail dispatch for /saml/*, /auth/oidc/* and /auth/rails (inbound only; the rails it serves are built by the org server, whose SAML metadata and OIDC discovery fetches are the auth package's lanes)"},
+	{ID: "org.supportaccess.http", Pkg: "internal/orgserver/supportaccess/supporthttp", Kind: egressListen, Reaches: "the support-access gate, the support sign-in completer and the support grant admin API (inbound only, no outbound call)"},
+	{ID: "org.oplog.http", Pkg: "internal/orgserver/oplog/oploghttp", Kind: egressListen, Reaches: "GET /api/org/operator-actions (inbound only, no outbound call)"},
+	{ID: "org.planusage.http", Pkg: "internal/orgserver/planusage", Kind: egressListen, Reaches: "GET /api/org/plan-usage (inbound only, no outbound call; reads through the request seam and the quota service's last pass)"},
+	{ID: "org.gateway.meterhttp", Pkg: "internal/orgserver/gateway/metering/meterhttp", Kind: egressListen, Reaches: "GET /api/org/gateway/usage (inbound only, no outbound call; reads gateway_usage_monthly and the runtime settings through the request seam; Plane A W1c-3a)"},
+	{ID: "org.pairing.http", Pkg: "internal/orgserver/pairingroutes", Kind: egressListen, Reaches: "the install page's pairing-code routes (mint, list, revoke; inbound only, no outbound call)"},
+	{ID: "org.recovery.http", Pkg: "internal/orgserver/recovery/recoveryhttp", Kind: egressListen, Reaches: "the recovery-link redemption page and route (GET and POST /auth/recover; inbound only, no outbound call)"},
+	{ID: "org.pooledgate", Pkg: "internal/orgserver/pooledgate", Kind: egressListen, Reaches: "the pooled route gate middleware (inbound only: it asks the mux which pattern a request resolves to and refuses the pooled inventory's not-yet-on-seam and refused-in-pooled routes; no outbound call, no SQL)"},
+	{ID: "org.hostlisten", Pkg: "internal/orgserver/hostlisten", Kind: egressListen, Reaches: "the pooled host API's own mTLS listener (/platform/v1, [platform.host_api]; inbound only: the control plane calls it, it calls nothing)"},
+	{ID: "org.hostapi", Pkg: "internal/orgserver/hostapi", Kind: egressListen, Reaches: "the host API handler (/platform/v1: the signed envelope, nonce, idempotency, audit-before-act), mounted by internal/orgserver/hostlisten; inbound only, no outbound call"},
 	{ID: "org.aigateway.providerext", Pkg: "internal/aigateway/providerext", Kind: egressListen, Reaches: "provider request shaping (header types)"},
+	{ID: "org.scimpool", Pkg: "internal/orgserver/scimpool", Kind: egressListen, Reaches: "a pooled organization's SCIM 2.0 front and its SCIM token admin routes (mint, list, revoke; inbound only, no outbound call)"},
+	{ID: "org.scimroutes", Pkg: "internal/orgserver/scimroutes", Kind: egressListen, Reaches: "the SCIM 2.0 route family's mux patterns (inbound only, no outbound call)"},
+	{ID: "org.samlspadmin", Pkg: "internal/orgserver/samlspadmin", Kind: egressListen, Reaches: "a pooled organization's SAML SP key list and rotation, GET /api/org/auth/saml/sp-keys and POST .../rotate (inbound only, no outbound call)"},
+	{ID: "org.seamhttp", Pkg: "internal/orgserver/seamhttp", Kind: egressListen, Reaches: "the request seam's HTTP half: serves a family's handler set inside one tenant transaction (inbound only, no outbound call)"},
+	{ID: "org.otelroutes", Pkg: "internal/orgserver/otelroutes", Kind: egressListen, Reaches: "the OTel-direct receiver (POST /ingest/otel/v1/{logs,metrics,traces}), the member's telemetry token routes and the org switch (inbound only, no outbound call)"},
+	{ID: "org.secseam", Pkg: "internal/orgserver/secseam", Kind: egressListen, Reaches: "the org.security admin routes bound to the request seam on a pooled server (inbound only; the relay and shard fetches stay the org.security.relay and org.security.shards lanes)"},
 
 	// --- address-only: types and parsing, no connection --------------------
 	{ID: "org.agentid", Pkg: "internal/agentid", Kind: egressAddress, Reaches: "IP parsing"},
@@ -304,6 +368,8 @@ var serverEgressLanes = []serverEgressLane{
 	{ID: "org.mcpgw.truststore", Pkg: "internal/mcpgw/truststore", Kind: egressAddress, Reaches: "address checks"},
 	{ID: "org.mcpintel.discover", Pkg: "internal/mcpintel/discover", Kind: egressAddress, Reaches: "endpoint formatting"},
 	{ID: "org.netpolicy", Pkg: "internal/netpolicy", Kind: egressAddress, Reaches: "IP classification and dial control"},
+	{ID: "org.ipclass", Pkg: "internal/ipclass", Kind: egressAddress, Reaches: "IP classification"},
+	{ID: "org.policy", Pkg: "internal/policy", Kind: egressAddress, Reaches: "host and IP parsing for the guard network rules"},
 	{ID: "org.agentaccessdiag", Pkg: "internal/orgserver/agentaccessdiag", Kind: egressAddress, Reaches: "address checks"},
 	{ID: "org.authcfg", Pkg: "internal/orgserver/authcfg", Kind: egressAddress, Reaches: "address checks"},
 	{ID: "org.config", Pkg: "internal/orgserver/config", Kind: egressAddress, Reaches: "host and port validation"},
@@ -497,5 +563,25 @@ func TestServerSecurityRelayHostsExact(t *testing.T) {
 	}
 	if !slices.Contains(hosts, online.OSVHost) {
 		t.Error("the relay client lost the OSV host")
+	}
+}
+
+// TestServerSecurityShardsHostsExact: the org.security.shards row names the
+// one host the shard client allows (internal/secscan/osvshard/shardnet,
+// lane RM-3), and only the server packages that schedule or run the sync
+// link it.
+func TestServerSecurityShardsHostsExact(t *testing.T) {
+	var row serverEgressLane
+	for _, l := range serverEgressLanes {
+		if l.ID == "org.security.shards" {
+			row = l
+		}
+	}
+	if row.Pkg != "internal/secscan/osvshard/shardnet" || row.Kind != egressRemote {
+		t.Fatalf("org.security.shards row: %+v", row)
+	}
+	hosts := shardnet.AllowedHosts()
+	if len(hosts) != 1 || !strings.HasPrefix(row.Reaches, hosts[0]+" only") {
+		t.Fatalf("org.security.shards names %q, its client allows %v", row.Reaches, hosts)
 	}
 }

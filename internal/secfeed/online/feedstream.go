@@ -28,6 +28,11 @@ const MaxStreamBytes int64 = 8 << 30
 // match what the signed manifest names.
 var ErrStreamDigest = errors.New("online: the streamed feed file does not match its manifest entry")
 
+// NotPublished reports whether err is ErrFeedNotPublished, the feed's 404 or
+// 410 (the org mirror's sync reads it through secrelay.FeedSource, which
+// does not import this package).
+func (c *Client) NotPublished(err error) bool { return errors.Is(err, ErrFeedNotPublished) }
+
 // FetchFeedFileTo streams one feed file into w, refusing more than size
 // bytes, and checks it is exactly size bytes with the SHA-256 hex digest
 // sha. It returns ErrFeedNotPublished for a 404 or 410. w holds partial

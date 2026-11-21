@@ -8,6 +8,7 @@ import { pickEnum } from "../../../shared/lib/urlParams.ts";
 import {
   AGENT_CONFIG_TABS,
   CACHE_TABS,
+  CODE_SECURITY_TABS,
   ROUTING_TABS,
   REMOTE_TABS,
   COMPRESSION_TABS,
@@ -31,6 +32,7 @@ const PAGES: Record<string, PageTabs<string>> = {
   remote: REMOTE_TABS,
   terminals: TERMINALS_TABS,
   "agent-config": AGENT_CONFIG_TABS,
+  "code-security": CODE_SECURITY_TABS,
 };
 
 for (const [page, tabs] of Object.entries(PAGES)) {
@@ -64,6 +66,18 @@ test("security: the seven tabs of mockup M4, in order", () => {
     ["overview", "verdicts", "rules", "budgets", "prompt-guard", "mcp", "coverage"],
   );
   assert.equal(SECURITY_TABS.labels.coverage, "Coverage & evidence");
+});
+
+test("code-security: Overview is the default; the pre-redesign ids still open their tabs", () => {
+  assert.deepEqual(
+    [...CODE_SECURITY_TABS.ids],
+    ["overview", "findings", "projects", "coverage", "scanners", "exceptions", "baselines"],
+  );
+  assert.equal(defaultTab(CODE_SECURITY_TABS), "overview");
+  // Links written before the redesign (Findings was the default then).
+  for (const id of ["findings", "exceptions", "baselines"]) {
+    assert.equal(pickEnum(new URLSearchParams(`?tab=${id}`).get("tab"), CODE_SECURITY_TABS.ids, "overview"), id);
+  }
 });
 
 test("cost: Statement absorbs /report; the old query string maps onto the tab", () => {

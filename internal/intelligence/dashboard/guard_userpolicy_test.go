@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,7 +44,11 @@ func TestAPIGuardSummaryReportsInvalidUserPolicy(t *testing.T) {
 	if !ok {
 		t.Fatal("malformed policy file not reported on /api/guard/summary")
 	}
-	if up["path"] != policyPath || up["line"] != float64(3) || !strings.Contains(up["error"].(string), "parse") {
+	// The banner names the path as configured, and newGuardPolicyServer
+	// writes it in slash form; compare cleaned, since C:/x and C:\x are the
+	// same file on Windows.
+	gotPath, _ := up["path"].(string)
+	if filepath.Clean(gotPath) != filepath.Clean(policyPath) || up["line"] != float64(3) || !strings.Contains(up["error"].(string), "parse") {
 		t.Errorf("user_policy = %v, want path %q, line 3, a parse error", up, policyPath)
 	}
 

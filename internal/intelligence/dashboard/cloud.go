@@ -110,6 +110,16 @@ type CloudPlanView struct {
 	MonthlyCap           *int   `json:"monthly_cap,omitempty"`
 	DigestWeekly         *bool  `json:"digest_weekly"`
 	ResultsRetentionDays *int   `json:"results_retention_days"`
+	// Plan v5 token budgets (migration 254, ruling R-AI1). BudgetUnit is
+	// "tokens" on a token-budgeted plan, where DailyCap / MonthlyCap read 0
+	// and the token windows below are the allowance; nil means unknown.
+	BudgetUnit          string `json:"budget_unit,omitempty"`
+	EvidenceTokenBudget *int   `json:"evidence_token_budget,omitempty"`
+	SessionTokenBudget  *int64 `json:"session_token_budget,omitempty"`
+	DailyTokensUsed     *int64 `json:"daily_tokens_used,omitempty"`
+	DailyTokenBudget    *int64 `json:"daily_token_budget,omitempty"`
+	MonthlyTokensUsed   *int64 `json:"monthly_tokens_used,omitempty"`
+	MonthlyTokenBudget  *int64 `json:"monthly_token_budget,omitempty"`
 	// AsOf is the finished_at of the sync run this plan was observed on.
 	AsOf string `json:"as_of,omitempty"`
 }
@@ -239,6 +249,13 @@ func (s *Server) handleCloudStatus(w http.ResponseWriter, r *http.Request) {
 				DailyCap: last.DailyCap, MonthlyCap: last.MonthlyCap,
 				DigestWeekly:         cloudIntPtrToBoolPtr(last.DigestWeekly),
 				ResultsRetentionDays: last.ResultsRetentionDays,
+				BudgetUnit:           last.BudgetUnit,
+				EvidenceTokenBudget:  last.EvidenceTokenBudget,
+				SessionTokenBudget:   last.SessionTokenBudget,
+				DailyTokensUsed:      last.DailyTokensUsed,
+				DailyTokenBudget:     last.DailyTokenBudget,
+				MonthlyTokensUsed:    last.MonthlyTokensUsed,
+				MonthlyTokenBudget:   last.MonthlyTokenBudget,
 				AsOf:                 dashapi.CloudRFC3339(last.FinishedAt),
 			}
 		}

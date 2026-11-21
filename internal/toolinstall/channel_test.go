@@ -224,3 +224,96 @@ func TestChannelTableCoversRegistry(t *testing.T) {
 		}
 	}
 }
+
+// TestOSPackageManagerChannels is one row per OS package-manager channel: the
+// argv InstallArgvFor builds reads back through PlanUninstall into a plain
+// remove under the same sudo, never a purge or an autoremove.
+func TestOSPackageManagerChannels(t *testing.T) {
+	cases := []struct {
+		channel   string
+		install   []string
+		uninstall []string
+		display   string
+	}{
+		{"apt", []string{"sudo", "apt-get", "install", "-y", "bubblewrap"}, []string{"sudo", "apt-get", "remove", "-y", "bubblewrap"}, "sudo apt-get remove -y bubblewrap"},
+		{"dnf", []string{"sudo", "dnf", "install", "-y", "bubblewrap"}, []string{"sudo", "dnf", "remove", "-y", "bubblewrap"}, "sudo dnf remove -y bubblewrap"},
+		{"pacman", []string{"sudo", "pacman", "-S", "--needed", "--noconfirm", "bubblewrap"}, []string{"sudo", "pacman", "-R", "--noconfirm", "bubblewrap"}, "sudo pacman -R --noconfirm bubblewrap"},
+		{"zypper", []string{"sudo", "zypper", "install", "-y", "bubblewrap"}, []string{"sudo", "zypper", "remove", "-y", "bubblewrap"}, "sudo zypper remove -y bubblewrap"},
+		{"apk", []string{"sudo", "apk", "add", "bubblewrap"}, []string{"sudo", "apk", "del", "bubblewrap"}, "sudo apk del bubblewrap"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.channel, func(t *testing.T) {
+			if !ElevatedChannel(tc.channel) {
+				t.Errorf("%s must be Elevated", tc.channel)
+			}
+			if !HasDefinedUninstall(tc.channel) {
+				t.Errorf("%s must have a defined uninstall", tc.channel)
+			}
+			pm, ok := PackageManagerByName(tc.channel)
+			if !ok {
+				t.Fatalf("PackageManagerByName(%q) not found", tc.channel)
+			}
+			ch, argv, ok := InstallArgvFor(pm, []string{"bubblewrap"})
+			if !ok || ch != tc.channel || !reflect.DeepEqual(argv, tc.install) {
+				t.Fatalf("InstallArgvFor = (%q, %q, %v), want (%q, %q, true)", ch, argv, ok, tc.channel, tc.install)
+			}
+			got, err := PlanUninstall(tc.channel, argv)
+			if err != nil {
+				t.Fatalf("PlanUninstall: %v", err)
+			}
+			if !reflect.DeepEqual(got.Argv, tc.uninstall) || got.Display != tc.display || got.Package != "bubblewrap" {
+				t.Errorf("uninstall = %q %q %q, want %q %q bubblewrap", got.Argv, got.Display, got.Package, tc.uninstall, tc.display)
+			}
+			for _, a := range got.Argv {
+				switch a {
+				case "purge", "autoremove", "-Rs", "-Rn", "-Rns", "--clean-deps", "--purge":
+					t.Errorf("derived uninstall carries %q", a)
+				}
+			}
+			if p := PackageOf(tc.channel, argv); p != "bubblewrap" {
+				t.Errorf("PackageOf = %q", p)
+			}
+		})
+	}
+	if ElevatedChannel("npm") || ElevatedChannel("brew") || ElevatedChannel("nope") {
+		t.Error("only the OS package managers are Elevated")
+	}
+}
+
+// TestOSPackageManagerReadBack covers the read-back edges of the elevated
+// channels: an absolute program, an install without sudo, two packages, and
+// the refusals (a program that is not the channel's, sudo with nothing after).
+func TestOSPackageManagerReadBack(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel string
+		install []string
+		want    []string
+		err     error
+	}{
+		{"absolute program kept", "apt", []string{"sudo", "/usr/bin/apt-get", "install", "-y", "e2fsprogs"}, []string{"sudo", "/usr/bin/apt-get", "remove", "-y", "e2fsprogs"}, nil},
+		{"absolute sudo kept", "dnf", []string{"/usr/bin/sudo", "dnf", "install", "-y", "virtiofsd"}, []string{"/usr/bin/sudo", "dnf", "remove", "-y", "virtiofsd"}, nil},
+		{"no sudo stays without", "apk", []string{"apk", "add", "podman"}, []string{"apk", "del", "podman"}, nil},
+		{"two packages", "apt", []string{"sudo", "apt-get", "install", "-y", "virtiofsd", "e2fsprogs"}, []string{"sudo", "apt-get", "remove", "-y", "virtiofsd", "e2fsprogs"}, nil},
+		{"wrong program", "apt", []string{"sudo", "apt", "install", "-y", "bubblewrap"}, nil, ErrUnrecognizedArgv},
+		{"sudo only", "zypper", []string{"sudo"}, nil, ErrUnrecognizedArgv},
+		{"no package", "pacman", []string{"sudo", "pacman", "-S", "--needed"}, nil, ErrUnrecognizedArgv},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PlanUninstall(tc.channel, tc.install)
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) {
+					t.Fatalf("err = %v, want %v", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PlanUninstall: %v", err)
+			}
+			if !reflect.DeepEqual(got.Argv, tc.want) {
+				t.Errorf("argv = %q, want %q", got.Argv, tc.want)
+			}
+		})
+	}
+}

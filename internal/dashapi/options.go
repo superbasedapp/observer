@@ -5,19 +5,25 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/artifactstate"
 	"github.com/marmutapp/superbased-observer/internal/captureprogress"
+	"github.com/marmutapp/superbased-observer/internal/cloudagentssvc"
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/frontdoor"
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/alignment"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/planlimitssvc"
+	"github.com/marmutapp/superbased-observer/internal/sdkcredsvc"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -49,7 +55,8 @@ type ExtraRoute struct {
 type Options struct {
 	// DB is the observer database.
 	DB *sql.DB
-	// DBPath is displayed in the header; not used to open anything.
+	// DBPath is displayed in the header and names this daemon's database to
+	// a CLI that asks (dashapi.DBIdentity, L-125); not used to open anything.
 	DBPath string
 	// ProcessArchive serves process capture that has moved to cold storage
 	// (corpus archival Bucket B, design §4.3). Nil - the default, and the
@@ -160,6 +167,25 @@ type Options struct {
 	// is the launch request's own sandbox flag. NIL has the same fail-open
 	// meaning as FeatureGate being nil.
 	TerminalFeatureGate func(requestedSandbox bool) (bool, string)
+	// LoopbackCallerGate is the caller check of every request from a local
+	// peer (security ledger LAUNCH-1, lane callerid): client and server are
+	// the connection's two ends as the listener saw them (client invalid
+	// when unparsable), mutating is an unsafe method or a WebSocket upgrade.
+	// It returns the refusal line and true to refuse with 403
+	// sandbox_caller. The daemon identifies the process behind the
+	// connection and refuses one that runs inside a live Observer box. NIL
+	// gates nothing (a dashboard without a terminal stack has no boxes).
+	LoopbackCallerGate func(ctx context.Context, client, server netip.AddrPort, mutating bool) (reason string, refuse bool)
+	// LaunchCaller resolves who started a dashboard launch from the
+	// connection's two ends (lane cli-2, migration 220): the initiator
+	// (termrun's closed set) and, for an agent, its parent session. Nil
+	// records every dashboard launch as human_dashboard.
+	LaunchCaller func(ctx context.Context, client, server netip.AddrPort) (initiator, parentSession string)
+	// PendingLaunches is the daemon's store of launches held for a human
+	// (lane cli-2 fixes-1): a launch route whose caller is an agent's is
+	// held there, never started. Nil refuses such a launch (it cannot be
+	// held, and it may not run unconfirmed).
+	PendingLaunches PendingLaunches
 	// MonthlyBudgetUSD surfaces on the Analysis tab as a spend-budget
 	// progress tile. Zero hides the budget readout. Sourced from
 	// `intelligence.monthly_budget_usd` in config.toml.
@@ -168,6 +194,12 @@ type Options struct {
 	// Settings page's GET /api/config + PUT /api/config/pricing
 	// endpoints. Empty disables the Settings save path (read-only).
 	ConfigPath string
+	// AggregateShareStatus reads the community aggregate-sharing switch and
+	// its consent receipt for the You page. It is filled by cmd/observer only
+	// in a build that carries the egress.aggregate-share component, so the
+	// dashboard never imports that component's packages; nil means the
+	// component is not in this build.
+	AggregateShareStatus func(ctx context.Context) (AggregateShareStatus, error)
 	// RecognizesSessionFile, when non-nil, filters parse_cursors rows
 	// in /api/health/watcher: paths NOT recognised by any current
 	// adapter are tagged orphan_unmatched and excluded from the
@@ -212,6 +244,12 @@ type Options struct {
 	// Claude Code is not reported as absent (WINNODE2 16b). Nil reports
 	// none.
 	InstallSignalTools func() []string
+	// WorkspaceGitInit makes a new Observer default workspace a git
+	// repository (cmd/observer defaultworkspace.go: a fixed `git init`, no
+	// hooks, no templates, a timeout). The Default workspace card's save runs
+	// it through defaultworkspace.Ensure, only on a folder Observer marked.
+	// Nil leaves the folder without a repository and the save reports it.
+	WorkspaceGitInit func(ctx context.Context, dir string) error
 	// ProxyPort is the resolved observer-proxy port (cfg.Proxy.Port).
 	// Used by /api/setup/codex to compute the desired
 	// ~/.codex/config.toml base_url. Zero falls back to 8820.
@@ -269,6 +307,13 @@ type Options struct {
 	// the point: a node must be able to enrol from here). Nil = not wired; the
 	// management routes answer 501.
 	EnrolManager EnrolmentManager
+	// ConnectStatus builds the front door's one-sentence status (plan 07
+	// M8.4, internal/frontdoor) from this machine's enrolment and company
+	// lock, given the sign-in state the dashboard already probes through
+	// CloudAccount. cmd/observer owns the mapping so `observer status`,
+	// `observer connect --status` and GET /api/connect/status say the same
+	// sentence. Nil = not wired: the route answers 501.
+	ConnectStatus func(ctx context.Context, id frontdoor.Identity) frontdoor.Status
 	// Components serves Settings > Components and the route guard (modular
 	// packaging P1, lane MP-DASH, components_manage.go): the node's component
 	// state, the preview / apply of a new selection, teardown and purge,
@@ -312,6 +357,11 @@ type Options struct {
 	// the HTTP response; implementations must be quick and never
 	// panic (mirror the CostEngine.Reload hot-path contract).
 	OnConfigSaved func()
+	// SDK backs the SDK destination discovery route and the SDK key
+	// sign-in/sign-out routes (Plane A W2-7, ruling D18; dashboard
+	// sdk_settings.go). Nil Status reads as "not signed in"; nil SignIn /
+	// SignOut answer 501.
+	SDK SDKSeams
 	// ToolCatalog lists every supported adapter (stable tool name +
 	// canonical watch paths) for the Connected-tools panel (P4.1).
 	// Injected by cmd - the same seam pattern as
@@ -397,6 +447,11 @@ type Options struct {
 	// control (GET /api/setup/windows-homes, POST /api/setup/windows-homes/
 	// apply, T-421 item 4). Nil is the honest not-wired state (501).
 	WindowsHomes WindowsHomeService
+	// SetupExtras, when non-nil, serves the Settings controls for the Claude
+	// Code status line, start at login and browser-capture setup (GET and
+	// POST /api/setup/statusline, /login-start, /browser; dashboard CLI
+	// parity, lane L2). A nil field is the honest not-wired state (501).
+	SetupExtras *SetupExtras
 	// Reprice, when non-nil, serves the Settings "Re-price stored costs"
 	// card (GET /api/reprice/status, POST /api/reprice/plan, /apply and
 	// /revert; gap PRICE-REPRICE-1). Nil is the honest not-wired state (501).
@@ -526,6 +581,16 @@ type Options struct {
 	// decision-record chain. Nil answers the honest "not available in this
 	// process" body, never a 404.
 	MCPAccessStatus func(ctx context.Context, verifyChain bool) (any, error)
+	// PromptJudgeStatus, when non-nil, backs GET /api/guard/prompt/judge
+	// (lane adm-p2): the organization's coding-agent prompt judge on this
+	// node, composed by cmd/observer from the SAME facts `observer guard
+	// status` prints (whether it is on and why not, scope, strict, what a
+	// prompt-gate hook does when the daemon cannot answer, the last day's
+	// J-801 counts, the consent sentence and the named residuals). A plain
+	// func returning a JSON-encodable value, so this package never imports
+	// the policy family. Nil answers the honest "not available in this
+	// process" body, never a 404.
+	PromptJudgeStatus func(ctx context.Context) (any, error)
 	// Remote is the injected remote-access security substrate (plan §4).
 	// Nil (the default) means loopback-only: a non-loopback bind is REFUSED
 	// (§4.6 atomic-safety rule). A non-nil controller reporting Ready()
@@ -547,6 +612,11 @@ type Options struct {
 	// probe; nil (the default) is the honest disabled state, matching the
 	// LaunchManager/BuildHandoff seam pattern (CLAUDE.md #2).
 	SandboxProber SandboxProber
+	// SandboxSetup, when non-nil, backs the sandbox setup routes
+	// (/api/terminal/sandbox/setup..., sandbox installation lifecycle plan
+	// section 3.6) and the CLI's `observer sandbox setup`. Nil means the
+	// module or the feature is not in this build: the routes answer 501.
+	SandboxSetup SandboxSetup
 	// SandboxInstallVersions, when non-nil, backs GET
 	// /api/terminal/sandbox/install-versions (lane LEFT-SBX): the published
 	// versions of one install-source tool for the Container sandboxes card's
@@ -561,6 +631,25 @@ type Options struct {
 	// on the Settings card. nil (the default, and every build without the
 	// sandbox) reads as not forbidden.
 	SandboxSignInForbidden func() bool
+	// SandboxSeize, when non-nil, reports what the strace switch
+	// ([terminal.sandbox].seccomp_allow_seize, lane ptrace) gives each
+	// sandbox on this host now, for GET /api/terminal/sandbox/ptrace-seize.
+	// nil (every build without the sandbox) answers no rows.
+	SandboxSeize func() SandboxSeizeHost
+	// SandboxEgressHostCheck, when non-nil, is the egress gateway's own host
+	// check for a [terminal.sandbox] block (OpenShell lane N5): it returns
+	// the gateway rule that refuses host under ts, or "" when the gateway
+	// lets it through. /api/sandbox/refusals/allow asks it whether "allow
+	// this host" would change anything. nil (the default, and every build
+	// without the sandbox) offers nothing and the apply answers 501.
+	SandboxEgressHostCheck func(ts config.TerminalSandboxConfig, host string) string
+	// SandboxProviderHost, when non-nil, reports whether host is in the
+	// model-provider host set the egress gateway's provider block refuses
+	// under cfg (the closed provider list plus the proxy's configured
+	// upstreams; OpenShell lane N5, audit finding N5-A1). Such a host is
+	// never offered, even when its refusal was stored as an allow-list
+	// miss. nil (every build without the sandbox) reads as not a provider.
+	SandboxProviderHost func(cfg config.Config, host string) bool
 	// ProjectPolicy, when non-nil, backs GET /api/terminal/project-policy
 	// (lane sec-p2b): the New Terminal dialog's "project policy" line for a
 	// chosen directory, read from the daemon's project match record and the
@@ -598,6 +687,11 @@ type Options struct {
 	// page model, account lifecycle, refresh and the status line feed. Nil
 	// makes every /api/plans route answer 503.
 	Plans *planlimitssvc.Service
+	// CloudAgents is the cloud-agent connector service
+	// (internal/cloudagentssvc, docs/cloud-agents.md): linked accounts,
+	// per-signal coverage, connect / test / sync / disconnect. Nil makes
+	// every /api/cloud-agents route answer 503.
+	CloudAgents *cloudagentssvc.Service
 	// Projects carries the [projects] tunables (Projects-page spend/ROI/
 	// commit-alignment arc, docs/plans/projects-page-roi-and-commit-
 	// alignment-plan-2026-09-21.md). Consumed for CommitLinkWindowDays
@@ -616,6 +710,10 @@ type Options struct {
 	// JudgeGradeReason explains why JudgeGrade is nil. Empty when
 	// JudgeGrade is non-nil.
 	JudgeGradeReason string
+	// JudgeGradePlace is where the person turns the tier on while
+	// JudgeGrade is nil ("" when no setting changes it, e.g. a build
+	// without the judge client).
+	JudgeGradePlace settingslink.Place
 	// CloudGradeAvailability reports whether the Cloud Intelligence
 	// commit-alignment grading job (§3.6 tier C) is available right now,
 	// and the honest reason when it is not - wired from
@@ -647,6 +745,19 @@ type Options struct {
 	// file cap and the import. Nil answers 404 on
 	// /api/security/import-sarif.
 	SARIFImport *SARIFImport
+	// SecurityScanNow is the Code security page's "Scan now" seam: the
+	// selected scanners and one manual run of one of them on one project.
+	// Nil leaves the page's scan job with its own history step only.
+	SecurityScanNow *SecurityScanNow
+	// SecurityDAST is the Scanners tab's DAST card seam (component
+	// security.dast, wired from cmd/observer/security_dast_dashboard.go):
+	// state, candidates, the accept and one run. Nil answers 404 on
+	// /api/security/dast*.
+	SecurityDAST *SecurityDAST
+	// SecurityProjectSBOM is the Projects tab's SBOM export seam (component
+	// security.deps, cmd/observer/security_sbom_dashboard.go). Nil answers
+	// 404 on /api/security/sbom.
+	SecurityProjectSBOM SecurityProjectSBOM
 	// Opengrep is the code rules' seam (component security.scan.opengrep,
 	// lane SEC-G2): the Code rules card's state and the guided install.
 	// Nil answers 404 on /api/security/code/install.
@@ -692,6 +803,12 @@ type Options struct {
 	// (component security.feedback, lane sec-h): the configured judge's
 	// advisory explanation of one finding. Nil answers 404.
 	SecurityExplain SecurityExplain
+	// SecurityExplainFix is the same action's suggest-a-fix variant (the
+	// drawer's "Suggest a fix", `observer security explain --fix`, OS and CI
+	// plan section 14.8): the prompt also carries the rule's fix hint and,
+	// for a dependency finding, the versions (never advisory prose). Nil
+	// answers a fix request as compiled out.
+	SecurityExplainFix SecurityExplain
 	// SecurityOrgShare feeds the affected-worker notice (security plan
 	// 7.12, lane SEC-E3): what this node shares with its organization about
 	// code security. Nil hides the notice.
@@ -707,6 +824,36 @@ type Options struct {
 	// Nil makes those write routes answer 503; every delivery read still
 	// works from the local database.
 	DeliveryService DeliveryService
+
+	// RuleRelaxation, when non-nil, answers for the agent-run security
+	// assessments (docs/plans/security-assessments-module-plan-2026-11-13.md
+	// section 13.4): for one project root and a list of guard rule ids, the
+	// org lock on each rule and what it decides now, read from a guard built
+	// the way the daemon builds its own (the enrolment key pin and tenancy), so
+	// the module never judges a lock from a second derivation. Injected by cmd
+	// (the dashboard package keeps no guard construction of its own for this).
+	// Nil, or a rule missing from the answer, reads as locked and undecided: the
+	// module then offers no local approval (fail closed).
+	RuleRelaxation func(ctx context.Context, projectRoot string, ruleIDs []string) map[string]RuleRelaxationFact
+
+	// SandboxGatewayPort, when non-nil, maps the proxy's port to the port
+	// the sandbox's in-box egress gateway listens on (internal/sandbox
+	// owns the number). Injected by cmd, so the dashboard keeps no
+	// internal/sandbox import (the isolation component's L1 boundary); the
+	// security assessments' E5 rule refuses that port as a target. Nil (a
+	// build without the sandbox) leaves the gateway port unknown (0).
+	SandboxGatewayPort func(proxyPort int) int
+}
+
+// RuleRelaxationFact is Options.RuleRelaxation's answer for one rule: the
+// lock (untouched, overridable or locked), its cause, the rule's decision in
+// the running mode (allow, flag, ask, deny; "" when unknown) and whether the
+// project's engine carries it.
+type RuleRelaxationFact struct {
+	Lock     string
+	Cause    string
+	Decision string
+	Known    bool
 }
 
 // TerminalSessionLink is the resolved identity of a live terminal launch token
@@ -759,4 +906,56 @@ type BinaryInstall struct {
 	// manager's launcher, which survives an upgrade) or "binary" (the real
 	// path).
 	Registers string `json:"registers"`
+}
+
+// InitiatorHumanDashboard is the initiator a dashboard launch records when
+// no LaunchCaller is wired or it gives no answer (lane cli-2). It repeats
+// internal/termrun.InitiatorHumanDashboard, which this package does not
+// import: termrun belongs to the terminals component, and the dashboard
+// compiles without it (pinned equal by TestInitiatorVocabularyMatches in
+// cmd/observer).
+const InitiatorHumanDashboard = "human_dashboard"
+
+// AggregateShareStatus is the community aggregate-sharing posture the You
+// page shows: the [aggregate_share] switch, the consent check result and the
+// current receipt's date, author and schema. Plain values, so the dashboard
+// needs no import of the component that owns them.
+type AggregateShareStatus struct {
+	// Enabled is [aggregate_share].enabled (default off).
+	Enabled bool
+	// Status is the consent check: valid, disabled, missing, or a changed
+	// schema, endpoint or registry that suspends sharing until re-consent.
+	Status string
+	// ConsentedAt, Actor and SchemaVersion describe the current receipt;
+	// zero when there is none.
+	ConsentedAt   time.Time
+	Actor         string
+	SchemaVersion int
+}
+
+// SDKSeams is the cmd-injected SDK key holder (internal/sdkcredsvc through
+// the orgclient lane), so the dashboard never dials the org itself.
+type SDKSeams struct {
+	// Status describes the stored SDK key (never the key).
+	Status func() sdkcredsvc.Status
+	// SignIn mints the member's SDK key on the org and stores it.
+	SignIn func(ctx context.Context) (sdkcredsvc.Status, error)
+	// SignOut revokes it on the org and removes the local copies; it
+	// returns how many keys the org revoked.
+	SignOut func(ctx context.Context) (int, error)
+	// Receiver reports what the daemon last recorded about its local OTLP
+	// receiver's bind (the record `observer doctor` row otlp.receiver
+	// reads); ok is false when nothing is recorded. Nil: not wired.
+	Receiver func() (OTLPReceiverState, bool)
+}
+
+// OTLPReceiverState is the daemon's record of its OTLP receiver bind: the
+// state ("listening" or "bind_failed"), the addresses and the bind error.
+// Addresses and an error string only: no content, no tokens.
+type OTLPReceiverState struct {
+	State    string `json:"state"`
+	GRPCAddr string `json:"grpc_addr,omitempty"`
+	HTTPAddr string `json:"http_addr,omitempty"`
+	Error    string `json:"error,omitempty"`
+	At       string `json:"at,omitempty"`
 }

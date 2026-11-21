@@ -167,7 +167,7 @@ type Result struct {
 func Build(ctx context.Context, deps Deps, req Request) (Result, error) {
 	var res Result
 	if !deps.Cfg.Enabled {
-		return res, fmt.Errorf("handoff is disabled ([handoff] enabled = false in config)")
+		return res, fmt.Errorf("handoff is disabled: turn it on in Settings > Session attach (More settings: handoff.enabled)")
 	}
 	now := time.Now
 	if deps.Now != nil {

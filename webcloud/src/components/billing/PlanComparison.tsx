@@ -5,10 +5,10 @@ import {
 } from "../../api";
 import type {
   BillingView,
-  CheckoutCatalog,
   CheckoutIntent,
   CheckoutPrice,
 } from "../../api";
+import { ensurePaddleReady, loadPaddleJs, paddleFailureText } from "./paddleCheckout";
 import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList";
 import { Pill } from "@shared/primitives/Pill";
 import {
@@ -41,91 +41,17 @@ import { Check, Sparkles } from "lucide-react";
 // primary button (Button.tsx: a disabled button reads as "not allowed", and
 // this is not an action at all).
 
-const PADDLE_JS_SRC = "https://cdn.paddle.com/paddle/v2/paddle.js";
-
-// loadPaddleJs loads the Paddle.js CDN script exactly once (module-scope
-// promise), never as an npm dependency (operator ruling: no Paddle SDK
-// bundled - loaded only on this page, at the moment of checkout). Every
-// caller shares the same in-flight/resolved promise, so a second Upgrade
-// click does not inject a second <script> tag.
-let paddleJsPromise: Promise<void> | null = null;
-function loadPaddleJs(): Promise<void> {
-  if (window.Paddle) {
-    return Promise.resolve();
-  }
-  if (paddleJsPromise) {
-    return paddleJsPromise;
-  }
-  paddleJsPromise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = PADDLE_JS_SRC;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => {
-      paddleJsPromise = null;
-      reject(new Error("could not load Paddle.js"));
-    };
-    document.head.appendChild(script);
-  });
-  return paddleJsPromise;
-}
-
-// paddleInitialized / paddleInitKey track whether Paddle.Initialize() has
-// already run this page load. Paddle documents that Initialize throws on a
-// second call, so every checkout open after the first must reuse the same
-// instance and, if the browser's Paddle.js build supports it, push a fresh
-// eventCallback through Paddle.Update instead. The key (client token +
-// environment) is recorded for diagnostics; once initialized, later opens
-// always go through Update rather than attempting a second Initialize even
-// if the key were somehow to change.
-let paddleInitialized = false;
-let paddleInitKey = "";
-
-function paddleKey(checkout: CheckoutCatalog): string {
-  return checkout.environment + "::" + checkout.client_token;
-}
-
-// ensurePaddleReady initializes Paddle.js exactly once per page load and
-// wires the given eventCallback - via Initialize the first time, via Update
-// on every later call - then hands back the non-null global so the caller
-// never needs its own non-null assertion. Throws if window.Paddle is not
-// present (the caller is expected to have awaited loadPaddleJs() first).
-function ensurePaddleReady(
-  checkout: CheckoutCatalog,
-  eventCallback: (event: PaddleEventData) => void,
-): PaddleGlobal {
-  const paddle = window.Paddle;
-  if (!paddle) {
-    throw new Error("Paddle.js failed to load");
-  }
-  if (paddleInitialized) {
-    if (paddleInitKey !== paddleKey(checkout) && import.meta.env.DEV) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "Paddle already initialized with a different client token or " +
-          "environment; Paddle.js only supports one Initialize call per " +
-          "page, so the original one stays in effect.",
-      );
-    }
-    paddle.Update?.({ eventCallback });
-    return paddle;
-  }
-  if (checkout.environment === "sandbox") {
-    paddle.Environment.set("sandbox");
-  }
-  paddle.Initialize({ token: checkout.client_token, eventCallback });
-  paddleInitialized = true;
-  paddleInitKey = paddleKey(checkout);
-  return paddle;
-}
-
-// PriceDisplay renders one purchasable price plus its trial line, if any.
+// PriceDisplay renders one purchasable price plus its trial line: the free
+// trial when this account would get one, or a plain "billed from the first
+// day" once it has had its trial (the server then opens a trial-less price).
 function PriceDisplay({
   price,
   trialDays,
+  trialUsed,
 }: {
   price: CheckoutPrice;
   trialDays: number;
+  trialUsed?: boolean;
 }) {
   return (
     <div className="mt-3 flex items-baseline gap-1.5">
@@ -138,6 +64,11 @@ function PriceDisplay({
       {trialDays > 0 && (
         <span className="ml-1 text-[11px] text-fg-3">
           {trialDays}-day free trial
+        </span>
+      )}
+      {trialDays <= 0 && trialUsed && (
+        <span className="ml-1 text-[11px] text-fg-3">
+          free trial used, billed from the first day
         </span>
       )}
     </div>
@@ -192,7 +123,10 @@ export function PlanComparison({
 
   // The current plan token drives which card gets the "Your plan" badge. A
   // missing plan snapshot leaves this unknown rather than guessing free.
-  const currentIsPlus = plan ? isPlusPlan(plan.plan) : null;
+  // A subscription billed through the personal dashboard (after the move
+  // onto it) is the paid plan even though the account snapshot is absent.
+  const viaPersonalOrg = view.paid_through_personal_org === true;
+  const currentIsPlus = viaPersonalOrg ? true : plan ? isPlusPlan(plan.plan) : null;
 
   const terminal = sub?.status === "refunded" || sub?.status === "charged_back";
   const canceled = sub?.status === "canceled";
@@ -247,17 +181,12 @@ export function PlanComparison({
           // Paddle failures arrive asynchronously, after Checkout.open has
           // returned. Show them on our page so support remains reachable even
           // if the vendor's iframe cannot navigate to its mail handler.
-          const detail = event.error && typeof event.error === "object"
-            ? (event.error as Record<string, unknown>).detail
-            : undefined;
-          const reference = typeof detail === "string" ? detail.match(/\bE-\d{3,4}\b/)?.[0] : undefined;
-          setError("Paddle could not complete checkout." + (reference ? ` Reference: ${reference}.` : "") +
-            " Please try again later or contact Paddle support below.");
+          setError(paddleFailureText(event));
           window.Paddle?.Checkout.close?.();
         }
       });
       paddle.Checkout.open({
-        items: [{ priceId: intent.price_id, quantity: 1 }],
+        items: [{ priceId: intent.price_id, quantity: intent.quantity ?? 1 }],
         customData: intent.custom_data,
         settings: {
           displayMode: "overlay",
@@ -296,7 +225,7 @@ export function PlanComparison({
 
         <Card tone="featured">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-[14px] font-semibold text-fg-0">Plus</h3>
+            <h3 className="text-[14px] font-semibold text-fg-0">Personal Pro</h3>
             {currentIsPlus === true ? (
               <Pill variant="accent">Your plan</Pill>
             ) : (
@@ -304,7 +233,11 @@ export function PlanComparison({
             )}
           </div>
           {checkout.available && price ? (
-            <PriceDisplay price={price} trialDays={checkout.trial_days} />
+            <PriceDisplay
+              price={price}
+              trialDays={checkout.trial_days}
+              trialUsed={checkout.trial_used}
+            />
           ) : (
             <p className="mt-1 text-[11px] text-fg-3">
               A paid plan billed through Paddle.

@@ -23,6 +23,7 @@ const workflowPath = ".github/workflows/npm-release.yml"
 // workflowJob is the subset of a job's shape these tests reason about.
 type workflowJob struct {
 	Name        string            `yaml:"name"`
+	If          string            `yaml:"if"`
 	Needs       yaml.Node         `yaml:"needs"`
 	Environment yaml.Node         `yaml:"environment,omitempty"`
 	Permissions map[string]string `yaml:"permissions"`

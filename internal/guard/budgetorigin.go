@@ -86,6 +86,16 @@ func (g *Guard) hasOrgBudgetOrigin(ruleID string) bool {
 type BudgetWindowSpend struct {
 	DailyUSD, MonthlyUSD       float64
 	DailyTokens, MonthlyTokens int64
+	// The Local* fields are this machine's own spend, without the org's
+	// cross-machine baseline: what a blocking cap is compared against when
+	// BaselineFlagOnly holds (policy baselineWithheld). The warning surfaces
+	// read them so they never call a reading "blocked" that the guard will not
+	// refuse (budget-enforcement honesty, 2026-11-18).
+	LocalDailyUSD, LocalMonthlyUSD       float64
+	LocalDailyTokens, LocalMonthlyTokens int64
+	// BaselineFlagOnly says the baseline in the totals may warn and may not
+	// deny (orgcontract.BudgetBaselineAppliedFlagOnly).
+	BaselineFlagOnly bool
 }
 
 // BudgetWindowSpendNow measures BudgetWindowSpend now, uncached. ok=false when
@@ -106,6 +116,9 @@ func (g *Guard) BudgetWindowSpendNow() (BudgetWindowSpend, bool) {
 	return BudgetWindowSpend{
 		DailyUSD: snap.DailyUSD + b.DailyUSD, MonthlyUSD: snap.MonthlyUSD + b.MonthlyUSD,
 		DailyTokens: snap.DailyTokens + b.DailyTokens, MonthlyTokens: snap.MonthlyTokens + b.MonthlyTokens,
+		LocalDailyUSD: snap.DailyUSD, LocalMonthlyUSD: snap.MonthlyUSD,
+		LocalDailyTokens: snap.DailyTokens, LocalMonthlyTokens: snap.MonthlyTokens,
+		BaselineFlagOnly: g.budgetBaselineFlagOnly(),
 	}, true
 }
 
@@ -175,10 +188,22 @@ func OrgBudgetVerdictText(v policy.Verdict, o BudgetOrigin) policy.Verdict {
 	}
 	// The labels are budgetwarn's (one owner), so a verdict and a warning on
 	// the same window read the same way.
+	//
+	// A hard window's verdict that only FLAGS was taken by a guard that is
+	// not refusing it (observe mode): it reads as a warning on this machine,
+	// never as "blocking" (budget-enforcement honesty, 2026-11-18). A deny,
+	// or a reason rendered for a hook stop (no decision), keeps "blocking".
+	flagsOnly := o.Enforcement == "hard" && v.Decision == policy.DecisionFlag
+	label := budgetwarn.EnforcementLabel(o.Enforcement)
+	if flagsOnly {
+		label = budgetwarn.EffectiveLabel(o.Enforcement, budgetwarn.EffectObserve)
+	}
 	v.Reason = "organization " + o.Window + " budget (" + budgetwarn.ScopeLabel(o.Scope) + ", " +
-		budgetwarn.EnforcementLabel(o.Enforcement) + ") reached: " + detail
-	switch o.Enforcement {
-	case "hard":
+		label + ") reached: " + detail
+	switch {
+	case flagsOnly:
+		v.Advice = "Your organization set this budget to block, but this machine's guard is not in enforce mode, so requests are not blocked. Ask an admin if you need more headroom."
+	case o.Enforcement == "hard":
 		v.Advice = "Your organization's budget blocks further proxied requests, and the next prompt or tool call in tools with a pre-send hook, until the period resets or an admin raises the cap."
 	default:
 		v.Advice = "This is a warning from your organization's budget; requests are not blocked. Ask an admin if you need more headroom."

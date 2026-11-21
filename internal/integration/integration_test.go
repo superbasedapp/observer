@@ -432,6 +432,8 @@ func TestPromptLaneClassifiedForEveryAdapter(t *testing.T) {
 		"aider":       PromptLaneProxyOnly,
 		"goose":       PromptLaneProxyOnly,
 		"prime-agent": PromptLaneProxyOnly,
+		// custom-agent (P-228): proxy-only by construction, no hook.
+		"custom-agent": PromptLaneProxyOnly,
 
 		// --- PromptLaneProbeRequired: a documented mechanism exists,
 		// but the exact wire shape (the prompt field's presence, or

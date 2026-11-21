@@ -287,7 +287,7 @@ func (ds *driftState) markSeen(id string) {
 
 // driftRoots are the directories a run's transcript may be read under: the
 // same ones the binding lets a payload's files name.
-func driftRoots(rec RunRecord) []string { return append(runDirs(rec), rec.Roots...) }
+func driftRoots(rec RunRecord) []string { return append(runDirs(rec), rec.ReadRoots()...) }
 
 // CheckDrift compares every run's transcripts with its gate events at now
 // and lowers each run that drifted (hooks_drifted); it returns how many

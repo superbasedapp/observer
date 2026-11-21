@@ -342,13 +342,37 @@ var purgeSessionListColumns = map[string]bool{
 	"commit_landings.contributors_json": true,
 }
 
+// purgeSessionKeyedByOtherName are columns that hold a session id although
+// their name contains neither "session" nor "thread", so the schema scan
+// cannot find them: each needs its purge decision. (A column scan on a name
+// alone missed cloud_usage_ledger.scope_session and this one once.)
+var purgeSessionKeyedByOtherName = map[string]bool{
+	"cloud_sync_checkpoints.scope": true, // session_history scope = the session id
+}
+
+// purgeNotSessionKeyColumns are the scan's matches that do NOT hold a
+// session id, each with the reviewed reason. A new column whose name
+// contains "session" or "thread" fails the coverage test until it is either
+// given a purge decision or listed here.
+var purgeNotSessionKeyColumns = map[string]string{
+	"projects.last_session_at":              "a timestamp, not an id",
+	"project_patterns.source_session_count": "a count, not an id",
+	"process_runs.thread_count":             "an OS thread count, not an id",
+	"sessions.thread_source":                "a column of the session row itself (an enum), deleted with it",
+	"sessions.vendor_session_ref":           "a column of the session row itself (the vendor's second reference), deleted with it",
+	"cloud_sync_last.session_token_budget":  "a token count (the cloud plan's per-session enrichment budget), not an id",
+}
+
 // purgeSchemaSessionColumns lists every (table, column) of the migrated
-// node schema whose column name contains session_id or thread_id.
+// node schema whose column name contains "session" or "thread" (wider than
+// session_id / thread_id, so a session id under a name like scope_session
+// is found), minus the reviewed not-an-id exemptions, plus the session-keyed
+// columns pinned by name. It fails on a stale exemption or pin.
 func purgeSchemaSessionColumns(t *testing.T, database *sql.DB) map[string]bool {
 	t.Helper()
 	rows, err := database.Query(`SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p
 		WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
-		  AND (p.name LIKE '%session_id%' OR p.name LIKE '%thread_id%')`)
+		  AND (p.name LIKE '%session%' OR p.name LIKE '%thread%')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +384,29 @@ func purgeSchemaSessionColumns(t *testing.T, database *sql.DB) map[string]bool {
 			t.Fatal(err)
 		}
 		out[tbl+"."+col] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for key, reason := range purgeNotSessionKeyColumns {
+		if !out[key] {
+			t.Errorf("not-a-session-id exemption %s matches no scanned column (stale)", key)
+		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("%s: an exemption needs its reviewed reason", key)
+		}
+		delete(out, key)
+	}
+	for key := range purgeSessionKeyedByOtherName {
+		tbl, col, _ := strings.Cut(key, ".")
+		var n int
+		if err := database.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, tbl, col).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("session-keyed column %s pinned by name does not exist", key)
+		}
+		out[key] = true
 	}
 	return out
 }
@@ -521,11 +568,17 @@ func TestAdapterPurgeAppliesSessionDecisions(t *testing.T) {
 	purgeSeedRow(t, database, &seq, "arena_runs", map[string]any{"id": "ar1"})
 	purgeSeedRow(t, database, &seq, "benchmark_runs", map[string]any{"run_id": "br1"})
 	attempt := purgeSeedRow(t, database, &seq, "benchmark_attempts", map[string]any{"run_id": "br1"})
+	cloudAcct := purgeSeedRow(t, database, &seq, "cloud_connector_accounts", map[string]any{"connector": "cursor-cloud", "account_id": "user:1"})
 	overrides := map[string]map[string]any{
 		"arena_candidates":          {"run_id": "ar1"},
 		"benchmark_session_members": {"run_id": "br1", "attempt_id": attempt},
 		"org_intel_outbox":          {"trigger_kind": "background", "state": "pending"},
 		"org_message_outbox":        {"kind": "post"},
+		"cloud_session_links":       {"pr_number": 7},
+		"cloud_usage_ledger": {
+			"measurement_source": "provider_run_total", "value_type": "snapshot", "monetary_status": "not_monetary",
+		},
+		"cloud_sync_checkpoints": {"account_pk": cloudAcct, "stream": "session_history"},
 		"mcp_relay_record": {
 			"record_kind": "decision", "capture_level": "L1", "corr_confidence": "exact",
 			"call_id": "call-1", "event_kind": "mcp_call", "decision": "allow",
@@ -593,6 +646,10 @@ func TestAdapterPurgeAppliesSessionDecisions(t *testing.T) {
 	purgeSeedRow(t, database, &seq, "file_changes", purgeSeedWith("file_changes", map[string]any{"session_id": "mixed", "action_id": zedMixedAction}))
 	purgeSeedRow(t, database, &seq, "file_changes", purgeSeedWith("file_changes", map[string]any{"session_id": "mixed", "action_id": ccMixedAction}))
 	purgeSeedRow(t, database, &seq, "cache_events", purgeSeedWith("cache_events", map[string]any{"session_id": "mixed", "token_usage_id": zedMixedToken}))
+	// Cloud-agent collection state that is NOT the purged session's: an
+	// account-wide discovery checkpoint and another session's ledger row.
+	purgeSeedRow(t, database, &seq, "cloud_sync_checkpoints", purgeSeedWith("cloud_sync_checkpoints", map[string]any{"stream": "discovery", "scope": ""}))
+	purgeSeedRow(t, database, &seq, "cloud_usage_ledger", purgeSeedWith("cloud_usage_ledger", map[string]any{"scope_session": "c1"}))
 
 	plan, err := s.CreateComponentPurgePlan(ctx, ComponentPurgeSpec{Kind: PurgeInteractive, Component: "adapter.zed", CatalogVersion: 1})
 	if err != nil {
@@ -613,6 +670,10 @@ func TestAdapterPurgeAppliesSessionDecisions(t *testing.T) {
 	}
 	if count(`SELECT COUNT(*) FROM api_turns WHERE session_id = 'p1'`) != 1 || count(`SELECT COUNT(*) FROM otel_content WHERE session_id = 'o1'`) != 1 {
 		t.Error("another source's api_turns / otel_content lost its session")
+	}
+	if count(`SELECT COUNT(*) FROM cloud_sync_checkpoints WHERE stream = 'discovery' AND scope = ''`) != 1 ||
+		count(`SELECT COUNT(*) FROM cloud_usage_ledger WHERE scope_session = 'c1'`) != 1 {
+		t.Error("cloud-agent state of another session or of the whole account was purged")
 	}
 	for _, d := range purgeSessionDecisions {
 		key := d.table + "." + d.column
@@ -759,5 +820,49 @@ func TestAdapterPurgeRemovesSessionFromCommitContributors(t *testing.T) {
 	// list per purged session.
 	if res.Nulled["commit_landings"] != 4 {
 		t.Errorf("rewritten contributor lists = %d, want 4", res.Nulled["commit_landings"])
+	}
+}
+
+// TestPurgeToolSessionsScopedAndTombstoned: the cloud-agent member-scope
+// correction (CLOUDAGENTS-6) removes only the named sessions of the tool,
+// with the rows the adapter purge's decision table assigns to them, and it
+// is a correction: the org push tombstones the deleted rows.
+func TestPurgeToolSessionsScopedAndTombstoned(t *testing.T) {
+	s, database := newTestStore(t)
+	ctx := context.Background()
+	seedMixedAdapters(t, s)
+	if _, err := database.Exec(`INSERT INTO cloud_usage_ledger (connector, source_record_id, measurement_source, value_type, unit, value, monetary_status, scope_session, reported_at, observed_at)
+		VALUES ('devin', 'r-z1', 'provider_run_total', 'cumulative', 'acu', 1.5, 'not_monetary', 'z1', '2026-10-07T00:00:00Z', '2026-10-07T00:00:00Z'),
+		       ('devin', 'r-z2', 'provider_run_total', 'cumulative', 'acu', 2.5, 'not_monetary', 'z2', '2026-10-07T00:00:00Z', '2026-10-07T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	tombsBefore := purgeCount(t, database, `SELECT COUNT(*) FROM org_push_deletions`)
+	// z1 is named; z2 is a zed session not named; c1 is named but another
+	// tool's; "nope" does not exist.
+	res, err := s.PurgeToolSessions(ctx, "zed", []string{"z1", "c1", "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["sessions"] != 1 || res.Deleted["actions"] != 3 || res.Deleted["token_usage"] != 1 || res.Deleted["cloud_usage_ledger"] != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+	for q, want := range map[string]int{
+		`SELECT COUNT(*) FROM sessions WHERE id = 'z1'`:                      0,
+		`SELECT COUNT(*) FROM sessions WHERE id IN ('z2','c1','mixed')`:      3,
+		`SELECT COUNT(*) FROM actions WHERE session_id = 'z2'`:               2,
+		`SELECT COUNT(*) FROM actions WHERE session_id = 'c1'`:               4,
+		`SELECT COUNT(*) FROM cloud_usage_ledger WHERE scope_session = 'z2'`: 1,
+		`SELECT COUNT(*) FROM cloud_usage_ledger WHERE scope_session = 'z1'`: 0,
+		`SELECT COUNT(*) FROM token_usage WHERE session_id = 'c1'`:           1,
+	} {
+		if got := purgeCount(t, database, q); got != want {
+			t.Errorf("%s = %d, want %d", q, got, want)
+		}
+	}
+	if got := purgeCount(t, database, `SELECT COUNT(*) FROM org_push_deletions`); got <= tombsBefore {
+		t.Fatal("the correction emitted no org tombstone (it must not run as retention ageing)")
+	}
+	if res, err := s.PurgeToolSessions(ctx, "zed", nil); err != nil || len(res.Deleted) != 0 {
+		t.Fatalf("empty purge: %+v %v", res, err)
 	}
 }

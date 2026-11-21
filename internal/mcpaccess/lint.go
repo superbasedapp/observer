@@ -74,8 +74,9 @@ const (
 // PDP method table) and, with no task grant compilable, default-denies them
 // in enforce mode.
 //
-// Re-grounded on the pinned agentgateway v1.6.0 (tag commit ea5608642,
-// T-749): unlike v1.5.0, its McpAuthorizationSet::validate now sets
+// Re-grounded on agentgateway v1.6.0 (tag commit ea5608642, T-749) and
+// re-checked at the v1.7.0 re-pin (tag commit 26f5aebe9, PT-95): unlike
+// v1.5.0, its McpAuthorizationSet::validate now sets
 // mcp.methodName from the request method before evaluating CEL, and
 // authorize_task_request passes tasks/get, tasks/update and tasks/cancel
 // through as distinct methods (upstream test
@@ -85,7 +86,7 @@ const (
 // mcp.task{target,name} alone and widen to all three. The refusal stays
 // until the compilers learn the method key.
 const taskUnavailableMessage = "task-action grants are feature_unavailable in v1: Observer's grant compilers key a task rule " +
-	"on mcp.task{target,name} only and never on mcp.methodName (which the pinned agentgateway v1.6.0 now sets for " +
+	"on mcp.task{target,name} only and never on mcp.methodName (which the pinned agentgateway v1.7.0 sets for " +
 	"tasks/get, tasks/update and tasks/cancel), so a grant on one action would compile to a rule that also matches the other " +
 	"two and silently widen (R8.30.g); every compiler refuses it identically (R8.1). The A2 front still dispatches " +
 	"tasks/get|update|cancel natively (subject-bound task binding + the PDP method table) and default-denies them in enforce " +

@@ -226,6 +226,15 @@ func runLandlockExec(args []string) int {
 	if err := applyLandlock(rs); err != nil {
 		return helperFail("observer sandbox (process_lite): %v", err)
 	}
+	// The seccomp filter, after no_new_privs (applyLandlock set it) and
+	// before the self-tests, so they run under it as the agent will (lane
+	// N2). It is read back from /proc/self/status here, and again by the
+	// host helper on this held step.
+	if plan.Seccomp != "" {
+		if err := applySeccompSelf(plan.Seccomp); err != nil {
+			return helperFail("observer sandbox (process_lite): %s: seccomp: %v", "built_below_plan", err)
+		}
+	}
 	if err := landlockSelfTest(in.ObserverDir); err != nil {
 		return helperFail("observer sandbox (process_lite): %s: %v", "built_below_plan", err)
 	}
@@ -271,8 +280,8 @@ func readLandlockPlan(p string) (landlockPlanFile, error) {
 	if err := json.Unmarshal(b, &plan); err != nil {
 		return landlockPlanFile{}, fmt.Errorf("landlock plan: %w", err)
 	}
-	if plan.Version != landlockPlanVersion {
-		return landlockPlanFile{}, fmt.Errorf("landlock plan: version %d, this binary reads %d (restart the daemon after an upgrade)", plan.Version, landlockPlanVersion)
+	if err := checkLandlockPlanVersion(plan); err != nil {
+		return landlockPlanFile{}, err
 	}
 	return plan, nil
 }
@@ -387,7 +396,7 @@ var landlockConnectFn = func(p string) error {
 // sandboxenv.TempDirEnv) set to that TMPDIR: the ruleset grants no other
 // temp folder (D-UC1).
 func landlockEnv(environ []string, in sandboxlandlock.PlanInput, tempEnv []string) []string {
-	// The allow-list first (WINFIX2 R-167); the drops below stay.
+	// The allow-list first (WINFIX2, ledger SBX-WIN-ENV-1); the drops below stay.
 	environ = sandboxBoxEnv("linux", environ)
 	drop := map[string]bool{"TMPDIR": true, landlockEnvSocketDir: true, sandboxEnvMarker: true}
 	out := make([]string, 0, len(environ)+3)

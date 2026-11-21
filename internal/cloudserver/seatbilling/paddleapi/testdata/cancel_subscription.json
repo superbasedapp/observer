@@ -1,0 +1,23 @@
+{
+  "data": {
+    "id": "sub_01jc0000000000000000000000",
+    "status": "canceled",
+    "customer_id": "ctm_01jc0000000000000000000000",
+    "currency_code": "USD",
+    "collection_mode": "automatic",
+    "billing_cycle": { "interval": "month", "frequency": 1 },
+    "current_billing_period": null,
+    "next_billed_at": null,
+    "canceled_at": "2026-11-17T12:00:00Z",
+    "scheduled_change": null,
+    "items": [
+      {
+        "status": "inactive",
+        "quantity": 4,
+        "recurring": true,
+        "price": { "id": "pri_01jcseat000000000000000000", "product_id": "pro_01jcteam000000000000000000" }
+      }
+    ]
+  },
+  "meta": { "request_id": "44444444-5555-6666-7777-888888888888" }
+}

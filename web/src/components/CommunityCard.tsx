@@ -20,7 +20,7 @@ import { Bug, Check, Github, Heart, Share2 } from "lucide-react";
 // TESTIMONIALS array below is empty by default and the section falls back to a
 // "be the first" CTA; drop real quotes in when we have consent to publish.
 //
-// Matches the OnboardingCard idiom (raw section, calm body, one pixel-chip
+// Matches the old onboarding card idiom (raw section, calm body, one pixel-chip
 // accent) rather than a chart shell — it's a persistent footer-style card, not
 // a data panel, so it is not dismissable.
 //
@@ -50,7 +50,7 @@ const TESTIMONIALS: { quote: string; author: string; role?: string }[] = [];
 // in the text would double it up. LinkedIn's share intent only takes
 // a url param at all (no text), so it never sees this string.
 const SHARE_TEXT_STATIC =
-  "I've been using SuperBased to see what my AI coding tools actually cost and do - it's worth a look";
+  "I've been using superbased to see what my AI coding tools actually cost and do - it's worth a look";
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -80,10 +80,10 @@ function linkedInShareURL(): string {
   return buildLinkedInShareURL(SITE);
 }
 function emailShareURL(text: string): string {
-  return buildEmailShareURL("You should try SuperBased", text, SITE);
+  return buildEmailShareURL("You should try superbased", text, SITE);
 }
 function feedbackURL(): string {
-  const subject = encodeURIComponent("SuperBased - feedback / testimonial");
+  const subject = encodeURIComponent("superbased - feedback / testimonial");
   return `mailto:${CONTACT}?subject=${subject}`;
 }
 
@@ -183,7 +183,7 @@ export function CommunityCard() {
             <Pill variant="accent">open source</Pill>
           </div>
           <p className="mt-1 text-[12px] text-fg-3">
-            SuperBased is open source and built in the open. A star helps others find it,
+            superbased is open source and built in the open. A star helps others find it,
             issues get fixed fast, and a share goes a long way.
           </p>
 
@@ -192,7 +192,7 @@ export function CommunityCard() {
               href={REPO}
               icon={<Icon icon={Github} size="md" />}
               title="Star us on GitHub"
-              desc="If SuperBased is useful, a star helps other developers find it."
+              desc="If superbased is useful, a star helps other developers find it."
             />
             <ActionTile
               href={ISSUES}
@@ -219,7 +219,7 @@ export function CommunityCard() {
                   )}
                 </span>
                 <span className="mt-0.5 block text-[11px] text-fg-4">
-                  Share SuperBased with someone who'd find it useful.
+                  Share superbased with someone who'd find it useful.
                 </span>
               </span>
             </button>
@@ -291,7 +291,7 @@ export function CommunityCard() {
             ) : (
               <p className="text-[11.5px] text-fg-3">
                 <span className="font-medium text-fg-2">Testimonials &amp; feedback.</span>{" "}
-                SuperBased save you time or money?{" "}
+                superbased save you time or money?{" "}
                 <a href={feedbackURL()} className="font-medium text-accent hover:underline">
                   Send us a testimonial
                 </a>{" "}

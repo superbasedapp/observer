@@ -14,8 +14,8 @@ import (
 // TestRelayRunProjectRootLinkedWorktree (SHR-WORKTREE merge): a live run in
 // a linked worktree keys its relayed security state on the main repository,
 // as the host path does (F0-14); the commit gate still sees the worktree as
-// another checkout from the event's working directory, so its plan is
-// opaque. A live run in the main checkout and a copy run are unchanged.
+// another checkout. On the relay path (the run recorded in the process)
+// a live run's checkout is scanned (R3-67), as on the host path. A live run in the main checkout and a copy run are unchanged.
 func TestRelayRunProjectRootLinkedWorktree(t *testing.T) {
 	mainRoot, wtRoot := linkedWorktreeFixture(t)
 	live := func(root string) sandboxrelayd.RunRecord {
@@ -40,9 +40,12 @@ func TestRelayRunProjectRootLinkedWorktree(t *testing.T) {
 	if got := relayRunCheckoutRoot(copyRun); got != wtRoot {
 		t.Fatalf("worktree copy run checkout = %q, want the worktree %q", got, wtRoot)
 	}
+	// Placed from the event's own working directory (no run recorded in
+	// this process), the worktree's commit is scanned in the worktree's
+	// own checkout.
 	pe := &policy.Event{Kind: policy.KindShellExec, Target: "git commit -m x", Cwd: wtRoot}
-	if p := securityQuickScanPlanFor(pe, relayRunProjectRoot(live(wtRoot)), nil); !p.opaque || !p.otherCheckout {
-		t.Fatalf("relayed worktree commit plan = %+v, want opaque and another checkout", p)
+	if p := securityQuickScanPlanFor(pe, relayRunProjectRoot(live(wtRoot)), nil); p.opaque || !p.otherCheckout || len(p.reqs) != 1 || !hookSamePath(p.reqs[0].ProjectRoot, wtRoot) {
+		t.Fatalf("worktree commit plan = %+v, want one request for the worktree's checkout", p)
 	}
 	// On the daemon path the run's launched checkout places the event even
 	// when the box reports no working directory.
@@ -54,7 +57,10 @@ func TestRelayRunProjectRootLinkedWorktree(t *testing.T) {
 	if root != mainRoot {
 		t.Fatalf("relayed project root = %q, want %q", root, mainRoot)
 	}
-	if p := securityQuickScanPlanFor(bare, root, nil); !p.opaque || !p.otherCheckout {
-		t.Fatalf("relayed worktree commit with no cwd: plan = %+v, want opaque and another checkout", p)
+	// A live run edits its host checkout, so its commit there is scanned in
+	// that checkout (R3-67; a copy run stays opaque, see
+	// TestSecurityRelayedLiveWorktreeCommitIsScanned).
+	if p := securityQuickScanPlanFor(bare, root, nil); p.opaque || !p.otherCheckout || len(p.reqs) != 1 || !hookSamePath(p.reqs[0].ProjectRoot, wtRoot) {
+		t.Fatalf("relayed worktree commit with no cwd: plan = %+v, want one request for the run's checkout", p)
 	}
 }

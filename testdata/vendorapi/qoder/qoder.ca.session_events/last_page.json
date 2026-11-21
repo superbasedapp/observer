@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "id": "evt_synth0009",
+      "type": "agent.tool_use",
+      "processed_at": "2026-10-30T09:10:00Z",
+      "name": "Write"
+    },
+    {
+      "id": "evt_synth0010",
+      "type": "agent.tool_result",
+      "processed_at": "2026-10-30T09:10:02Z",
+      "tool_use_id": "evt_synth0009",
+      "is_error": true
+    },
+    {
+      "id": "evt_synth0011",
+      "type": "session.status_idle",
+      "processed_at": "2026-10-30T09:11:00Z",
+      "stop_reason": {
+        "type": "end_turn"
+      }
+    },
+    {
+      "id": "evt_synth0012",
+      "type": "session.status_terminated",
+      "processed_at": "2026-10-30T09:12:00Z"
+    }
+  ],
+  "first_id": "evt_synth0009",
+  "last_id": "evt_synth0012",
+  "has_more": false,
+  "next_page": null
+}

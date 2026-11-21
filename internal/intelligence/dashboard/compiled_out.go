@@ -25,6 +25,7 @@ func compiledOutBody(id string) componentstate.NotActiveBody {
 		State:     components.StateAbsent,
 		Reason:    components.ReasonNotCompiled,
 		Message:   fmt.Sprintf("%s is not in this build. Settings > Components lists the builds that include it.", title),
+		Fields:    componentstate.NotActiveLink(id, components.StateAbsent),
 	}
 }
 

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -37,6 +39,23 @@ type SessionProcessResponse struct {
 	// from row counts alone: opt-in config gates, proxy-only network rows, and
 	// restart-bound settings. It is node-local config/status metadata only.
 	Diagnostics ProcessDiagnostics `json:"diagnostics"`
+	// Total (above) is the session's full row count; Roots holds only the
+	// window (process capture budget plan §9.3). Truncated reports that the
+	// session has rows older than the window's oldest that it left out (the
+	// client's "Load earlier" pages them with ?to=); Window describes what
+	// was returned.
+	Truncated bool               `json:"truncated"`
+	Window    *ProcessWindowInfo `json:"window,omitempty"`
+}
+
+// ProcessWindowInfo is the window a /processes response covers. From / To
+// are RFC3339 UTC (whole seconds); Limit is the effective row cap and
+// Returned the rows in the response.
+type ProcessWindowInfo struct {
+	From     string `json:"from,omitempty"`
+	To       string `json:"to,omitempty"`
+	Limit    int    `json:"limit"`
+	Returned int    `json:"returned"`
 }
 
 // ProcessDiagnostics is the session-process drawer's operator guidance model.
@@ -177,17 +196,42 @@ func (s *Server) handleSessionProcesses(w http.ResponseWriter, r *http.Request, 
 		_, _ = st.DeriveProcessRunsFromActions(ctx, sessionID)
 	}
 
-	runs, err := st.ProcessRunsForSession(ctx, sessionID)
+	// The window (process capture budget plan §9.3): the newest `limit` rows
+	// by default (2000, capped at 10000), or the rows in from/to, or only the
+	// rows seen since `since`. Never the whole history: a busy session holds
+	// tens of thousands of rows and their metric rings.
+	win, err := parseProcessWindow(r.URL.Query())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("load process runs: %v", err), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Cold-storage fallback (corpus archival P3.5). Only on a hot MISS: a
-	// session with live rows is answered entirely from the hot database, and
-	// an archived one is answered from the archive file for this one request,
-	// with no write-back. The endpoint's shape is unchanged either way.
-	if len(runs) == 0 {
-		runs = s.archivedProcessRuns(ctx, sessionID)
+	total, _, err := st.ProcessSessionRowMark(ctx, sessionID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("count process runs: %v", err), http.StatusInternalServerError)
+		return
+	}
+	var runs []store.ProcessRunRow
+	var truncated bool
+	var findings []store.ProcessFindingRow
+	if total > 0 {
+		res, err := st.ProcessRunsWindowForSession(ctx, sessionID, win)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("load process runs: %v", err), http.StatusInternalServerError)
+			return
+		}
+		runs, truncated = res.Rows, res.Truncated
+		// Observe-only side-effect flags for the drawer (§13.1 / §14), over
+		// the same window. Best-effort - a findings error never blocks the
+		// tree.
+		findings, _ = st.ProcessFindingsForSessionWindow(ctx, sessionID, win)
+	} else {
+		// Cold-storage fallback (corpus archival P3.5). Only on a hot MISS: a
+		// session with live rows is answered entirely from the hot database,
+		// and an archived one is answered from the archive file for this one
+		// request, with no write-back. The window applies the same way.
+		archived := s.archivedProcessRuns(ctx, sessionID)
+		total = int64(len(archived))
+		runs, truncated = windowArchivedRuns(archived, win)
 	}
 	cmds, err := st.ActionCommandsForSession(ctx, sessionID)
 	if err != nil {
@@ -199,10 +243,7 @@ func (s *Server) handleSessionProcesses(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, fmt.Sprintf("load action message ids: %v", err), http.StatusInternalServerError)
 		return
 	}
-	// Observe-only side-effect flags for the drawer (§13.1 / §14). Best-effort
-	// — a findings error never blocks the tree. Default to an empty slice so
-	// the JSON shape stays `"findings": []`.
-	findings, _ := st.ProcessFindingsForSession(ctx, sessionID)
+	// Default to an empty slice so the JSON shape stays `"findings": []`.
 	if findings == nil {
 		findings = []store.ProcessFindingRow{}
 	}
@@ -221,12 +262,32 @@ func (s *Server) handleSessionProcesses(w http.ResponseWriter, r *http.Request, 
 
 	writeJSON(w, SessionProcessResponse{
 		SessionID:    sessionID,
-		Total:        len(runs),
+		Total:        int(total),
 		NetworkTotal: len(networkEvents),
 		Roots:        buildProcessTree(runs, cmds, msgIDs, networkCounts),
 		Findings:     findings,
-		Diagnostics:  buildProcessDiagnostics(cfg, s.opts.ConfigPath != "", len(runs), len(networkEvents), proxyOnlyNetworkEvents),
+		Diagnostics:  buildProcessDiagnostics(cfg, s.opts.ConfigPath != "", int(total), len(networkEvents), proxyOnlyNetworkEvents),
+		Truncated:    truncated,
+		Window:       processWindowInfo(win, runs),
 	})
+}
+
+// processWindowInfo describes the window a tree response covers: the
+// requested bounds, or (for an open bound) the start of the oldest / newest
+// row returned, plus the effective limit and the rows returned.
+func processWindowInfo(w store.ProcessRunWindow, runs []store.ProcessRunRow) *ProcessWindowInfo {
+	info := &ProcessWindowInfo{Limit: w.Limit, Returned: len(runs)}
+	if !w.From.IsZero() {
+		info.From = w.From.UTC().Format(time.RFC3339)
+	} else if len(runs) > 0 {
+		info.From = startedAtISO(runs[0].StartedAt)
+	}
+	if !w.To.IsZero() {
+		info.To = w.To.UTC().Format(time.RFC3339)
+	} else if len(runs) > 0 {
+		info.To = startedAtISO(runs[len(runs)-1].StartedAt)
+	}
+	return info
 }
 
 func buildProcessDiagnostics(cfg config.Config, configWritable bool, processRows, networkEvents, proxyOnlyNetworkEvents int) ProcessDiagnostics {
@@ -553,36 +614,27 @@ func newBucketAcc() *bucketAcc {
 //   - A pair spanning more than metricsMaxPairSpanBuckets is a sampling gap
 //     and is dropped rather than smeared.
 func aggregateProcessMetrics(series []procMetricSeries, bucket time.Duration) metricsAggregate {
+	return aggregateWithFacts(series, factsOf(series), bucket)
+}
+
+// aggregateWithFacts is aggregateProcessMetrics with the whole-session facts
+// supplied separately. f must describe EVERY series of the session; series
+// may omit any series whose samples all fall before the grid floor (see
+// metricsGrid), because such a series contributes nothing to any bucket. That
+// is what lets the handler hand over only the unsettled tail of a long
+// session (loadSessionMetricSeries) and still produce the identical result.
+func aggregateWithFacts(series []procMetricSeries, f metricsFacts, bucket time.Duration) metricsAggregate {
 	out := metricsAggregate{Points: []SessionMetricPoint{}}
-	sampleInterval := medianSampleInterval(series)
+	sampleInterval := f.sampleInterval()
 	out.SampleIntervalMs = sampleInterval.Milliseconds()
+	out.SampledProcesses = f.sampled
+	out.RateProcesses = f.rated
+	out.WindowTruncated = f.truncated(sampleInterval)
 
-	for _, s := range series {
-		if len(s.Samples) > 0 {
-			out.SampledProcesses++
-		}
-		if len(s.Samples) > 1 {
-			out.RateProcesses++
-		}
-		if truncatedRing(s, sampleInterval) {
-			out.WindowTruncated = true
-		}
-	}
-	first, last, ok := sampleBounds(series)
-	if !ok {
-		out.BucketMs = clampBucket(bucket).Milliseconds()
-		return out
-	}
-	bucket = chooseBucket(bucket, sampleInterval, last.Sub(first))
+	bucket, floorIdx, ok := metricsGrid(f, bucket)
 	out.BucketMs = bucket.Milliseconds()
-
-	// Floor the grid at the most recent metricsMaxPoints buckets. The derived
-	// bucket already fits the window, but an explicit ?bucket= is honored as
-	// asked, so this is what keeps a fine bucket over a long session bounded:
-	// the newest slice of the window is returned and From reports it honestly.
-	floorIdx := bucketIndex(first, bucket)
-	if lastIdx := bucketIndex(last, bucket); lastIdx-floorIdx+1 > metricsMaxPoints {
-		floorIdx = lastIdx - metricsMaxPoints + 1
+	if !ok {
+		return out
 	}
 
 	grid := map[int64]*bucketAcc{}
@@ -600,9 +652,8 @@ func aggregateProcessMetrics(series []procMetricSeries, bucket time.Duration) me
 		return b
 	}
 
-	measurable := measurableCounters(series)
 	for _, s := range series {
-		accumulateSeries(s, bucket, floorIdx, measurable, at)
+		accumulateSeries(s, bucket, floorIdx, f.measurable, at)
 	}
 	if len(grid) == 0 {
 		return out
@@ -642,31 +693,189 @@ func accumulateSeries(s procMetricSeries, bucket time.Duration, floorIdx int64, 
 	accumulateGauges(s, bucket, floorIdx, at)
 }
 
-// measurableCounters reports which cumulative counters actually carry data in
-// this window: a counter that reads ZERO in every sample of every process is
-// treated as NOT MEASURED rather than as "measured, and idle".
-//
-// This is deliberate. A capture backend that does not populate a counter
-// leaves it at zero, and from the sample alone that is indistinguishable from
-// a process that genuinely did no I/O. Reporting it as measured would put a
-// flat zero line on screen — which reads as a confident "no disk traffic"
-// when the honest answer is "this host does not measure it". The cost is that
-// a genuinely, perfectly idle counter is reported unmeasured; that
-// under-claims rather than over-claims, which is the right direction.
-func measurableCounters(series []procMetricSeries) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range metricSpecs {
-		if m.Kind != metricCounter {
-			continue
+// metricsFacts are the whole-session facts the series depends on beyond the
+// grid itself: the sample-interval gaps the default bucket is derived from,
+// the contributing process counts, which counters are measurable, the ring
+// truncation evidence and the sample bounds. Every field is a merge-able
+// summary (a count, an OR, a max, a min/max, a sorted multiset), so the facts
+// of a session are the merge of the facts of any partition of its series:
+// the handler keeps the facts of the settled rows and merges in the tail's.
+// A value is treated as immutable once built (merge returns a new one), so a
+// cached value can be shared across concurrent requests.
+type metricsFacts struct {
+	// gaps holds every positive gap between consecutive samples of one
+	// process, sorted ascending.
+	gaps []time.Duration
+	// sampled / rated count the series with at least one / two samples.
+	sampled, rated int
+	// measurable reports which cumulative counters actually carry data: a
+	// counter that reads ZERO in every sample of every process is treated as
+	// NOT MEASURED rather than as "measured, and idle".
+	//
+	// This is deliberate. A capture backend that does not populate a counter
+	// leaves it at zero, and from the sample alone that is indistinguishable
+	// from a process that genuinely did no I/O. Reporting it as measured would
+	// put a flat zero line on screen — which reads as a confident "no disk
+	// traffic" when the honest answer is "this host does not measure it". The
+	// cost is that a genuinely, perfectly idle counter is reported unmeasured;
+	// that under-claims rather than over-claims, which is the right direction.
+	measurable map[string]bool
+	// maxLead is the largest gap between a process's start and its oldest
+	// RETAINED sample (hasLead: at least one such gap was measurable). See
+	// truncated.
+	maxLead time.Duration
+	hasLead bool
+	// first / last bound every non-zero sample timestamp (hasBounds: any).
+	first, last time.Time
+	hasBounds   bool
+}
+
+// factsOf computes the facts of a set of series.
+func factsOf(series []procMetricSeries) metricsFacts {
+	f := metricsFacts{measurable: map[string]bool{}}
+	for _, s := range series {
+		if len(s.Samples) > 0 {
+			f.sampled++
 		}
-		for _, s := range series {
-			if anySampleNonZero(s.Samples, m.Read) {
-				out[m.ID] = true
-				break
+		if len(s.Samples) > 1 {
+			f.rated++
+		}
+		for i := 1; i < len(s.Samples); i++ {
+			if d := s.Samples[i].T.Sub(s.Samples[i-1].T); d > 0 {
+				f.gaps = append(f.gaps, d)
+			}
+		}
+		for _, sm := range s.Samples {
+			if sm.T.IsZero() {
+				continue
+			}
+			if !f.hasBounds || sm.T.Before(f.first) {
+				f.first = sm.T
+			}
+			if !f.hasBounds || sm.T.After(f.last) {
+				f.last = sm.T
+			}
+			f.hasBounds = true
+		}
+		if len(s.Samples) > 0 && !s.StartedAt.IsZero() && !s.Samples[0].T.IsZero() {
+			if lead := s.Samples[0].T.Sub(s.StartedAt); !f.hasLead || lead > f.maxLead {
+				f.maxLead, f.hasLead = lead, true
+			}
+		}
+		for _, m := range metricSpecs {
+			if m.Kind == metricCounter && !f.measurable[m.ID] && anySampleNonZero(s.Samples, m.Read) {
+				f.measurable[m.ID] = true
 			}
 		}
 	}
+	sort.Slice(f.gaps, func(i, j int) bool { return f.gaps[i] < f.gaps[j] })
+	return f
+}
+
+// merge returns the facts of the union of the series f and g describe. It
+// never mutates either operand.
+func (f metricsFacts) merge(g metricsFacts) metricsFacts {
+	out := metricsFacts{
+		gaps:    mergeSortedDurations(f.gaps, g.gaps),
+		sampled: f.sampled + g.sampled,
+		rated:   f.rated + g.rated,
+	}
+	out.measurable = make(map[string]bool, len(f.measurable)+len(g.measurable))
+	for id, ok := range f.measurable {
+		out.measurable[id] = out.measurable[id] || ok
+	}
+	for id, ok := range g.measurable {
+		out.measurable[id] = out.measurable[id] || ok
+	}
+	out.maxLead, out.hasLead = f.maxLead, f.hasLead
+	if g.hasLead && (!out.hasLead || g.maxLead > out.maxLead) {
+		out.maxLead, out.hasLead = g.maxLead, true
+	}
+	out.first, out.last, out.hasBounds = f.first, f.last, f.hasBounds
+	if g.hasBounds {
+		if !out.hasBounds || g.first.Before(out.first) {
+			out.first = g.first
+		}
+		if !out.hasBounds || g.last.After(out.last) {
+			out.last = g.last
+		}
+		out.hasBounds = true
+	}
 	return out
+}
+
+// mergeSortedDurations merges two ascending slices into a new ascending one
+// (or returns an operand unchanged when the other is empty; operands are
+// never written).
+func mergeSortedDurations(a, b []time.Duration) []time.Duration {
+	if len(b) == 0 {
+		return a
+	}
+	if len(a) == 0 {
+		return b
+	}
+	out := make([]time.Duration, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if b[j] < a[i] {
+			out = append(out, b[j])
+			j++
+			continue
+		}
+		out = append(out, a[i])
+		i++
+	}
+	out = append(out, a[i:]...)
+	return append(out, b[j:]...)
+}
+
+// sampleInterval is the observed median gap between consecutive samples
+// across every process (0 when none). It is the ONLY source for the default
+// bucket width — nothing here hardcodes the capture cadence, so raising the
+// sampling frequency automatically tightens the buckets.
+func (f metricsFacts) sampleInterval() time.Duration {
+	if len(f.gaps) == 0 {
+		return 0
+	}
+	return f.gaps[len(f.gaps)/2]
+}
+
+// truncated reports that at least one process's ring has already evicted
+// samples: its oldest RETAINED sample starts materially after the process
+// did, so the window shown is shorter than the process's life. The tolerance
+// is derived from the observed cadence — the ring capacity constant is
+// deliberately not referenced here. Because the tolerance is one value for
+// the whole session, "any process exceeds it" is "the largest lead exceeds
+// it", which is why the facts keep only the max.
+func (f metricsFacts) truncated(sampleInterval time.Duration) bool {
+	if !f.hasLead {
+		return false
+	}
+	slack := 2 * sampleInterval
+	if slack < 5*time.Second {
+		slack = 5 * time.Second
+	}
+	return f.maxLead > slack
+}
+
+// metricsGrid resolves the bucket width and the grid floor (the lowest bucket
+// index the series is accumulated into) from the whole-session facts. The
+// floor keeps the grid at the most recent metricsMaxPoints buckets: the
+// derived bucket already fits the window, but an explicit ?bucket= is honored
+// as asked, so this is what keeps a fine bucket over a long session bounded:
+// the newest slice of the window is returned and From reports it honestly.
+// ok=false when there is no sample at all (the bucket is then just the
+// clamped request).
+func metricsGrid(f metricsFacts, bucket time.Duration) (time.Duration, int64, bool) {
+	if !f.hasBounds {
+		return clampBucket(bucket), 0, false
+	}
+	bucket = chooseBucket(bucket, f.sampleInterval(), f.last.Sub(f.first))
+	floorIdx := bucketIndex(f.first, bucket)
+	if lastIdx := bucketIndex(f.last, bucket); lastIdx-floorIdx+1 > metricsMaxPoints {
+		floorIdx = lastIdx - metricsMaxPoints + 1
+	}
+	return bucket, floorIdx, true
 }
 
 // localAcc is one process's own Δ and covered wall time inside one bucket for
@@ -951,45 +1160,10 @@ func gridBounds(grid map[int64]*bucketAcc) (int64, int64) {
 	return lo, hi
 }
 
-func sampleBounds(series []procMetricSeries) (time.Time, time.Time, bool) {
-	var lo, hi time.Time
-	found := false
-	for _, s := range series {
-		for _, sm := range s.Samples {
-			if sm.T.IsZero() {
-				continue
-			}
-			if !found || sm.T.Before(lo) {
-				lo = sm.T
-			}
-			if !found || sm.T.After(hi) {
-				hi = sm.T
-			}
-			found = true
-		}
-	}
-	return lo, hi, found
-}
-
 // medianSampleInterval is the observed median gap between consecutive samples
-// across every process. It is the ONLY source for the default bucket width —
-// nothing here hardcodes the capture cadence, so raising the sampling
-// frequency automatically tightens the buckets.
+// across every process (metricsFacts.sampleInterval over these series).
 func medianSampleInterval(series []procMetricSeries) time.Duration {
-	var gaps []time.Duration
-	for _, s := range series {
-		for i := 1; i < len(s.Samples); i++ {
-			d := s.Samples[i].T.Sub(s.Samples[i-1].T)
-			if d > 0 {
-				gaps = append(gaps, d)
-			}
-		}
-	}
-	if len(gaps) == 0 {
-		return 0
-	}
-	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
-	return gaps[len(gaps)/2]
+	return factsOf(series).sampleInterval()
 }
 
 // chooseBucket resolves the bucket width:
@@ -1027,22 +1201,6 @@ func clampBucket(b time.Duration) time.Duration {
 		return metricsMaxBucket
 	}
 	return b.Round(time.Second)
-}
-
-// truncatedRing reports that a process's ring has already evicted samples: its
-// oldest RETAINED sample starts materially after the process did, so the
-// window shown is shorter than the process's life. The tolerance is derived
-// from the observed cadence — the ring capacity constant is deliberately not
-// referenced here.
-func truncatedRing(s procMetricSeries, sampleInterval time.Duration) bool {
-	if len(s.Samples) == 0 || s.StartedAt.IsZero() || s.Samples[0].T.IsZero() {
-		return false
-	}
-	slack := 2 * sampleInterval
-	if slack < 5*time.Second {
-		slack = 5 * time.Second
-	}
-	return s.Samples[0].T.Sub(s.StartedAt) > slack
 }
 
 // metricsReasonInput is the (tiny) fact set the empty-series reason table is
@@ -1084,18 +1242,15 @@ func metricsReason(in metricsReasonInput) string {
 	return ""
 }
 
-// metricSeriesFromRuns projects store rows onto the pure aggregator's input,
-// defensively re-sorting each ring by timestamp (the ring is appended in order,
-// but a rate derivation must never depend on that).
-func metricSeriesFromRuns(runs []store.ProcessRunRow) []procMetricSeries {
+// metricSeriesFromRuns projects the metrics read's rows onto the pure
+// aggregator's input, one series per row in the same order, defensively
+// re-sorting each ring by timestamp (the ring is appended in order, but a
+// rate derivation must never depend on that). The rows are ours (freshly
+// decoded by the store), so the ring is sorted in place.
+func metricSeriesFromRuns(runs []store.ProcessMetricRun) []procMetricSeries {
 	out := make([]procMetricSeries, 0, len(runs))
 	for _, r := range runs {
-		if len(r.MetricSamples) == 0 {
-			out = append(out, procMetricSeries{Key: r.ProcessKey, StartedAt: r.StartedAt, Exited: r.Exited})
-			continue
-		}
-		samples := make([]procmodel.MetricSample, len(r.MetricSamples))
-		copy(samples, r.MetricSamples)
+		samples := r.Samples
 		sort.SliceStable(samples, func(i, j int) bool { return samples[i].T.Before(samples[j].T) })
 		out = append(out, procMetricSeries{
 			Key:       r.ProcessKey,
@@ -1107,6 +1262,166 @@ func metricSeriesFromRuns(runs []store.ProcessRunRow) []procMetricSeries {
 	return out
 }
 
+// --- Settled-facts cache for the metrics read -------------------------------
+//
+// A live session holds ~100k process rows, almost all of them processes that
+// exited long ago. Reading and decoding every ring on each 5s poll made the
+// endpoint scale with the whole session. Instead the facts of the SETTLED rows
+// (not seen for a while: see settleAgeFor) are kept here, and each poll reads
+// only the unsettled tail (store.ProcessMetricsForSession with the cached
+// mark), merging the tail's facts in. The cache is a pure accelerator: a mark
+// mismatch, a grid that reaches back into settled rows, or an evicted entry
+// all fall back to a full read and yield the identical response.
+//
+// It is package state rather than a Server field only because the Server
+// struct lives in dashboard.go; it is keyed by the *sql.DB, so two servers (or
+// the demo DB swap) never share entries.
+
+// metricsSettledKey identifies one session of one database.
+type metricsSettledKey struct {
+	db      *sql.DB
+	session string
+}
+
+// metricsSettledEntry is one session's cached settled facts.
+type metricsSettledEntry struct {
+	// mark is the store's mark for the settled rows the facts cover.
+	mark store.ProcessMetricsSettled
+	// facts are the facts of exactly those rows.
+	facts metricsFacts
+	// settleAge is the age the next read settles rows at.
+	settleAge time.Duration
+}
+
+const (
+	// metricsSettledCacheMax bounds the cache; past it the cache starts over.
+	metricsSettledCacheMax = 32
+	// metricsMinSettleAge is the least time a row must have gone unseen,
+	// relative to the session's newest sighting, before its facts are frozen.
+	// The live window is a few minutes at the default bucket; settleAgeFor
+	// raises the age when the grid reaches further back.
+	metricsMinSettleAge = 10 * time.Minute
+)
+
+var metricsSettled struct {
+	mu sync.Mutex
+	m  map[metricsSettledKey]metricsSettledEntry
+}
+
+func metricsSettledGet(k metricsSettledKey) (metricsSettledEntry, bool) {
+	metricsSettled.mu.Lock()
+	defer metricsSettled.mu.Unlock()
+	e, ok := metricsSettled.m[k]
+	return e, ok
+}
+
+func metricsSettledPut(k metricsSettledKey, e metricsSettledEntry) {
+	metricsSettled.mu.Lock()
+	defer metricsSettled.mu.Unlock()
+	if metricsSettled.m == nil || len(metricsSettled.m) >= metricsSettledCacheMax {
+		metricsSettled.m = map[metricsSettledKey]metricsSettledEntry{}
+	}
+	metricsSettled.m[k] = e
+}
+
+// settleAgeFor is how long a row must go unseen before it settles, for a grid
+// resolved from f and the request's bucket: the span from the grid floor to
+// the newest sample, plus the longest pair span a rate can bridge and a
+// minute of slack, and never less than metricsMinSettleAge. A row settled at
+// that age has (clock skew aside) no sample inside the grid, so the tail read
+// alone covers every bucket; the exact check is settledBelowGrid.
+func settleAgeFor(f metricsFacts, bucket time.Duration) time.Duration {
+	b, floorIdx, ok := metricsGrid(f, bucket)
+	if !ok {
+		return metricsMinSettleAge
+	}
+	age := f.last.Sub(bucketStart(floorIdx, b)) + time.Duration(metricsMaxPairSpanBuckets)*b + time.Minute
+	if age < metricsMinSettleAge {
+		return metricsMinSettleAge
+	}
+	return age
+}
+
+// settledBelowGrid reports that every sample of the settled rows lies before
+// the floor of the grid the whole-session facts resolve to, i.e. leaving the
+// settled series out of the accumulation changes no bucket.
+func settledBelowGrid(settled, whole metricsFacts, bucket time.Duration) bool {
+	if !settled.hasBounds {
+		return true
+	}
+	b, floorIdx, ok := metricsGrid(whole, bucket)
+	return ok && settled.last.Before(bucketStart(floorIdx, b))
+}
+
+// settledSeries returns the series of the runs the read flagged Settled
+// (series[i] is runs[i]).
+func settledSeries(runs []store.ProcessMetricRun, series []procMetricSeries) []procMetricSeries {
+	var out []procMetricSeries
+	for i, r := range runs {
+		if r.Settled {
+			out = append(out, series[i])
+		}
+	}
+	return out
+}
+
+// sessionMetricsInput is what the metrics handler aggregates: the series to
+// accumulate, the whole-session facts, and the session's process row count.
+type sessionMetricsInput struct {
+	series []procMetricSeries
+	facts  metricsFacts
+	total  int64
+	// tailOnly reports the series are only the unsettled tail (the cached
+	// settled facts were used). Exposed for tests.
+	tailOnly bool
+}
+
+// loadSessionMetricSeries reads a session's metric series through the one
+// store seam, using and refreshing the settled-facts cache. The result
+// aggregates (aggregateWithFacts) to exactly what aggregating every row of
+// the session would.
+func loadSessionMetricSeries(ctx context.Context, db *sql.DB, sessionID string, bucket time.Duration) (sessionMetricsInput, error) {
+	st := store.New(db)
+	key := metricsSettledKey{db: db, session: sessionID}
+	prev, cached := metricsSettledGet(key)
+	q := store.ProcessMetricsQuery{SettleAge: metricsMinSettleAge}
+	if cached {
+		mark := prev.mark
+		q.Known = &mark
+		q.SettleAge = prev.settleAge
+	}
+	res, err := st.ProcessMetricsForSession(ctx, sessionID, q)
+	if err != nil {
+		return sessionMetricsInput{}, err
+	}
+	if !res.Full {
+		tail := metricSeriesFromRuns(res.Runs)
+		whole := prev.facts.merge(factsOf(tail))
+		if settledBelowGrid(prev.facts, whole, bucket) {
+			metricsSettledPut(key, metricsSettledEntry{
+				mark:      res.Settled,
+				facts:     prev.facts.merge(factsOf(settledSeries(res.Runs, tail))),
+				settleAge: settleAgeFor(whole, bucket),
+			})
+			return sessionMetricsInput{series: tail, facts: whole, total: res.Total, tailOnly: true}, nil
+		}
+		// The grid reaches back into settled rows (a wide ?bucket=): read the
+		// whole session, settling at an age that clears this grid.
+		res, err = st.ProcessMetricsForSession(ctx, sessionID, store.ProcessMetricsQuery{SettleAge: settleAgeFor(whole, bucket)})
+		if err != nil {
+			return sessionMetricsInput{}, err
+		}
+	}
+	all := metricSeriesFromRuns(res.Runs)
+	whole := factsOf(all)
+	metricsSettledPut(key, metricsSettledEntry{
+		mark:      res.Settled,
+		facts:     factsOf(settledSeries(res.Runs, all)),
+		settleAge: settleAgeFor(whole, bucket),
+	})
+	return sessionMetricsInput{series: all, facts: whole, total: res.Total}, nil
+}
+
 // handleSessionMetrics serves GET /api/session/<id>/metrics?bucket=<duration>.
 //
 // It is the plottable sibling of handleSessionProcesses: same substrate (the
@@ -1114,6 +1429,11 @@ func metricSeriesFromRuns(runs []store.ProcessRunRow) []procMetricSeries {
 // differentiated, and aggregated across the WHOLE attributed subtree rather
 // than one arbitrarily chosen process. Read-only — the correlation write
 // passes stay on the /processes poll.
+//
+// Bounded: it reads only the metric columns of ring-bearing rows, and after
+// the first poll of a session only the rows not yet settled (see
+// loadSessionMetricSeries), so a long session's history is decoded once, not
+// on every poll.
 func (s *Server) handleSessionMetrics(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if sessionID == "" {
 		http.Error(w, "missing session id", http.StatusBadRequest)
@@ -1128,20 +1448,20 @@ func (s *Server) handleSessionMetrics(w http.ResponseWriter, r *http.Request, se
 		}
 		bucket = clampBucket(d)
 	}
-	runs, err := store.New(s.db()).ProcessRunsForSession(r.Context(), sessionID)
+	in, err := loadSessionMetricSeries(r.Context(), s.db(), sessionID, bucket)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load process runs: %v", err), http.StatusInternalServerError)
 		return
 	}
 	cfg, _ := loadConfigForDashboard(s.opts.ConfigPath)
-	agg := aggregateProcessMetrics(metricSeriesFromRuns(runs), bucket)
+	agg := aggregateWithFacts(in.series, in.facts, bucket)
 
 	resp := SessionMetricsResponse{
 		SessionID:        sessionID,
 		BucketMs:         agg.BucketMs,
 		SampleIntervalMs: agg.SampleIntervalMs,
 		Points:           agg.Points,
-		Processes:        len(runs),
+		Processes:        int(in.total),
 		SampledProcesses: agg.SampledProcesses,
 		RateProcesses:    agg.RateProcesses,
 		WindowTruncated:  agg.WindowTruncated,

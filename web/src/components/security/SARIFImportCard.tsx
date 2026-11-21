@@ -22,7 +22,10 @@ import {
 //
 // Working surface: calm register, zero delight elements.
 
-export type SARIFImportProject = { project_root_hash: string };
+// label is the project's name (lib/codeSecurity.ts projectLabel); a row
+// without one falls back to a short hash marked as such, never a bare hash
+// (which reads as a git commit id).
+export type SARIFImportProject = { project_root_hash: string; label?: string };
 
 export function SARIFImportCard({ projects, onImported }: { projects: SARIFImportProject[]; onImported?: () => void }) {
   const api = useApi<SARIFImportResponse>(SARIF_IMPORT_ROUTE);
@@ -92,7 +95,7 @@ export function SARIFImportCardView({
                 label="Project"
                 value={chosen}
                 onChange={(e) => setProject(e.target.value)}
-                options={projects.map((p) => ({ value: p.project_root_hash, label: p.project_root_hash.slice(0, 12) }))}
+                options={projects.map((p) => ({ value: p.project_root_hash, label: p.label ?? `Unknown project (${p.project_root_hash.slice(0, 8)})` }))}
               />
               <Select label="Tool" value={tool} onChange={(e) => setTool(e.target.value)} options={tools.map((t) => ({ value: t.id, label: t.label }))} />
             </div>

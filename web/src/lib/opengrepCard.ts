@@ -46,6 +46,8 @@ export type OpengrepStatus = {
   last_run_at?: string;
   last_run_outcome?: string;
   last_run_labels?: string[];
+  last_taint_pass?: string;
+  last_taint_pass_at?: string;
   post_write: boolean;
   commit_diff: boolean;
   schedule_hours: number;
@@ -113,6 +115,7 @@ export function opengrepRows(s: OpengrepStatus): Array<[string, string]> {
     if (s.fetch_error) fetch += ": failed, the installed pack stays in use (stale, never current)";
   }
   const run = s.last_run_at ? `${s.last_run_outcome ?? "?"} at ${new Date(s.last_run_at).toLocaleString()}${s.last_run_labels?.length ? ` (${s.last_run_labels.join(", ")})` : ""}` : "";
+  const taint = s.last_taint_pass ? `${s.last_taint_pass}${s.last_taint_pass_at ? ` (full scan at ${new Date(s.last_taint_pass_at).toLocaleString()})` : ""}` : "";
   const triggers = `after agent writes ${s.post_write ? "on" : "off"}, each new commit ${s.commit_diff ? "on" : "off"}, full scan ${opengrepScheduleLabel(s.schedule_hours)}`;
   const rows: Array<[string, string]> = [
     ["Engine", s.engine ?? ""],
@@ -120,6 +123,7 @@ export function opengrepRows(s: OpengrepStatus): Array<[string, string]> {
     ["Rule pack", pack],
     ["Last content fetch", fetch],
     ["Last run", run],
+    ["Intrafile taint pass", taint],
     ["Triggers", triggers],
     ["Isolation", s.isolation ?? ""],
   ];

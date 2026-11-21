@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ var enrolFailureStatus = map[orgenrol.Code]int{
 	orgenrol.CodeGone:            http.StatusGone,
 	orgenrol.CodeStale:           http.StatusConflict,
 	orgenrol.CodeUpstream:        http.StatusBadGateway,
+	orgenrol.CodeUnsentRows:      http.StatusConflict,
 }
 
 // writeEnrolErr writes a classified failure as {error, message} with its
@@ -217,18 +219,25 @@ func (s *Server) handleEnrolmentIdPStart(w http.ResponseWriter, r *http.Request)
 	if m == nil {
 		return
 	}
-	var body enrolProbeBody
+	var body idpStartBody
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeEnrolErr(w, orgenrol.Fail(orgenrol.CodeInvalidInput, "invalid JSON body"))
 		return
 	}
-	out, err := m.StartIdP(r.Context(), body.OrgURL)
+	out, err := m.StartIdP(r.Context(), body.OrgURL, SwitchOptions{DropUnsent: body.DropUnsent})
 	if err != nil {
 		writeEnrolErr(w, err)
 		return
 	}
 	s.recordManageAudit(r, "org_enrol_idp_start", "")
 	writeJSON(w, out)
+}
+
+// idpStartBody is the POST /api/enrolment/idp/start body: the server URL and
+// the explicit "Switch anyway" after an unsent_rows refusal (R3-78).
+type idpStartBody struct {
+	OrgURL     string `json:"org_url"`
+	DropUnsent bool   `json:"drop_unsent"`
 }
 
 type idpPollBody struct {
@@ -381,14 +390,22 @@ func (s *Server) leaveWithConfirm(w http.ResponseWriter, r *http.Request) (Leave
 	if m == nil {
 		return LeaveReport{}, false
 	}
+	// The body is optional (the older /api/enrolment/unenroll alias posts
+	// none): {"drop_unsent": true} is the explicit "Leave anyway" after an
+	// unsent_rows refusal (R3-78). A body that is present must decode.
+	var opts SwitchOptions
+	if err := decodeJSONBody(r, &opts); err != nil && !errors.Is(err, io.EOF) {
+		writeEnrolErr(w, orgenrol.Fail(orgenrol.CodeInvalidInput, "invalid JSON body"))
+		return LeaveReport{}, false
+	}
 	enrolMu.Lock()
-	out, err := m.Leave(r.Context())
+	out, err := m.Leave(r.Context(), opts)
 	enrolMu.Unlock()
 	if err != nil {
 		writeEnrolErr(w, err)
 		return LeaveReport{}, false
 	}
-	s.recordManageAudit(r, "org_leave", fmt.Sprintf("was_enrolled=%t", out.WasEnrolled))
+	s.recordManageAudit(r, "org_leave", fmt.Sprintf("was_enrolled=%t drop_unsent=%t", out.WasEnrolled, opts.DropUnsent))
 	return out, true
 }
 

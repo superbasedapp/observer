@@ -99,6 +99,7 @@ const sessionProcessRowsQuery = `
 			       pr.started_at, pr.exited_at, pr.exit_code, pr.exit_signal, pr.duration_ms,
 			       pr.cpu_user_ms, pr.cpu_system_ms, pr.max_rss_bytes, pr.working_set_bytes,
 			       pr.thread_count, pr.read_bytes, pr.write_bytes, pr.metric_samples_json,
+			       pr.capture_class, pr.service_root_key, pr.fold_count,
 			       ROW_NUMBER() OVER (PARTITION BY pr.session_id ORDER BY pr.started_at DESC) AS rn
 			FROM process_runs pr
 			WHERE pr.session_id IS NOT NULL AND pr.session_id != '' AND pr.started_at >= ?
@@ -111,7 +112,8 @@ const sessionProcessRowsQuery = `
 		       r.cpu_user_ms, r.cpu_system_ms, r.max_rss_bytes, r.working_set_bytes,
 		       r.thread_count, r.read_bytes, r.write_bytes, r.metric_samples_json,
 		       (SELECT COUNT(*) FROM process_events pe WHERE pe.process_run_id = r.id),
-		       (SELECT a.message_id FROM actions a WHERE a.id = r.action_id)
+		       (SELECT a.message_id FROM actions a WHERE a.id = r.action_id),
+		       r.capture_class, r.service_root_key, r.fold_count
 		FROM ranked r
 		WHERE r.rn <= ?
 		ORDER BY r.session_id, r.started_at DESC`
@@ -149,6 +151,8 @@ func (s *Store) SelectSessionProcessRows(ctx context.Context) ([]orgcontract.Ses
 			readBytes, writeBytes  sql.NullInt64
 			metricSamplesJSON      sql.NullString
 			messageID              sql.NullString
+			captureClass, rootKey  sql.NullString
+			foldCount              sql.NullInt64
 		)
 		if err := rows.Scan(
 			&r.SessionID, &r.RunKey, &parentKey, &r.PID, &ppid,
@@ -159,6 +163,7 @@ func (s *Store) SelectSessionProcessRows(ctx context.Context) ([]orgcontract.Ses
 			&cpuUserMs, &cpuSystemMs, &maxRSSBytes, &workingSetBytes,
 			&threadCount, &readBytes, &writeBytes, &metricSamplesJSON,
 			&r.EventCount, &messageID,
+			&captureClass, &rootKey, &foldCount,
 		); err != nil {
 			return nil, fmt.Errorf("store.SelectSessionProcessRows: scan: %w", err)
 		}
@@ -188,6 +193,9 @@ func (s *Store) SelectSessionProcessRows(ctx context.Context) ([]orgcontract.Ses
 		r.ReadBytes = readBytes.Int64
 		r.WriteBytes = writeBytes.Int64
 		r.MetricSamplesJSON = capMetricSamples(metricSamplesJSON.String)
+		r.CaptureClass = captureClass.String
+		r.ServiceRootKey = rootKey.String
+		r.FoldCount = foldCount.Int64
 
 		out = append(out, r)
 	}

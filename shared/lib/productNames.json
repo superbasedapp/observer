@@ -1,0 +1,15 @@
+{
+  "_readme": "The ONE owner of superbased's external product names (Plane A naming pass, W4-5). The apps read it through shared/lib/productNames.ts; the website's page and /docs generators replace @@name.<key>@@ tokens from it (website/docs-tools/productnames), and an unknown key fails the build. Change a name here and nowhere else. The brand is always lowercase. The Plane A name AI Apps is the operator ruling D26 (2026-11-20).",
+  "_gateways": "Two org components, two names (finding F-24, lane S2 2026-11-20). planea_gateway is the OTLP ingest gateway ([gateway], component org.planea.gateway) that apps send traces to: write its full name on first mention, then 'the gateway' when nothing else is near. aigateway is the inference gateway ([aigateway], component org.aigateway) that proxies model calls and enforces budgets; apps can call it too. Never shorten planea_gateway to 'AI gateway'.",
+  "_first_run": "The three options of the first-run question 'What are you here to do?' (first-run plan revision 2, section 2.1, decision 3). The site, the cloud portal, both dashboards and the docs read them from here.",
+  "brand": "superbased",
+  "planea": "AI Apps",
+  "planea_full": "superbased AI Apps",
+  "planea_area": "AI apps",
+  "planea_local": "Your AI apps",
+  "planea_gateway": "AI Apps ingest gateway",
+  "aigateway": "AI gateway",
+  "first_run_coding": "AI coding agents",
+  "first_run_apps": "AI apps and agents you build",
+  "first_run_both": "Both"
+}

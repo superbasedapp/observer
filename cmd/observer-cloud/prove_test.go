@@ -25,7 +25,8 @@ func TestProveCommandNeverReadsTheWorkerCredential(t *testing.T) {
 	// the scan forbids.
 	workerVar := "SBCI_" + "FOUNDRY_API_KEY"
 	anthropicWorkerVar := "SBCI_" + "ANTHROPIC_API_KEY"
-	for _, bad := range []string{workerVar, anthropicWorkerVar, "readSecretEnv", "chooseCredentials", "AbsentCredentials", "StaticCredentials", "FamilyCredentials"} {
+	openAICompatibleWorkerVar := "SBCI_" + "OPENAI_COMPATIBLE_API_KEY"
+	for _, bad := range []string{workerVar, anthropicWorkerVar, openAICompatibleWorkerVar, "readSecretEnv", "chooseCredentials", "AbsentCredentials", "StaticCredentials", "FamilyCredentials"} {
 		if strings.Contains(text, bad) {
 			t.Fatalf("cmd/observer-cloud/prove.go references %q — the proving lane must use only its own "+
 				"credential (%s); the worker's absence boundary stays untouched", bad, envProveAPIKey)
@@ -36,7 +37,7 @@ func TestProveCommandNeverReadsTheWorkerCredential(t *testing.T) {
 	}
 	// And the constants themselves are prove variables, not the worker's.
 	for _, v := range proveKeyEnvs {
-		if v == workerVar || v == anthropicWorkerVar || !strings.HasPrefix(v, "SBCI_PROVE_") {
+		if v == workerVar || v == anthropicWorkerVar || v == openAICompatibleWorkerVar || !strings.HasPrefix(v, "SBCI_PROVE_") {
 			t.Fatalf("prove-lane credential variable %q collided with (or is not distinct from) the worker's", v)
 		}
 	}

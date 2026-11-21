@@ -80,6 +80,10 @@ func TestTerminalSandboxConfigGetDefaults(t *testing.T) {
 func TestTerminalSandboxConfigPutRoundTripPreservesLaunchPolicy(t *testing.T) {
 	s, h := newManageServer(t)
 	root := t.TempDir()
+	// Host-absolute paths: the handler validates them with filepath.IsAbs,
+	// and "/mnt/c" or "/opt/shared" has no volume, so it is not absolute on
+	// a Windows host. Slash form keeps them plain JSON strings.
+	abs := func(name string) string { return filepath.ToSlash(filepath.Join(root, name)) }
 	body := `{
 		"enabled":true,
 		"backend":"bwrap",
@@ -88,11 +92,11 @@ func TestTerminalSandboxConfigPutRoundTripPreservesLaunchPolicy(t *testing.T) {
 		"allow_remote_clone":true,
 		"remote_allowed_hosts":["github.com"," github.com ","gitlab.com"],
 		"allow_worktree_source":true,
-		"workspaces_dir":"` + filepath.ToSlash(filepath.Join(root, "sandboxes")) + `",
+		"workspaces_dir":"` + abs("sandboxes") + `",
 		"workspace_retention_days":7,
-		"mask_paths":["/mnt/c"," /mnt/c "],
-		"extra_ro_binds":["/opt/shared"],
-		"extra_rw_binds":["/tmp/cache"],
+		"mask_paths":["` + abs("mnt-c") + `"," ` + abs("mnt-c") + ` "],
+		"extra_ro_binds":["` + abs("shared") + `"],
+		"extra_rw_binds":["` + abs("cache") + `"],
 		"prep_timeout_seconds":90
 	}`
 	code, out := putSandboxConfig(t, h, body)

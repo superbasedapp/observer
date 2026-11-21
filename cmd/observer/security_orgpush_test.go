@@ -37,9 +37,10 @@ func TestSecurityShareFor(t *testing.T) {
 		local   string
 		want    store.SecurityShare
 	}{
-		{"individual default", false, nil, "", store.SecurityShare{Level: "off"}},
+		{"individual default", false, nil, "", store.SecurityShare{Level: "posture"}},
+		{"individual explicit off", false, nil, "off", store.SecurityShare{Level: "off"}},
 		{"individual findings", false, nil, "findings", store.SecurityShare{Level: "findings"}},
-		{"individual ignores a pull", false, findingsKey, "", store.SecurityShare{Level: "off"}},
+		{"individual ignores a pull", false, findingsKey, "off", store.SecurityShare{Level: "off"}},
 		{"managed no pull", true, nil, "off", store.SecurityShare{Level: "posture"}},
 		{"managed pull with key", true, findingsKey, "", store.SecurityShare{Level: "findings", HoldsOrgKey: true}},
 		{"managed pull without key", true, &orgcontract.SecurityManagedPolicyV1{Version: 1, FindingShare: "findings"}, "", store.SecurityShare{Level: "findings"}},
@@ -54,9 +55,14 @@ func TestSecurityShareFor(t *testing.T) {
 
 // TestBindSecurityOrgProvidersOnlyWhileActive: with the module inactive the
 // seam is unbound and the push composes no security row (byte-identical);
-// active, an individual node at the default level still sends none, and at
-// findings it sends the rows.
+// active, an individual node at the default level sends the posture row and
+// no finding row (ruling R1 of lane CODESEC-ORG, 2026-11-03: an unset
+// [org_client.share].security reads as posture), an explicit off sends
+// nothing, and at findings it sends the rows.
 func TestBindSecurityOrgProvidersOnlyWhileActive(t *testing.T) {
+	// An individual node with no managed pull, whatever an earlier test left
+	// in the daemon's share state.
+	withSecurityNodeState(t, false, nil)
 	ctx := context.Background()
 	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "o.db")})
 	if err != nil {
@@ -82,8 +88,11 @@ func TestBindSecurityOrgProvidersOnlyWhileActive(t *testing.T) {
 		t.Fatalf("an inactive module composed security rows")
 	}
 	bindSecurityOrgProviders(st, true)
-	if b := push(store.ShareOptions{}); b.SecurityFindings != nil || b.SecurityPosture != nil {
-		t.Fatalf("an individual node at the default level composed security rows")
+	if b := push(store.ShareOptions{}); b.SecurityFindings != nil || len(b.SecurityPosture) != 1 {
+		t.Fatalf("an individual node at the default level: %d findings, %d posture rows, want the posture row only", len(b.SecurityFindings), len(b.SecurityPosture))
+	}
+	if b := push(store.ShareOptions{Security: "off"}); b.SecurityFindings != nil || b.SecurityPosture != nil {
+		t.Fatalf("an individual node at an explicit off composed security rows")
 	}
 	b := push(store.ShareOptions{Security: "findings"})
 	if len(b.SecurityFindings) != 1 || len(b.SecurityPosture) != 1 {
@@ -221,8 +230,10 @@ func withSecurityNodeState(t *testing.T, managed bool, pull *orgcontract.Securit
 // drives the REAL cmd-layer share resolution end to end through the push
 // composer: the daemon's binding (securityShareFor over secScanning.baseNow
 // and securityManagedCurrent), not a test-bound Level func. An individual
-// node follows its own key; a managed node sends posture by default and
-// full rows with org_key under a pull that sets findings with the key.
+// node follows its own key, posture while it is unset (ruling R1 of lane
+// CODESEC-ORG, 2026-11-03), and never a pull; a managed node sends posture by
+// default and full rows with org_key under a pull that sets findings with the
+// key.
 func TestSecurityWireRealCmdShareResolution(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "o.db")})
@@ -249,8 +260,9 @@ func TestSecurityWireRealCmdShareResolution(t *testing.T) {
 		wantPath     bool
 		wantOrgKey   bool
 	}{
-		{"individual default", false, nil, store.ShareOptions{FullContent: true}, false, false, false, false},
-		{"individual ignores a pull", false, withKey, store.ShareOptions{FullContent: true}, false, false, false, false},
+		{"individual default posture", false, nil, store.ShareOptions{FullContent: true}, true, false, false, false},
+		{"individual explicit off", false, nil, store.ShareOptions{FullContent: true, Security: "off"}, false, false, false, false},
+		{"individual ignores a pull", false, withKey, store.ShareOptions{FullContent: true}, true, false, false, false},
 		{"individual findings, metadata only", false, nil, store.ShareOptions{Security: "findings"}, true, true, false, false},
 		{"managed default posture", true, nil, store.ShareOptions{EnterpriseGranted: true, Security: "off"}, true, false, false, false},
 		{"managed pull findings with key", true, withKey, store.ShareOptions{EnterpriseGranted: true}, true, true, true, true},

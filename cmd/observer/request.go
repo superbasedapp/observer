@@ -337,7 +337,7 @@ func newRequestsCmd() *cobra.Command {
 				fmt.Fprintf(out, "  #%d  %-16s  %-9s  %s\n", r.ID, label, r.Status, r.CreatedAt)
 				fmt.Fprintf(out, "       %s\n", r.Message)
 				if r.Grant != nil {
-					fmt.Fprintf(out, "       granted as G-%d (%s)\n", r.Grant.ID, grantWindowText(r.Grant.ExpiresAtNs, time.Now()))
+					fmt.Fprintf(out, "       %s\n", requestGrantLine(r.Grant, time.Now()))
 				}
 				if r.ResolutionNote != "" {
 					fmt.Fprintf(out, "       note: %s\n", r.ResolutionNote)
@@ -348,6 +348,35 @@ func newRequestsCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	return cmd
+}
+
+// requestGrantLine is the answer line of a granted request: the grant's
+// live state, not the request's decision (demo finding #27). A revoked grant
+// says when and the admin's reason; one an extension replaced says which
+// grant replaced it (accessgrant.ReplacedBy); an ended one says it ended.
+func requestGrantLine(g *orgcontract.AccessRequestGrantSummary, now time.Time) string {
+	switch g.Status {
+	case accessgrant.StatusRevoked:
+		if by, ok := accessgrant.ReplacedBy(g.RevokeReason); ok {
+			line := fmt.Sprintf("granted as G-%d, replaced by %s", g.ID, by)
+			if g.RevokedAtNs > 0 {
+				line += " " + time.Unix(0, g.RevokedAtNs).UTC().Format(time.RFC3339)
+			}
+			return line
+		}
+		line := fmt.Sprintf("granted as G-%d, revoked", g.ID)
+		if g.RevokedAtNs > 0 {
+			line += " " + time.Unix(0, g.RevokedAtNs).UTC().Format(time.RFC3339)
+		}
+		if g.RevokeReason != "" {
+			line += ": " + g.RevokeReason
+		}
+		return line
+	case accessgrant.StatusExhausted:
+		return fmt.Sprintf("granted as G-%d, every use spent", g.ID)
+	default:
+		return fmt.Sprintf("granted as G-%d (%s)", g.ID, grantWindowText(g.ExpiresAtNs, now))
+	}
 }
 
 func grantWindowText(expiresNs int64, now time.Time) string {

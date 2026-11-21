@@ -1,0 +1,24 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "detail": "VerifiedOfficial",
+    "status": "VerifiedOfficial",
+    "title": "VerifiedOfficial",
+    "type": "VerifiedOfficial"
+  },
+  "fixture_sha256": "0712407a87713c306bbba1077bb41809f84c7168713301784a5e4416eda1eb27",
+  "http": {
+    "method": "GET",
+    "path": "/v3/organizations/{org_id}/sessions",
+    "status": 401
+  },
+  "notes": "The v3 ProblemDetail error schema of the 401 response (the corpus audit-log fixture shape); message values are synthesized.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "Devin API v3 reference as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids DV03 DV05 DV06 DV10) and the 2026-10-07 enterprise vendor API research; docs.devin.ai was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.devin.ai/api-reference/v3/sessions/organizations-sessions",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "cognition.devin_v3.org_sessions"
+}

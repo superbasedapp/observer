@@ -1,0 +1,506 @@
+{
+  "schema": "observer.threatmodel.v1",
+  "run_id": "GOLDEN",
+  "prompt_version": "tm.2",
+  "generator": {"tool": "golden-fixture", "model": "hand-written"},
+  "summary": "Golden threat model result (partial): hand-written for the scorer's tests on a deliberately vulnerable fixture, local testing only. The run id is a placeholder. Five of 7 components, eight of 14 expected threats, one trap credited, most cells left empty.",
+  "scope": {
+    "in_scope": ["server.py", "templates", "static", "notes.sqlite.seed.sql"],
+    "out_of_scope": [],
+    "assumptions": ["The application runs on a developer machine on loopback."]
+  },
+  "system": {
+    "components": [
+      {
+        "id": "http_server",
+        "name": "http_server",
+        "type": "service",
+        "description": "Request parsing, routing, cookies, CORS headers, error handling, the debug route.",
+        "paths": [{"path": "server.py", "line": 228, "needle": "class Handler(BaseHTTPRequestHandler):"}],
+        "tech": ["python3", "http.server"],
+        "zone": "app"
+      },
+      {
+        "id": "auth",
+        "name": "auth",
+        "type": "service",
+        "description": "Register, login, session issue, bearer token reading, logout.",
+        "paths": [{"path": "server.py", "line": 391, "needle": "def route_login(h):"}],
+        "tech": ["python3"],
+        "zone": "app"
+      },
+      {
+        "id": "notes",
+        "name": "notes",
+        "type": "service",
+        "description": "Note search, read, create, delete, pin, profile update, export credits.",
+        "paths": [{"path": "server.py", "line": 429, "needle": "def route_notes(h):"}],
+        "tech": ["python3"],
+        "zone": "app"
+      },
+      {
+        "id": "database",
+        "name": "database",
+        "type": "datastore",
+        "description": "In-memory SQLite: users, notes, sessions.",
+        "paths": [
+          {
+            "path": "server.py",
+            "line": 50,
+            "needle": "DB = sqlite3.connect(\":memory:\", check_same_thread=False)"
+          }
+        ],
+        "tech": ["sqlite3"],
+        "zone": "app"
+      },
+      {
+        "id": "file_store",
+        "name": "file_store",
+        "type": "datastore",
+        "description": "The static and attachments directories and the application tree they sit in.",
+        "paths": [{"path": "server.py", "line": 31, "needle": "STATIC_DIR = os.path.join(APP_ROOT, \"static\")"}],
+        "tech": ["filesystem"],
+        "zone": "app"
+      }
+    ],
+    "zones": [
+      {
+        "id": "client",
+        "name": "client",
+        "description": "The browser and the network path to the server; untrusted."
+      },
+      {
+        "id": "app",
+        "name": "app",
+        "description": "The server process: request handling, the in-memory database and the static files."
+      },
+      {
+        "id": "internal",
+        "name": "internal",
+        "description": "The loopback-only sibling listener (internal console), meant for the host only."
+      }
+    ],
+    "actors": [
+      {"id": "visitor", "name": "visitor", "kind": "anonymous"},
+      {"id": "member", "name": "member", "kind": "end_user"},
+      {"id": "admin", "name": "admin", "kind": "admin"}
+    ],
+    "assets": [
+      {
+        "id": "user_credentials_and_password_hashes",
+        "name": "user credentials and password hashes",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "private_notes",
+        "name": "private notes",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "session_tokens",
+        "name": "session tokens",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "internal_console_configuration",
+        "name": "internal console configuration",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["internal_console"]
+      },
+      {
+        "id": "application_source_and_example_settings",
+        "name": "application source and example settings",
+        "sensitivity": "internal",
+        "data_classes": [],
+        "stored_in": ["file_store"]
+      }
+    ],
+    "entry_points": [
+      {
+        "id": "EP-1",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-2",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-3",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-4",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-5",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-6",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-7",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-8",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-9",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-10",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-11",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      }
+    ],
+    "flows": [
+      {
+        "id": "requests",
+        "from": "visitor",
+        "to": "http_server",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["client", "app"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "responses",
+        "from": "http_server",
+        "to": "visitor",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["app", "client"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "auth_calls",
+        "from": "http_server",
+        "to": "auth",
+        "data": [],
+        "protocol": "in-process",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "note_calls",
+        "from": "http_server",
+        "to": "notes",
+        "data": [],
+        "protocol": "in-process",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "note_queries",
+        "from": "notes",
+        "to": "database",
+        "data": [],
+        "protocol": "sqlite",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "file_reads",
+        "from": "http_server",
+        "to": "file_store",
+        "data": [],
+        "protocol": "filesystem",
+        "crosses": [],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": false
+      }
+    ]
+  },
+  "threats": [
+    {
+      "id": "TH01",
+      "title": "SQL injection tampers with the notes query",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "flow", "id": "note_queries"},
+      "description": "The q parameter is concatenated into the SELECT. A UNION payload reads other tables (users, sessions). The helper that looks like input validation returns its argument unchanged.",
+      "rating": {"likelihood": 4, "impact": 5},
+      "existing": [
+        {
+          "text": "Bound parameter in the tag lookup",
+          "refs": [{"path": "server.py", "line": 93, "needle": "AND tag = ?"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Bind q as a parameter.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 431, "needle": "title LIKE '%{q}%'"}]
+        }
+      ],
+      "cwe": ["CWE-89"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial",
+      "abuse_case": {
+        "actor": "visitor",
+        "goal": "SQL injection tampers with the notes query",
+        "steps": ["GET /notes?q=zz%27%20UNION%20SELECT%20id%2C%20username%2C%20role%20FROM%20users--%20"]
+      }
+    },
+    {
+      "id": "TH02",
+      "title": "Reflected script in the response page",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "flow", "id": "responses"},
+      "description": "The term parameter is placed in the page heading without escaping; the result list is escaped, the heading is not.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [
+        {
+          "text": "The term is sanitised before it is rendered.",
+          "refs": [{"path": "server.py", "line": 443, "needle": "term is sanitised before it is rendered"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Escape the term before it is placed in the page.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 444, "needle": "Results for {term}"}]
+        }
+      ],
+      "cwe": ["CWE-79"],
+      "capec": [],
+      "asvs": [],
+      "status": "mitigated"
+    },
+    {
+      "id": "TH03",
+      "title": "Any signed-in user reads another user's note",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "notes"},
+      "description": "Any signed-in user can read any note by id, including other users' private notes. Delete and pin check the owner; read does not.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [
+        {
+          "text": "Ownership check on delete and pin",
+          "refs": [{"path": "server.py", "line": 208, "needle": "owner_id != uid"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Check the note's owner before returning it.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 464, "needle": "SELECT * FROM notes WHERE id = ?"}]
+        }
+      ],
+      "cwe": ["CWE-639"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial",
+      "abuse_case": {
+        "actor": "member",
+        "goal": "Any signed-in user reads another user's note",
+        "steps": ["POST /api/login", "GET /api/notes/1"]
+      }
+    },
+    {
+      "id": "TH04",
+      "title": "Admin route trusts a client-set role cookie",
+      "framework": "stride",
+      "category": "elevation_of_privilege",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "The admin user list is gated on a plain cookie named role, which the client sets. No session is needed.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Authorise from the server-side session, not a cookie.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 514, "needle": "h.cookie(\"role\") != \"admin\""}]
+        }
+      ],
+      "cwe": ["CWE-602"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "abuse_case": {
+        "actor": "visitor",
+        "goal": "Admin route trusts a client-set role cookie",
+        "steps": ["GET /admin/users"]
+      }
+    },
+    {
+      "id": "TH05",
+      "title": "Predictable session tokens let one user act as another",
+      "framework": "stride",
+      "category": "spoofing",
+      "element": {"kind": "component", "id": "auth"},
+      "description": "Session tokens are sequential numbers (sess-1001, sess-1002, ...), so a neighbour's token can be guessed; the cookie carries no HttpOnly, Secure or SameSite attribute.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Issue random tokens and set HttpOnly, Secure and SameSite.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 190, "needle": "sid={token}; Path=/"}]
+        }
+      ],
+      "cwe": ["CWE-330", "CWE-1004"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH06",
+      "title": "Path traversal discloses files outside the static directory",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "file_store"},
+      "description": "The file parameter is joined onto the static directory without normalisation, so ../ reaches the application directory (the source, the example settings file, the seed SQL). The shared reader stops at the application directory; that fence is containment for the fixture, not a mitigation of the flaw.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [
+        {
+          "text": "Real-path check on attachments",
+          "refs": [{"path": "server.py", "line": 123, "needle": "path.startswith(ATTACH_DIR"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Resolve the path and require it to stay under static/.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 528, "needle": "path = os.path.join(STATIC_DIR, name)"}]
+        }
+      ],
+      "cwe": ["CWE-22"],
+      "capec": [],
+      "asvs": [],
+      "status": "partial"
+    },
+    {
+      "id": "TH09",
+      "title": "Tracebacks and the debug route disclose internals",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "http_server"},
+      "description": "An unhandled exception returns the full traceback to the client, and /debug/info lists every route and every live session token.",
+      "rating": {"likelihood": 2, "impact": 2},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Return a generic error and remove the debug route.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 321, "needle": "traceback.format_exc()"}]
+        }
+      ],
+      "cwe": ["CWE-209", "CWE-489"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified"
+    },
+    {
+      "id": "TH12",
+      "title": "Mass assignment writes the role column",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "database"},
+      "description": "The profile update copies role from the request body, so any member can make themselves admin.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [],
+      "missing": [
+        {
+          "text": "Copy only the fields a member may change.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 482, "needle": "body.get(\"role\")"}]
+        }
+      ],
+      "cwe": ["CWE-915"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "abuse_case": {
+        "actor": "member",
+        "goal": "Mass assignment writes the role column",
+        "steps": ["POST /api/login", "POST /api/profile"]
+      }
+    }
+  ],
+  "no_threat": [],
+  "attack_trees": [],
+  "open_questions": ["Is the import route meant to be public?"],
+  "limits": ["Time ran out before the import route and the console."]
+}

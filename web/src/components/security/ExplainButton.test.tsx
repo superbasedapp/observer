@@ -45,3 +45,28 @@ test("no answer shows the honest reason and no advisory note", () => {
   assert.match(html, /no judge is configured/);
   assert.doesNotMatch(html, /Advisory/);
 });
+
+test("Suggest a fix shows beside Explain once security.feedback is selected", () => {
+  const html = renderToStaticMarkup(<ExplainButton findingId="f1" token="t" selected={["security", "security.feedback"]} />);
+  assert.match(html, /data-testid="code-security-fix-f1"/);
+  assert.match(html, />Suggest a fix</);
+});
+
+test("while a fix is asked both buttons are disabled and the fix button says so", () => {
+  const html = renderToStaticMarkup(
+    <ExplainButtonView findingId="f1" busy={true} mode="fix" view={null} onExplain={() => {}} onFix={() => {}} />,
+  );
+  assert.equal((html.match(/<button[^>]*disabled/g) ?? []).length, 2, html);
+  assert.match(html, /Asking for a fix\.\.\./);
+  assert.match(html, />Explain</);
+});
+
+test("a fix answer is headed as a suggestion and keeps the advisory note", () => {
+  const view = explainView({ available: true, advisory: true, text: "Upgrade to 2.17.1.", model: "m1", hosting: "loopback" });
+  const html = renderToStaticMarkup(
+    <ExplainButtonView findingId="f1" busy={false} mode="fix" view={view} onExplain={() => {}} onFix={() => {}} />,
+  );
+  assert.match(html, /Suggested fix/);
+  assert.match(html, /Upgrade to 2\.17\.1\./);
+  assert.match(html, /Advisory: it does not change this finding\./);
+});

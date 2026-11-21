@@ -10,15 +10,25 @@
 //   - the drop rules applied before matching (empty versions, locally
 //     developed packages, the project's own root package, the Go stdlib
 //     line);
-//   - the per-ecosystem canary table, the self-test that turns "the
-//     matcher ran" into "the database loaded and flags a known advisory";
+//   - the per-ecosystem table: each ecosystem's canary, the self-test that
+//     turns "the matcher ran" into "the database loaded and flags a known
+//     advisory", and what reads it (OSVScanner: osv-scanner's required
+//     databases and canary files are only the ecosystems it reads, never
+//     GitHub Actions, which the SCALIBR driver matches from the workflows,
+//     rule S-779; NativeRule names that rule for policy);
+//   - the manifest table (a manifest with no lockfile is a gap) and the
+//     dependency-file table with its unread-file rules (unread.go: a known
+//     dependency file no linked extractor reads is a gap, so a project of
+//     unread ecosystems never reads clean; the facade's coverage probe asks
+//     its own extractor table what is read);
 //   - the per-ecosystem outcome table and the run's coverage table: one
 //     missing database makes only that ecosystem "not scanned", and a run
 //     is "clean" only when every ecosystem it found was scanned and passed
 //     its self-test (principle PR12, revision 2.4 [JSP-12]);
 //   - grouping of advisories by aliases (GHSA, CVE, GO, PYSEC ids for the
 //     same flaw become one finding); it never compares versions: matching
-//     is SCALIBR's or osv-scanner's own (section 8.2);
+//     is SCALIBR's or osv-scanner's own (section 8.2), or, for GitHub
+//     Actions, the facade's range walk over SCALIBR's comparator;
 //   - the semantic adapter from grouped advisories to secfinding.Finding,
 //     on the "osv" adapter row of internal/secscan;
 //   - the two drivers' registry rows (secscan.DriverRow), including the

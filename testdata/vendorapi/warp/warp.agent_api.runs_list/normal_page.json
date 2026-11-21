@@ -1,0 +1,101 @@
+{
+  "runs": [
+    {
+      "run_id": "7c1e2a40-0000-4000-8000-000000000001",
+      "task_id": "7c1e2a40-0000-4000-8000-000000000001",
+      "title": "Fix the flaky auth test",
+      "state": "SUCCEEDED",
+      "execution_location": "REMOTE",
+      "prompt": "Fix the flaky auth test in auth_test.go",
+      "created_at": "2026-10-30T09:00:00Z",
+      "updated_at": "2026-10-30T09:21:40Z",
+      "run_time": "PT20M10S",
+      "started_at": "2026-10-30T09:01:05Z",
+      "finished_at": "2026-10-30T09:21:15Z",
+      "source": "API",
+      "session_id": "3d0b8f6e-0000-4000-8000-0000000000a1",
+      "session_link": "https://app.warp.dev/session/3d0b8f6e-0000-4000-8000-0000000000a1",
+      "creator": {"type": "user", "uid": "synthUserUid0001", "display_name": "Synthetic User", "email": "synthetic.user@example.com"},
+      "request_usage": {
+        "inference_cost": 41.5,
+        "compute_cost": 3.25,
+        "platform_cost": 10,
+        "inference_cost_usd": 0.415,
+        "compute_cost_usd": 0.0325,
+        "platform_cost_usd": 0.1,
+        "total_tokens": 182340
+      },
+      "agent_config": {
+        "name": "nightly-fixes",
+        "environment_id": "SynthEnvironment00001a",
+        "harness": {"type": "claude", "model_id": "claude-sonnet-4-5"}
+      },
+      "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c1",
+      "root_run_id": "7c1e2a40-0000-4000-8000-000000000001",
+      "is_sandbox_running": false,
+      "artifacts": [
+        {
+          "artifact_type": "PULL_REQUEST",
+          "created_at": "2026-10-30T09:20:00Z",
+          "data": {"url": "https://github.com/acme/widget/pull/42", "branch": "warp/fix-flaky-auth", "status": "open"}
+        }
+      ]
+    },
+    {
+      "run_id": "7c1e2a40-0000-4000-8000-000000000002",
+      "task_id": "7c1e2a40-0000-4000-8000-000000000002",
+      "title": "Write the release notes",
+      "state": "INPROGRESS",
+      "execution_location": "REMOTE",
+      "prompt": "Write the release notes for v2",
+      "created_at": "2026-10-30T09:05:00Z",
+      "updated_at": "2026-10-30T09:18:00Z",
+      "started_at": "2026-10-30T09:05:30Z",
+      "finished_at": null,
+      "source": "ORCHESTRATION",
+      "creator": {"type": "service_account", "uid": "synthServiceAcct0001"},
+      "request_usage": {
+        "inference_cost": 12,
+        "inference_cost_usd": 0.12
+      },
+      "agent_config": {
+        "harness": {"type": "codex", "model_id": "gpt-5.6", "reasoning_level": "high"}
+      },
+      "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c2",
+      "parent_run_id": "7c1e2a40-0000-4000-8000-000000000001",
+      "root_run_id": "7c1e2a40-0000-4000-8000-000000000001"
+    },
+    {
+      "run_id": "7c1e2a40-0000-4000-8000-000000000003",
+      "task_id": "7c1e2a40-0000-4000-8000-000000000003",
+      "title": "Triage the open issues",
+      "state": "FAILED",
+      "execution_location": "REMOTE",
+      "prompt": "Triage the open issues",
+      "created_at": "2026-10-30T08:00:00Z",
+      "updated_at": "2026-10-30T08:12:00Z",
+      "finished_at": "2026-10-30T08:11:59Z",
+      "status_message": {"message": "Agent failed", "error_code": "internal_error", "retryable": true},
+      "source": "WEB_APP",
+      "creator": {"type": "user", "uid": "synthUserUid0001"},
+      "request_usage": {
+        "inference_cost": 5,
+        "compute_cost": 1,
+        "platform_cost": 2,
+        "inference_cost_usd": 0.05,
+        "compute_cost_usd": 0.01,
+        "platform_cost_usd": 0.02,
+        "total_tokens": 20400,
+        "model_token_usage": [
+          {"model_id": "auto", "total_tokens": 20400, "usage_type": "warp", "tokens_by_category": {"primary_agent": 20400}}
+        ]
+      },
+      "agent_config": {"model_id": "auto"},
+      "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c3",
+      "root_run_id": "7c1e2a40-0000-4000-8000-000000000003"
+    }
+  ],
+  "page_info": {"has_next_page": true, "next_cursor": "synthRunsCursor0002"},
+  "as_of": "2026-10-30T09:22:00Z",
+  "team_uid": null
+}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,10 @@ func fakeSchtasksEnv(queryOut string, queryErr error, observer string) setup.Env
 		ResolveObserver: func(string) (string, bool) { return observer, observer != "" },
 		Distro:          "Ubuntu",
 		WindowsUser:     func() string { return "operator" },
+		// The daemon under test really runs on this host, and its DB and
+		// token paths come from t.TempDir(). A Windows host must say so, or
+		// the planner treats C:\... as a WSL path that is not absolute.
+		HostIsWindows: runtime.GOOS == "windows",
 	}
 }
 

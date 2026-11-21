@@ -123,11 +123,11 @@ func TestPaddleWebhookRejectsBadSignature(t *testing.T) {
 	// The account stayed on free (nothing applied).
 	uresp := c.do(c.signedReq("GET", "/v1/usage", nil))
 	var snap struct {
-		DailyCap int `json:"daily_cap"`
+		Plan string `json:"plan"`
 	}
 	decode(t, uresp, &snap)
-	if snap.DailyCap != 100 {
-		t.Fatalf("caps after rejected webhooks = %d, want 100 (free, nothing applied)", snap.DailyCap)
+	if snap.Plan != "free" {
+		t.Fatalf("plan after rejected webhooks = %q, want free (nothing applied)", snap.Plan)
 	}
 }
 
@@ -187,11 +187,11 @@ func TestPaddleWebhookBindingRefusedWithoutNonce(t *testing.T) {
 	// The account stayed on free — nothing was granted.
 	uresp := c.do(c.signedReq("GET", "/v1/usage", nil))
 	var snap struct {
-		DailyCap int `json:"daily_cap"`
+		Plan string `json:"plan"`
 	}
 	decode(t, uresp, &snap)
-	if snap.DailyCap != 100 {
-		t.Fatalf("caps after refused binding = %d, want 100 (free, nothing applied)", snap.DailyCap)
+	if snap.Plan != "free" {
+		t.Fatalf("plan after refused binding = %q, want free (nothing applied)", snap.Plan)
 	}
 }
 
@@ -634,6 +634,18 @@ func TestValidatePaddleCheckoutEnv(t *testing.T) {
 		{"live + public origin unaffected by the sandbox gate (still needs its own live_ token)", api.PaddleCheckoutEnv{
 			Environment: "live", ClientToken: "live_abc", WebhookConfigured: true, Prices: livePrices, OriginIsPublic: true,
 		}, false},
+		// Wave 17: the server-side API key's environment.
+		{"live with a live API key ok", api.PaddleCheckoutEnv{
+			Environment: "live", ClientToken: "live_abc", WebhookConfigured: true, Prices: livePrices, APIKeyEnvironment: "live",
+		}, false},
+		{"live with a sandbox API key rejected", api.PaddleCheckoutEnv{
+			Environment: "live", ClientToken: "live_abc", WebhookConfigured: true, Prices: livePrices, APIKeyEnvironment: "sandbox",
+		}, true},
+		{"live with an unprefixed API key rejected", api.PaddleCheckoutEnv{
+			Environment: "live", ClientToken: "live_abc", WebhookConfigured: true, Prices: livePrices, APIKeyEnvironment: "unknown",
+		}, true},
+		{"sandbox with a live API key rejected", api.PaddleCheckoutEnv{Environment: "sandbox", APIKeyEnvironment: "live"}, true},
+		{"sandbox with a sandbox API key ok", api.PaddleCheckoutEnv{Environment: "sandbox", APIKeyEnvironment: "sandbox"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

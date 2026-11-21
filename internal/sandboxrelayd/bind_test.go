@@ -23,6 +23,7 @@ type bindHarness struct {
 	daemon    *Daemon
 	mu        sync.Mutex
 	ran       []string
+	cwds      []string
 }
 
 func startBindHarness(t *testing.T, d *Daemon, runs ...RunRecord) *bindHarness {
@@ -37,6 +38,7 @@ func startBindHarness(t *testing.T, d *Daemon, runs ...RunRecord) *bindHarness {
 	d.Exec = func(_ context.Context, run RunRecord, req sandboxrelay.HookRequest) (sandboxrelay.HookResponse, error) {
 		h.mu.Lock()
 		h.ran = append(h.ran, run.RunID+":"+string(req.Stdin))
+		h.cwds = append(h.cwds, req.Cwd)
 		h.mu.Unlock()
 		return sandboxrelay.HookResponse{Stdout: []byte("ok")}, nil
 	}

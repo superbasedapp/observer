@@ -135,6 +135,22 @@ func TestPlansAPI_AccountLifecycleNeverReturnsASecret(t *testing.T) {
 	if hist.Code != http.StatusOK {
 		t.Fatalf("history = %d %s", hist.Code, hist.Body.String())
 	}
+	// A source with no daily usage answers available=false, no reconciliation.
+	usage := plansDo(t, s, http.MethodGet, "/api/plans/accounts/"+added.Account.ID+"/usage?days=14", "", false)
+	if usage.Code != http.StatusOK {
+		t.Fatalf("usage = %d %s", usage.Code, usage.Body.String())
+	}
+	var uv struct {
+		Available      bool            `json:"available"`
+		Days           int             `json:"days"`
+		Reconciliation json.RawMessage `json:"reconciliation"`
+	}
+	if err := json.Unmarshal(usage.Body.Bytes(), &uv); err != nil || uv.Available || uv.Days != 14 || uv.Reconciliation != nil {
+		t.Fatalf("usage body %s %v", usage.Body.String(), err)
+	}
+	if rec := plansDo(t, s, http.MethodGet, "/api/plans/accounts/nope/usage", "", false); rec.Code != http.StatusNotFound {
+		t.Fatalf("usage of an unknown account = %d, want 404", rec.Code)
+	}
 	if rec := plansDo(t, s, http.MethodPost, "/api/plans/accounts/"+added.Account.ID, `{"label":"Home"}`, true); rec.Code != http.StatusOK {
 		t.Fatalf("edit = %d %s", rec.Code, rec.Body.String())
 	}

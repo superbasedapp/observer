@@ -11,6 +11,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/loc"
 	"github.com/marmutapp/superbased-observer/internal/projectroi"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/taskreport"
 )
@@ -214,6 +215,9 @@ type apiProjectPromptGradeAvailable struct {
 	Judge  bool   `json:"judge"`
 	Cloud  bool   `json:"cloud"`
 	Reason string `json:"reason,omitempty"`
+	// Where the person turns the judge tier on, when it is the one off
+	// (settings, settings_label); omitted otherwise.
+	settingslink.Fields
 }
 
 type apiProjectPromptRow struct {
@@ -446,7 +450,8 @@ func (s *Server) handleProjectCommitScan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.opts.CommitRescan == nil {
-		http.Error(w, "commit scanning is not running in this process ([projects].commit_scan is off)", http.StatusServiceUnavailable)
+		writeNeedsSetting(w, http.StatusServiceUnavailable, "commit scanning is not running in this process ([projects].commit_scan is off)",
+			msgCommitScanOff, settingslink.IntelligenceSettings)
 		return
 	}
 
@@ -550,6 +555,13 @@ func (s *Server) handleProjectCommits(w http.ResponseWriter, r *http.Request) {
 	agg := dashapi.AggregateByCommit(linkage)
 	promptByAction := indexPromptsByAction(prompts)
 	ownership := commitOwnershipForRows(linkage, linkCommits, rawCommits)
+	// Cloud-agent credit (CA-C5, docs/projects-page.md "Cloud-agent
+	// credit"): the same overlay store.LoadCommitOwnership applies, so a
+	// commit a cloud session's PR produced reads that session here too.
+	if ownership, err = st.CreditCloudCommits(ctx, projectID, ownership, rawCommits); err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	rows := make([]apiProjectCommitRow, 0, len(rawCommits))
 	for _, c := range rawCommits {
@@ -664,6 +676,7 @@ func (s *Server) handleProjectPrompts(w http.ResponseWriter, r *http.Request) {
 
 	judgeAvailable := s.opts.JudgeGrade != nil
 	judgeReason := s.opts.JudgeGradeReason
+	judgeFix := s.judgeGradeFix()
 	cloudAvailable, cloudReason := false, "cloud grading is not available"
 	if s.opts.CloudGradeAvailability != nil {
 		cloudAvailable, cloudReason = s.opts.CloudGradeAvailability()
@@ -727,6 +740,9 @@ func (s *Server) handleProjectPrompts(w http.ResponseWriter, r *http.Request) {
 		case !cloudAvailable:
 			avail.Reason = cloudReason
 		}
+		if !judgeAvailable {
+			avail.Fields = judgeFix
+		}
 		row.GradeAvailable = avail
 
 		rows = append(rows, row)
@@ -770,11 +786,17 @@ func (s *Server) handleProjectCost(w http.ResponseWriter, r *http.Request) {
 	}
 	since, until, _ := projectDetailWindow(r)
 
-	priced, err := dashapi.LoadProjectSpend(ctx, st, s.opts.CostEngine, projectID, since, until)
+	// CA-D21 (cloud-agents lane CA-C1): the session / tool / model / day
+	// buckets cover the folded spend (the project plus its synthetic cloud
+	// twins, CA-D12 precedence applied), the same rows as the Overview Spend
+	// tile. Task and commit attribution read the project's own rows: a twin
+	// has no checkout, tasks or commits of its own here.
+	folded, err := dashapi.LoadFoldedProjectSpend(ctx, st, s.opts.CostEngine, projectID, since, until)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	priced := folded.All
 	turns := priced.Turns
 
 	var rows []dashapi.APIProjectCostBucketRow
@@ -805,6 +827,15 @@ func (s *Server) handleProjectCost(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, err)
 			return
 		}
+		// A folded cloud twin's sessions keep their own split (lane CA-C1),
+		// the same rows the detail panel's by_session reads.
+		twinEdits, twinTruncated, err := dashapi.LoadTwinAIEdits(ctx, st, folded, since, until)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		edits = append(edits, twinEdits...)
+		editsTruncated = editsTruncated || twinTruncated
 		codePerSession := make(map[string]int)
 		commentPerSession := make(map[string]int)
 		for _, e := range edits {
@@ -812,7 +843,7 @@ func (s *Server) handleProjectCost(w http.ResponseWriter, r *http.Request) {
 			commentPerSession[e.SessionID] += e.CommentLines()
 		}
 		for _, sess := range priced.Sessions {
-			row := dashapi.APIProjectCostBucketRow{Key: sess.ID, Label: sess.Tool, CostUSD: sess.CostUSD, Turns: turnsPerSession[sess.ID], UnpricedTurns: unpricedPerSession[sess.ID]}
+			row := dashapi.APIProjectCostBucketRow{Key: sess.ID, Label: sess.Tool, CostUSD: sess.CostUSD, Turns: turnsPerSession[sess.ID], UnpricedTurns: unpricedPerSession[sess.ID], ExecutionLocation: folded.Locations[sess.ID]}
 			row.AISplit = optionalAuthoredSplit(codePerSession[sess.ID], commentPerSession[sess.ID])
 			rows = append(rows, row)
 		}
@@ -877,7 +908,7 @@ func (s *Server) handleProjectCost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		linkage := projectroi.Link(prompts, edits, linkCommits, projectroi.Options{LinkWindow: s.commitLinkWindow()})
-		spend := projectroi.AttributeSpend(linkage, turns, prompts)
+		spend := projectroi.AttributeSpend(linkage, folded.Own.Turns, prompts)
 		for _, c := range rawCommits {
 			// 2026-09-22 review round 4 finding #9: commit buckets used
 			// to omit unpriced-turn coverage entirely, unlike every other
@@ -971,7 +1002,11 @@ func (s *Server) handleProjectGradeJudge(ctx context.Context, w http.ResponseWri
 		if reason == "" {
 			reason = "the judge tier is not configured"
 		}
-		writeJSON(w, map[string]any{"status": "not_available", "reason": reason})
+		fix := s.judgeGradeFix()
+		writeJSON(w, map[string]any{
+			"status": "not_available", "reason": reason,
+			"settings": fix.Settings, "settings_label": fix.SettingsLabel,
+		})
 		return
 	}
 	in, _, err := st.LoadPromptChainInput(ctx, projectID, actionID)
@@ -998,4 +1033,13 @@ func (s *Server) handleProjectGradeJudge(ctx context.Context, w http.ResponseWri
 			Extra: nonNilStrings(result.Extra), Confidence: result.Confidence, GradedAt: dashapi.FmtProjectTime(gradedAt), Model: model,
 		},
 	})
+}
+
+// judgeGradeFix is the deep link to where the judge tier is turned on
+// (Options.JudgeGradePlace), or empty fields when no setting changes it.
+func (s *Server) judgeGradeFix() settingslink.Fields {
+	if l, ok := settingslink.For(s.opts.JudgeGradePlace); ok {
+		return l.Fields()
+	}
+	return settingslink.Fields{}
 }

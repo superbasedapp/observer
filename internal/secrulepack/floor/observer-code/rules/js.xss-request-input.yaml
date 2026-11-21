@@ -1,0 +1,57 @@
+rules:
+  - id: js.xss-request-input
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Web request input or the page URL is written into the page as HTML, so a caller can run script in it; set textContent, or sanitize the HTML (DOMPurify) first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+      # The page's own URL and window name, which a link can set.
+      - pattern: location.hash
+      - pattern: location.search
+      - pattern: location.href
+      - pattern: window.location.hash
+      - pattern: window.location.search
+      - pattern: window.location.href
+      - pattern: document.location.hash
+      - pattern: document.location.search
+      - pattern: document.location.href
+      - pattern: document.URL
+      - pattern: document.documentURI
+      - pattern: document.referrer
+      - pattern: window.name
+    pattern-sanitizers:
+      - pattern: DOMPurify.sanitize(...)
+      - pattern: $P.sanitize(...)
+      - pattern: sanitizeHtml(...)
+      - pattern: escapeHtml(...)
+      - pattern: escape(...)
+      - pattern: $L.escape(...)
+      - pattern: encodeURIComponent(...)
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $EL.innerHTML = $X
+              - pattern: $EL.outerHTML = $X
+              - pattern: $EL.innerHTML += $X
+              - pattern: $EL.insertAdjacentHTML($POS, $X)
+              - pattern: document.write(..., $X, ...)
+              - pattern: document.writeln(..., $X, ...)
+              - pattern: '<$TAG dangerouslySetInnerHTML={{__html: $X}} />'
+              - pattern: '<$TAG dangerouslySetInnerHTML={{__html: $X}}>...</$TAG>'
+              - pattern: $J.html($X)
+              - pattern: $EL.setHTMLUnsafe($X)
+          - focus-metavariable: $X

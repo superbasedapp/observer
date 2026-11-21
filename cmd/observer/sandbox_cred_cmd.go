@@ -58,9 +58,12 @@ func credAdd(observerDir, provider, key string) error {
 	if !ok {
 		return fmt.Errorf("unknown provider %q (one of: %s)", provider, credProviderList())
 	}
-	key = strings.TrimSpace(key)
-	if key == "" || len(key) > 4096 || strings.ContainsAny(key, "\r\n\x00 ") || sandboxcred.IsSentinel(key) {
-		return errors.New("that is not a key (empty, too long, a sentinel, or it holds a space or a line break)")
+	// A terminal paste's wrappers go first (D9: bracketed-paste markers, a
+	// CR or LF, a byte-order mark), then the one broken rule is named,
+	// never the key.
+	key = sandboxcred.CleanPastedKey(key)
+	if problem := sandboxcred.KeyProblem(key); problem != "" {
+		return errors.New("that is not a usable key: " + problem + "; nothing was stored")
 	}
 	if err := credKeysFn(observerDir).Set(sandboxcred.KeyName(p.ID), key); err != nil {
 		return err
@@ -88,13 +91,17 @@ func credProviderList() string {
 	return strings.Join(ids, ", ")
 }
 
+// credPasteTries is how many times the terminal read asks again when a
+// read brings nothing (D9: through wsl.exe from Windows PowerShell an Enter
+// could arrive before the paste did).
+const credPasteTries = 3
+
 // credReadKey reads a key from in: without echo when it is a terminal.
 var credReadKey = func(in io.Reader, out io.Writer) (string, error) {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { //nolint:gosec // G115: a descriptor number
-		fmt.Fprint(out, "Paste the key (not shown): ")
-		b, err := term.ReadPassword(int(f.Fd())) //nolint:gosec // G115: a descriptor number
-		fmt.Fprintln(out)
-		return string(b), err
+		return credReadPasted(out, func() ([]byte, error) {
+			return term.ReadPassword(int(f.Fd())) //nolint:gosec // G115: a descriptor number
+		})
 	}
 	line, err := bufio.NewReader(io.LimitReader(in, 8192)).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -103,12 +110,55 @@ var credReadKey = func(in io.Reader, out io.Writer) (string, error) {
 	return line, nil
 }
 
+// credReadPasted prompts and reads one pasted key without echo, asking
+// again (up to credPasteTries) while a read brings nothing once the paste's
+// wrappers are removed.
+func credReadPasted(out io.Writer, read func() ([]byte, error)) (string, error) {
+	prompt := "Paste the key (not shown): "
+	var last string
+	for i := 0; i < credPasteTries; i++ {
+		fmt.Fprint(out, prompt)
+		b, err := read()
+		fmt.Fprintln(out)
+		if err != nil {
+			return "", err
+		}
+		last = string(b)
+		if sandboxcred.CleanPastedKey(last) != "" {
+			return last, nil
+		}
+		prompt = "Nothing was read (the paste may not have arrived yet). Paste the key again (not shown): "
+	}
+	return last, nil
+}
+
+// credStoreLine is the list's plain line about where keys are kept: on a
+// machine with no OS keychain (WSL, a headless Linux) the file store, said
+// as such.
+func credStoreLine(backend, diagnostic string) string {
+	switch backend {
+	case "keychain":
+		return "store: the OS keychain"
+	case "file":
+		line := "store: owner-only files on this machine (no OS keychain was found here, so the keys are not encrypted by the OS)"
+		if diagnostic != "" {
+			line += "\n  " + diagnostic
+		}
+		return line
+	}
+	if diagnostic != "" {
+		return "store: " + backend + " (" + diagnostic + ")"
+	}
+	return "store: " + backend
+}
+
 func newSandboxCredentialsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "credentials",
 		Short: "Your own provider keys for credential injection into sandboxed runs (beta)",
 		Long: "Keys added here stay on this machine (the OS keychain). A hosted sandboxed run with key custody home_relay " +
-			"gets only a sentinel in its key variable; Observer's proxy adds your key on the way to the provider's model host.",
+			"gets only a sentinel in its key variable (one per provider its tool can use whose key is stored here); Observer's proxy adds your key only on the way to that provider's own model host. " +
+			"Under key custody in_box_api_key a hosted run whose daemon environment lacks a provider's API key variable gets the key stored here instead, in the box; the consent screen and the New Terminal dialog name it before the upload.",
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "add <provider>",
@@ -143,7 +193,7 @@ func newSandboxCredentialsCmd() *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%-11s %-10s %s (box variable %s)\n", v.Provider, state, v.Host, v.KeyEnv)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", backend)
+			fmt.Fprintln(cmd.OutOrStdout(), credStoreLine(backend, credKeysFn(credObserverDir()).SecurityDiagnostic()))
 			return nil
 		},
 	}, &cobra.Command{
@@ -194,6 +244,9 @@ func credDashboardRoutes(string) []dashapi.ExtraRoute {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			// The probe answers from the stored key list (decision SBXD-1:
+			// the dialog's paste field re-reads it), so its cache goes.
+			applySandboxConfigLive()
 			w.WriteHeader(http.StatusNoContent)
 		})
 	}

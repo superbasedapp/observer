@@ -739,6 +739,22 @@ func TestUsageDecodesPlanFields(t *testing.T) {
 	if got.DigestsThisWeek != 1 {
 		t.Fatalf("digests_this_week = %d, want 1", got.DigestsThisWeek)
 	}
+	if got.BudgetUnit != "" || got.EvidenceTokenBudget != 0 {
+		t.Fatalf("a count-plan response carries no token budget: %+v", got)
+	}
+
+	// A token-budgeted plan (ruling R-AI1).
+	body = `{"plan":"free","plan_version":5,"budget_pool":"free","daily_cap":0,"monthly_cap":0,` +
+		`"budget_unit":"tokens","evidence_token_budget":4000,"session_token_budget":60000,` +
+		`"daily_tokens_used":13000,"daily_token_budget":250000,"monthly_tokens_used":90000,"monthly_token_budget":3000000}`
+	tok, err := c.Usage(ctx)
+	if err != nil {
+		t.Fatalf("Usage (token plan): %v", err)
+	}
+	if tok.BudgetUnit != "tokens" || tok.EvidenceTokenBudget != 4000 || tok.SessionTokenBudget != 60000 ||
+		tok.DailyTokensUsed != 13000 || tok.DailyTokenBudget != 250000 || tok.MonthlyTokensUsed != 90000 || tok.MonthlyTokenBudget != 3000000 {
+		t.Fatalf("token budget fields = %+v", tok)
+	}
 
 	// An older server predating the W5 wave never emits these keys.
 	body = `{"plan":"free","plan_label":"Free","budget_pool":"free","daily_cap":10,"monthly_cap":100}`

@@ -1,5 +1,5 @@
 (version 1)
-; Observer Seatbelt profile v1 (internal/sandboxsbpl): built from the bwrap plan's tables
+; Observer Seatbelt profile v2 (internal/sandboxsbpl): built from the bwrap plan's tables
 (deny default)
 ; processes: exec and fork inherit this profile; signals and process info stay inside it
 (allow process-exec)
@@ -16,9 +16,9 @@
   (global-name "com.apple.system.logger")
   (global-name "com.apple.logd")
   (global-name "com.apple.system.notification_center")
-  (global-name "com.apple.trustd.agent")
   (global-name "com.apple.bsd.dirhelper")
   (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.trustd.agent")
   (global-name "com.apple.SecurityServer")
   (global-name "com.apple.securityd.xpc"))
 ; files: the whole root reads, as bwrap's --ro-bind / /

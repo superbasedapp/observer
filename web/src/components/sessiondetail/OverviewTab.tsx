@@ -1,3 +1,5 @@
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { memo } from "react";
 import { ActionBreakdownDonut } from "@/components/charts";
 import {
@@ -36,7 +38,11 @@ export const OverviewTab = memo(function OverviewTab({ d }: { d: SessionDetail }
         {hasRecordedUsage(d) ? <TokenBucketsPanel tokens={d.tokens} /> : (
           <section className="rounded-3 border border-line-2 bg-bg-2 p-4">
             <h4 className="text-[12px] font-semibold text-fg-1">Token buckets</h4>
-            <p className="mt-2 text-[11.5px] text-fg-3">Input, output, cache read and cache write counts are unavailable because usage was not captured.</p>
+            <p className="mt-2 text-[11.5px] text-fg-3">
+              Input, output, cache read and cache write counts were not captured for this session. Some tools never record
+              them; for a tool that can route through the proxy, set that up in Settings &gt; Connected tools.{" "}
+              <NeedsSettingLink link={placeLink("connected_tools")} />
+            </p>
           </section>
         )}
         <ModelsUsedPanel rows={d.per_model} totalCost={d.cost_usd} />

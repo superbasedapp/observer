@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
 
@@ -68,7 +69,67 @@ func writeDashboardListenRecord(dbPath, addr string) (func(), error) {
 // readDashboardListenRecord reads the record for the database at dbPath;
 // ok=false when there is none or it does not parse.
 func readDashboardListenRecord(dbPath string) (dashboardListenRecord, bool) {
-	f, err := os.Open(dashboardListenRecordPath(dbPath)) //nolint:gosec // G304: the daemon's own record beside its database
+	return readDashboardListenRecordAt(dashboardListenRecordPath(dbPath))
+}
+
+// standaloneDashboardListenRecordPath is the record a standalone
+// `observer dashboard` (pid) writes beside the database: one file per
+// process, so it never replaces the daemon's own record, which the
+// SBX-UPD readers depend on (cli-1b fixes-4).
+func standaloneDashboardListenRecordPath(dbPath string, pid int) string {
+	return filepath.Join(filepath.Dir(dbPath), "dashboard-listen."+strconv.Itoa(pid)+".json")
+}
+
+// writeStandaloneDashboardListenRecord records a standalone dashboard's
+// address for this process, owner-only, and returns its removal (a removal
+// that runs only while the file still names this process).
+func writeStandaloneDashboardListenRecord(dbPath, addr string) (func(), error) {
+	p := standaloneDashboardListenRecordPath(dbPath, os.Getpid())
+	b, err := json.Marshal(dashboardListenRecord{Addr: addr, PID: os.Getpid()})
+	if err != nil {
+		return func() {}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return func() {}, err
+	}
+	tmp := p + ".tmp"
+	_ = os.Remove(tmp)
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return func() {}, err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return func() {}, err
+	}
+	return func() {
+		if rec, ok := readDashboardListenRecordAt(p); ok && rec.PID == os.Getpid() {
+			_ = os.Remove(p)
+		}
+	}, nil
+}
+
+// liveDashboardListenAddrs is every dashboard address recorded beside the
+// database at dbPath whose process is alive: the daemon's record and each
+// standalone `observer dashboard` record. A process-local Landlock plan
+// denies all of them.
+func liveDashboardListenAddrs(dbPath string, alive func(pid int) bool) []string {
+	paths := []string{dashboardListenRecordPath(dbPath)}
+	if more, err := filepath.Glob(filepath.Join(filepath.Dir(dbPath), "dashboard-listen.*.json")); err == nil {
+		paths = append(paths, more...)
+	}
+	var out []string
+	for _, p := range paths {
+		if rec, ok := readDashboardListenRecordAt(p); ok && alive(rec.PID) {
+			out = append(out, rec.Addr)
+		}
+	}
+	return out
+}
+
+// readDashboardListenRecordAt reads one record file; ok=false when there is
+// none or it does not parse.
+func readDashboardListenRecordAt(path string) (dashboardListenRecord, bool) {
+	f, err := os.Open(path) //nolint:gosec // G304: a daemon or dashboard record beside its own database
 	if err != nil {
 		return dashboardListenRecord{}, false
 	}

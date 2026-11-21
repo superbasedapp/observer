@@ -3,7 +3,9 @@
 package dashboard
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
@@ -16,6 +18,15 @@ import (
 // is never a remote viewer's action), answers 404 unless a dependency
 // driver is selected (the same rule as GET /api/security/scanners), and
 // guard rule R-165 denies an agent posting to it.
+//
+// The same POST records the OS release databases' one accept (OS-2, ruling
+// Q1 (b)) when its body is {"os":true}: one route, so R-165's row for it
+// covers both accepts and the route tables need no new entry. Any other
+// body, or none, is the language databases' accept, as before.
+//
+// Every status this route (and GET /api/security/scanners) returns carries
+// the exploit data's state, added here from the OSV store's files
+// (withScannerExploit, security_scanners_exploit.go), never by the seam.
 
 type securityScannerDBResponse struct {
 	Status       any    `json:"status"`
@@ -43,16 +54,25 @@ func (s *Server) handleSecurityScannersDB(w http.ResponseWriter, r *http.Request
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(securityScannerDBResponse{Status: st, ConfirmToken: setConfirmCookie(w, r)})
+		_ = json.NewEncoder(w).Encode(securityScannerDBResponse{Status: s.withScannerExploit(st), ConfirmToken: setConfirmCookie(w, r)})
 	case http.MethodPost:
 		if !requireConfirmToken(w, r) {
 			return
 		}
-		if sdb.Accept == nil {
+		isOS, ok := scannerDBAcceptsOS(r)
+		if !ok {
+			http.Error(w, "the body is not JSON", http.StatusBadRequest)
+			return
+		}
+		accept := sdb.Accept
+		if isOS {
+			accept = sdb.AcceptOS
+		}
+		if accept == nil {
 			writeCompiledOut(w, "security.deps")
 			return
 		}
-		if err := sdb.Accept(r.Context()); err != nil {
+		if err := accept(r.Context()); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -62,8 +82,32 @@ func (s *Server) handleSecurityScannersDB(w http.ResponseWriter, r *http.Request
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(securityScannerDBResponse{Status: st})
+		_ = json.NewEncoder(w).Encode(securityScannerDBResponse{Status: s.withScannerExploit(st)})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// scannerDBAcceptsOS reports whether a POST's JSON body sets "os" true (read
+// capped at 4 KB). An empty body is the language accept; a body that is not
+// JSON is refused (ok false) rather than guessed, so a consent is never
+// recorded for the other database set.
+func scannerDBAcceptsOS(r *http.Request) (isOS, ok bool) {
+	if r.Body == nil {
+		return false, true
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+	if err != nil || len(b) > 4096 {
+		return false, false
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return false, true
+	}
+	var body struct {
+		OS bool `json:"os"`
+	}
+	if json.Unmarshal(b, &body) != nil {
+		return false, false
+	}
+	return body.OS, true
 }

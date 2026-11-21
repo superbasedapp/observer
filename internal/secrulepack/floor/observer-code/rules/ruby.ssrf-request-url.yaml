@@ -1,0 +1,56 @@
+rules:
+  - id: ruby.ssrf-request-url
+    languages: [ruby]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|path_parameters|query_string|raw_post|body|headers|cookies|GET|POST|referer|referrer)$
+    pattern-sanitizers:
+      - pattern: ERB::Util.url_encode(...)
+      - pattern: CGI.escape(...)
+      - pattern: URI.encode_www_form_component(...)
+      - pattern: URI.encode_www_form(...)
+      - pattern: $X.to_i
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Net::HTTP.get($U, ...)
+              - pattern: Net::HTTP.get_response($U, ...)
+              - pattern: Net::HTTP.post($U, ...)
+              - pattern: Net::HTTP.post_form($U, ...)
+              - pattern: Net::HTTP.start($U, ...)
+              - pattern: Net::HTTP.new($U, ...)
+              - pattern: URI.open($U, ...)
+              - pattern: URI($U).open(...)
+              - pattern: URI.parse($U).open(...)
+              - pattern: URI($U).read(...)
+              - pattern: URI.parse($U).read(...)
+              - pattern: 'Faraday.new(url: $U, ...)'
+              - pattern: 'Faraday.new($U, ...)'
+              - pattern: 'RestClient::Request.execute(..., url: $U, ...)'
+              - pattern: Typhoeus::Request.new($U, ...)
+              - patterns:
+                  - pattern: $LIB.$M($U, ...)
+                  - metavariable-regex:
+                      metavariable: $LIB
+                      regex: ^(HTTParty|Faraday|RestClient|Excon|HTTP|HTTPX|Typhoeus)$
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(get|post|put|patch|delete|head|options|request)$
+          # A string that names a fixed host (or path) before the input: the
+          # input cannot pick the host.
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^(URI(\.parse)?\(\s*)?"https?://[^/"#?{}]+[/?#]
+          - focus-metavariable: $U

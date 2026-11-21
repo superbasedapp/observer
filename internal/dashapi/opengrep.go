@@ -59,6 +59,10 @@ type OpengrepStatus struct {
 	LastRunAt      string   `json:"last_run_at,omitempty"`
 	LastRunOutcome string   `json:"last_run_outcome,omitempty"`
 	LastRunLabels  []string `json:"last_run_labels,omitempty"`
+	// LastTaintPass is the intrafile taint pass of the newest full scan that
+	// recorded one, in words, and that scan's time (empty: none yet).
+	LastTaintPass   string `json:"last_taint_pass,omitempty"`
+	LastTaintPassAt string `json:"last_taint_pass_at,omitempty"`
 	// The triggers as configured, and whether runs are isolated here.
 	PostWrite     bool   `json:"post_write"`
 	CommitDiff    bool   `json:"commit_diff"`

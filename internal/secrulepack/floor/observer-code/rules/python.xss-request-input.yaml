@@ -1,0 +1,54 @@
+rules:
+  - id: python.xss-request-input
+    languages: [python]
+    severity: ERROR
+    message: Web request input is marked safe HTML or returned as an HTML response, so a caller can run script in the page; escape it, or render it through an autoescaping template.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+    pattern-sanitizers:
+      - pattern: escape(...)
+      - pattern: html.escape(...)
+      - pattern: markupsafe.escape(...)
+      - pattern: Markup.escape(...)
+      - pattern: conditional_escape(...)
+      - pattern: bleach.clean(...)
+      - pattern: int(...)
+      - pattern: float(...)
+      # A rendered template escaped the values itself.
+      - pattern: render_template(...)
+      - pattern: render_to_string(...)
+      - pattern: render(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Markup($X)
+              - pattern: markupsafe.Markup($X)
+              - pattern: flask.Markup($X)
+              - pattern: jinja2.Markup($X)
+              - pattern: mark_safe($X)
+              - pattern: django.utils.safestring.mark_safe($X)
+              - pattern: SafeString($X)
+          - focus-metavariable: $X
+      # A Django response whose content type is not set to something other
+      # than HTML (the default is text/html).
+      - patterns:
+          - pattern-either:
+              - pattern: HttpResponse($X, ...)
+              - pattern: django.http.HttpResponse($X, ...)
+          - pattern-not: HttpResponse($X, ..., content_type="application/json", ...)
+          - pattern-not: HttpResponse($X, ..., content_type="text/plain", ...)
+          - pattern-not: HttpResponse($X, ..., content_type="text/csv", ...)
+          - pattern-not: HttpResponse($X, "application/json", ...)
+          - pattern-not: HttpResponse($X, "text/plain", ...)
+          - focus-metavariable: $X

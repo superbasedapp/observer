@@ -49,8 +49,14 @@ func hostedRekeyRelayRun(observerDir string, rec sandboxremote.Record) (sandboxr
 	}
 	fresh, err := sandboxrelayd.NewRunRecord(sandboxrelayd.RunRecord{
 		RunID: base.RunID, Tool: base.Tool, ProjectRoot: base.ProjectRoot, WorkspaceDir: base.WorkspaceDir,
-		Roots: base.Roots, Delivery: base.Delivery, CopyHostPath: base.CopyHostPath, ConfigPath: base.ConfigPath,
+		Roots: sandboxrelayd.RemoteBoxRoots(base.WorkspaceDir, base.PathMap), Delivery: base.Delivery, CopyHostPath: base.CopyHostPath, ConfigPath: base.ConfigPath,
 		TerminalRunID: base.TerminalRunID,
+		// The box-path classes carry over (FX4 item 3): a re-keyed record
+		// without them refused every box path, the workspace included.
+		PathMap: base.PathMap, RefusalAuditRequired: base.RefusalAuditRequired,
+		// A hosted box is always remote (FX4-A1), whatever an older record
+		// said: its roots drop this machine's tool state.
+		RemoteBox: true,
 	})
 	if err != nil {
 		return sandboxrelayd.RunRecord{}, err
@@ -187,7 +193,7 @@ func (r *hostedRun) attachKeptPTY(ctx context.Context, term io.ReadWriteCloser, 
 		},
 	})
 	if err != nil {
-		_ = p.Kill(context.WithoutCancel(ctx))
+		hostedKill(ctx, p)
 		return 1, fmt.Errorf("the PTY handshake: %w", err)
 	}
 	defer hmux.Close()

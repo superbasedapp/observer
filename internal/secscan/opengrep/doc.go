@@ -31,7 +31,11 @@
 // --baseline-commit with the git hardening (a diff scope). Never --config
 // auto. A JSON copy of the output (--json-output, a local file in the run's
 // output directory) supplies the files the run scanned and the files it
-// could not parse; the SARIF supplies the results.
+// could not parse; the SARIF supplies the results. One flag is the pack's to
+// ask for: --taint-intrafile (intra-file inter-procedural taint analysis) is
+// passed only when the running pack's manifest sets taint_intrafile
+// (secrulepack.Pack.EngineFlags, PackFlags, ArgsForPack), in every mode the
+// self-test included, so a pack measured without it never runs with it.
 //
 // Exit codes (JSP-8): 0 is a result, read from the SARIF, never from the
 // code; 2 a crash; 7 a missing or invalid rule file. The canary rule of the

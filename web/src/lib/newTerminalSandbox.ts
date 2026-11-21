@@ -4,8 +4,20 @@
 // return; they own the honest disabled copy, so a test can pin every branch
 // without rendering the dialog.
 
-import { ISOLATION_NONE, isolationChoiceSummary, isolationOptions, launchBackend, type IsolationOption } from "./sandboxIsolation.ts";
-import type { SandboxAvailability, SandboxSourceAvail } from "./types.ts";
+import {
+  ISOLATION_AUTO,
+  ISOLATION_NONE,
+  backendNotes,
+  isolationChoiceSummary,
+  isolationOptions,
+  launchBackend,
+  unavailableRows,
+  type IsolationOption,
+  type UnavailableRow,
+} from "./sandboxIsolation.ts";
+import type { SandboxAvailability, SandboxHookNotice, SandboxKeyNotice, SandboxSourceAvail } from "./types.ts";
+import { PLACES, type Place } from "./settingsPlaces.ts";
+import { cloneURLProblem } from "./cloneURL.ts";
 
 // SHELL_TOOL is the reserved pseudo-tool sentinel for a fresh PLAIN SHELL
 // launch (must match internal/termsvc.ShellTool = "shell" verbatim). It is
@@ -92,6 +104,10 @@ export type IsolationPickerProps = {
   disabled: boolean;
   reason: string | null;
   chip: string | null;
+  /** The daemon's sentences about the chosen row (backendNotes). */
+  notes: string[];
+  /** The offered rows that cannot run here, each with its reason. */
+  unavailable: UnavailableRow[];
 };
 
 /**
@@ -111,7 +127,16 @@ export function isolationPickerProps(
   const reason = sandboxDisabledReason(tool, probe);
   const picked = options.find((o) => o.id === choice);
   const value = sandboxOn && !picked?.disabled ? choice : ISOLATION_NONE;
-  return { options, value, disabled: reason !== null, reason, chip: isolationChoiceSummary(probe, choice) };
+  const chosen = value === ISOLATION_NONE ? undefined : probe?.backends?.find((b) => b.id === (value === ISOLATION_AUTO ? probe?.backend : value));
+  return {
+    options,
+    value,
+    disabled: reason !== null,
+    reason,
+    chip: isolationChoiceSummary(probe, choice),
+    notes: backendNotes(chosen),
+    unavailable: unavailableRows(probe),
+  };
 }
 
 /**
@@ -136,6 +161,8 @@ export type SandboxLaunchFields = {
   backend?: string;
   workspace_source?: string;
   workspace_remote?: string;
+  /** Where a hosted row clones a clone-remote URL, when the launch chooses (SBXD-5). */
+  workspace_clone_where?: string;
   workspace_branch?: string;
   /** The dialog shows the inline sign-in step (lane BOXSIGNIN). */
   sign_in_ask?: true;
@@ -160,6 +187,8 @@ export function sandboxLaunchFields(input: {
   workspaceRemote: string;
   workspaceBranch: string;
   branchApplies: boolean;
+  /** The launch's own clone location (lib/hostedClone.ts cloneWhereLaunchValue; SBXD-5). */
+  workspaceCloneWhere?: string;
   /** The inline sign-in step's answer for this launch (lane BOXSIGNIN). */
   signInSeed?: boolean;
 }): SandboxLaunchFields {
@@ -175,7 +204,137 @@ export function sandboxLaunchFields(input: {
     ...(backend ? { backend } : {}),
     workspace_source: input.workspaceSource || "live",
     ...(input.workspaceRemote.trim() ? { workspace_remote: input.workspaceRemote.trim() } : {}),
+    ...(input.workspaceRemote.trim() && input.workspaceCloneWhere ? { workspace_clone_where: input.workspaceCloneWhere } : {}),
     ...(input.branchApplies && input.workspaceBranch.trim() ? { workspace_branch: input.workspaceBranch.trim() } : {}),
+  };
+}
+
+/**
+ * chosenBackendRow is the row the Isolation picker resolves to (Automatic:
+ * the probe's own pick), or undefined for None or a row the probe does not
+ * list.
+ */
+export function chosenBackendRow(probe: SandboxAvailability | null, sandboxOn: boolean, choice: string) {
+  if (!sandboxOn || !probe || choice === ISOLATION_NONE) return undefined;
+  const id = choice === ISOLATION_AUTO ? probe.backend : choice;
+  return probe.backends?.find((b) => b.id === id);
+}
+
+/**
+ * rowSourceOffered reports whether the chosen row takes a workspace
+ * source: true when no row is chosen or the row names no list of its own.
+ */
+export function rowSourceOffered(row: { label?: string; workspace_sources?: string[] } | undefined, source: string): boolean {
+  return !row?.workspace_sources || row.workspace_sources.includes(source);
+}
+
+/** The parts of a backend row the workspace-source picker reads. */
+type SourceRow = { label?: string; workspace_sources?: string[]; source_deliveries?: Record<string, string>; workspace_source_notes?: Record<string, string> };
+
+/** One entry of the dialog's workspace-source picker. */
+export type SandboxSourceOption = { id: string; label: string; disabled: boolean; title: string };
+
+/**
+ * sandboxSourceOptions is the dialog's workspace-source picker for the
+ * chosen row: each source this machine offers, labelled by its delivery,
+ * disabled when the probe says it is unavailable or the row does not take
+ * it now. The reason comes from the data that says why: the row's own note
+ * for a source it delivers but does not take now (workspace_source_notes,
+ * say the remote-clone switch off on this machine), then the probe's reason;
+ * "not offered by <row>" only for a source the row never takes.
+ */
+export function sandboxSourceOptions(
+  row: SourceRow | undefined,
+  sources: SandboxSourceAvail[] | undefined,
+): SandboxSourceOption[] {
+  return (sources ?? []).map((s) => {
+    const name = sandboxSourceLabel(s.id, row);
+    if (!rowSourceOffered(row, s.id)) {
+      const note = row?.workspace_source_notes?.[s.id]?.trim();
+      if (note) return { id: s.id, label: `${name} (not available now)`, disabled: true, title: note };
+      const who = row?.label ?? "this backend";
+      return { id: s.id, label: `${name} (not offered by ${who})`, disabled: true, title: `${row?.label ?? "This backend"} does not take this workspace source` };
+    }
+    if (!s.available) return { id: s.id, label: `${name} (unavailable)`, disabled: true, title: s.reason || "not available" };
+    return { id: s.id, label: name, disabled: false, title: name };
+  });
+}
+
+/**
+ * sandboxSourceNotes are the lines the dialog shows under the picker for
+ * the sources it disables with a reason the person can act on (a native
+ * option's tooltip is easy to miss): "<source>: <the row's note>".
+ */
+export function sandboxSourceNotes(
+  row: SourceRow | undefined,
+  sources: SandboxSourceAvail[] | undefined,
+): string[] {
+  return (sources ?? [])
+    .filter((s) => !rowSourceOffered(row, s.id) && !!row?.workspace_source_notes?.[s.id]?.trim())
+    .map((s) => `${sandboxSourceLabel(s.id, row)}: ${row?.workspace_source_notes?.[s.id]?.trim()}`);
+}
+
+/**
+ * A hosted launch's model key line, the row it is for, and whether it
+ * blocks Start (a refusal) or is only said before it (which keys the agent
+ * gets, or that it starts with none).
+ */
+export type HostedKeyBlock = SandboxKeyNotice & { backend: string; blocking: boolean };
+
+/**
+ * hostedKeyBlock is the line a hosted launch of `tool` meets on its model
+ * key, for the row the Isolation picker resolves to (Automatic: the probe's
+ * own pick): the tool's hosted_key line when that row runs on the
+ * provider's machines, else null. The daemon decides the line with the
+ * launch's own rule; this only says it before Start. A line blocks unless
+ * the daemon marked it advisory (a daemon that predates the mark sent only
+ * refusals, so an absent severity blocks).
+ */
+export function hostedKeyBlock(
+  tool: string,
+  probe: SandboxAvailability | null,
+  sandboxOn: boolean,
+  choice: string,
+): HostedKeyBlock | null {
+  if (!tool) return null;
+  const row = chosenBackendRow(probe, sandboxOn, choice);
+  if (!row || row.location !== "remote") return null;
+  const n = probe?.tools?.[tool]?.hosted_key;
+  return n && n.message ? { ...n, backend: row.id, blocking: n.severity !== "advisory" } : null;
+}
+
+/** The controls the key line offers under its sentence (decisions SBXD-1, SBXD-4). */
+export type HostedKeyLineControls = {
+  /** Where this launch keeps the key, in plain words (null: the daemon did not say). */
+  where: string | null;
+  /** Providers whose key, once pasted here, keeps the key on this machine. */
+  keepHome: { id: string; label: string }[];
+  /** "Also use the keys <tool> saved itself" (null: not offered for this launch). */
+  toolKeys: { on: boolean; label: string } | null;
+  /** "Also copy my <tool> login" (null: not offered for this launch). */
+  loginSeed: { on: boolean; label: string } | null;
+};
+
+/**
+ * hostedKeyLineControls reads the controls of a key line from the daemon's
+ * answer only: it never decides which provider or tool qualifies (the
+ * daemon's resolution table does), it only words them for `toolName`.
+ */
+export function hostedKeyLineControls(block: HostedKeyBlock | null, toolName: string): HostedKeyLineControls {
+  const none: HostedKeyLineControls = { where: null, keepHome: [], toolKeys: null, loginSeed: null };
+  if (!block) return none;
+  const where =
+    block.custody === "home_relay"
+      ? "The key stays on this machine for this launch."
+      : block.custody === "in_box_api_key"
+        ? "The key goes into the box for this launch."
+        : null;
+  const name = toolName || "this agent";
+  return {
+    where,
+    keepHome: block.keep_home ?? [],
+    toolKeys: block.tool_keys ? { on: block.tool_keys.on, label: `Also use the keys ${name} saved itself` } : null,
+    loginSeed: block.login_seed ? { on: block.login_seed.on, label: `Also copy my ${name} login (its short-lived access token only)` } : null,
   };
 }
 
@@ -185,6 +344,17 @@ export type SandboxStartBlock = {
   remoteURLMissing: boolean;
   /** The chosen workspace source is in the probe and not available. */
   sourceUnavailable: boolean;
+  /** The chosen hosted row cannot give this tool its model key. */
+  hostedKey: boolean;
+  /** The chosen hosted row cannot get this tool into its box. */
+  hostedTool: boolean;
+  /** The chosen hosted row cannot upload the chosen folder. */
+  hostedWorkspace: boolean;
+  /**
+   * remoteURLProblem is what is wrong with the typed clone address, in plain
+   * words (lib/cloneURL.ts, the daemon's own rules), or null.
+   */
+  remoteURLProblem: string | null;
   /** Start is blocked; message says why. */
   blocks: boolean;
   message: string | null;
@@ -203,14 +373,200 @@ export function sandboxStartBlock(input: {
   source: string;
   remote: string;
   sources: SandboxSourceAvail[] | undefined;
+  /** hostedKeyBlock's answer for the chosen row and tool (null: none). */
+  hostedKey?: HostedKeyBlock | null;
+  /** The chosen row (chosenBackendRow): a row that takes only some sources. */
+  row?: { label: string; location?: string; workspace_sources?: string[]; workspace_source_notes?: Record<string, string> };
+  /** hostedToolBlock's answer for the chosen row and tool (null: none). */
+  hostedTool?: HostedKeyBlock | null;
+  /** hostedWorkspaceBlock's answer for the chosen row, source and folder. */
+  hostedWorkspace?: HostedWorkspaceBlock | null;
 }): SandboxStartBlock {
   const active = input.sandboxOn && !input.controlDisabled;
   const avail = input.sources?.find((s) => s.id === input.source);
   const remoteURLMissing = active && input.source === "clone-remote" && input.remote.trim() === "";
-  const sourceUnavailable = active && avail !== undefined && !avail.available;
-  const blocks = remoteURLMissing || sourceUnavailable;
+  // A hosted row (location "remote") clones under the no-credential rule.
+  const remoteURLProblem =
+    active && input.source === "clone-remote" && !remoteURLMissing
+      ? cloneURLProblem(input.remote, { noCredential: input.row?.location === "remote" })
+      : null;
+  const notOffered = active && !rowSourceOffered(input.row, input.source);
+  const sourceUnavailable = active && ((avail !== undefined && !avail.available) || notOffered);
+  const hostedKey = active && !!input.hostedKey;
+  const hostedTool = active && !!input.hostedTool;
+  const hostedWorkspace = active && !!input.hostedWorkspace && input.hostedWorkspace.blocking !== false;
+  const blocks = remoteURLMissing || remoteURLProblem !== null || sourceUnavailable || hostedKey || hostedTool || hostedWorkspace;
   let message: string | null = null;
   if (remoteURLMissing) message = "Enter a remote URL to clone into the sandbox.";
+  else if (remoteURLProblem) message = remoteURLProblem;
+  else if (notOffered)
+    message =
+      input.row?.workspace_source_notes?.[input.source]?.trim() ||
+      `${input.row?.label ?? "This backend"} does not take this workspace source - pick another one.`;
   else if (sourceUnavailable) message = "The selected workspace source isn't available - pick another one.";
-  return { remoteURLMissing, sourceUnavailable, blocks, message };
+  else if (hostedWorkspace) message = input.hostedWorkspace?.message ?? null;
+  else if (hostedKey) message = input.hostedKey?.message ?? null;
+  else if (hostedTool) message = input.hostedTool?.message ?? null;
+  return { remoteURLMissing, sourceUnavailable, hostedKey, hostedTool, hostedWorkspace, remoteURLProblem, blocks, message };
+}
+
+/**
+ * SANDBOX_SOURCE_LABELS maps the server's closed workspace-source vocabulary
+ * (SandboxAvailability.sources[].id, mirrored 1:1 from internal/workspace's
+ * Source constants) to the dialog's display labels; sandboxSourceLabel is
+ * the one reader. Falls back to the raw id for a source the dialog has not
+ * been taught yet, rather than hiding it.
+ */
+export const SANDBOX_SOURCE_LABELS: Record<string, string> = {
+  live: "Live project directory",
+  "clone-local": "Copy of the project (clone)",
+  "clone-remote": "Clone a remote URL",
+  worktree: "Worktree",
+};
+
+/**
+ * DELIVERY_SOURCE_LABELS relabel a source by how the chosen row's box gets
+ * it (the probe's source_deliveries), keyed "<source>:<delivery>": on a
+ * hosted row the live source is an uploaded copy, never the folder itself,
+ * so its label must not say "live" (lane UX, item H5).
+ */
+const DELIVERY_SOURCE_LABELS: Record<string, string> = {
+  "live:sync": "Upload a copy of the project (changes come back as a diff)",
+  "live:upload_snapshot": "Upload a copy of the project (changes come back as a diff)",
+  // One source, "Clone a remote URL", whether the box or this machine
+  // clones it (decision SBXD-5; the clone location picker says which).
+  "clone-remote:remote_clone": "Clone a remote URL",
+};
+
+/**
+ * sandboxSourceLabel is a workspace source's label for the chosen row: the
+ * row's delivery label when the row says how the source reaches its box,
+ * else the source's own label. Never branches on the row id.
+ */
+export function sandboxSourceLabel(source: string, row?: { source_deliveries?: Record<string, string> }): string {
+  const delivery = row?.source_deliveries?.[source];
+  if (delivery) {
+    const byDelivery = DELIVERY_SOURCE_LABELS[`${source}:${delivery}`];
+    if (byDelivery) return byDelivery;
+  }
+  return SANDBOX_SOURCE_LABELS[source] ?? source;
+}
+
+/**
+ * hostedToolBlock is the refusal a hosted launch of `tool` would meet
+ * because the tool cannot get into the box (no template set, and no install
+ * way that can work there), for the row the Isolation picker resolves to:
+ * that row's tool_notices line, else null. The daemon decides the line with
+ * the launch's own rule (sandboxremote.PlanToolInstall); this only says it
+ * before Start.
+ */
+export function hostedToolBlock(
+  tool: string,
+  probe: SandboxAvailability | null,
+  sandboxOn: boolean,
+  choice: string,
+): HostedKeyBlock | null {
+  if (!tool) return null;
+  const row = chosenBackendRow(probe, sandboxOn, choice);
+  if (!row || row.location !== "remote") return null;
+  const n = row.tool_notices?.[tool];
+  return n && n.message ? { ...n, backend: row.id, blocking: true } : null;
+}
+
+/** HOSTED_TOOL_PLACE is where a hosted tool notice is fixed when the daemon
+ *  names no place (one that predates the field): Hosted sandboxes, where
+ *  each provider's template is typed. */
+export const HOSTED_TOOL_PLACE: Place = "terminal_sandbox_hosted";
+
+/**
+ * noticePlace is the settings place a pre-Start notice links to: the place
+ * the daemon named when this dashboard knows it, else `fallback`. A place
+ * this dashboard does not carry is never guessed into a path.
+ */
+export function noticePlace(n: { place?: string } | null | undefined, fallback: Place): Place {
+  const p = n?.place;
+  return p && Object.prototype.hasOwnProperty.call(PLACES, p) ? (p as Place) : fallback;
+}
+
+/** hostedToolPlace is where hostedToolBlock's notice links: the daemon's
+ *  place, else Hosted sandboxes. */
+export function hostedToolPlace(block: { place?: string } | null | undefined): Place {
+  return noticePlace(block, HOSTED_TOOL_PLACE);
+}
+
+/**
+ * hostedHookLine is what the dialog says before Start about guard in the
+ * chosen hosted row's box for `tool` (lane HOOKS, SBXD-6): the row's
+ * hook_notices line for the tool, as served (whether guard checks the
+ * agent's commands there, and when it does not, the no-hook disclosure).
+ * Null for a local row, none chosen, no tool, or a daemon that sends none.
+ */
+export function hostedHookLine(
+  tool: string,
+  row: { location: string; hook_notices?: Record<string, SandboxHookNotice> } | undefined,
+): SandboxHookNotice | null {
+  if (!tool || !row || row.location !== "remote") return null;
+  const n = row.hook_notices?.[tool];
+  return n && n.message ? n : null;
+}
+
+/**
+ * hostedNetworkNotes are the chosen hosted row's sentences about its box's
+ * own network at the configured tier (on a hosted internet tier: the
+ * provider's network, the cloud metadata address not known to be refused),
+ * shown as served before Start. Empty for a local row or none chosen.
+ */
+export function hostedNetworkNotes(row: { location: string; network_notes?: string[] } | undefined): string[] {
+  if (!row || row.location !== "remote") return [];
+  return row.network_notes ?? [];
+}
+
+/**
+ * hostedUploadNeedsRepo reports whether the chosen row uploads `source` as
+ * a copy of a git repository's files (delivery "sync", or a vendor row's
+ * "upload_snapshot"): then the folder
+ * must be a repository's own top level, which the dialog checks before
+ * Start (lane UX, item H8).
+ */
+export function hostedUploadNeedsRepo(row: { source_deliveries?: Record<string, string> } | undefined, source: string): boolean {
+  const d = row?.source_deliveries?.[source || "live"];
+  return d === "sync" || d === "upload_snapshot";
+}
+
+/** GET /api/terminal/sandbox/hosted/workspace's answer for one folder. */
+export type HostedWorkspaceReply = {
+  dir: string;
+  resolved?: string;
+  ok: boolean;
+  code?: string;
+  message?: string;
+  technical?: string;
+};
+
+/**
+ * What the chosen folder's upload meets, said before Start: a refusal
+ * (`blocking`: the folder cannot be uploaded) or a note that blocks nothing
+ * (a folder that is not a git repository, uploaded through Observer's own
+ * listing, decision SBXD-8), like the key line's advisory.
+ */
+export type HostedWorkspaceBlock = { code: string; message: string; technical?: string; blocking: boolean };
+
+/**
+ * hostedWorkspaceBlock is what a hosted launch meets on the chosen folder:
+ * the refusal when it cannot be uploaded (inside a git repository, the home
+ * folder, or not a repository while uploading such folders is off), or the
+ * daemon's non-blocking note when it is uploaded although it is not a
+ * repository: the daemon's answer for that folder when the chosen row
+ * uploads the chosen source, else null. A reply for another folder, or none
+ * (an older daemon, a failed read), blocks nothing: the launch still checks.
+ */
+export function hostedWorkspaceBlock(
+  row: { source_deliveries?: Record<string, string> } | undefined,
+  source: string,
+  folder: string,
+  reply: HostedWorkspaceReply | null,
+): HostedWorkspaceBlock | null {
+  if (!reply || !folder || reply.dir !== folder || !hostedUploadNeedsRepo(row, source)) return null;
+  if (!reply.message) return null;
+  return { code: reply.code ?? "", message: reply.message, technical: reply.technical, blocking: !reply.ok };
 }

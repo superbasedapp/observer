@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/attachrule"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -57,6 +58,16 @@ type enrolSequence struct {
 	cfgEdit        orgClientCfgEdit
 	cfgEditErr     error
 	pushEnabledNow bool
+	// drain is what was sent to (or left for) the previous organization
+	// before the switch (R3-78); dropRequested is the person's --drop-unsent
+	// / "Switch anyway".
+	drain         orgclient.DrainReport
+	dropRequested bool
+}
+
+// drainNote renders the switch drain for both surfaces (orgenrol_drain.go).
+func (s enrolSequence) drainNote() (string, bool) {
+	return drainNote(s.drain, false, s.dropRequested)
 }
 
 // cfgEditNote renders the existing-block edit for both surfaces: the line to
@@ -78,18 +89,31 @@ func (s enrolSequence) cfgEditNote() (text string, warn bool) {
 // (the CLI shows it, the dashboard classifies it); nothing after the exchange
 // can fail the enrolment, because the code is spent by then. configPath is
 // the explicit --config (empty = ~/.observer/config.toml).
-func runEnrolSequence(ctx context.Context, b orgBundle, configPath, orgURL, token string, writeBlock bool) (enrolSequence, error) {
-	enr, offer, err := b.client.Enroll(ctx, orgURL, token)
+//
+// R3-78: when this machine is enrolled with a different organization, the
+// rows still waiting for it are sent there first; when they cannot be, the
+// enrolment is refused (*orgclient.UnsentRowsError, the code unspent) unless
+// dropUnsent is set.
+func runEnrolSequence(ctx context.Context, b orgBundle, configPath, orgURL, token string, writeBlock, dropUnsent bool) (enrolSequence, error) {
+	// M8.6: a machine company config locks to one organization enrols
+	// nowhere else (attachrule row 1); nothing is drained or spent.
+	if err := gateManagedAttach(ctx, b, attachrule.IntentAttach, orgURL); err != nil {
+		return enrolSequence{}, err
+	}
+	enr, offer, drain, err := b.client.EnrollWithOptions(ctx, orgURL, token,
+		orgclient.EnrollOptions{Drain: switchDrainOptions(&b.cfg, dropUnsent), Attach: b.attach})
 	if err != nil {
 		return enrolSequence{}, err
 	}
 	seq := enrolSequence{
-		enr:         enr,
-		offer:       offer,
-		managed:     enr.IsManaged(),
-		pushEnabled: b.cfg.OrgClient.Enabled,
+		enr:           enr,
+		offer:         offer,
+		managed:       enr.IsManaged(),
+		pushEnabled:   b.cfg.OrgClient.Enabled,
+		drain:         drain,
+		dropRequested: dropUnsent,
 	}
-	seq.posture = enrolShareDefaultFor(seq.managed)
+	seq.posture = enrolShareDefaultOf(seq.managed, offerOwnerManaged(offer, enr))
 	// Arc 4 P6a: a managed enrolment binds this machine (plan section 9).
 	// The fingerprint is computed and sent ONLY for a managed node; an
 	// individual node never emits a machine identity. Best effort: never
@@ -108,7 +132,7 @@ func runEnrolSequence(ctx context.Context, b orgBundle, configPath, orgURL, toke
 	// rewritten (only its enabled / org_server_url lines, below).
 	seq.cfgPath, seq.cfgPathErr = resolveConfigPath(configPath)
 	if seq.cfgPathErr == nil {
-		seq.blockAdded, seq.blockErr = ensureOrgClientBlock(seq.cfgPath, enr.OrgServerURL, seq.managed)
+		seq.blockAdded, seq.blockErr = ensureOrgClientBlockShare(seq.cfgPath, enr.OrgServerURL, seq.posture)
 		// T-728: an EXISTING block (a node that left, or re-enrols) gets its
 		// push switch back on and the address of the server just joined, as
 		// one-line edits (orgClientCfgRows); its share and scope settings
@@ -301,4 +325,15 @@ func enrolWireBinaryFor(out io.Writer, dbPath string) string {
 		fmt.Fprintln(out, "  "+note)
 	}
 	return bin
+}
+
+// offerOwnerManaged reports whether the enrolment just made is with the
+// developer's own organization (orgcontract.EnrollResponse.OwnerManaged),
+// from the grant offer when there is one, else from the enrolment row the
+// enrol response filled in memory.
+func offerOwnerManaged(offer *orgclient.GrantOffer, enr *store.Enrolment) bool {
+	if offer != nil && offer.OwnerManaged {
+		return true
+	}
+	return enr != nil && enr.OwnerManaged
 }

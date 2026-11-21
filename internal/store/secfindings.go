@@ -13,9 +13,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
+	"github.com/marmutapp/superbased-observer/internal/seclang"
 )
 
 // The security pillar's findings store (agent migration 177; security
@@ -1044,18 +1046,358 @@ func (s *Store) DropSecFindingCommit(ctx context.Context, c SecFindingCommit, re
 	return closed, nil
 }
 
-// SecFindingFilter selects findings for ListSecFindings.
+// SecFindingFilter selects findings for ListSecFindings (and
+// CountSecFindings, SecFindingFacets and SecFindingGroups, which share its
+// WHERE clause, secFindingWhere). Every set field narrows the selection
+// (AND); a list keeps a finding whose column is any of its values (OR).
+// Each list is capped at SecFilterMaxValues values (empty and repeated
+// values dropped, later ones ignored), and every value is a bound
+// parameter.
 type SecFindingFilter struct {
+	// ID, when set, selects that one finding (the Code security page's
+	// finding drawer).
+	ID              string
 	ProjectRootHash string
+	// ProjectRootHashes keeps the findings of any of these projects (the
+	// Code security page's project filter; ANDed with ProjectRootHash when
+	// both are set).
+	ProjectRootHashes []string
 	// Status "" is every status.
 	Status secfinding.Status
-	Limit  int
+	// Severities, Categories, Drivers and Baselines keep a finding whose
+	// severity, category, driver or baseline is one of the values.
+	Severities []string
+	Categories []string
+	Drivers    []string
+	Baselines  []string
+	// Ecosystems keeps a dependency finding (vulnerable_dependency) whose
+	// evidence names one of these ecosystems: everything before its last
+	// space, the split secdepdetail.ParsePackage makes ("GitHub Actions"
+	// keeps its space). A finding of any other category is left out.
+	Ecosystems []string
+	// Languages keeps a finding of any category but vulnerable_dependency
+	// (a dependency finding has an ecosystem instead) whose path one of
+	// these seclang rows names; an id seclang does not know matches
+	// nothing.
+	Languages []string
+	// RuleID and RelPath keep the findings of exactly that rule id and
+	// that project-relative path (a group's drill-down).
+	RuleID  string
+	RelPath string
+	// Package keeps a dependency finding whose package coordinate (its
+	// evidence after the last space) is exactly "name@version".
+	Package string
+	// Query keeps a finding whose rule id, message or path holds it, case
+	// insensitive (ASCII), at most SecFilterMaxQuery bytes; a dependency
+	// finding's evidence (its public package coordinate) is searched too.
+	// No other category's evidence is ever matched: a secret's redacted
+	// excerpt is not a search oracle.
+	Query string
+	Limit int
+	// Offset skips that many findings of the ordered list (the Code
+	// security page's paging); 0 starts at the first.
+	Offset int
+	// Sort orders the list by one whitelisted column (SecSortSeverity,
+	// SecSortLastSeen, SecSortFirstSeen), Desc descending, each tie broken
+	// by last_seen DESC, id. "" keeps the default order, last_seen DESC, id
+	// (Desc ignored), so a caller that sets neither sees no change.
+	Sort string
+	Desc bool
+}
+
+// The SecFindingFilter.Sort values.
+const (
+	SecSortSeverity  = "severity"
+	SecSortLastSeen  = "last_seen"
+	SecSortFirstSeen = "first_seen"
+)
+
+// secSortColumns is the sort whitelist: a Sort value names one of these
+// columns, nothing else reaches the ORDER BY.
+var secSortColumns = map[string]string{
+	SecSortLastSeen:  "last_seen",
+	SecSortFirstSeen: "first_seen",
+}
+
+// The SecFindingFilter caps.
+const (
+	// SecFilterMaxValues caps each list of a SecFindingFilter; values past
+	// it are ignored.
+	SecFilterMaxValues = 64
+	// SecFilterMaxQuery caps SecFindingFilter.Query, in bytes; the rest is
+	// ignored.
+	SecFilterMaxQuery = 256
+)
+
+// The SQL that splits a dependency finding's evidence ("<ecosystem>
+// <name>@<version>") at its last space, as secdepdetail.ParsePackage does:
+// rtrim strips every trailing character that is not a space, which leaves
+// the evidence up to and including its last space (secDepPrefixSQL); the
+// ecosystem is that prefix without the space, the package the rest. They
+// read evidence_redacted and so are used only under category =
+// 'vulnerable_dependency'.
+const (
+	secDepPrefixSQL    = `rtrim(evidence_redacted, replace(evidence_redacted, ' ', ''))`
+	secDepEcosystemSQL = `substr(evidence_redacted, 1, length(` + secDepPrefixSQL + `) - 1)`
+	secDepPackageSQL   = `substr(evidence_redacted, length(` + secDepPrefixSQL + `) + 1)`
+)
+
+// secFilterColumns are the filter's plain list columns: a value list keeps
+// a finding whose column is one of its values.
+var secFilterColumns = []struct {
+	column string
+	values func(SecFindingFilter) []string
+}{
+	{"project_root_hash", func(f SecFindingFilter) []string { return f.ProjectRootHashes }},
+	{"severity", func(f SecFindingFilter) []string { return f.Severities }},
+	{"category", func(f SecFindingFilter) []string { return f.Categories }},
+	{"driver", func(f SecFindingFilter) []string { return f.Drivers }},
+	{"baseline", func(f SecFindingFilter) []string { return f.Baselines }},
+}
+
+// secFilterList drops empty and repeated values and caps the list at
+// SecFilterMaxValues.
+func secFilterList(vals []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range vals {
+		if v == "" || seen[v] {
+			continue
+		}
+		if len(out) == SecFilterMaxValues {
+			break
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// secPlaceholders is "?,?,…" for n values, and the values as arguments.
+func secPlaceholders(vals []string) (string, []any) {
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		args[i] = v
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", len(vals)), ","), args
+}
+
+// secLikeEscape escapes LIKE's wildcards and its escape character (the
+// patterns use ESCAPE '\').
+func secLikeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// secLanguagePredicate is the SQL that a finding's path is in one seclang
+// language (any of its suffixes, or its base name exactly, under either
+// separator), with its arguments; ok is false for an unknown id. The
+// table's own rules (seclang TestRowsDoNotOverlap) make it select exactly
+// the paths seclang.Language names id.
+func secLanguagePredicate(id string) (string, []any, bool) {
+	suffixes, names, ok := seclang.Patterns(id)
+	if !ok {
+		return "", nil, false
+	}
+	var parts []string
+	var args []any
+	for _, s := range suffixes {
+		parts = append(parts, `lower(rel_path) LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+secLikeEscape(s))
+	}
+	for _, n := range names {
+		parts = append(parts, `lower(rel_path) = ?`, `lower(rel_path) LIKE ? ESCAPE '\'`, `lower(rel_path) LIKE ? ESCAPE '\'`)
+		args = append(args, n, "%/"+secLikeEscape(n), `%\\`+secLikeEscape(n))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args, true
+}
+
+// secLanguageCond is the Languages filter: a non-dependency finding whose
+// path is in one of the languages; no known id matches nothing.
+func secLanguageCond(ids []string) (string, []any) {
+	var parts []string
+	args := []any{string(policy.FindingVulnerableDependency)}
+	for _, id := range ids {
+		if p, a, ok := secLanguagePredicate(id); ok {
+			parts = append(parts, p)
+			args = append(args, a...)
+		}
+	}
+	if len(parts) == 0 {
+		return "1 = 0", nil
+	}
+	return "(category <> ? AND (" + strings.Join(parts, " OR ") + "))", args
+}
+
+// secQueryPattern is Query as a LIKE pattern ("" when there is none):
+// capped, ASCII-folded the way SQLite's lower() folds, wildcards escaped.
+func secQueryPattern(q string) string {
+	q = strings.TrimSpace(q)
+	if len(q) > SecFilterMaxQuery {
+		n := SecFilterMaxQuery
+		for n > 0 && !utf8.RuneStart(q[n]) {
+			n--
+		}
+		q = q[:n]
+	}
+	if q == "" {
+		return ""
+	}
+	return "%" + secLikeEscape(seclang.Fold(q)) + "%"
+}
+
+// secFindingConds is the filter's conditions (each one AND) and their
+// arguments, in order: the one builder every findings read shares.
+func secFindingConds(f SecFindingFilter) ([]string, []any) {
+	var where []string
+	var args []any
+	add := func(cond string, a ...any) {
+		where = append(where, cond)
+		args = append(args, a...)
+	}
+	dep := string(policy.FindingVulnerableDependency)
+	if f.ID != "" {
+		add("id = ?", f.ID)
+	}
+	if f.ProjectRootHash != "" {
+		add("project_root_hash = ?", f.ProjectRootHash)
+	}
+	if f.Status != "" {
+		add("status = ?", string(f.Status))
+	}
+	for _, c := range secFilterColumns {
+		if vals := secFilterList(c.values(f)); len(vals) > 0 {
+			ph, a := secPlaceholders(vals)
+			add(c.column+" IN ("+ph+")", a...)
+		}
+	}
+	if ecos := secFilterList(f.Ecosystems); len(ecos) > 0 {
+		ph, a := secPlaceholders(ecos)
+		add("(category = ? AND "+secDepEcosystemSQL+" IN ("+ph+"))", append([]any{dep}, a...)...)
+	}
+	if langs := secFilterList(f.Languages); len(langs) > 0 {
+		cond, a := secLanguageCond(langs)
+		add(cond, a...)
+	}
+	if f.RuleID != "" {
+		add("rule_id = ?", f.RuleID)
+	}
+	if f.RelPath != "" {
+		add("rel_path = ?", f.RelPath)
+	}
+	if f.Package != "" {
+		add("(category = ? AND "+secDepPackageSQL+" = ?)", dep, f.Package)
+	}
+	if p := secQueryPattern(f.Query); p != "" {
+		add(`(lower(rule_id) LIKE ? ESCAPE '\' OR lower(message) LIKE ? ESCAPE '\' OR lower(rel_path) LIKE ? ESCAPE '\'`+
+			` OR (category = ? AND lower(evidence_redacted) LIKE ? ESCAPE '\'))`, p, p, p, dep, p)
+	}
+	return where, args
+}
+
+// secFindingWhere is the WHERE clause (with its leading " WHERE ", or "")
+// and arguments every findings read shares (ListSecFindings,
+// CountSecFindings, SecFindingFacets, SecFindingGroups); extra conditions
+// (fixed literals with their arguments) are ANDed after the filter's.
+func secFindingWhere(f SecFindingFilter, extra ...secCond) (string, []any) {
+	where, args := secFindingConds(f)
+	for _, e := range extra {
+		where = append(where, e.sql)
+		args = append(args, e.args...)
+	}
+	if len(where) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(where, " AND "), args
+}
+
+// secCond is one extra fixed condition of secFindingWhere.
+type secCond struct {
+	sql  string
+	args []any
+}
+
+// secFindingOrder is the ORDER BY clause and its arguments. The severity
+// rank is a CASE built from policy.FindingSeverities() (weakest first), its
+// labels bound as parameters; an unknown severity ranks below info.
+func secFindingOrder(f SecFindingFilter) (string, []any) {
+	dir := " ASC"
+	if f.Desc {
+		dir = " DESC"
+	}
+	if f.Sort == SecSortSeverity {
+		var b strings.Builder
+		var args []any
+		b.WriteString(" ORDER BY CASE severity")
+		for i, sev := range policy.FindingSeverities() {
+			b.WriteString(" WHEN ? THEN " + fmt.Sprint(i))
+			args = append(args, string(sev))
+		}
+		b.WriteString(" ELSE -1 END" + dir + ", last_seen DESC, id")
+		return b.String(), args
+	}
+	if col, ok := secSortColumns[f.Sort]; ok {
+		return " ORDER BY " + col + dir + ", last_seen DESC, id", nil
+	}
+	return " ORDER BY last_seen DESC, id", nil
+}
+
+// CountSecFindings returns how many findings f selects (Limit, Offset and
+// Sort ignored): the total the Code security page pages through.
+func (s *Store) CountSecFindings(ctx context.Context, f SecFindingFilter) (int, error) {
+	where, args := secFindingWhere(f)
+	var n int
+	//nolint:gosec // G202: the clauses are fixed literals; every value is a bound parameter.
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sec_findings`+where, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store.CountSecFindings: %w", err)
+	}
+	return n, nil
+}
+
+// maxSecDependencyEvidence bounds one SecDependencyEvidence call.
+const maxSecDependencyEvidence = 1000
+
+// SecDependencyEvidence returns the redacted evidence of each listed
+// finding that is a dependency finding (category vulnerable_dependency):
+// "<ecosystem> <name>@<version>", a public package coordinate the Code
+// security page shows. The evidence of every other category (a secret's
+// redacted excerpt above all) never leaves through here: the category is
+// part of the query, not a caller's filter.
+func (s *Store) SecDependencyEvidence(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	if len(ids) > maxSecDependencyEvidence {
+		return nil, errors.New("store.SecDependencyEvidence: too many ids")
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store.SecDependencyEvidence: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, evidence_redacted FROM sec_findings
+		WHERE category = ? AND id IN (SELECT value FROM json_each(?))`, string(policy.FindingVulnerableDependency), string(b))
+	if err != nil {
+		return nil, fmt.Errorf("store.SecDependencyEvidence: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, ev string
+		if err := rows.Scan(&id, &ev); err != nil {
+			return nil, fmt.Errorf("store.SecDependencyEvidence: %w", err)
+		}
+		out[id] = ev
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.SecDependencyEvidence: %w", err)
+	}
+	return out, nil
 }
 
 // ListSecFindings returns findings newest first (at most Limit, default
-// 200, at most 1000), with the full lineage the SARIF export writes (the
-// prompt action, tool version, surface, attribution method and confidence
-// and the taint flag, lane sec-g5).
+// 200, at most 1000; Offset, Sort and Desc page and order them), with the
+// full lineage the SARIF export writes (the prompt action, tool version,
+// surface, attribution method and confidence and the taint flag, lane
+// sec-g5).
 func (s *Store) ListSecFindings(ctx context.Context, f SecFindingFilter) ([]secfinding.Finding, error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -1064,25 +1406,21 @@ func (s *Store) ListSecFindings(ctx context.Context, f SecFindingFilter) ([]secf
 	if limit > 1000 {
 		limit = 1000
 	}
-	var where []string
-	var args []any
-	if f.ProjectRootHash != "" {
-		where, args = append(where, "project_root_hash = ?"), append(args, f.ProjectRootHash)
-	}
-	if f.Status != "" {
-		where, args = append(where, "status = ?"), append(args, string(f.Status))
-	}
+	where, args := secFindingWhere(f)
+	//nolint:gosec // G202: the WHERE and ORDER BY clauses are fixed literals (secFindingWhere, secFindingOrder); every value is a bound parameter.
 	q := `SELECT id, project_root_hash, local_key, org_key, rel_path, start_line, end_line, rule_id, rule_pack,
 		driver, driver_version, category, severity, confidence, scope, evidence_hash, message, fix_hint, baseline,
 		attribution, COALESCE(session_id, ''), action_id, tool, model, status, first_seen, last_seen, closed_at, exception_id,
 		reached_remote_at, prompt_action_id, tool_version, surface, attribution_method, attribution_confidence, taint_at_write
-		FROM sec_findings`
-	if len(where) > 0 {
-		//nolint:gosec // G202: the clauses are fixed literals above; every value is a bound parameter.
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += " ORDER BY last_seen DESC, id LIMIT ?"
+		FROM sec_findings` + where
+	order, orderArgs := secFindingOrder(f)
+	args = append(args, orderArgs...)
+	q += order + " LIMIT ?"
 	args = append(args, limit)
+	if f.Offset > 0 {
+		q += " OFFSET ?"
+		args = append(args, f.Offset)
+	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListSecFindings: %w", err)
@@ -1357,6 +1695,10 @@ type SecRunSummary struct {
 	Outcome   string
 	Scope     string
 	Notes     []string
+	// Passes is the coverage's extra passes as recorded (secscan.Coverage
+	// Passes, a list of secscan.PassStatus), nil when it has none; the
+	// caller decodes it.
+	Passes json.RawMessage
 }
 
 // SecLatestRun returns the driver's newest run of any project; ok is false
@@ -1364,9 +1706,22 @@ type SecRunSummary struct {
 // scan and is skipped, through the same filter as SecLastScan
 // (secScanRanSQL; lane SEC-G2 audit finding 4).
 func (s *Store) SecLatestRun(ctx context.Context, driver string) (SecRunSummary, bool, error) {
+	return s.secLatestRun(ctx, driver, "")
+}
+
+// SecLatestRunWithPasses is SecLatestRun limited to runs whose coverage
+// recorded an extra pass (secscan.Coverage.Passes), so a surface can show
+// the newest pass status beside the newest run (the Opengrep taint pass
+// runs on full scans only, and a later diff run records none).
+func (s *Store) SecLatestRunWithPasses(ctx context.Context, driver string) (SecRunSummary, bool, error) {
+	return s.secLatestRun(ctx, driver, ` AND json_valid(coverage_json) AND json_type(coverage_json, '$.Passes') = 'array'`)
+}
+
+func (s *Store) secLatestRun(ctx context.Context, driver, filter string) (SecRunSummary, bool, error) {
 	var started, outcome, scope, raw string
-	err := s.db.QueryRowContext(ctx, `SELECT started_at, outcome, scope, coverage_json FROM sec_scan_runs WHERE driver = ?`+secScanRanSQL+`
-		ORDER BY started_at DESC, id DESC LIMIT 1`, driver).Scan(&started, &outcome, &scope, &raw)
+	//nolint:gosec // G202: only fixed clauses are concatenated; the driver is a bound parameter.
+	err := s.db.QueryRowContext(ctx, `SELECT started_at, outcome, scope, coverage_json FROM sec_scan_runs WHERE driver = ?`+secScanRanSQL+filter+
+		` ORDER BY started_at DESC, id DESC LIMIT 1`, driver).Scan(&started, &outcome, &scope, &raw)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return SecRunSummary{}, false, nil
@@ -1378,10 +1733,11 @@ func (s *Store) SecLatestRun(ctx context.Context, driver string) (SecRunSummary,
 		out.StartedAt = t
 	}
 	var cov struct {
-		Notes []string `json:"Notes"`
+		Notes  []string        `json:"Notes"`
+		Passes json.RawMessage `json:"Passes"`
 	}
 	if raw != "" && json.Unmarshal([]byte(raw), &cov) == nil {
-		out.Notes = cov.Notes
+		out.Notes, out.Passes = cov.Notes, cov.Passes
 	}
 	return out, true, nil
 }
@@ -1760,4 +2116,187 @@ func (s *Store) SecFindingEvidence(ctx context.Context, id string) (evidence, se
 		return "", "", false, fmt.Errorf("store.SecFindingEvidence: %w", err)
 	}
 	return evidence, sessionID, true, nil
+}
+
+// The Code security page's read-side joins (2026-11-02): the project each
+// finding's root hash names, the newest scan runs per project and a
+// finding's commit and lifecycle history. Read-only.
+// SecProjectRef is one stored project as the Code security page names it:
+// the projects row a root hash points at.
+type SecProjectRef struct {
+	ID            int64
+	Root          string
+	Name          string
+	LastSessionAt time.Time
+}
+
+// SecProjectRefs returns every project whose root is a path, in id order.
+// The page keys a row by secposture.ProjectRootHash(Root), the same hash
+// sec_findings and sec_scan_runs carry, so the hash is computed by the
+// caller (store does not import the posture package).
+func (s *Store) SecProjectRefs(ctx context.Context) ([]SecProjectRef, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, root_path, COALESCE(name, ''), COALESCE(last_session_at, '')
+		FROM projects WHERE root_path <> '' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("store.SecProjectRefs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SecProjectRef
+	for rows.Next() {
+		var r SecProjectRef
+		var last string
+		if err := rows.Scan(&r.ID, &r.Root, &r.Name, &last); err != nil {
+			return nil, fmt.Errorf("store.SecProjectRefs: %w", err)
+		}
+		if !projectRootIsPath(r.Root) {
+			continue
+		}
+		r.LastSessionAt, _ = time.Parse(time.RFC3339Nano, last)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SecDriverRun is one driver's newest run on one project.
+type SecDriverRun struct {
+	ProjectRootHash string
+	Driver          string
+	Scope           string
+	Outcome         string
+	Reason          string
+	Findings        int
+	StartedAt       time.Time
+	Duration        time.Duration
+}
+
+// SecLatestDriverRuns returns, per project and driver, the newest scan run
+// of the working tree: the same runs SecLastScan counts (no baseline
+// rescan, no diff run, no run that never executed). An empty rootHash
+// returns every project's.
+func (s *Store) SecLatestDriverRuns(ctx context.Context, rootHash string) ([]SecDriverRun, error) {
+	inner := `SELECT MAX(id) FROM sec_scan_runs WHERE driver NOT LIKE ? AND driver NOT LIKE ?` + secScanRanSQL
+	args := []any{SecBaselineDriverPrefix + "%", SecDiffDriverPrefix + "%"}
+	if rootHash != "" {
+		inner += ` AND project_root_hash = ?`
+		args = append(args, rootHash)
+	}
+	inner += ` GROUP BY project_root_hash, driver`
+	//nolint:gosec // G202: the clauses are fixed literals; every value is a bound parameter.
+	rows, err := s.db.QueryContext(ctx, `SELECT project_root_hash, driver, scope, outcome, findings, started_at, duration_ms, coverage_json
+		FROM sec_scan_runs WHERE id IN (`+inner+`) ORDER BY project_root_hash, driver`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.SecLatestDriverRuns: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SecDriverRun
+	for rows.Next() {
+		var r SecDriverRun
+		var started, cov string
+		var ms int64
+		if err := rows.Scan(&r.ProjectRootHash, &r.Driver, &r.Scope, &r.Outcome, &r.Findings, &started, &ms, &cov); err != nil {
+			return nil, fmt.Errorf("store.SecLatestDriverRuns: %w", err)
+		}
+		r.StartedAt, _ = time.Parse(secTime, started)
+		r.Duration = time.Duration(ms) * time.Millisecond
+		r.Reason = secCoverageReason(cov)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// secCoverageReason reads a run's coverage reason under either spelling
+// (secscan.Coverage's "Reason" or a scheduled failure's "reason").
+func secCoverageReason(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var cov struct {
+		Reason  string `json:"Reason"`
+		Reason2 string `json:"reason"`
+	}
+	if json.Unmarshal([]byte(raw), &cov) != nil {
+		return ""
+	}
+	if cov.Reason != "" {
+		return cov.Reason
+	}
+	return cov.Reason2
+}
+
+// SecFindingCommitRow is one commit a finding is held by.
+type SecFindingCommitRow struct {
+	SHA      string
+	LastSeen time.Time
+	Remotes  []string
+}
+
+// SecFindingCommits returns the commits holding a finding, newest first.
+func (s *Store) SecFindingCommits(ctx context.Context, findingID string) ([]SecFindingCommitRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT commit_sha, last_seen, remotes_json FROM sec_finding_commits
+		WHERE finding_id = ? ORDER BY last_seen DESC, commit_sha`, findingID)
+	if err != nil {
+		return nil, fmt.Errorf("store.SecFindingCommits: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SecFindingCommitRow
+	for rows.Next() {
+		var r SecFindingCommitRow
+		var last, remotes string
+		if err := rows.Scan(&r.SHA, &last, &remotes); err != nil {
+			return nil, fmt.Errorf("store.SecFindingCommits: %w", err)
+		}
+		r.LastSeen, _ = time.Parse(secTime, last)
+		if remotes != "" {
+			_ = json.Unmarshal([]byte(remotes), &r.Remotes)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SecFindingEvent is one lifecycle event of a finding.
+type SecFindingEvent struct {
+	Kind   string
+	Detail string
+	At     time.Time
+}
+
+// SecFindingEvents returns a finding's newest lifecycle events, newest
+// first, at most limit (default 50).
+func (s *Store) SecFindingEvents(ctx context.Context, findingID string, limit int) ([]SecFindingEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, detail, at FROM sec_finding_events
+		WHERE finding_id = ? ORDER BY id DESC LIMIT ?`, findingID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store.SecFindingEvents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SecFindingEvent
+	for rows.Next() {
+		var e SecFindingEvent
+		var at string
+		if err := rows.Scan(&e.Kind, &e.Detail, &at); err != nil {
+			return nil, fmt.Errorf("store.SecFindingEvents: %w", err)
+		}
+		e.At, _ = time.Parse(secTime, at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SecSessionHasCategory reports whether the session has any finding of the
+// category, open or closed (security coverage gaps plan item 6: a session
+// with a test_tampering finding never verifies a fix).
+func (s *Store) SecSessionHasCategory(ctx context.Context, sessionID string, category policy.FindingCategory) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sec_findings WHERE session_id = ? AND category = ?`,
+		sessionID, string(category)).Scan(&n); err != nil {
+		return false, fmt.Errorf("store.SecSessionHasCategory: %w", err)
+	}
+	return n > 0, nil
 }

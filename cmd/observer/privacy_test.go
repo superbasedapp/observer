@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/netlanes"
 )
 
 // errPrivacyTestBoom is a sentinel used to assert config-load failures
@@ -288,7 +289,7 @@ func TestBuildPrivacyEgressDefault(t *testing.T) {
 		"observer summarize":                   false,
 		"aggregate-share rail":                 false,
 		"OTel exporter":                        false,
-		"generalized observability (Plane A)":  false,
+		"AI Apps (app observability)":          false,
 		"email / digest alerts":                false,
 		"remote-access notify":                 false,
 		"TLS pre-warm":                         true,
@@ -698,7 +699,7 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 		{
 			name:    "observability enabled",
 			mutate:  func(c *config.Config) { c.Observability.Enabled = true },
-			rowName: "generalized observability (Plane A)",
+			rowName: "AI Apps (app observability)",
 		},
 		{
 			name:    "email enabled",
@@ -834,7 +835,10 @@ func TestPrivacyCmdTextOutput(t *testing.T) {
 		"rolling conversation summarization",
 		"pricing feed",
 		"routing upstream probe",
-		"Two automatic calls run by default",
+		"Three automatic calls run by default",
+		"Every network lane",
+		"Package list downloads",
+		"Connect: personal dashboard or team",
 		"TLS pre-warm HEAD requests",
 		privacyDocsURL,
 	} {
@@ -863,6 +867,37 @@ func TestPrivacyCmdLongTextQualifiesPhoneHomeClaim(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(cmd.Long), "no telemetry") {
 		t.Errorf("Long help still makes a \"no telemetry\" claim: %q", cmd.Long)
+	}
+}
+
+// TestPrivacyCmdMarkdown pins --markdown: only the lane table, one row per
+// internal/netlanes lane, and it refuses --json alongside.
+func TestPrivacyCmdMarkdown(t *testing.T) {
+	cfg := config.Default()
+	deps := privacyDeps{loadConfig: func() (config.Config, error) { return cfg, nil }}
+	cmd := newPrivacyCmdWith(deps)
+	cmd.SetArgs([]string{"--markdown"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.String() != netlanes.Markdown() {
+		t.Fatalf("--markdown printed more than the lane table:\n%s", out.String())
+	}
+	if !strings.HasPrefix(out.String(), "| Lane | What is sent |") {
+		t.Fatalf("not a Markdown table: %q", out.String())
+	}
+	both := newPrivacyCmdWith(deps)
+	both.SetArgs([]string{"--markdown", "--json"})
+	both.SetOut(&out)
+	both.SetErr(&out)
+	if err := both.Execute(); err == nil {
+		t.Fatal("--markdown with --json was accepted")
+	}
+	if got := len(buildPrivacyReport(cfg).Lanes); got != len(netlanes.Lanes) {
+		t.Fatalf("report lanes = %d, want %d", got, len(netlanes.Lanes))
 	}
 }
 

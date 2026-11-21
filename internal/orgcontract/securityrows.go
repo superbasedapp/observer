@@ -389,7 +389,7 @@ var (
 	SecurityFindingCategories = []string{
 		"agent_config", "repo_trust", "secret", "malicious_package", "vulnerable_dependency",
 		"hallucinated_package", "code_vuln", "iac", "ci_config", "security_regression",
-		"test_tampering", "scope_drift", "git_bypass", "provenance",
+		"test_tampering", "scope_drift", "git_bypass", "provenance", "license",
 	}
 	SecurityFindingSeverities   = []string{"info", "low", "medium", "high", "critical"}
 	SecurityFindingConfidences  = []string{"low", "medium", "high"}

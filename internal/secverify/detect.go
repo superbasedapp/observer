@@ -88,6 +88,7 @@ var detectorTable = []Detector{
 	{ID: "repo_trust", Category: CategoryRepoTrust, Phase: "B", Run: repoTrustRun, NotRequired: "it sees only the added lines of a modified file, so a structured file it cannot parse makes it partial; agent_config reports the change itself"},
 	{ID: "ci_workflow", Category: CategoryCIConfig, Phase: "C", Run: detectCIWorkflow},
 	{ID: "test_tampering", Category: CategoryTestTampering, Phase: "C", Run: detectTestTampering},
+	{ID: "container_config", Category: CategoryIaC, Phase: "OS-1", Run: detectContainerConfig},
 	{ID: "install_index", Category: CategoryMalicious, Phase: "D1", Run: detectInstallIndex, NotRequired: "its data is supplied by the caller (a verified install index), so a run without one must not turn every default check unknown"},
 }
 

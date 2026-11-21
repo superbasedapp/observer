@@ -1,0 +1,38 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "items": "Inferred",
+    "items[]": "Inferred",
+    "items[].id": "Inferred",
+    "items[].kind": "Inferred",
+    "items[].llm_message": "Inferred",
+    "items[].llm_message.content": "Inferred",
+    "items[].llm_message.content[]": "Inferred",
+    "items[].llm_message.content[].text": "Inferred",
+    "items[].llm_message.content[].type": "Inferred",
+    "items[].llm_message.role": "Inferred",
+    "items[].source": "Inferred",
+    "items[].timestamp": "Inferred",
+    "next_page_id": "Inferred"
+  },
+  "fixture_sha256": "391ca2f80669b6128a475e48e3d4123a9c377a5d8bfdb6c83e4b9ceb63da9348",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/conversation/{conversation_id}/events/search",
+    "query": {
+      "limit": "100",
+      "sort_order": "TIMESTAMP",
+      "page_id": "syntheventpage0002"
+    },
+    "status": 200
+  },
+  "notes": "Synthesized for lane CA-A4. The reference (OH08) names the route, the page cursor and limit (max 100), event-kind and timestamp filters and timestamp ordering, and the event families (message, action, observation, LLM completion logs, token events, hook execution, errors). Member spellings (id, timestamp, source, kind, llm_message.content[], tool_name, tool_call_id, action, observation, action_id) follow the OpenHands software-agent-sdk event model and are Inferred. Timestamps are zoneless ISO 8601 as the SDK serializes them (read as UTC, Inferred). action and observation are open, tool-specific objects whose members are not documented; their sample members are deliberately left out of the ledger and the closed DTO never decodes them.",
+  "scenario": "last_page",
+  "sdk_or_spec_version_or_commit": "OpenHands Cloud V1 API as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids OH01 OH04 OH08) and the OpenHands software-agent-sdk event model; docs.openhands.dev was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.openhands.dev/openhands/usage/cloud/api-reference/events/search-events",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "openhands.cloud.events_search"
+}

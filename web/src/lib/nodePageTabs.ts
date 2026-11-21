@@ -49,14 +49,24 @@ export const SECURITY_RECENT_VERDICTS = 5;
 
 // ---------- Code security (security pillar plan sections 4.10 and 6.3) ----------
 
-// Findings is the Phase A shell; Exceptions and Baselines arrive with lane
-// sec-c3 (local exceptions and the baseline commit). The Trust, Scanners and
-// Evidence tabs join with the phases that build them.
-export const CODE_SECURITY_TABS = pageTabs(["findings", "exceptions", "baselines"] as const, {
-  findings: "Findings",
-  exceptions: "Exceptions",
-  baselines: "Baselines",
-});
+// The page redesign (docs/plans/code-security-page-redesign-plan-2026-11-06.md
+// section 4.1): Overview is the default ("am I safe, and what do I fix
+// first"); Projects, Coverage and Scanners hold what used to share the
+// Findings tab's one long scroll. Findings, Exceptions and Baselines keep
+// their ids, so an old `?tab=findings` link still opens the same tab. Seven
+// tabs is the limit (more would be a rail).
+export const CODE_SECURITY_TABS = pageTabs(
+  ["overview", "findings", "projects", "coverage", "scanners", "exceptions", "baselines"] as const,
+  {
+    overview: "Overview",
+    findings: "Findings",
+    projects: "Projects",
+    coverage: "Coverage",
+    scanners: "Scanners",
+    exceptions: "Exceptions",
+    baselines: "Baselines",
+  },
+);
 export type CodeSecurityTab = (typeof CODE_SECURITY_TABS.ids)[number];
 
 // ---------- Cost (plan P2; absorbs /report as Statement, §3 row 9) ----------
@@ -173,6 +183,12 @@ export const TERMINALS_LAUNCH_POLICY_HASH = "#launch-policy";
 export const TERMINALS_FOLDERS_HASH = "#folder-selection";
 /** The Remote systems card (the SSH profile editor), T-488. */
 export const TERMINALS_REMOTE_SYSTEMS_HASH = "#remote-systems";
+/** The sandbox card's Backends list (the enabled backends), which the New
+ *  Terminal Isolation picker links to for a backend that is not enabled. */
+export const TERMINALS_SANDBOX_BACKENDS_HASH = "#sandbox-backends";
+/** The Hosted sandboxes panel (each provider's template), which the New
+ *  Terminal dialog's hosted tool notice links to. */
+export const TERMINALS_HOSTED_SANDBOXES_HASH = "#hosted-sandboxes";
 
 /** Every in-page anchor on the Terminals Settings tab. The hash minus its
  *  "#" is the card's element id, which the page scrolls to. */
@@ -180,6 +196,8 @@ export const TERMINALS_SETTINGS_ANCHORS: readonly string[] = [
   TERMINALS_LAUNCH_POLICY_HASH,
   TERMINALS_FOLDERS_HASH,
   TERMINALS_REMOTE_SYSTEMS_HASH,
+  TERMINALS_SANDBOX_BACKENDS_HASH,
+  TERMINALS_HOSTED_SANDBOXES_HASH,
 ];
 
 /**

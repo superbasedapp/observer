@@ -128,10 +128,10 @@ func TestGuardApproveRevokeCmds(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := store.New(database)
-	if !st.ApprovalActiveFor(context.Background(), "R-110", "any-session", "", time.Now().UTC()) {
+	if !mustApprovalActive(t, st, context.Background(), "R-110", "any-session", "", time.Now().UTC()) {
 		t.Error("global grant not visible to ApprovalActiveFor")
 	}
-	if st.ApprovalActiveFor(context.Background(), "R-101", "any-session", "", time.Now().UTC()) {
+	if mustApprovalActive(t, st, context.Background(), "R-101", "any-session", "", time.Now().UTC()) {
 		t.Error("grant leaked to a different rule")
 	}
 	_ = database.Close()

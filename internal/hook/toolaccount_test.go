@@ -142,3 +142,49 @@ func TestClaudeAccountProviderSelectorsSuppress(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeHostSessionAccountWinsOverCachedLogin pins the account
+// precedence table (accountEvidenceRules): a host-authenticated Claude
+// Code session (the desktop app) is labelled with the host's account, never
+// with the CLI's cached ~/.claude.json login, which can be another account.
+func TestClaudeHostSessionAccountWinsOverCachedLogin(t *testing.T) {
+	root := t.TempDir()
+	cached := []byte(`{"oauthAccount":{"emailAddress":"cli-login@example.com","displayName":"CLI","accountUuid":"cli-uuid"},"accessToken":"secret-sentinel"}`)
+	body, _ := json.Marshal(map[string]string{"session_id": "s1", "tool_use_id": "call1", "transcript_path": filepath.Join(root, ".claude", "projects", "p", "s1.jsonl")})
+	read := func(string) ([]byte, error) { return cached, nil }
+	for _, tc := range []struct {
+		name                     string
+		env                      map[string]string
+		wantN                    int
+		wantEmail, wantID, wantS string
+	}{
+		{"no host: cached login", nil, 1, "cli-login@example.com", "cli-uuid", "claude_local_login_snapshot"},
+		{"host names the account", map[string]string{"CLAUDE_CODE_USER_EMAIL": "desktop@example.com", "CLAUDE_CODE_ACCOUNT_UUID": "desk-uuid", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH": "1"}, 1, "desktop@example.com", "desk-uuid", "claude_host_session_env"},
+		{"host names only the account id", map[string]string{"CLAUDE_CODE_ACCOUNT_UUID": "desk-uuid"}, 1, "", "desk-uuid", "claude_host_session_env"},
+		{"host signed in, no account named", map[string]string{"CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH": "1"}, 0, "", "", ""},
+		{"api key beats the host", map[string]string{"ANTHROPIC_API_KEY": "k", "CLAUDE_CODE_USER_EMAIL": "desktop@example.com"}, 0, "", "", ""},
+		{"blank host values are unset", map[string]string{"CLAUDE_CODE_USER_EMAIL": "  "}, 1, "cli-login@example.com", "cli-uuid", "claude_local_login_snapshot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(k string) string { return tc.env[k] }
+			got := localAccountObservations(models.ToolClaudeCode, "PreToolUse", body, read, getenv, time.Now())
+			if len(got) != tc.wantN {
+				t.Fatalf("got %d observations (%+v), want %d", len(got), got, tc.wantN)
+			}
+			if tc.wantN == 0 {
+				return
+			}
+			o := got[0]
+			if o.Email != tc.wantEmail || o.AccountID != tc.wantID || o.Source != tc.wantS {
+				t.Fatalf("observation = %+v, want email %q id %q source %q", o, tc.wantEmail, tc.wantID, tc.wantS)
+			}
+			if o.BindingID != "call1" || o.SessionID != "s1" || o.Role != "assistant" {
+				t.Fatalf("binding = %+v", o)
+			}
+			wire, _ := json.Marshal(got)
+			if strings.Contains(string(wire), "secret-sentinel") {
+				t.Fatal("credential escaped projection")
+			}
+		})
+	}
+}

@@ -476,6 +476,12 @@ type CrossOSProcRef struct {
 	StartedAt        time.Time
 	Source           AttributionSource
 	Confidence       Confidence
+	// SessionID, Tool and ProjectID are the run's CURRENT attribution ("" / 0
+	// when unattributed). The correlator reads them off env-token children to
+	// learn which session a host process runs (see crossOSIdentityRules).
+	SessionID string
+	Tool      string
+	ProjectID int64
 }
 
 // CrossOSAttribution assigns one process (by key) to a session, source
@@ -498,6 +504,15 @@ type CrossOSAttribution struct {
 // attributed at HIGH confidence (those are authoritative — bridge/inherited/
 // adapter_pid). Only the ROOT must match by cwd/time; children are reached by
 // inheritance regardless of their own cwd/start (§9.2.2).
+//
+// A host's env-token children outrank the time match (crossOSIdentityRules):
+// a Windows claude.exe does not carry the session-id env var itself, it SETS
+// it for every child, so the session its children name is the session it
+// runs. A long-lived or resumed claude.exe whose launch happens to sit next
+// to another session's start (a resume stub, a sub-agent whose own child
+// climbed to it) must not be pinned to that session. Such a host anchors to
+// the session its children name instead (identityAnchor), and a host whose
+// children name several sessions is never correlated at all.
 //
 // Pure: the store loads sessions+runs and applies the returned attributions.
 // window <= 0 uses CrossOSWindow; basenames nil uses DefaultCrossOSToolBasenames.
@@ -558,6 +573,22 @@ func CorrelateCrossOS(sessions []CrossOSSessionRef, runs []CrossOSProcRef, basen
 		anchors = climbed
 	}
 
+	// The children's env-token identity has the last word on every anchor: a
+	// time-matched anchor whose children name a different session (or several)
+	// is dropped, and a host whose children name exactly one session anchors
+	// to it whether or not a session started near its launch.
+	named := childSessions(runs)
+	for k, sess := range anchors {
+		if !identityAllows(named[k], sess.SessionID) {
+			delete(anchors, k)
+		}
+	}
+	for i := range runs {
+		if sess, ok := identityAnchor(&runs[i], named[runs[i].ProcessKey], basenames); ok {
+			anchors[runs[i].ProcessKey] = sess
+		}
+	}
+
 	out := make([]CrossOSAttribution, 0, len(anchors))
 	assigned := make(map[string]bool)
 	for anchorKey, sess := range anchors {
@@ -573,6 +604,9 @@ func CorrelateCrossOS(sessions []CrossOSSessionRef, runs []CrossOSProcRef, basen
 			if k != anchorKey {
 				if _, isOtherAnchor := anchors[k]; isOtherAnchor {
 					continue
+				}
+				if !identityAllows(named[k], sess.SessionID) {
+					continue // its children say it runs another session
 				}
 			}
 			r := byKey[k]
@@ -592,6 +626,85 @@ func CorrelateCrossOS(sessions []CrossOSSessionRef, runs []CrossOSProcRef, basen
 		}
 	}
 	return out
+}
+
+// childSessions maps each run's key to the distinct sessions its direct
+// env-token children are attributed to, in input order. Only a high-confidence
+// env token counts: it is the one identity a child inherits from the process
+// that started it rather than from a pid seed.
+func childSessions(runs []CrossOSProcRef) map[string][]CrossOSSessionRef {
+	named := make(map[string][]CrossOSSessionRef)
+	for i := range runs {
+		c := &runs[i]
+		if c.ParentProcessKey == "" || c.SessionID == "" ||
+			c.Source != AttrEnvToken || c.Confidence != ConfHigh {
+			continue
+		}
+		seen := false
+		for _, s := range named[c.ParentProcessKey] {
+			if s.SessionID == c.SessionID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			named[c.ParentProcessKey] = append(named[c.ParentProcessKey],
+				CrossOSSessionRef{SessionID: c.SessionID, Tool: c.Tool, ProjectID: c.ProjectID})
+		}
+	}
+	return named
+}
+
+// crossOSIdentityRule is one row of the table that decides whether a
+// correlation-derived session may land on a run, given the sessions the run's
+// env-token children name.
+type crossOSIdentityRule struct {
+	name    string
+	matches func(named []CrossOSSessionRef, sessionID string) bool
+	allow   bool
+}
+
+// crossOSIdentityRules is walked top-down, first match wins. A refusal also
+// stops the subtree walk at that run, so a host's other children are not
+// carried into the wrong session either.
+var crossOSIdentityRules = []crossOSIdentityRule{
+	{"no env-token children: the time match is the only evidence", func(named []CrossOSSessionRef, _ string) bool {
+		return len(named) == 0
+	}, true},
+	{"env-token children name this session", func(named []CrossOSSessionRef, sessionID string) bool {
+		return len(named) == 1 && named[0].SessionID == sessionID
+	}, true},
+	{"env-token children name another session: their direct identity outranks correlation", func(named []CrossOSSessionRef, _ string) bool {
+		return len(named) == 1
+	}, false},
+	{"env-token children name several sessions: a multi-session host is never correlated", func(named []CrossOSSessionRef, _ string) bool {
+		return len(named) > 1
+	}, false},
+}
+
+// identityAllows reports whether a correlation may attribute a run whose
+// env-token children name `named` to sessionID.
+func identityAllows(named []CrossOSSessionRef, sessionID string) bool {
+	for _, rule := range crossOSIdentityRules {
+		if rule.matches(named, sessionID) {
+			return rule.allow
+		}
+	}
+	return false
+}
+
+// identityAnchor reports the session a host anchors to from its children
+// alone: a run that is not already authoritative, whose env-token children
+// name exactly one session, and whose own basename is in that session's tool
+// set (so a plain shell between the tool and its children never anchors).
+func identityAnchor(r *CrossOSProcRef, named []CrossOSSessionRef, basenames map[string][]string) (CrossOSSessionRef, bool) {
+	if r.Confidence == ConfHigh || len(named) != 1 {
+		return CrossOSSessionRef{}, false
+	}
+	if !basenameMatches(r.ExeBasename, basenames[named[0].Tool]) {
+		return CrossOSSessionRef{}, false
+	}
+	return named[0], true
 }
 
 // bestSession picks the session a process anchors to. The process must run in

@@ -1,0 +1,13 @@
+{
+  "idempotency_key": "idem-1",
+  "tenant_id": "org_1",
+  "name": "Acme",
+  "owner_sub": "user_1",
+  "owner_email": "o@acme.test",
+  "entitlements": {
+    "version": 3,
+    "body": "Ym9keQ==",
+    "signature": "c2ln",
+    "key_id": "k1"
+  }
+}

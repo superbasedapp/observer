@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer/oidchttp"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -24,13 +26,15 @@ import (
 // carries an opaque transaction cookie across the AuthKit round-trip and comes
 // back holding the same __Host-sbci session cookie the dev-auth login mints.
 //
-// Two cookies, deliberately different:
+// Two cookies, with different lifetimes and purposes:
 //
-//   - the SESSION cookie is SameSite=Strict — it must never ride a cross-site
-//     request;
-//   - the TRANSACTION cookie is SameSite=Lax, because the AuthKit callback IS a
-//     cross-site top-level navigation and a Strict cookie would simply not be
-//     sent (adversarial-review finding 5). It is pre-auth, single-use,
+//   - the SESSION cookie is SameSite=Lax (operator ruling A7a,
+//     portalCookieSameSite in portal.go): it rides a cross-site top-level GET
+//     navigation, so every mutation is guarded by portalAuth's double-submit
+//     CSRF header and exact-Origin check, never by SameSite;
+//   - the TRANSACTION cookie is SameSite=Lax too, because the AuthKit callback
+//     IS a cross-site top-level navigation and a Strict cookie would simply not
+//     be sent (adversarial-review finding 5). It is pre-auth, single-use,
 //     10-minute-lived, and is cleared the moment the callback reads it.
 //
 // The whole leg is DARK BY DEFAULT: without the SBCI_PORTAL_WORKOS activation
@@ -43,9 +47,13 @@ const (
 	// portalTxnCookieDev is the plain-http dev fallback (the __Host- prefix
 	// requires Secure, which a browser refuses over http).
 	portalTxnCookieDev = "sbci_txn"
-	// portalTxnCookieMaxAge bounds the transaction cookie to the same 10 minutes
-	// the auth_transactions row lives.
-	portalTxnCookieMaxAge = 600
+	// portalTxnCookieMaxAge bounds the transaction cookie to the same 30
+	// minutes the auth_transactions row lives (store.DefaultAuthTransactionTTL).
+	portalTxnCookieMaxAge = 1800
+
+	// portalSignInErrorParam carries a recoverable callback failure to the
+	// console sign-in page (callbackRefuse), which explains it.
+	portalSignInErrorParam = "signin_error"
 
 	// defaultPortalReturnTo is where a completed sign-in lands when the caller
 	// asked for nothing specific.
@@ -143,7 +151,9 @@ func secretHash(raw string) string {
 var percentEncodedTraps = []string{"%5c", "%2f", "%2e"}
 
 // safeReturnPath is the redirect allowlist. It admits ONLY a canonical,
-// same-origin, query-free PATH inside the portal SPA. Everything else — an
+// same-origin, query-free PATH inside the portal SPA, plus the rows of
+// returnTargets (today one: the OIDC authorize endpoint with its query,
+// canonically re-encoded). Everything else — an
 // absolute URL ("https://evil.example"), a protocol-relative one
 // ("//evil.example"), a backslash trick ("/\evil"), a percent-encoded
 // separator ("/portal/a%2f..%2f..%2fx"), a dot segment ("/portal/../x"), a
@@ -167,12 +177,17 @@ func safeReturnPath(raw string) (string, bool) {
 	if raw == "" {
 		return defaultPortalReturnTo, true
 	}
+	// 0) Split off a query. Only a returnTarget row that keeps one may have
+	// it; every check below runs on the PATH alone, so a query can never
+	// smuggle a separator or a dot segment into what is redirected to.
+	rawPath, rawQuery, hasQuery := strings.Cut(raw, "?")
 	// 1) Raw-string traps. A backslash is a path separator to some browsers and
-	// URL parsers; a control character can split a header downstream.
-	if strings.Contains(raw, "\\") {
+	// URL parsers; a control character can split a header downstream; a
+	// fragment is never accepted.
+	if strings.ContainsAny(raw, "\\#") {
 		return "", false
 	}
-	lower := strings.ToLower(raw)
+	lower := strings.ToLower(rawPath)
 	for _, trap := range percentEncodedTraps {
 		if strings.Contains(lower, trap) {
 			return "", false
@@ -184,13 +199,14 @@ func safeReturnPath(raw string) (string, bool) {
 		}
 	}
 	// 2) Shape. A path, and nothing but a path: no scheme, no authority, no
-	// query, no fragment. Accepting a query would mean reasoning about how it
-	// merges with the step-up parameter appended later; refusing it is simpler
-	// and costs nothing (no portal route needs one on a return_to).
-	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.ContainsAny(raw, "?#") {
+	// query, no fragment. A query is admitted only by a row that says so
+	// (the OIDC authorize resume); for the portal SPA, accepting one would
+	// mean reasoning about how it merges with the step-up parameter appended
+	// later, and no portal route needs one on a return_to.
+	if !strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "//") {
 		return "", false
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(rawPath)
 	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", false
 	}
@@ -209,10 +225,63 @@ func safeReturnPath(raw string) (string, bool) {
 	if strings.HasSuffix(u.Path, "/") && cleaned != "/" {
 		cleaned += "/"
 	}
-	if !strings.HasPrefix(cleaned, portalReturnPrefix) {
-		return "", false
+	// 5) The allow-list, top-down; the first row whose path matches decides.
+	for _, t := range returnTargets {
+		if !t.matches(cleaned) {
+			continue
+		}
+		if !hasQuery {
+			return cleaned, true
+		}
+		if !t.query {
+			return "", false
+		}
+		// The query is re-encoded canonically: parsed (it must parse) and
+		// written back, so what is stored and later redirected to is exactly
+		// the parameters, never a spelling of them.
+		q, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", false
+		}
+		if enc := q.Encode(); enc != "" {
+			return cleaned + "?" + enc, true
+		}
+		return cleaned, true
 	}
-	return cleaned, true
+	return "", false
+}
+
+// returnTarget is one row of the return_to allow-list.
+type returnTarget struct {
+	// path is matched exactly, or as a prefix when prefix is set.
+	path   string
+	prefix bool
+	// query admits (and canonically re-encodes) a query string.
+	query bool
+}
+
+func (t returnTarget) matches(p string) bool {
+	if t.prefix {
+		return strings.HasPrefix(p, t.path)
+	}
+	return p == t.path
+}
+
+// returnTargets is the return_to allow-list, walked top-down by
+// safeReturnPath. The portal SPA is the general case; the one exception is
+// the OIDC authorize endpoint (managed-SaaS M6.2, design A5): an authorize
+// request with no portal session sends the browser to sign in with
+// return_to set to that same request, so it can resume. Its query (client,
+// redirect URI, PKCE challenge, state, nonce) is the request itself, and the
+// authorize endpoint re-validates every parameter, so keeping it cannot turn
+// into an open redirect: the redirect lands on our own exact path.
+var returnTargets = []returnTarget{
+	// C2: the second-factor page carries its own return_to (the authorize
+	// request it resumes); the page sends that back to the finish routes,
+	// which validate it again here before answering it as "next".
+	{path: secondFactorPagePath, query: true},
+	{path: portalReturnPrefix, prefix: true},
+	{path: oidcissuer.AuthorizePath, query: true},
 }
 
 // portalWorkOSReady reports whether the WorkOS browser leg may run, writing the
@@ -262,6 +331,9 @@ func (s *Server) optionalPortalPrincipal(r *http.Request) (portalPrincipal, bool
 // rest), sets the Lax transaction cookie carrying the RAW state secret, and
 // redirects to WorkOS.
 //
+// ?screen_hint=sign-up (login only) opens AuthKit on its sign-up screen: the
+// console's "Create an account" (parseScreenHint).
+//
 // ?purpose=step_up&action=deletion|export|security additionally requires a live
 // portal session and binds that session + account into the transaction, so the
 // callback can prove the person who re-authenticated is the person already
@@ -286,9 +358,43 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 		TTL:         store.DefaultAuthTransactionTTL,
 		Now:         s.now(),
 	}
+	// forceReauth: make AuthKit authenticate the person again rather than
+	// reuse its own session. Always for a step-up; for a login, when the
+	// platform OIDC issuer asked for a fresh sign-in (reauth=1: its relying
+	// party sent prompt=login, or a max_age the portal session cannot show it
+	// meets). The transaction records it, and only a login whose transaction
+	// says so mints a portal session with an authentication time (the
+	// issuer's auth_time): the browser can drop reauth=1, but then the session
+	// it gets has none, and the issuer asks again.
+	// The sign-up choice (hosted sign-in fix, lane A): a closed enum, valid
+	// on a login only. A step-up re-authenticates someone already signed
+	// in, so asking it for the sign-up screen is refused rather than ignored.
+	screenHint, ok := parseScreenHint(q)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid_screen_hint",
+			"screen_hint must be sign-up or sign-in when present")
+		return
+	}
+	forceReauth := false
 	switch purpose := q.Get("purpose"); purpose {
 	case "", store.AuthPurposeLogin:
+		// Absent, or exactly one value "1"; anything else (an empty or
+		// repeated parameter included) is refused rather than guessed at.
+		switch vs, present := q[oidchttp.ReauthQueryParam]; {
+		case !present:
+		case len(vs) == 1 && vs[0] == "1":
+			forceReauth = true
+		default:
+			writeErr(w, http.StatusBadRequest, "invalid_reauth", "reauth must be 1 when present")
+			return
+		}
 	case store.AuthPurposeStepUp:
+		if screenHint != "" {
+			writeErr(w, http.StatusBadRequest, "invalid_screen_hint",
+				"a step-up start cannot ask for the sign-up screen")
+			return
+		}
+		forceReauth = true
 		action := q.Get("action")
 		switch action {
 		case store.StepUpActionDeletion, store.StepUpActionExport, store.StepUpActionSecurity:
@@ -333,34 +439,79 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 	in.StateHash = secretHash(rawState)
 	in.NonceHash = secretHash(rawNonce)
 	in.PKCEVerifier = verifier
+	in.ForceReauth = forceReauth
 
 	if _, err := s.store.CreateAuthTransaction(r.Context(), in); err != nil {
 		s.log.Error("cloudserver/api: create auth transaction", "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "could not start sign-in")
 		return
 	}
-	s.audit(r.Context(), in.AccountID, "portal_workos_start_"+in.Purpose)
+	action := "portal_workos_start_" + in.Purpose
+	if forceReauth && in.Purpose == store.AuthPurposeLogin {
+		action += "_reauth"
+	}
+	if screenHint == workOSScreenSignUp {
+		action += "_signup"
+	}
+	s.audit(r.Context(), in.AccountID, action)
 
 	s.setTxnCookie(w, rawState)
-	authorizeURL := s.workOSAuthorizeURLFor(in.RedirectURI, pkceChallenge(verifier), rawState, rawNonce,
-		in.Purpose == store.AuthPurposeStepUp)
+	authorizeURL := s.workOSAuthorizeURLFor(in.RedirectURI, pkceChallenge(verifier), rawState, rawNonce, forceReauth, screenHint)
 	http.Redirect(w, r, authorizeURL, http.StatusFound)
+}
+
+// screenHintParam is the start route's query parameter for the screen AuthKit
+// opens on. It keeps WorkOS's own name so the console's link reads the same
+// as the authorize request it becomes.
+const screenHintParam = "screen_hint"
+
+// workOSScreenSignUp is the authorize request's screen_hint for AuthKit's
+// sign-up screen. WorkOS documents screen_hint (sign-up | sign-in) as valid
+// only with provider=authkit, which workOSAuthorizeURLFor always sends.
+const workOSScreenSignUp = "sign-up"
+
+// screenHints is the closed set of screen_hint values the start route
+// accepts, each mapped to what the authorize request carries. "sign-in" is
+// AuthKit's default screen, so it is accepted and sends nothing: the
+// authorize request carries screen_hint only for a sign-up.
+var screenHints = map[string]string{
+	"sign-in":          "",
+	workOSScreenSignUp: workOSScreenSignUp,
+}
+
+// parseScreenHint reads the start route's screen_hint: absent is "" (the
+// default screen); exactly one value from screenHints maps through it;
+// anything else (an unknown, empty or repeated value) is refused, never
+// guessed at.
+func parseScreenHint(q url.Values) (string, bool) {
+	vs, present := q[screenHintParam]
+	if !present {
+		return "", true
+	}
+	if len(vs) != 1 {
+		return "", false
+	}
+	hint, ok := screenHints[vs[0]]
+	return hint, ok
 }
 
 // workOSAuthorizeURLFor builds the AuthKit authorization URL. It mirrors the
 // node-side builder in internal/cloudclient (same parameter set) but is
 // implemented here because the server must not import the client package (the
-// cloud egress pin).
+// cloud egress pin). One deliberate difference: screenHint (the console's
+// "Create an account") adds screen_hint, which the node-side builder never
+// sends, because the CLI's own sign-in is never a sign-up entry point (a
+// person creates the account in the browser console).
 //
 // forceReauth adds the two OIDC freshness parameters WorkOS's authorize
 // endpoint accepts (both SDK-documented): `prompt=login` and `max_age=0`. They
-// are set for a STEP-UP only, and they are the whole point of a step-up —
-// without them a live SSO session at the provider satisfies the
-// re-authentication silently, and "re-authenticate to delete your account"
-// degrades into a redirect the user never sees. A login start is deliberately
-// left unchanged: forcing a fresh provider auth on every sign-in would be
-// hostile, and there is nothing to step up from.
-func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce string, forceReauth bool) string {
+// are set for a STEP-UP, and they are the whole point of a step-up — without
+// them a live SSO session at the provider satisfies the re-authentication
+// silently, and "re-authenticate to delete your account" degrades into a
+// redirect the user never sees. A login start sets them only when the
+// platform OIDC issuer asked for a fresh sign-in (reauth=1, handleWorkOSStart):
+// forcing a fresh provider auth on every ordinary sign-in would be hostile.
+func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce string, forceReauth bool, screenHint string) string {
 	u, err := url.Parse(s.workOSAuthorizeURL)
 	if err != nil {
 		// The URL comes from configuration validated at startup; fall back to the
@@ -380,6 +531,9 @@ func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce stri
 		q.Set("prompt", "login")
 		q.Set("max_age", "0")
 	}
+	if screenHint != "" {
+		q.Set(screenHintParam, screenHint)
+	}
 	u.RawQuery = q.Encode()
 	return u.String()
 }
@@ -394,16 +548,17 @@ var errWorkOSRejected = errors.New("cloudserver/api: workos rejected the authori
 // exchangeWorkOSCode redeems the authorization code server-side. The client
 // secret (WORKOS_API_KEY) never leaves this process.
 //
-// It returns the access token AND the display identity: the authenticate
-// response is the ONE place WorkOS hands us the user's email and name (the
-// AuthKit access token carries no email claim), so this is the only moment the
-// portal can learn who the person is. The profile is display-only — the account
-// is still resolved from the VERIFIED token's (provider, subject), never from
-// anything in this `user` object.
-func (s *Server) exchangeWorkOSCode(ctx context.Context, code, verifier string) (string, accountProfile, error) {
+// It returns the access token AND what the user object said about the person:
+// the authenticate response is the ONE place WorkOS hands us the user's email,
+// its `email_verified` flag and name (the AuthKit access token carries no email
+// claim), so this is the only moment the server can learn them. The profile is
+// display-only; the providerEmail is what the platform OIDC issuer signs
+// (A4). The account is still resolved from the VERIFIED token's (provider,
+// subject), never from anything in this `user` object.
+func (s *Server) exchangeWorkOSCode(ctx context.Context, code, verifier string) (string, workOSUser, error) {
 	status, body, err := s.postWorkOSToken(ctx, code, verifier)
 	if err != nil {
-		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: %w", err)
+		return "", workOSUser{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: %w", err)
 	}
 	// Every non-200 is classified by workOSClassifyRules (T-964): 429 is
 	// WorkOS's `slow_down` signal and stays a retryable provider fault (§10);
@@ -412,7 +567,7 @@ func (s *Server) exchangeWorkOSCode(ctx context.Context, code, verifier string) 
 	// invalid_client live); every other 4xx is the code's own fault.
 	if status != http.StatusOK {
 		wc, desc := parseWorkOSError(body)
-		return "", accountProfile{}, &workOSTokenError{
+		return "", workOSUser{}, &workOSTokenError{
 			Outcome: classifyWorkOSStatus(status, wc), Status: status, Code: wc, Description: desc,
 		}
 	}
@@ -422,18 +577,66 @@ func (s *Server) exchangeWorkOSCode(ctx context.Context, code, verifier string) 
 		// grant shapes and on any provider that does not send it — an omitted or
 		// empty user simply yields an empty profile, never an error.
 		User struct {
-			Email     string `json:"email"`
-			FirstName string `json:"first_name"`
-			LastName  string `json:"last_name"`
+			Email string `json:"email"`
+			// WorkOS's own verification of Email (the User object's
+			// `email_verified`). A pointer: absent is NOT verified (A4).
+			EmailVerified *bool  `json:"email_verified"`
+			FirstName     string `json:"first_name"`
+			LastName      string `json:"last_name"`
 		} `json:"user"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: decode: %w", err)
+		return "", workOSUser{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: decode: %w", err)
 	}
 	if out.AccessToken == "" {
-		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: response carried no access_token")
+		return "", workOSUser{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: response carried no access_token")
 	}
-	return out.AccessToken, newAccountProfile(out.User.Email, out.User.FirstName, out.User.LastName), nil
+	return out.AccessToken, workOSUser{
+		profile: newAccountProfile(out.User.Email, out.User.FirstName, out.User.LastName),
+		email:   newProviderEmail(out.User.Email, out.User.EmailVerified),
+	}, nil
+}
+
+// workOSUser is what one code exchange's user object said: the display
+// profile (accountprofile.go) and the provider's statement about the address
+// (verifiedemail.go). Both are consequences of a completed sign-in, never
+// inputs to account resolution.
+type workOSUser struct {
+	profile accountProfile
+	email   providerEmail
+}
+
+// callbackRecoverable are the callback refusals a person fixes by signing in
+// again: the transaction this browser started is gone (expired, never set,
+// already used, or another tab's), or they cancelled at the provider. A
+// sign-up whose verification took longer than the transaction hit these with
+// the account already created (L-142).
+var callbackRecoverable = map[string]bool{
+	"transaction_missing": true,
+	"state_mismatch":      true,
+	"transaction_invalid": true,
+	"code_rejected":       true,
+	"provider_error":      true,
+}
+
+// callbackRefuse answers a refused callback. A browser navigation (Accept
+// names text/html) refused for a recoverable reason is sent to the console
+// sign-in page, which explains it and offers the sign-in again, never a raw
+// JSON error page; everything else, and every non-browser caller, gets the
+// structured error as before. Nothing changes about WHAT is refused: the
+// redirect starts no sign-in and carries only the fixed code.
+func callbackRefuse(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	if callbackRecoverable[code] && acceptsHTML(r) {
+		http.Redirect(w, r, defaultPortalReturnTo+"?"+portalSignInErrorParam+"="+code, http.StatusSeeOther)
+		return
+	}
+	writeErr(w, status, code, msg)
+}
+
+// acceptsHTML reports whether the request is a browser navigation: its
+// Accept header names text/html.
+func acceptsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // handleWorkOSCallback completes the round-trip. Order matters and every step is
@@ -469,7 +672,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 
 	c, err := r.Cookie(s.portalTxnCookieName())
 	if err != nil || c.Value == "" {
-		writeErr(w, http.StatusBadRequest, "transaction_missing",
+		callbackRefuse(w, r, http.StatusBadRequest, "transaction_missing",
 			"this sign-in did not start on this browser (no transaction cookie)")
 		return
 	}
@@ -478,7 +681,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(c.Value)) != 1 {
 		s.audit(ctx, "", "portal_workos_state_mismatch")
-		writeErr(w, http.StatusBadRequest, "state_mismatch",
+		callbackRefuse(w, r, http.StatusBadRequest, "state_mismatch",
 			"the sign-in state did not match this browser's transaction")
 		return
 	}
@@ -495,7 +698,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("cloudserver/api: consume auth transaction after provider error", "err", err)
 		}
 		s.audit(ctx, "", "portal_workos_provider_error")
-		writeErr(w, http.StatusBadRequest, "provider_error", "the identity provider refused the sign-in")
+		callbackRefuse(w, r, http.StatusBadRequest, "provider_error", "the identity provider refused the sign-in")
 		return
 	}
 	code := q.Get("code")
@@ -507,7 +710,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	txn, err := s.store.ConsumeAuthTransaction(ctx, secretHash(state), s.now())
 	if errors.Is(err, store.ErrNotFound) {
 		s.audit(ctx, "", "portal_workos_transaction_replay")
-		writeErr(w, http.StatusBadRequest, "transaction_invalid",
+		callbackRefuse(w, r, http.StatusBadRequest, "transaction_invalid",
 			"this sign-in link has expired or was already used")
 		return
 	}
@@ -527,7 +730,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 		returnTo = defaultPortalReturnTo
 	}
 
-	accessToken, profile, err := s.exchangeWorkOSCode(ctx, code, txn.PKCEVerifier)
+	accessToken, user, err := s.exchangeWorkOSCode(ctx, code, txn.PKCEVerifier)
 	var tokErr *workOSTokenError
 	_ = errors.As(err, &tokErr)
 	if errors.Is(err, errWorkOSMisconfigured) {
@@ -547,7 +750,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 			"workos_status", tokErr.Status, "workos_error", tokErr.Code,
 			"workos_error_description", tokErr.Description)
 		s.audit(ctx, txn.AccountID, "portal_workos_code_rejected")
-		writeErr(w, http.StatusBadRequest, "code_rejected",
+		callbackRefuse(w, r, http.StatusBadRequest, "code_rejected",
 			"the authorization code was rejected (it may have expired or already been used)")
 		return
 	}
@@ -564,10 +767,10 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if txn.Purpose == store.AuthPurposeStepUp {
-		s.completeStepUp(w, r, txn, id.Provider, id.Subject, returnTo, profile)
+		s.completeStepUp(w, r, txn, id.Provider, id.Subject, returnTo, user)
 		return
 	}
-	s.completeWorkOSLogin(w, r, id.Provider, id.Subject, returnTo, profile)
+	s.completeWorkOSLogin(w, r, id.Provider, id.Subject, returnTo, user, txn.ForceReauth)
 }
 
 // completeWorkOSLogin mints a FRESH browser session (a new cookie value every
@@ -577,10 +780,25 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 // It also records the display identity the exchange returned, AFTER the account
 // is resolved and the session minted: the profile is a consequence of a
 // completed sign-in, never an input to one, and a failed upsert never fails it
-// (see rememberProfile).
-func (s *Server) completeWorkOSLogin(w http.ResponseWriter, r *http.Request, provider, subject, returnTo string, profile accountProfile) {
+// (see rememberProfile). The provider's address and its `email_verified` flag
+// are refreshed in the same place, but a failed write DOES fail the sign-in
+// (before the cookie is set): the issuer signs that address, so a stale one
+// must not survive a sign-in that did not record the latest statement (A4).
+//
+// forced is the transaction's ForceReauth: the leg sent AuthKit prompt=login
+// and max_age=0, so the callback instant is a fresh authentication and the
+// session records it (store.WithFreshAuthentication, the platform OIDC
+// issuer's auth_time). An ordinary leg may have been answered from AuthKit's
+// own session, so its session records no authentication time. The same
+// contract caveat as completeStepUp applies: "fresh" holds to the extent
+// AuthKit honours those parameters.
+func (s *Server) completeWorkOSLogin(w http.ResponseWriter, r *http.Request, provider, subject, returnTo string, user workOSUser, forced bool) {
 	ctx := r.Context()
-	sess, err := s.store.PortalLogin(ctx, provider, subject, s.portalSessionTTL, s.now(), store.WithIdleTTL(s.portalSessionIdleTTL))
+	opts := []store.PortalLoginOption{store.WithIdleTTL(s.portalSessionIdleTTL)}
+	if forced {
+		opts = append(opts, store.WithFreshAuthentication())
+	}
+	sess, err := s.store.PortalLogin(ctx, provider, subject, s.portalSessionTTL, s.now(), opts...)
 	if errors.Is(err, store.ErrAccountSuspended) {
 		// The identity still verifies at the provider, but this account's access
 		// has been revoked here (D18: a user.deleted lifecycle event suspends it).
@@ -600,9 +818,15 @@ func (s *Server) completeWorkOSLogin(w http.ResponseWriter, r *http.Request, pro
 		writeErr(w, http.StatusInternalServerError, "internal", "could not sign in")
 		return
 	}
-	s.rememberProfile(ctx, sess.AccountID, profile)
+	if err := s.rememberProviderEmail(ctx, sess.AccountID, user.email); err != nil {
+		s.log.Error("cloudserver/api: record provider email after workos login", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "could not sign in")
+		return
+	}
+	s.rememberProfile(ctx, sess.AccountID, user.profile)
 	s.audit(ctx, sess.AccountID, "portal_login_ok")
 	s.setSessionCookie(w, sess.RawSession, sess.ExpiresAt)
+	s.ensurePersonalAfterSignIn(sess.AccountID)
 	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
 
@@ -622,7 +846,7 @@ func (s *Server) completeWorkOSLogin(w http.ResponseWriter, r *http.Request, pro
 // confirming it against the live provider is an explicit item in the operator's
 // attended verification window, not something this code can assert for itself:
 // the token this leg returns carries no auth_time claim to cross-check.
-func (s *Server) completeStepUp(w http.ResponseWriter, r *http.Request, txn store.AuthTransaction, provider, subject, returnTo string, profile accountProfile) {
+func (s *Server) completeStepUp(w http.ResponseWriter, r *http.Request, txn store.AuthTransaction, provider, subject, returnTo string, user workOSUser) {
 	ctx := r.Context()
 	account, err := s.store.AccountForIdentity(ctx, provider, subject)
 	if err != nil || account != txn.AccountID {
@@ -635,7 +859,14 @@ func (s *Server) completeStepUp(w http.ResponseWriter, r *http.Request, txn stor
 	// account (the mismatch branch above is the only other outcome), so the
 	// profile this exchange returned belongs to it. Refreshing it here is
 	// trivially safe and keeps a long-lived session's chip current.
-	s.rememberProfile(ctx, txn.AccountID, profile)
+	s.rememberProfile(ctx, txn.AccountID, user.profile)
+	// A step-up is a fresh provider sign-in too, so the provider's address
+	// statement is refreshed, and a failed write fails it (A4).
+	if err := s.rememberProviderEmail(ctx, txn.AccountID, user.email); err != nil {
+		s.log.Error("cloudserver/api: record provider email after step-up", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "could not complete re-authentication")
+		return
+	}
 	authz, err := s.store.CreateStepUpAuthorization(ctx, txn.AccountID, txn.SessionID, txn.Action, s.now())
 	if err != nil {
 		s.log.Error("cloudserver/api: create step-up authorization", "err", err)
@@ -696,6 +927,9 @@ func (s *Server) handlePortalSession(w http.ResponseWriter, r *http.Request) {
 		"csrf_token": rot.RawCSRFToken,
 		"expires_at": rot.ExpiresAt.UTC().Format(time.RFC3339),
 		"auth_mode":  s.portalAuthMode(),
+		// The retirement switch (retired.go): the console hides the legacy
+		// personal-plane links once it reads "retired".
+		"personal_plane": s.personalPlane,
 	}
 	// The signed-in user's own display identity, so the SPA can render a name
 	// instead of a UUID. The key is OMITTED when nothing is known — see
@@ -704,6 +938,11 @@ func (s *Server) handlePortalSession(w http.ResponseWriter, r *http.Request) {
 	// untouched by it.
 	if prof := profileBody(s.lookupProfile(r.Context(), p.AccountID)); prof != nil {
 		body["profile"] = prof
+	}
+	// C2: whether this session must still use its passkey (the SPA then
+	// shows only the second-factor page).
+	if st, ok := secondFactorFrom(r.Context()); ok {
+		body["second_factor"] = secondFactorView(st)
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -742,6 +981,8 @@ func (s *Server) handlePortalAuthConfig(w http.ResponseWriter, _ *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"auth_mode":              s.portalAuthMode(),
 		"workos_browser_enabled": s.workOSBrowserReady(),
+		// Deployment-wide, not account-scoped (retired.go).
+		"personal_plane": s.personalPlane,
 	})
 }
 

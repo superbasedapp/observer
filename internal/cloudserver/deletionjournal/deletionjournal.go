@@ -45,12 +45,31 @@ const (
 	EventDone Event = "done"
 )
 
+// Kind is what a record deletes (managed-SaaS M6.9, design m6.0 3.4). The zero
+// value is an account, so every record written before kinds existed keeps
+// its meaning and an old reader that ignores the field reads an org record
+// as an account record with no account id (which it skips: see
+// AcceptedAccounts).
+type Kind string
+
+const (
+	// KindAccount is an account deletion (the zero value).
+	KindAccount Kind = ""
+	// KindOrg is an org deletion: OrgID names the org. Its EventAccepted is
+	// written when the org is fenced for purging (after the cooling-off
+	// window, past which it can no longer be canceled), so a restore
+	// re-purges exactly the orgs whose purge had started.
+	KindOrg Kind = "org"
+)
+
 // Record is one immutable journal line. It carries NO account content — only the
-// opaque account UUID, the request id, the event, and the time. That is all the
-// restore runbook needs to re-tombstone.
+// opaque account or org UUID, the request id, the event, and the time. That is
+// all the restore runbook needs to re-tombstone.
 type Record struct {
 	Event     Event     `json:"event"`
+	Kind      Kind      `json:"kind,omitempty"`
 	AccountID string    `json:"account_id"`
+	OrgID     string    `json:"org_id,omitempty"`
 	RequestID string    `json:"request_id"`
 	At        time.Time `json:"at"`
 }
@@ -148,7 +167,7 @@ func AcceptedAccounts(records []Record) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, r := range records {
-		if r.Event != EventAccepted {
+		if r.Event != EventAccepted || r.Kind != KindAccount || r.AccountID == "" {
 			continue
 		}
 		if _, ok := seen[r.AccountID]; ok {
@@ -156,6 +175,26 @@ func AcceptedAccounts(records []Record) []string {
 		}
 		seen[r.AccountID] = struct{}{}
 		out = append(out, r.AccountID)
+	}
+	return out
+}
+
+// AcceptedOrgs returns the org ids that have a KindOrg EventAccepted record:
+// the orgs whose purge had started, which a restore must purge again before
+// the restored service reopens (plan 06 5.3.10 step 5). Deduplicated, in
+// first-seen order.
+func AcceptedOrgs(records []Record) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, r := range records {
+		if r.Event != EventAccepted || r.Kind != KindOrg || r.OrgID == "" {
+			continue
+		}
+		if _, ok := seen[r.OrgID]; ok {
+			continue
+		}
+		seen[r.OrgID] = struct{}{}
+		out = append(out, r.OrgID)
 	}
 	return out
 }

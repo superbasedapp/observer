@@ -28,7 +28,7 @@ agent_config = "flag"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Mode != ModeEnforce || strings.Join(p.Require, ",") != "secrets,agent_config,ci_workflow,test_tampering" || len(p.FixturePaths) == 0 {
+	if p.Mode != ModeEnforce || strings.Join(p.Require, ",") != "secrets,agent_config,ci_workflow,test_tampering,container_config" || len(p.FixturePaths) == 0 {
 		t.Errorf("defaults = %+v", p)
 	}
 }

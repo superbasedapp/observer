@@ -40,7 +40,13 @@ type Options struct {
 	// force=false. Explicit indexing (force=true) bypasses them. Fed
 	// from [codeintel].ignore_paths at the boundary.
 	IgnoreRoots []string
-	Logger      *slog.Logger
+	// CountComplexity asks every parse for per-function complexity
+	// (parse.Options.Complexity), fed from [projects].quality_metrics at
+	// the boundary. It raises the extraction version a file must have
+	// been indexed under to count as fresh, so turning it on re-parses
+	// each file once; turning it off re-parses nothing.
+	CountComplexity bool
+	Logger          *slog.Logger
 }
 
 const (
@@ -437,7 +443,13 @@ func (ix *Indexer) indexFile(ctx context.Context, project string, c candidate) (
 	}
 
 	prev, found, stateErr := ix.opts.Store.CodeIntelFileState(ctx, project, c.path)
-	fresh := stateErr == nil && found && prev.Status == "indexed"
+	// A row indexed under an older extraction than this pass asks for is
+	// not fresh: the content did not move, but what a parse extracts did
+	// (version 1 = per-function complexity counted), so it is parsed again
+	// once. The requirement is monotone: a pass that does not count
+	// complexity accepts any version.
+	want := ix.extractVersion()
+	fresh := stateErr == nil && found && prev.Status == "indexed" && prev.ExtractVersion >= want
 
 	// Stat-only fast path. Every known project is re-walked on every
 	// `observer start`; without this, each pass opens and SHA-256s every
@@ -474,7 +486,7 @@ func (ix *Indexer) indexFile(ctx context.Context, project string, c candidate) (
 	}
 	_ = ix.opts.Store.CodeIntelSetFileStatus(ctx, project, c.path, "indexing")
 
-	res, perr := parser.Parse(ctx, src, c.lang, c.path)
+	res, perr := parse.Run(ctx, parser, src, c.lang, c.path, parse.Options{Complexity: ix.opts.CountComplexity})
 	if perr != nil && len(res.Nodes) == 0 {
 		_ = ix.opts.Store.CodeIntelSetFileStatus(ctx, project, c.path, "failed")
 		ix.logger.Debug("codeintel: parse failed", "file", c.path, "err", perr)
@@ -482,16 +494,17 @@ func (ix *Indexer) indexFile(ctx context.Context, project string, c candidate) (
 	}
 
 	saveErr := ix.opts.Store.CodeIntelSaveFile(ctx, codeintel.FileResult{
-		Project:     project,
-		Path:        c.path,
-		Lang:        c.lang,
-		Parser:      res.Parser,
-		ContentHash: hash,
-		MTime:       fi.ModTime().Unix(),
-		Nodes:       res.Nodes,
-		Imports:     res.Imports,
-		Calls:       res.Calls,
-		BodyBuckets: bodyBuckets(src, res.Nodes),
+		Project:        project,
+		Path:           c.path,
+		Lang:           c.lang,
+		Parser:         res.Parser,
+		ContentHash:    hash,
+		MTime:          fi.ModTime().Unix(),
+		Nodes:          res.Nodes,
+		Imports:        res.Imports,
+		Calls:          res.Calls,
+		BodyBuckets:    bodyBuckets(src, res.Nodes),
+		ExtractVersion: want,
 	})
 	if saveErr != nil {
 		_ = ix.opts.Store.CodeIntelSetFileStatus(ctx, project, c.path, "failed")
@@ -499,6 +512,16 @@ func (ix *Indexer) indexFile(ctx context.Context, project string, c candidate) (
 		return outcomeFailed, false
 	}
 	return outcomeIndexed, false
+}
+
+// extractVersion is the extraction version this pass writes and requires:
+// codeintel.ExtractVersion when it counts complexity, else 0 (the base
+// extraction every row has).
+func (ix *Indexer) extractVersion() int {
+	if ix.opts.CountComplexity {
+		return codeintel.ExtractVersion
+	}
+	return 0
 }
 
 func (ix *Indexer) ignoredDir(name string) bool {

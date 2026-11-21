@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxlandlock"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
@@ -138,6 +139,7 @@ func TestLandlockOnlyTheHostTier(t *testing.T) {
 // dashboard port.
 func TestLandlockComposeWritesThePlan(t *testing.T) {
 	skipDriverOffHost(t, "Landlock")
+	noteTestDashboard(t, "127.0.0.1:8081")
 	home := t.TempDir()
 	setTestHome(t, home)
 	if real, err := filepath.EvalSymlinks(home); err == nil {
@@ -213,6 +215,7 @@ func TestParseLandlockExecArgs(t *testing.T) {
 // database, a secret and a symlinked entry stay unreachable.
 func TestLandlockPlanGrantsTheLauncherItsConfig(t *testing.T) {
 	skipOnWindows(t, "Landlock is a Linux driver")
+	noteTestDashboard(t, "127.0.0.1:8081")
 	home := t.TempDir()
 	setTestHome(t, home)
 	if real, err := filepath.EvalSymlinks(home); err == nil {
@@ -279,4 +282,147 @@ func TestLandlockPlanGrantsTheLauncherItsConfig(t *testing.T) {
 			t.Errorf("%s is reachable: %#x", never, a)
 		}
 	}
+}
+
+// TestLandlockPlanVersionSeccomp: a plan with a seccomp profile is written
+// as version 2, which an exec step from before the filter refuses; the
+// version and the field must agree.
+func TestLandlockPlanVersionSeccomp(t *testing.T) {
+	t.Parallel()
+	if landlockPlanVersionFor("") != landlockPlanVersion || landlockPlanVersionFor("observer_default") != landlockPlanVersionSeccomp {
+		t.Fatal("landlockPlanVersionFor")
+	}
+	for _, c := range []struct {
+		version int
+		seccomp string
+		ok      bool
+	}{
+		{1, "", true},
+		{2, "observer_default", true},
+		{1, "observer_default", false},
+		{2, "", false},
+		{3, "", false},
+	} {
+		err := checkLandlockPlanVersion(landlockPlanFile{Version: c.version, Seccomp: c.seccomp})
+		if (err == nil) != c.ok {
+			t.Errorf("version %d seccomp %q: %v", c.version, c.seccomp, err)
+		}
+	}
+}
+
+// TestSeccompProfileFor: the switch off plans nothing; on, only a Linux
+// host with a supported architecture gets the profile, anything else is
+// refused (never run unfiltered).
+func TestSeccompProfileFor(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		goos, goarch string
+		ok           bool
+	}{
+		{"linux", "amd64", true},
+		{"linux", "arm64", true},
+		{"linux", "riscv64", false},
+		{"darwin", "arm64", false},
+		{"windows", "amd64", false},
+	} {
+		p, err := seccompProfileFor(c.goos, c.goarch, "observer_default")
+		if (err == nil) != c.ok || (c.ok && p != "observer_default") {
+			t.Errorf("%s/%s: %q, %v", c.goos, c.goarch, p, err)
+		}
+	}
+	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{}, landlockRow(), ""); p != "" || err != nil {
+		t.Fatalf("off: %q, %v", p, err)
+	}
+	oci, _ := sandboxbackend.Get(sandboxbackend.BackendOCIRunc)
+	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, oci, ""); p != "" || err != nil {
+		t.Fatalf("a row with the engine's own filter: %q, %v", p, err)
+	}
+	if runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
+		if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, landlockRow(), ""); p != "observer_default" || err != nil {
+			t.Fatalf("on: %q, %v", p, err)
+		}
+		// The strace opt-in (lane ptrace): the recorded seize profile is
+		// planned only while the opt-in is on; a non-seize record or the
+		// opt-in off keeps observer_default.
+		for _, c := range []struct {
+			cfg      config.TerminalSandboxConfig
+			recorded string
+			want     string
+		}{
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "observer_seize_yama", "observer_seize_yama"},
+			{config.TerminalSandboxConfig{Seccomp: true}, "observer_seize_yama", "observer_default"},
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "observer_default", "observer_default"},
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "off", "observer_default"},
+			{config.TerminalSandboxConfig{SeccompAllowSeize: true}, "observer_seize_yama", ""},
+		} {
+			if p, err := sandboxSeccompProfile(c.cfg, landlockRow(), c.recorded); p != c.want || err != nil {
+				t.Errorf("%+v recorded %q: %q, %v; want %q", c.cfg, c.recorded, p, err, c.want)
+			}
+		}
+	}
+}
+
+// TestLandlockComposeSeccomp (lane N2): with [terminal.sandbox].seccomp on,
+// the plan file is version 2 and names the profile, and the host helper is
+// told to read the filter back; off, neither appears.
+func TestLandlockComposeSeccomp(t *testing.T) {
+	skipDriverOffHost(t, "Landlock")
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		t.Skip("the seccomp assembler targets amd64 and arm64")
+	}
+	// process_lite shares the host network, so its compose needs the
+	// dashboard address to deny (the release line's LAUNCH-1 rule).
+	noteTestDashboard(t, "127.0.0.1:8081")
+	for _, on := range []bool{false, true} {
+		home := t.TempDir()
+		setTestHome(t, home)
+		if real, err := filepath.EvalSymlinks(home); err == nil {
+			home = real
+		}
+		_ = os.MkdirAll(filepath.Join(home, ".claude"), 0o700)
+		ws := filepath.Join(home, "proj")
+		_ = os.MkdirAll(ws, 0o700)
+		fakeLandlockABI(t, 9)
+		cfg := landlockTestConfig(t, true, "process_lite")
+		cfg.Terminal.Sandbox.Seccomp = on
+		exe, _ := os.Executable()
+		rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, nil, filepath.Join(home, ".observer"), exe, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt.applyDaemonConfig(cfg)
+		d := rt.drivers[sandboxbackend.BackendProcessLite].(*landlockDriver)
+		wrap, err := d.compose(termsvc.CreateResult{Run: termsvc.SandboxRun{ID: "runlandlockseccomp01", Tool: "claude-code", Dir: ws}}, 9)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, err := sandbox.ParseHostArgs(wrap[2:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(wrap[len(wrap)-2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan landlockPlanFile
+		if err := json.Unmarshal(raw, &plan); err != nil {
+			t.Fatal(err)
+		}
+		want, version := "", landlockPlanVersion
+		if on {
+			want, version = "observer_default", landlockPlanVersionSeccomp
+		}
+		if host.SeccompProfile != want || plan.Seccomp != want || plan.Version != version {
+			t.Fatalf("seccomp %v: host flag %q, plan %q version %d", on, host.SeccompProfile, plan.Seccomp, plan.Version)
+		}
+	}
+}
+
+// noteTestDashboard makes this test process the daemon whose dashboard
+// listens on addr (the deny list needs a known dashboard address).
+func noteTestDashboard(t *testing.T, addr string) {
+	t.Helper()
+	prev := resolvedDashboardListen()
+	noteDashboardListen(addr)
+	t.Cleanup(func() { noteDashboardListen(prev) })
 }

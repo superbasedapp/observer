@@ -143,6 +143,10 @@ type Run struct {
 	// 8.4, migration 179): what the launch actually built and the capture
 	// level computed for it. The zero value is "not recorded".
 	Isolation Isolation
+	// Origin is who started the run (migration 220, lane cli-2): the
+	// closed Initiator set and, for an agent, its parent session. The zero
+	// value is "not recorded".
+	Origin Origin
 }
 
 // Isolation is the per-run isolation evidence, as closed-vocabulary strings
@@ -163,6 +167,9 @@ type Isolation struct {
 	NativeSandboxState string
 	Verification       string
 	KeyCustody         string
+	// Seccomp is what the syscall filter gave the run (a
+	// sandboxvocab.SeccompRun value, migration 232; tracker F-002).
+	Seccomp string
 }
 
 // Correlation is one scored link from a run to an observed agent session.

@@ -1,0 +1,63 @@
+rules:
+  - id: js.nosql-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Web request input reaches a MongoDB query filter as it is, so a caller can send an operator object such as a not-equal match in place of a value; convert it to a string or id first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      # The body and the query string can carry objects (JSON, or the
+      # bracket syntax of the default query parser); path parameters are
+      # always strings.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sanitizers:
+      - pattern: String(...)
+      - pattern: $X.toString()
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: ObjectId(...)
+      - pattern: new ObjectId(...)
+      - pattern: $M.ObjectId(...)
+      - pattern: new $M.ObjectId(...)
+      - pattern: mongoSanitize.sanitize(...)
+      - pattern: sanitize(...)
+    pattern-sinks:
+      # The filter of a collection or a model, by its conventional name: a
+      # capitalised model, a name ending in Collection or Model, or a
+      # db.collection(...) handle.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $COLL.$F($Q, ...)
+                  - metavariable-regex:
+                      metavariable: $COLL
+                      regex: ^([A-Z][A-Za-z0-9]*|(this\.)?\w*([cC]ollection|[mM]odel)s?|db\.\w+|.*\.collection\(.*\)|mongoose\.model\(.*\))$
+              # A local handle from db.collection(...) or mongoose.model(...).
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          const $COLL = $DB.collection(...);
+                          ...
+                      - pattern-inside: |
+                          let $COLL = $DB.collection(...);
+                          ...
+                      - pattern-inside: |
+                          const $COLL = mongoose.model(...);
+                          ...
+                  - pattern: $COLL.$F($Q, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|findOneAndRemove|updateOne|updateMany|update|deleteOne|deleteMany|remove|countDocuments|count|replaceOne|exists)$
+          - focus-metavariable: $Q
+      # A server-side JavaScript condition.
+      - patterns:
+          - pattern: '{..., $where: $X, ...}'
+          - focus-metavariable: $X

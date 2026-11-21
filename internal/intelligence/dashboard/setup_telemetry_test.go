@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -77,7 +78,9 @@ func TestSetupTelemetryStep(t *testing.T) {
 	if !strings.Contains(got, "sk-fixture-key") || !strings.Contains(got, `"otlpEndpoint": "http://127.0.0.1:4318"`) {
 		t.Fatalf("written file:\n%s", got)
 	}
-	if info, _ := os.Stat(settings); info.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits (os.Stat reports 0666 or 0444
+	// there), so "0600 kept" is only observable on a POSIX host.
+	if info, _ := os.Stat(settings); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600 kept", info.Mode().Perm())
 	}
 	if r := post(`{"tool":"qwen-code"}`); r.Changed || !r.AlreadySet {
@@ -179,5 +182,15 @@ func TestTelemetryReceiverKeysLiveInTheLinkedSection(t *testing.T) {
 		if !ok || "/settings?section="+sec != telemetryReceiverSettingsLink {
 			t.Errorf("%s is in section %q (ok=%v); the refusal links %s", key, sec, ok, telemetryReceiverSettingsLink)
 		}
+	}
+}
+
+// TestTelemetryRefusalLinkIsTheTableRow: the receiver refusal's deep link
+// fields come from the one settingslink table and agree with its older
+// settings_link field.
+func TestTelemetryRefusalLinkIsTheTableRow(t *testing.T) {
+	f := otelExportFields()
+	if f.Settings != telemetryReceiverSettingsLink || f.SettingsLabel != "Settings > OTel export" {
+		t.Fatalf("otel export fields = %+v, want %s", f, telemetryReceiverSettingsLink)
 	}
 }

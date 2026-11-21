@@ -154,7 +154,7 @@ func observersOnPath(pathEnv string) []string {
 
 // siblingExists is the real filesystem answer to "does <dir>/<name> exist".
 func siblingExists(dir, name string) bool {
-	_, err := os.Stat(filepath.Join(filepath.FromSlash(dir), filepath.FromSlash(name)))
+	_, err := os.Stat(filepath.Join(filepath.FromSlash(dir), filepath.FromSlash(name))) //nolint:gosec // G703: false positive; an existence check only, nothing is read or written
 	return err == nil
 }
 
@@ -186,12 +186,12 @@ func newSetupPreflightCmd() *cobra.Command {
 	var dir string
 	cmd := &cobra.Command{
 		Use:   "preflight",
-		Short: "Report whether another SuperBased install is on this computer",
+		Short: "Report whether another superbased install is on this computer",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			res := runPreflight(absDir(dir))
 			out := cmd.OutOrStdout()
 			if !res.Blocked() {
-				fmt.Fprintln(out, "No other SuperBased install found.")
+				fmt.Fprintln(out, "No other superbased install found.")
 				if d := res.OwnDaemon; d != nil {
 					fmt.Fprintf(out, "A daemon from this install is running (pid %d).\n", d.PID)
 				}
@@ -237,7 +237,7 @@ func newSetupInstallCmd(sys setupOS) *cobra.Command {
 		Short: "Copy this observer into a per-user directory (and optionally add it to Path and start at sign-in)",
 		Long: "Copies observer (and, on Windows, observerw.exe) into --dir, adds the superbased\n" +
 			"alias, and with --path / --autostart adds the directory to the per-user Path and\n" +
-			"starts SuperBased at sign-in. A running daemon is never stopped: its binary is\n" +
+			"starts superbased at sign-in. A running daemon is never stopped: its binary is\n" +
 			"renamed aside and keeps running until you restart it. Refuses when another install\n" +
 			"is on this computer (npm, pip, the VS Code extension, or another copy) unless --force.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -250,8 +250,8 @@ func newSetupInstallCmd(sys setupOS) *cobra.Command {
 	cmd.Flags().StringVar(&o.source, "source", "", "The observer binary to install (default: this one)")
 	cmd.Flags().StringVar(&o.observerw, "observerw", "", "observerw.exe to install beside it (Windows; needed for start at sign-in)")
 	cmd.Flags().BoolVar(&o.addPath, "path", false, "Add the directory to the per-user Path (Windows)")
-	cmd.Flags().BoolVar(&o.autostart, "autostart", false, "Start SuperBased when you sign in (Windows)")
-	cmd.Flags().BoolVar(&o.force, "force", false, "Install even when another SuperBased install is on this computer")
+	cmd.Flags().BoolVar(&o.autostart, "autostart", false, "Start superbased when you sign in (Windows)")
+	cmd.Flags().BoolVar(&o.force, "force", false, "Install even when another superbased install is on this computer")
 	cmd.Flags().BoolVar(&o.exitCodes, "exit-codes", false, "Report outcomes as exit codes for the setup program (3 blocked, 10 restart needed)")
 	_ = cmd.Flags().MarkHidden("exit-codes")
 	return cmd
@@ -282,7 +282,7 @@ func runSetupInstall(o setupInstallOptions) error {
 			if o.exitCodes {
 				return exitErr(setupExitBlocked)
 			}
-			return errors.New("another SuperBased install is on this computer")
+			return errors.New("another superbased install is on this computer")
 		}
 		fmt.Fprint(o.out, setup.PreflightReport(pre, ""))
 		fmt.Fprintln(o.out, "Installing a second copy anyway (--force).")
@@ -330,7 +330,7 @@ func runSetupInstall(o setupInstallOptions) error {
 	if d := pre.OwnDaemon; d != nil && upgrade {
 		fmt.Fprintf(o.out, "\nSuperBased (pid %d) is still running the previous version. It keeps running until you restart it.\n"+
 			"The daemon is the proxy your AI tools may route through, so restart it when no AI session uses the proxy:\n"+
-			"turn the proxy route off first, then quit SuperBased and start it again (docs/daemon-restart-runbook.md).\n", d.PID)
+			"turn the proxy route off first, then quit superbased and start it again (docs/daemon-restart-runbook.md).\n", d.PID)
 		if o.exitCodes {
 			return exitErr(setupExitRestartNotice)
 		}
@@ -356,7 +356,7 @@ func placeBinary(src, dst, stamp string) error {
 		aside := filepath.Join(filepath.Dir(dst), setup.AsideName(filepath.Base(dst), stamp))
 		if rerr := os.Rename(dst, aside); rerr != nil {
 			_ = os.Remove(tmp)
-			return fmt.Errorf("could not replace %s (%w). If SuperBased is running from it, quit it and run setup again", dst, rerr)
+			return fmt.Errorf("could not replace %s (%w). If superbased is running from it, quit it and run setup again", dst, rerr)
 		}
 	}
 	if err := os.Rename(tmp, dst); err != nil {
@@ -562,7 +562,7 @@ func setupAutostartOn(sys setupOS, out io.Writer, dir string) error {
 	if err := sys.writeRun(setup.RunValue(w)); err != nil {
 		return fmt.Errorf("write the sign-in entry: %w", err)
 	}
-	fmt.Fprintln(out, "SuperBased will start when you sign in to Windows.")
+	fmt.Fprintln(out, "superbased will start when you sign in to Windows.")
 	return nil
 }
 
@@ -575,13 +575,13 @@ func setupAutostartOff(sys setupOS, out io.Writer) error {
 		return err
 	}
 	if cur == "" {
-		fmt.Fprintln(out, "SuperBased was not set to start at sign-in.")
+		fmt.Fprintln(out, "superbased was not set to start at sign-in.")
 		return nil
 	}
 	if err := sys.deleteRun(); err != nil {
 		return fmt.Errorf("remove the sign-in entry: %w", err)
 	}
-	fmt.Fprintln(out, "SuperBased will no longer start when you sign in.")
+	fmt.Fprintln(out, "superbased will no longer start when you sign in.")
 	return nil
 }
 
@@ -589,7 +589,7 @@ func newSetupAutostartCmd(sys setupOS) *cobra.Command {
 	var dir string
 	cmd := &cobra.Command{
 		Use:       "autostart on|off|status",
-		Short:     "Start SuperBased when you sign in to Windows",
+		Short:     "Start superbased when you sign in to Windows",
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"on", "off", "status"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -654,7 +654,7 @@ func newSetupUninstallCmd(sys setupOS) *cobra.Command {
 		SilenceErrors: true,
 	}
 	cmd.Flags().StringVar(&o.dir, "dir", defaultSetupDir(), "Directory holding observer")
-	cmd.Flags().BoolVar(&o.purge, "purge", false, "Also delete your SuperBased data (~/.observer)")
+	cmd.Flags().BoolVar(&o.purge, "purge", false, "Also delete your superbased data (~/.observer)")
 	cmd.Flags().BoolVar(&o.stopDaemon, "stop-daemon", false, "Stop a running daemon from this install first (AI sessions routed through its proxy lose their connection)")
 	cmd.Flags().BoolVar(&o.force, "force", false, "Carry on when removing hooks or MCP entries reports an error")
 	cmd.Flags().BoolVar(&o.exitCodes, "exit-codes", false, "Report outcomes as exit codes for the setup program (4 daemon running)")
@@ -673,20 +673,20 @@ func runSetupUninstall(o setupUninstallOptions) error {
 	pre := setup.Preflight(setup.PreflightInput{InstallDir: dir, Daemon: o.daemon(), GOOS: runtime.GOOS})
 	if d := pre.OwnDaemon; d != nil {
 		if !o.stopDaemon {
-			fmt.Fprintf(o.out, "SuperBased is running from this install (pid %d). Quit it first, or run again with --stop-daemon.\n"+
+			fmt.Fprintf(o.out, "superbased is running from this install (pid %d). Quit it first, or run again with --stop-daemon.\n"+
 				"AI sessions that route through its proxy lose their connection until they are restarted.\n", d.PID)
 			if o.exitCodes {
 				return exitErr(setupExitDaemonRunning)
 			}
-			return errors.New("SuperBased is still running")
+			return errors.New("superbased is still running")
 		}
 		if o.sys.stopPID == nil {
-			return errors.New("stopping a process is not supported here; quit SuperBased and run again")
+			return errors.New("stopping a process is not supported here; quit superbased and run again")
 		}
 		if err := o.sys.stopPID(d.PID, 30*time.Second); err != nil {
-			return fmt.Errorf("stop SuperBased (pid %d): %w", d.PID, err)
+			return fmt.Errorf("stop superbased (pid %d): %w", d.PID, err)
 		}
-		fmt.Fprintf(o.out, "Stopped SuperBased (pid %d).\n", d.PID)
+		fmt.Fprintf(o.out, "Stopped superbased (pid %d).\n", d.PID)
 	}
 	if o.sys.supportsRun() {
 		if err := setupAutostartOff(o.sys, o.out); err != nil {
@@ -706,7 +706,7 @@ func runSetupUninstall(o setupUninstallOptions) error {
 	}
 	removeStaleAside(dir)
 	if !o.purge {
-		fmt.Fprintln(o.out, "Your SuperBased data in ~/.observer was kept.")
+		fmt.Fprintln(o.out, "Your superbased data in ~/.observer was kept.")
 	}
 	return nil
 }
@@ -801,7 +801,7 @@ func runSetupLaunch(o setupLaunchOptions) error {
 	}
 	url := "http://" + defaultDashboardAddr
 	if o.running() {
-		fmt.Fprintln(o.out, "SuperBased is already running.")
+		fmt.Fprintln(o.out, "superbased is already running.")
 	} else {
 		if o.sys.spawnDetached == nil {
 			return errors.New("starting the daemon in the background is not supported here; run `observer start`")
@@ -815,17 +815,17 @@ func runSetupLaunch(o setupLaunchOptions) error {
 			return fmt.Errorf("create %s: %w", filepath.Dir(logPath), err)
 		}
 		if err := o.sys.spawnDetached([]string{self, "start", "--no-open"}, logPath); err != nil {
-			return fmt.Errorf("start SuperBased: %w", err)
+			return fmt.Errorf("start superbased: %w", err)
 		}
-		fmt.Fprintf(o.out, "Starting SuperBased in the background (log: %s)...\n", logPath)
+		fmt.Fprintf(o.out, "Starting superbased in the background (log: %s)...\n", logPath)
 		deadline := time.Now().Add(o.wait)
 		for !o.ready() {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("SuperBased did not come up within %s; see %s", o.wait, logPath)
+				return fmt.Errorf("superbased did not come up within %s; see %s", o.wait, logPath)
 			}
 			o.sleep(500 * time.Millisecond)
 		}
-		fmt.Fprintln(o.out, "SuperBased is running.")
+		fmt.Fprintln(o.out, "superbased is running.")
 	}
 	if dashboardInBuild {
 		fmt.Fprintf(o.out, "Dashboard: %s\n", url)

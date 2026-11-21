@@ -313,7 +313,16 @@ func TestRepairGuardAnchors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if dry.Candidates != tc.wantCand || dry.Proven != tc.wantProven || !reflect.DeepEqual(dry.Unproven, tc.wantUnproven) {
+			var unproven []int64
+			for _, u := range dry.Unproven {
+				unproven = append(unproven, u.ID)
+				// Every case searches the whole range, so a miss is never a
+				// radius miss.
+				if u.Reason != GuardAnchorNoID {
+					t.Errorf("unproven %d reason = %q, want %q", u.ID, u.Reason, GuardAnchorNoID)
+				}
+			}
+			if dry.Candidates != tc.wantCand || dry.Proven != tc.wantProven || !reflect.DeepEqual(unproven, tc.wantUnproven) {
 				t.Fatalf("dry run = %+v, want candidates %d proven %d unproven %v", dry, tc.wantCand, tc.wantProven, tc.wantUnproven)
 			}
 			if dry.Applied || !reflect.DeepEqual(snapshot(), damaged) {

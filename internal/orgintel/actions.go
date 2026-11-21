@@ -1,6 +1,9 @@
 package orgintel
 
-import "github.com/marmutapp/superbased-observer/internal/dataauthority"
+import (
+	"github.com/marmutapp/superbased-observer/internal/dataauthority"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
+)
 
 // actions.go decides what a developer may do with ONE session on the org plane
 // (Cloud Intelligence parity phase 3, design section 3.2): preview the exact
@@ -102,6 +105,28 @@ var actionReasonText = map[string]string{
 	"developer_actions_off":   "Your organization runs session enrichment in the background only.",
 }
 
+// actionReasonTextPersonal words the org-level refusals for a personal
+// dashboard, where the person is the only admin: no "your organization".
+// A reason with no row here reads the same on both.
+var actionReasonTextPersonal = map[string]string{
+	"no_terms":              "Your personal dashboard has not sent its session enrichment terms yet.",
+	"org_off":               "Your personal dashboard has session enrichment off.",
+	"managed_rail_off":      "Your personal dashboard has session enrichment off for this machine.",
+	"purpose_not_allowed":   "Your personal dashboard does not allow a purpose your consent covers.",
+	"developer_actions_off": "Your personal dashboard runs session enrichment in the background only.",
+}
+
+// ActionReasonTextFor is ActionReasonText worded for the dashboard kind:
+// personal reads the personal row when there is one.
+func ActionReasonTextFor(reason string, personal bool) string {
+	if personal {
+		if t, ok := actionReasonTextPersonal[reason]; ok {
+			return t
+		}
+	}
+	return ActionReasonText(reason)
+}
+
 // ActionReasonText returns the sentence for a refusal reason ("" for none).
 func ActionReasonText(reason string) string {
 	if reason == "" {
@@ -111,4 +136,37 @@ func ActionReasonText(reason string) string {
 		return t
 	}
 	return "Session enrichment is not available for this session (" + reason + ")."
+}
+
+// ActionFix is who can lift a refusal, and where. Place is a place in this
+// machine's dashboard (the developer changes it here); OrgPlace is a place
+// in the team dashboard (only the organization's admins change it; the node
+// never offers a toggle for it). Both empty means no setting lifts it.
+type ActionFix struct {
+	Place    settingslink.Place
+	OrgPlace settingslink.OrgPlace
+}
+
+// actionReasonFix is the table beside actionReasonText: one row per refusal
+// reason, read by the dashboard to turn the sentence into an instruction
+// with a link (internal/settingslink owns the paths).
+var actionReasonFix = map[string]ActionFix{
+	// The session belongs to the personal plane; nothing to change.
+	"not_org_session": {},
+	"not_enrolled":    {Place: settingslink.Account},
+	// The org publishes its terms; they arrive on the next sync.
+	"no_terms":                {OrgPlace: settingslink.OrgSessionEnrichment},
+	"org_off":                 {OrgPlace: settingslink.OrgSessionEnrichment},
+	"managed_rail_off":        {OrgPlace: settingslink.OrgSessionEnrichment},
+	"individual_not_opted_in": {Place: settingslink.TeamSummaries},
+	// The developer reviews their consent here; the admins choose the
+	// purposes there.
+	"purpose_not_allowed":   {Place: settingslink.TeamSummaries, OrgPlace: settingslink.OrgSessionEnrichment},
+	"developer_actions_off": {OrgPlace: settingslink.OrgSessionEnrichment},
+}
+
+// ActionReasonFix returns who can lift a refusal reason and where (zero for
+// none, or an unknown reason).
+func ActionReasonFix(reason string) ActionFix {
+	return actionReasonFix[reason]
 }

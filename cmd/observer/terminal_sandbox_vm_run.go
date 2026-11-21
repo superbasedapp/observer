@@ -451,7 +451,7 @@ func (d *vmDriver) compose(created termsvc.CreateResult, res sandboxvm.ProbeResu
 	tier := vocab.Tier(r.egress.Mode)
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs, HostSocketDir: dirs.SocketDir}
 	if capture := sandboxRunCaptureFor(vmRow(), created.ProxyRouted, tier, r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
-		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHosts
+		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHostList()
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

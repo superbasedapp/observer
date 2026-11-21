@@ -1,0 +1,83 @@
+rules:
+  - id: php.open-redirect
+    languages: [php]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; redirect to a path on this site, a named route, or a host on an allow-list (wp_safe_redirect).
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: urlencode(...)
+      - pattern: rawurlencode(...)
+      - pattern: wp_validate_redirect(...)
+      # Named routes and a model's own URL.
+      - pattern: route(...)
+      - pattern: action(...)
+      - pattern: $MODEL->getUrl(...)
+      - pattern: wp_sanitize_redirect(...)
+    pattern-sinks:
+      # A Location header whose value starts with the input (or with only a
+      # scheme or slashes before it).
+      - patterns:
+          - pattern: header($H, ...)
+          - metavariable-regex:
+              metavariable: $H
+              regex: (?is)^["']\s*location\s*:\s*(/{0,2}|https?:/{0,2})(["']\s*\.|\{?\$)
+          - focus-metavariable: $H
+      - patterns:
+          - pattern-either:
+              - pattern: redirect($U, ...)
+              - pattern: redirect()->to($U, ...)
+              - pattern: redirect()->away($U, ...)
+              - pattern: Redirect::to($U, ...)
+              - pattern: Redirect::away($U, ...)
+              - pattern: new RedirectResponse($U, ...)
+              - pattern: $this->redirect($U, ...)
+              - pattern: wp_redirect($U, ...)
+          # A fixed path on this site or a fixed host before the input.
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^["'](/[^/\\"'{$]|https?://[^/"'#?{}$]+[/?#])
+          - focus-metavariable: $U

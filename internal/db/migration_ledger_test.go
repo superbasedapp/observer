@@ -32,8 +32,9 @@ func TestNodePreLedgerReopenAdoptsRealLineage(t *testing.T) {
 	ledgertest.PreLedgerReopen(t, nodeRunner, migrations.Files, lateSteps)
 }
 
-// The node late-step table holds exactly the wave lineage fork's two rows;
-// TestNodeLateStepsAreTheWaveFork (migration_wavefork_test.go) pins it.
+// The node late-step table holds exactly the wave lineage fork's two rows
+// and the main merge's two (P-247); TestNodeLateStepsTable
+// (migration_wavefork_test.go) pins it.
 
 // openLedgerDB opens a fresh, fully migrated node database and returns it
 // with the version of the highest step below the head that is not a late

@@ -30,6 +30,17 @@
 // source is valid again, and Result.FailedCheck names the check. The daemon,
 // observer hook, bare launchers, doctor and the updater all call Load.
 //
-// The decision (ceiling.go, acl.go) is pure and table-driven; the per-OS
-// readers (source_*.go) only collect a Probe.
+// The same source may also carry the attach policy (attach.go; plan 06
+// section 19.3 rule 2 way 3 and rule 3 row 1, plan 07 M8.6): the
+// organization server URL this machine attaches to, the attach method (a
+// closed vocabulary: idp) and a lock. LoadAttach decides it. An unlocked URL
+// is the default target of a bare `observer enroll`; a locked one becomes
+// internal/attachrule's row-1 lock, so the node refuses attaching to any
+// other server and disconnecting. A source with attach keys and no ceiling
+// is a valid source with no ceiling (ErrNoCeiling, StatusNone); a source that
+// fails a check makes the attach policy AttachStatusInvalid, and the node
+// refuses every destination change until it is fixed.
+//
+// The decisions (ceiling.go, attach.go, acl.go) are pure and table-driven;
+// the per-OS readers (source_*.go) only collect a Probe.
 package managedconfig

@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  Install a SuperBased Observer edition on Windows.
+  Install a superbased Observer edition on Windows.
 
 .DESCRIPTION
   install.ps1 [-Edition minimal|developer|managed|full] [-Version vX.Y.Z]
               [-Prefix DIR] [-FromDir DIR] [-BaseUrl URL]
-              [-RequireSignature] [-AddToPath] [-Uninstall [-Purge] [-Force]]
-              [-DryRun] [-Yes]
+              [-RequireSignature] [-AddToPath] [-Connect [team]] [-Apps]
+              [-Uninstall [-Purge] [-Force]] [-DryRun] [-Yes]
 
   -Edition          minimal | developer | managed | full (default: a menu on
                     an interactive console, otherwise developer)
@@ -25,6 +25,30 @@
   -AddToPath        add the install directory to the USER Path without
                     asking (otherwise asked on an interactive console, and
                     only printed with -Yes)
+  -Connect [team]   one step to see this machine online: install, add the
+                    install directory to your user Path, start Observer and
+                    open the local dashboard, then run `observer
+                    connect [team]` (approve in your browser, or enter the
+                    printed code on any device), set Observer to start
+                    when you sign in to Windows (a per-user sign-in entry,
+                    no administrator rights, no Windows service). The
+                    team is a team's
+                    short name; without one you choose on the approval
+                    page (your personal dashboard by default). Also read
+                    from the SBO_CONNECT_TEAM environment variable. Needs
+                    the developer or full edition (the default with
+                    -Connect). It carries no token: the approval happens
+                    in your browser.
+  -Apps             also turn on AI Apps (traces, cost and evals for the AI
+                    apps you build) with `observer apps on`: the receiver
+                    listens on 127.0.0.1:4318 once Observer runs, and with
+                    -Connect the local dashboard opens on the AI apps
+                    track. Also read from the SBO_CONNECT_APPS environment
+                    variable (1 or 0), the form `irm ... | iex` can carry.
+                    Needs the developer or full edition (the default with
+                    -Apps). Data stays on this machine unless it is
+                    connected to an organization that turned an AI Apps
+                    share on.
   -Uninstall        run `observer uninstall --all` (hook, MCP and
                     proxy-route entries), then delete the binaries and the
                     user Path entry this installer added; %USERPROFILE%\.observer
@@ -71,8 +95,11 @@
   Run it with: powershell -ExecutionPolicy Bypass -File install.ps1 -Edition developer
   (the flag applies to that one process only; no system setting changes).
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
+  # The optional team after -Connect (`-Connect acme`); the only positional
+  # parameter, so it binds only there.
+  [Parameter(Position = 0)][string]$ConnectTeam = "",
   [string]$Edition = "",
   [string]$Version = "latest",
   [string]$Prefix = "",
@@ -80,6 +107,8 @@ param(
   [string]$BaseUrl = "",
   [switch]$RequireSignature,
   [switch]$AddToPath,
+  [switch]$Connect,
+  [switch]$Apps,
   [switch]$Uninstall,
   [switch]$Purge,
   [switch]$Force,
@@ -100,12 +129,19 @@ $LatestApiUrl = "https://api.github.com/repos/superbasedapp/observer/releases/la
 $DefaultEdition = "developer"
 $Editions = [ordered]@{
   minimal   = "capture only: hooks, transcript watcher and the local dashboard; no proxy, terminals or self-update"
-  developer = "a developer's own machine: proxy, dashboard, terminals, guard and every adapter (recommended)"
+  developer = "a developer's own machine: proxy, dashboard, terminals, guard, every adapter and app observability (off until you enable it) (recommended)"
   managed   = "a machine enrolled in an organization: org client and self-update on, local extras off"
   full      = "everything compiled in: the build npm, PyPI and the VS Code extension ship"
 }
 
 function Say([string]$m) { Write-Host $m }
+
+# The Run value `observer setup autostart on` writes (internal/setup
+# RunValueName), so `observer setup autostart off` removes ours too.
+$RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$RunValueName = "SuperBasedObserver"
+$LocalDashboard = "http://127.0.0.1:8081"
+$OnlineDashboard = "https://cloud.superbased.app"
 function Warn([string]$m) { Write-Warning "install.ps1: $m" }
 function Fail([string]$m) { throw "install.ps1: $m" }
 
@@ -466,7 +502,7 @@ function Invoke-Uninstall {
   if (-not $Purge) { Say "    ($env:USERPROFILE\.observer is kept)" }
   Say "  - delete $exe and $(Join-Path $dir 'superbased.exe')"
   if (Test-OnUserPath $dir) { Say "  - remove $dir from the user Path" }
-  Say "If this machine is enrolled in an organization, leave it first: observer unenroll"
+  Say "If this machine is connected, disconnect it first: observer disconnect"
   Say "Stop a running ``observer start`` first (the binary cannot be deleted while it runs)."
   if ($DryRun) { Say "(dry run: nothing changed)"; return }
   if (Test-Interactive) {
@@ -620,6 +656,161 @@ function Test-OtherInstalls([string]$exe, [string]$alias) {
   Fail "not installing a second copy: upgrade the existing install with its own command above, or pass -Force to install a second copy at $exe anyway"
 }
 
+# ------------------------------------------------------------------- connect
+
+# Set-SignInStart: start Observer when the user signs in to Windows, with no
+# administrator rights and no Windows service. With observerw.exe beside
+# observer.exe (the Windows setup program ships it), `observer setup
+# autostart on` writes the per-user Run value. Without it, the same Run value
+# starts `observer setup launch` through a hidden PowerShell window; that
+# command starts the daemon with no window and exits.
+function Set-SignInStart([string]$exe, [string]$dir) {
+  if (Test-Path -LiteralPath (Join-Path $dir "observerw.exe") -PathType Leaf) {
+    # Out-Host: the command's lines must not become this function's result.
+    & $exe setup autostart on --dir $dir | Out-Host
+    if ($LASTEXITCODE -eq 0) { return $true }
+    Warn "``observer setup autostart on`` reported a problem; writing the sign-in entry directly"
+  }
+  $cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command `"& '$($exe -replace "'", "''")' setup launch`""
+  # Tests (with -FromDir only) write to a stand-in key instead.
+  $key = $RunKey
+  if ($env:OBSERVER_INSTALL_TEST_RUNKEY -and $FromDir) { $key = $env:OBSERVER_INSTALL_TEST_RUNKEY }
+  try {
+    if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
+    Set-ItemProperty -LiteralPath $key -Name $RunValueName -Value $cmd
+    Say "Observer will start when you sign in to Windows (undo: observer setup autostart off)."
+    return $true
+  } catch {
+    Warn "could not write the sign-in entry ($($_.Exception.Message)); start Observer with: observer start"
+    return $false
+  }
+}
+
+# Get-ConnectTeam: the team after -Connect, else SBO_CONNECT_TEAM, else "".
+function Get-ConnectTeam {
+  if ($ConnectTeam) { return $ConnectTeam }
+  if ($env:SBO_CONNECT_TEAM) { return [string]$env:SBO_CONNECT_TEAM }
+  return ""
+}
+
+# Test-AppsWanted: -Apps, or SBO_CONNECT_APPS=1 (the form `irm ... | iex`
+# can carry; connect.ps1 reads the same name).
+function Test-AppsWanted {
+  if ($Apps) { return $true }
+  $v = [string]$env:SBO_CONNECT_APPS
+  switch -regex ($v) {
+    '^(1|true|yes)$' { return $true }
+    '^(|0|false|no)$' { return $false }
+  }
+  Fail "SBO_CONNECT_APPS='$v' is not 1 or 0"
+}
+
+# Invoke-AppsOn: `observer apps on` for -Apps, before Observer is started,
+# so a daemon this installer starts comes up with AI Apps on (one already
+# running turns it on at once, with no restart). --installer records the
+# installer as the arrival intent and opens and starts nothing. A failure (a
+# taken receiver port, an organization pin) is reported, never fatal.
+function Invoke-AppsOn([string]$exe) {
+  if (-not $script:appsWanted) { return $false }
+  Say ""
+  # Out-Host: a native command's output inside a function would otherwise
+  # become part of its return value (and not be shown).
+  & $exe apps on --yes --installer | Out-Host
+  if ($LASTEXITCODE -eq 0) { return $true }
+  Warn "AI Apps is not on; Observer still works on this machine. Turn it on any time: observer apps on"
+  return $false
+}
+
+# Complete-Connect: the end of a -Connect install, after the binary is in
+# place. Order: make Observer run (the sign-in entry, then `observer setup
+# launch`, which starts `observer start` with no window and registers the
+# hooks), show the local dashboard, then connect (the approval tab opens on
+# top). Failures are reported, never fatal: the install stays.
+function Complete-Connect([string]$exe, [string]$dir, $running, [bool]$appsOn = $false) {
+  $team = Get-ConnectTeam
+  $autostart = Set-SignInStart $exe $dir
+  $started = $false
+  if (@($running).Count -gt 0) {
+    foreach ($p in $running) {
+      Say ""
+      Say "observer (pid $($p.Id)) still runs the previous binary. The daemon is the proxy: restart it when no AI"
+      Say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md): stop it"
+      Say "(Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
+    }
+  } else {
+    # Starts `observer start` with no window and waits for it; the
+    # installer opens the page itself, below.
+    & $exe setup launch
+    $started = ($LASTEXITCODE -eq 0)
+    if (-not $started) { Warn "``observer setup launch`` reported a problem; start Observer with: observer start" }
+  }
+
+  # The local dashboard comes first: with ?connecting=1 it tells the person
+  # to approve this machine in the tab `observer connect` opens next.
+  $url = "$LocalDashboard/?connecting=1"
+  if ($team) { $url += "&team=$team" }
+  # The connect hand-off carries the arrival intent (a closed value the
+  # daemon validates and stores): -Apps is the AI apps track.
+  if ($script:appsWanted) { $url += "&intent=apps" }
+  Say ""
+  if ($started -or @($running).Count -gt 0) {
+    Say "Opening the local dashboard: $LocalDashboard"
+    # Tests (with -FromDir only) never open a browser; they read the URL.
+    if (-not ($env:OBSERVER_INSTALL_TEST_NO_OPEN -and $FromDir)) {
+      try { Start-Process $url } catch { Say "Open $LocalDashboard in a browser on this machine." }
+    } else {
+      Say "(test: the local dashboard opens at $url)"
+    }
+  } else {
+    Say "Observer is still starting. The local dashboard will be at $LocalDashboard"
+  }
+
+  Say ""
+  Say "Connecting this machine. Nothing is sent before you approve it."
+  $connectArgs = @("connect")
+  if ($team) { $connectArgs += $team }
+  $connectArgs += "--wire-clients=false"
+  & $exe @connectArgs
+  $connected = ($LASTEXITCODE -eq 0)
+  if (-not $connected) { Warn "not connected; Observer still works on this machine. Connect any time: observer connect" }
+
+  # The daemon builds its push loop only at start-up, so after a successful
+  # connect the one this installer started is restarted once (stop it, then
+  # `observer setup launch` again; no browser is opened). Non-fatal.
+  if ($connected -and $started) {
+    Say ""
+    if ($team) { $to = "team $team" } else { $to = "your personal dashboard" }
+    Say "Restarting Observer so it starts sending to $to."
+    try {
+      $alias = Join-Path $dir "superbased.exe"
+      foreach ($p in @(Get-RunningFrom @($exe, $alias))) {
+        Stop-Process -Id $p.Id -ErrorAction Stop
+        [void]$p.WaitForExit(10000)
+      }
+    } catch { Warn "could not stop Observer ($($_.Exception.Message)); restart it so it starts sending: observer start" }
+    & $exe setup launch
+    if ($LASTEXITCODE -ne 0) { Warn "``observer setup launch`` reported a problem; start Observer with: observer start" }
+  }
+
+  Say ""
+  if ($connected) { Say "This machine is connected." } else { Say "This machine is not connected yet: observer connect" }
+  Say "Local dashboard   $LocalDashboard"
+  Say "  everything Observer records on this computer, in full; it stays here"
+  if ($appsOn) {
+    Say "AI Apps           $LocalDashboard/apps"
+    Say "  traces from the AI apps you build, sent to 127.0.0.1:4318 (observer apps status)"
+  }
+  if ($team -and $connected) {
+    Say "Team dashboard    $OnlineDashboard"
+    Say "  full detail (prompts, responses, file paths); the team's admins can read it"
+  } else {
+    Say "Online dashboard  $OnlineDashboard"
+    Say "  a summary from each machine you connect"
+  }
+  if ($autostart) { Say "Observer starts when you sign in to Windows." }
+  if ($connected) { Say "Undo any time: observer disconnect" }
+}
+
 # ------------------------------------------------------------------- install
 
 function Invoke-Install {
@@ -644,6 +835,10 @@ function Invoke-Install {
   $ed = $Edition
   if ($ed) {
     if (-not $Editions.Contains($ed)) { Fail "unknown edition '$ed' (minimal, developer, managed or full)" }
+  } elseif ($Connect -or $script:appsWanted) {
+    # -Connect and -Apps ask nothing here: an existing developer or full install
+    # keeps its edition, anything else gets developer.
+    $ed = if ($defEd -eq "full") { "full" } else { "developer" }
   } elseif (Test-Interactive) {
     Say "Choose an edition:"
     $i = 1
@@ -658,6 +853,14 @@ function Invoke-Install {
     }
   } else { $ed = $defEd }
 
+  # Signing in lives in the developer and full editions only.
+  if ($Connect -and $ed -ne "developer" -and $ed -ne "full") {
+    Fail "-Connect needs the developer or full edition (the $ed edition has no superbased sign-in); drop -Edition or pass -Edition developer"
+  }
+  # AI Apps is compiled into the developer and full editions only.
+  if ($script:appsWanted -and $ed -ne "developer" -and $ed -ne "full") {
+    Fail "-Apps needs the developer or full edition (the $ed edition does not include AI Apps); drop -Edition or pass -Edition developer"
+  }
   if ($env:OBSERVER_INSTALL_TEST_VENDOR_KEY -and -not $FromDir) { Fail "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with -FromDir" }
   if ($BaseUrl -and -not $BaseUrl.StartsWith("https://")) { Fail "-BaseUrl must be https" }
   if ($FromDir) {
@@ -687,7 +890,7 @@ function Invoke-Install {
     $script:AssetBase = "$base/download/$ver"
     $asset = if ($ed -eq "full") { "observer-$ver-win32-x64.zip" } else { "observer-$ver-$ed-win32-x64.zip" }
 
-    Say "SuperBased Observer $ver, $ed edition"
+    Say "superbased Observer $ver, $ed edition"
     Say "  edition   $($Editions[$ed])"
     Say "  platform  win32-x64"
     Say "  archive   $asset"
@@ -799,7 +1002,7 @@ function Invoke-Install {
     }
 
     if (-not (Test-OnUserPath $dir)) {
-      $add = [bool]$AddToPath
+      $add = [bool]$AddToPath -or [bool]$Connect
       if (-not $add -and (Test-Interactive)) {
         $a = Ask "Add $dir to your user Path? [Y/n]" "y"
         $add = $a -match '^(y|yes)$'
@@ -818,6 +1021,13 @@ function Invoke-Install {
       Warn "``observer`` in this session resolves to $($resolved.Source), not $exe (an npm or pip install?); remove one so the shell runs the one you expect"
     }
 
+    # -Apps: AI Apps on before anything starts Observer.
+    $appsOn = Invoke-AppsOn $exe
+
+    if ($Connect -and $otherDaemons.Count -eq 0) {
+      Complete-Connect $exe $dir $running $appsOn
+      return
+    }
     if ($previous) {
       foreach ($p in $running) {
         Say ""
@@ -845,7 +1055,9 @@ function Invoke-Install {
     }
     Say ""
     Say "Next steps:"
-    if ($ed -eq "managed") { Say "  observer enroll --link <enrolment link>  # join your organization" }
+    if ($ed -eq "managed") { Say "  observer connect <server>              # connect to your company's server" }
+    else { Say "  observer connect                       # sign in and see this machine online" }
+    if ($appsOn) { Say "  observer apps status                   # AI Apps: the receiver and the latest trace" }
     # The minimal edition compiles the proxy out (T-744): never claim one there.
     if ($ed -eq "minimal") {
       Say "  observer init                          # hooks for your AI tools"
@@ -861,4 +1073,13 @@ function Invoke-Install {
 }
 
 if ($Purge -and -not $Uninstall) { Fail "-Purge applies only to -Uninstall" }
+if ($Connect -and $Uninstall) { Fail "-Connect does not go with -Uninstall" }
+if ($Apps -and $Uninstall) { Fail "-Apps does not go with -Uninstall" }
+$script:appsWanted = $false
+if (-not $Uninstall) { $script:appsWanted = Test-AppsWanted }
+if ($ConnectTeam -and -not $Connect) { Fail "unexpected argument '$ConnectTeam' (a team name goes after -Connect)" }
+if ($Connect) {
+  $connectTeamArg = Get-ConnectTeam
+  if ($connectTeamArg -and $connectTeamArg -notmatch '^[a-z0-9][a-z0-9-]{0,62}$') { Fail "-Connect: '$connectTeamArg' is not a team name (lowercase letters, digits and hyphens)" }
+}
 if ($Uninstall) { Invoke-Uninstall } else { Invoke-Install }

@@ -1,0 +1,68 @@
+rules:
+  - id: java.xss-request-input
+    languages: [java]
+    severity: ERROR
+    message: Web request input is written to the response as it is, so a caller can run script in the page; encode it for HTML (OWASP Encoder's Encode.forHtml) or render it through an escaping template.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletRequest $R).$M(...)
+              - patterns:
+                  - pattern: $R.$M(...)
+                  - metavariable-regex:
+                      metavariable: $R
+                      regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $FN(..., @$A $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RT $FN(..., @$A(...) $T $P, ...) { ... }
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|String\[\]|List<String>|Optional<String>|CharSequence)$
+    pattern-sanitizers:
+      - pattern: Encode.forHtml(...)
+      - pattern: Encode.forHtmlContent(...)
+      - pattern: Encode.forHtmlAttribute(...)
+      - pattern: StringEscapeUtils.escapeHtml4(...)
+      - pattern: StringEscapeUtils.escapeHtml(...)
+      - pattern: HtmlUtils.htmlEscape(...)
+      - pattern: ESAPI.encoder().encodeForHTML(...)
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletResponse $RESP).getWriter().$W(...)
+              - pattern: (HttpServletResponse $RESP).getOutputStream().$W(...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: $RESP.getWriter().$W(...)
+                      - pattern: $RESP.getOutputStream().$W(...)
+                  - metavariable-regex:
+                      metavariable: $RESP
+                      regex: (?i)^(resp|response|res|httpResponse|servletResponse|httpServletResponse)$
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          PrintWriter $OUT = $RESP.getWriter();
+                          ...
+                      - pattern-inside: |
+                          $OUT = $RESP.getWriter();
+                          ...
+                  - pattern: $OUT.$W(...)
+          - metavariable-regex:
+              metavariable: $W
+              regex: ^(write|print|println|printf|format|append)$

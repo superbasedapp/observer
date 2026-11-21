@@ -97,6 +97,8 @@ func newServeCmd() *cobra.Command {
 				GetSessionMessage: messageReader(cfg, database),
 				// Tool results follow the developer cost display (T-204).
 				CostDisplay: newCostDisplayResolver(store.New(database)).Mode,
+				// get_settings / set_setting (Plane A W2-8, D19).
+				Settings: newMCPSettingsBackend(configPath, database),
 			}
 			if cfg.Compression.Conversation.Stash.Enabled {
 				st, err := stash.New(stash.Options{
@@ -237,7 +239,7 @@ func newServeCmd() *cobra.Command {
 			}
 			// The security module's tools (lane sec-c3): only while the
 			// module is active and [security.mcp].tools is on.
-			for _, t := range securityMCPTools(cfg, database, logger) {
+			for _, t := range securityMCPToolsAt(cfg, database, logger, configPath) {
 				mcpOpts.ExtraTools = append(mcpOpts.ExtraTools, t)
 			}
 			s, err := mcp.New(mcpOpts)

@@ -145,10 +145,10 @@ func (e *LunaExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route s
 		// failure — fail the job immediately, never retry into a persisting
 		// endpoint (plan §2.3).
 		if errors.Is(err, inference.ErrPersistenceViolation) {
-			return ExecResult{Outcome: ExecProviderError, Terminal: true, TerminalReason: store.ReasonPersistenceViolation, Detail: "store:false violated"}, nil
+			return ExecResult{Outcome: ExecProviderError, Terminal: true, TerminalReason: store.ReasonPersistenceViolation, FailKind: FailPersistenceViolation, EstimateUSD: estimateCallUSD(prompt, route), Detail: "store:false violated"}, nil
 		}
 		// Quota / timeout / transport / 5xx — retryable provider error.
-		return ExecResult{Outcome: ExecProviderError, Detail: providerErrClass(err)}, nil
+		return ExecResult{Outcome: ExecProviderError, FailKind: classifyProviderErr(err), EstimateUSD: estimateCallUSD(prompt, route), Detail: providerErrClass(err)}, nil
 	}
 
 	tokensIn, tokensOut := res.TokensIn, res.TokensOut
@@ -160,7 +160,7 @@ func (e *LunaExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route s
 		// The rejected call was still billed: carry its cost so the worker
 		// counts it against the pool's spend ceiling (T-946).
 		attemptCost, _ := priceCall(e.pricer, route, res, now)
-		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: attemptCost, Detail: InvalidOutputDetail(res, rejection)}, nil
+		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: attemptCost, CostKnown: true, FailKind: FailInvalidOutput, Detail: InvalidOutputDetail(res, rejection)}, nil
 	}
 
 	// Marshal the OPAQUE normalized result — the JSON sink runs through

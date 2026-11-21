@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/gitalias"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
 	"github.com/marmutapp/superbased-observer/internal/hookctx"
+	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secipc"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
@@ -111,15 +112,27 @@ func (s *hookSecurity) quickScanOff(root string) bool {
 	return s.noScan[root]
 }
 
+// quickScanError is a quick-scan provider error that names its reason
+// (hookctx.QuickScanReasoner): Fill records it on the unknown answer, and
+// the commit gate's verdict says it.
+type quickScanError struct {
+	msg, reason string
+}
+
+func (e *quickScanError) Error() string { return e.msg }
+
+// QuickScanReason implements hookctx.QuickScanReasoner.
+func (e *quickScanError) QuickScanReason() string { return e.reason }
+
 // errQuickScanOff is the quick-scan provider's answer while the posture
 // says the service is not serving: Fill records it and the verdict stays
 // unknown, never clean.
-var errQuickScanOff = errors.New("security: quick-scan service not available")
+var errQuickScanOff error = &quickScanError{msg: "security: quick-scan service not available", reason: policy.QuickScanReasonNotServing}
 
 // errQuickScanNoTime is the quick-scan provider's answer when the hook
 // already spent the host's timeout less the margins: the verdict stays
 // unknown, never clean (LEFT2 audit E4).
-var errQuickScanNoTime = errors.New("security: no time left in the host's hook timeout for the quick scan")
+var errQuickScanNoTime error = &quickScanError{msg: "security: no time left in the host's hook timeout for the quick scan", reason: policy.QuickScanReasonNoTime}
 
 // hookQuickScanBudget clamps budget below plan's host timeout less the time
 // the hook spent since plan.Started (zero when no start is recorded).
@@ -389,7 +402,12 @@ func securityFactsEnrich(configPath, tool, event string, aliases func(dir string
 		}
 		ctx := context.Background()
 		hc := invocationHookContext(ctx, configPath)
-		root := hookProjectRoot(pe)
+		// A line run from outside any working tree whose commit names its
+		// repository (`git -C <repo> commit`, `cd <repo> && git commit`)
+		// is read as that repository's, the way a working directory inside
+		// it is (R3-67): before, the posture key was the bare directory and
+		// the gate read unknown (S-794).
+		root := securityGitTargetRoot(pe, hookProjectRoot(pe), aliases)
 		// The classifier runs only here, while the module is active, and
 		// only for the event kinds that can commit (lazily: a file write
 		// never reaches it).
@@ -456,9 +474,9 @@ func securityFactsEnrich(configPath, tool, event string, aliases func(dir string
 		}
 		if sec.Posture != policy.SecurityPostureAbsent {
 			sec.Hits, sec.ScanIncomplete = secrules.PreWriteSecurity(pe)
-			sec.QuickScan = policy.QuickScanNone
+			sec.QuickScan, sec.QuickScanDetail = policy.QuickScanNone, policy.QuickScanDetail{}
 			if plan.asked(sec) {
-				sec.QuickScan = plan.verdict(ctx, hc, req, hc.QuickScan)
+				sec.QuickScan, sec.QuickScanDetail = plan.verdict(ctx, hc, req, hc.QuickScan)
 			}
 		}
 		pe.Security = &sec
@@ -494,6 +512,9 @@ type securityQuickScanPlan struct {
 	// unplaced write reading unknown (lane SEC-GATE5 milestone 1).
 	otherRepos []string
 	unplaced   bool
+	// opaqueReason is the policy.QuickScanReason an opaque plan answers
+	// with, so the verdict says why no scan ran.
+	opaqueReason string
 }
 
 // maxOtherRepos bounds the other repositories one event's posture reads
@@ -509,6 +530,12 @@ const maxRaiseDirs = 16
 // commit (an opaque plan reports none: no trailer for a line the hook
 // cannot place).
 func (p securityQuickScanPlan) commits() bool {
+	if p.otherCheckout {
+		// A commit in another checkout of the project is scanned there, but
+		// its trailer is not this root's to hold (as when the plan was
+		// opaque for it).
+		return false
+	}
 	for _, r := range p.reqs {
 		if r.Form.Form == policy.GitWriteCommit {
 			return true
@@ -522,9 +549,12 @@ func (p securityQuickScanPlan) elsewhere() bool { return p.unplaced || len(p.oth
 
 // captureDirty stamps every request with the project's dirty counter as
 // it is now (zero when it cannot be read: a clean answer then covers
-// nothing).
+// nothing). A plan for another checkout of the project covers nothing
+// either: its scan reads that checkout's index, so its clean answer must
+// never clear the project's dirty state (which the main checkout's commits
+// read).
 func (p securityQuickScanPlan) captureDirty(layout secposture.Layout, root string) {
-	if len(p.reqs) == 0 {
+	if len(p.reqs) == 0 || p.otherCheckout {
 		return
 	}
 	seen, err := secposture.ReadDirty(layout, secposture.ProjectRootHash(root))
@@ -557,14 +587,19 @@ func (p securityQuickScanPlan) asked(sec hookctx.Security) bool {
 // hook context (a Fill that raises no second dirty marker), stopping at
 // the first answer that is not clean. A failed or skipped answer is
 // unknown, never clean.
-func (p securityQuickScanPlan) verdict(ctx context.Context, hc *hookctx.Context, req hookctx.Request, firstRes *hookctx.QuickScanResult) policy.QuickScanVerdict {
-	if p.opaque {
-		return policy.QuickScanUnknown
+//
+// The detail says why an unknown answer is unknown (the scan's own reason
+// and numbers, the hook's when it got no answer, the plan's when no scan
+// could run), for the commit gate's verdict words.
+func (p securityQuickScanPlan) verdict(ctx context.Context, hc *hookctx.Context, req hookctx.Request, firstRes *hookctx.QuickScanResult) (policy.QuickScanVerdict, policy.QuickScanDetail) {
+	if p.opaque || len(p.reqs) == 0 {
+		reason := p.opaqueReason
+		if reason == "" {
+			reason = policy.QuickScanReasonUnplaced
+		}
+		return policy.QuickScanUnknown, policy.QuickScanDetail{Reason: reason}
 	}
-	v := policy.QuickScanUnknown
-	if firstRes != nil {
-		v = firstRes.Verdict
-	}
+	v, d := answerOf(firstRes)
 	seen := p.reqs[0].DirtySeen
 	for _, next := range p.reqs[1:] {
 		if v != policy.QuickScanClean {
@@ -576,12 +611,21 @@ func (p securityQuickScanPlan) verdict(ctx context.Context, hc *hookctx.Context,
 		more.WriteCapable = false
 		more.QuickScan = &r
 		hc.Fill(ctx, more)
-		v = policy.QuickScanUnknown
-		if hc.QuickScan != nil {
-			v = hc.QuickScan.Verdict
-		}
+		v, d = answerOf(hc.QuickScan)
 	}
-	return v
+	if v != policy.QuickScanUnknown {
+		d = policy.QuickScanDetail{}
+	}
+	return v, d
+}
+
+// answerOf is one Fill's quick-scan answer: unknown with no_answer when
+// the Fill recorded none (the step was skipped).
+func answerOf(res *hookctx.QuickScanResult) (policy.QuickScanVerdict, policy.QuickScanDetail) {
+	if res == nil {
+		return policy.QuickScanUnknown, policy.QuickScanDetail{Reason: policy.QuickScanReasonNoAnswer}
+	}
+	return res.Verdict, res.Detail
 }
 
 // securityQuickScanPlanFor returns the quick-scan plan for an event: one
@@ -605,23 +649,140 @@ func securityQuickScanPlanFor(pe *policy.Event, root string, aliases func(string
 	if len(gating) == 0 {
 		return securityQuickScanPlan{}
 	}
-	others, unplaced, placedOtherCheckout := securityWriteRepos(pe, root, aliases)
-	other := placedOtherCheckout || securityInOtherCheckout(pe, root)
-	if other || unplaced || len(others) > 0 || len(gating) > maxQuickScanWrites || securityLeavesRoot(pe, root) {
-		return securityQuickScanPlan{opaque: true, otherCheckout: other, otherRepos: others, unplaced: unplaced}
+	placed := securityPlaceWrites(pe, root, aliases)
+	others, unplaced := placed.others, placed.unplaced
+	other := placed.otherCheckout || securityInOtherCheckout(pe, root)
+	opaque := func(reason string) securityQuickScanPlan {
+		return securityQuickScanPlan{opaque: true, otherCheckout: other, otherRepos: others, unplaced: unplaced, opaqueReason: reason}
 	}
-	// A relayed commit in a sandbox copy is scanned in the copy's tree, and
-	// a tree only inside a box answers unknown (lane sec-box,
-	// security_box.go).
-	scanRoot, ok := securityQuickScanRoot(root)
-	if !ok {
-		return securityQuickScanPlan{opaque: true}
+	if unplaced || len(others) > 0 || len(gating) > maxQuickScanWrites {
+		return opaque(policy.QuickScanReasonUnplaced)
 	}
-	plan := securityQuickScanPlan{}
+	if !other {
+		if securityLeavesRoot(pe, root) {
+			return opaque(policy.QuickScanReasonUnplaced)
+		}
+		// A relayed commit in a sandbox copy is scanned in the copy's tree,
+		// and a tree only inside a box answers unknown (lane sec-box,
+		// security_box.go).
+		scanRoot, ok := securityQuickScanRoot(root)
+		if !ok {
+			return opaque(policy.QuickScanReasonUnplaced)
+		}
+		plan := securityQuickScanPlan{}
+		for _, w := range gating {
+			plan.reqs = append(plan.reqs, &hookctx.QuickScanRequest{ProjectRoot: scanRoot, Form: securityFormInRoot(w, pe, scanRoot), OnlyWhen: securityNeedsQuickScan})
+		}
+		return plan
+	}
+	// The writes run in a linked worktree of the project other than root's
+	// own checkout (F0-14: they share root as their project). Such a commit
+	// records THAT checkout's index, so the scan reads that checkout: every
+	// gating write must be placed in the same one, the line must not leave
+	// it, and a relayed run (whose tree is the run's) is not this case.
+	// Before this the plan was always opaque here, so every commit an agent
+	// made from a worktree (an isolated subagent's, a `cd` into one) read
+	// "the quick scan did not finish" although no scan had run (S-793 asked
+	// on every such commit). The clean answer covers no dirty counter
+	// (captureDirty), and the enrich step still reads a clean posture as
+	// dirty for it, so the project's own clean record is never inherited.
+	//
+	// A relayed run is placed on the checkout it was launched in
+	// (RunCheckoutRoot). A LIVE run edits that host tree itself, so its
+	// commit records that checkout's index and is scanned there, as on the
+	// host path and as securityQuickScanRoot already treats a live run in
+	// the main checkout (R3-67); a copy run's tree is the box's, so it
+	// stays opaque.
+	checkout := placed.checkout
+	if checkout == "" || securityRelayedCopy() || securityLeavesCheckout(pe, root, checkout) {
+		return opaque(policy.QuickScanReasonUnplaced)
+	}
+	plan := securityQuickScanPlan{otherCheckout: true}
 	for _, w := range gating {
-		plan.reqs = append(plan.reqs, &hookctx.QuickScanRequest{ProjectRoot: scanRoot, Form: w, OnlyWhen: securityNeedsQuickScan})
+		plan.reqs = append(plan.reqs, &hookctx.QuickScanRequest{ProjectRoot: checkout, Form: securityFormInRoot(w, pe, checkout), OnlyWhen: securityNeedsCheckoutScan})
 	}
 	return plan
+}
+
+// securityRelayedCopy reports a relayed run whose agent edits a copy of the
+// tree (a clone, or a tree inside a box): its commits record that copy's
+// index, never the host checkout's.
+func securityRelayedCopy() bool {
+	if hookctx.Process().RunProjectRoot() == "" {
+		return false
+	}
+	delivery, _ := hookctx.Process().WorkspaceDelivery()
+	return delivery == hookctx.DeliveryCopy
+}
+
+// securityGitTargetRoot is the project root an event's commit gate reads
+// (R3-67). It is root, except for a line run from a directory that is in no
+// git working tree whose gating writes all place in ONE repository (`git -C
+// <repo> commit`, `cd <repo> && git commit`): that repository is then the
+// root, exactly as if the line had run inside it. A relayed run keeps the
+// run's root (the host launch fact decides), and a line that also writes
+// elsewhere, or that the placer cannot place, keeps root (it reads unknown,
+// as before).
+func securityGitTargetRoot(pe *policy.Event, root string, aliases func(string) (map[string]string, bool)) string {
+	if root == "" || hookctx.Process().RunProjectRoot() != "" {
+		return root
+	}
+	if _, ok := git.FindCheckoutRoot(root); ok {
+		return root
+	}
+	// The root is payload-named (the event's project directory), so it is
+	// read through the hook context's payload seam, never os.Stat: on the
+	// relay path a root outside the run's roots is refused there, which
+	// keeps the conservative reading below.
+	if st, err := hookctx.Process().Stat(root); err != nil || !st.IsDir() {
+		// A root this host cannot see (a box path, a foreign spelling) is
+		// nothing to resolve against: the old conservative reading stands.
+		return root
+	}
+	placed := securityPlaceWrites(pe, root, aliases)
+	if placed.unplaced || len(placed.others) != 1 || placed.inRoot {
+		return root
+	}
+	return placed.others[0]
+}
+
+// securityFormInRoot drops a gating write's `-C <dir>` when that directory is
+// the very checkout the scan reads (R3-67). The daemon's scan refuses any
+// form naming a directory, because it scans the request's root and a `-C`
+// elsewhere records another index; once the hook has placed the write and
+// asks for that same checkout, the `-C` says nothing more, and pathspecs are
+// relative to it exactly as to the root. Any other directory (a
+// subdirectory, whose pathspecs would resolve differently, a `--git-dir`, a
+// `~` spelling) is kept, and the scan answers unknown as before.
+func securityFormInRoot(w policy.GitWrite, pe *policy.Event, scanRoot string) policy.GitWrite {
+	if w.Dir == "" || scanRoot == "" {
+		return w
+	}
+	base := pe.Cwd
+	if run := hookctx.Process().RunCheckoutRoot(); run != "" {
+		base = run
+	} else if run := hookctx.Process().RunProjectRoot(); run != "" {
+		base = run
+	}
+	if base == "" {
+		base = scanRoot
+	}
+	dir := pathnorm.NormalizeForeign(filepath.FromSlash(w.Dir))
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(pathnorm.NormalizeForeign(base), dir)
+	}
+	if hookSamePath(dir, scanRoot) || hookSamePath(hookAbs(dir), hookAbs(scanRoot)) {
+		w.Dir = ""
+	}
+	return w
+}
+
+// securityNeedsCheckoutScan is OnlyWhen for a commit in another checkout:
+// the enrich step reads a clean posture as dirty there (the project's clean
+// record does not speak for that checkout's index), so the scan is asked
+// in a clean project too, not only a dirty one.
+func securityNeedsCheckoutScan(s hookctx.Security) bool {
+	return s.Posture == policy.SecurityPostureDirty || s.Posture == policy.SecurityPostureClean
 }
 
 // dirChangeCommands are the command units that change the shell's
@@ -638,6 +799,12 @@ var dirChangeCommands = map[string]bool{
 // variable, `-`, no operand, popd). The quick scan reads root's index, so
 // such a line is never answered clean (lane SEC-GATEFIX milestone 2e).
 func securityLeavesRoot(pe *policy.Event, root string) bool {
+	return securityLeavesCheckout(pe, root, hookCheckoutOf(root))
+}
+
+// securityLeavesCheckout is securityLeavesRoot against checkout: a `cd`
+// whose target is not inside checkout, or one it cannot resolve.
+func securityLeavesCheckout(pe *policy.Event, root, checkout string) bool {
 	if pe.Kind != policy.KindShellExec {
 		return false
 	}
@@ -648,7 +815,7 @@ func securityLeavesRoot(pe *policy.Event, root string) bool {
 	for _, dir := range dirs {
 		// Checkouts, not project roots: a linked worktree shares its main
 		// checkout's project root (F0-14) but not its index.
-		if hookCheckoutOf(dir) != hookCheckoutOf(root) {
+		if !hookSamePath(hookCheckoutOf(pathnorm.NormalizeForeign(dir)), checkout) {
 			return true
 		}
 	}
@@ -848,7 +1015,14 @@ func securityInOtherCheckout(pe *policy.Event, root string) bool {
 	}
 	project, checkout := hookRootOf(root), hookCheckoutOf(root)
 	for _, dir := range locs {
-		if dir == "" || hookRootOf(dir) != project {
+		if dir == "" {
+			continue
+		}
+		// A foreign spelling (a Windows host's `D:\repo` on a WSL-bridged
+		// hook) is translated first: as written it is a relative path here,
+		// which resolves only by the luck of the process's directory.
+		dir = pathnorm.NormalizeForeign(dir)
+		if hookRootOf(dir) != project {
 			continue
 		}
 		if hookCheckoutOf(dir) != checkout {
@@ -867,9 +1041,42 @@ func securityInOtherCheckout(pe *policy.Event, root string) bool {
 // relayed event is anchored on the run's checkout, never on a directory the
 // box reported, and gets no home directory to expand.
 func securityWriteRepos(pe *policy.Event, root string, aliases func(string) (map[string]string, bool)) (others []string, unplaced, otherCheckout bool) {
+	p := securityPlaceWrites(pe, root, aliases)
+	return p.others, p.unplaced, p.otherCheckout
+}
+
+// securityPlacement is where an event's gating writes run
+// (securityPlaceWrites).
+type securityPlacement struct {
+	// others, unplaced and otherCheckout are securityWriteRepos's answers.
+	others                  []string
+	unplaced, otherCheckout bool
+	// checkout is the one checkout of root's project every gating write
+	// was placed in, "" when they were placed in more than one, in another
+	// repository, or not at all.
+	checkout string
+	// inRoot: at least one gating write was placed in root's own project.
+	inRoot bool
+}
+
+// securityPlaceWrites places every gating write of an event (see
+// securityWriteRepos) and also names the one checkout of root's project
+// they all run in.
+func securityPlaceWrites(pe *policy.Event, root string, aliases func(string) (map[string]string, bool)) (out securityPlacement) {
 	if root == "" || (pe.Kind != policy.KindShellExec && pe.Kind != policy.KindMCPCall) {
-		return nil, false, false
+		return out
 	}
+	others, unplaced, otherCheckout := []string(nil), false, false
+	checkouts := map[string]bool{}
+	defer func() {
+		out.others, out.unplaced, out.otherCheckout = others, unplaced, otherCheckout
+		out.inRoot = len(checkouts) > 0
+		if !unplaced && len(others) == 0 && len(checkouts) == 1 {
+			for c := range checkouts {
+				out.checkout = c
+			}
+		}
+	}()
 	ev := *pe
 	home := ""
 	if run := hookctx.Process().RunCheckoutRoot(); run != "" {
@@ -886,7 +1093,8 @@ func securityWriteRepos(pe *policy.Event, root string, aliases func(string) (map
 	// unplaced, and no directory of it is stat-ed (SEC-GATE5 follow-up).
 	if ev.Kind == policy.KindShellExec {
 		if _, _, network := securityLineWalk(&ev, root); network {
-			return nil, true, false
+			unplaced = true
+			return out
 		}
 	}
 	anchor := ev.Cwd
@@ -911,12 +1119,16 @@ func securityWriteRepos(pe *policy.Event, root string, aliases func(string) (map
 				unplaced = true
 				continue
 			}
-			dir := filepath.FromSlash(policy.GitDirWorkTree(d))
+			// A foreign spelling (a WSL-bridged Windows host's `d:/repo`) is
+			// translated first, as hookProjectRoot translates the cwd.
+			dir := pathnorm.NormalizeForeign(filepath.FromSlash(policy.GitDirWorkTree(d)))
 			proj := hookRootOf(dir)
 			if hookSamePath(proj, project) {
-				if !hookSamePath(hookCheckoutOf(dir), checkout) {
+				co := hookCheckoutOf(dir)
+				if !hookSamePath(co, checkout) {
 					otherCheckout = true
 				}
+				checkouts[filepath.Clean(co)] = true
 				continue
 			}
 			key := filepath.Clean(proj)
@@ -931,7 +1143,7 @@ func securityWriteRepos(pe *policy.Event, root string, aliases func(string) (map
 			others = append(others, proj)
 		}
 	}
-	return others, unplaced, otherCheckout
+	return out
 }
 
 // securityWritesUnplaced reports that the placer left a gating write

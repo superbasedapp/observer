@@ -101,7 +101,7 @@ func destructiveRules() []Rule {
 			AppliesTo: shell, MatchCmd: matchProtectedDeletion,
 			Observe: DecisionFlag, Enforce: DecisionAsk,
 			Doc:    "deletion of a protected branch or tag",
-			Advice: "Confirm the ref is disposable; protected patterns are configured in [guard.boundary].",
+			Advice: "Confirm the ref is disposable; protected patterns are Protected branches (Observer dashboard Settings > Guard, Boundary; [guard.boundary]).",
 		},
 		{
 			ID: "R-120", Category: CategoryDestructive, Severity: SeverityCritical,
@@ -114,7 +114,7 @@ func destructiveRules() []Rule {
 			ID: "R-130", Category: CategoryDestructive, Severity: SeverityCritical,
 			AppliesTo: shell, MatchCmd: matchCloudDestroy,
 			Observe: DecisionFlag, Enforce: DecisionAsk,
-			Doc:    "cloud-infrastructure destruction command",
+			Doc:    "cloud-infrastructure or container-volume destruction command",
 			Advice: "Run a plan/dry-run variant first and have a human review the target scope.",
 		},
 		{
@@ -177,6 +177,16 @@ func unitPathTokens(cmd *Command) []string {
 	}
 	out = append(out, cmd.RedirectTargets...)
 	return out
+}
+
+// positionalsSkipping is Command.Positionals with the given set of
+// value-taking flags in place of the per-base valueFlags row, for the rules
+// that own their CLI's flag knowledge (the database CLI table, the R-130
+// sub-table): a listed flag's separate value is not an operand, an
+// "=VALUE" form carries its own, and "--" ends option scanning.
+func positionalsSkipping(cmd *Command, valued map[string]bool) []string {
+	_, pos := walkOptions(cmd, optSpec{valued: valued})
+	return pos
 }
 
 // excerpt bounds a detail string for verdict reasons (Don'ts: bounded
@@ -408,6 +418,15 @@ func dangerousDeleteTarget(ctx *MatchContext, op operand, d Dialect, a deleteAnc
 	if allow && matchAllowPaths(ctx, rp) {
 		return tierNone, ""
 	}
+	if ev.AltDialect != "" && d != ev.AltDialect && isDriveRelative(expandHome(raw, ctx.Cfg.Home)) {
+		// An unstated Windows shell is read twice (Event.AltDialect): the
+		// posix reading eats the backslashes of `d:\repo\build` and leaves
+		// the drive-relative `d:repobuild`, which normPath roots at the
+		// drive and would call outside the project. The other reading
+		// judges the real path, so this one does not (surface-gap FU-101).
+		// An event read once keeps the drive-rooted best effort.
+		return tierNone, ""
+	}
 	outside := ""
 	root := deleteProjectRoot(ev)
 	if root != "" && rp != "" && comparableFlavors(rp, root) && !isUnder(rp, root) {
@@ -434,9 +453,12 @@ func dangerousDeleteTarget(ctx *MatchContext, op operand, d Dialect, a deleteAnc
 	return tierDeny, outside
 }
 
-// deleteProjectRoot is the root R-101's recursive-delete arms judge
-// "outside the project" against: the event's own ProjectRoot, else the git
-// working tree the hook found around its cwd (Event.RepoRoot, D-MU10).
+// deleteProjectRoot is the root the destructive rules' outside-the-project
+// arms judge against: R-101's recursive-delete arms (D-MU10), R-102's
+// `.git` / project-root delete and R-141's `chown -R` arm (surface-gap
+// FU-101). It is the event's own ProjectRoot, else the git checkout the
+// hook found around its cwd (Event.RepoRoot). "" means no root is known,
+// which those arms treat as unknown, never as outside.
 func deleteProjectRoot(ev *Event) string {
 	if ev.ProjectRoot != "" {
 		return ev.ProjectRoot
@@ -706,7 +728,7 @@ func matchDeleteVCS(ctx *MatchContext, cmd *Command) (bool, string) {
 	if !ok || !recursive {
 		return false, ""
 	}
-	pr := ctx.Event.ProjectRoot
+	pr := deleteProjectRoot(ctx.Event)
 	if pr == "" {
 		return false, ""
 	}
@@ -861,61 +883,8 @@ func matchProtectedDeletion(ctx *MatchContext, cmd *Command) (bool, string) {
 
 // --- SQL (R-120) -------------------------------------------------------
 
-// sqlCLIs are the database CLIs whose command-line SQL and heredoc
-// bodies R-120 scans.
-var sqlCLIs = map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true}
-
-// SQL shape patterns. Go regexp is RE2 — linear time, no
-// catastrophic backtracking (a documented advantage over PCRE-based
-// competitors, spec §4.4).
-var (
-	reSQLDrop     = regexp.MustCompile(`(?i)\bDROP\s+(TABLE|DATABASE|SCHEMA)\b`)
-	reSQLTruncate = regexp.MustCompile(`(?i)\bTRUNCATE(\s+TABLE)?\s+\w`)
-	reSQLDelete   = regexp.MustCompile(`(?i)\bDELETE\s+FROM\b`)
-	reSQLWhere    = regexp.MustCompile(`(?i)\bWHERE\b`)
-)
-
-// matchDangerousSQL implements R-120 over -c/-e command flags, the
-// sqlite3 positional SQL argument, and heredoc bodies.
-func matchDangerousSQL(_ *MatchContext, cmd *Command) (bool, string) {
-	if !sqlCLIs[cmd.Base] {
-		return false, ""
-	}
-	var texts []string
-	if v, ok := cmd.FlagValue("-c", "--command", "-e", "--execute"); ok {
-		texts = append(texts, v)
-	}
-	if cmd.Base == "sqlite3" {
-		if pos := cmd.Positionals(); len(pos) > 1 {
-			texts = append(texts, pos[len(pos)-1])
-		}
-	}
-	if cmd.Heredoc != "" {
-		texts = append(texts, cmd.Heredoc)
-	}
-	for _, t := range texts {
-		if hit, why := dangerousSQL(t); hit {
-			return true, why
-		}
-	}
-	return false, ""
-}
-
-// dangerousSQL scans SQL text statement-by-statement for the R-120
-// shapes.
-func dangerousSQL(text string) (bool, string) {
-	for _, stmt := range strings.Split(text, ";") {
-		switch {
-		case reSQLDrop.MatchString(stmt):
-			return true, "DROP statement: " + excerpt(stmt)
-		case reSQLTruncate.MatchString(stmt):
-			return true, "TRUNCATE statement: " + excerpt(stmt)
-		case reSQLDelete.MatchString(stmt) && !reSQLWhere.MatchString(stmt):
-			return true, "DELETE without WHERE: " + excerpt(stmt)
-		}
-	}
-	return false, ""
-}
+// R-120's matcher (matchDangerousSQL) lives in rules_database.go with the
+// database CLI table it shares with R-121 to R-126.
 
 // --- cloud / publish / perms / device (R-130/R-140/R-141/R-142) -------
 
@@ -928,6 +897,12 @@ var cloudDestroyChecks = []func(*Command) (bool, string){
 	checkGcloudDelete,
 	checkKubectlDelete,
 	checkHelmUninstall,
+	checkPulumiDestroy,
+	checkCDKDestroy,
+	checkAzGroupDelete,
+	checkDockerSystemPrune,
+	checkDockerVolumeRemove,
+	checkComposeDownVolumes,
 }
 
 // matchCloudDestroy implements R-130 by walking the provider
@@ -1014,6 +989,100 @@ func checkHelmUninstall(cmd *Command) (bool, string) {
 	return false, ""
 }
 
+// Value-taking flags of the R-130 CLIs that have no valueFlags row, so
+// their verbs read at the right operand position (positionalsSkipping).
+var (
+	pulumiValued = setOf("-s", "--stack", "-C", "--cwd", "--color", "-m", "--message", "--config-file",
+		"-t", "--target", "-p", "--parallel", "--exclude", "--secrets-provider")
+	cdkValued = setOf("-a", "--app", "--profile", "-c", "--context", "-r", "--role-arn", "-o", "--output",
+		"--toolkit-stack-name", "--plugin", "--ca-bundle-path", "-p", "--package")
+	azValued = setOf("-n", "--name", "-g", "--resource-group", "--subscription", "-o", "--output", "--query")
+	// dockerValued covers the docker globals and the compose flags that come
+	// before a compose verb.
+	dockerValued = setOf("-H", "--host", "-c", "--context", "--config", "-l", "--log-level",
+		"-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile",
+		"--ansi", "--progress", "--filter", "-t", "--timeout", "--rmi")
+)
+
+// checkPulumiDestroy: `pulumi destroy` and its `pulumi down` alias.
+func checkPulumiDestroy(cmd *Command) (bool, string) {
+	if cmd.Base != "pulumi" {
+		return false, ""
+	}
+	if pos := positionalsSkipping(cmd, pulumiValued); len(pos) > 0 && (pos[0] == "destroy" || pos[0] == "down") {
+		return true, "pulumi " + pos[0]
+	}
+	return false, ""
+}
+
+// cdkWords are the command words that run the AWS CDK CLI.
+var cdkWords = setOf("cdk", "aws-cdk")
+
+// checkCDKDestroy: `cdk destroy`, also through a package runner (`npx cdk
+// destroy`, `npx aws-cdk destroy`).
+func checkCDKDestroy(cmd *Command) (bool, string) {
+	words := append([]string{cmd.Base}, positionalsSkipping(cmd, cdkValued)...)
+	for i := 0; i+1 < len(words); i++ {
+		if !cdkWords[canonicalBase(words[i], cmd.Dialect)] || (i > 0 && !isCommandRunner(cmd.Base)) {
+			continue
+		}
+		if words[i+1] == "destroy" {
+			return true, "cdk destroy"
+		}
+	}
+	return false, ""
+}
+
+// checkAzGroupDelete: `az group delete` (a resource group and everything
+// in it).
+func checkAzGroupDelete(cmd *Command) (bool, string) {
+	if cmd.Base != "az" {
+		return false, ""
+	}
+	if pos := positionalsSkipping(cmd, azValued); len(pos) >= 2 && pos[0] == "group" && pos[1] == "delete" {
+		return true, "az group delete"
+	}
+	return false, ""
+}
+
+// checkDockerSystemPrune: `docker system prune -a` (every unused image,
+// not only dangling ones).
+func checkDockerSystemPrune(cmd *Command) (bool, string) {
+	if cmd.Base != "docker" {
+		return false, ""
+	}
+	pos := positionalsSkipping(cmd, dockerValued)
+	if len(pos) >= 2 && pos[0] == "system" && pos[1] == "prune" && (cmd.HasShortFlag('a') || cmd.HasLongFlag("--all")) {
+		return true, "docker system prune --all"
+	}
+	return false, ""
+}
+
+// checkDockerVolumeRemove: `docker volume rm` / `remove` / `prune` (volume
+// data is not recoverable).
+func checkDockerVolumeRemove(cmd *Command) (bool, string) {
+	if cmd.Base != "docker" {
+		return false, ""
+	}
+	pos := positionalsSkipping(cmd, dockerValued)
+	if len(pos) >= 2 && pos[0] == "volume" && (pos[1] == "rm" || pos[1] == "remove" || pos[1] == "prune") {
+		return true, "docker volume " + pos[1]
+	}
+	return false, ""
+}
+
+// checkComposeDownVolumes: `docker compose down -v` and `docker-compose
+// down --volumes` (the project's named volumes go with the containers).
+func checkComposeDownVolumes(cmd *Command) (bool, string) {
+	pos := positionalsSkipping(cmd, dockerValued)
+	down := (cmd.Base == "docker" && len(pos) >= 2 && pos[0] == "compose" && pos[1] == "down") ||
+		(cmd.Base == "docker-compose" && len(pos) >= 1 && pos[0] == "down")
+	if down && (cmd.HasShortFlag('v') || cmd.HasLongFlag("--volumes")) {
+		return true, "compose down --volumes"
+	}
+	return false, ""
+}
+
 // matchPackagePublish implements R-140: registry publish and yank
 // operations across the package managers in the catalog.
 func matchPackagePublish(_ *MatchContext, cmd *Command) (bool, string) {
@@ -1062,16 +1131,17 @@ func matchBulkPermChange(ctx *MatchContext, cmd *Command) (bool, string) {
 			return false, ""
 		}
 		anchors := unitAnchors(ctx, cmd)
+		root := deleteProjectRoot(ctx.Event)
 		for _, t := range pos[1:] { // pos[0] is the owner spec
 			for _, a := range anchors {
 				if a.unknown || a.opaque {
 					continue
 				}
 				rp := resolveAt(ctx, t, a)
-				if rp == "" || ctx.Event.ProjectRoot == "" {
+				if rp == "" || root == "" {
 					continue
 				}
-				if comparableFlavors(rp, ctx.Event.ProjectRoot) && !isUnder(rp, ctx.Event.ProjectRoot) {
+				if comparableFlavors(rp, root) && !isUnder(rp, root) {
 					return true, "chown -R outside project: " + t
 				}
 			}

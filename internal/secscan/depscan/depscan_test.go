@@ -30,6 +30,13 @@ func TestDropRules(t *testing.T) {
 		{"unpinned requirements line", Package{Ecosystem: "PyPI", Name: "requests", Version: "2.0", Unpinned: true}, "unpinned_version"},
 		{"local entry of an oversize lockfile", Package{Ecosystem: "npm", Name: "vite", Version: "5.4.21", Local: true, LockfileTooLarge: true}, "local_unchecked"},
 		{"root package.json with no version is no gap", Package{Ecosystem: "npm", Name: "app", Extractor: "javascript/packagejson", Path: "package.json"}, "root_project"},
+		{"action pinned by a SHA with no comment", Package{Ecosystem: "GitHub Actions", Name: "actions/checkout", PinnedBySHA: true}, "sha_no_version"},
+		{"action on a branch", Package{Ecosystem: "GitHub Actions", Name: "actions/checkout", Version: "main", NotAVersion: true}, "not_a_version"},
+		{"action on a moving tag kept", Package{Ecosystem: "GitHub Actions", Name: "actions/checkout", Version: "v4", MovingTag: true}, ""},
+		{"action from a SHA comment kept", Package{Ecosystem: "GitHub Actions", Name: "actions/checkout", Version: "v4.1.0", VersionFromComment: true}, ""},
+		{"kernel headers of an image", Package{Ecosystem: "Debian:12", Name: "linux", Binary: "linux-libc-dev", Version: "6.1.112-1", Extractor: "os/dpkg"}, "kernel_package"},
+		{"package of another release", Package{Ecosystem: "Debian:12", Name: "musl", Version: "1.2.5-r0", Extractor: "os/apk", OtherRelease: true}, "other_release"},
+		{"an npm package named like a kernel is kept", Package{Ecosystem: "npm", Name: "linux-headers-x", Version: "1.0.0"}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -45,7 +52,7 @@ func TestDropRules(t *testing.T) {
 			}
 		})
 	}
-	if got := DropRuleNames(); !slices.Equal(got, []string{"go_directive", "root_project", "empty_version", "unpinned_version", "local_unchecked", "local_package"}) {
+	if got := DropRuleNames(); !slices.Equal(got, []string{"kernel_package", "other_release", "go_directive", "artifact_toolchain", "go_version_unknown", "artifact_main_module", "root_project", "sha_no_version", "not_a_version", "empty_version", "unpinned_version", "local_unchecked", "local_package"}) {
 		t.Fatalf("drop table order %v", got)
 	}
 	// The Gap column: only real dependencies the run could not check leave
@@ -54,7 +61,7 @@ func TestDropRules(t *testing.T) {
 	for _, r := range dropRules {
 		gaps[r.Name] = r.Gap
 	}
-	want := map[string]string{"go_directive": "", "root_project": "", "empty_version": ReasonUnpinned, "unpinned_version": ReasonUnpinned, "local_unchecked": ReasonLockfileTooLarge, "local_package": ""}
+	want := map[string]string{"kernel_package": "", "other_release": ReasonOtherRelease, "go_directive": "", "root_project": "", "sha_no_version": ReasonPinnedBySHA, "not_a_version": ReasonUnpinned, "empty_version": ReasonUnpinned, "unpinned_version": ReasonUnpinned, "local_unchecked": ReasonLockfileTooLarge, "local_package": ""}
 	for k, v := range want {
 		if gaps[k] != v {
 			t.Errorf("rule %s gap %q, want %q", k, gaps[k], v)

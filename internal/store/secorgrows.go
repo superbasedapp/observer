@@ -226,12 +226,15 @@ type ResolveSecurityShareFacts struct {
 
 // securityShareRules is the ordered share table (CLAUDE.md rule 5), walked
 // top-down; the first row that matches decides. An individual node is
-// decided by its own key only (default off, never remote, Q7); a managed
-// node by the org's pull, posture by default.
+// decided by its own key only (never remote, Q7): unset is posture (ruling
+// R1 of lane CODESEC-ORG, 2026-11-03), an explicit "off" or an unknown
+// value is off. A managed node is decided by the org's pull, posture by
+// default.
 var securityShareRules = []struct {
 	match func(f ResolveSecurityShareFacts) bool
 	level func(f ResolveSecurityShareFacts) string
 }{
+	{func(f ResolveSecurityShareFacts) bool { return !f.Managed && f.LocalLevel == "" }, func(ResolveSecurityShareFacts) string { return orgcontract.SecuritySharePosture }},
 	{func(f ResolveSecurityShareFacts) bool { return !f.Managed }, func(f ResolveSecurityShareFacts) string { return knownShareLevel(f.LocalLevel) }},
 	{func(f ResolveSecurityShareFacts) bool { return f.PullLevel != "" }, func(f ResolveSecurityShareFacts) string { return knownShareLevel(f.PullLevel) }},
 	{func(ResolveSecurityShareFacts) bool { return true }, func(ResolveSecurityShareFacts) string { return orgcontract.SecuritySharePosture }},

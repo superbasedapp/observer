@@ -205,10 +205,29 @@ func TestFetchBudgetPolicyETag304KeepsTheCachedDoc(t *testing.T) {
 	if err != nil || !first.Changed {
 		t.Fatalf("first fetch: %+v err=%v, want a changed accept", first, err)
 	}
+	before, err := s.LoadOrgBudget(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	// Demo bug #4: the 304 records when the org re-confirmed the body, so a
+	// status read in another process can say "last confirmed at" instead of
+	// the time the body first arrived. The document witness does not move.
+	confirmedAt := time.Now().UTC().Add(3 * time.Hour).Truncate(time.Second)
+	c.SetBudgetClock(func() time.Time { return confirmedAt })
 	second, err := c.FetchBudgetPolicy(context.Background())
 	if err != nil {
 		t.Fatalf("second fetch: %v", err)
+	}
+	after, err := s.LoadOrgBudget(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.FetchedAt.Equal(confirmedAt) {
+		t.Errorf("fetched_at after the 304 = %v, want the confirmation time %v (was %v)", after.FetchedAt, confirmedAt, before.FetchedAt)
+	}
+	if after.Witness != before.Witness || after.Version != before.Version {
+		t.Errorf("a 304 changed the stored document: %+v -> %+v", before.Witness, after.Witness)
 	}
 	if got, _ := bs.gotINM.Load().(string); got != `"bp-abc123"` {
 		t.Errorf("If-None-Match = %q, want the cached ETag — a poll that did not send it would re-download every cycle", got)

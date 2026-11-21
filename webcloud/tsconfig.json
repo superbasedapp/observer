@@ -21,5 +21,8 @@
     }
   },
   "include": ["src", "../shared"],
-  "exclude": ["dist", "node_modules"]
+  // The node:test unit tests (npm test) run under node's own runner and need
+  // @types/node, which this app does not install (adding it rehoists the
+  // workspace lock for web and web2); the app build never includes them.
+  "exclude": ["dist", "node_modules", "src/**/*.test.ts", "src/**/*.test.tsx"]
 }

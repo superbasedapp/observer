@@ -162,7 +162,9 @@ func (s *Store) LoadProjectRemotes(ctx context.Context, projectID int64) ([]deli
 
 // ListDeliveryRepos returns one row per project remote, for every project
 // with an AI-touched commit (a commit_landings row) committed in the last 90
-// days: the repositories the provider service polls.
+// days, and every remote a cloud session in that window claimed a PR or
+// branch on (cloud_session_links, lane CA-C5): the repositories the provider
+// service polls.
 func (s *Store) ListDeliveryRepos(ctx context.Context) ([]delivery.Remote, error) {
 	since := timestamp(time.Now().UTC().Add(-deliveryRepoWindow))
 	rows, err := s.db.QueryContext(ctx, `
@@ -170,7 +172,10 @@ func (s *Store) ListDeliveryRepos(ctx context.Context) ([]delivery.Remote, error
 		 WHERE EXISTS (SELECT 1 FROM commit_landings cl
 		                 JOIN project_commits c ON c.id = cl.commit_id
 		                WHERE cl.project_id = r.project_id AND c.committed_at >= ?)
-		 ORDER BY r.project_id, r.remote_name`, since)
+		    OR EXISTS (SELECT 1 FROM cloud_session_links csl
+		                 JOIN sessions cs ON cs.id = csl.session_id
+		                WHERE csl.remote = lower(r.host || '/' || r.repo_slug) AND cs.started_at >= ?)
+		 ORDER BY r.project_id, r.remote_name`, since, since)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListDeliveryRepos: %w", err)
 	}
@@ -667,8 +672,8 @@ func (s *Store) UpsertPullRequest(ctx context.Context, pr delivery.PullRequest, 
 		INSERT INTO pull_requests
 		  (provider_link_id, provider, host, repo_slug, number, title, url, author_login, pr_state,
 		   merge_readiness, facets_json, provider_raw_state, head_sha, base_ref, merge_commit_sha,
-		   merge_method, created_at, merged_at, closed_at, updated_at, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   merge_method, created_at, merged_at, closed_at, updated_at, fetched_at, head_ref)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider_link_id, repo_slug, number) DO UPDATE SET
 			provider           = excluded.provider,
 			host               = excluded.host,
@@ -687,13 +692,14 @@ func (s *Store) UpsertPullRequest(ctx context.Context, pr delivery.PullRequest, 
 			merged_at          = excluded.merged_at,
 			closed_at          = excluded.closed_at,
 			updated_at         = excluded.updated_at,
-			fetched_at         = excluded.fetched_at
+			fetched_at         = excluded.fetched_at,
+			head_ref           = CASE WHEN excluded.head_ref <> '' THEN excluded.head_ref ELSE pull_requests.head_ref END
 		RETURNING id`,
 		pr.LinkID, string(pr.Provider), strings.ToLower(pr.Host), pr.RepoSlug, pr.Number, title, pr.URL,
 		pr.AuthorLogin, string(pr.State), string(pr.Readiness), string(facets), pr.RawState, pr.HeadSHA,
 		pr.BaseRef, pr.MergeCommitSHA, string(pr.MergeMethod), optionalTimestamp(pr.CreatedAt),
 		optionalTimestamp(pr.MergedAt), optionalTimestamp(pr.ClosedAt), optionalTimestamp(pr.UpdatedAt),
-		timestamp(pr.FetchedAt)).Scan(&id)
+		timestamp(pr.FetchedAt), boundHeadRef(pr.HeadRef)).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("store.UpsertPullRequest: %w", err)
 	}
@@ -758,7 +764,17 @@ func (s *Store) SetPRCommitPatchFingerprint(ctx context.Context, prID int64, sha
 const prColumns = `p.id, p.provider_link_id, p.provider, p.host, p.repo_slug, p.number, p.title, p.url,
 	p.author_login, p.pr_state, p.merge_readiness, p.facets_json, p.provider_raw_state, p.head_sha,
 	p.base_ref, p.merge_commit_sha, p.merge_method, p.created_at, p.merged_at, p.closed_at,
-	p.updated_at, p.fetched_at`
+	p.updated_at, p.fetched_at, p.head_ref`
+
+// boundHeadRef caps a PR head branch name before it is stored (a git ref
+// name is at most 255 bytes in practice; anything longer is not one).
+func boundHeadRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if len(ref) > 255 || strings.ContainsAny(ref, "\x00\n\r") {
+		return ""
+	}
+	return ref
+}
 
 func scanPR(sc interface{ Scan(...any) error }) (delivery.PullRequest, error) {
 	var (
@@ -768,7 +784,7 @@ func scanPR(sc interface{ Scan(...any) error }) (delivery.PullRequest, error) {
 	)
 	if err := sc.Scan(&p.ID, &p.LinkID, &provider, &p.Host, &p.RepoSlug, &p.Number, &p.Title, &p.URL,
 		&p.AuthorLogin, &state, &readiness, &facets, &p.RawState, &p.HeadSHA, &p.BaseRef, &p.MergeCommitSHA,
-		&method, &created, &merged, &closed, &updated, &fetched); err != nil {
+		&method, &created, &merged, &closed, &updated, &fetched, &p.HeadRef); err != nil {
 		return p, err
 	}
 	p.Provider = delivery.Provider(provider)

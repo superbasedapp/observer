@@ -24,6 +24,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/secciwf"
 	"github.com/marmutapp/superbased-observer/internal/secdetect"
 	"github.com/marmutapp/superbased-observer/internal/secdiffobs"
+	"github.com/marmutapp/superbased-observer/internal/secdockerfile"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
 	"github.com/marmutapp/superbased-observer/internal/secpostwrite"
@@ -96,6 +97,24 @@ func (r *securityRuntime) allowRoot(root string, now time.Time) bool {
 	for _, sp := range spellings {
 		if gitRoot, ok := git.FindRoot(sp); ok && filepath.Clean(gitRoot) == filepath.Clean(sp) {
 			return true
+		}
+		// A linked worktree's own checkout (a commit there records the
+		// worktree's index, which the hook now asks the scan to read): its
+		// project is the main repository (F0-14), which must itself be a
+		// known project or a working tree's root.
+		if co, ok := git.FindCheckoutRoot(sp); ok && filepath.Clean(co) == filepath.Clean(sp) {
+			if gitRoot, ok := git.FindRoot(sp); ok && filepath.Clean(gitRoot) != filepath.Clean(sp) {
+				main := []string{gitRoot}
+				if n := commitScanRoot(gitRoot); n != "" && n != gitRoot {
+					main = append(main, n)
+				}
+				if r.knownRoot(list, main, now) {
+					return true
+				}
+				if mr, ok := git.FindRoot(gitRoot); ok && filepath.Clean(mr) == filepath.Clean(gitRoot) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -178,7 +197,7 @@ func securityIdentify(resolved string) func(typ, value string) string {
 // error, which the scan answers as unknown, never clean.
 func newSecurityQuickScanEngine(identify func(string, string) string) *secquickscan.Engine {
 	return &secquickscan.Engine{
-		Git:      gitview.RunReadOnlyNoLazyFetch,
+		Git:      securityQuickScanGit,
 		Version:  secrules.PackVersion,
 		Scanner:  secdetect.Scanner{Identify: identify},
 		ReadFile: securityReadWorkingFile,
@@ -186,6 +205,34 @@ func newSecurityQuickScanEngine(identify func(string, string) string) *secquicks
 		// commit (false without security.deps compiled in).
 		Retain: depsRetainPath,
 	}
+}
+
+// securityQuickScanGitRun is the quick scan's git envelope: read-only and
+// never lazily fetching (a seam for tests).
+var securityQuickScanGitRun = gitview.RunReadOnlyNoLazyFetchEnv
+
+// securityQuickScanGit runs one quick-scan git command in root, through
+// the git internal/gitroute chooses for it (R3-86, security_quickscan_gitroute.go).
+//
+// On a WSL daemon reading a checkout on a Windows drive (a DrvFs mount) that
+// is the Windows git.exe through interop, with the root's Windows spelling
+// as -C: a working-tree diff (`git commit -a`, a pathspec) from the WSL git
+// across the 9P bridge took 25 to 45 s on a 27,000-file repository even with
+// the minimal stat check (R3-66), over the 2 s budget, and git.exe reads it
+// in a few hundred milliseconds. git.exe also follows a linked worktree's
+// `.git` pointer (spelled D:/...) natively. When git.exe is not usable
+// (interop off, none installed) or fails to run, the WSL git reads the
+// drive with core.checkStat=minimal and core.trustctime=false (whole-second
+// mtime and size, which is what Windows git's own commit compares).
+//
+// With the host's own git, in a linked worktree's own checkout it names the
+// worktree's git directory and work tree explicitly (GIT_DIR,
+// GIT_WORK_TREE): a worktree a Windows git created carries a `.git` pointer
+// spelled `D:/...`, which a WSL daemon's git cannot follow ("not a git
+// repository"). Anywhere else it is the plain envelope, unchanged.
+func securityQuickScanGit(ctx context.Context, root string, maxBytes int, timeout time.Duration, args ...string) ([]byte, bool, error) {
+	plan := securityGitRouter().Plan(ctx, root, args)
+	return securityRunGitPlan(ctx, root, plan, maxBytes, timeout, args)
 }
 
 // securityReadWorkingFile reads a working-tree file for the quick scan's
@@ -244,7 +291,8 @@ func recordQuickScanCode(root string, r secquickscan.Result) {
 	if step == nil || !step.code || step.st == nil || r.Verdict == secquickscan.VerdictUnknown {
 		return
 	}
-	if len(r.CI) == 0 && len(r.Observations) == 0 && r.CIUnchecked == 0 && len(r.CIChecked) == 0 {
+	if len(r.CI) == 0 && len(r.Observations) == 0 && r.CIUnchecked == 0 && len(r.CIChecked) == 0 &&
+		len(r.Container) == 0 && r.ContainerUnchecked == 0 && len(r.ContainerChecked) == 0 {
 		return
 	}
 	go recordSecurityCode(context.Background(), step.st, root, secposture.ProjectRootHash(root), "", policy.FindingScopeStaged, r, step.logger)
@@ -399,6 +447,7 @@ const (
 	rescanSecret
 	rescanWorkflow
 	rescanVerification
+	rescanDockerfile
 )
 
 // rescanKindFor maps a sighting onto its rescan: a secret through the
@@ -410,6 +459,8 @@ func rescanKindFor(o store.SecOpenSighting) securityRescanKind {
 		return rescanSecret
 	case o.RulePack == securityCodePack && strings.HasPrefix(o.RuleID, securityCIRulePrefix):
 		return rescanWorkflow
+	case o.RulePack == securityCodePack && strings.HasPrefix(o.RuleID, securityContainerRulePrefix):
+		return rescanDockerfile
 	case o.RulePack == securityCodePack && slices.Contains(securityRecheckObservations, o.RuleID):
 		return rescanVerification
 	}
@@ -423,7 +474,7 @@ func rescanKindFor(o store.SecOpenSighting) securityRescanKind {
 func rescanClasses(code bool) []store.SecRescanClass {
 	out := []store.SecRescanClass{{Pack: securitySecretsPack}}
 	if code {
-		out = append(out, store.SecRescanClass{Pack: securityCodePack, RulePrefixes: []string{securityCIRulePrefix}, RuleIDs: securityRecheckObservations})
+		out = append(out, store.SecRescanClass{Pack: securityCodePack, RulePrefixes: []string{securityCIRulePrefix, securityContainerRulePrefix}, RuleIDs: securityRecheckObservations})
 	}
 	return out
 }
@@ -495,7 +546,7 @@ func (r *securityRescan) tick(ctx context.Context, now time.Time) {
 		r.after = o
 		kind := rescanKindFor(o)
 		root := byHash[o.ProjectRootHash]
-		if kind == rescanNone || root == "" || ((kind == rescanWorkflow || kind == rescanVerification) && !r.code) {
+		if kind == rescanNone || root == "" || ((kind == rescanWorkflow || kind == rescanVerification || kind == rescanDockerfile) && !r.code) {
 			continue
 		}
 		key := fmt.Sprintf("%s\x00%s\x00%d", root, o.Path, kind)
@@ -511,6 +562,8 @@ func (r *securityRescan) tick(ctx context.Context, now time.Time) {
 			r.recheckWorkflow(ctx, root, o.Path)
 		case rescanVerification:
 			r.recheckVerification(ctx, root, o.Path)
+		case rescanDockerfile:
+			r.recheckDockerfile(ctx, root, o.Path)
 		}
 	}
 }
@@ -998,6 +1051,36 @@ func (r *securityRescan) recheckWorkflow(ctx context.Context, root, rel string) 
 		secsvc.Gone{Pack: securityCodePack, Paths: []string{rel}, RulePrefixes: []string{securityCIRulePrefix}}, r.logger)
 }
 
+// recheckDockerfile runs the Dockerfile rules (S-750 to S-755) over a
+// Dockerfile as it is now, like recheckWorkflow: its hits are recorded
+// again and a rule that no longer fires there closes; a deleted file
+// closes everything sighted there; a file that cannot be checked whole
+// proves nothing.
+func (r *securityRescan) recheckDockerfile(ctx context.Context, root, rel string) {
+	if securityFileDeleted(root, rel) {
+		recordSecurityFindings(ctx, r.st, root, policy.FindingScopePostWrite, nil,
+			secscan.Coverage{Outcome: secscan.OutcomeClean, Reason: "file_deleted"}, securityDeletedGone([]string{rel}), r.logger)
+		return
+	}
+	b, err := secpostwrite.ReadFile(root, rel, secdockerfile.MaxDockerfileBytes)
+	if err != nil {
+		return
+	}
+	rep := secdockerfile.Check(b)
+	if !rep.Complete() || rep.TruncatedRuns > 0 {
+		return
+	}
+	hash := secposture.ProjectRootHash(root)
+	var fs []secfinding.Finding
+	for _, h := range rep.Findings {
+		f := securityContainerFinding(hash, "", secquickscan.ContainerFinding{Path: rel, RuleID: h.RuleID, Line: h.Line, Severity: h.Severity, FlagOnly: h.FlagOnly, Message: h.Message, Detail: h.Detail})
+		f.Scope = policy.FindingScopePostWrite
+		fs = append(fs, f)
+	}
+	recordSecurityFindings(ctx, r.st, root, policy.FindingScopePostWrite, fs, secscan.Coverage{Outcome: secscan.OutcomeClean, FilesScanned: 1},
+		secsvc.Gone{Pack: securityCodePack, Paths: []string{rel}, RulePrefixes: []string{securityContainerRulePrefix}}, r.logger)
+}
+
 // recheckVerification reads a file whole (capped) and runs the observation
 // rules over it as if every line were added: a recheckable observation
 // that no longer fires there closes; a deleted file closes the state
@@ -1116,6 +1199,10 @@ const securityCodePack = "security.code"
 // (securityCIFinding).
 const securityCIRulePrefix = "ci."
 
+// securityContainerRulePrefix is the rule id prefix of a Dockerfile rule
+// finding (securityContainerFinding), recorded under securityCodePack too.
+const securityContainerRulePrefix = "container."
+
 // securityStateObservations are the diff observation rules whose finding
 // is a fact about the file as it is (disabled TLS verification, a
 // suppression or always-true fallback), so the file's deletion closes it.
@@ -1137,7 +1224,7 @@ var securityRecheckObservations = []string{"code.s-761"}
 func securityDeletedGone(paths []string) secsvc.Gone {
 	return secsvc.Gone{
 		Pack: securitySecretsPack, Paths: paths,
-		Also: []secsvc.Gone{{Pack: securityCodePack, Paths: paths, RulePrefixes: append([]string{securityCIRulePrefix}, securityStateObservations...)}},
+		Also: []secsvc.Gone{{Pack: securityCodePack, Paths: paths, RulePrefixes: append([]string{securityCIRulePrefix, securityContainerRulePrefix}, securityStateObservations...)}},
 	}
 }
 
@@ -1148,10 +1235,10 @@ func securityFileDeleted(root, rel string) bool {
 	if root == "" || rel == "" {
 		return false
 	}
-	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+	if st, err := os.Stat(root); err != nil || !st.IsDir() { //nolint:gosec // G703: false positive; a stat of a recorded project root, nothing is read or written
 		return false
 	}
-	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))) //nolint:gosec // G703: false positive; an existence check of a recorded file under that root
 	return errors.Is(err, os.ErrNotExist)
 }
 
@@ -1351,9 +1438,17 @@ func recordSecurityCode(ctx context.Context, st *store.Store, root, hash, sha st
 		f.Scope = scope
 		fs = append(fs, f)
 	}
+	for _, c := range r.Container {
+		f := securityContainerFinding(hash, sha, c)
+		f.Scope = scope
+		fs = append(fs, f)
+	}
 	cov := secscan.Coverage{Outcome: secscan.OutcomeClean, FilesScanned: r.Files}
-	if r.CIUnchecked > 0 {
+	switch {
+	case r.CIUnchecked > 0:
 		cov.Outcome, cov.Reason = secscan.OutcomeUnknown, "workflow_unchecked"
+	case r.ContainerUnchecked > 0:
+		cov.Outcome, cov.Reason = secscan.OutcomeUnknown, "dockerfile_unchecked"
 	}
 	if len(fs) == 0 && cov.Outcome == secscan.OutcomeClean && r.Files == 0 && len(r.Deleted) == 0 {
 		return // nothing changed that the code rows read
@@ -1363,8 +1458,12 @@ func recordSecurityCode(ctx context.Context, st *store.Store, root, hash, sha st
 	// milestone 1d). An unknown run closes nothing (secsvc.RecordRun), and
 	// the checked list carries only workflows read whole.
 	gone := secsvc.Gone{Pack: securityCodePack, Paths: r.CIChecked, RulePrefixes: []string{securityCIRulePrefix}}
+	if len(r.ContainerChecked) > 0 {
+		// A Dockerfile checked whole speaks for the container.* rows there.
+		gone.Also = append(gone.Also, secsvc.Gone{Pack: securityCodePack, Paths: r.ContainerChecked, RulePrefixes: []string{securityContainerRulePrefix}})
+	}
 	if len(r.Deleted) > 0 {
-		gone.Also = []secsvc.Gone{securityDeletedGone(r.Deleted).Also[0]}
+		gone.Also = append(gone.Also, securityDeletedGone(r.Deleted).Also[0])
 	}
 	recordSecurityFindings(ctx, st, root, scope, fs, cov, gone, logger)
 }
@@ -1396,6 +1495,55 @@ func securityObservationFinding(rootHash, sha string, o secdiffobs.Observation) 
 		Scope:      policy.FindingScopeCommit,
 		Project:    secfinding.Project{RootHash: rootHash},
 		Message:    o.RuleID + ": " + o.Message,
+		Baseline:   policy.FindingBaselineNew,
+		Commit:     secfinding.Commit{SHA: sha},
+		Status:     policy.FindingStatusOpen,
+	})
+}
+
+// containerFindingSeverities maps a Dockerfile rule hit's severity onto the
+// finding scale; a flag-only hit is low whatever its row says.
+var containerFindingSeverities = map[secdockerfile.Severity]policy.FindingSeverity{
+	secdockerfile.SeverityHigh:   policy.FindingSeverityHigh,
+	secdockerfile.SeverityMedium: policy.FindingSeverityMedium,
+	secdockerfile.SeverityLow:    policy.FindingSeverityLow,
+}
+
+// securityContainerFinding is a landed Dockerfile rule hit (S-750 to S-755)
+// as a finding: category iac at the hit's severity, medium confidence (the
+// rules have no precision figure yet, so they never count toward S-791's
+// blocking set), keyed by the rule and the Dockerfile, with the rule's
+// fixed message and, for S-752, the end-of-life table's words.
+func securityContainerFinding(rootHash, sha string, c secquickscan.ContainerFinding) secfinding.Finding {
+	rule := securityContainerRulePrefix + strings.ToLower(c.RuleID)
+	sev, ok := containerFindingSeverities[c.Severity]
+	if !ok || c.FlagOnly {
+		sev = policy.FindingSeverityLow
+	}
+	text := c.Message
+	if text == "" {
+		if r, found := secdockerfile.RuleByID(c.RuleID); found {
+			text = r.Message
+		}
+	}
+	msg := c.RuleID
+	if text != "" {
+		msg += ": " + text
+	}
+	if c.Detail != "" {
+		msg += " (" + c.Detail + ")"
+	}
+	return secfinding.Normalize(secfinding.Finding{
+		LocalKey:   secfinding.LocalKey(rootHash, rule, secfinding.TextIdentity(c.Path)),
+		Location:   secfinding.Location{RelPath: c.Path, StartLine: c.Line, EndLine: c.Line},
+		Rule:       secfinding.Rule{ID: rule, Pack: securityCodePack, PackVersion: secrules.PackVersion},
+		Engine:     secfinding.Engine{Driver: "native"},
+		Category:   policy.FindingIaC,
+		Severity:   sev,
+		Confidence: policy.FindingConfidenceMedium,
+		Scope:      policy.FindingScopeCommit,
+		Project:    secfinding.Project{RootHash: rootHash},
+		Message:    msg,
 		Baseline:   policy.FindingBaselineNew,
 		Commit:     secfinding.Commit{SHA: sha},
 		Status:     policy.FindingStatusOpen,
@@ -1458,6 +1606,10 @@ func startSecurityPhaseC(ctx context.Context, ng *gatedGroup, configPath string,
 		// KiB (lane LEFT-SEC, SECP-18).
 		sec := cfg.Security
 		securityReflogBase.Store(&sec)
+		// Resolve the quick scan's Windows git now (a WSL daemon only;
+		// nothing elsewhere), so the first commit's scan does not pay for
+		// it (R3-86).
+		go securityGitRouter().Prime(ctx)
 		runSecurityPostWrite(ctx, store.New(database), resolved, func() int { return securityPostWriteCapInForce(sec) }, securityCommitSwitches{code: codeActive, secrets: cfg.Security.Secrets.CommitCheck}, newLogger(cfg.Observer.LogLevel))
 		return nil
 	})

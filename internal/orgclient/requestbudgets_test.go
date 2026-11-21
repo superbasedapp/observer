@@ -2,6 +2,7 @@ package orgclient
 
 import (
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
@@ -40,7 +41,7 @@ func TestRequestableBudgets(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := requestableBudgets(orgcontract.BudgetPolicyBody{Caps: tc.caps})
+			got := requestableBudgets(orgcontract.BudgetPolicyBody{Caps: tc.caps}, time.Now())
 			var ids []string
 			for _, b := range got {
 				ids = append(ids, b.BudgetID)
@@ -71,7 +72,7 @@ func TestRequestableBudgetFacts(t *testing.T) {
 			CapTokens: 5000, ScopeTokens: "member:u1", CapUSD: 50, ScopeUSD: "team:eng",
 		},
 		{Period: "calendar_month", ResolvedScope: "team:eng", BudgetID: "b-eng", CapUSD: 900},
-	}})
+	}}, time.Now())
 	if len(got) != 2 {
 		t.Fatalf("got %+v", got)
 	}
@@ -81,5 +82,68 @@ func TestRequestableBudgetFacts(t *testing.T) {
 	}
 	if team.Grantable || team.CapUSD != 900 {
 		t.Fatalf("team = %+v", team)
+	}
+}
+
+// TestRequestableBudgetGrant pins the budget-increase grant a listed budget
+// carries (round-3 demo bug: a live budget increase was missing from the
+// Requests page's "Exceptions in force" card and its request row read the
+// raised cap). The raised caps stay CapTokens / CapUSD (what is enforced),
+// the base and the end travel beside them, and a grant past its end on this
+// machine's clock is dropped exactly as the enforcer drops it.
+func TestRequestableBudgetGrant(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	later, earlier := now.Add(24*time.Hour).UnixNano(), now.Add(-time.Minute).UnixNano()
+	member := func(c orgcontract.BudgetPolicyCap) orgcontract.BudgetPolicyCap {
+		c.Period, c.ResolvedScope, c.BudgetID = "calendar_month", "member:u1", "b-u1"
+		return c
+	}
+	cases := []struct {
+		name string
+		cap  orgcontract.BudgetPolicyCap
+		want RequestableBudget
+	}{
+		{
+			"no grant: caps only",
+			member(orgcontract.BudgetPolicyCap{CapUSD: 100000}),
+			RequestableBudget{CapUSD: 100000},
+		},
+		{
+			"a live grant: raised caps, the base and the end",
+			member(orgcontract.BudgetPolicyCap{CapUSD: 100010, GrantID: 6, BaseCapUSD: 100000, GrantExpiresAtNs: later}),
+			RequestableBudget{CapUSD: 100010, GrantID: 6, BaseCapUSD: 100000, GrantExpiresAtNs: later},
+		},
+		{
+			"a perpetual grant keeps its overlay with no end",
+			member(orgcontract.BudgetPolicyCap{CapTokens: 1_500_000, GrantID: 7, BaseCapTokens: 1_000_000}),
+			RequestableBudget{CapTokens: 1_500_000, GrantID: 7, BaseCapTokens: 1_000_000},
+		},
+		{
+			"a grant past its end on this clock reverts to the base",
+			member(orgcontract.BudgetPolicyCap{CapUSD: 100010, GrantID: 6, BaseCapUSD: 100000, GrantExpiresAtNs: earlier}),
+			RequestableBudget{CapUSD: 100000},
+		},
+		{
+			"a unit another row supplied carries neither its cap nor its base",
+			member(orgcontract.BudgetPolicyCap{
+				CapTokens: 6000, BaseCapTokens: 5000, CapUSD: 50, BaseCapUSD: 50, ScopeUSD: "team:eng",
+				GrantID: 8, GrantExpiresAtNs: later,
+			}),
+			RequestableBudget{CapTokens: 6000, BaseCapTokens: 5000, GrantID: 8, GrantExpiresAtNs: later},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := requestableBudgets(orgcontract.BudgetPolicyBody{Caps: []orgcontract.BudgetPolicyCap{tc.cap}}, now)
+			if len(got) != 1 {
+				t.Fatalf("got %+v", got)
+			}
+			g := got[0]
+			if g.CapTokens != tc.want.CapTokens || g.CapUSD != tc.want.CapUSD || g.GrantID != tc.want.GrantID ||
+				g.BaseCapTokens != tc.want.BaseCapTokens || g.BaseCapUSD != tc.want.BaseCapUSD ||
+				g.GrantExpiresAtNs != tc.want.GrantExpiresAtNs {
+				t.Fatalf("got %+v, want caps/grant of %+v", g, tc.want)
+			}
+		})
 	}
 }

@@ -1,0 +1,63 @@
+rules:
+  - id: csharp.nosql-injection
+    languages: [csharp]
+    severity: ERROR
+    message: Web request input is pasted into a MongoDB query given as JSON text, or run as a server-side JavaScript condition, so a caller can change the query; build the filter with Builders and pass the input as a value.
+    metadata:
+      category: code_vuln
+      cwe: CWE-943
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: int.Parse(...)
+      - pattern: long.Parse(...)
+      - pattern: Guid.Parse(...)
+      - pattern: ObjectId.Parse(...)
+      - pattern: new ObjectId(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: BsonDocument.Parse($Q)
+              - pattern: new BsonDocument("$where", $Q)
+              - pattern: new BsonJavaScript($Q)
+              - pattern: new JsonFilterDefinition<$T>($Q)
+          - focus-metavariable: $Q
+      # A filter given as JSON text: the driver parses a string filter as a
+      # query document.
+      - patterns:
+          - pattern-either:
+              - pattern: $COLL.$F($Q, ...)
+              - pattern: $COLL.$F<$T>($Q, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(Find|FindAsync|FindSync|CountDocuments|CountDocumentsAsync|DeleteOne|DeleteOneAsync|DeleteMany|DeleteManyAsync|UpdateOne|UpdateOneAsync|UpdateMany|UpdateManyAsync|FindOneAndUpdate|FindOneAndUpdateAsync|FindOneAndDelete|FindOneAndDeleteAsync|FindOneAndReplace|FindOneAndReplaceAsync|ReplaceOne|ReplaceOneAsync)$
+          - metavariable-regex:
+              metavariable: $Q
+              regex: (?s)^(\$@?".*|@?".*"\s*\+.*|.*\+\s*@?".*|string\.Format\(.*)$
+          - focus-metavariable: $Q

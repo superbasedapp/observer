@@ -21,6 +21,9 @@ import { OrgIntelConsentBanner } from "@/components/OrgIntelConsentBanner";
 import { BudgetWarningBanner } from "@/components/BudgetWarningBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { FirstCaptureToast } from "@/components/FirstCaptureToast";
+import { LiveRibbon } from "@/components/ribbon/LiveRibbon";
+import { useLiveRibbon } from "@/components/ribbon/useLiveRibbon";
+import { firstCaptureToastAllowed } from "@/lib/ribbon";
 import { FirstRunHost } from "@/components/FirstRunHost";
 import { ToastViewport } from "@/components/Toast";
 import { MessageToast } from "@/components/MessageToast";
@@ -30,6 +33,7 @@ import { FilterBar } from "@/components/FilterBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NotFoundPage } from "@/pages/NotFound";
 import { NotInstalled } from "@/components/NotInstalled";
+import { AppsStart } from "@/components/apps/AppsStart";
 import { PAGE_ROUTES } from "@/lib/components.gen";
 import { isComponentActive } from "@/lib/componentState";
 import { useComponentState } from "@/lib/useComponents";
@@ -57,7 +61,8 @@ import {
   useGovernanceVisibility,
   type Governance,
 } from "@/lib/governance";
-import { FLOOR_NAV_IDS, navSource, type GovernancePosture } from "@/lib/visibility";
+import { FLOOR_NAV_IDS, type GovernancePosture } from "@/lib/visibility";
+import { ManagedNotice } from "@/components/ManagedNotice";
 
 // HelpDrawer carries the 164-entry registry — defer until first
 // open so it doesn't bloat the shell chunk.
@@ -90,53 +95,6 @@ function navIdForPath(pathname: string): string | null {
 function componentForPath(pathname: string): string | undefined {
   const rel = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
   return PAGE_ROUTES.find((r) => r.path === rel)?.component;
-}
-
-// ManagedNotice renders instead of the page when the current route is
-// hidden on this machine (the resolved visibility: the org's directives plus
-// the managed-node defaults) - a direct-URL visit to a hidden page must say
-// so, not blank out or 404.
-function ManagedNotice({ gov, navId }: { gov: Governance | null; navId: string }) {
-  const notice = gov?.notice;
-  const byDefault = navSource(gov, navId) === "default";
-  return (
-    <div className="flex h-full items-center justify-center p-12" data-testid="managed-notice">
-      <div className="max-w-md text-center">
-        <h2 className="text-[15px] font-semibold text-fg-1">
-          Managed by your organization
-        </h2>
-        <p className="mt-2 text-[12.5px] text-fg-3">
-          This page is managed by {governedOrgLabel(gov)} and is not available on
-          this machine.
-          {byDefault &&
-            " It is hidden by default on organization-managed machines; your administrator can make it available."}
-        </p>
-        {(notice?.contact || notice?.policy_url) && (
-          <p className="mt-3 text-[11.5px] text-fg-3">
-            {notice?.contact && (
-              <a
-                href={`mailto:${notice.contact}`}
-                className="text-accent hover:underline"
-              >
-                {notice.contact}
-              </a>
-            )}
-            {notice?.contact && notice?.policy_url && " · "}
-            {notice?.policy_url && (
-              <a
-                href={notice.policy_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-accent hover:underline"
-              >
-                {notice.policy_url}
-              </a>
-            )}
-          </p>
-        )}
-      </div>
-    </div>
-  );
 }
 
 // PostureUnresolved renders instead of a governed page until this machine's
@@ -261,6 +219,8 @@ function AnimatedRoutes() {
             ),
           )}
           <Route path="report" element={<ReportRedirect />} />
+          {/* The persistent AI Apps nav item's page (review E-71). */}
+          <Route path="apps" element={<AppsStart />} />
           {/* D-6: an unknown route gets an honest page instead of a
               silent redirect that reads as a navigation bug. */}
           <Route path="*" element={<NotFoundPage />} />
@@ -282,6 +242,20 @@ function ActivityProgress() {
   const active = useApiActivity() > 0;
   const rider = useRouteRider(pathname, active);
   return <TopProgress active={active} rider={rider} className="z-40" />;
+}
+
+// FirstCaptureGate keeps one celebration, not two: where the live ribbon can
+// show its first-prompt receipt, the receipt owns the first capture and the
+// older FirstCaptureToast stays away; where it cannot (the ribbon is off, the
+// org hid Live, an older daemon), the toast behaves as before.
+function FirstCaptureGate() {
+  const ribbon = useLiveRibbon();
+  const allowed = firstCaptureToastAllowed({
+    answered: ribbon.answered,
+    supported: ribbon.supported,
+    ribbonOn: !ribbon.off,
+  });
+  return allowed ? <FirstCaptureToast /> : null;
 }
 
 // Renderer injected into the shared design-system help slot: DS components
@@ -421,7 +395,11 @@ export default function App() {
                 every page - Terminals included - and toasts a new notice
                 once per browser through the ToastViewport below. */}
             <BudgetWarningBanner />
-            <FirstCaptureToast />
+            {/* The live ribbon's strip (components/ribbon): under the state
+                banners, above the page, only while an agent session is live.
+                It also hosts the one-time first-prompt receipt. */}
+            <LiveRibbon />
+            <FirstCaptureGate />
             {/* The first-run capture view (T-922): detected AI tools and the
                 watcher's progress over their existing history. Opens by
                 itself once on a fresh install; reopened from the command

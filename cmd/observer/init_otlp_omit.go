@@ -21,3 +21,12 @@ func runOTLPExportInit(_ io.Writer, _ string, _ []string, _, _ bool) error {
 		components.DistrosHaving("ingest.otlp"))
 	return exitErr(componentstate.RefusalExitCode)
 }
+
+// runOTLPCloudEnvironment is the off side of `observer init
+// --otlp-cloud-endpoint`: no receiver in this build, so no exporter can
+// point at it.
+func runOTLPCloudEnvironment(_ io.Writer, _, _ string) error {
+	fmt.Fprintf(os.Stderr, "--otlp-cloud-endpoint: OTLP ingest (ingest.otlp) is not in this build; %s. Install a build that includes it.\n",
+		components.DistrosHaving("ingest.otlp"))
+	return exitErr(componentstate.RefusalExitCode)
+}

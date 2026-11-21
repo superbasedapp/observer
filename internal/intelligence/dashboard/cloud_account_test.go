@@ -15,6 +15,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // fakeCloudRunner is a controllable CloudCommandRunner: it records each
@@ -347,11 +349,12 @@ func TestCloudLoginRefusals(t *testing.T) {
 // a client id is configured. Not-enrolled (and a Status error, which must not
 // block a legitimate personal sign-in) still reach the runner.
 func TestCloudLoginOrgEnrolledRefusal(t *testing.T) {
-	t.Run("enrolled refuses without spawning", func(t *testing.T) {
+	t.Run("managed enrolment refuses without spawning", func(t *testing.T) {
 		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
 		runner := &fakeCloudRunner{}
 		srv := newCloudAccountTestServer(t, probe, runner)
 		srv.opts.OrgClient = &fakeEnrolment{state: orgclient.EnrolmentState{Enrolled: true, OrgName: "Acme Corp"}}
+		writeTestEnrolment(t, srv, orgcontract.TenancyManaged)
 
 		rec := httptest.NewRecorder()
 		srv.handleCloudLogin(rec, httptest.NewRequest(http.MethodPost, "/api/cloud/login", nil))
@@ -364,6 +367,22 @@ func TestCloudLoginOrgEnrolledRefusal(t *testing.T) {
 		if got := runner.calls(); len(got) != 0 {
 			t.Fatalf("must not spawn a subprocess when org-enrolled, calls = %v", got)
 		}
+	})
+	// Getting started v2: an individual connection (a personal dashboard,
+	// an individual team connection) is the person's own account, so the
+	// sign-in proceeds.
+	t.Run("individual enrolment proceeds", func(t *testing.T) {
+		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
+		runner := &fakeCloudRunner{}
+		srv := newCloudAccountTestServer(t, probe, runner)
+		srv.opts.OrgClient = &fakeEnrolment{state: orgclient.EnrolmentState{Enrolled: true, OrgName: "Sam"}}
+		writeTestEnrolment(t, srv, orgcontract.TenancyIndividual)
+
+		code, _ := cloudDoJSON[CloudLoginState](t, srv.handleCloudLogin, http.MethodPost, "/api/cloud/login")
+		if code != http.StatusOK {
+			t.Fatalf("individual-enrolment login → %d", code)
+		}
+		cloudWaitFor(t, "spawn when individually enrolled", func() bool { return len(runner.calls()) == 1 })
 	})
 	t.Run("not enrolled still proceeds", func(t *testing.T) {
 		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
@@ -636,5 +655,60 @@ func TestCloudSectionWrite(t *testing.T) {
 	}
 	if code, _ = put(`{"BaseURL":"not a url"}`); code != http.StatusBadRequest {
 		t.Fatalf("bad base_url → %d, want 400", code)
+	}
+
+	// login_port (B-S2): editable from the Advanced fold, 1024-65535 or 0,
+	// and a change needs no daemon restart (the cloud command reads it).
+	for _, tc := range []struct {
+		body string
+		code int
+		want int
+	}{
+		{`{"LoginPort":9800}`, http.StatusOK, 9800},
+		{`{"LoginPort":0}`, http.StatusOK, 0},
+		{`{"LoginPort":80}`, http.StatusBadRequest, 0},
+		{`{"LoginPort":70000}`, http.StatusBadRequest, 0},
+		{`{"LoginPort":65535}`, http.StatusOK, 65535},
+	} {
+		code, out = put(tc.body)
+		if code != tc.code {
+			t.Fatalf("%s → %d %v, want %d", tc.body, code, out, tc.code)
+		}
+		if code != http.StatusOK {
+			continue
+		}
+		if out["restart_required"] != false {
+			t.Errorf("%s: login_port must not require a restart: %v", tc.body, out)
+		}
+		cfg, _ = loadConfigForDashboard(cfgPath)
+		if cfg.Cloud.LoginPort != tc.want || cfg.Cloud.BaseURL != "https://new.example" {
+			t.Fatalf("%s: cloud after PUT = %+v", tc.body, cfg.Cloud)
+		}
+	}
+}
+
+// TestValidCloudLoginPort pins the dashboard's port range.
+func TestValidCloudLoginPort(t *testing.T) {
+	for _, tc := range []struct {
+		port int
+		ok   bool
+	}{
+		{0, true}, {1023, false}, {1024, true}, {9797, true}, {65535, true}, {65536, false}, {-1, false},
+	} {
+		if err := validCloudLoginPort(tc.port); (err == nil) != tc.ok {
+			t.Errorf("validCloudLoginPort(%d) = %v, want ok=%v", tc.port, err, tc.ok)
+		}
+	}
+}
+
+// writeTestEnrolment stores an enrolment row of the given kind, the fact
+// enrolmentTenancy reads through orgclient.NodeManaged.
+func writeTestEnrolment(t *testing.T, srv *Server, tenancy string) {
+	t.Helper()
+	if err := store.New(srv.opts.DB).WriteEnrolment(context.Background(), store.Enrolment{
+		OrgID: "org-1", OrgName: "Acme Corp", OrgServerURL: "https://org.acme.example",
+		UserID: "u1", UserEmail: "dev@acme.example", Tenancy: tenancy,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

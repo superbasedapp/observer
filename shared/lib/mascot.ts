@@ -1,4 +1,4 @@
-// The SuperBased mascot's artwork as data: "Prompt in a cape" (B4C-1, the
+// The superbased mascot's artwork as data: "Prompt in a cape" (B4C-1, the
 // operator's pick from the 2026-10-02 mascot exploration). A squishy
 // terminal buddy whose face IS the prompt (">" winking eye + a blinking
 // "_" cursor), wearing a shoulder cape, with the logo mark as a belly badge.

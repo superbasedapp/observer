@@ -3194,7 +3194,7 @@ func TestInsertTurnDetached_IgnoresAlreadyCancelledOuterContext(t *testing.T) {
 	// helper after the response is delivered), the helper's signature
 	// takes no context, so there is no possible regression path that
 	// re-introduces r.Context() without changing this signature.
-	p.insertTurnDetached(models.APITurn{Model: "test", Provider: "anthropic"}, 0, "test-label")
+	p.insertTurnDetached(nil, models.APITurn{Model: "test", Provider: "anthropic"}, 0, "test-label")
 
 	errs, turns := sink.snapshot()
 	if len(turns) != 1 {

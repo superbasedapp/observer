@@ -990,6 +990,7 @@ var honestZeroPackages = map[string]string{
 	"copilot-web":    "../adapter/browserchat",
 	"junie":          "../adapter/junie",
 	"grokbot":        "../adapter/grokbot",
+	"custom-agent":   "../adapter/customagent",
 }
 
 // TestHonestZeroVocabularyHasNoClassifier gives the honest-zero branch
@@ -1610,6 +1611,8 @@ var hookBindingHonestZeroRows = map[string]bool{
 	"grokbot": true, "zed": true, "aider": true, "cowork": true, "freebuff": true,
 	// 2026-10-21 wave: no hook surface of their own.
 	"stakpak": true,
+	// custom-agent (P-228): the developer's own code, captured by the proxy.
+	"custom-agent": true,
 }
 
 // TestEveryRowDeclaresBindingsOrHonestZero: every registry row either lists

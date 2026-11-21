@@ -97,26 +97,27 @@ const (
 // captureRiskClasses classifies every capture-risk label (CLAUDE.md #5). A
 // test pins that every CaptureRisk* constant has a row.
 var captureRiskClasses = map[string]captureRiskClass{
-	CaptureRiskHookBinaryMismatch:       captureRiskStanding,
-	CaptureRiskHookConfigChanged:        captureRiskStanding,
-	CaptureRiskCodexHookUntrusted:       captureRiskStanding,
-	CaptureRiskHookRegistrationError:    captureRiskStanding,
-	CaptureRiskHookRegistryEntryMissing: captureRiskStanding,
-	CaptureRiskAgentConfigDrift:         captureRiskStanding,
-	CaptureRiskHookRepaired:             captureRiskAct,
-	CaptureRiskRouteRepaired:            captureRiskAct,
-	CaptureRiskRouteBypassObserved:      captureRiskStanding,
-	CaptureRiskHookSilentSurface:        captureRiskStanding,
-	CaptureRiskHookSwitchedOff:          captureRiskStanding,
-	CaptureRiskConfigLayerOverride:      captureRiskStanding,
-	CaptureRiskRouteInactiveProvider:    captureRiskStanding,
-	CaptureRiskShellWrapMissing:         captureRiskStanding,
-	CaptureRiskVendorPolicyBlocksMCP:    captureRiskStanding,
-	CaptureRiskVendorPolicyPinsRoute:    captureRiskStanding,
-	CaptureRiskHookRegistrationFailed:   captureRiskAct,
-	CaptureRiskHookRegistryMissing:      captureRiskAct,
-	CaptureRiskHookConfigMissing:        captureRiskAct,
-	CaptureRiskHookRegistrationDrift:    captureRiskAct,
+	CaptureRiskHookBinaryMismatch:        captureRiskStanding,
+	CaptureRiskHookConfigChanged:         captureRiskStanding,
+	CaptureRiskCodexHookUntrusted:        captureRiskStanding,
+	CaptureRiskHookRegistrationError:     captureRiskStanding,
+	CaptureRiskHookRegistryEntryMissing:  captureRiskStanding,
+	CaptureRiskAgentConfigDrift:          captureRiskStanding,
+	CaptureRiskHookRepaired:              captureRiskAct,
+	CaptureRiskRouteRepaired:             captureRiskAct,
+	CaptureRiskRouteBypassObserved:       captureRiskStanding,
+	CaptureRiskHookSilentSurface:         captureRiskStanding,
+	CaptureRiskHookSwitchedOff:           captureRiskStanding,
+	CaptureRiskConfigLayerOverride:       captureRiskStanding,
+	CaptureRiskRouteInactiveProvider:     captureRiskStanding,
+	CaptureRiskShellWrapMissing:          captureRiskStanding,
+	CaptureRiskVendorPolicyBlocksMCP:     captureRiskStanding,
+	CaptureRiskVendorPolicyPinsRoute:     captureRiskStanding,
+	CaptureRiskSandboxGatewayConfigDrift: captureRiskStanding,
+	CaptureRiskHookRegistrationFailed:    captureRiskAct,
+	CaptureRiskHookRegistryMissing:       captureRiskAct,
+	CaptureRiskHookConfigMissing:         captureRiskAct,
+	CaptureRiskHookRegistrationDrift:     captureRiskAct,
 }
 
 // captureRiskPriority orders the capture-risk labels from the most to the
@@ -149,6 +150,7 @@ var captureRiskPriority = []string{
 	CaptureRiskHookSwitchedOff,
 	CaptureRiskVendorPolicyBlocksMCP,
 	CaptureRiskConfigLayerOverride,
+	CaptureRiskSandboxGatewayConfigDrift,
 	CaptureRiskHookSilentSurface,
 	CaptureRiskHookConfigChanged,
 	CaptureRiskHookRegistryEntryMissing,
@@ -726,7 +728,8 @@ func validCaptureRisk(label string) bool {
 		CaptureRiskRouteInactiveProvider,
 		CaptureRiskShellWrapMissing,
 		CaptureRiskVendorPolicyBlocksMCP,
-		CaptureRiskVendorPolicyPinsRoute:
+		CaptureRiskVendorPolicyPinsRoute,
+		CaptureRiskSandboxGatewayConfigDrift:
 		return true
 	default:
 		return false
@@ -743,7 +746,8 @@ func validUnknownCheck(label string) bool {
 		CaptureUnknownChecksumMissing,
 		CaptureUnknownBinaryPath,
 		CaptureUnknownRecordedBinary,
-		CaptureUnknownCodexTrust:
+		CaptureUnknownCodexTrust,
+		CaptureUnknownSandboxGatewayConfig:
 		return true
 	default:
 		return false

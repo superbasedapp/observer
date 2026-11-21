@@ -5,6 +5,7 @@ import {
   Activity,
   BookOpen,
   DollarSign,
+  Gauge,
   GitCommitHorizontal,
   GitPullRequest,
   LayoutDashboard,
@@ -32,6 +33,7 @@ import { PromptsTab } from "@/components/projectdetail/PromptsTab";
 import { TasksTab } from "@/components/projectdetail/TasksTab";
 import { GuidanceTab } from "@/components/projectdetail/GuidanceTab";
 import { SkillsTab } from "@/components/projectdetail/SkillsTab";
+import { QualityTab } from "@/components/projectdetail/QualityTab";
 
 // ProjectDetailPanel — the Projects-page list->detail drawer (plan
 // docs/plans/projects-page-roi-and-commit-alignment-plan-2026-09-21.md §3.5).
@@ -50,7 +52,7 @@ import { SkillsTab } from "@/components/projectdetail/SkillsTab";
 // drawer tab to the URL"), beside the page's `?project=`: a REPLACE write
 // (a drawer tab is an in-place view, not navigation), the default is the
 // param's absence, and an unknown value falls back to Overview.
-const TAB_IDS = ["overview", "spend", "commits", "delivery", "prompts", "tasks", "guidance", "skills"] as const;
+const TAB_IDS = ["overview", "spend", "commits", "delivery", "quality", "prompts", "tasks", "guidance", "skills"] as const;
 type TabId = (typeof TAB_IDS)[number];
 const TAB_PARAM = "dtab";
 // COMMIT_PARAM names the commit the Commits tab opens expanded (a deep link
@@ -64,6 +66,7 @@ const TAB_ICONS: Record<TabId, LucideIcon> = {
   spend: DollarSign,
   commits: GitCommitHorizontal,
   delivery: GitPullRequest,
+  quality: Gauge,
   prompts: MessageSquareText,
   tasks: ListTodo,
   guidance: BookOpen,
@@ -76,6 +79,7 @@ const TABS: TabDef<TabId>[] = (
     { id: "spend", label: "Spend" },
     { id: "commits", label: "Commits" },
     { id: "delivery", label: "Delivery" },
+    { id: "quality", label: "Quality" },
     { id: "prompts", label: "Prompts" },
     { id: "tasks", label: "Tasks" },
     { id: "guidance", label: "Guidance" },
@@ -197,7 +201,7 @@ export function ProjectDetailPanel({
             />
 
             <div className="mt-5">
-              {tab === "overview" && <OverviewTab d={d} onReload={detail.reload} />}
+              {tab === "overview" && <OverviewTab d={d} onReload={detail.reload} win={win} />}
               {tab === "spend" && <SpendTab projectId={d.project.id} win={win} />}
               {tab === "commits" && <CommitsTab projectId={d.project.id} win={win} />}
               {tab === "delivery" && (
@@ -218,6 +222,7 @@ export function ProjectDetailPanel({
                   }
                 />
               )}
+              {tab === "quality" && <QualityTab projectId={d.project.id} win={win} />}
               {tab === "prompts" && <PromptsTab projectId={d.project.id} win={win} />}
               {tab === "tasks" && <TasksTab projectId={d.project.id} win={win} />}
               {tab === "guidance" && <GuidanceTab root={d.project.root_path} />}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // proxyclientauth.go: the doctor row of the proxy client token (OSH-R-009,
@@ -43,11 +44,16 @@ func proxyClientAuthCheck(cfg config.Config, port int, routes []proxyroute.Route
 	for _, t := range token {
 		c.Details = append(c.Details, t+": route carries the client token")
 	}
+	initAll := remedy.Of(remedy.Init, "")
 	for _, t := range plain {
-		c.Details = append(c.Details, t+": route is in the plain form (run `observer init` to rewrite it)")
+		c.Details = append(c.Details, t+": route is in the plain form (rewrite it with Set up in Settings > Connected tools, or run "+remedy.Quote(initAll)+")")
+	}
+	if len(plain) > 0 {
+		c.Remediations = append(c.Remediations, initAll)
 	}
 	if !cfg.Proxy.RequireClientAuth {
-		c.Message = fmt.Sprintf("client token routes are on and not required: %d route(s) carry the token, %d plain; set [proxy].require_client_auth once every route and session carries it", len(token), len(plain))
+		c.Message = fmt.Sprintf("client token routes are on and not required: %d route(s) carry the token, %d plain; turn on [proxy].require_client_auth (Settings > Proxy) once every route and session carries it", len(token), len(plain))
+		c.Remediations = append(c.Remediations, remedy.Of(remedy.OpenSettings, "proxy"))
 		return c
 	}
 	if len(plain) > 0 {

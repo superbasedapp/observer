@@ -21,6 +21,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/codeintel"
 	"github.com/marmutapp/superbased-observer/internal/codeintel/parse"
+	"github.com/marmutapp/superbased-observer/internal/codeintel/parse/complexity"
 )
 
 // parserName is the backend identity recorded on every ParseResult so a
@@ -62,8 +63,15 @@ func (goParser) Capabilities(lang codeintel.Language) codeintel.LanguageCapabili
 // parser.SkipObjectResolution (spans only; no scope wiring needed) and
 // is best-effort: a recoverable parse error still yields whatever the
 // AST contains, with a nil error. Only when ParseFile returns no usable
-// file at all does Parse return the wrapped error. It never panics.
+// file at all does Parse return the wrapped error. It never panics. It
+// extracts the base set; ParseWith adds the optional extractions.
 func (p goParser) Parse(ctx context.Context, src []byte, lang codeintel.Language, filename string) (codeintel.ParseResult, error) {
+	return p.ParseWith(ctx, src, lang, filename, parse.Options{})
+}
+
+// ParseWith is Parse under opts (parse.OptionParser): complexity is counted
+// only when opts.Complexity is set.
+func (p goParser) ParseWith(_ context.Context, src []byte, lang codeintel.Language, filename string, opts parse.Options) (codeintel.ParseResult, error) {
 	result := codeintel.ParseResult{
 		Lang:       lang,
 		Capability: p.Capabilities(lang),
@@ -102,6 +110,11 @@ func (p goParser) Parse(ctx context.Context, src []byte, lang codeintel.Language
 	sort.SliceStable(result.Imports, func(i, j int) bool {
 		return result.Imports[i].StartLine < result.Imports[j].StartLine
 	})
+	// Complexity: every decision point's offset, attributed to its
+	// innermost function or method by exact span (parse/complexity).
+	if opts.Complexity {
+		complexity.Count(result.Nodes, decisionOffsets(fset, file))
+	}
 	result.Calls = extractCalls(fset, file, src, result.Nodes)
 	sort.SliceStable(result.Calls, func(i, j int) bool {
 		if result.Calls[i].StartLine != result.Calls[j].StartLine {
@@ -136,6 +149,46 @@ func extractNodes(fset *token.FileSet, file *ast.File, src []byte) []codeintel.N
 		}
 	}
 	return nodes
+}
+
+// decisionOffsets returns the byte offset of every decision point in file,
+// as Go's rows in parse/complexity's rule table define one: the go/ast type
+// name and the keyword or operator are looked up in the table, never
+// decided here. A default case or select clause reports "default" and so is
+// not a row.
+func decisionOffsets(fset *token.FileSet, file *ast.File) []int {
+	var offs []int
+	add := func(kind, tok string, pos token.Pos) {
+		if pos.IsValid() && complexity.GoDecision(kind, tok) {
+			offs = append(offs, fset.Position(pos).Offset)
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.IfStmt:
+			add("IfStmt", "if", x.If)
+		case *ast.ForStmt:
+			add("ForStmt", "for", x.For)
+		case *ast.RangeStmt:
+			add("RangeStmt", "for", x.For)
+		case *ast.CaseClause:
+			add("CaseClause", caseToken(x.List == nil), x.Case)
+		case *ast.CommClause:
+			add("CommClause", caseToken(x.Comm == nil), x.Case)
+		case *ast.BinaryExpr:
+			add("BinaryExpr", x.Op.String(), x.OpPos)
+		}
+		return true
+	})
+	return offs
+}
+
+// caseToken is the keyword a case or select clause starts with.
+func caseToken(isDefault bool) string {
+	if isDefault {
+		return "default"
+	}
+	return "case"
 }
 
 // nodeFromFunc builds a Node for a func or method declaration. The

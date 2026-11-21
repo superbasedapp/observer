@@ -53,7 +53,9 @@ func (s *Server) handleBudget(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	now := time.Now().UTC()
+	// The server clock (s.now), not time.Now: tests pin it to a month
+	// boundary, and the analysis headline's MTD tile reads the same seam.
+	now := s.now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	daysElapsed := int(now.Sub(monthStart).Hours()/24) + 1
 	daysInMonth := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()

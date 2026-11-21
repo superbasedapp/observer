@@ -153,11 +153,14 @@ func (s *Store) SubmitJob(ctx context.Context, in SubmitJobInput) (JobSubmission
 		if e != nil {
 			return e
 		}
+		// The upsert locks the session row before any budget window: the
+		// canonical lock order every submit and close shares
+		// (reserve_tokens.go: accounts, reservation, session, windows, pool).
 		sessionPK, e := ensureSessionTx(ctx, tx, in.AccountID, projectPK, in.CloudSessionID, in.Tool, in.ModelFamily, in.Metrics)
 		if e != nil {
 			return e
 		}
-		reservationID, e := reserveAllowanceTx(ctx, tx, in.AccountID, in.Feature, now, s.spendCeilings)
+		reservationID, e := reserveSubmitTx(ctx, tx, in.AccountID, in.Feature, sessionPK, in.RouteID, in.SizeBytes, now, s.spendCeilings)
 		if e != nil {
 			return e
 		}

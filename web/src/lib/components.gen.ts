@@ -100,6 +100,54 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     Page: lazy(() => import("@/pages/Policies").then((m) => ({ default: m.PoliciesPage }))),
   },
   {
+    navId: "app-traces",
+    path: "apps/traces",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppTraces").then((m) => ({ default: m.AppTracesPage }))),
+  },
+  {
+    navId: "app-sessions",
+    path: "apps/sessions",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppSessions").then((m) => ({ default: m.AppSessionsPage }))),
+  },
+  {
+    navId: "app-analytics",
+    path: "apps/analytics",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppAnalytics").then((m) => ({ default: m.AppAnalyticsPage }))),
+  },
+  {
+    navId: "app-end-users",
+    path: "apps/end-users",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppEndUsers").then((m) => ({ default: m.AppEndUsersPage }))),
+  },
+  {
+    navId: "app-evals",
+    path: "apps/evals",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppEvals").then((m) => ({ default: m.AppEvalsPage }))),
+  },
+  {
+    navId: "app-scores",
+    path: "apps/scores",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppScores").then((m) => ({ default: m.AppScoresPage }))),
+  },
+  {
+    navId: "app-prompts",
+    path: "apps/prompts",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppPrompts").then((m) => ({ default: m.AppPromptsPage }))),
+  },
+  {
+    navId: "app-alerts",
+    path: "apps/alerts",
+    component: "obs",
+    Page: lazy(() => import("@/pages/AppAlerts").then((m) => ({ default: m.AppAlertsPage }))),
+  },
+  {
     navId: "agent-config",
     path: "agent-config",
     component: "integration.agent-config",
@@ -152,6 +200,12 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     path: "patterns",
     component: "analytics",
     Page: lazy(() => import("@/pages/Patterns").then((m) => ({ default: m.PatternsPage }))),
+  },
+  {
+    navId: "you",
+    path: "you",
+    component: "core",
+    Page: lazy(() => import("@/pages/You").then((m) => ({ default: m.YouPage }))),
   },
   {
     navId: "privacy",
@@ -212,6 +266,14 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
   "code-security": "security",
   egress: "obs",
   policies: "obs",
+  "app-traces": "obs",
+  "app-sessions": "obs",
+  "app-analytics": "obs",
+  "app-end-users": "obs",
+  "app-evals": "obs",
+  "app-scores": "obs",
+  "app-prompts": "obs",
+  "app-alerts": "obs",
   "agent-config": "integration.agent-config",
   tools: "core",
   compression: "proxy.compression",
@@ -221,6 +283,7 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
   benchmarks: "benchmark",
   discovery: "analytics",
   patterns: "analytics",
+  you: "core",
   privacy: "core",
   messages: "org.client",
   requests: "org.client",
@@ -240,3 +303,11 @@ export const SANDBOX_SETTINGS_CARD: LazyExoticComponent<typeof import("@/compone
 /** SandboxIsolationPicker from @/components/SandboxIsolationPicker (component terminals.sandbox), or null when this build does not compile it. */
 export const SANDBOX_ISOLATION_PICKER: LazyExoticComponent<typeof import("@/components/SandboxIsolationPicker").SandboxIsolationPicker> | null =
   lazy(() => import("@/components/SandboxIsolationPicker").then((m) => ({ default: m.SandboxIsolationPicker })));
+
+/** SandboxSetupPanel from @/components/SandboxSetupPanel (component terminals.sandbox), or null when this build does not compile it. */
+export const SANDBOX_SETUP_PANEL: LazyExoticComponent<typeof import("@/components/SandboxSetupPanel").SandboxSetupPanel> | null =
+  lazy(() => import("@/components/SandboxSetupPanel").then((m) => ({ default: m.SandboxSetupPanel })));
+
+/** SandboxRefusalsCard from @/components/SandboxRefusals (component terminals.sandbox), or null when this build does not compile it. */
+export const SANDBOX_REFUSALS_CARD: LazyExoticComponent<typeof import("@/components/SandboxRefusals").SandboxRefusalsCard> | null =
+  lazy(() => import("@/components/SandboxRefusals").then((m) => ({ default: m.SandboxRefusalsCard })));

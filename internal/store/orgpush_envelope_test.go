@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/mcprelay/record"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/proccapture"
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
 )
 
@@ -85,13 +86,14 @@ var envelopeWireFamilies = map[string]string{
 	"SessionManifests": "org_push_manifests resync heal via orgpushtomb.go; a manifest ships whole or is deferred",
 
 	// --- teams-tier aggregates (fitRows, key-ordered buckets) ---
-	"RoutingSummaries":     "SelectRoutingSummaries; drops trailing (day,tier,reason,mode) buckets",
-	"CacheSummaries":       "SelectCacheSummaries; drops trailing (day,model,kind) buckets",
-	"CodeintelSummaries":   "SelectCodeintelSummaries; drops trailing (project,lang) buckets",
-	"ProcessSummaries":     "SelectProcessSummaries; drops trailing (day,tool) buckets",
-	"TerminalSummaries":    "SelectTerminalSummaries; drops trailing (day,tool,kind) buckets",
-	"RemoteAuditSummaries": "SelectRemoteAuditSummaries; drops trailing buckets",
-	"SandboxPosture":       "SelectSandboxPostureRows via composeSandboxPosture; drops trailing (day, isolation and capture enum) buckets",
+	"RoutingSummaries":      "SelectRoutingSummaries; drops trailing (day,tier,reason,mode) buckets",
+	"CacheSummaries":        "SelectCacheSummaries; drops trailing (day,model,kind) buckets",
+	"CodeintelSummaries":    "SelectCodeintelSummaries; drops trailing (project,lang) buckets",
+	"ProcessSummaries":      "SelectProcessSummaries; drops trailing (day,tool) buckets",
+	"TerminalSummaries":     "SelectTerminalSummaries; drops trailing (day,tool,kind) buckets",
+	"RemoteAuditSummaries":  "SelectRemoteAuditSummaries; drops trailing buckets",
+	"SandboxPosture":        "SelectSandboxPostureRows via composeSandboxPosture; drops trailing (day, isolation and capture enum) buckets",
+	"SandboxEgressRefusals": "SelectSandboxEgressRefusalDays via composeSandboxEgressCounts (managed only); drops trailing (day, tier, rule) buckets",
 	// The security pillar wire (secorgrows.go composeSecurity, fitSnapshot).
 	"SecurityPosture":  "composeSecurity; one row per push, dropped whole when over budget",
 	"SecurityFindings": "SelectSecurityFindingRows via composeSecurity; drops the oldest-seen findings (last_seen DESC order)",
@@ -108,6 +110,10 @@ var envelopeWireFamilies = map[string]string{
 	"SessionCacheEvents":        "SelectSessionCacheEvents; per-session capped at 500 most-recent in SQL, then chronological — fitRows drops the trailing (session,timestamp) events",
 	"SessionProcesses":          "SelectSessionProcessRows; per-session most-recent-first, drops oldest runs",
 	"SessionNetworkEvents":      "SelectSessionNetworkEventsBounded; per-session most-recent-first, drops oldest events",
+	// The process capture budget's org wire (layer O1, fitSnapshot, one
+	// gated recompute feeding two slices).
+	"SessionProcessCaptureStats": "SelectSessionProcessCaptureStatsRows; oldest change first, drops the most recently changed sessions (composed before the rollups)",
+	"SessionProcessRollups":      "SelectSessionProcessRollupRows; per-session capped at 2,000 newest buckets in SQL, drops trailing (session, bucket) rows",
 
 	// --- node session-detail trickle-up (fitSnapshot; each under its OWN
 	// tier flag, with a SECOND shipsRawContent() gate on the content columns
@@ -220,6 +226,8 @@ func envelopeShareOptions() ShareOptions {
 		TaskDetail:        true,
 		ToolAccountDetail: true,
 		HookActivity:      true,
+		// The managed-only wires (the sandbox egress refusal counts).
+		Managed: true,
 	}
 }
 
@@ -413,6 +421,27 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		runID := seedProcessRun(t, s, fmt.Sprintf("proc-%d", i), sessionID, 200+i,
 			now.Add(-time.Duration(i)*time.Minute), true)
 		seedProcessEvents(t, s, runID, fmt.Sprintf("proc-%d", i), sessionID, 2)
+	}
+
+	// process_rollups / process_capture_stats → SessionProcessRollups +
+	// SessionProcessCaptureStats (the process capture budget, layer O1).
+	{
+		rollups := make([]proccapture.Rollup, 0, 20)
+		for i := 0; i < 20; i++ {
+			rollups = append(rollups, proccapture.Rollup{
+				Key: proccapture.GroupKey{
+					SessionID: sessionID, BucketStart: proccapture.BucketStart(now.Add(-time.Duration(i)*time.Minute), time.Minute),
+					Kind: proccapture.GroupBudget, ExeBasename: "git", ArgvTemplateHash: fmt.Sprintf("h%d", i),
+				},
+				Count: int64(10 + i), FirstSeen: now, LastSeen: now, ExampleArgvPreview: "git status " + pad[:256],
+			})
+		}
+		if _, err := s.PersistCapture(ctx, nil, proccapture.Delta{
+			Rollups: rollups,
+			Stats:   map[string]proccapture.Stats{sessionID: {Observed: 300, Kept: 10, RolledUp: 290, BudgetHits: 1}},
+		}); err != nil {
+			t.Fatalf("seed process capture: %v", err)
+		}
 	}
 
 	// network events with bodies → SessionNetworkEvents (the incident wire).
@@ -700,6 +729,17 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 
 	// obs provider seam → the eight Obs* tiers.
 	s.SetObsOrgProviders(stubEnvelopeObsProviders())
+
+	// sandbox_egress_refusals → SandboxEgressRefusals (managed only): one
+	// rule bucket per day, so the aggregate has rows to truncate.
+	for i := 0; i < 10; i++ {
+		if _, err := s.InsertSandboxEgressRefusal(ctx, SandboxEgressRefusal{
+			RunID: "run-env-0", Host: fmt.Sprintf("h%d.example", i), Port: 443, Rule: "allow-list-miss",
+			Tier: "proxy_only", At: now.AddDate(0, 0, -i),
+		}); err != nil {
+			t.Fatalf("seed sandbox egress refusal: %v", err)
+		}
+	}
 
 	// sandbox capability seam → SandboxPosture (+ the envelope-level
 	// SandboxCapability).

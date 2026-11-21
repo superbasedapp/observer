@@ -1,0 +1,26 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-01",
+  "field_ledger": {
+    "detail": "VerifiedOfficial",
+    "error": "VerifiedOfficial",
+    "retryable": "VerifiedOfficial",
+    "status": "VerifiedOfficial",
+    "title": "VerifiedOfficial",
+    "type": "VerifiedOfficial"
+  },
+  "fixture_sha256": "8b9c3a2106dc294998f255a6e952dc96de7ed1ebc1b45834d3f421e1eff19e1f",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/agent/runs/{runId}/conversation",
+    "status": 401
+  },
+  "notes": "Built for lane CA-V1 from the Warp Agent API OpenAPI at the pinned docs commit (getRunConversation (GET /agent/runs/{runId}/conversation), ConversationResponse with ConversationStep, ConversationMessage and the four content blocks). The documented Error schema (RFC 7807 problem details with the backward-compatible error and retryable members) for a 401; error code authentication_required from PlatformErrorCode. The body values are synthesized. Ids, names and amounts are synthetic; every member name is the schema's own.",
+  "scenario": "error_401",
+  "sdk_or_spec_version_or_commit": "github.com/warpdotdev/docs at 4aa3f1207664a44ab3c4c5626ae0999ef03bbf14 (2026-10-30), developers/agent-api-openapi.yaml, server https://app.warp.dev/api/v1",
+  "source_kind": "openapi_spec",
+  "source_sha256": "ee4c2e0e8fdc711951b9936cc5bcdfc6102555a70d62512b8ecfb5a4238fa3ec",
+  "source_url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "warp.agent_api.run_conversation"
+}

@@ -1,0 +1,83 @@
+{
+  "_source": {
+    "target": "anthropic",
+    "instrumentor": "@arizeai/openinference-instrumentation-anthropic 1.0.3",
+    "library": "@anthropic-ai/sdk 1.10.0",
+    "grounding": "Anthropic messages.create with a system prompt and cache read/write usage, against a loopback stub. The instrumentation reports GROSS prompt tokens (30 + 2000 + 100).",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "anthropic",
+  "spans": [
+    {
+      "name": "Anthropic Messages",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":64,\"system\":\"Be brief.\",\"messages\":[{\"role\":\"user\",\"content\":\"Capital of France?\"}]}",
+        "llm.finish_reason": "end_turn",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":64}",
+        "llm.model_name": "claude-sonnet-5-5",
+        "llm.output_messages.0.message.contents.0.message_content.text": "Paris.",
+        "llm.output_messages.0.message.contents.0.message_content.type": "text",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "anthropic",
+        "llm.request.model_name": "claude-sonnet-5-5",
+        "llm.response.model_name": "claude-sonnet-5-5",
+        "llm.system": "anthropic",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 2130,
+        "llm.token_count.prompt_details.cache_read": 2000,
+        "llm.token_count.prompt_details.cache_write": 100,
+        "llm.token_count.total": 2135,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Paris.\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":30,\"output_tokens\":5,\"cache_read_input_tokens\":2000,\"cache_creation_input_tokens\":100}}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "claude-sonnet-5-5",
+        "provider": "anthropic",
+        "input_tokens": 2130,
+        "output_tokens": 5,
+        "total_tokens": 2135,
+        "total_derived": false,
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 100,
+        "reasoning_tokens": null,
+        "finish_reasons": [
+          "end_turn"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "parts": [
+              {
+                "text": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "max_tokens": 64,
+          "model": "claude-sonnet-5-5"
+        }
+      }
+    }
+  ]
+}

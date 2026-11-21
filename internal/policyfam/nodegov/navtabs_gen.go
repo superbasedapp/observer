@@ -17,7 +17,11 @@ var NavTabs = []NavTabPage{
 		{ID: "coverage", Label: "Coverage & evidence"},
 	}},
 	{Page: "code-security", Tabs: []NavTab{
+		{ID: "overview", Label: "Overview"},
 		{ID: "findings", Label: "Findings"},
+		{ID: "projects", Label: "Projects"},
+		{ID: "coverage", Label: "Coverage"},
+		{ID: "scanners", Label: "Scanners"},
 		{ID: "exceptions", Label: "Exceptions"},
 		{ID: "baselines", Label: "Baselines"},
 	}},

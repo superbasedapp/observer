@@ -1,4 +1,4 @@
-// Obs - the SuperBased mascot as a tiny inline-SVG React component:
+// Obs - the superbased mascot as a tiny inline-SVG React component:
 // "Prompt in a cape" (B4C-1, chosen 2026-10-02 to replace the arcade's
 // pixel player sprite on the dashboards). A squishy terminal buddy whose
 // face IS the prompt - a ">" winking eye and a blinking "_" cursor - in a
@@ -82,7 +82,7 @@ export function Obs({
   const f = mascotFrame(asked, size, wide);
   const a11y = decorative
     ? { "aria-hidden": true as const, focusable: "false" as const }
-    : { role: "img", "aria-label": "Obs, the SuperBased mascot" };
+    : { role: "img", "aria-label": "Obs, the superbased mascot" };
   return (
     <svg
       width={f.width}

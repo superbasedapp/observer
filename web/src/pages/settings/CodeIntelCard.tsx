@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ConfirmButton, Pill } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
-import { markRestartPending } from "@/lib/restartPending";
+import { markRestartPending, RESTART_HINT } from "@/lib/restartPending";
 import type { ConfigKeyPatch, ConfigKeysDryRun, ConfigKeysError, ConfigKeysResponse } from "@/lib/configSchema";
 import {
   CODEINTEL_COPY,
@@ -73,7 +73,11 @@ export function CodeIntelCard({
       if (out.restart_required_keys.length > 0) {
         markRestartPending("intelligence", out.restart_required_keys);
       }
-      setDone(patch.value ? "Turned on. Restart the daemon to start indexing." : "Turned off. Restart the daemon to apply.");
+      setDone(
+        patch.value
+          ? `Turned on. Indexing starts after a daemon restart: ${RESTART_HINT}.`
+          : `Turned off. Applies after a daemon restart: ${RESTART_HINT}.`,
+      );
       onSaved();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));

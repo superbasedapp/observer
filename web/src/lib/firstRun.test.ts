@@ -5,18 +5,15 @@ import {
   captureChips,
   closeFirstRun,
   closeMarksSeen,
-  closedThisVisit,
   decideFirstRun,
   firstRunSnapshot,
   firstRunView,
   headline,
   historyBadge,
-  markClosedThisVisit,
   openFirstRun,
   progressRatio,
   resetFirstRunUi,
   seenRequestInit,
-  shouldAutoOpen,
   shouldPoll,
   sortTools,
   subscribeFirstRun,
@@ -181,32 +178,6 @@ test("closing marks seen only once the capture finished", () => {
   assert.equal(closeMarksSeen(resp()), false);
   assert.equal(closeMarksSeen(resp({ capture: { state: "done", files_found: 1, files_processed: 1, files_failed: 0 } })), true);
   assert.equal(closeMarksSeen(null), false);
-});
-
-test("auto-open follows the daemon unless closed this visit", () => {
-  assert.equal(shouldAutoOpen(resp(), false), true);
-  assert.equal(shouldAutoOpen(resp(), true), false);
-  assert.equal(shouldAutoOpen(resp({ auto_open: false }), false), false);
-  assert.equal(shouldAutoOpen(null, false), false);
-});
-
-test("the visit flag survives a throwing storage", () => {
-  const store = new Map<string, string>();
-  const ok = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
-  assert.equal(closedThisVisit(ok), false);
-  markClosedThisVisit(ok);
-  assert.equal(closedThisVisit(ok), true);
-  const broken = {
-    getItem: () => {
-      throw new Error("denied");
-    },
-    setItem: () => {
-      throw new Error("denied");
-    },
-  };
-  assert.equal(closedThisVisit(broken), false);
-  markClosedThisVisit(broken);
-  assert.equal(closedThisVisit(null), false);
 });
 
 test("the seen POST carries JSON and the confirm header", () => {

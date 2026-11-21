@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -234,7 +235,7 @@ func TestOCIBindPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := d.bindPlan(home, run, spec, overlays, "/tmp/observer-sbx-runid", nil)
+	p := mustBindPlan(t, d, home, run, spec, overlays, "/tmp/observer-sbx-runid", nil)
 	binds := map[string]sandboxoci.Bind{}
 	for _, b := range p.Binds {
 		binds[b.Target] = b
@@ -287,7 +288,7 @@ func TestOCIBindPlanProjectAtHome(t *testing.T) {
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	spec := ociClaudeSpec(t)
 	run := termsvc.SandboxRun{ID: "runid000000000000002", Tool: "claude-code", Dir: home}
-	p := d.bindPlan(home, run, spec, nil, "/tmp/observer-sbx-runid2", nil)
+	p := mustBindPlan(t, d, home, run, spec, nil, "/tmp/observer-sbx-runid2", nil)
 	if !reflect.DeepEqual(p.Tmpfs, []string{"/tmp", rt.observerDir}) {
 		t.Fatalf("tmpfs %v: the home is the workspace bind and the observer dir must be blinded", p.Tmpfs)
 	}
@@ -349,6 +350,16 @@ func ociClaudeSpec(t *testing.T) integration.SandboxSpec {
 		t.Skip("claude-code has no sandbox spec in this build")
 	}
 	return spec.Sandbox
+}
+
+// mustBindPlan is d.bindPlan for a test that expects the plan to build.
+func mustBindPlan(t *testing.T, d *ociDriver, home string, run termsvc.SandboxRun, spec integration.SandboxSpec, overlays []sandbox.Overlay, sockDir string, proj []sandboxoci.ProjectedDir) sandboxoci.CreatePlan {
+	t.Helper()
+	p, err := d.bindPlan(home, run, spec, overlays, sockDir, proj)
+	if err != nil {
+		t.Fatalf("bindPlan: %v", err)
+	}
+	return p
 }
 
 // TestOCIDevcontainerNeedsConsent: a repository's .devcontainer image is
@@ -639,7 +650,7 @@ func TestOCIBindPlanMasksWhatABindShows(t *testing.T) {
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	spec := ociClaudeSpec(t)
 	run := termsvc.SandboxRun{ID: "runmask000000001", Tool: "claude-code", Dir: ws}
-	p := d.bindPlan(home, run, spec, nil, "/tmp/observer-sbx-runmask", nil)
+	p := mustBindPlan(t, d, home, run, spec, nil, "/tmp/observer-sbx-runmask", nil)
 	if !slices.Contains(p.Tmpfs, drive) {
 		t.Fatalf("the bind of %s shows %s unmasked: tmpfs %v", mnt, drive, p.Tmpfs)
 	}
@@ -660,7 +671,10 @@ func TestOCIBindPlanMasksWhatABindShows(t *testing.T) {
 	}
 
 	t.Run("wsl2 /mnt", func(t *testing.T) {
-		roots := foreignMountRoots()
+		roots, err := foreignMountRoots()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if runtime.GOOS != "linux" || len(roots) == 0 {
 			t.Skip("not a WSL2 host with a Windows drive")
 		}
@@ -672,13 +686,64 @@ func TestOCIBindPlanMasksWhatABindShows(t *testing.T) {
 		}
 		rt.applyDaemonConfig(cfg)
 		d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
-		p := d.bindPlan(home, termsvc.SandboxRun{ID: "runmask000000002", Tool: "claude-code", Dir: filepath.Join(home, ".observer", "workspaces", "x")}, spec, nil, "/tmp/observer-sbx-runmask2", nil)
+		p := mustBindPlan(t, d, home, termsvc.SandboxRun{ID: "runmask000000002", Tool: "claude-code", Dir: filepath.Join(home, ".observer", "workspaces", "x")}, spec, nil, "/tmp/observer-sbx-runmask2", nil)
 		for _, r := range roots {
 			if !slices.Contains(p.Tmpfs, r) {
 				t.Errorf("a bind of /mnt shows %s unmasked: tmpfs %v", r, p.Tmpfs)
 			}
 		}
 	})
+}
+
+// TestOCIBindPlanMasksTheMountTableDrives (ledger SBX-BE-24): the container
+// row's masks come from the host mount table too, not only from a foreign
+// AI-tool home. A bind of /mnt under a scratch HOME (crossmount detects no
+// foreign home) still gets an empty tmpfs over each Windows drive, and the
+// workspace on one of them stays bound read-write. A mount table that
+// cannot be read refuses the plan rather than carry no mask.
+func TestOCIBindPlanMasksTheMountTableDrives(t *testing.T) {
+	skipDriverOffHost(t, "the OCI driver")
+	if runtime.GOOS != "linux" {
+		t.Skip("the mount table is read on Linux hosts only")
+	}
+	home := t.TempDir()
+	setTestHome(t, home)
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	_ = os.MkdirAll(filepath.Join(home, ".observer"), 0o700)
+	cfg := ociTestConfig(t, true, "oci-runc")
+	cfg.Terminal.Sandbox.ExtraROBinds = []string{"/mnt"}
+	exe, _ := os.Executable()
+	rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, nil, filepath.Join(home, ".observer"), exe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.applyDaemonConfig(cfg)
+	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
+	spec := ociClaudeSpec(t)
+	ws := "/mnt/d/programsx/proj"
+	run := termsvc.SandboxRun{ID: "runmask000000003", Tool: "claude-code", Dir: ws}
+
+	withHostMountTable(t, wslMountinfo, nil)
+	p := mustBindPlan(t, d, home, run, spec, nil, "/tmp/observer-sbx-runmask3", nil)
+	for _, drive := range []string{"/mnt/c", "/mnt/d"} {
+		if !slices.Contains(p.Tmpfs, drive) {
+			t.Errorf("the bind of /mnt shows %s unmasked: tmpfs %v", drive, p.Tmpfs)
+		}
+	}
+	wsBound := false
+	for _, b := range p.Binds {
+		wsBound = wsBound || (b.Target == ws && !b.ReadOnly)
+	}
+	if !wsBound {
+		t.Errorf("the workspace on /mnt/d is not bound read-write: %+v", p.Binds)
+	}
+
+	withHostMountTable(t, "", errors.New("boom"))
+	if _, err := d.bindPlan(home, run, spec, nil, "/tmp/observer-sbx-runmask3", nil); err == nil || !strings.Contains(err.Error(), "launch is refused") {
+		t.Fatalf("an unreadable mount table gave %v, want a refusal", err)
+	}
 }
 
 // TestSandboxLaunchPickReadsVerification (P-067): the launch walk drops a

@@ -241,7 +241,7 @@ func TestMXCBoxEnv(t *testing.T) {
 		"PATH=C:\\bin", "OBSERVER_OOB_AUTH=secret", "OBSERVER_OOB_FD=3", envDaemonChild + "=1", "HTTPS_PROXY=http://corp:8080",
 		"https_proxy=http://corp:8080", "TEMP=C:\\host-tmp", "MXC_BIN_DIR=C:\\evil", sandboxEnvMarker + "=0", "ANTHROPIC_API_KEY=k", mxcBoxDirEnv + "=C:\\forged",
 		mxcProxyURLEnv + "=http://forged",
-		// The allow-list (WINFIX2 R-167): the launch names the provider
+		// The allow-list (WINFIX2, ledger SBX-WIN-ENV-1): the launch names the provider
 		// variable; GITHUB_TOKEN is not named.
 		sandboxenv.EnvAllow + "=ANTHROPIC_API_KEY", "GITHUB_TOKEN=gh-dummy",
 	}

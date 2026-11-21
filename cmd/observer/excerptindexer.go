@@ -27,9 +27,10 @@ func excerptIndexer(database *sql.DB, c config.IndexingConfig) *indexing.Indexer
 	return indexing.New(database, c.MaxExcerptBytes)
 }
 
-// hookCaptureStore is the Store a hook process captures through: the plain
-// store bound to the excerpt indexer the switch allows (excerptIndexer).
+// hookCaptureStore is the Store a hook process captures through: the hook
+// ingest store (hookIngestStore, its root resolver wired) bound to the
+// excerpt indexer the switch allows (excerptIndexer).
 // Every hook capture site builds its store here.
 func hookCaptureStore(database *sql.DB, c config.IndexingConfig) *store.Store {
-	return store.New(database).WithIndexer(excerptIndexer(database, c))
+	return hookIngestStore(database).WithIndexer(excerptIndexer(database, c))
 }

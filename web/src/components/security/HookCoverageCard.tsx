@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { ListChecks } from "lucide-react";
 import {
   ChartShell,
@@ -40,6 +41,13 @@ import {
 // a confirmed action carrying the confirm token.
 
 type HookFailure = { tool: string; outcome: string; kind: string; count: number; last_at?: string };
+
+// hookSetupLink opens the tool's Set up wizard in Settings > Connected tools (the
+// /api/setup/hooks and /api/setup/codex-hooks writers), the dashboard twin of
+// the `observer init --<tool>` a doctor message names (cli-parity L4).
+function hookSetupLink(tool: string): string {
+  return `/settings?section=tools&tool=${encodeURIComponent(tool)}&open=setup`;
+}
 
 type HookPosture = {
   state: string;
@@ -257,6 +265,17 @@ export function HookCoverageCard() {
                                 {d}
                               </span>
                             ))}
+                        {c.status !== "ok" && (
+                          // The doctor's message names the CLI twin (`observer
+                          // init --<tool>`); the dashboard's hook registration
+                          // is the tool's Set up wizard in Settings > Connected tools.
+                          <Link
+                            to={hookSetupLink(result.tool)}
+                            className="mt-0.5 block text-[11px] text-accent hover:underline"
+                          >
+                            Fix in Setup
+                          </Link>
+                        )}
                       </span>
                     </li>
                   ))}

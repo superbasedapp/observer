@@ -39,6 +39,14 @@ const (
 	VerdictReducedCaptureNotAccepted = "reduced_capture_not_accepted"
 	VerdictReducedCaptureNotAllowed  = "reduced_capture_not_allowed"
 	VerdictLifetimeCapTooShort       = "lifetime_cap_too_short"
+	// VerdictRefusalAuditRequired: the floor require_refusal_audit is in
+	// force and the row does not hand refusals on the launch's tier to the
+	// node's audit (rule S7e, lane N4).
+	VerdictRefusalAuditRequired = "refusal_audit_required"
+	// VerdictGatewayModeNotAllowed: the floor gateway_modes is in force and
+	// the row runs its boxes through a gateway whose mode the floor does
+	// not list (rule S7g, OpenShell lane O4).
+	VerdictGatewayModeNotAllowed = "gateway_mode_not_allowed"
 	// VerdictProbeFailed is used at S4 when a probe gave no verdict of its
 	// own.
 	VerdictProbeFailed = "probe_failed"
@@ -98,6 +106,19 @@ type Probe struct {
 	// driver's own note, such as a container runtime known to fail); ""
 	// when none. Selection never reads it.
 	Hint string
+	// GatewayMode is the gateway that runs the row's boxes, for a row that
+	// has one (OpenShell lane O4); "" for every other row. The
+	// gateway_modes floor (S4g) judges it.
+	GatewayMode vocab.GatewayMode
+	// Prerequisite is the driver's plain sentence of what the row needs
+	// on this host before it can run (decision D4 for the openshell row);
+	// "" when none. Selection never reads it.
+	Prerequisite string
+	// VersionPins are the values a version pin of the row may usefully take
+	// (the driver's tested versions; a pin to any other version can never
+	// make the row usable), for the dashboard's pin picker; nil when the
+	// row has no pin. Selection never reads it.
+	VersionPins []string
 }
 
 // Floors are the org and machine-owner floors in force (section 8.1).
@@ -113,12 +134,19 @@ type Floors struct {
 	RequireFullCapture   bool
 	AllowedRegions       []string
 	ForbidProviderInject bool
+	// RequireRefusalAudit: the org floor require_refusal_audit (lane N4).
+	RequireRefusalAudit bool
+	// AllowedGatewayModes: the org floor gateway_modes (OpenShell lane O4);
+	// nil means any mode. Judged only for a row whose probe reports a
+	// gateway mode (rule S7g).
+	AllowedGatewayModes []vocab.GatewayMode
 }
 
 // InForce reports whether any floor is set (S4b).
 func (f Floors) InForce() bool {
 	return f.OrgMinClass != "" || f.MachineMinClass != "" || f.AllowedBackends != nil ||
-		f.MinEgress != "" || f.RequireFullCapture || f.AllowedRegions != nil || f.ForbidProviderInject
+		f.MinEgress != "" || f.RequireFullCapture || f.AllowedRegions != nil || f.ForbidProviderInject ||
+		f.RequireRefusalAudit || f.AllowedGatewayModes != nil
 }
 
 // Tool is what selection needs about the tool being launched.
@@ -250,8 +278,14 @@ var selectRules = []selectRule{
 		}
 		return "", ""
 	}},
+	// S3 names the row's own reason for this host when it declares one
+	// (Isolation.HostRefusals, live check O5-L2 2026-11-01: openshell on
+	// WSL2), else the generic text; the verdict is the same either way.
 	{"S3", func(c candidate) (string, string) {
 		if !c.row.RunsOn(c.in.Host) {
+			if reason := c.row.HostRefusal(c.in.Host); reason != "" {
+				return VerdictUnsupportedPlatform, reason
+			}
 			return VerdictUnsupportedPlatform, "this backend does not run on " + string(c.in.Host)
 		}
 		return "", ""
@@ -377,6 +411,29 @@ var selectRules = []selectRule{
 		}
 		return "", ""
 	}},
+	// S7e (lane N4): under require_refusal_audit only a launch whose tier the
+	// row audits may run (Net.RefusalAuditTiers): the tier decides, because
+	// one row can start Observer's gateway on one tier and none on another
+	// (bwrap's host tier shares the host network, audit finding N4-A1). Each
+	// audited launch path composes its relay run, the channel the refusals
+	// travel on, so no other launch fact is read.
+	{"S7e", func(c candidate) (string, string) {
+		if c.in.Floors.RequireRefusalAudit && !c.row.Net.AuditsRefusalsOn(c.in.Request.Tier) {
+			return VerdictRefusalAuditRequired, "this backend does not hand egress refusals on the " + string(c.in.Request.Tier) + " tier to this machine's refusal audit, and " + OrgFloorPhrase("require_refusal_audit") + " is in force"
+		}
+		return "", ""
+	}},
+	// S7g (OpenShell lane O4): under gateway_modes a row run through a
+	// gateway may run only under a listed mode. The mode is the driver's
+	// own report on its probe (a capability, never a backend name); a row
+	// whose probe reports none has no gateway and is not judged.
+	{"S7g", func(c candidate) (string, string) {
+		m := c.probe.GatewayMode
+		if c.in.Floors.AllowedGatewayModes == nil || m == "" || contains(c.in.Floors.AllowedGatewayModes, m) {
+			return "", ""
+		}
+		return VerdictGatewayModeNotAllowed, "this backend runs its boxes through a gateway in " + string(m) + " mode, and " + OrgFloorPhrase("gateway_modes") + " allows only " + joinModes(c.in.Floors.AllowedGatewayModes)
+	}},
 	{"S8", func(c candidate) (string, string) {
 		t := c.in.Request.Tier
 		if !c.row.OffersTier(t) || (t == vocab.TierHost && c.row.Iso.Location == vocab.LocationRemote) {
@@ -430,6 +487,18 @@ var selectRules = []selectRule{
 		}
 		return "", ""
 	}},
+}
+
+// joinModes lists gateway modes for a reason.
+func joinModes(ms []vocab.GatewayMode) string {
+	out := ""
+	for i, m := range ms {
+		if i > 0 {
+			out += ", "
+		}
+		out += string(m)
+	}
+	return out
 }
 
 func quoteOr(s, empty string) string {
@@ -491,10 +560,17 @@ func AutoDrop(row sandboxbackend.Capability, verification vocab.Verification) (D
 
 // floorRules are the rows of selectRules that come from org and machine
 // floors (section 8.1).
-var floorRules = map[string]bool{"S4b": true, "S6": true, "S6b": true, "S7": true, "S7b": true, "S12b": true}
+var floorRules = map[string]bool{"S4b": true, "S6": true, "S6b": true, "S7": true, "S7b": true, "S7e": true, "S7g": true, "S12b": true}
 
 // IsFloorRule reports whether a drop came from a floor rule.
 func IsFloorRule(id string) bool { return floorRules[id] }
+
+// OrgFloorPhrase is how a floor rule's reason names an organization floor
+// by its wire key ("the organization's floor <key>"). The rules build their
+// reasons with it, and the boundary that relabels a reason with the floor's
+// admin label replaces exactly this phrase, so the two cannot drift apart
+// (lane FU10 fix round 1, audit FU10-A3).
+func OrgFloorPhrase(key string) string { return "the organization's floor " + key }
 
 // FloorDrop judges one row against the floor rules only, with the beta fact
 // given (the launch path knows the row's verification, not the probe's

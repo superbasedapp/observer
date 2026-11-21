@@ -23,6 +23,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/loc"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secfinding/sarif"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
@@ -308,7 +309,8 @@ func sarifRefusedKeys(m map[string]int) []string {
 func securitySARIFImportDoctorCheck(_ context.Context, configPath string) diag.Check {
 	c := diag.Check{Name: sarifImportComponent, Status: diag.StatusOK}
 	if !sarifImportSelected(componentSnapshotFor(configPath)) {
-		c.Message = "SARIF import: not selected (opt-in; add security.scan.sarif-import and security.code under [components])"
+		c.Message = "SARIF import: not selected (opt-in; turn it on in Code security > Scanners, or add security.scan.sarif-import and security.code under [components])"
+		c.Remediations = []remedy.Remediation{remedy.Of(remedy.OpenScanners, "")}
 		return c
 	}
 	c.Message = "SARIF import: selected; reads only a file you name (observer security import-sarif FILE --tool ...); never runs a tool, never watches a folder"

@@ -23,7 +23,9 @@ import (
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 
+	"github.com/marmutapp/superbased-observer/internal/genaiattr"
 	"github.com/marmutapp/superbased-observer/internal/ingest/hostguard"
+	"github.com/marmutapp/superbased-observer/internal/otlpjson"
 )
 
 // maxBodyBytes caps an OTLP/HTTP request body to bound memory on a malformed or
@@ -112,7 +114,8 @@ func grpcHandlerError(err error) error {
 // receiver.
 type Handler func(ctx context.Context, req *collogspb.ExportLogsServiceRequest) error
 
-// TraceHandler ingests one decoded OTLP trace export. Optional; injected by
+// TraceHandler ingests one decoded OTLP trace export. A *PartialTraces error
+// is answered as an OTLP partial success (partial.go). Optional; injected by
 // the generalized-observability subsystem (internal/obs) when [observability]
 // is enabled, mirroring Handler's posture. Like Handler it carries NO schema
 // or store dependency — the receiver stays generic. A nil TraceHandler means
@@ -150,13 +153,25 @@ const (
 	// DNS-rebinding / cross-origin attempt rather than a local exporter.
 	// Distinct from ReasonAuth so an operator can tell "a page tried to reach
 	// my receiver" from "a collector presented a bad token".
-	ReasonHost      = "host"
-	ReasonMethod    = "method"
-	ReasonGzip      = "gzip"
-	ReasonMalformed = "malformed"
-	ReasonDecode    = "decode"
-	ReasonSize      = "size"
-	ReasonHandler   = "handler"
+	ReasonHost = "host"
+	// ReasonOrigin is a request refused by the browser guard (F13, the
+	// residual of AUDIT-NODE-OTLP-1): it carried an Origin header or a
+	// Sec-Fetch-Site of cross-site / same-site, so a web page sent it, not a
+	// local exporter. Distinct from ReasonHost (which catches rebinding by
+	// the Host header) so an operator can tell the two apart.
+	ReasonOrigin = "origin"
+	// ReasonContentType is a request refused because its Content-Type is not
+	// an OTLP encoding (application/x-protobuf or application/json). The
+	// CORS "simple" types (text/plain, form posts, none) are exactly what a
+	// page can send without a preflight, so the browser-guarded receiver
+	// never decodes them.
+	ReasonContentType = "content_type"
+	ReasonMethod      = "method"
+	ReasonGzip        = "gzip"
+	ReasonMalformed   = "malformed"
+	ReasonDecode      = "decode"
+	ReasonSize        = "size"
+	ReasonHandler     = "handler"
 )
 
 // Signal label strings for OnOutcome.
@@ -248,6 +263,16 @@ type Options struct {
 	// ReceiverToken is the shared secret compared against the request token when
 	// RequireToken is set. Ignored when RequireToken is false.
 	ReceiverToken string
+	// AcceptToken, when set (and RequireToken is set), is a SECOND way a
+	// request token may authorize: a value that does not match ReceiverToken
+	// is offered to it, and a true answer admits the request. The node sets
+	// it to the active-ship-token check so a cloud environment's exporter can
+	// carry a per-environment, short-lived, revocable ship token instead of
+	// the node's one shared receiver token (CLOUDTEL-1, cloud-agents decision
+	// CA-D18). nil (the edge, and every node without a ship token) keeps the
+	// shared-token comparison as the only check. It runs per request, before
+	// decode; it must be cheap and must not log the value.
+	AcceptToken func(token string) bool
 
 	// GRPCMaxRecvBytes, when > 0, sets grpc.MaxRecvMsgSize on the gRPC server so
 	// an oversized message is rejected pre-service (a size reject) and the
@@ -330,6 +355,7 @@ func New(opts Options) (*Receiver, error) {
 				onOutcome:    opts.OnOutcome,
 				requireToken: opts.RequireToken,
 				token:        opts.ReceiverToken,
+				accept:       opts.AcceptToken,
 			}))
 		}
 		if opts.RequireToken {
@@ -363,7 +389,14 @@ func New(opts Options) (*Receiver, error) {
 			mux.HandleFunc("/v1/logs", r.withIngressGuards(sigLogs, r.handleHTTPLogs))
 		}
 		if opts.TraceHandler != nil {
-			mux.HandleFunc("/v1/traces", r.withIngressGuards(sigTraces, r.handleHTTPTraces))
+			traces := r.withIngressGuards(sigTraces, r.handleHTTPTraces)
+			mux.HandleFunc("/v1/traces", traces)
+			// The Langfuse SDK exporters append this path to
+			// LANGFUSE_BASE_URL (W5-2): the same handler and the same
+			// guards, so a Langfuse-instrumented app points at the machine
+			// unchanged. Langfuse's Basic public:secret header is never a
+			// credential here (docs/sdk/langfuse.md).
+			mux.HandleFunc(genaiattr.LangfuseOTLPTracesPath, traces)
 		}
 		if opts.MetricHandler != nil {
 			mux.HandleFunc("/v1/metrics", r.withIngressGuards(sigMetrics, r.handleHTTPMetrics))
@@ -474,7 +507,8 @@ func (r *Receiver) closeListeners() {
 // rather than one this package can silently fix.
 func (r *Receiver) withIngressGuards(signal string, next http.HandlerFunc) http.HandlerFunc {
 	hostGuard := r.hostGuardEnabled()
-	if !hostGuard && !r.opts.RequireToken {
+	browserGuard := r.browserGuardEnabled()
+	if !hostGuard && !browserGuard && !r.opts.RequireToken {
 		return next
 	}
 	want := []byte(r.opts.ReceiverToken)
@@ -484,9 +518,23 @@ func (r *Receiver) withIngressGuards(signal string, next http.HandlerFunc) http.
 			r.report(signal, OutcomeRejected, ReasonHost)
 			return
 		}
+		if browserGuard {
+			if fromBrowser(req) {
+				http.Error(w, "forbidden: browser requests are not accepted", http.StatusForbidden)
+				r.report(signal, OutcomeRejected, ReasonOrigin)
+				return
+			}
+			// A non-POST falls through to the handler's method check, so
+			// the outcome still names the method, not the missing type.
+			if req.Method == http.MethodPost && !otlpContentType(req) {
+				http.Error(w, "unsupported content type: use application/x-protobuf or application/json", http.StatusUnsupportedMediaType)
+				r.report(signal, OutcomeRejected, ReasonContentType)
+				return
+			}
+		}
 		if r.opts.RequireToken {
 			got := []byte(req.Header.Get(HeaderEdgeToken))
-			if subtle.ConstantTimeCompare(got, want) != 1 {
+			if !tokenMatches(got, want, r.opts.AcceptToken) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				r.report(signal, OutcomeRejected, ReasonAuth)
 				return
@@ -630,13 +678,15 @@ func (r *Receiver) handleHTTPTraces(w http.ResponseWriter, req *http.Request) {
 		r.report(sigTraces, OutcomeRejected, ReasonMalformed)
 		return
 	}
-	if err := r.opts.TraceHandler(req.Context(), &in); err != nil {
-		r.opts.Logger.Warn("ingest/otlp: http trace handler error", "err", err)
-		writeHandlerError(w, err)
+	herr := r.opts.TraceHandler(req.Context(), &in)
+	resp, ok := traceResponse(herr)
+	if !ok {
+		r.opts.Logger.Warn("ingest/otlp: http trace handler error", "err", herr)
+		writeHandlerError(w, herr)
 		r.report(sigTraces, OutcomeRejected, ReasonHandler)
 		return
 	}
-	out, ctype, err := encodeResponse(req, &coltracepb.ExportTraceServiceResponse{})
+	out, ctype, err := encodeResponse(req, resp)
 	if err != nil {
 		http.Error(w, "marshal response", http.StatusInternalServerError)
 		r.report(sigTraces, OutcomeRejected, ReasonHandler)
@@ -733,11 +783,13 @@ type traceService struct {
 }
 
 func (s *traceService) Export(ctx context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
-	if err := s.handler(ctx, req); err != nil {
+	err := s.handler(ctx, req)
+	resp, ok := traceResponse(err)
+	if !ok {
 		s.logger.Warn("ingest/otlp: grpc trace handler error", "err", err)
 		return nil, grpcHandlerError(err)
 	}
-	return &coltracepb.ExportTraceServiceResponse{}, nil
+	return resp, nil
 }
 
 // logsService is the gRPC LogsService implementation; Export defers to the
@@ -826,6 +878,50 @@ func (r *Receiver) hostGuardEnabled() bool {
 	}
 }
 
+// browserGuardEnabled reports whether the browser guard (F13) applies: the
+// Origin / Sec-Fetch-Site refusal and the OTLP content-type allow-list. It is
+// on for every receiver WITHOUT a token gate, because such a receiver's only
+// defence is that nothing remote can reach it, and a web page in a local
+// browser can: a CORS "simple" POST (text/plain, a form, no type) needs no
+// preflight and would otherwise be decoded and ingested, letting the page
+// forge spans, cost, user and tenant (which feed admission budgets). A
+// token-gated receiver (the edge, a non-loopback node) is off: the token
+// travels in a custom header, which a page can only send after a preflight
+// this receiver never answers.
+func (r *Receiver) browserGuardEnabled() bool {
+	return !r.opts.RequireToken
+}
+
+// fromBrowser reports whether a request was sent by a web page. A browser
+// stamps Origin on every cross-origin request and on every POST (a native
+// exporter never sets it), and Sec-Fetch-Site names the initiator's site.
+// Any Origin, including the opaque "null", is refused; Sec-Fetch-Site
+// "none" (a user navigation) and "same-origin" are not by themselves a page
+// of another site.
+func fromBrowser(req *http.Request) bool {
+	if _, ok := req.Header["Origin"]; ok {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get("Sec-Fetch-Site"))) {
+	case "cross-site", "same-site":
+		return true
+	}
+	return false
+}
+
+// otlpContentType reports whether the request's Content-Type is one the OTLP
+// encoding table accepts (internal/otlpjson.Encoding, the org gateway's
+// rule): the two OTLP media types (parameters such as charset allowed), or
+// NO Content-Type at all, which is protobuf, the encoding every OTLP/HTTP
+// exporter defaulted to before JSON existed (review R-A13: a Plane B native
+// exporter that omits the header must not be refused). Any other type is
+// not. A browser cannot use the missing-type case to get in: every POST a
+// page makes carries Origin, which fromBrowser refuses first.
+func otlpContentType(req *http.Request) bool {
+	_, err := otlpjson.Encoding(req.Header.Get("Content-Type"))
+	return err == nil
+}
+
 // readReason classifies a body-read error: a MaxBytesReader overflow is a size
 // reject; anything else is treated as malformed input.
 func readReason(err error) string {
@@ -857,6 +953,8 @@ type outcomeStatsHandler struct {
 	// even installed) is a no-op.
 	requireToken bool
 	token        string
+	// accept is Options.AcceptToken (nil-safe).
+	accept func(string) bool
 }
 
 // rpcAccounting is the per-RPC state carried in the TagRPC context. It tracks the
@@ -889,7 +987,7 @@ func (h *outcomeStatsHandler) report(signal string, outcome Outcome, reason stri
 func (h *outcomeStatsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
 	acc := &rpcAccounting{method: info.FullMethodName}
 	if h.requireToken {
-		acc.authed = tokenAuthorized(ctx, h.token)
+		acc.authed = tokenAuthorized(ctx, h.token, h.accept)
 	} else {
 		acc.authed = true
 	}
@@ -936,9 +1034,9 @@ func (h *outcomeStatsHandler) HandleRPC(ctx context.Context, s stats.RPCStats) {
 }
 
 // tokenAuthorized reports whether the incoming gRPC metadata carries a receiver
-// token matching want (constant-time compared). A missing metadata / missing key
-// is unauthorized.
-func tokenAuthorized(ctx context.Context, want string) bool {
+// token matching want (constant-time compared), or one accept admits. A missing
+// metadata / missing key is unauthorized.
+func tokenAuthorized(ctx context.Context, want string, accept func(string) bool) bool {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return false
@@ -947,7 +1045,17 @@ func tokenAuthorized(ctx context.Context, want string) bool {
 	if len(vals) == 0 {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(vals[0]), []byte(want)) == 1
+	return tokenMatches([]byte(vals[0]), []byte(want), accept)
+}
+
+// tokenMatches is the one token rule both transports apply: the shared
+// receiver token (constant-time compared), else Options.AcceptToken when set.
+// An empty presented value never reaches accept.
+func tokenMatches(got, want []byte, accept func(string) bool) bool {
+	if subtle.ConstantTimeCompare(got, want) == 1 {
+		return true
+	}
+	return accept != nil && len(got) > 0 && accept(string(got))
 }
 
 // tokenGateInterceptor is the post-decode half of the two-part gRPC auth: it

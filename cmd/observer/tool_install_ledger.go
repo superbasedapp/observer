@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -57,12 +58,20 @@ type toolInstallLedger struct {
 	// its binary resolving (attach_standalone.go wires the post-install hook
 	// registration here).
 	onInstalled func(tool string)
+	// onSandboxSettled, when set, runs once a sandbox record settles (any
+	// status), with the record's backend.
+	onSandboxSettled func(backend string)
 	// bootAt is when this ledger (this daemon process) started. Only an
 	// in-flight phase that began BEFORE it can be an orphan of a previous
 	// daemon; a phase this process began is always settled by this process
 	// (track handles even an already-reaped handle), so the lazy sweep never
 	// races a just-inserted row that track has not registered yet.
 	bootAt time.Time
+	// daemonListening is set on a ledger a CLI process opens (nil: this
+	// process is the daemon, the owner of every record it did not begin).
+	// It reports whether a daemon listens now; while one does, the CLI never
+	// settles a record that daemon may own (orphanRules).
+	daemonListening func(ctx context.Context) bool
 
 	mu sync.Mutex
 	// exitStatus is the PTY manager's authoritative exit status. Set once the
@@ -78,6 +87,22 @@ type pendingToolInstallOp struct {
 	id   int64
 	tool string
 	from toolinstall.Status
+	// subject is the record's subject_kind ("" reads as store.SubjectTool).
+	subject string
+	// verify, set on a sandbox record, re-checks the prerequisite after the
+	// run (its own passive Detect, or for a step only the active check can
+	// see, that check after an exit 0; sandboxSettleRules) and returns where
+	// it resolved ("" = not found); exitOK says the run exited 0. A tool
+	// record re-resolves its binary.
+	verify func(exitOK bool) string
+}
+
+// subjectOf is op's subject_kind.
+func (op pendingToolInstallOp) subjectOf() string {
+	if op.subject == "" {
+		return store.SubjectTool
+	}
+	return op.subject
 }
 
 // newToolInstallLedger builds the production ledger over st.
@@ -116,6 +141,35 @@ func (l *toolInstallLedger) setExitStatus(fn func(handle string) (bool, int, boo
 	l.mu.Lock()
 	l.exitStatus = fn
 	l.mu.Unlock()
+}
+
+// setOnSandboxSettled wires the callback run after a sandbox record
+// settles. Nil-safe.
+func (l *toolInstallLedger) setOnSandboxSettled(fn func(backend string)) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.onSandboxSettled = fn
+	l.mu.Unlock()
+}
+
+// sandboxSettled runs onSandboxSettled for record id, with its backend read
+// back from the record ("" when it cannot be read).
+func (l *toolInstallLedger) sandboxSettled(id int64) {
+	l.mu.Lock()
+	fn := l.onSandboxSettled
+	l.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	backend := ""
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if row, ok, err := l.st.GetInstallRecord(ctx, store.SubjectSandbox, id); err == nil && ok {
+		backend = row.Backend
+	}
+	fn(backend)
 }
 
 // setOnInstalled wires the post-install callback. Nil-safe.
@@ -255,10 +309,16 @@ func (l *toolInstallLedger) settle(handle string, ev toolinstall.Event, code int
 	if !allowed {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	finish := store.ToolInstallFinish{Status: string(to), ExitCode: code, At: l.now()}
-	if ev != toolinstall.EventOrphaned && l.resolveBin != nil {
+	switch {
+	case ev == toolinstall.EventOrphaned:
+	case op.verify != nil:
+		// A sandbox step is "installed" only when its prerequisite reads
+		// present afterwards (plan section 3.5), never the tool path. The
+		// check may run the row's probe, so the store's deadline starts
+		// after it.
+		finish.ResolvedBin = op.verify(ev == toolinstall.EventExitOK)
+	case op.subjectOf() == store.SubjectTool && l.resolveBin != nil:
 		finish.ResolvedBin = l.resolveBin(op.tool)
 	}
 	// An install that exited 0 is "installed" only when its binary resolves
@@ -270,18 +330,32 @@ func (l *toolInstallLedger) settle(handle string, ev toolinstall.Event, code int
 		}
 		finish.Status = string(to)
 	}
-	var err error
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var (
+		done bool
+		err  error
+	)
 	if op.from == toolinstall.StatusInstalling {
-		_, err = l.st.FinishToolInstall(ctx, op.id, string(op.from), finish)
+		done, err = l.st.FinishInstallRecord(ctx, op.subjectOf(), op.id, string(op.from), finish)
 	} else {
-		_, err = l.st.FinishToolUninstall(ctx, op.id, string(op.from), finish)
+		done, err = l.st.FinishUninstallRecord(ctx, op.subjectOf(), op.id, string(op.from), finish)
 	}
 	if err != nil {
-		l.logger.Warn("tool install ledger: settling record failed", "tool", op.tool, "id", op.id, "err", err)
+		l.logger.Warn("tool install ledger: settling record failed", "tool", op.tool, "subject", op.subjectOf(), "id", op.id, "err", err)
 		return
 	}
-	l.logger.Info("tool install ledger: record settled", "tool", op.tool, "id", op.id, "status", to, "exit_code", code, "resolved_bin", finish.ResolvedBin)
-	if to == toolinstall.StatusInstalled && finish.ResolvedBin != "" {
+	if !done {
+		// The compare-and-set lost: the record left op.from before this
+		// exit landed (another process settled it). Say so, never "settled".
+		l.logger.Warn("tool install ledger: record was already settled elsewhere", "tool", op.tool, "subject", op.subjectOf(), "id", op.id, "want", to)
+		return
+	}
+	l.logger.Info("tool install ledger: record settled", "tool", op.tool, "subject", op.subjectOf(), "id", op.id, "status", to, "exit_code", code, "resolved_bin", finish.ResolvedBin)
+	if op.subjectOf() == store.SubjectSandbox {
+		l.sandboxSettled(op.id)
+	}
+	if to == toolinstall.StatusInstalled && finish.ResolvedBin != "" && op.subjectOf() == store.SubjectTool {
 		l.mu.Lock()
 		fn := l.onInstalled
 		l.mu.Unlock()
@@ -291,13 +365,58 @@ func (l *toolInstallLedger) settle(handle string, ev toolinstall.Event, code int
 	}
 }
 
-// reconcileOrphan settles an in-flight row no live process here tracks (the
-// daemon that spawned it is gone) and returns the row as it now stands.
+// orphanCtx is what the orphan rules read about one record.
+type orphanCtx struct {
+	inFlight bool
+	// begunHere: the record's phase began after this process started.
+	begunHere bool
+	// trackedHere: a live PTY in this process settles it.
+	trackedHere bool
+	// isDaemon: this process is the daemon (no daemonListening seam).
+	isDaemon bool
+	// daemonListening: a CLI process found a daemon listening (read only
+	// when the rows above it did not decide).
+	daemonListening func() bool
+}
+
+// orphanRule is one row of the ordered orphan table, walked top-down; the
+// first row that decides answers whether to settle the record as
+// interrupted.
+type orphanRule struct {
+	name  string
+	match func(c orphanCtx) (settle, hit bool)
+}
+
+// orphanRules decide whether a record is an orphan this process may settle.
+// Only the process that owns a record settles it: the daemon owns every
+// record begun before it started that nothing here tracks (the daemon that
+// began it is gone); a CLI process never settles a record a live daemon may
+// own (a setup terminal the daemon started), only one left when no daemon
+// listens at all.
+var orphanRules = []orphanRule{
+	{"not_in_flight", func(c orphanCtx) (bool, bool) { return false, !c.inFlight }},
+	{"begun_here", func(c orphanCtx) (bool, bool) { return false, c.begunHere }},
+	{"tracked_here", func(c orphanCtx) (bool, bool) { return false, c.trackedHere }},
+	{"daemon_owns_it", func(c orphanCtx) (bool, bool) { return true, c.isDaemon }},
+	{"daemon_listening", func(c orphanCtx) (bool, bool) { return false, c.daemonListening() }},
+	{"no_daemon", func(orphanCtx) (bool, bool) { return true, true }},
+}
+
+// orphanDecision walks orphanRules for c and returns the answer and the row
+// that decided it.
+func orphanDecision(c orphanCtx) (bool, string) {
+	for _, r := range orphanRules {
+		if settle, hit := r.match(c); hit {
+			return settle, r.name
+		}
+	}
+	return false, ""
+}
+
+// reconcileOrphan settles an in-flight row this process may settle (see
+// orphanRules) and returns the row as it now stands.
 func (l *toolInstallLedger) reconcileOrphan(ctx context.Context, row store.ToolInstallRow) store.ToolInstallRow {
 	st := toolinstall.Status(row.Status)
-	if !toolinstall.InFlight(st) {
-		return row
-	}
 	phaseStart := row.StartedAt
 	if st == toolinstall.StatusUninstalling {
 		phaseStart = time.Time{}
@@ -305,24 +424,34 @@ func (l *toolInstallLedger) reconcileOrphan(ctx context.Context, row store.ToolI
 			phaseStart = *row.UninstallStartedAt
 		}
 	}
-	if !phaseStart.Before(l.bootAt) {
-		return row // begun by THIS process: it settles it
-	}
 	l.mu.Lock()
 	live := l.tracked[row.ID]
 	l.mu.Unlock()
-	if live {
+	settle, _ := orphanDecision(orphanCtx{
+		inFlight:    toolinstall.InFlight(st),
+		begunHere:   !phaseStart.Before(l.bootAt),
+		trackedHere: live,
+		isDaemon:    l.daemonListening == nil,
+		daemonListening: func() bool {
+			return l.daemonListening(ctx)
+		},
+	})
+	if !settle {
 		return row
 	}
 	to, ok := toolinstall.Next(st, toolinstall.EventOrphaned)
 	if !ok {
 		return row
 	}
-	if done, err := l.st.SetToolInstallStatus(ctx, row.ID, row.Status, string(to)); err == nil && done {
+	subject := row.SubjectKind
+	if subject == "" {
+		subject = store.SubjectTool
+	}
+	if done, err := l.st.SetInstallRecordStatus(ctx, subject, row.ID, row.Status, string(to)); err == nil && done {
 		row.Status = string(to)
 	} else if err == nil {
 		// Lost the CAS to a concurrent settle: re-read.
-		if fresh, found, err := l.st.GetToolInstall(ctx, row.ID); err == nil && found {
+		if fresh, found, err := l.st.GetInstallRecord(ctx, subject, row.ID); err == nil && found {
 			return fresh
 		}
 	}
@@ -348,6 +477,12 @@ func toToolInstallRecord(row store.ToolInstallRow) dashapi.ToolInstallRecord {
 		UninstallStartedAt: row.UninstallStartedAt,
 		UninstalledAt:      row.UninstallFinishedAt,
 		UninstallExitCode:  row.UninstallExitCode,
+		SubjectKind:        wireSubject(row.SubjectKind),
+		Backend:            row.Backend,
+		Source:             row.Source,
+		Digest:             row.Digest,
+		PlacedPath:         row.PlacedPath,
+		Elevated:           row.Elevated,
 	}
 	if toolinstall.HasDefinedUninstall(row.Channel) {
 		if plan, err := toolinstall.PlanUninstall(row.Channel, row.Argv); err == nil {
@@ -492,3 +627,289 @@ func (l *toolInstallLedger) Forget(ctx context.Context, tool string, id int64) e
 
 // Compile-time check.
 var _ dashapi.ToolInstallLedger = (*toolInstallLedger)(nil)
+
+// wireSubject is the record's subject on the wire: "" for an AI tool (the
+// default every tool route already reads), the subject otherwise, so a tool
+// record's JSON is exactly what it was before migration 222.
+func wireSubject(s string) string {
+	if s == store.SubjectTool {
+		return ""
+	}
+	return s
+}
+
+// ---- sandbox setup records (plan section 3.5, subject_kind sandbox) --------
+
+// sandboxInstallRecord is one sandbox setup step about to be recorded. Name
+// is the record's tool column: the prerequisite id (a shared prerequisite
+// keeps one record whichever row set it up), or the per-backend name of a
+// generic step (sandboxRecordName).
+type sandboxInstallRecord struct {
+	Name    string
+	Backend string
+	// Channel is the record's channel: the package manager's channel for a
+	// pm step (toolinstall.InstallArgvFor's), the sandboxsetup Channel for
+	// every other step.
+	Channel string
+	Argv    []string
+	Display string
+	// Source is where a placed file came from (vendor_release, org_mirror,
+	// from_file).
+	Source   string
+	Elevated bool
+}
+
+// row turns rec into the store row it inserts, in status installing.
+func (l *toolInstallLedger) sandboxRow(rec sandboxInstallRecord) store.ToolInstallRow {
+	return store.ToolInstallRow{
+		SubjectKind: store.SubjectSandbox,
+		Tool:        rec.Name,
+		Channel:     rec.Channel,
+		Package:     toolinstall.PackageOf(rec.Channel, rec.Argv),
+		Argv:        rec.Argv,
+		Display:     rec.Display,
+		Status:      string(toolinstall.StatusInstalling),
+		StartedAt:   l.now(),
+		Backend:     rec.Backend,
+		Source:      rec.Source,
+		Elevated:    rec.Elevated,
+	}
+}
+
+// RecordSandboxInstall records a sandbox step a setup terminal just started
+// (handle is its PTY) and tracks its exit: settle then calls verify (the
+// prerequisite read again, sandboxSettleRules) so "installed" means the
+// prerequisite is present afterwards, else installed_not_found.
+func (l *toolInstallLedger) RecordSandboxInstall(ctx context.Context, rec sandboxInstallRecord, handle string, verify func(exitOK bool) string) (int64, error) {
+	if l == nil {
+		return 0, errors.New("toolInstallLedger.RecordSandboxInstall: no install ledger in this daemon")
+	}
+	id, err := l.st.InsertToolInstall(ctx, l.sandboxRow(rec))
+	if err != nil {
+		return 0, fmt.Errorf("toolInstallLedger.RecordSandboxInstall: %w", err)
+	}
+	l.track(handle, pendingToolInstallOp{id: id, tool: rec.Name, from: toolinstall.StatusInstalling, subject: store.SubjectSandbox, verify: verify})
+	return id, nil
+}
+
+// SettleSandboxForeground settles a sandbox step that ran in the foreground
+// on the person's own terminal (the CLI surface: no PTY handle) with its exit
+// code.
+func (l *toolInstallLedger) SettleSandboxForeground(ctx context.Context, rec sandboxInstallRecord, code int, verify func(exitOK bool) string) (int64, error) {
+	if l == nil {
+		return 0, errors.New("toolInstallLedger.SettleSandboxForeground: no install ledger in this process")
+	}
+	id, err := l.st.InsertToolInstall(ctx, l.sandboxRow(rec))
+	if err != nil {
+		return 0, fmt.Errorf("toolInstallLedger.SettleSandboxForeground: %w", err)
+	}
+	handle := fmt.Sprintf("sandbox-foreground-%d", id)
+	l.mu.Lock()
+	l.pending[handle] = pendingToolInstallOp{id: id, tool: rec.Name, from: toolinstall.StatusInstalling, subject: store.SubjectSandbox, verify: verify}
+	l.tracked[id] = true
+	l.mu.Unlock()
+	l.settle(handle, toolinstall.ExitEvent(code), code)
+	return id, nil
+}
+
+// BeginSandboxOp records an in-process sandbox step (a pinned download, a
+// content fetch) that an op, not a PTY, drives. The record is tracked by
+// this process until FinishSandboxOp settles it, so the orphan sweep never
+// takes it; a daemon restart leaves it in flight and reconcileOrphan marks
+// it interrupted.
+func (l *toolInstallLedger) BeginSandboxOp(ctx context.Context, rec sandboxInstallRecord) (int64, error) {
+	if l == nil {
+		return 0, errors.New("toolInstallLedger.BeginSandboxOp: no install ledger in this process")
+	}
+	id, err := l.st.InsertToolInstall(ctx, l.sandboxRow(rec))
+	if err != nil {
+		return 0, fmt.Errorf("toolInstallLedger.BeginSandboxOp: %w", err)
+	}
+	l.mu.Lock()
+	l.tracked[id] = true
+	l.mu.Unlock()
+	return id, nil
+}
+
+// sandboxOpOutcome is how an in-process sandbox op ended.
+type sandboxOpOutcome struct {
+	// Err is the op's failure (nil: it finished).
+	Err error
+	// Digest and PlacedPath are what a pinned download placed.
+	Digest, PlacedPath string
+}
+
+// FinishSandboxOp settles the record BeginSandboxOp made, from the op's own
+// outcome (never a PTY exit): a failure is install_failed; a finished op is
+// installed when verify finds the prerequisite afterwards, else
+// installed_not_found.
+func (l *toolInstallLedger) FinishSandboxOp(ctx context.Context, id int64, out sandboxOpOutcome, verify func() string) (toolinstall.Status, error) {
+	if l == nil {
+		return "", errors.New("toolInstallLedger.FinishSandboxOp: no install ledger in this process")
+	}
+	l.mu.Lock()
+	delete(l.tracked, id)
+	l.mu.Unlock()
+	code, found := 0, ""
+	if out.Err != nil {
+		code = 1
+	} else if verify != nil {
+		found = verify()
+	}
+	to, ok := toolinstall.Next(toolinstall.StatusInstalling, toolinstall.InstallExitEvent(code, found != ""))
+	if !ok {
+		return "", fmt.Errorf("toolInstallLedger.FinishSandboxOp: no transition for record %d", id)
+	}
+	done, err := l.st.FinishInstallRecord(ctx, store.SubjectSandbox, id, string(toolinstall.StatusInstalling),
+		store.ToolInstallFinish{Status: string(to), ExitCode: code, ResolvedBin: found, At: l.now(), Digest: out.Digest, PlacedPath: out.PlacedPath})
+	if err != nil {
+		return "", fmt.Errorf("toolInstallLedger.FinishSandboxOp: %w", err)
+	}
+	if !done {
+		return "", dashapi.ErrToolInstallStale
+	}
+	l.logger.Info("tool install ledger: sandbox op settled", "id", id, "status", to, "resolved", found)
+	l.sandboxSettled(id)
+	return to, nil
+}
+
+// SandboxRecords returns the latest sandbox record per name, newest first,
+// with an orphaned in-flight record settled as interrupted.
+func (l *toolInstallLedger) SandboxRecords(ctx context.Context) ([]store.ToolInstallRow, error) {
+	if l == nil {
+		return nil, nil
+	}
+	rows, err := l.st.ListLatestInstallRecords(ctx, store.SubjectSandbox)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i] = l.reconcileOrphan(ctx, rows[i])
+	}
+	return rows, nil
+}
+
+// SandboxRecordWire renders a sandbox row for the wire (the same rendering
+// the tool routes use, plus the live terminal handle).
+func (l *toolInstallLedger) SandboxRecordWire(row store.ToolInstallRow) dashapi.ToolInstallRecord {
+	return l.liveRecord(row)
+}
+
+// latestSandbox loads the sandbox record the person confirmed: it must be
+// name's latest not-forgotten record.
+func (l *toolInstallLedger) latestSandbox(ctx context.Context, name string, id int64) (store.ToolInstallRow, error) {
+	row, ok, err := l.st.LatestInstallRecord(ctx, store.SubjectSandbox, name)
+	if err != nil {
+		return store.ToolInstallRow{}, err
+	}
+	if !ok {
+		return store.ToolInstallRow{}, dashapi.ErrToolInstallNotFound
+	}
+	if row.ID != id {
+		return store.ToolInstallRow{}, dashapi.ErrToolInstallStale
+	}
+	return l.reconcileOrphan(ctx, row), nil
+}
+
+// uninstallFrom is the uninstallable status set as strings.
+func uninstallFrom() []string {
+	from := toolinstall.UninstallableFrom()
+	out := make([]string, len(from))
+	for i, s := range from {
+		out[i] = string(s)
+	}
+	return out
+}
+
+// UninstallSandbox claims a sandbox record installed through a package
+// channel, derives its uninstall argv with toolinstall.PlanUninstall over the
+// argv the install ACTUALLY ran (so an install under sudo is removed under
+// sudo, `remove` never `purge`), spawns it through spawn and tracks its exit.
+func (l *toolInstallLedger) UninstallSandbox(ctx context.Context, name string, id int64, spawn func(argv []string) (string, error)) (dashapi.ToolUninstallStarted, error) {
+	if l == nil {
+		return dashapi.ToolUninstallStarted{}, errors.New("toolInstallLedger.UninstallSandbox: no install ledger in this process")
+	}
+	row, err := l.latestSandbox(ctx, name, id)
+	if err != nil {
+		return dashapi.ToolUninstallStarted{}, err
+	}
+	plan, err := toolinstall.PlanUninstall(row.Channel, row.Argv)
+	if err != nil {
+		return dashapi.ToolUninstallStarted{}, fmt.Errorf("%w: %s", dashapi.ErrToolUninstallUnsupported, toolinstall.NoDefinedUninstallGuidance)
+	}
+	if !toolinstall.Uninstallable(toolinstall.Status(row.Status)) {
+		return dashapi.ToolUninstallStarted{}, dashapi.ErrToolInstallStale
+	}
+	argv := append([]string(nil), plan.Argv...)
+	prev, claimed, err := l.st.ClaimUninstallRecord(ctx, store.SubjectSandbox, id, uninstallFrom(), string(toolinstall.StatusUninstalling), argv, plan.Display, l.now())
+	if err != nil {
+		return dashapi.ToolUninstallStarted{}, err
+	}
+	if !claimed {
+		return dashapi.ToolUninstallStarted{}, dashapi.ErrToolInstallStale
+	}
+	handle, err := spawn(argv)
+	if err != nil {
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, rerr := l.st.RevertUninstallRecord(rctx, store.SubjectSandbox, id, string(toolinstall.StatusUninstalling), prev); rerr != nil {
+			l.logger.Warn("tool install ledger: reverting a failed sandbox uninstall claim failed", "name", name, "id", id, "err", rerr)
+		}
+		return dashapi.ToolUninstallStarted{}, err
+	}
+	op := pendingToolInstallOp{id: id, tool: name, from: toolinstall.StatusUninstalling, subject: store.SubjectSandbox}
+	if handle == "" {
+		// A foreground run (the CLI): spawn already returned; its exit code
+		// is reported through SettleSandboxUninstall.
+		l.mu.Lock()
+		l.tracked[id] = true
+		l.mu.Unlock()
+		return dashapi.ToolUninstallStarted{RecordID: id, Tool: name, Command: plan.Display, Package: plan.Package}, nil
+	}
+	l.track(handle, op)
+	return dashapi.ToolUninstallStarted{RecordID: id, Handle: handle, Tool: name, Command: plan.Display, Package: plan.Package}, nil
+}
+
+// SettleSandboxUninstall settles a foreground sandbox uninstall (the CLI)
+// with its exit code.
+func (l *toolInstallLedger) SettleSandboxUninstall(_ context.Context, name string, id int64, code int) error {
+	if l == nil {
+		return errors.New("toolInstallLedger.SettleSandboxUninstall: no install ledger in this process")
+	}
+	handle := fmt.Sprintf("sandbox-foreground-uninstall-%d", id)
+	l.mu.Lock()
+	l.pending[handle] = pendingToolInstallOp{id: id, tool: name, from: toolinstall.StatusUninstalling, subject: store.SubjectSandbox}
+	l.mu.Unlock()
+	l.settle(handle, toolinstall.ExitEvent(code), code)
+	return nil
+}
+
+// MarkSandboxUndone records that an in-process undo (a component removal, a
+// config key restored, a placed file deleted) finished: the record moves to
+// uninstalling and then to uninstalled (or uninstall_failed with undoErr),
+// with display naming what was undone.
+func (l *toolInstallLedger) MarkSandboxUndone(ctx context.Context, name string, id int64, display string, undoErr error) error {
+	if l == nil {
+		return errors.New("toolInstallLedger.MarkSandboxUndone: no install ledger in this process")
+	}
+	if _, err := l.latestSandbox(ctx, name, id); err != nil {
+		return err
+	}
+	_, claimed, err := l.st.ClaimUninstallRecord(ctx, store.SubjectSandbox, id, uninstallFrom(), string(toolinstall.StatusUninstalling), []string{"observer-undo", name}, display, l.now())
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return dashapi.ErrToolInstallStale
+	}
+	code := 0
+	if undoErr != nil {
+		code = 1
+	}
+	to, _ := toolinstall.Next(toolinstall.StatusUninstalling, toolinstall.ExitEvent(code))
+	_, err = l.st.FinishUninstallRecord(ctx, store.SubjectSandbox, id, string(toolinstall.StatusUninstalling), store.ToolInstallFinish{Status: string(to), ExitCode: code, At: l.now()})
+	if err == nil {
+		l.sandboxSettled(id)
+	}
+	return err
+}

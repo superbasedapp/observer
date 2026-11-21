@@ -47,7 +47,7 @@ func TestComposeContainsKeyLines(t *testing.T) {
 		"Spend by tool",
 		"Top movers vs prior period",
 		"claude-opus-4-8: $80.00 (was $50.00, +$30.00 (+60%))",
-		"Sent by SuperBased Observer v1.19.0",
+		"Sent by superbased Observer v1.19.0",
 	}
 	for _, w := range wantText {
 		if !strings.Contains(m.Text, w) {

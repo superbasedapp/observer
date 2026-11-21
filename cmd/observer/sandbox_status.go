@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -39,6 +39,7 @@ func newSandboxCmd() *cobra.Command {
 		Short: "Sandboxes and VMs: backends, availability and capture",
 	}
 	cmd.AddCommand(newSandboxStatusCmd(), newSandboxRelayGateCmd())
+	cmd.AddCommand(newSandboxSetupCmd())
 	for _, sub := range sandboxSubcommands {
 		cmd.AddCommand(sub())
 	}
@@ -55,6 +56,7 @@ func newSandboxStatusCmd() *cobra.Command {
 		cfgPath string
 		backend string
 		asJSON  bool
+		all     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "status",
@@ -69,8 +71,25 @@ func newSandboxStatusCmd() *cobra.Command {
 			// under; a stored read, no request.
 			managed := sandboxManagedStatus(cmd.Context(), cfg, gov.PinsInForce)
 			cfg.Terminal.Sandbox = cliEffectiveSandboxConfig(cmd.Context(), cfg, gov.PinsInForce)
+			// The organization's isolation floors, read the way a sandboxed
+			// CLI launch reads them (installCLIIsolationFloors), so status
+			// and launch judge the rows against the same floors (O5 audit
+			// finding O5-A5). When they cannot be read, every launch
+			// refuses with org_floors_unreadable, and status says so.
+			floorsErr := installCLIIsolationFloors(cmd.Context(), cfg)
 			st := sandboxStatus(cmd.Context(), cfg)
 			st.Managed = &managed
+			if floorsErr != nil {
+				st.OrgFloorsUnreadable = floorsErr.Error()
+			}
+			if !all && backend == "" {
+				// A row this node cannot turn on (the org-hosted row on a node
+				// whose organization publishes no gateway, g1-design.md section
+				// 8.4) is listed only with --all, keyed on its verdict.
+				st.Backends = slices.DeleteFunc(st.Backends, func(b dashapi.SandboxBackendAvail) bool {
+					return sandboxNotOfferedVerdicts[b.Verdict]
+				})
+			}
 			if backend != "" {
 				var keep []dashapi.SandboxBackendAvail
 				for _, b := range st.Backends {
@@ -94,8 +113,14 @@ func newSandboxStatusCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfgPath, "config", "", "config file (default ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&backend, "backend", "", "show one backend only")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	cmd.Flags().BoolVar(&all, "all", false, "also list the rows this machine cannot turn on (offered only by an organization)")
 	return cmd
 }
+
+// sandboxNotOfferedVerdicts are the probe verdicts of a row that is not
+// something this node can turn on: `observer sandbox status` lists such a
+// row only with --all (and the picker omits it).
+var sandboxNotOfferedVerdicts = map[string]bool{"org_gateway_not_offered": true}
 
 // sandboxStatusReport is the status the verb prints.
 type sandboxStatusReport struct {
@@ -109,9 +134,23 @@ type sandboxStatusReport struct {
 	// force (lane SBX-UPD): how soon an update waiting for live sandboxed
 	// runs asks.
 	LiveRunUpdatePolicy string `json:"live_run_update_policy"`
+	// Seccomp is [terminal.sandbox].seccomp in force (tracker F-002, lane
+	// FU4): Observer's syscall filter on the rows that load it.
+	Seccomp bool `json:"seccomp"`
+	// SeccompAllowSeize is [terminal.sandbox].seccomp_allow_seize (lane
+	// ptrace, PT-96), and SeizeRows what it gives each row that loads
+	// Observer's filter on this host now (its containment ground, or why
+	// PTRACE_SEIZE stays denied).
+	SeccompAllowSeize bool                      `json:"seccomp_allow_seize"`
+	SeizeRows         []dashapi.SandboxSeizeRow `json:"seize_rows,omitempty"`
 	// Managed is the org's managed pull on this node (`observer sandbox
 	// status` only; nil in doctor).
 	Managed *sandboxManagedRailStatus `json:"managed,omitempty"`
+	// OrgFloorsUnreadable is why the organization's isolation floors could
+	// not be read (`observer sandbox status` only): every sandboxed launch
+	// refuses with org_floors_unreadable until they can, whatever the rows
+	// say (O5 audit finding O5-A5).
+	OrgFloorsUnreadable string `json:"org_floors_unreadable,omitempty"`
 }
 
 // sandboxStatus probes this host the way the dashboard does and renders
@@ -126,8 +165,10 @@ func sandboxStatus(ctx context.Context, cfg config.Config) sandboxStatusReport {
 		egress = sandbox.EgressProfile{Mode: sandbox.Egress(tcfg.Egress)}
 	}
 	exe, _ := os.Executable()
-	home, _ := os.UserHomeDir()
-	r := &sandboxRuntime{cfg: tcfg, egress: egress, observerDir: filepath.Join(home, ".observer"), observerBin: exe}
+	// The Observer dir is the configured database's dir, as the daemon and
+	// a sandboxed CLI launch use (sandboxObserverDirFor), so a row's state
+	// dir is the one a launch would use (O5 audit finding O5-A3).
+	r := &sandboxRuntime{cfg: tcfg, egress: egress, observerDir: sandboxObserverDirFor(cfg), observerBin: exe}
 	// The drivers this node selects (lane SBX-P3A); a driver whose backend
 	// is not listed answers without probing.
 	r.buildSandboxDrivers(cfg)
@@ -150,7 +191,28 @@ func sandboxStatus(ctx context.Context, cfg config.Config) sandboxStatusReport {
 		Backends: backends,
 
 		LiveRunUpdatePolicy: normalizeLiveRunPolicy(tcfg.LiveRunUpdatePolicy),
+		Seccomp:             tcfg.Seccomp,
+		SeccompAllowSeize:   tcfg.SeccompAllowSeize,
+		SeizeRows:           sandboxSeizeHostNow().Rows,
 	}
+}
+
+// seizeStatusLine is the status line of [terminal.sandbox]
+// .seccomp_allow_seize: off, or which rows it lifts PTRACE_SEIZE on here and
+// on which ground, and why not on the others.
+func seizeStatusLine(on bool, rows []dashapi.SandboxSeizeRow) string {
+	if !on {
+		return "strace in a sandbox (PTRACE_SEIZE): blocked under the filter (seccomp_allow_seize off, the default; turn it on in the dashboard, Terminals > Settings)"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.Lifted {
+			parts = append(parts, r.Backend+": allowed ("+r.Ground+")")
+			continue
+		}
+		parts = append(parts, r.Backend+": "+r.Reason)
+	}
+	return "strace in a sandbox (PTRACE_SEIZE): seccomp_allow_seize on; " + strings.Join(parts, "; ")
 }
 
 // liveRunPolicyLine is the status and doctor line for the policy.
@@ -163,6 +225,15 @@ func liveRunPolicyLine(policy string) string {
 
 // renderSandboxStatus prints the report as a table plus one detail line per
 // unavailable or beta backend.
+// seccompStatusLine is the status line of [terminal.sandbox].seccomp: which
+// rows the key reaches, and that the others say so at launch (audit N2-A9).
+func seccompStatusLine(on bool) string {
+	if !on {
+		return "Syscall filter (seccomp): off ([terminal.sandbox] seccomp = false, the default)"
+	}
+	return "Syscall filter (seccomp): on: rows that load Observer's profile (bubblewrap, process_lite) run under observer_default or are refused; container rows keep their engine's filter; on every other row Observer's filter does not run, and its launch says so"
+}
+
 func renderSandboxStatus(w io.Writer, st sandboxStatusReport) error {
 	state := "on"
 	if !st.Enabled {
@@ -185,8 +256,17 @@ func renderSandboxStatus(w io.Writer, st sandboxStatusReport) error {
 	if st.Enabled && st.LiveRunUpdatePolicy != "" {
 		fmt.Fprintln(w, liveRunPolicyLine(st.LiveRunUpdatePolicy))
 	}
+	if st.Enabled {
+		fmt.Fprintln(w, seccompStatusLine(st.Seccomp))
+	}
+	if st.Enabled && st.Seccomp {
+		fmt.Fprintln(w, seizeStatusLine(st.SeccompAllowSeize, st.SeizeRows))
+	}
 	if st.Managed != nil {
 		fmt.Fprintln(w, sandboxManagedStatusLine(*st.Managed))
+	}
+	if st.OrgFloorsUnreadable != "" {
+		fmt.Fprintf(w, "Organization floors: %s; every sandboxed launch refuses until they can be read\n", st.OrgFloorsUnreadable)
 	}
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
@@ -300,11 +380,15 @@ func sandboxDoctorSection(ctx context.Context, cfg config.Config, configPath str
 		}
 		out = append(out, sandboxDoctorCheck(st, b))
 	}
+	// One `sandbox.setup.<backend>` row per offered row on this host, from
+	// the passive setup plan (never the active check; sandbox_setup_cmd.go).
+	out = append(out, sandboxSetupDoctorChecks(ctx, sandboxSetupDoctorSeam(configPath), sandboxHostKind())...)
 	pins, pinsKnown := sandboxDoctorGovernancePins(configPath)
 	out = append(out, sandboxSkipRepoScanDoctorChecks(ctx, cfg, pins, pinsKnown)...)
 	eff := cliEffectiveSandboxConfig(ctx, cfg, pins)
 	out = append(out, sandboxInstallScriptsDoctorChecks(eff)...)
 	out = append(out, sandboxSignInDoctorChecks(eff)...)
+	out = append(out, hostedKeyDoctorChecks(eff)...)
 	if st.Enabled {
 		out = append(out, diag.Check{Name: "sandbox.live_run_update_policy", Status: diag.StatusOK, Message: liveRunPolicyLine(st.LiveRunUpdatePolicy)})
 	}

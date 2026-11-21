@@ -179,8 +179,24 @@ func (c *Client) stream(ctx context.Context, id, rpc string, msg any, pty, asRoo
 	case <-p.started:
 		return p, nil
 	case <-p.done:
+		// A short process can start and end before this select runs, so
+		// both channels are ready and either case may be chosen. A process
+		// that started is handed back (its output reads to EOF and Wait
+		// reports the exit); only a stream that ended before any start is
+		// an error, and never a nil process with a nil error.
+		select {
+		case <-p.started:
+			return p, nil
+		default:
+		}
 		cancel()
-		return nil, p.err
+		p.mu.Lock()
+		err := p.err
+		p.mu.Unlock()
+		if err == nil {
+			err = errors.New("e2b: the process stream ended before the process started")
+		}
+		return nil, err
 	case <-ctx.Done():
 		cancel()
 		return nil, ctx.Err()

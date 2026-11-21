@@ -1405,6 +1405,80 @@
       "AltSeam": ""
     }
   },
+  "custom-agent": {
+    "compact_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "none",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
   "deepagents-code": {
     "compact_lifecycle": {
       "State": "vendor_only",

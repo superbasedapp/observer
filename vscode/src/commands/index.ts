@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { ResolvedBinary } from '../binary';
 import type { DaemonManager } from '../daemon';
+import { registerAppsOn } from '../apps';
 import { registerDoctor } from './doctor';
 import { registerLaunch } from './launch';
 import { registerLifecycle } from './lifecycle';
@@ -12,11 +13,11 @@ import { registerCopyProxyEnv } from './proxyEnv';
 //   start / stop / openDashboard        — M1 (live; see lifecycle.ts)
 //   copyProxyEnv                        — M4 (live; see proxyEnv.ts)
 //   init / initWithMCP                  — future
-//   enroll                              — future
+//   enroll                              — replaced by observer.connect
+//                                         ("Sign in and connect", connect.ts)
 const STUBS: Array<{ id: string; milestone: string }> = [
   { id: 'observer.init', milestone: 'M3+' },
   { id: 'observer.initWithMCP', milestone: 'M3+' },
-  { id: 'observer.enroll', milestone: 'M6' },
 ];
 
 export function registerCommands(
@@ -28,6 +29,8 @@ export function registerCommands(
   registerLaunch(ctx, bin);
   registerLifecycle(ctx, daemon);
   registerCopyProxyEnv(ctx, daemon);
+  // AI Apps (lane POLISH-F2): calls the daemon's one enable seam.
+  registerAppsOn(ctx, daemon);
   for (const { id, milestone } of STUBS) {
     ctx.subscriptions.push(
       vscode.commands.registerCommand(id, async () => {

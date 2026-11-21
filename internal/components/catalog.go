@@ -18,8 +18,10 @@ import (
 // one bump for the wave) the security.provenance row (SEC-F2A),
 // org.security.ci and the code-scanner driver rows SEC-G5 adds alongside;
 // 4 (lane GATES-SEC, one bump) security.scan.trivy, security.scan.kics,
-// isolation.seal and org.security.githubapp.
-const CatalogVersion = 4
+// isolation.seal and org.security.githubapp; 5 (wave 17, one bump for the
+// wave: lanes pooled-integrations, pooled-sandbox and pooled-coding)
+// org.vendorconn, org.sandbox, org.coding, org.agent-config and org.entities.
+const CatalogVersion = 5
 
 var (
 	buildOnce sync.Once
@@ -34,6 +36,11 @@ func build() {
 		rows = append(rows, adapterRows()...)
 		rows = append(rows, serverRows()...)
 		byID = make(map[string]Component, len(rows))
+		for i := range rows {
+			if rows[i].Reach == 0 && grandfathered[rows[i].ID] {
+				rows[i].Reach = grandfatheredReach(rows[i])
+			}
+		}
 		for _, r := range rows {
 			byID[r.ID] = r
 		}
@@ -110,7 +117,7 @@ func Artifacts() []ArtifactComponent {
 		{
 			ID: "artifact.vscode-extension", Kind: ArtifactEditorExtension,
 			Title:     "VS Code extension",
-			About:     "The SuperBased Observer extension for VS Code and its forks, installed from the VS Code Marketplace or Open VSX. It bundles its own observer binary per platform and prefers an installed observer that is strictly newer.",
+			About:     "The superbased Observer extension for VS Code and its forks, installed from the VS Code Marketplace or Open VSX. It bundles its own observer binary per platform and prefers an installed observer that is strictly newer.",
 			Platforms: []string{"VS Code", "VS Code Server", "Cursor", "Windsurf", "VSCodium"},
 			Source:    "VS Code Marketplace and Open VSX (5 platform VSIXes)",
 			Signer:    "the marketplace (the bundled observer binary is the release build)",

@@ -1,0 +1,13 @@
+# Pinned set the live test ran green with (2026-11-20, Python 3.12).
+# Install the superbased SDK from this checkout first (README step 2); it is
+# not on PyPI yet.
+crewai==1.15.44
+openai==2.54.0
+openinference-instrumentation-crewai==1.1.28
+openinference-instrumentation-openai==0.1.75
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+# Only beta releases of this package exist. Pinning it here lets resolvers
+# that refuse pre-releases by default accept it (CrewAI needs it through
+# opentelemetry-sdk >= 1.45.2).
+opentelemetry-semantic-conventions==0.66b2

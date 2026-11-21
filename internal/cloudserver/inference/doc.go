@@ -8,6 +8,9 @@
 // It is pure: no SQL, no HTTP, no file system. The concrete clients live in
 // their own packages (internal/cloudserver/foundry for Azure AI Foundry,
 // internal/cloudserver/anthropic for the Anthropic Messages API) and are
-// composed by cmd/observer-cloud. Every caller branches on a dialect's
+// composed by cmd/observer-cloud. The one exception to "client elsewhere" is
+// OpenAICompatible (openaicompat.go): a mapping-only adapter over
+// internal/llmwire, which owns the OpenAI-compatible wire and its
+// netguard-built transport; this package still imports no net/http. Every caller branches on a dialect's
 // capability row (DialectSpec), never on a provider name.
 package inference

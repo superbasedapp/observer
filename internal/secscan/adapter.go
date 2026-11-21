@@ -171,6 +171,62 @@ func validRuleID(id string) bool {
 	return true
 }
 
+// cweTagForms is the table of rule-tag spellings that name a CWE id, walked
+// top-down with the first matching prefix winning (longest first). A tag is
+// compared lowercased and trimmed; what follows the prefix must be the number
+// alone or the number then ":" or a space and a title ("CWE-79: Improper
+// Neutralization ..."). The Opengrep, CodeQL and GitHub conventions are all
+// here; a tag that is none of these is not a CWE reference.
+var cweTagForms = []string{"external/cwe/cwe-", "cwe-", "cwe:"}
+
+// maxCWEPerFinding bounds References.CWE; a rule tagged with more is
+// truncated (the tags are engine data, never trusted for size).
+const maxCWEPerFinding = 16
+
+// cweFromTags maps a rule's tags onto References.CWE: each recognized tag
+// becomes "CWE-<n>" (n of one to five digits, no leading zeros, not zero),
+// de-duplicated, in first-seen order. Malformed tags are ignored. nil when no
+// tag names a CWE, so a finding from an untagged rule is unchanged.
+func cweFromTags(tags []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		t := strings.ToLower(strings.TrimSpace(tag))
+		var rest string
+		found := false
+		for _, form := range cweTagForms {
+			if r, ok := strings.CutPrefix(t, form); ok {
+				rest, found = r, true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		n := 0
+		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+			n++
+		}
+		if n == 0 || n > 5 || (n < len(rest) && rest[n] != ':' && rest[n] != ' ') {
+			continue
+		}
+		v, err := strconv.Atoi(rest[:n])
+		if err != nil || v == 0 {
+			continue
+		}
+		id := "CWE-" + strconv.Itoa(v)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+		if len(out) == maxCWEPerFinding {
+			break
+		}
+	}
+	return out
+}
+
 // Adapt maps one decoded SARIF run onto findings through an adapter row.
 // Engine messages and rule descriptions never reach the finding: its
 // message is templated from the row, the rule id and the engine name
@@ -218,6 +274,7 @@ func Adapt(row AdapterRow, run sarif.Run, o AdaptOptions) ([]secfinding.Finding,
 			Message:  "Reported by " + row.Name + " rule " + id,
 			Baseline: policy.FindingBaselineUnknown, Status: policy.FindingStatusOpen,
 		}
+		f.References.CWE = cweFromTags(rule.Tags)
 		if len(res.Locations) > 0 {
 			l := res.Locations[0]
 			rel, why := NormalizeLocation(l.URI, o.ProjectRoot)

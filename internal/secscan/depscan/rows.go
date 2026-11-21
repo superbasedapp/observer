@@ -44,6 +44,10 @@ const UntestedVersionPrefix = "Untested engine version"
 var runLabels = []struct{ prefix, words string }{
 	{NotIsolatedPrefix, "not isolated"},
 	{UntestedVersionPrefix, "untested engine version"},
+	// An image's OS release (osimage.go).
+	{FixedOnlyPrefix, "fixed issues only"},
+	{KnownGapPrefix, "known gap"},
+	{KernelNotePrefix, "kernel packages left out"},
 }
 
 // RunLabels returns the labels a run's notes carry, in table order, each
@@ -148,12 +152,13 @@ func ScalibrRow(extractors []string) secscan.DriverRow {
 		Offline:    secscan.Offline{NoNetwork: true, Database: "OSV per-ecosystem exports, downloaded by Observer (internal/secscan/osvdb)"},
 		Processes:  []secscan.ProcessDecl{{Binary: "observer (the scan child: `observer security scan-child`)"}},
 		Egress: []secscan.EgressDecl{
-			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh (Observer's download, never SCALIBR's)"},
+			{Host: "superbased.app", Trigger: "database refresh from superbased's signed mirror (Observer's download, never SCALIBR's)"},
+			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh, the fallback source (Observer's download, never SCALIBR's)"},
 			{Host: "api.osv.dev", Trigger: "online matching, a user command only"},
 		},
 		MinVersion: SCALIBRVersion, TestedRange: SCALIBRVersion,
 		SemanticAdapter: "osv",
-		Licence:         "Apache-2.0 (OSV-SCALIBR) and its 43 linked modules (MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, ISC)",
+		Licence:         "Apache-2.0 (OSV-SCALIBR) and its 45 linked modules (docs/dependency-scanning-notices.md; MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, ISC)",
 	}
 }
 
@@ -163,6 +168,22 @@ func ScalibrRow(extractors []string) secscan.DriverRow {
 var OSVScannerFlags = secscan.FlagRule{
 	Always: []string{"scan", "source", "-r", "--offline", "--no-call-analysis=all", "--format", "json"},
 	Never:  []string{"--download-offline-databases", "--experimental-call-analysis", "--licenses", "--serve"},
+}
+
+// OSVScannerSourceFlags are the flags of the Go source check's runs only
+// (plan section 14.5 item 3b, 3b-src, spike RG-0 "What changes in plan
+// 14.5" item 7): Go call analysis on, offline, one go.mod per process (-L,
+// added per run), never the recursive walk (-r mixes modules' results,
+// RG-0's route 1 defect) and never --no-call-analysis. Every other
+// osv-scanner run keeps OSVScannerFlags (--no-call-analysis=all). Info
+// verbosity: osv-scanner reports a skipped analysis ("Go is not
+// installed") at info level only.
+var OSVScannerSourceFlags = secscan.FlagRule{
+	Always: []string{"scan", "source", "--offline", "--call-analysis=go", "--format", "json", "--verbosity", "info"},
+	Never: []string{
+		"-r", "--recursive", "--no-call-analysis=all", "--no-call-analysis", "--download-offline-databases",
+		"--experimental-call-analysis", "--call-analysis=rust", "--call-analysis=all", "--licenses", "--serve", "-S", "--sbom",
+	},
 }
 
 // OSVScannerExitCodes is osv-scanner's exit-code table (JSP-8).
@@ -185,7 +206,8 @@ func OSVRow() secscan.DriverRow {
 		// osv-scanner itself runs --offline; the database it reads is
 		// Observer's download, declared here like the SCALIBR row's.
 		Egress: []secscan.EgressDecl{
-			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh (Observer's download, never osv-scanner's)"},
+			{Host: "superbased.app", Trigger: "database refresh from superbased's signed mirror (Observer's download, never osv-scanner's)"},
+			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh, the fallback source (Observer's download, never osv-scanner's)"},
 		},
 		MinVersion: OSVScannerMinVersion, TestedRange: OSVScannerTested,
 		PinnedDigests:   []string{OSVScannerLinuxAMD64},

@@ -135,14 +135,11 @@ func assembleShareData(ctx context.Context, engine *cost.Engine, db *sql.DB, p n
 		Tools:       topItems(toolSum.Rows, shareTopTools),
 	}
 
-	// Cache-read share = cache_read / (net input + cache_read + cache_creation).
-	// The denominator is total input-side tokens; the share is what fraction hit
-	// prefix cache. Only meaningful when there is input-side activity.
-	tb := modelSum.TotalTokens
-	denom := tb.Input + tb.CacheRead + tb.CacheCreation + tb.CacheCreation1h
-	if denom > 0 {
+	// Cache-read share: the one formula (cost.CacheReadShare), only
+	// meaningful when there is input-side activity.
+	if share, ok := cost.CacheReadShare(modelSum.TotalTokens); ok {
 		data.HasCacheShare = true
-		data.CacheReadShare = float64(tb.CacheRead) / float64(denom)
+		data.CacheReadShare = share
 	}
 	return data, nil
 }

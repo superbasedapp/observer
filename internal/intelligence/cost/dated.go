@@ -199,6 +199,28 @@ func (t *Table) HasDated() bool {
 	return t != nil && len(t.dated) > 0
 }
 
+// PriceAt prices one token bundle for model at `at` through the table's
+// resolution ladder and reports which rung priced it. A table with no dated
+// timeline prices at the current rate (the ordinary cost surfaces' rule), so
+// a zero or historical `at` costs nothing extra there. ok is false when no
+// rung prices the model. It is the ONE owner of "a table, a model, a time and
+// a bundle make dollars" for read-time pricing outside the engine's own
+// summaries: the guard budget pricer and the dashboard's budget card both
+// call it.
+func (t *Table) PriceAt(model string, at time.Time, b TokenBundle) (float64, PricingSource, bool) {
+	if t == nil {
+		return 0, PricingSourceMiss, false
+	}
+	if !t.HasDated() {
+		at = time.Time{}
+	}
+	pricing, source, ok := t.LookupWithSourceAt(model, at)
+	if !ok {
+		return 0, source, false
+	}
+	return ComputeBreakdown(pricing, b).Total, source, true
+}
+
 // DatedModels returns the keys that carry a dated rate timeline.
 func (t *Table) DatedModels() []string {
 	if t == nil {

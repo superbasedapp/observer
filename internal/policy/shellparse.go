@@ -29,10 +29,14 @@ const maxUnwrapDepth = 5
 // reading rather than guessing), and each of those may itself be a
 // launcher. Depth alone bounds the tree's HEIGHT, so the leaf count is
 // fan-out^depth — a crafted line can turn a few kilobytes into
-// millions of units, and the guard hook's watchdog fails OPEN on
-// timeout. Charging per expansion SITE bounds that product, and
-// exhausting the budget is recorded on Unanalyzed (fail CLOSED), never
-// silently dropped.
+// millions of units, and the guard hook that would evaluate them must
+// not be relied on to time out safely: under enforcement a gate hook
+// that times out fails CLOSED (docs/guard.md "Hook failure semantics"),
+// so a line that cannot be analysed in time is BLOCKED, not waved
+// through — and only with enforcement off does it fail open. Either way
+// the parser must produce a verdict rather than hang, so charging per
+// expansion SITE bounds that product, and exhausting the budget is
+// recorded on Unanalyzed (fail CLOSED), never silently dropped.
 //
 // The uncharged paths are uncharged because they are already bounded
 // by the INPUT LENGTH rather than multiplied by it: a line of N bytes
@@ -167,9 +171,15 @@ type Command struct {
 	Pipeline bool
 	// RedirectTargets are the output-redirection targets (`> file`,
 	// `>> file`) — write-classified path candidates for the
-	// boundary rules. Input redirections are consumed and dropped
-	// (no current rule needs them).
+	// boundary rules. Input redirections are on InputRedirects.
 	RedirectTargets []string
+	// InputRedirects are the standard-input redirection sources (`<
+	// file`, `0< file`, `0<file`): the file the unit reads as its input,
+	// which R-126 judges as SQL for a database CLI (`mysql < x.sql`).
+	// Heredocs (`<<`, `<<-`), here-strings (`<<<`) and an input redirect
+	// of another descriptor (`3< file`) are not on it; their word is
+	// consumed and dropped as before.
+	InputRedirects []string
 	// Heredoc is the concatenated heredoc body attached to the unit
 	// (`psql <<EOF ... EOF`), scanned by R-120.
 	Heredoc string
@@ -245,6 +255,18 @@ type Command struct {
 	// later command calls it: every verdict a rule draws from the unit is
 	// capped at ASK (engine.go, D-338). "" when the unit can run.
 	uncalledDef string
+	// hadSub records that a command substitution ("$(...)", backticks) was
+	// stripped out of this unit's own text (unit.hadSub). fromSubst marks a
+	// unit that IS the top level of such a substitution: its output became
+	// part of some other unit's words. R-170 reads the pair so a fetch whose
+	// output is substituted into an interpreter's -c payload is told apart
+	// from a fetch the payload merely runs (demo finding #22).
+	hadSub, fromSubst bool
+	// procSubIn marks a unit that reads a process substitution as its input
+	// or an operand (`bash <(curl ...)`, `bash < <(curl ...)`), and
+	// procSubSrc the first unit of that substitution. Both are lexer facts;
+	// no other rule reads them.
+	procSubIn, procSubSrc bool
 	// altReading marks a unit from the event's second reading
 	// (Event.AltDialect). A unit rule's reason comes from that reading
 	// first (engine.go applyRuleCeiling); whether the rule hits never
@@ -486,9 +508,9 @@ func ParseArgv(argv []string, dialect Dialect) []Command {
 	}
 	var out []Command
 	st := newParseState()
-	processUnit(unit{words: words}, dialect, st, &out)
+	processUnit(unit{words: words, hadSub: len(subs) > 0}, dialect, st, &out)
 	for _, sub := range subs {
-		out = append(out, parseDepth(sub, dialect, st.deeper())...)
+		out = appendSubstitutionUnits(out, parseDepth(sub, dialect, st.deeper()), st.depth+1)
 	}
 	return settleDefinitions(out)
 }
@@ -501,8 +523,10 @@ type unit struct {
 	lits      [][]int
 	qbr       [][]int
 	redirects []string
-	heredoc   string
-	pipeline  bool
+	// inputs are the standard-input redirect sources (Command.InputRedirects).
+	inputs   []string
+	heredoc  string
+	pipeline bool
 	// sep is the list operator in front of the unit (`;` or start of
 	// line, `&&`, `||`, `|`); opens and closes count the subshell
 	// parentheses between the previous unit and this one. cwdtrack.go
@@ -514,6 +538,8 @@ type unit struct {
 	// this unit's text (stripSubstitutions leaves subMarker in its
 	// place), so a directory change or link it named cannot be resolved.
 	hadSub bool
+	// procSubIn / procSubSrc: see Command.procSubIn.
+	procSubIn, procSubSrc bool
 }
 
 // parseDepth lexes raw under the dialect's rules and processes each
@@ -578,7 +604,20 @@ type unit struct {
 func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	orig := raw
 	ps := dialect == DialectPowerShell
+	// HEREDOC BODIES ARE DATA. A quoted-delimiter body is never expanded by
+	// the POSIX shell, so it is shielded from the substitution pass; and a
+	// PowerShell reading of a line PowerShell refuses to parse (an unquoted
+	// `<` heredoc operator) treats the body the same way. cmd has no heredoc.
+	psInert := ps && psRejectsHeredocLine(raw)
+	restore := func(t string) string { return t }
+	if dialect != DialectCmd && (!ps || psInert) {
+		raw, restore = shieldQuotedHeredocBodies(raw)
+	}
 	raw, subs, tickSpan := stripSubstitutionsOpts(raw, stripOpts{mark: true, psEscape: ps, psTicks: ps && st.psTicks})
+	raw = restore(raw)
+	for k := range subs {
+		subs[k] = restore(subs[k])
+	}
 	atLimit := st.depth >= maxUnwrapDepth && len(subs) > 0
 	if atLimit {
 		subs = nil
@@ -586,7 +625,13 @@ func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	var units []unit
 	switch dialect {
 	case DialectPowerShell:
-		units = buildUnits(lexLine(blankPSDefinitionParams(raw), psLexSpec), nil)
+		text, bodies := raw, []string(nil)
+		if psInert {
+			// PowerShell would run none of this line; its body lines are
+			// heredoc data, attached to their unit as under POSIX.
+			text, bodies = extractHeredocs(raw)
+		}
+		units = buildUnits(lexLine(blankPSDefinitionParams(text), psLexSpec), bodies)
 	case DialectCmd:
 		units = buildUnits(lexLine(raw, cmdLexSpec), nil)
 	default:
@@ -610,7 +655,7 @@ func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	sst := st.deeper()
 	sst.cur, sst.curPos = seq, -1
 	for _, sub := range subs {
-		out = append(out, parseDepth(sub, dialect, sst)...)
+		out = appendSubstitutionUnits(out, parseDepth(sub, dialect, sst), sst.depth)
 	}
 	if ps && tickSpan && !st.psTicks {
 		out = appendPSTickReading(orig, st, out)
@@ -690,6 +735,19 @@ func markSubstitutionLimit(raw string, dialect Dialect, st parseState, out *[]Co
 	}
 }
 
+// appendSubstitutionUnits appends the units one command substitution parsed
+// into, marking the substitution's own top level (the units at depth) as
+// fromSubst. Deeper units (a payload the substitution unwrapped) are not
+// marked: their output is not what was substituted.
+func appendSubstitutionUnits(out, sub []Command, depth int) []Command {
+	for i := range sub {
+		if sub[i].Depth == depth {
+			sub[i].fromSubst = true
+		}
+	}
+	return append(out, sub...)
+}
+
 // processUnit turns one lexed unit into a Command (plus any nested
 // Commands its payloads unwrap into) and appends them to out.
 func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
@@ -727,11 +785,15 @@ func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
 		Wrappers:         wrappers,
 		Pipeline:         u.pipeline,
 		RedirectTargets:  u.redirects,
+		InputRedirects:   u.inputs,
 		Heredoc:          u.heredoc,
 		Env:              unitEnv(u.words, len(stripped)),
 		seq:              st.cur,
 		seqPos:           st.curPos,
 		chdir:            chdir,
+		hadSub:           u.hadSub,
+		procSubIn:        u.procSubIn,
+		procSubSrc:       u.procSubSrc,
 	}
 	nested := analyzeNested(&cmd, st)
 	// PowerShell script blocks passed as arguments are code too
@@ -852,11 +914,29 @@ var posixWrappers = map[string]wrapperSpec{
 	"timeout": {leadingOperand: true, argFlags: setOf("-k", "-s", "--kill-after", "--signal")},
 	"nice":    {argFlags: setOf("-n", "--adjustment")},
 	"nohup":   {},
+	// setsid and systemd-run start their argv detached from the caller
+	// (lane cli-2 fixes-1, low): a launch behind either is still judged
+	// as the command it runs. tmux and screen take the command as their
+	// own shell string and are not unwrapped (security ledger LAUNCH-2).
+	"setsid": {},
+	"systemd-run": {argFlags: setOf("-u", "--unit", "-p", "--property", "-E", "--setenv", "-M", "--machine", "-H", "--host",
+		"--uid", "--gid", "--nice", "--working-directory", "--slice", "--description", "--service-type",
+		"--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar",
+		"--timer-property", "--path-property", "--socket-property", "--expand-environment")},
 	"time":    {},
 	"stdbuf":  {argFlags: setOf("-i", "-o", "-e")},
 	"command": {},
 	"builtin": {},
 	"exec":    {},
+	// busybox / toybox are multi-call binaries: `busybox APPLET [args…]` runs
+	// the applet as if it were the command (NET-5). Stripping the leading
+	// busybox/toybox makes the applet the Base every rule family sees, so
+	// `busybox rm -rf /` is R-101 and `busybox sh -c '…'` unwraps like any
+	// shell. They take no value-consuming options of their own (`--list`,
+	// `--help` and `--install` are value-less), so a plain wrapper row with
+	// no argFlags is correct; an applet begins at the first non-dashed word.
+	"busybox": {},
+	"toybox":  {},
 	"xargs": {argFlags: setOf("-I", "-n", "-P", "-d", "-a", "-E", "-s", "-L", "-i",
 		"--max-args", "--max-procs", "--delimiter", "--arg-file", "--max-chars", "--max-lines", "--replace")},
 }
@@ -1112,11 +1192,29 @@ func dashCPayload(argv []string) (string, bool) {
 // (documented, pinned by tests): one heredoc per line; an
 // unterminated heredoc consumes the rest of the input as its body.
 func extractHeredocs(s string) (string, []string) {
+	clean, bodies, _ := scanHeredocs(s)
+	return clean, bodies
+}
+
+// heredocInfo is one heredoc scanHeredocs found: where its `<<` operator
+// sits in the scanned text, whether its delimiter was quoted, and its body's
+// byte span (empty when the input carries no body).
+type heredocInfo struct {
+	op                 int
+	quoted             bool
+	bodyStart, bodyEnd int
+}
+
+// scanHeredocs is extractHeredocs that also reports each heredoc it removed
+// (heredocInfo), so the substitution pass can leave a QUOTED body alone and
+// the PowerShell reading can recognise a POSIX heredoc line.
+func scanHeredocs(s string) (string, []string, []heredocInfo) {
 	if !strings.Contains(s, "<<") {
-		return s, nil
+		return s, nil, nil
 	}
 	var out strings.Builder
 	var bodies []string
+	var infos []heredocInfo
 	skips := map[int]int{} // newline index → resume index past the body
 	inS, inD := false, false
 	i := 0
@@ -1163,7 +1261,7 @@ func extractHeredocs(s string) (string, []string) {
 				i++
 			}
 		case c == '<' && i+1 < len(s) && s[i+1] == '<' && (i+2 >= len(s) || s[i+2] != '<'):
-			adv, ok := scanHeredoc(s, i, &bodies, skips, &out)
+			adv, ok := scanHeredoc(s, i, &bodies, &infos, skips, &out)
 			if !ok {
 				out.WriteString("<<")
 				i += 2
@@ -1175,14 +1273,14 @@ func extractHeredocs(s string) (string, []string) {
 			i++
 		}
 	}
-	return out.String(), bodies
+	return out.String(), bodies, infos
 }
 
 // scanHeredoc parses one heredoc redirection starting at s[i] ("<<"),
 // records its body and skip range, writes the marker word, and
 // returns the index to resume lexing at. ok is false when the text
 // after "<<" is not a valid heredoc introducer.
-func scanHeredoc(s string, i int, bodies *[]string, skips map[int]int, out *strings.Builder) (int, bool) {
+func scanHeredoc(s string, i int, bodies *[]string, infos *[]heredocInfo, skips map[int]int, out *strings.Builder) (int, bool) {
 	j := i + 2
 	if j < len(s) && s[j] == '-' {
 		j++
@@ -1212,6 +1310,7 @@ func scanHeredoc(s string, i int, bodies *[]string, skips map[int]int, out *stri
 	if nl < 0 {
 		// Declared but no body present in this input.
 		*bodies = append(*bodies, "")
+		*infos = append(*infos, heredocInfo{op: i, quoted: q != 0})
 		out.WriteString(marker)
 		return j, true
 	}
@@ -1223,9 +1322,132 @@ func scanHeredoc(s string, i int, bodies *[]string, skips map[int]int, out *stri
 	bodyStart := newlineAt + 1
 	bodyLen, total := findHeredocEnd(s[bodyStart:], delim)
 	*bodies = append(*bodies, s[bodyStart:bodyStart+bodyLen])
+	*infos = append(*infos, heredocInfo{op: i, quoted: q != 0, bodyStart: bodyStart, bodyEnd: bodyStart + bodyLen})
 	skips[newlineAt] = bodyStart + total
 	out.WriteString(marker)
 	return j, true
+}
+
+// heredocShieldByte delimits the placeholder shieldQuotedHeredocBodies puts
+// where a quoted body was. No real command line carries it; a line that
+// already does is left unshielded (no change, the conservative direction).
+const heredocShieldByte = '\x02'
+
+// shieldQuotedHeredocBodies replaces every QUOTED heredoc body (`<<'EOF'`,
+// `<<"EOF"`) with an inert placeholder for the substitution pass, and returns
+// the function that puts the bodies back. A quoted delimiter tells the shell
+// to expand NOTHING in the body, so a `$(…)` or backtick span there is text,
+// not a command: lifting it out (as the pass does everywhere else) read data
+// as code — a Go test appended via `cat >> x_test.go <<'EOF'` with a backtick
+// raw string naming ~/.bashrc denied R-154. An UNQUOTED body is untouched: the
+// shell does run its substitutions, so they stay analysed.
+func shieldQuotedHeredocBodies(s string) (string, func(string) string) {
+	noop := func(t string) string { return t }
+	if !strings.Contains(s, "<<") || strings.IndexByte(s, heredocShieldByte) >= 0 {
+		return s, noop
+	}
+	_, _, infos := scanHeredocs(s)
+	var b strings.Builder
+	var saved []string
+	prev := 0
+	for _, h := range infos {
+		if !h.quoted || h.bodyEnd <= h.bodyStart || h.bodyStart < prev {
+			continue
+		}
+		b.WriteString(s[prev:h.bodyStart])
+		b.WriteByte(heredocShieldByte)
+		b.WriteString(strconv.Itoa(len(saved)))
+		b.WriteByte(heredocShieldByte)
+		saved = append(saved, s[h.bodyStart:h.bodyEnd])
+		prev = h.bodyEnd
+	}
+	if len(saved) == 0 {
+		return s, noop
+	}
+	b.WriteString(s[prev:])
+	restore := func(t string) string {
+		for k := len(saved) - 1; k >= 0; k-- {
+			ph := string(heredocShieldByte) + strconv.Itoa(k) + string(heredocShieldByte)
+			t = strings.ReplaceAll(t, ph, saved[k])
+		}
+		return t
+	}
+	return b.String(), restore
+}
+
+// psRejectsHeredocLine reports that PowerShell would refuse to parse the
+// line at all because one of its POSIX heredoc operators is an unquoted `<`
+// in PowerShell's own terms (the `<` operator is reserved, a parse error that
+// stops the whole script). Under PowerShell nothing in such a line runs, so
+// its PowerShell reading may treat the heredoc body as the data it is under
+// the POSIX shell instead of lexing body lines as commands. It is
+// deliberately conservative: when the PowerShell quote state before the
+// operator is uncertain (psOperatorUnquoted), it answers false and the
+// reading is unchanged.
+func psRejectsHeredocLine(s string) bool {
+	_, _, infos := scanHeredocs(s)
+	for _, h := range infos {
+		if psOperatorUnquoted(s, h.op) {
+			return true
+		}
+	}
+	return false
+}
+
+// psOperatorUnquoted reports whether the `<` at s[pos] sits outside every
+// PowerShell string, scanning from the start with PowerShell's quoting:
+// single quotes (a doubled apostrophe is a literal one), double quotes
+// (backtick escapes, a doubled quote is a literal one), and the backtick
+// escape outside strings. Anything
+// it does not model before pos — a comment, a here-string, a subexpression
+// inside a double-quoted string, a non-ASCII byte (PowerShell also accepts
+// typographic quotes) — makes it answer false, so the caller changes nothing.
+func psOperatorUnquoted(s string, pos int) bool {
+	if pos < 0 || pos+1 >= len(s) || s[pos] != '<' || s[pos+1] == '#' {
+		return false
+	}
+	inS, inD := false, false
+	for i := 0; i < pos; i++ {
+		c := s[i]
+		if c >= 0x80 {
+			return false
+		}
+		switch {
+		case inS:
+			if c == '\'' {
+				if i+1 < pos && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inS = false
+			}
+		case inD:
+			switch {
+			case c == '`':
+				i++
+			case c == '$' && i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{'):
+				return false
+			case c == '"':
+				if i+1 < pos && s[i+1] == '"' {
+					i++
+					continue
+				}
+				inD = false
+			}
+		case c == '`':
+			if i+1 == pos {
+				return false // the operator character itself is escaped
+			}
+			i++
+		case c == '\'':
+			inS = true
+		case c == '"':
+			inD = true
+		case c == '#', c == '@' && i+1 < len(s) && (s[i+1] == '\'' || s[i+1] == '"'):
+			return false
+		}
+	}
+	return !inS && !inD
 }
 
 // findHeredocEnd locates the terminator line within body text,
@@ -1327,8 +1549,10 @@ var (
 // carry their list semantics), "(" and ")" (unquoted parens, unit
 // separators), "|" (pipe), ">" (output redirect whose target is the
 // next word), ">fd" (fd-duplication redirect, no target word), "<"
-// (input redirect, target dropped by buildUnits), and the zero-width
-// opSubMark.
+// (standard-input redirect whose source is the next word), "<drop" (a
+// "<<", "<<-" or "<<<" the heredoc pre-pass did not take, an input
+// redirect of another descriptor, or the "<" of "<>": the next word is
+// dropped by buildUnits), and the zero-width opSubMark.
 func lexLine(s string, spec lexSpec) []ptoken {
 	lx := &lexer{src: s, spec: spec}
 	lx.run()
@@ -1474,8 +1698,7 @@ func (lx *lexer) run() {
 		case c == '>':
 			lx.scanRedirect()
 		case c == '<':
-			lx.op("<")
-			lx.i++
+			lx.scanInput()
 		case c == '(' && lx.cur.Len() == 0:
 			// A subshell/group opener at word start acts as a unit
 			// separator; inside a word ("$(...)"), it is literal
@@ -1583,6 +1806,38 @@ func (lx *lexer) scanRedirect() {
 	lx.op(">")
 }
 
+// scanInput handles '<'. A standard-input redirect ("<", "0<", "0<file")
+// becomes "<", whose source buildUnits records on Command.InputRedirects; a
+// pure-digit fd prefix is not a word, as for '>'. Everything else that
+// starts with '<' becomes "<drop", whose next word is dropped exactly as
+// every '<' was before InputRedirects existed: "<<", "<<-" and "<<<" (a
+// heredoc introducer the POSIX pre-pass did not take, or a here-string),
+// an input redirect of another descriptor ("3< file"), and the "<" of "<>",
+// whose '>' is still scanned as the output redirect it always was.
+func (lx *lexer) scanInput() {
+	s := lx.src
+	fd := ""
+	if lx.digit && lx.cur.Len() > 0 {
+		fd = lx.cur.String()
+		lx.cur.Reset()
+		lx.lits, lx.qbr = nil, nil
+		lx.has = false
+		lx.digit = false
+	}
+	lx.i++
+	switch {
+	case lx.i < len(s) && s[lx.i] == '<':
+		for lx.i < len(s) && s[lx.i] == '<' {
+			lx.i++
+		}
+		lx.op("<drop")
+	case lx.i < len(s) && s[lx.i] == '>', fd != "" && fd != "0":
+		lx.op("<drop")
+	default:
+		lx.op("<")
+	}
+}
+
 // buildUnits groups lexer tokens into units, wiring redirect targets,
 // heredoc bodies and pipeline membership.
 func buildUnits(toks []ptoken, bodies []string) []unit {
@@ -1591,18 +1846,27 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 	pipeNext := false
 	redirNext := false
 	dropNext := false
+	inNext := false
 	// The list operator and parens seen since the last emitted unit
 	// belong to the NEXT unit; a flush that emits nothing keeps them.
 	nextSep, nextOpens, nextCloses := sepSeq, 0, 0
+	// nextProcSub marks the next emitted unit as the first command of a
+	// process substitution (`<(` : a "<" operator directly followed by a
+	// "(" opener).
+	nextProcSub := false
 	flush := func() {
 		if len(cur.words) > 0 || cur.heredoc != "" || len(cur.redirects) > 0 {
 			cur.pipeline = cur.pipeline || pipeNext
 			cur.sep, cur.opens, cur.closes = nextSep, nextOpens, nextCloses
+			if nextProcSub {
+				cur.procSubSrc = true
+				nextProcSub = false
+			}
 			units = append(units, cur)
 			nextSep, nextOpens, nextCloses = sepSeq, 0, 0
 		}
 		cur = unit{}
-		redirNext, dropNext = false, false
+		redirNext, dropNext, inNext = false, false, false
 	}
 	for _, t := range toks {
 		if t.op {
@@ -1614,7 +1878,14 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 				pipeNext = false
 				nextSep = listSep(t.text)
 			case "(":
+				procSub := inNext
+				if procSub {
+					// `cmd <(...)` / `cmd < <(...)`: cmd reads the
+					// process substitution that starts here.
+					cur.procSubIn = true
+				}
 				flush()
+				nextProcSub = procSub
 				pipeNext = false
 				nextOpens++
 			case ")":
@@ -1631,6 +1902,8 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 			case ">fd":
 				// fd duplication — no target word follows.
 			case "<":
+				inNext = true
+			case "<drop":
 				dropNext = true
 			}
 			continue
@@ -1651,7 +1924,10 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 			cur.redirects = append(cur.redirects, t.text)
 			redirNext = false
 		case dropNext:
-			dropNext = false // input-redirect source: dropped (no rule consumes it)
+			dropNext = false // heredoc / here-string word, other-fd input source: dropped
+		case inNext:
+			cur.inputs = append(cur.inputs, t.text)
+			inNext = false
 		default:
 			cur.words = append(cur.words, t.text)
 			cur.lits = append(cur.lits, t.lit)

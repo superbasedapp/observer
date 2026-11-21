@@ -1,6 +1,6 @@
 // remoteIdentity.ts: which machine is this dashboard? (T-425)
 //
-// The instance switcher opens a REMOTE machine's own SuperBased dashboard in a
+// The instance switcher opens a REMOTE machine's own superbased dashboard in a
 // new tab, over a loopback SSH forward (http://127.0.0.1:<port>). That tab
 // looks exactly like the local dashboard, so an operator once read a remote
 // box's (correct) refusal as a fault on their own machine (D-325: the

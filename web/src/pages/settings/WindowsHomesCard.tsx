@@ -137,6 +137,7 @@ function WindowsHomeRow({
             disabled={busy}
             confirmLabel="Write these changes?"
             armedNote="Writes only the lines previewed below."
+            armedNoteSide="top"
           >
             Apply
           </ConfirmButton>

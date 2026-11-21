@@ -14,6 +14,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 )
 
@@ -266,6 +267,8 @@ func TestCheckAdapterBrowserExtensionBranch(t *testing.T) {
 		if !joinedHas(c.Details, "observer init --browser") {
 			t.Errorf("expected an actionable remediation hint: %v", c.Details)
 		}
+		// The same fix as a dashboard button (Settings > Browser capture).
+		assertSpelled(t, c, remedy.BrowserHostSetup)
 	})
 
 	t.Run("watcher-only adapter is unaffected", func(t *testing.T) {

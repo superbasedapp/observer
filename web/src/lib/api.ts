@@ -7,7 +7,9 @@
 
 import { markRemoteAuthLost } from "@/lib/authLoss";
 import { getRemoteCSRF, isRemoteView, setRemoteCSRF } from "@/lib/remote";
+import { bodyText, parseErrorBody } from "@/lib/needsSetting";
 import { errorMachineSuffix } from "@/lib/remoteIdentity";
+import { parseJSONBody } from "@/lib/jsonBody";
 import type {
   InstanceInfo,
   InstanceTestResult,
@@ -211,7 +213,9 @@ export async function fetchJSON<T>(
     const body = await res.text().catch(() => "");
     throw new ApiError(res.status, url, body);
   }
-  return res.json() as Promise<T>;
+  // A write answered 204, or 200 with no body (the hosted consent route),
+  // is a success with nothing to read, never "Unexpected end of JSON input".
+  return parseJSONBody<T>(res.status, await res.text());
 }
 
 // ---------- session classification (tags / favorites / notes) ----------
@@ -410,8 +414,16 @@ export function fetchLOCSummary(
 // apiReason extracts the SERVER's own message from an ApiError so the UI can
 // show the honest, actionable reason (notably the known_hosts guidance) rather
 // than a generic "request failed". Falls back to the raw error text.
+//
+// A JSON body yields its sentence ("message", or an "error" that is a
+// sentence) read from the FULL body, never the message's 200-char excerpt,
+// so a structured refusal never shows as raw, cut-off JSON (operator report
+// 2026-11-18). An error whose fix is a setting also carries a deep link:
+// render it with NeedsSettingNotice (lib/needsSetting.ts errorNote).
 export function apiReason(e: unknown): string {
   if (e instanceof ApiError) {
+    const text = bodyText(parseErrorBody(e.body));
+    if (text) return `${text}${errorMachineSuffix()}`;
     const marker = `${e.path}: `;
     const at = e.message.indexOf(marker);
     if (at >= 0) {
@@ -488,6 +500,43 @@ export async function deliveryWrite<T>(method: "POST" | "PUT" | "DELETE", path: 
         parsed = null;
       }
       throw new DeliveryWriteError(parsed?.error || e.body.trim() || e.message, parsed?.kind ?? "", e.status);
+    }
+    throw e;
+  }
+}
+
+/** CloudAgentsWriteError is a refused cloud-agents write: the server's sentence
+ *  and the HTTP status (400 a refused value, 404 an unknown account, 503 the
+ *  keychain or the service is unavailable). */
+export class CloudAgentsWriteError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+/** cloudAgentsWrite sends one owner-local, confirm-token POST to a
+ *  /api/cloud-agents route (Settings > Connected tools > Cloud agents) and maps
+ *  a refusal to its sentence. The body may carry an API key: it goes in the
+ *  body only, never in a URL, and nothing here logs it. */
+export async function cloudAgentsWrite<T>(path: string, body: unknown = {}): Promise<T> {
+  try {
+    return await fetchJSON<T>(path, undefined, {
+      method: "POST",
+      headers: await localConfirmHeaders(),
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    if (e instanceof ApiError) {
+      let parsed: { error?: string } | null = null;
+      try {
+        parsed = JSON.parse(e.body) as { error?: string };
+      } catch {
+        parsed = null;
+      }
+      throw new CloudAgentsWriteError(parsed?.error || e.body.trim() || e.message, e.status);
     }
     throw e;
   }

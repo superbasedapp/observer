@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/proccapture"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
 	"github.com/marmutapp/superbased-observer/internal/processobs/bridge"
 	"github.com/marmutapp/superbased-observer/internal/processobs/linuxebpf"
@@ -112,6 +113,15 @@ func runProcessObserver(ctx context.Context, configPath string) error {
 	// the medium CorrelateCrossOS pass.
 	attributor := processobs.NewAttributor(seed, scrubber, nil)
 	attributor.SetMetricPolicy(resolveMetricPolicy(cfg.Observer.Process, logger))
+	// Process capture budget ([observer.process.capture], plan
+	// docs/plans/process-capture-budget-plan-2026-11-04.md). The service
+	// table marks service roots in the tree (and stops the env token at them);
+	// the Observer classifies every run at its one persist seam. Both are inert
+	// with capture.enabled = false.
+	captureCfg := cfg.Observer.Process.Capture.CaptureConfig()
+	if captureCfg.Enabled {
+		attributor.SetServiceTable(proccapture.NewPolicy(captureCfg).IsService)
+	}
 	attributor.SetTokenLookup(func(token string) (processobs.Seed, bool) {
 		s, ok, lerr := st.SessionSeedByID(ctx, token)
 		if lerr != nil || !ok {
@@ -155,6 +165,7 @@ func runProcessObserver(ctx context.Context, configPath string) error {
 		// around the backend — see processobs.Options.TransportUnavailableReason
 		// for the capability-loss that wrapping caused.
 		TransportUnavailableReason: transportUnavailable,
+		Capture:                    captureCfg,
 	})
 
 	// Refresh the active-session project roots that gate cwd-anchored capture
@@ -953,3 +964,7 @@ func buildProcessScrubber(pc config.ProcessConfig) *processobs.FieldScrubber {
 		},
 	}
 }
+
+// The store is the Observer's capture-budget sink: exemplar runs and the
+// rollup / stats / fold delta in one transaction (processobs.CaptureSink).
+var _ processobs.CaptureSink = (*store.Store)(nil)

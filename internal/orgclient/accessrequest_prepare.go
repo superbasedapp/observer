@@ -94,6 +94,15 @@ func (c *Client) PrepareAccessRequest(ctx context.Context, in orgcontract.Access
 	return out, nil
 }
 
+// AlreadyGranted reports the grant in force on this machine that already
+// covers the validated request n (accessgrant_claim.go).
+func (c *Client) AlreadyGranted(ctx context.Context, n accessgrant.Normalized) (accessgrant.Held, bool) {
+	if c == nil {
+		return accessgrant.Held{}, false
+	}
+	return AlreadyGranted(ctx, c.store, n, time.Now())
+}
+
 // SendOrQueueAccessRequest posts a PREPARED request, or queues it when the
 // org cannot be reached right now (transport failure or a 5xx); the outbox
 // posts it on a later push cycle. A refusal on the merits is returned, never

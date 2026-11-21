@@ -113,7 +113,7 @@ func TestLeaveRemovesOnlyEnrolmentWrittenRoutes(t *testing.T) {
 				t.Fatalf("leave plan = %+v, want %s %q", ov.LeavePlan, c.wantAction, c.wantMessage)
 			}
 
-			lv, err := d.Leave(ctx)
+			lv, err := d.Leave(ctx, dashapi.SwitchOptions{})
 			if err != nil || !lv.WasEnrolled {
 				t.Fatalf("Leave = (%+v, %v)", lv, err)
 			}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/handoff"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
 )
 
 // HandoffSubstrate is everything the store contributes to a session
@@ -80,10 +81,10 @@ func (s *Store) LoadHandoffSubstrate(ctx context.Context, sessionID string) (Han
 func (s *Store) loadHandoffSourceFiles(ctx context.Context, sessionID string, sub *HandoffSubstrate) error {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT source_file FROM token_usage
-		  WHERE session_id = ? AND source_file LIKE '/%'
+		  WHERE session_id = ? AND source_file != ''
 		 UNION
 		 SELECT DISTINCT source_file FROM actions
-		  WHERE session_id = ? AND source_file LIKE '/%'`,
+		  WHERE session_id = ? AND source_file != ''`,
 		sessionID, sessionID)
 	if err != nil {
 		return fmt.Errorf("store.LoadHandoffSubstrate: source files: %w", err)
@@ -93,6 +94,16 @@ func (s *Store) loadHandoffSourceFiles(ctx context.Context, sessionID string, su
 		var f string
 		if err := rows.Scan(&f); err != nil {
 			return err
+		}
+		// Only real transcript paths: a local absolute path on this OS. This
+		// is pathnorm.IsLocalAbsPath rather than a SQL `LIKE '/%'`, which
+		// also dropped every C:\ path on a Windows daemon; it is the one
+		// stored-path open gate (ledger CLOUDSESS-12), so a UNC, device or
+		// extended-length path never reaches a reader that opens it
+		// (handoffsvc, the MCP get_session_message tool). A `<tool>:hook`
+		// sentinel is not absolute on any OS, so it stays filtered (D-P0.1).
+		if !pathnorm.IsLocalAbsPath(f) {
+			continue
 		}
 		sub.SourceFiles = append(sub.SourceFiles, f)
 	}

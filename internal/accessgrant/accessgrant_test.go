@@ -33,7 +33,8 @@ func TestRequestTypeTable(t *testing.T) {
 		{TypeGuardExemption, KeyWritePolicy, 30 * day},
 		{TypeToolAllow, KeyWritePolicy, 90 * day},
 		{TypeModelAccess, KeyWritePolicy, 90 * day},
-		{TypeFeatureEnable, KeyAdminDeployment, 90 * day},
+		{TypeFeatureEnable, KeyAdminFleet, 90 * day},
+		{TypeComponentEnable, KeyAdminFleet, 90 * day},
 		{TypeBudgetIncrease, KeyWriteBudgets, 0},
 		{TypeFindingException, KeyWriteSecurity, 90 * day},
 	}
@@ -218,6 +219,25 @@ func TestDecide(t *testing.T) {
 			},
 		},
 		{
+			// 2026-11-12: another admin holds the key but not the tier, so
+			// nobody else can decide a locked-rule exemption; the designated
+			// super-admin may approve their own, flagged.
+			name: "sole super-admin, another admin present: own locked-rule request self-approved, flagged", p: base(nil),
+			f:    Facts{Rule: RuleFacts{Known: true, Locked: true}, Approver: Approver{UserID: "carol", HasKey: true, SuperAdmin: true, OnlyTierApprover: true}, RequesterID: "carol"},
+			tier: TierSuperAdmin, check: func(t *testing.T, d Decision) {
+				if !d.SelfApproved {
+					t.Fatal("want self_approved")
+				}
+			},
+		},
+		{
+			// The other admin can decide a request that needs only the key,
+			// so four eyes still hold for it.
+			name: "sole super-admin, another admin present: own key-tier request refused", p: base(nil),
+			f:    Facts{Rule: unlocked, Approver: Approver{UserID: "carol", HasKey: true, SuperAdmin: true, OnlyTierApprover: true}, RequesterID: "carol"},
+			tier: TierKey, wantCode: CodeSelf,
+		},
+		{
 			// C156-01: a proactive grant (and an extension) has no request
 			// row; the grantee is still compared with the approver.
 			name: "proactive grant to oneself refused (D-086)", p: base(func(p *Proposal) { p.UserID = "bob" }),
@@ -246,6 +266,22 @@ func TestDecide(t *testing.T) {
 		{
 			name: "longer than 30d refused", p: base(func(p *Proposal) { p.ExpiresAt = t0.Add(31 * day) }),
 			f: Facts{Rule: unlocked, Approver: approver}, tier: TierKey, wantCode: CodeOutOfRange,
+		},
+		{
+			// 2026-11-13: the type's maximum binds every approver but the
+			// super-admin.
+			name: "super-admin may approve a year", p: base(func(p *Proposal) { p.ExpiresAt = t0.Add(365 * day) }),
+			f: Facts{Rule: unlocked, Approver: super}, tier: TierKey,
+		},
+		{
+			name: "an org-lowered maximum does not bind the super-admin", p: base(func(p *Proposal) { p.ExpiresAt = t0.Add(10 * day) }),
+			f: Facts{Rule: unlocked, Approver: super},
+			s: func(s *Settings) { s.MaxDurationS = map[string]int64{TypeGuardExemption: 86400} }, tier: TierKey,
+		},
+		{
+			name: "an org-lowered maximum binds an admin", p: base(func(p *Proposal) { p.ExpiresAt = t0.Add(10 * day) }),
+			f: Facts{Rule: unlocked, Approver: approver},
+			s: func(s *Settings) { s.MaxDurationS = map[string]int64{TypeGuardExemption: 86400} }, tier: TierKey, wantCode: CodeOutOfRange,
 		},
 		{
 			name: "uses without expiry refused", p: base(func(p *Proposal) { p.ExpiresAt = time.Time{}; p.MaxUses = 1 }),

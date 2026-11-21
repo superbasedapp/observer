@@ -149,14 +149,20 @@ func TestOversizedViewerFrameRejected(t *testing.T) {
 
 	rctx, rcancel := context.WithTimeout(ctx, 4*time.Second)
 	defer rcancel()
-	// Drain the on-open pty_size geometry frame (Feature 2) the bridge sends to
-	// every client before the read loop; the cap-close arrives on the NEXT read.
-	if _, _, derr := c.Read(rctx); derr != nil {
-		t.Fatalf("expected the on-open pty_size frame, got error: %v", derr)
+	// The server rejects the oversized frame and ends the connection, so a read
+	// fails - and fails BEFORE the deadline, which is what tells a rejection
+	// apart from a server that accepted the frame and simply went quiet. The
+	// on-open pty_size geometry frame (Feature 2) normally arrives first and is
+	// drained here, but it is not required: on Windows the server closing with
+	// the unread rest of the 2 MiB frame in its receive buffer sends a TCP RST,
+	// and the client's stack discards data still queued for it, that frame
+	// included ("wsarecv: An existing connection was forcibly closed").
+	var rerr error
+	for i := 0; i < 2 && rerr == nil; i++ {
+		_, _, rerr = c.Read(rctx)
 	}
-	// The server rejects the oversized frame and closes; a read returns an error.
-	if _, _, rerr := c.Read(rctx); rerr == nil {
-		t.Fatal("oversized frame was accepted - read cap not enforced")
+	if rerr == nil || rctx.Err() != nil {
+		t.Fatalf("oversized frame was accepted - read cap not enforced (last read err: %v)", rerr)
 	}
 	// And no PTY side effect ever occurred (no lease was held).
 	if lm.localWriter.writes.Load() != 0 || lm.localWriter.resizes.Load() != 0 {

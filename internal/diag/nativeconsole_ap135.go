@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // AP-135 native-console doctor probes for the two Rail B artifacts
@@ -134,6 +135,7 @@ func checkIBMBobTeamsAt(cfg config.Config, paths []string, home string) Check {
 		}
 	}
 	noteSystemFile(path, note)
+	var rems []remedy.Remediation
 	b, err := os.ReadFile(path)
 	var policy map[string]json.RawMessage
 	switch {
@@ -176,14 +178,14 @@ func checkIBMBobTeamsAt(cfg config.Config, paths []string, home string) Check {
 			pol.Untrusted = systemFileUntrusted(path)
 		}
 		noteBobPolicyTelemetry(pol, note)
-		noteBobPolicyHooks(pol, home, note)
+		rems = noteBobPolicyHooks(pol, home, note)
 		noteBobPolicyGateway(pol, note)
 	}
 	msg := "ibm bob policy deployed - all checks passed"
 	if worst != StatusOK {
 		msg = "ibm bob policy deployed - see warnings below"
 	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return Check{Name: name, Status: worst, Message: msg, Details: details, Remediations: rems}
 }
 
 // firstExisting returns the first path that exists, or "".

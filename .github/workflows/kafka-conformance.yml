@@ -60,6 +60,12 @@ permissions:
 jobs:
   kafka-live:
     name: live-kafka conformance
+    # Dispatch only on the private repository (lane CICD round 3,
+    # 2026-11-03): Actions there run only for a public release (operator
+    # ruling 2026-10-20) and this gates nothing, so a push or pull request
+    # there skips the job (a skipped job bills nothing). The public
+    # repository, where minutes are free, still runs it on every trigger.
+    if: github.repository != 'marmutapp/superbased-observer-private' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

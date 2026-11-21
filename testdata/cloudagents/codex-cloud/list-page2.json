@@ -1,0 +1,17 @@
+{
+  "tasks": [
+    {
+      "id": "task_e_6720aa03b2c3d4e5f6a7b8c9d0e1f2a5",
+      "url": "https://chatgpt.com/codex/tasks/task_e_6720aa03b2c3d4e5f6a7b8c9d0e1f2a5",
+      "title": "Review: tighten scrub patterns",
+      "status": "error",
+      "updated_at": "2026-10-30T22:05:00Z",
+      "environment_id": "env_01HZXB9W4N1P5S7V",
+      "environment_label": "Scratch environment",
+      "summary": "No changes",
+      "is_review": true,
+      "attempt_total": null
+    }
+  ],
+  "cursor": null
+}

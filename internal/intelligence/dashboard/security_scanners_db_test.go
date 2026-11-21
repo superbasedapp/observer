@@ -93,3 +93,66 @@ func TestHandleSecurityScannersDB(t *testing.T) {
 		t.Fatalf("scanners card db %s %v", w.Body, err)
 	}
 }
+
+// TestHandleSecurityScannersDBOSAccept: the same route records the OS
+// release databases' accept for a body of {"os":true} (and only then), the
+// language accept for any other JSON body or none, and refuses a body that
+// is not JSON rather than guess which consent was meant; the OS state rides
+// on the same status.
+func TestHandleSecurityScannersDBOSAccept(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lang, osAcc int
+	seam := &dashapi.ScannerDB{
+		Status: func(context.Context) (dashapi.ScannerDBStatus, error) {
+			return dashapi.ScannerDBStatus{Accepted: lang > 0, OS: &dashapi.ScannerOSDBStatus{Accepted: osAcc > 0, Source: "superbased.app", Installed: []dashapi.ScannerOSRelease{}}}, nil
+		},
+		Accept:   func(context.Context) error { lang++; return nil },
+		AcceptOS: func(context.Context) error { osAcc++; return nil },
+	}
+	s := &Server{opts: Options{ConfigPath: cfg, ScannerDB: seam, SecuritySelected: scannerRule("security.deps", "security.scan.osv")}}
+	s.comps.svc = scannerSnapSvc{snap: componentstate.Snapshot{Configured: true}}
+	w := httptest.NewRecorder()
+	s.handleSecurityScannersDB(w, httptest.NewRequest(http.MethodGet, "/api/security/scanners/db", nil))
+	var resp struct {
+		Status       dashapi.ScannerDBStatus `json:"status"`
+		ConfirmToken string                  `json:"confirm_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Status.OS == nil || resp.Status.OS.Accepted {
+		t.Fatalf("GET %s %v", w.Body, err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/security/scanners/db", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set(remoteConfirmHeader, resp.ConfirmToken)
+		r.AddCookie(&http.Cookie{Name: remoteConfirmCookie, Value: resp.ConfirmToken})
+		w := httptest.NewRecorder()
+		s.handleSecurityScannersDB(w, r)
+		return w
+	}
+	cases := []struct {
+		body          string
+		code          int
+		wantLang, wOS int
+	}{
+		{`not json`, http.StatusBadRequest, 0, 0},
+		{`{"os":false}`, http.StatusOK, 1, 0},
+		{`{"os":true}`, http.StatusOK, 1, 1},
+		{``, http.StatusOK, 2, 1},
+		{`{"accept":true}`, http.StatusOK, 3, 1},
+	}
+	for _, tc := range cases {
+		w := post(tc.body)
+		if w.Code != tc.code || lang != tc.wantLang || osAcc != tc.wOS {
+			t.Fatalf("body %q: %d (lang %d, os %d)", tc.body, w.Code, lang, osAcc)
+		}
+	}
+	// A seam without the OS accept answers it as compiled out.
+	seam.AcceptOS = nil
+	if w := post(`{"os":true}`); w.Code == http.StatusOK || osAcc != 1 {
+		t.Fatalf("no OS seam: %d", w.Code)
+	}
+}

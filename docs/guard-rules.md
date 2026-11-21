@@ -22,7 +22,7 @@ appear once per row.
 | R-110 | destructive | critical | flag | deny | force push to a protected branch |
 | R-111 | destructive | warn | flag | ask | deletion of a protected branch or tag |
 | R-120 | destructive | critical | flag | deny | destructive SQL through a database CLI (DROP/TRUNCATE/DELETE without WHERE) |
-| R-130 | destructive | critical | flag | ask | cloud-infrastructure destruction command |
+| R-130 | destructive | critical | flag | ask | cloud-infrastructure or container-volume destruction command |
 | R-140 | destructive | high | flag | ask | package registry publish/yank |
 | R-141 | destructive | high | flag | ask | bulk permission/ownership change (chmod -R 777 / chown -R outside project) |
 | R-142 | destructive | critical | flag | deny | disk/device-level operation (mkfs / dd to a device / diskpart / format) |
@@ -52,6 +52,7 @@ appear once per row.
 | R-160 | boundary | critical | flag | deny | agent modifying observer/guard/hook configuration |
 | R-160 | boundary | critical | flag | deny | shell command modifying observer/guard/hook configuration |
 | R-160 | boundary | critical | flag | deny | interpreter one-liner or inline script deleting observer/guard/hook configuration |
+| R-160 | boundary | critical | flag | deny | interpreter one-liner or inline script naming observer/guard/hook configuration |
 | R-161 | boundary | high | flag | flag | agent modifying the project guard policy file |
 | R-161 | boundary | high | flag | flag | shell command modifying the project guard policy file |
 | R-162 | boundary | critical | flag | deny | agent write or edit that turns a coding agent's hooks off (disableAllHooks and its siblings) in a hook-bearing settings file |
@@ -69,13 +70,28 @@ appear once per row.
 | R-114 | boundary | high | flag | ask | shell command writing .gitattributes with a custom filter, diff or merge driver |
 | R-165 | boundary | high | flag | deny | agent approving its own guard exception or loosening the guard (observer guard approve, guard disable and their siblings) |
 | R-165 | boundary | high | flag | deny | agent calling the local dashboard's guard approval or policy routes |
+| R-165 | boundary | high | flag | deny | interpreter one-liner or inline script calling the local dashboard's guard approval or policy routes |
 | R-165 | boundary | high | flag | deny | agent writing a grant into the guard's approvals table |
+| R-165 | boundary | high | flag | deny | agent persisting an OBSERVER_GUARD_ environment override (setx, the registry or .NET setters, launchctl setenv, a shell startup file) |
+| R-165 | boundary | high | flag | deny | agent writing an OBSERVER_GUARD_ environment override into a shell startup file |
+| R-165 | boundary | high | ask | ask | agent giving the person's consent to relay org sandbox runs through this laptop or to probe a sandbox backend on this machine (observer sandbox org-shell opt-in, observer sandbox setup check; with or without --yes) |
 | R-165 | boundary | high | flag | flag | agent requesting a guard exception (recorded; a human decides it) |
 | R-165 | boundary | high | flag | deny | agent writing the developer's consent record (the scanner database accept or the online checks' disclosure) |
 | R-165 | boundary | high | flag | deny | shell command writing the developer's consent record (redirect, tee, cp, mv and their kin) |
 | R-165 | boundary | high | flag | deny | interpreter one-liner or inline script naming the developer's consent record |
+| R-167 | boundary | high | flag | deny | agent calling the local dashboard to add a host to the sandbox egress allow-list (the refusal advisor's apply, or a settings route that writes the list) |
+| R-167 | boundary | high | flag | deny | agent setting the sandbox egress host allow-list with observer config set |
+| R-168 | boundary | high | ask | ask | agent launching another agent (observer launch or a launcher verb) |
+| R-168 | boundary | high | ask | ask | agent calling the local dashboard's launch routes |
 | R-166 | boundary | high | flag | deny | agent write to a protected test, CI or coverage path (opt-in path classes) |
 | R-166 | boundary | high | flag | deny | shell command writing a protected test, CI or coverage path (opt-in path classes) |
+| R-121 | destructive | high | flag | ask | SQL UPDATE without WHERE through a database CLI |
+| R-122 | destructive | high | flag | ask | schema-destroying SQL through a database CLI (DROP INDEX/VIEW/USER/ROLE/FUNCTION and similar, ALTER TABLE ... DROP, DROP OWNED) |
+| R-123 | destructive | critical | flag | deny | NoSQL or key-value store destruction (mongosh dropDatabase/drop/deleteMany({}), redis-cli FLUSHALL/FLUSHDB, cqlsh DROP KEYSPACE, etcdctl del of every key) |
+| R-124 | destructive | warn | flag | flag | ORM or migration-tool database reset (prisma migrate reset, rails db:drop, alembic downgrade base, manage.py flush and similar) |
+| R-125 | destructive | high | flag | ask | database command against a production host, connection string, database or profile ([guard.database] prod_patterns) |
+| R-126 | destructive | critical | flag | deny | SQL file run through a database CLI that contains destructive SQL (DROP TABLE/DATABASE/SCHEMA, TRUNCATE, DELETE without WHERE) |
+| R-126 | destructive | critical | flag | ask | SQL file run through a database CLI that contains an UPDATE without WHERE or a schema drop |
 | R-170 | exfil | critical | flag | deny | remote content piped into an interpreter (curl\|sh-class remote-code execution) |
 | R-171 | exfil | high | flag | ask | shell command uploading file contents to a remote destination |
 | R-172 | exfil | critical | flag | deny | secret-shaped value in the arguments of a network-touching command |
@@ -83,6 +99,15 @@ appear once per row.
 | R-172 | exfil | critical | flag | deny | secret-shaped content typed directly into a prompt to your coding-agent tool, before it reaches the model |
 | R-173 | exfil | warn | flag | flag | DNS lookup of an encoded-looking subdomain (DNS-tunnel exfil shape) |
 | R-190 | pii | warn | flag | deny | deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text |
+| R-174 | exfil | critical | flag | deny | network command reaching a cloud instance-metadata endpoint |
+| R-174 | exfil | critical | flag | deny | network command to a host on the deny list ([guard.network] deny_hosts) |
+| R-175 | exfil | warn | allow | allow | network command to a private, link-local, carrier-NAT or unique-local address |
+| R-175 | exfil | warn | allow | allow | network command to a raw public IP address instead of a host name |
+| R-176 | exfil | high | allow | allow | network command to a host not on the allow list ([guard.network] allow_hosts) |
+| R-177 | exfil | high | flag | deny | reverse shell: an interactive shell wired to a network socket |
+| R-177 | exfil | high | flag | ask | network listener opened on this machine |
+| R-178 | exfil | high | flag | ask | tunnel exposing this machine to the public internet |
+| R-179 | exfil | warn | flag | ask | network/vulnerability scanner |
 | R-180 | injection | high | flag | flag | inbound tool-result/web content carries injection-shaped instruction patterns |
 | R-204 | posture | high | flag | flag | compiled native guard rules drifted from the effective policy |
 | R-205 | posture | high | flag | flag | org policy bundle failed integrity verification and was rejected |
@@ -145,6 +170,7 @@ S-746 is reserved (the `--ignore-scripts` rewrite).
 | S-748 | code_security | warn | ask | ask | agent install the online package check could not answer in time ([security.deps] online_unknown_action = ask) |
 | S-748 | code_security | warn | ask | deny | agent install the online package check could not answer in time ([security.deps] online_unknown_action = deny) |
 | S-749 | code_security | high | flag | flag | agent install of a package some of whose versions are listed as malicious, without a pin outside them |
+| S-757 | code_security | high | flag | flag | agent install of a version that lacks the build provenance earlier versions carried (npm provenance, PyPI attestations) |
 
 ## Code security: commit gate
 

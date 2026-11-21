@@ -54,8 +54,9 @@ func TestOpenIsIdempotentAcrossReopen(t *testing.T) {
 		t.Fatalf("schema_meta: %v", err)
 	}
 	// Bump alongside every new file in internal/archivestore/migrations.
-	// 1 = archive_codeintel_* (Bucket A), 2 = archive_process_* (Bucket B).
-	const wantVersion = "2"
+	// 1 = archive_codeintel_* (Bucket A), 2 = archive_process_* (Bucket B),
+	// 3 = the process capture budget columns on archive_process_runs.
+	const wantVersion = "3"
 	if version != wantVersion {
 		t.Fatalf("schema version = %q, want %q", version, wantVersion)
 	}

@@ -1,1 +1,0 @@
-import{j as a,b as o}from"./vendor-react-BT-Z05uK.js";import{ax as x,dM as d,di as n}from"./index-BP4_IqB0.js";function f({label:i,help:t,error:e,mono:l,className:s,...r}){return a.jsx(x,{label:i,help:t,error:e,children:a.jsx("textarea",{...r,className:o(d({mono:l,invalid:!!e,ownWidth:n(s)}),"resize-y",s)})})}export{f as T};

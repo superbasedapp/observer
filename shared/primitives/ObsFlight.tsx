@@ -208,7 +208,11 @@ export function ObsJobRider({ ratio, size = 28, className }: { ratio: number | n
   const w = Math.round(size * 1.8 * 10) / 10;
   const h = Math.round(size * 1.24 * 10) / 10;
   return (
-    <div className={clsx(`${ROOT}-job`, className)} style={{ height: h }} aria-hidden>
+    // The run box slides by its own width, so at a high ratio it sits past
+    // the track's right edge: clip x (only x, so Obs and its cape stay
+    // whole) or it adds scrollable overflow to the page (the progress-line
+    // rider's 2026-11-06 scrollbar flicker, shared/styles/motion.css).
+    <div className={clsx(`${ROOT}-job`, className)} style={{ height: h, overflowX: "clip", overflowY: "visible" }} aria-hidden>
       <SceneStyle />
       <div className={`${ROOT}-job-run`} style={{ width: `calc(100% - ${w}px)`, transform: `translateX(${pct}%)` }}>
         <span className={`${ROOT}-job-at`}>

@@ -171,7 +171,7 @@ func newRootCmd() *cobra.Command { return newRootCmdWith(defaultUsageDeps()) }
 func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root := &cobra.Command{
 		Use:          invocationName(),
-		Short:        "SuperBased - unify AI coding tool activity",
+		Short:        "superbased - unify AI coding tool activity",
 		Long:         "Captures, normalizes, and analyzes tool call activity from AI coding assistants.\nSee README.md for a feature tour.",
 		Version:      version,
 		SilenceUsage: true,
@@ -200,6 +200,9 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 		root.AddCommand(mk())
 	}
 	root.AddCommand(newIDECmd())
+	// Scriptable launch and run control over the daemon (P-228, phase 1b).
+	root.AddCommand(newLaunchCmd())
+	root.AddCommand(newTerminalsCmd())
 	root.AddCommand(newShellWrapCmd())
 	root.AddCommand(newRelayCmd())
 	root.AddCommand(newHookBridgeCmd())
@@ -222,8 +225,14 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newEvalCmd())
 	root.AddCommand(newObsCmd())
 	root.AddCommand(newDigestCmd())
-	root.AddCommand(newEnrollCmd())
+	root.AddCommand(newConnectCmd())
+	// Getting started v2: `enroll` is the old word for connecting; it keeps
+	// working but is hidden from help (`observer connect` is the front door).
+	enroll := newEnrollCmd()
+	enroll.Hidden = true
+	root.AddCommand(enroll)
 	root.AddCommand(newUnenrollCmd())
+	root.AddCommand(newDisconnectCmd())
 	root.AddCommand(newOrgCmd())
 	root.AddCommand(newRequestCmd())
 	root.AddCommand(newRequestsCmd())
@@ -233,6 +242,11 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newWorkspacesCmd())
 	root.AddCommand(newSandboxCmd())
 	root.AddCommand(newCloudCmd())
+	// cloud-session plus the CA-C7 loopback receiver verbs (their own file,
+	// so the cloud-session command file keeps one call site for this lane).
+	cloudSessionCmd := newCloudSessionCmd()
+	cloudSessionCmd.AddCommand(newCloudSessionOTelReceiverCmd())
+	root.AddCommand(cloudSessionCmd)
 	root.AddCommand(newIntelCmd())
 	root.AddCommand(newPricingCmd())
 	root.AddCommand(newRepriceCmd())
@@ -282,6 +296,7 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newProcessBridgeCmd(),
 		newDBCmd(),
 		newCostCmd(),
+		newChartCmd(),
 		newScoreCmd(),
 		newAdviseCmd(),
 		newDiscoverCmd(),
@@ -305,6 +320,7 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newModelValueCmd(),
 		newPredictCmd(),
 		newPlansCmd(),
+		newCloudAgentsCmd(),
 		newProjectCmd(),
 		newTasksCmd(),
 		newArchiveCmd(),
@@ -313,9 +329,12 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newVerbosityCmd(),
 		newTagCmd(),
 		newTagsCmd(),
+		newSessionsCmd(),
 		newProfileCmd(),
 		newExperimentCmd(),
 		newConfigCmd(),
+		newSDKCmd(),
+		newAppsCmd(),
 	}
 }
 

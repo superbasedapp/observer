@@ -1,0 +1,53 @@
+rules:
+  - id: go.xss-request-input
+    languages: [go]
+    severity: ERROR
+    message: Web request input is converted to a trusted html/template type, which turns its escaping off, so a caller can run script in the page; pass the plain string to the template instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: html.EscapeString(...)
+      - pattern: template.HTMLEscapeString(...)
+      - pattern: template.HTMLEscaper(...)
+      - pattern: template.JSEscapeString(...)
+      - pattern: url.QueryEscape(...)
+      - pattern: url.PathEscape(...)
+      - pattern: strconv.Atoi(...)
+      - pattern: $P.Sanitize(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: template.HTML($X)
+              - pattern: template.HTMLAttr($X)
+              - pattern: template.JS($X)
+              - pattern: template.JSStr($X)
+              - pattern: template.CSS($X)
+              - pattern: template.URL($X)
+              - pattern: template.Srcset($X)
+          - focus-metavariable: $X

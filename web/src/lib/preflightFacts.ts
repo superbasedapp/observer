@@ -26,11 +26,12 @@ export const PREFLIGHT_FACT_ROWS: ReadonlyArray<FactRow> = [
   // T-396: the installed tool's runtime is above the floor but outside the
   // vendor's declared range. Said, never blocking (the doctor says it too).
   (_tool, p) => launchRuntimeAdvisory(p),
-  (tool, p) =>
+  (_tool, p) =>
     p.config_override === "missing"
-      ? `[launch.tools.${tool}].path is set, but nothing is there. Fix the path or remove it.`
+      ? "Nothing is at the binary path set for this tool. Change or remove it in Settings > Session attach (Launch binary paths)."
       : null,
-  (tool, p) => (p.config_override === "used" ? `Uses the path set in [launch.tools.${tool}].path.` : null),
+  (_tool, p) =>
+    p.config_override === "used" ? "Uses the binary path set in Settings > Session attach (Launch binary paths)." : null,
   (_tool, p) =>
     p.missing_interpreter
       ? `It needs ${p.missing_interpreter}, which isn't installed, so it will fail to start.`
@@ -41,7 +42,7 @@ export const PREFLIGHT_FACT_ROWS: ReadonlyArray<FactRow> = [
       : null,
   (_tool, p) =>
     p.install_unverified
-      ? "SuperBased can't confirm it's installed. The launch will tell you if it isn't."
+      ? "superbased can't confirm it's installed. The launch will tell you if it isn't."
       : null,
 ];
 

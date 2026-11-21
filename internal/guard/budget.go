@@ -882,6 +882,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 	}
 	g.stampOrgOverride(es, &av)
 	appr.stamp(&av)
+	g.stampGrantProject(&av, &ev)
 	em := ResolveEmission(verdict, proxyRequestCaps)
 	if em.Permission == "deny" {
 		av.Enforced = true

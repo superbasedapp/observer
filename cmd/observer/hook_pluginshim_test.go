@@ -4,15 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
+
+// setSeededTestHome points HOME at a fresh directory whose default database
+// (~/.observer/observer.db, where a config without db_path writes) is
+// already migrated from the shared template (internal/db/dbtemplate). A
+// cold first open runs the whole migration chain,
+// about 20 s under -race on a CI runner: as long as the hook's whole
+// max-runtime, so a test's first invocation timed out inside its guard
+// persist (after the reply) or its reconsider-once lookup (before it). The
+// plugin dialects are what these tests pin, not the cold migration.
+func setSeededTestHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	setTestHome(t, home)
+	d, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(home, ".observer", "observer.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Close()
+}
 
 // pluginDeny is the exact plugin-dialect fail-closed block for reason.
 func pluginDeny(reason string) string {
@@ -43,7 +63,7 @@ func pluginReplyOf(t *testing.T, out string) hook.PluginReply {
 // plugin deny (which the shim / Hermes plugin maps onto the host block), a
 // benign call gets the plugin allow, both exit 0 with exactly one reply.
 func TestPluginToolGateDialects(t *testing.T) {
-	setTestHome(t, t.TempDir())
+	setSeededTestHome(t)
 	cases := []struct {
 		tool, event, mode string
 		toolName          string
@@ -131,7 +151,7 @@ func TestPluginToolGateFailureSemantics(t *testing.T) {
 // dialect: a secret is withheld (deny) under the prompt lane, a clean prompt
 // passes; a non-prompt event on the dialect answers allow.
 func TestPluginPromptGate(t *testing.T) {
-	setTestHome(t, t.TempDir())
+	setSeededTestHome(t)
 	dir := t.TempDir()
 	cp := filepath.Join(dir, "config.toml")
 	writeFileT(t, cp, "[guard]\nenabled = true\nmode = \"enforce\"\n[guard.prompt]\nenabled = true\nhook_lane = true\n")
@@ -155,12 +175,9 @@ func TestPluginPromptGate(t *testing.T) {
 // [guard.prompt] mode = "warn" an allow that carries the notice as message
 // (the shim toasts / notifies it). pi `input` rides the confirm dialect.
 func TestPluginPromptGateWarnAndConfirm(t *testing.T) {
-	home := t.TempDir()
-	setTestHome(t, home)
-	// The reconsider-once store lives in the default DB under ~/.observer.
-	if err := os.MkdirAll(filepath.Join(home, ".observer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// The reconsider-once store lives in the default DB under ~/.observer,
+	// seeded migrated so the first ask-once lookup is not a cold migration.
+	setSeededTestHome(t)
 	secret := "ghp_" + strings.Repeat("a1B2", 9)
 	for _, host := range []struct{ tool, event string }{{"opencode", "chat.message"}, {"pi", "input"}} {
 		b, ok := resolveHookBinding(host.tool, host.event)

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "type": "authentication_error",
+    "code": "TOKEN_INVALID",
+    "message": "Invalid or expired access token."
+  }
+}

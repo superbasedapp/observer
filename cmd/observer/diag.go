@@ -154,6 +154,10 @@ func newStatusCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), string(body))
 				return nil
 			}
+			// M8.4: the front door's one sentence (identity and
+			// destination), the same one `observer connect --status` and
+			// the dashboard show.
+			fmt.Fprintf(cmd.OutOrStdout(), "Connection: %s\n", connectStatusLine(cmd.Context(), configPath, store.New(database)))
 			fmt.Fprint(cmd.OutOrStdout(), diag.FormatStatus(snap))
 			return nil
 		},

@@ -11,6 +11,36 @@ import (
 	agentupdate "github.com/marmutapp/superbased-observer/internal/update"
 )
 
+// TestConnectWrapperCarriesTheInstallVerifier pins scripts/connect.ps1's
+// Ed25519 verifier to a byte-identical copy of scripts/install.ps1's: the
+// wrapper checks the installer's signature before running it, and Windows
+// PowerShell 5.1 has no Ed25519 of its own, so it carries the same pure
+// PowerShell verifier. A fix to one that misses the other fails here.
+func TestConnectWrapperCarriesTheInstallVerifier(t *testing.T) {
+	root := repoRoot(t)
+	block := func(file string) string {
+		raw, err := os.ReadFile(filepath.Join(root, "scripts", file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		s := string(raw)
+		start := strings.Index(s, "# ------------------------------------------------------------ Ed25519 (RFC 8032)")
+		end := strings.Index(s, "function Test-VerifierSelfCheck {")
+		if start < 0 || end < start {
+			t.Fatalf("%s: no Ed25519 block", file)
+		}
+		rest := s[end:]
+		closing := strings.Index(rest, "\n}\n")
+		if closing < 0 {
+			t.Fatalf("%s: Test-VerifierSelfCheck has no end", file)
+		}
+		return s[start : end+closing+3]
+	}
+	if block("install.ps1") != block("connect.ps1") {
+		t.Fatal("scripts/connect.ps1's Ed25519 verifier differs from scripts/install.ps1's; copy the block again")
+	}
+}
+
 // TestInstallersCarryTheVendorKeys pins the vendor verification keys the
 // edition installers (scripts/install.sh, scripts/install.ps1; T-729) check
 // a release archive's <archive>.sig against to the set the agent itself
@@ -45,6 +75,10 @@ func TestInstallersCarryTheVendorKeys(t *testing.T) {
 	}{
 		{"scripts/install.sh", regexp.MustCompile(`(?m)^VENDOR_KEYS="([^"]*)"$`)},
 		{"scripts/install.ps1", regexp.MustCompile(`(?m)^\$VendorKeys = @\(([^)]*)\)$`)},
+		// The one-step connect wrappers (Getting started v2) verify the
+		// installer through the signed SHA256SUMS with the same keys.
+		{"scripts/connect.sh", regexp.MustCompile(`(?m)^VENDOR_KEYS="([^"]*)"$`)},
+		{"scripts/connect.ps1", regexp.MustCompile(`(?m)^\$VendorKeys = @\(([^)]*)\)$`)},
 	}
 	for _, c := range cases {
 		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(c.file)))

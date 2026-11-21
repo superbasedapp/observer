@@ -31,13 +31,13 @@
 package treesitter
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -47,6 +47,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/codeintel"
 	"github.com/marmutapp/superbased-observer/internal/codeintel/parse"
+	"github.com/marmutapp/superbased-observer/internal/codeintel/parse/complexity"
 )
 
 // grammarFS holds the zstd-compressed grammar modules and their co-located
@@ -108,6 +109,11 @@ var servedCapability = codeintel.LanguageCapability{
 type langModule struct {
 	compiled api.Closer // wazero.CompiledModule
 	query    []byte
+	// cquery is the language's decision query generated from
+	// parse/complexity's rule table (nil when the language has no rows).
+	// It runs as a second pass over the same instance and only feeds
+	// Node.Complexity.
+	cquery []byte
 	// free is a BOUNDED free-list of reusable instances (SR27-A2). It
 	// replaced a sync.Pool: wazero links every instance into its runtime's
 	// module list, so an instance the pool dropped at GC was never closed
@@ -227,6 +233,9 @@ func New() (parse.Parser, []string) {
 			continue
 		}
 		lm := &langModule{compiled: compiled, query: query, free: make(chan *instance, freeListSize)}
+		if cq := complexity.Query(s.lang); cq != "" {
+			lm.cquery = []byte(cq)
+		}
 		lm.newInst = func() *instance { return b.newInstance(ctx, compiled) }
 		shared[key] = lm
 		b.modules[s.lang] = lm
@@ -300,7 +309,14 @@ func (b *backend) Capabilities(lang codeintel.Language) codeintel.LanguageCapabi
 // exact spans. It is best-effort and panic-free: an unserved language, an
 // instantiation failure, or a module-side error yields a result with the
 // correct capability flags but no nodes (callers fail open), never a panic.
-func (b *backend) Parse(ctx context.Context, src []byte, lang codeintel.Language, _ string) (codeintel.ParseResult, error) {
+// It extracts the base set; ParseWith adds the optional extractions.
+func (b *backend) Parse(ctx context.Context, src []byte, lang codeintel.Language, filename string) (codeintel.ParseResult, error) {
+	return b.ParseWith(ctx, src, lang, filename, parse.Options{})
+}
+
+// ParseWith is Parse under opts (parse.OptionParser): the decision query of
+// the complexity pass runs only when opts.Complexity is set.
+func (b *backend) ParseWith(ctx context.Context, src []byte, lang codeintel.Language, _ string, opts parse.Options) (codeintel.ParseResult, error) {
 	res := codeintel.ParseResult{
 		Lang:       lang,
 		Capability: b.Capabilities(lang),
@@ -330,10 +346,54 @@ func (b *backend) Parse(ctx context.Context, src []byte, lang codeintel.Language
 		inst.close()
 		return res, fmt.Errorf("treesitter.Parse: %w", err)
 	}
-	lm.put(inst)
+	// Complexity pass: the decision query runs as its own extraction (the
+	// harness's record stream has no decision record type, so mixing its
+	// captures into the main query would be ambiguous with call sites). A
+	// failure here leaves the figure uncounted (Complexity 0) and never
+	// fails the parse.
+	var decisions []int
+	counted := false
+	if opts.Complexity && len(lm.cquery) > 0 {
+		cctx, ccancel := context.WithTimeout(ctx, parseTimeout)
+		cout, cerr := inst.runExtract(cctx, src, lm.cquery)
+		ccancel()
+		if cerr != nil {
+			inst.close()
+			inst = nil
+		} else {
+			decisions, counted = decisionOffsets(cout), true
+		}
+	}
+	if inst != nil {
+		lm.put(inst)
+	}
 	decodeInto(&res, out, src)
 	sortResult(&res)
+	if counted {
+		complexity.Count(res.Nodes, decisions)
+	}
 	return res, nil
+}
+
+// decisionOffsets reads the start byte of every record of a decision-query
+// run (each pattern captures its decision token as `@name @reference.call`,
+// so every record is a 'C' record at the token).
+func decisionOffsets(b []byte) []int {
+	var offs []int
+	for len(b) >= 22 {
+		rectype := b[0]
+		sb := binary.LittleEndian.Uint32(b[1:])
+		nl := binary.LittleEndian.Uint32(b[18:])
+		b = b[22:]
+		if uint32(len(b)) < nl {
+			break
+		}
+		b = b[nl:]
+		if rectype == 'C' {
+			offs = append(offs, int(sb))
+		}
+	}
+	return offs
 }
 
 // runExtract copies src + query into the module, calls ci_run, and returns a
@@ -463,7 +523,10 @@ func decodeInto(res *codeintel.ParseResult, b, src []byte) {
 				Enclosing: -1, // resolved after sort
 				StartLine: int(sr) + 1,
 				StartByte: int(sb),
-				RawText:   firstLineExcerpt(src, int(sb)),
+				// The record's span is the @name capture (the bare callee),
+				// so widen the excerpt back over the receiver chain: the
+				// module-scoped resolver classifies ns.foo() from it.
+				RawText: callExcerpt(src, int(sb)),
 			})
 		case 'I':
 			res.Imports = append(res.Imports, codeintel.Import{
@@ -479,23 +542,34 @@ func decodeInto(res *codeintel.ParseResult, b, src []byte) {
 	}
 }
 
-// fullLineExcerpt returns the WHOLE source line containing byte offset off
+// excerptScan bounds how far either excerpt helper looks from its anchor
+// for a line break. An excerpt is at most maxExcerpt bytes, so looking
+// further only matters for a line that is longer than this window, and
+// there it changes nothing that survives the clip unless the line opens
+// with more than excerptScan-maxExcerpt bytes of whitespace. Without
+// the bound a minified bundle, one line of 800 KB or more, cost one
+// line-sized copy per record: the tinymce.min.js in litemall has about
+// 23,000 records, so one parse allocated and kept about 9.7 GB (ADR-0010).
+const excerptScan = 4 * maxExcerpt
+
+// fullLineExcerpt returns the source line containing byte offset off
 // (scanning back to the prior newline and forward to the next), trimmed and
 // clipped — used for import sites so the excerpt carries the statement's
-// imported names even though the path capture anchors mid-line.
+// imported names even though the path capture anchors mid-line. On a line
+// longer than the scan window, the excerpt starts maxExcerpt/2 bytes before
+// off instead of at the line start, so it still holds the path (ADR-0010).
 func fullLineExcerpt(src []byte, off int) string {
 	if off < 0 || off > len(src) {
 		return ""
 	}
-	start := off
-	for start > 0 && src[start-1] != '\n' {
-		start--
+	lo := max(0, off-excerptScan)
+	start := lo
+	if i := bytes.LastIndexByte(src[lo:off], '\n'); i >= 0 {
+		start = lo + i + 1
+	} else if lo > 0 {
+		start = runeStart(src, max(0, off-maxExcerpt/2))
 	}
-	end := off
-	for end < len(src) && src[end] != '\n' {
-		end++
-	}
-	return clip(strings.TrimSpace(string(src[start:end])), maxExcerpt)
+	return lineExcerpt(src, start)
 }
 
 // firstLineExcerpt returns the line beginning at byte offset start, trimmed
@@ -505,11 +579,135 @@ func firstLineExcerpt(src []byte, start int) string {
 	if start < 0 || start >= len(src) {
 		return ""
 	}
-	end := start
-	for end < len(src) && src[end] != '\n' {
-		end++
+	return lineExcerpt(src, start)
+}
+
+// lineExcerpt returns the text from start to the next newline, looking at
+// most excerptScan bytes ahead, trimmed and clipped to maxExcerpt. It
+// works on the byte slice and copies only the clipped result, so the
+// excerpt never shares (and keeps alive) a line-sized allocation.
+func lineExcerpt(src []byte, start int) string {
+	hi := min(len(src), start+excerptScan)
+	end := hi
+	if i := bytes.IndexByte(src[start:hi], '\n'); i >= 0 {
+		end = start + i
 	}
-	return clip(strings.TrimSpace(string(src[start:end])), maxExcerpt)
+	return string(clipBytes(bytes.TrimSpace(src[start:end]), maxExcerpt))
+}
+
+// runeStart moves i back to the start of the UTF-8 rune that contains it.
+func runeStart(src []byte, i int) int {
+	for i > 0 && i < len(src) && src[i]&0xC0 == 0x80 {
+		i--
+	}
+	return i
+}
+
+// callExcerpt is the call-site excerpt for a call whose callee NAME starts
+// at nameStart. The extractor's call record spans the @name capture, not the
+// @reference.call expression, so firstLineExcerpt alone turns
+// `relay.forward(x)` into `forward(x)` and the module-scoped resolver
+// (resolve.splitCallGeneric) can no longer tell a namespace call from a bare
+// one. callExcerpt prepends the receiver chain recovered by callQualifier, so
+// the excerpt starts where the call expression does (`relay.forward(x)`, the
+// shape the goast backend already stores). CallSite.Name, StartByte and
+// StartLine stay on the name.
+func callExcerpt(src []byte, nameStart int) string {
+	line := firstLineExcerpt(src, nameStart)
+	if line == "" {
+		return ""
+	}
+	return string(clipBytes([]byte(callQualifier(src, nameStart)+line), maxExcerpt))
+}
+
+// maxQualifierSegments bounds the backward receiver-chain scan.
+const maxQualifierSegments = 8
+
+// memberOps are the member-access operators a receiver chain may use, longest
+// first so `?.` / `?->` / `->` / `::` win over a bare `.`.
+var memberOps = []string{"?->", "?.", "->", "::", "&.", "."}
+
+// callQualifier walks backwards from the callee name over the receiver chain
+// (`ident <op> ident <op> ... name`, whitespace and newlines between tokens
+// ignored) and returns it with whitespace dropped: "relay.", "self.db.",
+// "$this->", "std::", or "" for a bare call. A receiver that is not an
+// identifier (`a().foo()`, `arr[i].foo()`, `"s".foo()`) contributes only its
+// closing character, so the excerpt reads `).foo(...)` and the resolver
+// classifies it as complex rather than bare. `..` (JS spread, ranges, Lua
+// concatenation) is not a member operator.
+func callQualifier(src []byte, nameStart int) string {
+	if nameStart <= 0 || nameStart > len(src) {
+		return ""
+	}
+	var parts []string // receiver chain, innermost first
+	i := nameStart
+	for n := 0; n < maxQualifierSegments; n++ {
+		j := skipSpaceBack(src, i)
+		op := memberOpBefore(src, j)
+		if op == "" {
+			break
+		}
+		k := skipSpaceBack(src, j-len(op))
+		s := identStartBack(src, k)
+		if s == k {
+			if k > 0 {
+				parts = append(parts, op, string(src[k-1]))
+			}
+			break
+		}
+		parts = append(parts, op, string(src[s:k]))
+		i = s
+	}
+	var b bytes.Buffer
+	for p := len(parts) - 1; p >= 0; p-- {
+		b.WriteString(parts[p])
+	}
+	return b.String()
+}
+
+// skipSpaceBack returns the smallest index <= i such that src[index:i] is
+// all whitespace.
+func skipSpaceBack(src []byte, i int) int {
+	for i > 0 {
+		switch src[i-1] {
+		case ' ', '\t', '\r', '\n':
+			i--
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// memberOpBefore returns the member operator ending at src[:j], or "".
+func memberOpBefore(src []byte, j int) string {
+	for _, op := range memberOps {
+		if j < len(op) || string(src[j-len(op):j]) != op {
+			continue
+		}
+		if op == "." && j >= 2 && src[j-2] == '.' {
+			return "" // `..` / `...`: spread, range, concatenation
+		}
+		return op
+	}
+	return ""
+}
+
+// identStartBack returns the start of the identifier ending at src[:k] (k
+// itself when there is none). `$` covers PHP/JS names; bytes >= 0x80 keep
+// non-ASCII identifiers whole.
+func identStartBack(src []byte, k int) int {
+	for k > 0 {
+		c := src[k-1]
+		switch {
+		case c == '_' || c == '$' || c >= 0x80,
+			c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			k--
+		default:
+			return k
+		}
+	}
+	return k
 }
 
 // unquote strips a single pair of surrounding quotes (" ' or `) from an
@@ -526,16 +724,16 @@ func unquote(s string) string {
 	return s
 }
 
-// clip bounds s to max bytes without splitting a UTF-8 rune.
-func clip(s string, max int) string {
-	if len(s) <= max {
-		return s
+// clipBytes bounds b to max bytes without splitting a UTF-8 rune.
+func clipBytes(b []byte, max int) []byte {
+	if len(b) <= max {
+		return b
 	}
 	cut := max
-	for cut > 0 && s[cut]&0xC0 == 0x80 {
+	for cut > 0 && b[cut]&0xC0 == 0x80 {
 		cut--
 	}
-	return s[:cut]
+	return b[:cut]
 }
 
 // sortResult makes the output deterministic and resolves each call's

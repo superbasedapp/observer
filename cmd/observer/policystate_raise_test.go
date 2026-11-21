@@ -10,10 +10,9 @@ import (
 )
 
 // TestPolicyStateReportingEnabled_OrgRaise pins D-DEMO-13 (demo estate,
-// 2026-09-21): a managed node whose local [org_client.share].policy_state is
-// OFF must still report once the org raises the share under
-// extract.policy_state — and a node that is neither opted in nor raised must
-// stay silent even though its reporter loop now always runs.
+// 2026-09-21) as the 2026-11-12 ruling extends it: a managed node always
+// reports (the share switch gates individual nodes only), and an individual
+// node that did not opt in stays silent even though its reporter loop runs.
 func TestPolicyStateReportingEnabled_OrgRaise(t *testing.T) {
 	t.Parallel()
 	raised := govern.Effective{
@@ -32,12 +31,17 @@ func TestPolicyStateReportingEnabled_OrgRaise(t *testing.T) {
 		eff   govern.Effective
 		want  bool
 	}{
-		{"local off, org raises under extract.policy_state", false, raised, true},
-		{"local off, no directive", false, govern.Effective{Managed: true}, false},
-		{"local off, directive but authority not granted", false, govern.Effective{Managed: true, Share: map[string]any{"policy_state": true}}, false},
-		{"local off, directive on an individual node", false, govern.Effective{Managed: false, Authority: []string{govern.AuthorityExtractPolicyState}, Share: map[string]any{"policy_state": true}}, false},
-		{"local on, org lowers", true, lowered, false},
-		{"local on, no directive", true, govern.Effective{}, true},
+		// 2026-11-12 ruling (managed policy visibility G1): a managed node
+		// reports whatever its share switch, its grant tokens or a
+		// directive say; the switch gates individual nodes only.
+		{"managed, local off, org raises under extract.policy_state", false, raised, true},
+		{"managed, local off, no directive", false, govern.Effective{Managed: true}, true},
+		{"managed, local off, directive but authority not granted", false, govern.Effective{Managed: true, Share: map[string]any{"policy_state": true}}, true},
+		{"managed, local on, org lowers", true, lowered, true},
+		{"individual, local off, directive", false, govern.Effective{Managed: false, Authority: []string{govern.AuthorityExtractPolicyState}, Share: map[string]any{"policy_state": true}}, false},
+		{"individual, local on, org lowers", true, govern.Effective{Share: map[string]any{"policy_state": false}}, false},
+		{"individual, local on, no directive", true, govern.Effective{}, true},
+		{"individual, local off, no directive", false, govern.Effective{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

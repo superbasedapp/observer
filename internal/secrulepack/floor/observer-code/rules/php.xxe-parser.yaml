@@ -1,0 +1,16 @@
+rules:
+  - id: php.xxe-parser
+    languages: [php]
+    severity: ERROR
+    message: libxml is asked to substitute entities or load an external DTD (LIBXML_NOENT, LIBXML_DTDLOAD, XMLReader's SUBST_ENTITIES or LOADDTD, DOMDocument's substituteEntities or resolveExternals, or the entity loader turned back on), so a document can read local files or reach internal hosts; parse with the defaults, which leave both off.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    pattern-either:
+      - pattern: LIBXML_NOENT
+      - pattern: LIBXML_DTDLOAD
+      - pattern: libxml_disable_entity_loader(false)
+      - pattern: $R->setParserProperty(XMLReader::SUBST_ENTITIES, true)
+      - pattern: $R->setParserProperty(XMLReader::LOADDTD, true)
+      - pattern: $D->substituteEntities = true
+      - pattern: $D->resolveExternals = true

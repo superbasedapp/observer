@@ -70,3 +70,9 @@ func routingPolicyTemplateNames() []string { return nil }
 func checkRoutingRulesTOML(config.RoutingConfig, string) ([]config.RoutingRuleConfig, []string) {
 	return nil, []string{"model routing (proxy.routing) is not in this build, so a rules fragment cannot be checked"}
 }
+
+// newRoutingLintErrors finds nothing: the compiler is not in this build. A
+// shape save still passes the dashboard's row checks and the loader's
+// [routing] checks (routing_shapes.go); a daemon without routing only loads
+// these shapes, it never compiles them.
+func newRoutingLintErrors(config.RoutingConfig, config.RoutingConfig) []string { return nil }

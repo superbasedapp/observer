@@ -106,7 +106,7 @@ func TestSandboxCLIRefusals(t *testing.T) {
 // auto keeps naming the backend the probe's reason belongs to.
 func TestSandboxCLIRefusalNamesTheRequestedRow(t *testing.T) {
 	av := dashapi.SandboxAvailability{
-		Backend: "hcs", Verdict: "image_missing",
+		Backend: "hcs", Verdict: "image_missing", ReasonListsRows: true,
 		Reason: "no sandbox backend is available on windows: hcs (image_missing): no utility VM image; mxc-appcontainer (psec_unavailable): base-container tier only; mxc-process (available, not chosen automatically); wslc (backend_missing): WSL is not installed",
 		Backends: []dashapi.SandboxBackendAvail{
 			{ID: "hcs", Verdict: "image_missing", Reason: "no utility VM image"},

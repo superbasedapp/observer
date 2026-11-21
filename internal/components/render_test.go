@@ -50,16 +50,16 @@ func TestCompiledRegistry(t *testing.T) {
 	}
 }
 
-// TestFullWithoutObsIsDeveloper pins the D-389 / D-408 shape: developer is
-// the full product minus Plane A observability, so a no_obs build reports
-// itself as the developer distro. D-749 Q34 adds the one later exception:
-// a library-linked scanner driver (security.scan.scalibr, security plan
-// section 4.2) is compiled only into managed and full, so the developer
-// shape is full minus obs minus that driver; lane SEC-G5's linked
-// actionlint (security.scan.actionlint) is the second.
-func TestFullWithoutObsIsDeveloper(t *testing.T) {
-	linkedDrivers := []string{"security.scan.scalibr", "security.scan.actionlint"}
-	MarkOmitted("obs")
+// TestFullWithoutLinkedDriversIsDeveloper pins the developer shape: since
+// D7 (plan of record 2026-11-19, superseding D-389) Plane A observability is
+// compiled into developer, so developer is the full product minus only the
+// library-linked scanner drivers compiled into managed and full (D-749 Q34:
+// security.scan.scalibr; lane SEC-G5's linked actionlint; phase OS-2's image
+// OS package extractors, security.scan.os; and the linked Go symbol check
+// security.reach.go, plan 14.5 item 3b). A build without obs as well now
+// matches no prebuilt distro.
+func TestFullWithoutLinkedDriversIsDeveloper(t *testing.T) {
+	linkedDrivers := []string{"security.scan.scalibr", "security.scan.actionlint", "security.scan.os", "security.reach.go"}
 	for _, id := range linkedDrivers {
 		MarkOmitted(id)
 	}
@@ -72,6 +72,10 @@ func TestFullWithoutObsIsDeveloper(t *testing.T) {
 		omitMu.Unlock()
 	}()
 	if got := DistroOf(Compiled(BinaryNode)); got != DistroDeveloper {
-		t.Fatalf("full without obs = %s, want developer", got)
+		t.Fatalf("full without the linked drivers = %s, want developer", got)
+	}
+	MarkOmitted("obs")
+	if got := DistroOf(Compiled(BinaryNode)); got != DistroCustom {
+		t.Fatalf("full without the linked drivers and obs = %s, want custom", got)
 	}
 }

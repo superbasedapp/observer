@@ -23,7 +23,7 @@ func doubleClickDispatch(args []string) (int, bool) {
 		return 0, false
 	}
 	out := os.Stdout
-	fmt.Fprintf(out, "SuperBased Observer %s\n\n", version)
+	fmt.Fprintf(out, "superbased Observer %s\n\n", version)
 	err := runSetupLaunch(setupLaunchOptions{open: true, wait: 60 * time.Second, out: out, sys: defaultSetupOS()})
 	code := 0
 	if err != nil {

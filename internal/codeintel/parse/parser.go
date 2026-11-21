@@ -86,3 +86,28 @@ func (r *Registry) Languages() []codeintel.Language {
 	}
 	return out
 }
+
+// Options are a parse pass's optional extractions. The zero value asks for
+// the base extraction only (symbols, spans, imports, calls).
+type Options struct {
+	// Complexity asks the backend to count each function's and method's
+	// cyclomatic complexity (Node.Complexity, parse/complexity). It costs
+	// a second query pass on a tree-sitter file, so the indexer asks for
+	// it only when a consumer needs it ([projects].quality_metrics).
+	Complexity bool
+}
+
+// OptionParser is implemented by a backend that has optional extractions.
+// A backend without any implements only Parser; Run calls its Parse.
+type OptionParser interface {
+	ParseWith(ctx context.Context, src []byte, lang codeintel.Language, filename string, opts Options) (codeintel.ParseResult, error)
+}
+
+// Run parses src with p under opts: through ParseWith when p has optional
+// extractions, else through Parse (which then extracts the base set).
+func Run(ctx context.Context, p Parser, src []byte, lang codeintel.Language, filename string, opts Options) (codeintel.ParseResult, error) {
+	if op, ok := p.(OptionParser); ok {
+		return op.ParseWith(ctx, src, lang, filename, opts)
+	}
+	return p.Parse(ctx, src, lang, filename)
+}

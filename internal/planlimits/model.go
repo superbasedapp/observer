@@ -177,6 +177,12 @@ type Snapshot struct {
 	Balances   []Balance  `json:"balances,omitempty"`
 	Spend      []Spend    `json:"spend,omitempty"`
 	Status     string     `json:"status"`
+	// Usage is the daily account-wide usage a source read in the same
+	// session, when it reports one (SourceDef.DailyUsage). It travels beside
+	// the reading, never inside it: it is not part of the stored snapshot
+	// body or of any snapshot JSON, so a reading is byte-identical with or
+	// without it. The service stores it through its own seam.
+	Usage *UsageReport `json:"-"`
 }
 
 // newSnap returns a snapshot with the rung filled from the kind table.

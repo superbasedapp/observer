@@ -80,11 +80,20 @@ type Leaf struct {
 	OwnedBy string `json:"owned_by,omitempty"`
 	// Enum is the closed vocabulary for a string leaf, when one exists.
 	Enum []string `json:"enum,omitempty"`
+	// KeysAreIDs marks a string map whose keys are ids from a closed
+	// vocabulary (prompt-guard detector names such as slack_token), never
+	// credential names: a credential word in one of its keys does not make
+	// the value a credential. The values are still checked by the detector.
+	KeysAreIDs bool `json:"keys_are_ids,omitempty"`
 	// Min / Max bound numeric leaves when set.
 	Min *float64 `json:"min,omitempty"`
 	Max *float64 `json:"max,omitempty"`
 	// Doc is the field's Go doc comment. Generator-only.
 	Doc string `json:"doc,omitempty"`
+	// Help is the user-facing help Settings shows under the key (U-14): the
+	// doc without its Go identifier and design-record pointers, or a
+	// hand-written override (web/cfgschema/help.go). Generator-only.
+	Help string `json:"help,omitempty"`
 
 	// index is the reflect FieldByIndex chain from config.Config to the
 	// leaf, used by the value accessors. Not serialized.
@@ -99,6 +108,8 @@ type Table struct {
 	Owner     string `json:"owner"`
 	Block     string `json:"block"`
 	Doc       string `json:"doc,omitempty"`
+	// Help is the section's user-facing help (Leaf.Help).
+	Help string `json:"help,omitempty"`
 }
 
 var (

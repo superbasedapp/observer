@@ -1,0 +1,5 @@
+{"totalUsage":{"inputTokens":7500,"outputTokens":1650,"cacheWriteTokens":1200,"cacheReadTokens":22000,"totalTokens":32350},"cost":{"rawCostCents":3.89843,"chargedCents":2.5},"runs":[
+ {"id":"run-b3000000-0000-4000-8000-0000000000b3","usageUuid":"0f1e2d3c-4b5a-4968-8776-b3b3b3b3b3b3","usage":{"inputTokens":500,"outputTokens":50,"cacheWriteTokens":0,"cacheReadTokens":1000,"totalTokens":1550},"cost":{"rawCostCents":0.19843,"chargedCents":0}},
+ {"id":"run-b2000000-0000-4000-8000-0000000000b2","usageUuid":"0f1e2d3c-4b5a-4968-8776-b2b2b2b2b2b2","usage":{"inputTokens":4000,"outputTokens":900,"cacheWriteTokens":0,"cacheReadTokens":12000,"totalTokens":16900},"cost":{"rawCostCents":2.5,"chargedCents":2.5}},
+ {"id":"run-b1000000-0000-4000-8000-0000000000b1","usageUuid":"0f1e2d3c-4b5a-4968-8776-b1b1b1b1b1b1","usage":{"inputTokens":3000,"outputTokens":700,"cacheWriteTokens":1200,"cacheReadTokens":9000,"totalTokens":13900},"cost":{"rawCostCents":1.2,"chargedCents":0}}
+]}

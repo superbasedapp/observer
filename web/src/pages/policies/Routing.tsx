@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartShell, HostMark, Icon, InlineLoading, Pill, SegmentedControl, SinglePicker, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  Callout,
+  ChartShell,
+  EmptyState,
+  ErrorState,
+  HostMark,
+  Input,
+  InlineLoading,
+  Pill,
+  SegmentedControl,
+  SinglePicker,
+  Tooltip,
+} from "@/components/primitives";
 import { contentClassOptions, keepSelected, uniqueSorted, type PickOption } from "@/lib/pickerOptions";
 import { useCriterionIds, useEndUserOptions, useModelOptions } from "@/lib/usePickerSources";
 import { Summary } from "@/components/Summary";
 import { useApi } from "@/lib/useApi";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
+import { useDaemonRestart } from "@/lib/useDaemonRestart";
+import { RestartOverlay } from "@/components/RestartOverlay";
+import { restartErrorText } from "./AdmissionOff";
 import {
   EGRESS_REASON_CODES,
   type EgressAction,
@@ -18,27 +34,17 @@ import {
   type LintIssue,
   egressActionKind,
   emptyEgressWhen,
+  policyErrorText,
   postPolicy,
 } from "./types";
-import {
-  IssueList,
-  Labeled,
-  Muted,
-  NumberInput,
-  Select,
-  TextInput,
-  btnGhost,
-  btnGhostDanger,
-  btnPrimary,
-  btnSecondary,
-  inputClass,
-} from "./ui";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { IssueList, Labeled, NumberInput, Select, TextInput } from "./ui";
+import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { EGRESS_REASON_LABEL, TARGET_SHAPE_LABEL, wordsFor } from "./vocab";
 
-// Routing tab — the Plane-A egress (routing) authoring surface: typed upstream
+// Routing tab - the Plane-A egress (routing) authoring surface: typed upstream
 // targets + a first-match-wins WHEN→ROUTE rule table. Egress only takes real
 // effect on the PROXY path (only the proxy can reroute an upstream), and the
-// proxy holds a SEPARATE service instance — so "Apply (preview)" validates and
+// proxy holds a SEPARATE service instance - so "Check" validates and
 // updates this dashboard's egress preview, but the routing behavior changes
 // only after "Save & restart". The buttons say so.
 
@@ -50,8 +56,10 @@ const ACTION_KINDS: { value: EgressActionKind; label: string }[] = [
   { value: "route_to_model", label: "Swap model" },
   { value: "set_effort", label: "Set effort" },
   { value: "deny", label: "Deny" },
-  { value: "no_route", label: "No route (log only)" },
+  { value: "no_route", label: "Log only" },
 ];
+const cap = (v: string) => (v ? v[0].toUpperCase() + v.slice(1) : v);
+const SHAPE_OPTIONS = ["openai", "anthropic"].map((v) => ({ value: v, label: wordsFor(TARGET_SHAPE_LABEL, v) }));
 
 // RulePickers carries the known sets a rule's matchers and actions pick from
 // (D-571): criterion ids of the admission policy, the draft's cohort labels,
@@ -87,9 +95,26 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
   }, [api.data]);
 
   const globalIssues = useMemo(() => issues.filter((i) => !i.rule_name), [issues]);
+  // "Save and restart" restarts (with the usual confirm), not only saves
+  // (UI review U-29).
+  const { restarting, error: restartError, restart } = useDaemonRestart();
 
+  if (restarting) {
+    return (
+      <RestartOverlay
+        title="Restarting the daemon…"
+        body="Applying the routing policy and reconnecting. This page reloads automatically when the new process is up."
+      />
+    );
+  }
   if (api.loading && !draft) return <ChartShell title="Egress policy"><InlineLoading label="Loading egress policy" /></ChartShell>;
-  if (!draft) return <ChartShell title="Egress policy"><Muted>No policy loaded.</Muted></ChartShell>;
+  if (!draft) {
+    return (
+      <ChartShell title="Egress policy">
+        <ErrorState title="Couldn't load the routing policy" error={api.error ?? "No policy came back."} onRetry={api.reload} />
+      </ChartShell>
+    );
+  }
 
   const patch = (p: Partial<EgressPolicy>) => setDraft({ ...draft, ...p });
   const patchTarget = (i: number, t: Partial<EgressTarget>) =>
@@ -116,19 +141,22 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
         pushToast("Egress policy not applied - see issues", "danger");
         return;
       }
-      if (persist && !data.persisted) {
-        pushToast(`Validated, but not saved: ${data.persist_error || "persist failed"}`, "warn");
-      } else if (persist) {
-        markRestartPending("egress policy");
-        pushToast("Saved. Restart the daemon to apply routing on the proxy.", "success");
-      } else {
-        pushToast("Validated - dashboard preview updated (routing changes on Save & restart).", "success");
-      }
       api.reload();
       onApplied?.();
+      if (persist && !data.persisted) {
+        pushToast("Checked, but not saved. Check that the config file is writable.", "warn");
+      } else if (persist) {
+        markRestartPending("egress policy");
+        await restart({
+          title: "Restart the daemon to apply the routing policy?",
+          lead: "The routing policy is saved and applies on the proxy when the daemon starts again.",
+        });
+      } else {
+        pushToast("Checked. The preview is updated; routing changes after Save and restart.", "success");
+      }
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      pushToast("Apply failed", "danger");
+      setErr(policyErrorText(e));
+      pushToast("Routing policy not applied.", "danger");
     } finally {
       setBusy("");
     }
@@ -147,32 +175,44 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
       {/* Targets */}
       <ChartShell
         title="Upstream targets"
-        sub="Named upstreams a rule can route to. A declared shape (anthropic | openai) is required for any enforce-mode route - cross-shape routing is rejected at compile."
+        sub="Named upstreams a rule can route to. A route only goes to a target with the same API shape."
       >
         <div className="space-y-2">
-          {draft.targets.length === 0 && <Muted>No targets. Add one before a route-to-upstream rule can reference it.</Muted>}
+          {draft.targets.length === 0 && (
+            <EmptyState variant="inline" title="No targets" body="Add one before a rule can route to it." />
+          )}
           {draft.targets.map((t, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2">
               {/* Serving-host mark resolved from the id / url (unknown renders nothing). */}
               <HostMark host={`${t.id} ${t.url}`} size={12} />
-              <TextInput value={t.id} onChange={(id) => patchTarget(i, { id })} placeholder="id (e.g. ollama-local)" className="min-w-[9rem]" />
-              <TextInput value={t.url} onChange={(url) => patchTarget(i, { url })} placeholder="http://127.0.0.1:11434" className="min-w-[14rem] flex-1" />
+              <TextInput value={t.id} onChange={(id) => patchTarget(i, { id })} placeholder="Name, e.g. ollama-local" ariaLabel="Target name" className="w-auto min-w-[9rem]" />
+              <TextInput value={t.url} onChange={(url) => patchTarget(i, { url })} placeholder="http://127.0.0.1:11434" ariaLabel="Target URL" className="w-auto min-w-[14rem] flex-1" />
               <Select
                 value={t.shape}
                 onChange={(shape) => patchTarget(i, { shape: shape as EgressTarget["shape"] })}
-                options={[{ value: "openai", label: "openai" }, { value: "anthropic", label: "anthropic" }]}
+                options={SHAPE_OPTIONS}
+                ariaLabel="API shape"
               />
-              <button type="button" onClick={() => patch({ targets: draft.targets.filter((_, n) => n !== i) })} className={btnGhostDanger}>Remove</button>
+              <Button
+                size="sm"
+                variant="ghost"
+                iconLeft={Trash2}
+                onClick={() => patch({ targets: draft.targets.filter((_, n) => n !== i) })}
+                aria-label={`Remove target ${t.id || i + 1}`}
+              >
+                Remove
+              </Button>
             </div>
           ))}
         </div>
-        <button
-          type="button"
+        <Button
+          size="sm"
+          iconLeft={Plus}
+          className="mt-3"
           onClick={() => patch({ targets: [...draft.targets, { id: "", url: "", shape: "openai" }] })}
-          className={btnGhost + " mt-3"}
         >
-          + Add target
-        </button>
+          Add target
+        </Button>
       </ChartShell>
 
       {/* Cohorts */}
@@ -181,7 +221,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
       {/* Rules */}
       <ChartShell
         title="Routing rules"
-        sub="First match wins - order matters (use ↑/↓). Each rule matches on the admission verdict, budget, cohort, or request shape, then takes exactly one action."
+        sub="First match wins, so order matters. Each rule matches on the verdict, budget, cohort or request, then takes one action."
       >
         <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-3">
           <Labeled label="Mode">
@@ -195,19 +235,21 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
               onChange={(mode) => patch({ mode })}
             />
           </Labeled>
-          <Labeled label="Cost-switch cooldown (s)">
-            <NumberInput value={draft.cooldown_seconds} onChange={(cooldown_seconds) => patch({ cooldown_seconds })} />
+          <Labeled label="Model switch cooldown (seconds)">
+            <NumberInput className="w-24" min={0} value={draft.cooldown_seconds} onChange={(cooldown_seconds) => patch({ cooldown_seconds })} />
           </Labeled>
         </div>
 
         {draft.mode === "enforce" && (
-          <div className="mb-3 rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11px] text-warn">
-            Enforce actively reroutes or denies end-user traffic on the proxy path. A route-to-upstream needs a target with a matching shape.
-          </div>
+          <Callout tone="warn" title="Enforce reroutes or denies end-user traffic" className="mb-3">
+            Check that the advise-only decisions on Activity looked right first.
+          </Callout>
         )}
 
         <div className="space-y-3">
-          {draft.rules.length === 0 && <Muted>No rules - nothing is rerouted. Add one, or apply a Template.</Muted>}
+          {draft.rules.length === 0 && (
+            <EmptyState variant="inline" title="No rules" body="Nothing is rerouted. Add a rule, or apply a template." />
+          )}
           {draft.rules.map((r, i) => (
             <RuleRow
               key={i}
@@ -223,8 +265,10 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
             />
           ))}
         </div>
-        <button
-          type="button"
+        <Button
+          size="sm"
+          iconLeft={Plus}
+          className="mt-3"
           onClick={() =>
             patch({
               rules: [
@@ -233,22 +277,25 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
               ],
             })
           }
-          className={btnGhost + " mt-3"}
         >
-          + Add rule
-        </button>
+          Add rule
+        </Button>
 
         {globalIssues.length > 0 && <IssueList issues={globalIssues} />}
-        {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}
+        {err && <Callout tone="danger" title="Policy not applied" className="mt-3">{err}</Callout>}
+        {restartError && (
+          <Callout tone="warn" title="The daemon did not restart" className="mt-3">
+            {restartErrorText(restartError)}
+          </Callout>
+        )}
 
-        <div className="mt-4 flex items-center gap-2">
-          <button type="button" disabled={busy !== ""} onClick={() => submit(false)} className={btnSecondary}>
-            {busy === "apply" ? "Validating…" : "Apply (preview)"}
-          </button>
-          <button type="button" disabled={busy !== ""} onClick={() => submit(true)} className={btnPrimary}>
-            {busy === "save" ? "Saving…" : "Save & restart"}
-          </button>
-          <span className="text-[11px] text-fg-3">Routing changes only take effect on the proxy after Save &amp; restart</span>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button disabled={busy !== ""} loading={busy === "apply"} onClick={() => void submit(false)}>
+            {busy === "apply" ? "Checking" : "Check"}
+          </Button>
+          <Button variant="primary" disabled={busy !== ""} loading={busy === "save"} onClick={() => void submit(true)}>
+            {busy === "save" ? "Saving" : "Save and restart"}
+          </Button>
         </div>
       </ChartShell>
     </div>
@@ -256,8 +303,8 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
 }
 
 // CohortsCard edits the end-user → cohort map that a rule's user_cohort matcher
-// keys on. It holds the rows in local state (seeded once) so a user id — the map
-// KEY — can be typed without the entry vanishing mid-edit; every change emits a
+// keys on. It holds the rows in local state (seeded once) so a user id - the map
+// KEY - can be typed without the entry vanishing mid-edit; every change emits a
 // cleaned map (empty user ids dropped, values trimmed) up to the draft.
 function CohortsCard({
   value,
@@ -276,9 +323,9 @@ function CohortsCard({
     onChange(map);
   };
   return (
-    <ChartShell title="Cohorts" sub="Map an end-user id to a cohort label so a rule can match on it (user_cohort). Optional; local-only.">
+    <ChartShell title="Cohorts" sub="Put end users in a named cohort so a rule can match on it. Optional, kept on this machine.">
       <div className="space-y-2">
-        {rows.length === 0 && <Muted>No cohorts mapped.</Muted>}
+        {rows.length === 0 && <EmptyState variant="inline" title="No cohorts" />}
         {rows.map(([u, c], i) => (
           <div key={i} className="flex flex-wrap items-center gap-2">
             <SinglePicker
@@ -298,14 +345,16 @@ function CohortsCard({
               onChange={(v) => emit(rows.map((r, n) => (n === i ? [r[0], v] : r)))}
               allowFree
               freeLabel="New cohort"
-              placeholder="cohort (e.g. eu)"
+              placeholder="cohort, e.g. eu"
               ariaLabel="Cohort"
             />
-            <button type="button" onClick={() => emit(rows.filter((_, n) => n !== i))} className={btnGhostDanger}>Remove</button>
+            <Button size="sm" variant="ghost" iconLeft={Trash2} onClick={() => emit(rows.filter((_, n) => n !== i))} aria-label={`Remove cohort entry ${u || i + 1}`}>
+              Remove
+            </Button>
           </div>
         ))}
       </div>
-      <button type="button" onClick={() => emit([...rows, ["", ""]])} className={btnGhost + " mt-3"}>+ Add cohort</button>
+      <Button size="sm" iconLeft={Plus} className="mt-3" onClick={() => emit([...rows, ["", ""]])}>Add cohort</Button>
     </ChartShell>
   );
 }
@@ -349,23 +398,29 @@ function RuleRow({
     <div className="rounded-2 border border-line-2 bg-bg-3/40 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10.5px] font-mono text-fg-3">#{index + 1}</span>
-        <TextInput value={rule.name} onChange={(name) => onChange({ name })} placeholder="rule name" className="min-w-[10rem] flex-1" />
+        <TextInput value={rule.name} onChange={(name) => onChange({ name })} placeholder="Rule name" ariaLabel="Rule name" className="w-auto min-w-[10rem] flex-1" />
         <div className="flex items-center gap-1">
-          <Tooltip content="Move up (earlier match)"><button type="button" disabled={index === 0} onClick={() => onMove(-1)} className={btnGhost} aria-label="Move up (earlier match)"><Icon icon={ArrowUp} size="xs" /></button></Tooltip>
-          <Tooltip content="Move down"><button type="button" disabled={index === count - 1} onClick={() => onMove(1)} className={btnGhost} aria-label="Move down"><Icon icon={ArrowDown} size="xs" /></button></Tooltip>
-          <button type="button" onClick={onRemove} className={btnGhostDanger}>Remove</button>
+          <Tooltip content="Move up (earlier match)">
+            <Button size="sm" variant="ghost" iconLeft={ArrowUp} disabled={index === 0} onClick={() => onMove(-1)} aria-label="Move up (earlier match)" />
+          </Tooltip>
+          <Tooltip content="Move down">
+            <Button size="sm" variant="ghost" iconLeft={ArrowDown} disabled={index === count - 1} onClick={() => onMove(1)} aria-label="Move down" />
+          </Tooltip>
+          <Button size="sm" variant="ghost" iconLeft={Trash2} onClick={onRemove} aria-label={`Remove rule ${rule.name || index + 1}`}>
+            Remove
+          </Button>
         </div>
       </div>
 
       {/* WHEN */}
       <div className="mt-2">
-        <div className="mb-1 text-[10px] uppercase tracking-[0.06em] text-fg-3">When</div>
+        <div className="mb-1 text-[11px] font-semibold text-fg-2">When</div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Labeled label="Verdict ≥">
-            <Select value={rule.when.verdict_at_least} onChange={(v) => setWhen({ verdict_at_least: v })} options={VERDICTS.map((v) => ({ value: v, label: v || "(any)" }))} />
+          <Labeled label="Verdict at least">
+            <Select value={rule.when.verdict_at_least} onChange={(v) => setWhen({ verdict_at_least: v })} options={VERDICTS.map((v) => ({ value: v, label: cap(v) || "Any" }))} />
           </Labeled>
-          <Labeled label="Severity ≥">
-            <Select value={rule.when.severity_at_least} onChange={(v) => setWhen({ severity_at_least: v })} options={SEVERITIES.map((s) => ({ value: s, label: s || "(any)" }))} />
+          <Labeled label="Severity at least">
+            <Select value={rule.when.severity_at_least} onChange={(v) => setWhen({ severity_at_least: v })} options={SEVERITIES.map((s) => ({ value: s, label: cap(s) || "Any" }))} />
           </Labeled>
           <Labeled label="Criterion" group>
             <SinglePicker
@@ -383,10 +438,10 @@ function RuleRow({
             />
           </Labeled>
           <Labeled label="Provider">
-            <Select value={rule.when.provider} onChange={(v) => setWhen({ provider: v })} options={[{ value: "", label: "(any)" }, { value: "anthropic", label: "anthropic" }, { value: "openai", label: "openai" }]} />
+            <Select value={rule.when.provider} onChange={(v) => setWhen({ provider: v })} options={[{ value: "", label: "Any" }, ...SHAPE_OPTIONS]} />
           </Labeled>
-          <Labeled label="Budget band ≥">
-            <input
+          <Labeled label="Budget used at least (0 to 1)">
+            <Input
               type="number"
               step={0.1}
               min={0}
@@ -394,7 +449,7 @@ function RuleRow({
               value={rule.when.budget_band_at_least ?? ""}
               placeholder="unset"
               onChange={(e) => setWhen({ budget_band_at_least: e.target.value === "" ? null : Number(e.target.value) })}
-              className={inputClass + " w-24"}
+              className="w-24"
             />
           </Labeled>
           <Labeled label="Cohort">
@@ -402,7 +457,7 @@ function RuleRow({
               value={rule.when.user_cohort}
               onChange={(v) => setWhen({ user_cohort: v })}
               options={[
-                { value: "", label: "(any)" },
+                { value: "", label: "Any" },
                 ...uniqueSorted([...pickers.cohorts, rule.when.user_cohort]).map((c) => ({ value: c, label: c })),
               ]}
             />
@@ -448,22 +503,22 @@ function RuleRow({
                 ariaLabel="User"
               />
             </Labeled>
-            <Labeled label="Min prompt tokens"><NumberInput value={rule.when.min_prompt_tokens} onChange={(n) => setWhen({ min_prompt_tokens: n })} /></Labeled>
+            <Labeled label="Min prompt tokens"><NumberInput className="w-28" min={0} value={rule.when.min_prompt_tokens} onChange={(n) => setWhen({ min_prompt_tokens: n })} /></Labeled>
           </div>
         </details>
       </div>
 
       {/* THEN */}
       <div className="mt-3">
-        <div className="mb-1 text-[10px] uppercase tracking-[0.06em] text-fg-3">Then</div>
+        <div className="mb-1 text-[11px] font-semibold text-fg-2">Then</div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Select value={kind} onChange={(k) => setKind(k as EgressActionKind)} options={ACTION_KINDS} />
+          <Select value={kind} onChange={(k) => setKind(k as EgressActionKind)} options={ACTION_KINDS} ariaLabel="Action" />
           {kind === "route_to_upstream" && (
             <Labeled label="Target">
               {targetIds.length > 0 ? (
                 <Select value={rule.action.route_to_upstream} onChange={(v) => setAction({ route_to_upstream: v })} options={targetIds.map((id) => ({ value: id, label: id }))} />
               ) : (
-                <span className="text-[11px] text-warn">add a target first</span>
+                <span className="text-[11px] text-fg-3">Add a target under Upstream targets first.</span>
               )}
             </Labeled>
           )}
@@ -486,14 +541,14 @@ function RuleRow({
           )}
           {kind === "set_effort" && (
             <Labeled label="Effort">
-              <Select value={rule.action.set_effort} onChange={(v) => setAction({ set_effort: v })} options={EFFORTS.map((e) => ({ value: e, label: e }))} />
+              <Select value={rule.action.set_effort} onChange={(v) => setAction({ set_effort: v })} options={EFFORTS.map((e) => ({ value: e, label: cap(e) }))} />
             </Labeled>
           )}
           <Labeled label="On unavailable">
-            <Select value={rule.on_unavailable} onChange={(v) => onChange({ on_unavailable: v })} options={[{ value: "fail_open", label: "fail open" }, { value: "deny", label: "deny" }]} />
+            <Select value={rule.on_unavailable} onChange={(v) => onChange({ on_unavailable: v })} options={[{ value: "fail_open", label: "Fall through" }, { value: "deny", label: "Deny" }]} />
           </Labeled>
-          <Labeled label="Reason code">
-            <Select value={rule.reason_code} onChange={(v) => onChange({ reason_code: v })} options={EGRESS_REASON_CODES.map((c) => ({ value: c, label: c || "(derived)" }))} />
+          <Labeled label="Reason">
+            <Select value={rule.reason_code} onChange={(v) => onChange({ reason_code: v })} options={EGRESS_REASON_CODES.map((c) => ({ value: c, label: wordsFor(EGRESS_REASON_LABEL, c) }))} />
           </Labeled>
         </div>
       </div>

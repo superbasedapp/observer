@@ -26,6 +26,9 @@ import (
 //     token comes from the closed tables below, nothing typed reaches
 //     os/exec, and a kind that changes state needs the confirm token the
 //     route's GET mints.
+//   - /api/guard/jobs/chain runs the audit chain repairs (`observer guard
+//     repair-anchors | dedup-events | relink-gaps`, each with and without
+//     --apply) the same way (B-G8).
 
 // guardTestMaxTarget bounds the dry-run subject (a command line or a path).
 const guardTestMaxTarget = 4096
@@ -172,6 +175,42 @@ var guardMCPJobs = map[string]guardJobKind{
 	"mcp-report": {
 		label: "MCP compliance summary (observer guard mcp report)",
 		argv:  fixedArgv("guard", "mcp", "report"),
+	},
+}
+
+// guardChainJobs is the Coverage tab's audit chain repair (plan
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md, B-G8): the three
+// documented repairs store.GuardChainRepairHint names, each as a dry run
+// (a read: it only reports) and an apply (it rewrites guard_events rows, so
+// it carries the confirm token, and guard rule R-165 denies an agent's
+// request to this route). Every argv is fixed; the CLI's own code runs.
+var guardChainJobs = map[string]guardJobKind{
+	"repair-anchors": {
+		label: "Find the rows whose action id old maintenance cleared and prove each id from the row's own hash (observer guard repair-anchors)",
+		argv:  fixedArgv("guard", "repair-anchors"),
+	},
+	"repair-anchors-apply": {
+		writes: true,
+		label:  "Write the proven action ids (observer guard repair-anchors --apply)",
+		argv:   fixedArgv("guard", "repair-anchors", "--apply"),
+	},
+	"dedup-events": {
+		label: "Find repeated guard rows a transcript re-parse wrote (observer guard dedup-events)",
+		argv:  fixedArgv("guard", "dedup-events"),
+	},
+	"dedup-events-apply": {
+		writes: true,
+		label:  "Remove the repeated rows and re-hash the chain after them (observer guard dedup-events --apply)",
+		argv:   fixedArgv("guard", "dedup-events", "--apply"),
+	},
+	"relink-gaps": {
+		label: "Find links broken only by a deleted row (observer guard relink-gaps)",
+		argv:  fixedArgv("guard", "relink-gaps"),
+	},
+	"relink-gaps-apply": {
+		writes: true,
+		label:  "Re-link the chain over the deleted rows and record the rewrite (observer guard relink-gaps --apply)",
+		argv:   fixedArgv("guard", "relink-gaps", "--apply"),
 	},
 }
 

@@ -102,6 +102,11 @@ type SourceDef struct {
 	// fixed per account and checked by CheckBaseURL at save time and again
 	// by the egress package on every request (ledger SUBS-5).
 	UserBaseURL bool
+	// DailyUsage marks a source whose reading may also carry the account's
+	// daily token totals (Snapshot.Usage), for the "usage by day"
+	// reconciliation against what this node captured. The surfaces dispatch
+	// on this flag, never on the source id.
+	DailyUsage bool
 }
 
 // Rung is the source's ladder rung.
@@ -146,7 +151,7 @@ var Sources = []SourceDef{
 	// Rung 1, official: off until the user adds an account.
 	{
 		ID: SourceCodexAppServer, Provider: ProviderChatGPT, Kind: KindVendorRPC, Command: "codex", Order: 20,
-		MinInterval: 5 * time.Minute, DocURL: "https://learn.chatgpt.com/docs/app-server",
+		MinInterval: 5 * time.Minute, DocURL: "https://learn.chatgpt.com/docs/app-server", DailyUsage: true,
 	},
 	{
 		ID: SourceOpenRouter, Provider: ProviderOpenRouter, Kind: KindOfficialAPI, Order: 20,

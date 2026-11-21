@@ -104,21 +104,27 @@ func hashIdentity(orgID, raw string) string {
 // for a merely-absent source, so a host with no writable state and no hostname
 // degrades to "unbindable" rather than failing.
 func rawIdentity() (string, error) {
+	raw, _, err := rawIdentitySource()
+	return raw, err
+}
+
+// rawIdentitySource is rawIdentity plus the rung that produced the value.
+func rawIdentitySource() (string, Source, error) {
 	switch goos {
 	case "linux":
 		// /etc/machine-id is the systemd/D-Bus stable machine id; the
 		// /var/lib/dbus path is the same value on non-systemd installs. Under
 		// WSL2 this is the DISTRO's id (documented in the package doc).
 		if id := firstFileValue("/etc/machine-id", "/var/lib/dbus/machine-id"); id != "" {
-			return id, nil
+			return id, SourceOS, nil
 		}
 	case "darwin":
 		if id := darwinPlatformUUID(); id != "" {
-			return id, nil
+			return id, SourceOS, nil
 		}
 	case "windows":
 		if id := windowsMachineGUID(); id != "" {
-			return id, nil
+			return id, SourceOS, nil
 		}
 	}
 	// Persisted-seed rung. Every OS, and deliberately ABOVE the hostname: a
@@ -130,16 +136,16 @@ func rawIdentity() (string, error) {
 	// the restart whenever that dir is a mounted volume, which is exactly the
 	// deployment shape that also wants a stable identity.
 	if id := persistedIdentity(); id != "" {
-		return id, nil
+		return id, SourceSeed, nil
 	}
 	// Hostname fallback for every OS. Weakest source (hostnames collide and
 	// change), but better than an empty identity on a host without a stable id
 	// — and the ONLY source left on a read-only filesystem, where the seed
 	// above cannot be minted.
 	if hn, err := hostname(); err == nil {
-		return strings.TrimSpace(hn), nil
+		return strings.TrimSpace(hn), SourceHostname, nil
 	}
-	return "", nil
+	return "", SourceNone, nil
 }
 
 // persistedIdentity read-or-mints the self-generated seed at
@@ -258,4 +264,55 @@ func extractQuotedAfter(text, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// Source names the rung of the source ladder that produced a machine's raw
+// identity. It carries no part of the identity itself.
+type Source string
+
+// The rungs, strongest first, plus the empty case.
+const (
+	// SourceOS is the OS-native machine id.
+	SourceOS Source = "os"
+	// SourceSeed is the seed Observer minted in its data dir.
+	SourceSeed Source = "seed"
+	// SourceHostname is the hostname, the weakest rung.
+	SourceHostname Source = "hostname"
+	// SourceNone means nothing readable: the machine is unbindable.
+	SourceNone Source = "none"
+)
+
+// displayDomain separates the not-enrolled display fingerprint from every
+// org-salted value: an org id is never this string, so the display value is
+// not linkable to what any org holds.
+const displayDomain = "sbo-you-page-display-v1"
+
+// Info is what the You page shows about this machine's identity.
+type Info struct {
+	// Fingerprint is the org-salted value the org sees when orgID is set,
+	// else a display-only value under displayDomain. Empty when unbindable.
+	Fingerprint string
+	// Source is the ladder rung the identity came from.
+	Source Source
+	// OrgBound is true when Fingerprint is the org-salted value.
+	OrgBound bool
+}
+
+// Describe returns the machine identity for display. With a non-empty orgID it
+// is exactly ForOrg(orgID); without one it is a stable fingerprint under a
+// fixed, separate domain so it cannot be matched to any org's value. The raw
+// OS id and the persisted seed never leave this package.
+func Describe(orgID string) (Info, error) {
+	raw, src, err := rawIdentitySource()
+	if err != nil {
+		return Info{Source: SourceNone}, err
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return Info{Source: SourceNone}, nil
+	}
+	if orgID == "" {
+		return Info{Fingerprint: hashIdentity(displayDomain, raw), Source: src}, nil
+	}
+	return Info{Fingerprint: hashIdentity(orgID, raw), Source: src, OrgBound: true}, nil
 }

@@ -43,7 +43,11 @@ type StepOutcome struct {
 	NeedsAttention []string `json:"needs_attention,omitempty"`
 	// Command is the verb a StepManual step needs.
 	Command string `json:"command,omitempty"`
-	Error   string `json:"error,omitempty"`
+	// Link and LinkLabel are the dashboard page that does a StepManual
+	// step's undo (Step.Link), carried so a result list can offer it too.
+	Link      string `json:"link,omitempty"`
+	LinkLabel string `json:"link_label,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Options configures a Service.
@@ -445,7 +449,7 @@ func (s *Service) runTeardown(steps []Step, dryRun bool) []StepOutcome {
 			o.Component, o.Kind = st.Component, st.Kind
 			out = append(out, o)
 		case StepManual:
-			o := StepOutcome{Component: st.Component, Kind: st.Kind, Target: st.Component, Command: st.Command, Detail: []string{st.What}}
+			o := StepOutcome{Component: st.Component, Kind: st.Kind, Target: st.Component, Command: st.Command, Link: st.Link, LinkLabel: st.LinkLabel, Detail: []string{st.What}}
 			switch {
 			case missingVerb(st):
 				o.NeedsAttention = []string{standIn(st)}

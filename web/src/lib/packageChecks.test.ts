@@ -42,4 +42,6 @@ test("the index download note shows only while the switch is off", () => {
   assert.equal(packageChecksIndexDownloadNote(status({ index_download: true })), null);
   const off = packageChecksIndexDownloadNote(status({ index_download: false }));
   assert.ok(off && off.includes("index already on disk"), String(off));
+  // It names the dashboard switch, not the config key (dashboard CLI parity).
+  assert.ok(off.includes("Settings > Guard > Code security") && !off.includes("security.deps"), off);
 });

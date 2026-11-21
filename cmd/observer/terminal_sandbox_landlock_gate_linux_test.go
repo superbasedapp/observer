@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // terminal_sandbox_landlock_gate_linux_test.go: the host helper's start gate
@@ -97,24 +100,34 @@ func TestStartGateHoldsTheLandlockExecChild(t *testing.T) {
 
 // TestLandlockAwaitRelease: the step proceeds on the release byte and
 // refuses when the pipe closes without one.
+//
+// landlockAwaitRelease owns the descriptor it is given and closes it, as
+// the exec step owns its inherited gate. So the read end handed over is a
+// raw descriptor no *os.File holds: an os.Pipe end passed by its Fd() was
+// closed twice, the second time by that *os.File's finalizer at some later
+// GC, which closed whatever reused the number (a later test's TempDir
+// cleanup failed with "unlinkat ...: bad file descriptor", CI round 5 of
+// v1.38.0).
 func TestLandlockAwaitRelease(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
+	pipe := func(t *testing.T) (r, w int) {
+		t.Helper()
+		var p [2]int
+		if err := unix.Pipe2(p[:], unix.O_CLOEXEC); err != nil {
+			t.Fatal(err)
+		}
+		return p[0], p[1]
+	}
+	r, w := pipe(t)
+	if _, err := unix.Write(w, []byte{1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Write([]byte{1}); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	if err := landlockAwaitRelease(int(r.Fd())); err != nil {
+	_ = unix.Close(w)
+	if err := landlockAwaitRelease(r); err != nil {
 		t.Fatalf("released: %v", err)
 	}
-	r2, w2, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = w2.Close()
-	if err := landlockAwaitRelease(int(r2.Fd())); err == nil || !strings.Contains(err.Error(), "did not release") {
+	r2, w2 := pipe(t)
+	_ = unix.Close(w2)
+	if err := landlockAwaitRelease(r2); err == nil || !strings.Contains(err.Error(), "did not release") {
 		t.Fatalf("closed without a byte: %v", err)
 	}
 }
@@ -156,7 +169,19 @@ func TestLandlockRecheckPieces(t *testing.T) {
 	if err := quick.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond) // exited, not yet reaped
+	// Exited, not yet reaped: waitid with WNOWAIT returns once the child
+	// has exited and leaves it a zombie for the re-check to read (a fixed
+	// sleep was a budget for how fast this machine runs true).
+	var si unix.Siginfo
+	for {
+		err := unix.Waitid(unix.P_PID, quick.Process.Pid, &si, unix.WEXITED|unix.WNOWAIT, nil)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EINTR) {
+			t.Fatalf("waitid: %v", err)
+		}
+	}
 	if err := landlockRecheck(quick.Process.Pid); !errors.Is(err, errRecheckChildExited) {
 		t.Fatalf("an exited child: %v", err)
 	}
@@ -172,7 +197,29 @@ func TestLandlockRecheckPieces(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Process.Kill(); _ = held.Wait() }()
+	// The product re-checks an exec step held on its start gate, which set
+	// no_new_privs before it blocked there. The stand-in is held once
+	// setpriv has set the flag and exec'd sleep (its comm is then "sleep"):
+	// wait for that, so the short deadline above is not a budget for how
+	// fast this machine forks and execs setpriv (v1.38.0 CI round 4: not
+	// set within 300ms on a loaded runner).
+	waitForComm(t, held.Process.Pid, "sleep")
 	if err := landlockRecheck(held.Process.Pid); err != nil {
 		t.Fatalf("a held child with no_new_privs in the helper's namespaces: %v", err)
+	}
+}
+
+// waitForComm waits until /proc/<pid>/comm reads comm (the process has
+// exec'd it). The minute is a failure bound only.
+func waitForComm(t *testing.T, pid int, comm string) {
+	t.Helper()
+	p := filepath.Join("/proc", strconv.Itoa(pid), "comm")
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(5 * time.Millisecond) {
+		if b, err := os.ReadFile(p); err == nil && strings.TrimSpace(string(b)) == comm { //nolint:gosec // G304: a /proc path of a child this test started
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d did not exec %s within a minute", pid, comm)
+		}
 	}
 }

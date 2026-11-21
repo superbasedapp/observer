@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/alignment"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // projects_wire.go wires the Projects-page ROI + commit-alignment arc's
@@ -34,4 +35,20 @@ import (
 // no wrapper needed, the signatures already match.
 func projectsDashboardOptions(cfg *config.Config) (judgeGrade func(context.Context, alignment.Input) (alignment.Result, string, error), judgeGradeReason string) {
 	return projectsJudgeGradeSeam(cfg)
+}
+
+// projectsJudgeGradePlace is where the person turns the "J" grading tier on
+// when it is unavailable: the alignment_judge switch (Settings >
+// Intelligence) while it is off, else the judge's model (Settings >
+// Observability). Empty when the tier runs, or when this build has no judge
+// client (no setting changes that).
+func projectsJudgeGradePlace(cfg *config.Config, available bool) settingslink.Place {
+	switch {
+	case available || !judgeClientInBuild || cfg == nil:
+		return ""
+	case cfg.Projects.AlignmentJudge != "obs_judge":
+		return settingslink.IntelligenceSettings
+	default:
+		return settingslink.ObservabilitySettings
+	}
 }

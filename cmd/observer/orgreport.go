@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/attachrule"
 	"github.com/marmutapp/superbased-observer/internal/budgetwarnfile"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/orgenrol"
+	"github.com/marmutapp/superbased-observer/internal/policyfam"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -51,6 +54,11 @@ type orgStatusReport struct {
 	// IntelLine is the org-plane Cloud Intelligence consent line (design
 	// 3.7 step 3), empty unless something is pending.
 	IntelLine string
+	// PromptJudgeLine says the organization's prompt judge may read this
+	// developer's coding-agent prompts here (P-228, fix round 1 F8): shown
+	// on a managed node whose grant holds enforce.admission, the authority
+	// that governs planeb.admission.
+	PromptJudgeLine string
 	// Oversized is the daemon's report of snapshot rows too large for any
 	// push (family names and sizes only; store.LoadOrgPushOversizedRows).
 	Oversized []store.OrgPushOversizedRow
@@ -77,6 +85,7 @@ func collectOrgStatus(ctx context.Context, b orgBundle) (orgStatusReport, error)
 		if grant, _, gerr := loader(ctx); gerr == nil && grant != nil {
 			rep.Governed = true
 			rep.TenancyLine = managedConsentRefusalLine(grant)
+			rep.PromptJudgeLine = promptJudgeStatusLine(rep.Tenancy == orgcontract.TenancyManaged, grant.Authority, b.cfg.OrgClient.Policy)
 		}
 	}
 	// Share mode - the v1.8.0 per-node opt-in, read through the SAME
@@ -146,6 +155,9 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 		return
 	}
 	fmt.Fprintf(out, "Enrolled:         yes\n")
+	if line := enrolmentKindLine(rep.Tenancy); line != "" {
+		fmt.Fprintln(out, line)
+	}
 	fmt.Fprintf(out, "Organization:     %s (org_id %s)\n", st.OrgName, st.OrgID)
 	fmt.Fprintf(out, "User:             %s\n", st.UserEmail)
 	fmt.Fprintf(out, "Server:           %s\n", st.OrgServerURL)
@@ -167,6 +179,10 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 	}
 	if rep.IntelLine != "" {
 		fmt.Fprintln(out, rep.IntelLine)
+		fmt.Fprintln(out)
+	}
+	if rep.PromptJudgeLine != "" {
+		fmt.Fprintln(out, rep.PromptJudgeLine)
 		fmt.Fprintln(out)
 	}
 
@@ -210,6 +226,24 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 	}
 }
 
+// enrolmentKindLines is the "Kind:" line per enrolment kind (demo bug #3: the
+// status never printed it, so the kind had to be inferred from the share mode
+// and the guard lock line). The dashboard's top-bar chip says the same thing
+// (web/src/lib/enrolmentChip.ts).
+var enrolmentKindLines = map[string]string{
+	orgcontract.TenancyIndividual: "Kind:             individual - the organization can add guard floors and lower budget caps,\n" +
+		"                  but cannot switch settings on this machine for you",
+	orgcontract.TenancyManaged: "Kind:             organization-managed - the organization enforces what it holds authority\n" +
+		"                  for (guard policy, budgets, pinned settings) and receives content",
+}
+
+// enrolmentKindLine renders the kind collectOrgStatus resolved through
+// orgclient.NodeManaged; "" (an unresolved kind) prints nothing rather than a
+// guess.
+func enrolmentKindLine(tenancy string) string {
+	return enrolmentKindLines[tenancy]
+}
+
 // grantShowReport is `observer org grant show`.
 type grantShowReport struct {
 	Live        govern.LiveIdentity
@@ -236,6 +270,24 @@ type governedFamilyRow struct {
 	Family        string
 	Accepted      bool
 	Preauthorized bool
+}
+
+// promptJudgeStatusLine is the `observer org status` disclosure of the
+// organization's coding-agent prompt judge (P-228): empty unless the node is
+// managed and its grant holds enforce.admission. It says whether this
+// machine's config accepts the planeb.admission family (the start-time
+// backfill adds it once) and that the judge runs only while a signed body
+// turns its node lane on.
+func promptJudgeStatusLine(managed bool, authority []string, policy config.OrgClientPolicyConfig) string {
+	if !managed || !containsString(govern.AuthorityEnforceAdmission, authority) {
+		return ""
+	}
+	if !containsString(policyfam.FamilyPlaneBAdmission, policy.AcceptedFamilies()) {
+		return "Prompt judge:     your grant lets the organization judge the prompts you type into coding agents, " +
+			"but this machine's config.toml does not accept planeb.admission, so it does not run here."
+	}
+	return "Prompt judge:     your organization may let " + orgenrol.PromptJudgeDisclosure +
+		". See `observer guard status` or the Security page for whether it is on."
 }
 
 // governedFamilyRows computes the W-7 family table (config-side only).
@@ -510,6 +562,10 @@ type unenrolReport struct {
 	// (T-728); ConfigWarn is set when it could not be made.
 	ConfigEdit orgClientCfgEdit
 	ConfigWarn string
+	// Drain is what was sent to the organization before leaving, or left
+	// unsent with --drop-unsent (R3-78); DropRequested is that choice.
+	Drain         orgclient.DrainReport
+	DropRequested bool
 }
 
 // unenrolLocalSteps are the rows of the conferred -> retired table that this
@@ -617,7 +673,13 @@ func leaveRoutes(configPath string, apply bool) ([]proxyroute.LeaveRoute, error)
 }
 
 // performUnenrol leaves the organization and runs the symmetric cleanup.
-func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenrolReport, error) {
+//
+// R3-78: the rows still waiting for the organization are sent to it FIRST,
+// through the push path (orgclient.DrainBeforeLeave), because leaving removes
+// the credentials that could ever send them. When they cannot be sent the
+// leave is refused (*orgclient.UnsentRowsError, nothing changed) unless
+// dropUnsent is set.
+func performUnenrol(ctx context.Context, b orgBundle, configPath string, dropUnsent bool) (unenrolReport, error) {
 	st, err := b.client.Status(ctx)
 	if err != nil {
 		return unenrolReport{}, err
@@ -625,7 +687,16 @@ func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenro
 	if !st.Enrolled {
 		return unenrolReport{}, nil
 	}
-	rep := unenrolReport{WasEnrolled: true, OrgName: st.OrgName}
+	// M8.6: a machine company config locks to its organization cannot leave
+	// it (attachrule row 1); nothing is drained or retired.
+	if err := gateManagedAttach(ctx, b, attachrule.IntentDisconnect, ""); err != nil {
+		return unenrolReport{}, err
+	}
+	drain, err := b.client.DrainBeforeLeave(ctx, switchDrainOptions(&b.cfg, dropUnsent))
+	if err != nil {
+		return unenrolReport{}, err
+	}
+	rep := unenrolReport{WasEnrolled: true, OrgName: st.OrgName, Drain: drain, DropRequested: dropUnsent}
 	// ENFORCEMENT BEFORE IDENTITY (T-718): the local enforcement artifacts go
 	// first (unenrolLocalSteps), then the client's ordered walk.
 	//
@@ -670,7 +741,7 @@ func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenro
 	// Symmetric cleanup for the proxy routes the enrolment's --wire-clients
 	// step wrote (Claude Code's ANTHROPIC_BASE_URL, Codex's provider, ...):
 	// remove exactly those, and only while they are still what enrolment
-	// wrote. A route you, `observer init` or Settings > Setup set is kept;
+	// wrote. A route you, `observer init` or Settings > Connected tools set is kept;
 	// the record of who wrote it is made at write time (internal/routeprov),
 	// never guessed from the value. Best-effort: a failure here doesn't fail
 	// unenroll.
@@ -704,6 +775,12 @@ func printUnenrolReport(out io.Writer, rep unenrolReport) {
 	if !rep.WasEnrolled {
 		fmt.Fprintln(out, "Not enrolled; nothing to do.")
 		return
+	}
+	if note, warn := drainNote(rep.Drain, true, rep.DropRequested); note != "" {
+		if warn {
+			note = "Warning: " + note
+		}
+		fmt.Fprintln(out, note)
 	}
 	fmt.Fprintf(out, "Unenrolled from %s. Local credentials cleared.\n", rep.OrgName)
 	// Admin-controlled Plane B (spec §5.1): Unenroll deleted the enrolment

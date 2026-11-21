@@ -1,0 +1,95 @@
+rules:
+  - id: php.sql-string-concat
+    languages: [php]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; pass the value as a bound parameter (a PDO or mysqli prepared statement, Laravel bindings, $wpdb->prepare placeholders) instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: $DB->quote(...)
+      - pattern: $DB->real_escape_string(...)
+      - pattern: $DB->escape(...)
+      - pattern: $DB->prepare(...)
+      - pattern: mysqli_real_escape_string(...)
+      - pattern: pg_escape_string(...)
+      - pattern: pg_escape_literal(...)
+      - pattern: pg_escape_identifier(...)
+      - pattern: esc_sql(...)
+      - pattern: $DB->escapeString(...)
+      - pattern: $DB->quoteString(...)
+      - pattern: $DB->quoteIdentifier(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: mysqli_query($C, $SQL, ...)
+              - pattern: mysqli_real_query($C, $SQL)
+              - pattern: mysqli_multi_query($C, $SQL)
+              - pattern: mysqli_prepare($C, $SQL)
+              - pattern: mysql_query($SQL, ...)
+              - pattern: pg_query($C, $SQL)
+              - pattern: pg_query($SQL)
+              - pattern: pg_query_params($C, $SQL, ...)
+              - pattern: pg_prepare($C, $N, $SQL)
+              - patterns:
+                  - pattern: DB::$Q($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $Q
+                      regex: ^(select|selectOne|insert|update|delete|statement|unprepared|raw|affectingStatement|cursor|scalar)$
+              # Query-builder raw fragments, on any builder.
+              - patterns:
+                  - pattern: $B->$Q($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $Q
+                      regex: ^(whereRaw|orWhereRaw|selectRaw|orderByRaw|havingRaw|orHavingRaw|groupByRaw|fromRaw|joinRaw)$
+              # A database handle by its conventional name.
+              - patterns:
+                  - pattern: $DB->$Q($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $Q
+                      regex: ^(query|exec|prepare|multi_query|real_query|unbuffered_query|get_results|get_row|get_var|get_col|executeQuery|executeStatement|executeUpdate|fetchAllAssociative|fetchAssociative|fetchOne|fetchAll|fetchAssoc|fetchColumn|createQuery|createNativeQuery)$
+                  - metavariable-regex:
+                      metavariable: $DB
+                      regex: (?i)^\$(this->)?\w*(db|dbh|pdo|conn|connection|mysqli|link|database|wpdb|em|entityManager)\w*$
+          - focus-metavariable: $SQL

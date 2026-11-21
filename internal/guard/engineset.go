@@ -3,9 +3,12 @@ package guard
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -635,16 +638,74 @@ func (es *engineSet) orgState() (PolicyState, bool) {
 //     never below the org floor. Its `disable` list unions into the
 //     per-project engine's Config.Disabled inside buildEngine.
 //
-// It returns one PolicyState per successfully-loaded layer (0, 1 or 2).
+// It returns one PolicyState per successfully-loaded layer file.
 // loaded=false (with the snapshot's base engine, states=nil) covers every
-// degrade path (no files, read error, parse error, engine-build error),
-// each recording an issue. A parse error on ONE layer drops that layer's
-// contribution but the other layer still loads; only an engine-build
-// failure of the merged result drops both.
+// degrade path (no files, read error, parse error, every rung of the
+// fallback ladder failing), each recording an issue. A parse error on ONE
+// layer drops that layer's contribution but the others still load; an
+// engine-build failure of the merged result walks projectLadder, which drops
+// the least trusted layer first (RC-1): the linked worktree files, then the
+// repository file, then the trusted layer, then the user layer in this root,
+// and the org project sections only when nothing else is left.
 //
 // named is the rule-ID set the folded org layer names when org project
 // envelopes loaded (nil otherwise): the root's org lock blast radius.
 func (g *Guard) buildProjectEngine(es *engineSet, projectRoot, checkout string) projectBuild {
+	return g.buildProjectEngineWith(es, projectRoot, checkout, nil)
+}
+
+// inRepoSet is which repository policy files a projectLadder rung keeps.
+// The values are ordered: a larger one keeps fewer files.
+type inRepoSet int
+
+const (
+	// inRepoAll keeps every checkout's file the engine reads.
+	inRepoAll inRepoSet = iota
+	// inRepoMain keeps the main checkout's file only.
+	inRepoMain
+	// inRepoNone keeps no repository file.
+	inRepoNone
+)
+
+// projectRung is one row of the project engine's fallback ladder: the layers
+// it keeps besides the org layer and the root's org project sections, which
+// every rung keeps.
+type projectRung struct {
+	inRepo  inRepoSet
+	trusted bool
+	user    bool
+}
+
+// projectLadder is the order a project engine build drops layers in when
+// the full set does not build, least trusted first (RC-1): a defect in the
+// repository-controlled file costs only that file, never the trusted layer
+// (with its applied recipe) or the org project sections; a trusted-layer
+// defect costs the trusted layer; a user-layer defect that only shows with
+// this root's org project sections costs the user layer in this root, never
+// the sections. A rung never keeps a layer an earlier rung dropped. When no
+// rung builds, the root evaluates with the base engine and its org project
+// layer is unknown (projectUnknownUnloadable).
+var projectLadder = []projectRung{
+	{inRepo: inRepoAll, trusted: true, user: true},
+	{inRepo: inRepoMain, trusted: true, user: true},
+	{inRepo: inRepoNone, trusted: true, user: true},
+	{inRepo: inRepoNone, trusted: false, user: true},
+	{inRepo: inRepoNone, trusted: false, user: false},
+}
+
+// projectCandidate is the layer set one projectLadder rung builds: org is the
+// org layer composed with the root's org project sections.
+type projectCandidate struct {
+	org, user, inRepo, trusted *policyFile
+}
+
+// errInjectedBuild is the build failure a test's fault hook injects.
+var errInjectedBuild = errors.New("injected build failure")
+
+// buildProjectEngineWith is buildProjectEngine with a fault hook: a candidate
+// fault reports true for fails as if its engine did not build (tests drive
+// the ladder with it; production passes nil).
+func (g *Guard) buildProjectEngineWith(es *engineSet, projectRoot, checkout string, fault func(projectCandidate) bool) projectBuild {
 	// In-repo project layer (escalate-only): the main checkout's file and,
 	// for a known checkout, that checkout's own (checkoutPolicyPaths, lane
 	// LEFT-SHARED), else each linked worktree's own (ProjectPolicyPaths,
@@ -653,25 +714,15 @@ func (g *Guard) buildProjectEngine(es *engineSet, projectRoot, checkout string) 
 
 	// Trusted daemon-local project layer (weaken/disable-allowed,
 	// org-floor-respected).
+	// An applied project recipe (<hash>.recipe.toml, recipelayer.go) folds
+	// into this layer ahead of the trusted file's own rows.
 	trustedPath := TrustedProjectPolicyPath(g.cfg, g.home, projectRoot)
 	var trusted *policyFile
 	var trustedStates []PolicyState
 	if trustedPath != "" {
-		raw, err := g.readFile(trustedPath)
-		switch {
-		case os.IsNotExist(err):
-			// no trusted project policy — the common case
-		case err != nil:
-			g.recordIssues([]string{fmt.Sprintf("trusted project policy %s: %v", trustedPath, err)})
-		default:
-			pf, perr := parsePolicyFile(raw, layerTrustedProject)
-			if perr != nil {
-				g.recordIssues([]string{fmt.Sprintf("trusted project policy %s: %v", trustedPath, perr)})
-			} else {
-				trusted = pf
-				trustedStates = append(trustedStates, PolicyState{Layer: layerTrustedProject, Path: trustedPath, ContentHash: sha256hex(raw)})
-			}
-		}
+		var issues []string
+		trusted, trustedStates, issues = g.readLayerWithRecipe(trustedPath, layerTrustedProject)
+		g.recordIssues(issues)
 	}
 
 	// The org project layer: the envelopes of the projects this root matched
@@ -690,90 +741,299 @@ func (g *Guard) buildProjectEngine(es *engineSet, projectRoot, checkout string) 
 	// worktree's file) is dropped with an issue naming the file and the
 	// rule, so it can never fail the whole build (audit finding 1, lane
 	// shr-worktree2).
-	targets := inRepoOverrideTargets(g.packRules, effectiveConfigDisable(org, g.cfg.Rules.Disable), org, es.userLayer, trusted, inRepoFiles)
+	targets := inRepoOverrideTargets(g.packRules, effectiveConfigDisable(org, g.configDisable()), org, es.userLayer, trusted, inRepoFiles)
 	for i := range inRepoFiles {
 		var issues []string
 		inRepoFiles[i], issues = dropUnloadedInRepoOverrides(inRepoFiles[i], inRepoStates[i].Path, targets)
 		g.recordIssues(issues)
 	}
-	inRepo := foldInRepoPolicyFiles(inRepoFiles)
-
-	if inRepo == nil && trusted == nil && len(projectLayers) == 0 {
+	allFold := foldInRepoPolicyFiles(inRepoFiles)
+	if allFold == nil && trusted == nil && len(projectLayers) == 0 {
 		return projectBuild{eng: es.base(), org: om}
 	}
 
-	built, err := g.buildEngine(es.mode, org, es.userLayer, inRepo, trusted)
-	if err != nil {
-		// A linked worktree's file must never cost the project its own
-		// policy: rebuild with the main checkout's file, the trusted layer
-		// and the org project sections before any fallback to the bare
-		// base engine.
-		mainPath := ProjectPolicyPath(g.cfg, projectRoot)
-		var mainFiles []*policyFile
-		var mainStates []PolicyState
-		for i := range inRepoFiles {
-			if inRepoStates[i].Path == mainPath {
-				mainFiles = append(mainFiles, inRepoFiles[i])
-				mainStates = append(mainStates, inRepoStates[i])
-			}
-		}
-		if len(mainFiles) < len(inRepoFiles) {
-			g.recordIssues([]string{fmt.Sprintf("linked worktree policy files for %s dropped: %v", projectRoot, err)})
-			inRepo, inRepoStates = foldInRepoPolicyFiles(mainFiles), mainStates
-			if inRepo == nil && trusted == nil && len(projectLayers) == 0 {
-				return projectBuild{eng: es.base(), org: om}
-			}
-			built, err = g.buildEngine(es.mode, org, es.userLayer, inRepo, trusted)
+	// A linked worktree's file must never cost the project its own policy
+	// (inRepoMain), and the repository file must never cost the trusted
+	// layer or the org project sections (inRepoNone).
+	mainPath := ProjectPolicyPath(g.cfg, projectRoot)
+	var mainFiles []*policyFile
+	var mainStates []PolicyState
+	for i := range inRepoFiles {
+		if inRepoStates[i].Path == mainPath {
+			mainFiles = append(mainFiles, inRepoFiles[i])
+			mainStates = append(mainStates, inRepoStates[i])
 		}
 	}
-	states := make([]PolicyState, 0, len(inRepoStates)+len(trustedStates)+len(projectStates))
-	states = append(states, inRepoStates...)
-	states = append(states, trustedStates...)
+	mainFold := allFold
+	if len(mainFiles) < len(inRepoFiles) {
+		mainFold = foldInRepoPolicyFiles(mainFiles)
+	}
+	inRepoOf := func(s inRepoSet) (*policyFile, []PolicyState) {
+		switch s {
+		case inRepoAll:
+			return allFold, inRepoStates
+		case inRepoMain:
+			if mainFold == allFold {
+				return allFold, inRepoStates
+			}
+			return mainFold, mainStates
+		}
+		return nil, nil
+	}
+
+	var tried []projectCandidate
+	// errWith is, per layer, the error of the last failed build that still
+	// held it: the reason it was dropped.
+	errWith := map[string]error{}
+	var lastErr error
+	for _, r := range projectLadder {
+		c := projectCandidate{org: org}
+		var keptInRepo []PolicyState
+		c.inRepo, keptInRepo = inRepoOf(r.inRepo)
+		if r.trusted {
+			c.trusted = trusted
+		}
+		if r.user {
+			c.user = es.userLayer
+		}
+		if c.inRepo == nil && c.trusted == nil && len(projectLayers) == 0 {
+			// Nothing of this root's own is left: the base engine.
+			break
+		}
+		if slices.Contains(tried, c) {
+			continue
+		}
+		tried = append(tried, c)
+		built, notes, err := g.buildEngineNotes(es.mode, c.org, c.user, c.inRepo, c.trusted, g.publishedBudgetInputs())
+		if err == nil && fault != nil && fault(c) {
+			err = errInjectedBuild
+		}
+		if err != nil {
+			lastErr = err
+			c.recordFailure(errWith, err)
+			continue
+		}
+		g.recordIssues(notes)
+		g.recordDrops(projectRungDrops(projectRoot, inRepoStates, keptInRepo, trusted != nil && c.trusted == nil, trustedStates,
+			es.userLayer != nil && c.user == nil, es.states, errWith))
+		return projectBuiltFrom(c, built, keptInRepo, trustedStates, projectLayers, projectStates, om)
+	}
+
+	// No rung built: the root evaluates with the base engine.
+	var dropped []droppedProjectLayer
+	if allFold != nil {
+		dropped = append(dropped, droppedProjectLayer{layerProject, inRepoStates})
+	}
+	if trusted != nil {
+		dropped = append(dropped, droppedProjectLayer{layerTrustedProject, trustedStates})
+	}
 	if len(projectLayers) > 0 {
-		states = append(states, projectStates...)
+		dropped = append(dropped, droppedProjectLayer{layerOrg, projectStates})
 	}
-	if err != nil {
-		g.recordIssues([]string{fmt.Sprintf("project policy for %s dropped: %v", projectRoot, err)})
-		if len(projectLayers) > 0 && om.unknown == "" {
-			// The matched project's sections could not be applied: its
-			// layer is unknown here, never "nothing to load" (PR14).
+	return g.projectFallback(es, projectRoot, lastErr, dropped, om)
+}
+
+// droppedProjectLayer is one layer a root's project build could not keep.
+type droppedProjectLayer struct {
+	layer  string
+	states []PolicyState
+}
+
+// projectFallback records that no ladder rung built (every dropped layer,
+// with lastErr as the reason) and returns the base engine for the root. A
+// dropped org project layer leaves the matched project's sections unknown
+// here, never "nothing to load" (PR14).
+func (g *Guard) projectFallback(es *engineSet, projectRoot string, lastErr error, dropped []droppedProjectLayer, om orgProjectMatch) projectBuild {
+	issue := fmt.Sprintf("project policy for %s dropped: %v", projectRoot, lastErr)
+	drops := make([]LayerDrop, 0, len(dropped))
+	for _, d := range dropped {
+		drops = append(drops, LayerDrop{Layer: d.layer, Paths: statePaths(d.states), Issue: issue})
+		if d.layer == layerOrg && om.unknown == "" {
 			om.unknown = projectUnknownUnloadable
 		}
-		return projectBuild{eng: es.base(), org: om}
+	}
+	g.recordDrops(withDropPaths(drops, projectRoot, nil))
+	return projectBuild{eng: es.base(), org: om}
+}
+
+// recordFailure notes err as the reason for every layer the failed candidate
+// still held: the last failed build that held a layer is why it was dropped.
+func (c projectCandidate) recordFailure(errWith map[string]error, err error) {
+	if c.inRepo != nil {
+		errWith[layerProject] = err
+	}
+	if c.trusted != nil {
+		errWith[layerTrustedProject] = err
+	}
+	if c.user != nil {
+		errWith[layerUser] = err
+	}
+}
+
+// projectBuiltFrom is the projectBuild of the first ladder rung that built:
+// the states of the layers it kept, and each rule id's category taken from
+// its most trusted owner.
+func projectBuiltFrom(c projectCandidate, built *policy.Engine, keptInRepo, trustedStates []PolicyState, projectLayers []*policyFile, projectStates []PolicyState, om orgProjectMatch) projectBuild {
+	states := make([]PolicyState, 0, len(keptInRepo)+len(trustedStates)+len(projectStates))
+	states = append(states, keptInRepo...)
+	if c.trusted != nil {
+		states = append(states, trustedStates...)
 	}
 	var named map[string]bool
 	if len(projectLayers) > 0 {
-		named = namedRuleIDs(org)
+		states = append(states, projectStates...)
+		named = namedRuleIDs(c.org)
 	}
+	// Most trusted first: an id keeps its owner's category
+	// (ruleIDOwners; the merge dropped every reused row).
 	cats := make(map[string]policy.Category)
 	for _, pl := range projectLayers {
-		for i := range pl.rules {
-			cats[pl.rules[i].ID] = pl.rules[i].Category
-		}
+		addRuleCategories(cats, pl)
 	}
-	if inRepo != nil {
-		for i := range inRepo.rules {
-			cats[inRepo.rules[i].ID] = inRepo.rules[i].Category
-		}
-	}
-	if trusted != nil {
-		for i := range trusted.rules {
-			cats[trusted.rules[i].ID] = trusted.rules[i].Category
-		}
-	}
+	addRuleCategories(cats, c.trusted)
+	addRuleCategories(cats, c.inRepo)
 	return projectBuild{eng: built, states: states, cats: cats, named: named, loaded: true, org: om}
+}
+
+// projectRungDrops is the LayerDrop list of a project build that succeeded
+// on a lower rung: the repository files it did not keep (all, or only the
+// linked worktrees'), the trusted layer and the user layer when dropped,
+// each with the error of the last failed build that held it.
+func projectRungDrops(root string, inRepoStates, keptInRepo []PolicyState, trustedDropped bool, trustedStates []PolicyState,
+	userDropped bool, baseStates []PolicyState, errWith map[string]error,
+) []LayerDrop {
+	var drops []LayerDrop
+	var gone []string
+	for _, st := range inRepoStates {
+		if !hasPolicyState(keptInRepo, st) {
+			gone = append(gone, st.Path)
+		}
+	}
+	if len(gone) > 0 {
+		issue := fmt.Sprintf("repository policy files for %s dropped (the trusted and org project layers still apply): %v", root, errWith[layerProject])
+		if len(keptInRepo) > 0 {
+			issue = fmt.Sprintf("linked worktree policy files for %s dropped: %v", root, errWith[layerProject])
+		}
+		drops = append(drops, LayerDrop{Layer: layerProject, Paths: gone, Issue: issue})
+	}
+	if trustedDropped {
+		drops = append(drops, LayerDrop{
+			Layer: layerTrustedProject, Paths: statePaths(trustedStates),
+			Issue: fmt.Sprintf("trusted project layer for %s dropped (the org project layer still applies): %v", root, errWith[layerTrustedProject]),
+		})
+	}
+	if userDropped {
+		var paths []string
+		for _, st := range baseStates {
+			if st.Layer == layerUser {
+				paths = append(paths, st.Path)
+			}
+		}
+		drops = append(drops, LayerDrop{
+			Layer: layerUser, Paths: paths,
+			Issue: fmt.Sprintf("user policy layer dropped in %s (the org project sections still apply): %v", root, errWith[layerUser]),
+		})
+	}
+	return withDropPaths(drops, root, nil)
+}
+
+// statePaths lists the paths of states, in order.
+func statePaths(states []PolicyState) []string {
+	if len(states) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(states))
+	for _, st := range states {
+		out = append(out, st.Path)
+	}
+	return out
+}
+
+// maxInRepoPolicyBytes caps a repository policy file (RC-10): the file is
+// repository-controlled and read on every hook, so a larger one is refused
+// unread. The recipe file cap (guardrecipe).
+const maxInRepoPolicyBytes = 128 << 10
+
+// maxInRepoPolicyNesting caps how deeply a repository policy file nests
+// arrays and inline tables, and maxInRepoPolicyLineDots how many dots one
+// of its lines carries outside strings (dotted keys and table headers nest
+// a table per segment) (RC-10, tomlNesting). The decoder's cost grows
+// superlinearly with both; a policy file needs about three levels
+// ([[rule]] headers, a matcher list) and one dot per line ([rule.match], a
+// decimal value), so a file past either bound is refused before it is
+// decoded.
+const (
+	maxInRepoPolicyNesting  = 8
+	maxInRepoPolicyLineDots = 16
+)
+
+// tooNested reports a repository policy text past the pre-decode nesting
+// bounds.
+func tooNested(raw []byte) bool {
+	depth, dots := tomlNesting(raw)
+	return depth > maxInRepoPolicyNesting || dots > maxInRepoPolicyLineDots
+}
+
+// errPolicyFileTooLarge and errPolicyFileNotRegular are the refusals of
+// readInRepoPolicyFile.
+var (
+	errPolicyFileTooLarge   = fmt.Errorf("refused: larger than %d bytes", maxInRepoPolicyBytes)
+	errPolicyFileNotRegular = errors.New("refused: not a regular file")
+)
+
+// readInRepoPolicyFile reads one repository policy file, bounded: only a
+// regular file of at most maxInRepoPolicyBytes (a device, FIFO or directory
+// the repository points the path at could block the hook or never end).
+// With an injected ReadFile (tests, the recipe service's preview) it reads
+// through it and applies the size cap to the bytes.
+func (g *Guard) readInRepoPolicyFile(path string) ([]byte, error) {
+	if !g.osReads {
+		raw, err := g.readFile(path)
+		if err == nil && len(raw) > maxInRepoPolicyBytes {
+			return nil, errPolicyFileTooLarge
+		}
+		return raw, err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errPolicyFileNotRegular
+	}
+	if fi.Size() > maxInRepoPolicyBytes {
+		return nil, errPolicyFileTooLarge
+	}
+	f, err := os.Open(path) //nolint:gosec // the project's own policy file path
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	// The file may have been swapped between the stat and the open.
+	if fi, err = f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, errPolicyFileNotRegular
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxInRepoPolicyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxInRepoPolicyBytes {
+		return nil, errPolicyFileTooLarge
+	}
+	return raw, nil
 }
 
 // readInRepoPolicyFiles reads and parses the in-repo policy files at paths,
 // in order, with one state per file loaded; a missing file is the common
-// case, a read or parse error records an issue and skips the file, and a
-// copy identical to one already read counts once.
+// case, a read or parse error (or a refusal: too large, not a regular file,
+// nested too deeply) records an issue and skips the file, and a copy
+// identical to one already read counts once.
 func (g *Guard) readInRepoPolicyFiles(paths []string) ([]*policyFile, []PolicyState) {
 	var files []*policyFile
 	var states []PolicyState
 	seen := map[string]bool{}
 	for _, path := range paths {
-		raw, err := g.readFile(path)
+		raw, err := g.readInRepoPolicyFile(path)
 		switch {
 		case os.IsNotExist(err):
 			// no in-repo project policy, the common case
@@ -781,6 +1041,9 @@ func (g *Guard) readInRepoPolicyFiles(paths []string) ([]*policyFile, []PolicySt
 			g.recordIssues([]string{fmt.Sprintf("project policy %s: %v", path, err)})
 		case seen[sha256hex(raw)]:
 			// the same file as another checkout's
+		case tooNested(raw):
+			g.recordIssues([]string{fmt.Sprintf("project policy %s: refused: nested deeper than %d levels of arrays or inline tables, or more than %d dots in one line's keys",
+				path, maxInRepoPolicyNesting, maxInRepoPolicyLineDots)})
 		default:
 			pf, perr := parsePolicyFile(raw, layerProject)
 			if perr != nil {
@@ -834,25 +1097,31 @@ func (es *engineSet) projectRecheckDue(ek string) (string, bool) {
 }
 
 // buildRuleCategories seeds the audit-attribution category map from the
-// built-in catalog and the org+user layer rules (user last so a reused
-// ID last-writes, matching New). Project cats are added lazily per
-// snapshot.
+// built-in catalog and the org+user layer rules, most trusted first: an id
+// keeps the category of the layer that owns it (ruleIDOwners; the merge
+// drops a user row reusing an org id, RC-2). Project cats are added lazily
+// per snapshot.
 func buildRuleCategories(org, user *policyFile) map[string]policy.Category {
 	m := make(map[string]policy.Category)
 	for _, info := range policy.Catalog() {
 		m[info.ID] = info.Category
 	}
-	if org != nil {
-		for i := range org.rules {
-			m[org.rules[i].ID] = org.rules[i].Category
-		}
-	}
-	if user != nil {
-		for i := range user.rules {
-			m[user.rules[i].ID] = user.rules[i].Category
-		}
-	}
+	addRuleCategories(m, org)
+	addRuleCategories(m, user)
 	return m
+}
+
+// addRuleCategories adds pf's rule categories to m for the ids m does not
+// hold yet (callers add layers most trusted first).
+func addRuleCategories(m map[string]policy.Category, pf *policyFile) {
+	if pf == nil {
+		return
+	}
+	for i := range pf.rules {
+		if _, ok := m[pf.rules[i].ID]; !ok {
+			m[pf.rules[i].ID] = pf.rules[i].Category
+		}
+	}
 }
 
 // dropLayerState removes every state of the given layer (used by New's

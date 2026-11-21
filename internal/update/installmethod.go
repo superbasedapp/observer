@@ -96,7 +96,7 @@ var installRules = []installRule{
 	{
 		name:   "vscode-extension",
 		method: MethodVSCode,
-		advice: "update the SuperBased Observer extension in VS Code",
+		advice: "update the superbased Observer extension in VS Code",
 		matches: func(_ PathProbe, lower string) bool {
 			return strings.Contains(lower, "superbased.superbased-observer") ||
 				strings.Contains(lower, "globalstorage/superbased") ||

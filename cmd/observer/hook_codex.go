@@ -102,12 +102,14 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 		hookFailClosed(guardposture.KindUnparseable, body) {
 		return
 	}
+	guardRan := false
 	if event == codexadapter.HookEventUserPromptSubmit && promptGuardEnabled(cfg) {
 		g := buildHookGuard(cfg, os.Stderr)
 		if g == nil && hookFailClosed(guardposture.KindGuardInit, body) {
 			return
 		}
 		if g != nil {
+			guardRan = true
 			var after func()
 			// PromptDialectTopLevelBlock signals a block in its JSON
 			// reply ({"decision":"block",…}), which Codex honours per
@@ -119,7 +121,7 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 			// fail-closed path's exit-2 block, whose stderr carries the
 			// same developer-facing reason.
 			handled, after, _ = hook.HandlePromptSubmitGuarded(
-				models.ToolCodex, hook.PromptDialectTopLevelBlock, event, body, truncated, g,
+				models.ToolCodex, hook.PromptDialectTopLevelBlock, event, body, truncated, withOrgPromptJudge(g, configPath, cfg),
 				makePromptGuardPersist(cfg, g, models.ToolCodex, "codex:"+event, os.Stderr), hookStdout, os.Stderr,
 			)
 			// FU-161: an undecodable prompt payload fails closed under
@@ -143,6 +145,22 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 			}
 		}
 	}
+	if event == codexadapter.HookEventUserPromptSubmit && !guardRan {
+		// The organization's judge runs whatever the local guard switches
+		// say (adm-2 fixes-1, H3). Like the guarded path, this receiver
+		// blocks through the JSON reply and exits 0.
+		var after func()
+		handled, after, _ = hook.HandlePromptSubmitOrgJudge(models.ToolCodex, hook.PromptDialectTopLevelBlock, event, body, truncated, newOrgPromptJudge(configPath, cfg), hookStdout, os.Stderr)
+		if handled {
+			markHookReplied()
+		}
+		if !handled && judgeOnlyUndecodableRefused(hook.PromptDialectTopLevelBlock, body, truncated) {
+			return
+		}
+		if after != nil {
+			after()
+		}
+	}
 	if handled {
 		// Reply already sent by the guard path above - still capture
 		// the action row (mirrors HandleCodexEvent's own ingest half,
@@ -154,7 +172,7 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 			fmt.Fprintf(os.Stderr, "observer-hook: codex build %s: %v\n", event, err)
 		} else if ok && ev.SessionID != "" {
 			ictx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
-			if _, err := store.New(database).Ingest(ictx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
+			if _, err := hookIngestStore(database).Ingest(ictx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
 				fmt.Fprintf(os.Stderr, "observer-hook: codex %s insert: %v\n", event, err)
 			}
 			cancel()
@@ -169,7 +187,7 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 		// security_feedback.go); unchanged unless security.feedback is
 		// selected.
 		codexOut = securityPostFeedbackWriter(ctx, codexOut, models.ToolCodex, event, body, configPath)
-		hook.HandleCodexEvent(event, store.New(database), sc, bytes.NewReader(body),
+		hook.HandleCodexEvent(event, hookIngestStore(database), sc, bytes.NewReader(body),
 			codexOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
 		markHookReplied()
 	}

@@ -89,14 +89,25 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 	if err != nil {
 		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: load commits: %w", err)
 	}
-	priced, err := LoadProjectSpend(ctx, st, in.CostEngine, projectID, since, until)
+	// CA-D21 (cloud-agents lane CA-C1): the Spend figures fold the project's
+	// synthetic cloud twins in (folded.All); the prompt-to-commit linkage and
+	// the ROI proxies read the project's own rows (folded.Own), because a
+	// twin has no local checkout for its sessions to reach a commit through.
+	folded, err := LoadFoldedProjectSpend(ctx, st, in.CostEngine, projectID, since, until)
 	if err != nil {
 		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: load spend: %w", err)
 	}
-	turns, sessions := priced.Turns, priced.Sessions
+	priced := folded.All
+	turns, sessions := folded.Own.Turns, folded.Own.Sessions
 	promptCounts, err := st.LoadProjectPromptCounts(ctx, projectID, since, until)
 	if err != nil {
 		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: load prompt counts: %w", err)
+	}
+	// A folded twin's sessions keep their own prompt counts and AI lines on
+	// the per-session rows (never a 0 that only means "not loaded").
+	promptCounts, sessionEdits, err := twinSessionInputs(ctx, st, folded, since, until, promptCounts, edits)
+	if err != nil {
+		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: %w", err)
 	}
 	tasks, err := st.LoadProjectTasks(ctx, projectID, since, until)
 	if err != nil {
@@ -145,8 +156,12 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 	})
 
 	var totalUSD float64
-	for _, t := range turns {
+	for _, t := range priced.Turns {
 		totalUSD += t.CostUSD
+	}
+	locations, err := buildSpendLocations(ctx, st, folded)
+	if err != nil {
+		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: location split: %w", err)
 	}
 
 	agg := AggregateByCommit(linkage)
@@ -185,10 +200,11 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 		Spend: apiProjectDetailSpend{
 			TotalUSD:      totalUSD,
 			UnpricedTurns: priced.UnpricedTurns,
-			ByTool:        BucketCost(turns, func(t projectroi.Turn) string { return t.Tool }),
-			ByModel:       BucketCost(turns, func(t projectroi.Turn) string { return t.Model }),
-			ByDay:         BucketCostByDay(turns),
-			BySession:     buildBySession(sessions, turns, promptCounts, edits, linkage),
+			ByTool:        BucketCost(priced.Turns, func(t projectroi.Turn) string { return t.Tool }),
+			ByModel:       BucketCost(priced.Turns, func(t projectroi.Turn) string { return t.Model }),
+			ByDay:         BucketCostByDay(priced.Turns),
+			BySession:     withSessionLocations(buildBySession(priced.Sessions, priced.Turns, promptCounts, sessionEdits, linkage), folded.Locations),
+			Locations:     locations,
 		},
 		ROI:        toRoiTiles(roi),
 		WindowDays: in.Days,
@@ -196,6 +212,9 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 	}
 	if detail.Truncated {
 		stampTruncationCaveat(detail.ROI)
+	}
+	if folded.HasTwins() {
+		stampTwinCaveat(detail.ROI)
 	}
 	if detail.Project.Tools == nil {
 		detail.Project.Tools = []string{}

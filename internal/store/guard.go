@@ -74,6 +74,17 @@ const (
 	guardMaxReasonRunes  = 1024
 )
 
+// guardReasonMaxRunes is the most runes the Reason of a row with this rule id
+// keeps: guardMaxReasonRunes, except for the security assessment lifecycle
+// audit rows (SecAssessEventRuleID), whose launch line is longer by design
+// (secAssessReasonMaxRunes). Content-bounding stays at this seam, one table.
+func guardReasonMaxRunes(ruleID string) int {
+	if ruleID == SecAssessEventRuleID && secAssessReasonMaxRunes > guardMaxReasonRunes {
+		return secAssessReasonMaxRunes
+	}
+	return guardMaxReasonRunes
+}
+
 // GuardEventRow is one row of guard_events. ChainPrev/ChainHash are
 // OUTPUT fields — InsertGuardEvents computes and stamps them; any
 // caller-supplied values are ignored. ID is set on rows returned by
@@ -105,9 +116,21 @@ type GuardEventRow struct {
 	// G3): set when a grant turned an ask/deny into an allow-by-grant or a
 	// softened ask; 0 (NULL) otherwise. Part of the chain input from
 	// version 2 on.
-	GrantID   int64
-	ChainPrev string
-	ChainHash string
+	GrantID int64
+	// ProjectRootHash / ProjectRoot are the project the gate matched grants
+	// on for this verdict (guard.GrantProject; agent migration 253,
+	// GRANT-20): the guard.HashProjectRoot digest and the raw root. Both
+	// empty (NULL) when the lane recorded none and on every row written
+	// before 253; a request drafted from the row then takes the session's
+	// project (GuardEventRequestDraft). NOT part of the chain input: they
+	// steer a request draft the developer reviews and the org approves,
+	// never a verdict, and adding them would need a new chain version for
+	// no audit gain. NODE-LOCAL: the org push never selects either
+	// (orgpush.go; the raw root is pinned by tests/invariant/privacy_test.go).
+	ProjectRootHash string
+	ProjectRoot     string
+	ChainPrev       string
+	ChainHash       string
 	// ChainV is the chain-input version this row was hashed under (an OUTPUT
 	// field like ChainPrev/ChainHash on insert: InsertGuardEvents always
 	// writes guardChainVersionCurrent). 0 on a loaded row reads as 1.
@@ -321,8 +344,9 @@ INSERT INTO guard_events (
     ts, session_id, action_id, api_turn_id, tool, event_kind,
     rule_id, category, severity, decision, degraded_from, enforced,
     source, reason, target_hash, target_excerpt, taint_origin,
-    chain_prev, chain_hash, grant_id, chain_v, action_anchor
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    chain_prev, chain_hash, grant_id, chain_v, action_anchor,
+    project_root_hash, project_root
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // InsertGuardEvents appends a batch of guard_events rows inside a
 // single transaction, computing the §10.4 hash chain link for each:
@@ -385,7 +409,7 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 
 	for i := range events {
 		ev := &events[i]
-		ev.Reason = truncateRunes(ev.Reason, guardMaxReasonRunes)
+		ev.Reason = truncateRunes(ev.Reason, guardReasonMaxRunes(ev.RuleID))
 		ev.TargetExcerpt = truncateRunes(ev.TargetExcerpt, guardMaxExcerptRunes)
 		ev.tsStored = timestamp(ev.TS)
 		ev.actionAnchor = nil
@@ -420,6 +444,8 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 			nullableGrantID(ev.GrantID),
 			ev.ChainV,
 			nullableInt64Ptr(ev.actionAnchor),
+			nullableString(ev.ProjectRootHash),
+			nullableString(ev.ProjectRoot),
 		); err != nil {
 			return fmt.Errorf("store.InsertGuardEvents: exec[%d]: %w", i, err)
 		}
@@ -479,6 +505,46 @@ type GuardChainReport struct {
 	// once and does not cascade. A row that fails more than one way counts
 	// in each class. Nil when OK.
 	Breaks map[string]int
+	// ActionlessRewritten counts the rows that fail as rewritten AND carry
+	// no action id at all (action_id and action_anchor both NULL): the
+	// GUARD-CHAIN-1 shape, a row whose action routine maintenance pruned
+	// before agent migration 197 recorded the anchor (FU-236). Such a row
+	// is not proven tampered: `observer guard repair-anchors` searches the
+	// action id that reproduces its stored hash and restores it only on an
+	// exact match. Reported so the status surfaces can name that repair
+	// path instead of a bare "BROKEN".
+	ActionlessRewritten int
+}
+
+// GuardChainRepairHint is the operator line for a broken chain, keyed on
+// what the walk found (FU-236): the documented, non-destructive repair
+// command for each recoverable failure shape, in the order an operator runs
+// them, or "" when nothing recoverable was found. Walked top-down (CLAUDE.md
+// rule 5); every command named here reports only unless given --apply. The
+// CLI and the dashboard both show it, so it names the dashboard control
+// first (Security > Coverage, Repair audit chain, which runs the same verbs)
+// and keeps the CLI verbs second.
+func GuardChainRepairHint(r GuardChainReport) string {
+	for _, row := range guardChainHintRows {
+		if row.applies(r) {
+			return row.hint
+		}
+	}
+	return ""
+}
+
+var guardChainHintRows = []struct {
+	applies func(GuardChainReport) bool
+	hint    string
+}{
+	{
+		func(r GuardChainReport) bool { return !r.OK && r.ActionlessRewritten > 0 },
+		"rows whose action routine maintenance pruned before the action-anchor fix: back up observer.db, then restore the ids with Repair audit chain on the dashboard's Security > Coverage tab (dry run, then apply) or `observer guard repair-anchors` and `--apply`; it restores an action id only where the stored hash proves it",
+	},
+	{
+		func(r GuardChainReport) bool { return !r.OK && r.Breaks[guardBreakLink] > 0 },
+		"broken links (deleted rows): Repair audit chain on the dashboard's Security > Coverage tab, or `observer guard dedup-events` and `observer guard relink-gaps`, report what they would do; nothing changes until you apply (--apply)",
+	},
 }
 
 // VerifyGuardChain walks the full guard_events chain in id order and
@@ -528,6 +594,9 @@ func (s *Store) VerifyGuardChain(ctx context.Context) (GuardChainReport, error) 
 			}
 			for _, class := range classes {
 				report.Breaks[class]++
+				if class == guardBreakRewritten && r.hashedActionID() == nil {
+					report.ActionlessRewritten++
+				}
 			}
 		}
 		expectedPrev = r.ChainHash
@@ -548,7 +617,8 @@ const guardEventSelectColumns = `
 	       COALESCE(degraded_from,''), enforced, COALESCE(source,''),
 	       COALESCE(reason,''), COALESCE(target_hash,''),
 	       COALESCE(target_excerpt,''), COALESCE(taint_origin,''),
-	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v, action_anchor
+	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v, action_anchor,
+	       COALESCE(project_root_hash,''), COALESCE(project_root,'')
 	FROM guard_events`
 
 // scanGuardEventRow scans one guardEventSelectColumns row.
@@ -564,6 +634,7 @@ func scanGuardEventRow(sc rowScanner) (GuardEventRow, error) {
 		&r.Reason, &r.TargetHash,
 		&r.TargetExcerpt, &r.TaintOrigin,
 		&r.ChainPrev, &r.ChainHash, &r.GrantID, &r.ChainV, &anchor,
+		&r.ProjectRootHash, &r.ProjectRoot,
 	); err != nil {
 		return r, err
 	}
@@ -608,6 +679,10 @@ type GuardEventAnchoredRow struct {
 	GuardEventRow
 	MessageID string
 	TurnIndex *int64
+	// SubagentSessionID is the `<root>:agent:<agent>` session whose action
+	// this hook-path verdict judged, when the row is stored under the root
+	// (guardsubagent.go); "" for a row of the session itself.
+	SubagentSessionID string
 }
 
 // LoadGuardEventsForSessionWithMessageAnchor is LoadGuardEventsForSession's
@@ -618,7 +693,35 @@ type GuardEventAnchoredRow struct {
 // guessing from timestamps) uses this; every other caller (the Security
 // page's global timeline, `observer guard status`) keeps using
 // LoadGuardEventsForSession, which doesn't pay the join.
+//
+// Sub-agents (guardsubagent.go): for a `<root>:agent:<agent>` session the
+// read adds the root's hook-path verdicts that judged this sub-agent's
+// actions (SubagentSessionID set); for any other session it marks its own
+// rows that judged one of its sub-agents' actions. Order stays id
+// ascending.
 func (s *Store) LoadGuardEventsForSessionWithMessageAnchor(ctx context.Context, sessionID string) ([]GuardEventAnchoredRow, error) {
+	rows, err := s.loadGuardEventsAnchored(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if root, ok := subagentRoot(sessionID); ok {
+		extra, err := s.loadRootRowsForSubagent(ctx, root, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: sub-agent rows: %w", err)
+		}
+		rows = append(rows, extra...)
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+		return rows, nil
+	}
+	if err := s.attributeRootRows(ctx, sessionID, rows); err != nil {
+		return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: sub-agent attribution: %w", err)
+	}
+	return rows, nil
+}
+
+// loadGuardEventsAnchored is the session's own rows with their message
+// anchors.
+func (s *Store) loadGuardEventsAnchored(ctx context.Context, sessionID string) ([]GuardEventAnchoredRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ge.id, ge.ts, COALESCE(ge.session_id,''), ge.action_id, ge.api_turn_id,
 		       COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), ge.rule_id,
@@ -698,6 +801,32 @@ func (s *Store) LoadRecentGuardEvents(ctx context.Context, since time.Time, limi
 		return nil, fmt.Errorf("store.LoadRecentGuardEvents: query: %w", err)
 	}
 	return loadGuardEventRows(rows, "store.LoadRecentGuardEvents")
+}
+
+// LoadRecentSessionlessGuardEvents returns guard_events rows that carry no
+// session id, newest first: the verdicts no session view can show (an org
+// bundle rejected (R-205), a posture change, a disabled hook, an invalid user
+// policy). It is the developer's list of them when the dashboard Security page
+// is hidden on a managed node (control-coverage audit CG-18; the
+// `observer guard events --session-less` CLI). since zero = no lower bound;
+// limit <= 0 = 200.
+func (s *Store) LoadRecentSessionlessGuardEvents(ctx context.Context, since time.Time, limit int) ([]GuardEventRow, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := guardEventSelectColumns + ` WHERE (session_id IS NULL OR session_id = '')`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` AND ts >= ?`
+		args = append(args, timestamp(since))
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadRecentSessionlessGuardEvents: query: %w", err)
+	}
+	return loadGuardEventRows(rows, "store.LoadRecentSessionlessGuardEvents")
 }
 
 // loadGuardEventRows scans guardEventSelectColumns result rows into
@@ -1119,29 +1248,188 @@ type GuardApprovalRow struct {
 	ProjectRootHash string
 	GrantedBy       string
 	ExpiresAt       time.Time
+	// Channel names the surface that made or extended the grant
+	// ("dashboard", "cli", "judge"), recorded on the grant's audit event
+	// (GuardApprovalAuditRuleID). Not a guard_approvals column: the row
+	// keeps one grantor, the audit trail keeps every actor. Empty records
+	// "unknown".
+	Channel string
 }
 
-// InsertGuardApproval appends an approval grant and returns its id.
+// GuardApprovalAuditRuleID is the rule_id of the audit event
+// GrantGuardApproval appends to guard_events for every create, extend and
+// re-grant (P-232 fix round 1), so who granted what and when stays on the
+// hash-chained record although a key keeps one guard_approvals row. Like
+// GuardRechainRuleID it is a marker row: event_kind 'audit', decision
+// 'allow', never a verdict.
+const GuardApprovalAuditRuleID = "guard_approval"
+
+// InsertGuardApproval records an approval grant and returns its id. It is
+// GrantGuardApproval without the existing flag: every creator (the
+// dashboard POST, `observer guard approve`, `observer guard prompt allow`,
+// the LLM judge) goes through the same grant-or-extend seam, so none of
+// them can add a duplicate row.
 func (s *Store) InsertGuardApproval(ctx context.Context, a GuardApprovalRow) (int64, error) {
-	if a.RuleID == "" || a.Scope == "" {
-		return 0, errors.New("store.InsertGuardApproval: rule_id and scope required")
+	id, _, err := s.GrantGuardApproval(ctx, a)
+	if err != nil {
+		return 0, fmt.Errorf("store.InsertGuardApproval: %w", err)
 	}
+	return id, nil
+}
+
+// GrantGuardApproval is the one writer of guard_approvals grants (P-232):
+// an idempotent grant-or-extend keyed on (rule_id, scope, session_id,
+// project_root_hash), the unique key agent migration 218 adds.
+//
+//	| # | an existing row with the same key | result                                         | audit op  |
+//	|---|-----------------------------------|------------------------------------------------|-----------|
+//	| 1 | none                              | a new row, existing=false                      | create    |
+//	| 2 | yes, still active                 | that row; expires_at = the later of the two    | extend    |
+//	| 3 | yes, already expired              | that row, re-granted: expires_at, ts and       | re-grant  |
+//	|   |                                   | granted_by take the new grant's values         |           |
+//
+// "The later of the two" treats a non-expiring grant (an empty expires_at) as
+// later than any expiry, so a never-expiring grant is never shortened by a
+// ttl grant and a ttl grant over a never-expiring one changes nothing. The
+// older id is kept in every case: the Approvals card, `observer guard
+// revoke <id>` and the org snapshot (approval_key = the node id) keep
+// naming the same grant.
+//
+// One row per key holds ONE grantor: on an extend the row keeps the grant's
+// original granted_by and ts (the org snapshot ships those), and a re-grant
+// replaces them. So the full record lives in guard_events instead: every
+// call appends a GuardApprovalAuditRuleID audit event IN THE SAME
+// TRANSACTION as the grant write, naming the op, rule, scope, grant id,
+// channel and actor, the old and new expiry, and on an extend or re-grant
+// the previous grantor and grant time. Content-free: ids, hashes, times and
+// the actor names the register already holds.
+func (s *Store) GrantGuardApproval(ctx context.Context, a GuardApprovalRow) (id int64, existing bool, err error) {
+	if a.RuleID == "" || a.Scope == "" {
+		return 0, false, errors.New("store.GrantGuardApproval: rule_id and scope required")
+	}
+	if a.TS.IsZero() {
+		a.TS = time.Now().UTC()
+	}
+	ts := timestamp(a.TS)
 	expires := ""
 	if !a.ExpiresAt.IsZero() {
 		expires = timestamp(a.ExpiresAt)
 	}
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("store.GrantGuardApproval: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The insert-or-nothing comes first, so the transaction holds the write
+	// lock before it reads the existing row: no revoke or second grant can
+	// land between the read and the extend.
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO guard_approvals (ts, rule_id, scope, session_id, project_root_hash, granted_by, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		timestamp(a.TS), a.RuleID, a.Scope, a.SessionID, a.ProjectRootHash, a.GrantedBy, expires)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (rule_id, scope, session_id, project_root_hash) DO NOTHING`,
+		ts, a.RuleID, a.Scope, a.SessionID, a.ProjectRootHash, a.GrantedBy, expires)
 	if err != nil {
-		return 0, fmt.Errorf("store.InsertGuardApproval: %w", err)
+		return 0, false, fmt.Errorf("store.GrantGuardApproval: insert: %w", err)
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("store.InsertGuardApproval: last id: %w", err)
+	audit := approvalAudit{op: "create", grant: a, newExpires: expires}
+	if n, _ := res.RowsAffected(); n == 1 {
+		if id, err = res.LastInsertId(); err != nil {
+			return 0, false, fmt.Errorf("store.GrantGuardApproval: last id: %w", err)
+		}
+	} else {
+		var oldTS, oldBy, oldExpires string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id, ts, granted_by, expires_at FROM guard_approvals
+			 WHERE rule_id = ? AND scope = ? AND session_id = ? AND project_root_hash = ?`,
+			a.RuleID, a.Scope, a.SessionID, a.ProjectRootHash).Scan(&id, &oldTS, &oldBy, &oldExpires); err != nil {
+			return 0, false, fmt.Errorf("store.GrantGuardApproval: read existing: %w", err)
+		}
+		existing = true
+		expired := oldExpires != "" && !parseStamp(oldExpires).After(a.TS)
+		newExpires := laterApprovalExpiry(oldExpires, expires)
+		newTS, newBy := oldTS, oldBy
+		audit.op = "extend"
+		if expired {
+			newTS, newBy = ts, a.GrantedBy
+			audit.op = "re-grant"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE guard_approvals SET ts = ?, granted_by = ?, expires_at = ? WHERE id = ?`,
+			newTS, newBy, newExpires, id); err != nil {
+			return 0, false, fmt.Errorf("store.GrantGuardApproval: extend: %w", err)
+		}
+		audit.oldExpires, audit.newExpires = oldExpires, newExpires
+		audit.prevBy, audit.prevTS = oldBy, oldTS
 	}
-	return id, nil
+	audit.id = id
+	if err := insertGuardEventsTx(ctx, tx, []GuardEventRow{audit.row()}); err != nil {
+		return 0, false, fmt.Errorf("store.GrantGuardApproval: audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("store.GrantGuardApproval: commit: %w", err)
+	}
+	return id, existing, nil
+}
+
+// laterApprovalExpiry is the later of two stored expiries, the empty
+// (never-expiring) one winning.
+func laterApprovalExpiry(a, b string) string {
+	if a == "" || b == "" {
+		return ""
+	}
+	if parseStamp(b).After(parseStamp(a)) {
+		return b
+	}
+	return a
+}
+
+// approvalAudit is one GrantGuardApproval call as an audit event.
+type approvalAudit struct {
+	op                     string // create | extend | re-grant
+	id                     int64
+	grant                  GuardApprovalRow
+	oldExpires, newExpires string
+	prevBy, prevTS         string
+}
+
+// approvalExpiryText spells a stored expiry for the audit reason.
+func approvalExpiryText(e string) string {
+	if e == "" {
+		return "never"
+	}
+	return e
+}
+
+// row renders the audit event. The channel goes in tool (it ships on the
+// org push like every guard event's tool); the actor, expiries and the
+// previous grantor are in reason, which the push strips unless the node
+// ships full content. The anchor rides the columns a verdict uses: the
+// session id, and the project hash as target_hash.
+func (a approvalAudit) row() GuardEventRow {
+	channel := a.grant.Channel
+	if channel == "" {
+		channel = "unknown"
+	}
+	reason := fmt.Sprintf("approval %s: rule %s scope %s, grant #%d, by %s (%s); expires %s",
+		a.op, a.grant.RuleID, a.grant.Scope, a.id, channel, a.grant.GrantedBy, approvalExpiryText(a.newExpires))
+	if a.op != "create" {
+		reason = fmt.Sprintf("%s (was %s); previously granted by %s at %s",
+			reason, approvalExpiryText(a.oldExpires), a.prevBy, a.prevTS)
+	}
+	return GuardEventRow{
+		TS:            a.grant.TS,
+		SessionID:     a.grant.SessionID,
+		Tool:          channel,
+		EventKind:     "audit",
+		RuleID:        GuardApprovalAuditRuleID,
+		Category:      "posture",
+		Severity:      "info",
+		Decision:      "allow",
+		Source:        "observer",
+		Reason:        reason,
+		TargetHash:    a.grant.ProjectRootHash,
+		TargetExcerpt: fmt.Sprintf("%s %s #%d", a.grant.RuleID, a.grant.Scope, a.id),
+	}
 }
 
 // ActiveGuardApprovals returns the non-expired approvals for a rule
@@ -1268,6 +1556,11 @@ func (s *Store) PersistGuardVerdicts(ctx context.Context, verdicts []guard.Actio
 			TargetExcerpt: v.Input.Target,
 			TaintOrigin:   v.TaintOrigin,
 			GrantID:       v.GrantID,
+			// The project the gate matched grants on (GRANT-20), so a
+			// request drafted from this row is scoped where the next call
+			// is matched.
+			ProjectRootHash: v.GrantProject.Hash,
+			ProjectRoot:     v.GrantProject.Root,
 		}
 		if v.Input.ActionID != 0 {
 			id := v.Input.ActionID
@@ -1438,6 +1731,13 @@ type GuardEventSummary struct {
 	ByCategory map[string]int
 	// Enforced counts rows whose decision actually blocked/asked.
 	Enforced int
+	// EnforcedByOrg is the part of Enforced whose verdict came from the
+	// ORG policy layer (source "org": a rule the org bundle authored or
+	// overrode, which follows the org layer's action whatever the local
+	// mode). FU-235: the status surfaces say how many of the enforced
+	// verdicts the organization's policy produced, so a block under an
+	// org-locked rule on an observe node is never unaccounted for.
+	EnforcedByOrg int
 }
 
 // SummarizeGuardEvents aggregates guard_events with ts >= since
@@ -1460,10 +1760,13 @@ func (s *Store) SummarizeGuardEventsBetween(ctx context.Context, since, until ti
 		ByCategory: map[string]int{},
 	}
 	q := `SELECT COALESCE(decision,''), COALESCE(severity,''), COALESCE(category,''),
-	             COALESCE(enforced,0), COUNT(*)
+	             COALESCE(enforced,0), COALESCE(source,'') = ?, COUNT(*)
 	        FROM guard_events`
-	var conds []string
-	args := []any{}
+	// Audit marker rows (the chain repair's guard_rechain, the approval
+	// register's guard_approval) record operator actions, not verdicts, so
+	// they never count as one.
+	conds := []string{`COALESCE(event_kind, '') != 'audit'`}
+	args := []any{policy.SourceOrg}
 	if !since.IsZero() {
 		conds = append(conds, `ts >= ?`)
 		args = append(args, timestamp(since))
@@ -1472,10 +1775,8 @@ func (s *Store) SummarizeGuardEventsBetween(ctx context.Context, since, until ti
 		conds = append(conds, `ts < ?`)
 		args = append(args, timestamp(until))
 	}
-	if len(conds) > 0 {
-		q += ` WHERE ` + strings.Join(conds, ` AND `) //nolint:gosec // G202: the concatenated fragments are fixed SQL with ? placeholders; values bind as args
-	}
-	q += ` GROUP BY decision, severity, category, enforced`
+	q += ` WHERE ` + strings.Join(conds, ` AND `) //nolint:gosec // G202: the concatenated fragments are fixed SQL with ? placeholders; values bind as args
+	q += ` GROUP BY 1, 2, 3, 4, 5`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return sum, fmt.Errorf("store.SummarizeGuardEventsBetween: query: %w", err)
@@ -1483,8 +1784,8 @@ func (s *Store) SummarizeGuardEventsBetween(ctx context.Context, since, until ti
 	defer rows.Close()
 	for rows.Next() {
 		var decision, severity, category string
-		var enforced, n int
-		if err := rows.Scan(&decision, &severity, &category, &enforced, &n); err != nil {
+		var enforced, fromOrg, n int
+		if err := rows.Scan(&decision, &severity, &category, &enforced, &fromOrg, &n); err != nil {
 			return sum, fmt.Errorf("store.SummarizeGuardEventsBetween: scan: %w", err)
 		}
 		sum.Total += n
@@ -1499,12 +1800,61 @@ func (s *Store) SummarizeGuardEventsBetween(ctx context.Context, since, until ti
 		}
 		if enforced != 0 {
 			sum.Enforced += n
+			if fromOrg != 0 {
+				sum.EnforcedByOrg += n
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return sum, fmt.Errorf("store.SummarizeGuardEventsBetween: rows: %w", err)
 	}
 	return sum, nil
+}
+
+// GuardApprovalUse is one session's latest verdict for a rule that an
+// approval grant downgraded (guard_events.degraded_from = 'approved'), with
+// the project root that session belongs to ("" when unknown). The
+// dashboard's Approvals card folds these into each grant's "last used"
+// column: a global grant takes the latest of all, a session grant its own
+// session's, a project grant the sessions whose root hashes to its anchor.
+type GuardApprovalUse struct {
+	SessionID   string
+	ProjectRoot string
+	LastTS      time.Time
+}
+
+// GuardApprovalUses returns, per session, the latest approved verdict for
+// ruleID (P-232 "last used"). It reads guard_events through its rule_id
+// index and joins the session's project; the hash is computed by the caller
+// (guard.HashProjectRoot, the one hash owner). guard_events does not record
+// WHICH grant downgraded a verdict, so where two grants cover the same call
+// both read it as a use.
+func (s *Store) GuardApprovalUses(ctx context.Context, ruleID string) ([]GuardApprovalUse, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(ge.session_id, ''), COALESCE(p.root_path, ''), MAX(ge.ts)
+		  FROM guard_events ge
+		  LEFT JOIN sessions s ON s.id = ge.session_id
+		  LEFT JOIN projects p ON p.id = s.project_id
+		 WHERE ge.rule_id = ? AND ge.degraded_from = 'approved'
+		 GROUP BY COALESCE(ge.session_id, ''), COALESCE(p.root_path, '')`, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("store.GuardApprovalUses: query: %w", err)
+	}
+	defer rows.Close()
+	var out []GuardApprovalUse
+	for rows.Next() {
+		var u GuardApprovalUse
+		var ts string
+		if err := rows.Scan(&u.SessionID, &u.ProjectRoot, &ts); err != nil {
+			return nil, fmt.Errorf("store.GuardApprovalUses: scan: %w", err)
+		}
+		u.LastTS = parseStamp(ts)
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.GuardApprovalUses: rows: %w", err)
+	}
+	return out, nil
 }
 
 // DeleteGuardApproval removes one approval grant by id (the
@@ -1532,9 +1882,12 @@ func (s *Store) DeleteGuardApproval(ctx context.Context, id int64) (bool, error)
 //     hook's read-only fast path. Recorded as a G8 deferral — 'once'
 //     rows are ignored here until the consumption design lands.
 //
-// Errors report false: fail-safe toward enforcement, never toward a
-// silent grant.
-func (s *Store) ApprovalActiveFor(ctx context.Context, ruleID, sessionID, projectRootHash string, now time.Time) bool {
+// "No grant" is (false, nil). A query that could not run (a missing
+// table, a busy or closed database, a cancelled context) is (false, err):
+// still fail-safe toward enforcement, never toward a silent grant, but the
+// caller can now tell the two apart and record why a granted rule asked
+// (P-232).
+func (s *Store) ApprovalActiveFor(ctx context.Context, ruleID, sessionID, projectRootHash string, now time.Time) (bool, error) {
 	const q = `
 		SELECT 1 FROM guard_approvals
 		WHERE rule_id = ?
@@ -1547,7 +1900,14 @@ func (s *Store) ApprovalActiveFor(ctx context.Context, ruleID, sessionID, projec
 		LIMIT 1`
 	var one int
 	err := s.db.QueryRowContext(ctx, q, ruleID, timestamp(now), sessionID, projectRootHash).Scan(&one)
-	return err == nil
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	default:
+		return false, fmt.Errorf("store.ApprovalActiveFor: %w", err)
+	}
 }
 
 // ProjectRootForSession resolves a session's project root path (empty
@@ -1749,6 +2109,29 @@ func (s *Store) PromptSessionStops(ctx context.Context, tool, sessionID string) 
 	return out, nil
 }
 
+// guardReplayDetailTypes are guard.ReplayDetailActionTypes, read once.
+var guardReplayDetailTypes = guard.ReplayDetailActionTypes()
+
+// guardReplayQuery is LoadGuardReplayInputs' query. Its two IN lists bind
+// guardReplayDetailTypes (in order, twice), then the window start and the
+// limit.
+var guardReplayQuery = func() string {
+	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(guardReplayDetailTypes)), ",") + ")"
+	return `
+		SELECT a.id, a.session_id, COALESCE(p.root_path, ''), a.tool,
+		       a.action_type,
+		       CASE WHEN a.action_type IN ` + in + ` THEN COALESCE(a.target, '') ELSE '' END,
+		       a.timestamp,
+		       CASE WHEN a.action_type IN ` + in + ` THEN COALESCE(a.turn_index, 0) ELSE 0 END,
+		       COALESCE(a.success, 1),
+		       CASE WHEN a.action_type = 'user_prompt' THEN COALESCE(a.raw_tool_input, '') ELSE '' END
+		FROM actions a
+		LEFT JOIN projects p ON a.project_id = p.id
+		WHERE a.timestamp >= ?
+		ORDER BY a.timestamp ASC, a.id ASC
+		LIMIT ?`
+}()
+
 // LoadGuardReplayInputs loads historical actions as guard evaluation
 // inputs for `observer guard simulate` / `observer guard rescan`
 // (§11.1: replay history against CURRENT policy — possible only
@@ -1757,6 +2140,18 @@ func (s *Store) PromptSessionStops(ctx context.Context, tool, sessionID string) 
 // replays faithfully. limit <= 0 defaults to 50k (a generous sweep
 // bound; the CLI reports when it was hit so a silent cap never reads
 // as full coverage).
+//
+// Every row in the window is returned, in order, so the scanned count and
+// the cap are unchanged. Target and TurnIndex are filled only for the
+// action types the guard reads them on (guard.ReplayDetailActionTypes);
+// every other row carries its identity (id, session, root, tool, type,
+// time, success) and leaves them zero, because EvaluateActions skips it
+// before reading anything else. That keeps those rows on the timestamp
+// index (idx_actions_ts_cover holds every other selected column): SQLite
+// defers the table seek until a column outside the index is read, and the
+// CASE reads one only for a detail type, so about half of a week's history
+// (post_tool_batch, assistant_message, ...) never touches the table (demo
+// bug #14, R3-5).
 func (s *Store) LoadGuardReplayInputs(ctx context.Context, since time.Time, limit int) ([]guard.ActionInput, error) {
 	if limit <= 0 {
 		limit = 50000
@@ -1764,17 +2159,14 @@ func (s *Store) LoadGuardReplayInputs(ctx context.Context, since time.Time, limi
 	// raw_tool_input is selected ONLY for user_prompt rows (the post-hoc
 	// prompt lane's full prompt text — already scrubbed at capture); every
 	// other action type replays on its target exactly as before.
-	const q = `
-		SELECT a.id, a.session_id, COALESCE(p.root_path, ''), a.tool,
-		       a.action_type, COALESCE(a.target, ''), a.timestamp,
-		       COALESCE(a.turn_index, 0), COALESCE(a.success, 1),
-		       CASE WHEN a.action_type = 'user_prompt' THEN COALESCE(a.raw_tool_input, '') ELSE '' END
-		FROM actions a
-		LEFT JOIN projects p ON a.project_id = p.id
-		WHERE a.timestamp >= ?
-		ORDER BY a.timestamp ASC, a.id ASC
-		LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, timestamp(since), limit)
+	args := make([]any, 0, 2*len(guardReplayDetailTypes)+2)
+	for range 2 {
+		for _, t := range guardReplayDetailTypes {
+			args = append(args, t)
+		}
+	}
+	args = append(args, timestamp(since), limit)
+	rows, err := s.db.QueryContext(ctx, guardReplayQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadGuardReplayInputs: query: %w", err)
 	}

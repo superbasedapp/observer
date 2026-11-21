@@ -1,5 +1,10 @@
 package policy
 
+import (
+	"strings"
+	"time"
+)
+
 // This file is the security pillar's type contract inside the guard core
 // (security pillar plan docs/plans/security-pillar-plan-2026-10-19.md,
 // sections 4.3, 4.5 and 4.7; joint roadmap section 12, lane sec-a). It
@@ -63,6 +68,10 @@ const (
 	FindingScopeDrift           FindingCategory = "scope_drift"
 	FindingGitBypass            FindingCategory = "git_bypass"
 	FindingProvenance           FindingCategory = "provenance"
+	// FindingLicense is a dependency licence that breaks the node's
+	// licence policy (security coverage gaps plan item 4): flag only,
+	// never in the commit gate's blocking set.
+	FindingLicense FindingCategory = "license"
 )
 
 // FindingCategories returns the closed category vocabulary in plan order.
@@ -71,7 +80,7 @@ func FindingCategories() []FindingCategory {
 		FindingAgentConfig, FindingRepoTrust, FindingSecret, FindingMaliciousPackage,
 		FindingVulnerableDependency, FindingHallucinatedPackage, FindingCodeVuln, FindingIaC,
 		FindingCIConfig, FindingSecurityRegression, FindingTestTampering, FindingScopeDrift,
-		FindingGitBypass, FindingProvenance,
+		FindingGitBypass, FindingProvenance, FindingLicense,
 	}
 }
 
@@ -324,7 +333,35 @@ type InstallCheck struct {
 	// unknown package) and S-748 (an unanswered online check). Stamped by
 	// the hook's install provider from the daemon's settings file.
 	Action string
+	// Provenance is the registry's provenance state of the version
+	// installed (security coverage gaps plan item 3), orthogonal to the
+	// verdict: S-757 flags InstallProvenanceRegressed whatever the verdict.
+	Provenance InstallProvenance
 }
+
+// InstallProvenance is the closed provenance vocabulary of an install
+// check: whether the registry shows a build provenance attestation (npm
+// provenance, a PyPI PEP 740 attestation) for the version installed. It is
+// a presence fact from the registry's own document, never a verification
+// of the attestation.
+type InstallProvenance string
+
+// The InstallProvenance values.
+const (
+	// InstallProvenanceNotChecked: no provenance reader for the ecosystem,
+	// online checks off, or provenance checks off.
+	InstallProvenanceNotChecked InstallProvenance = ""
+	// InstallProvenancePresent: the version installed carries one.
+	InstallProvenancePresent InstallProvenance = "present"
+	// InstallProvenanceAbsent: no version of the package ever carried one
+	// (the common case; never flagged).
+	InstallProvenanceAbsent InstallProvenance = "absent"
+	// InstallProvenanceRegressed: the version installed lacks one while an
+	// earlier version had one: the signal S-757 flags.
+	InstallProvenanceRegressed InstallProvenance = "regressed"
+	// InstallProvenanceUnknown: the registry answer could not say.
+	InstallProvenanceUnknown InstallProvenance = "unknown"
+)
 
 // The InstallCheck.Action values (the [security.deps] unknown-package
 // pickers).
@@ -374,6 +411,88 @@ const (
 	QuickScanUnknown QuickScanVerdict = "unknown"
 )
 
+// QuickScanDetail says why a quick scan answered unknown, as data the
+// commit gate's verdict words render (secrules): a closed reason code and
+// the scan's own numbers. It never carries a path or an error text. The
+// zero value is "no reason recorded" (a scanner from before the field).
+type QuickScanDetail struct {
+	// Reason is one of the QuickScanReason values.
+	Reason string
+	// Budget is the time the scan was given, Elapsed the time it ran
+	// (zero when not measured).
+	Budget, Elapsed time.Duration
+	// Files is the number of changed files the scan read before it
+	// stopped (zero when the diff was never read).
+	Files int
+	// Git names the git that read the change when it was not the host's
+	// own (R3-86): one of the QuickScanGit values, "" otherwise.
+	Git string
+}
+
+// The QuickScanGit values (QuickScanDetail.Git): which git a WSL daemon
+// read a checkout on a Windows drive with (internal/gitroute's Route
+// spellings; the daemon's test pins the two equal).
+const (
+	// QuickScanGitWindows: the Windows git.exe, through WSL interop.
+	QuickScanGitWindows = "windows_git"
+	// QuickScanGitDrvFs: the WSL git across the drive mount (no usable
+	// Windows git).
+	QuickScanGitDrvFs = "wsl_git_drvfs"
+	// QuickScanGitDrvFsFallback: the WSL git across the drive mount, after
+	// the Windows git failed to run.
+	QuickScanGitDrvFsFallback = "wsl_git_drvfs_fallback"
+)
+
+// ValidQuickScanGit reports a QuickScanGit value (or "", the host's git):
+// the closed set a wire peer may send.
+func ValidQuickScanGit(s string) bool {
+	switch s {
+	case "", QuickScanGitWindows, QuickScanGitDrvFs, QuickScanGitDrvFsFallback:
+		return true
+	}
+	return false
+}
+
+// The QuickScanReason values: the scanner's own (internal/secquickscan's
+// UnknownReason spellings), the endpoint's (internal/secipc) and the hook's.
+const (
+	// QuickScanReasonBudget: the scan ran out of its time budget.
+	QuickScanReasonBudget = "budget"
+	// QuickScanReasonOverBudget: the endpoint stopped waiting for the
+	// scanner at the budget.
+	QuickScanReasonOverBudget = "over_budget"
+	// QuickScanReasonGit: git could not read the repository.
+	QuickScanReasonGit = "git_unavailable"
+	// QuickScanReasonDiffOverCap: the change is larger than the scan reads.
+	QuickScanReasonDiffOverCap = "diff_over_cap"
+	// QuickScanReasonIncomplete: a detector stopped before the end.
+	QuickScanReasonIncomplete = "scan_incomplete"
+	// QuickScanReasonNoUpstream: a plain push with no upstream to compare.
+	QuickScanReasonNoUpstream = "no_upstream"
+	// QuickScanReasonNotModelled: the command records something the scan
+	// does not model (a merge, a `git -C` directory, an opaque push).
+	QuickScanReasonNotModelled = "form_not_modelled"
+	// QuickScanReasonBadRequest: the request did not decode.
+	QuickScanReasonBadRequest = "bad_request"
+	// QuickScanReasonRootNotAllowed: the daemon does not know the repository.
+	QuickScanReasonRootNotAllowed = "root_not_allowed"
+	// QuickScanReasonBusy: the daemon was serving its connection cap.
+	QuickScanReasonBusy = "busy"
+	// QuickScanReasonScanFailed: the scanner failed or panicked.
+	QuickScanReasonScanFailed = "scan_failed"
+	// QuickScanReasonNotServing: the daemon's quick-scan service is off.
+	QuickScanReasonNotServing = "quick_scan_not_available"
+	// QuickScanReasonNoTime: the host's hook timeout left no time for it.
+	QuickScanReasonNoTime = "no_time"
+	// QuickScanReasonNoAnswer: the hook got no answer from the daemon
+	// (not running, refused, or the answer was lost).
+	QuickScanReasonNoAnswer = "no_answer"
+	// QuickScanReasonUnplaced: the command commits somewhere the hook
+	// cannot place (another repository, a directory it cannot resolve, more
+	// writes than one event's scan covers), so no scan can speak for it.
+	QuickScanReasonUnplaced = "unplaced"
+)
+
 // SecurityHitPathMax caps SecurityHit.Path in bytes (section 4.5.3: a
 // path is at most 512 bytes).
 const SecurityHitPathMax = 512
@@ -393,6 +512,42 @@ type SecurityHit struct {
 	Path string
 	// Line is 1-based; 0 when unknown.
 	Line int
+	// CWE are the finding's CWE ids ("CWE-89"), at most SecurityHitCWEMax,
+	// each a closed shape (ValidCWE); the feedback line picks its hint
+	// from them (security coverage gaps plan item 6). Never free text.
+	CWE []string
+}
+
+// SecurityHitCWEMax caps SecurityHit.CWE.
+const SecurityHitCWEMax = 4
+
+// ValidCWE reports whether s is a CWE id of the closed shape CWE-<1 to 5
+// digits>.
+func ValidCWE(s string) bool {
+	n, ok := strings.CutPrefix(s, "CWE-")
+	if !ok || n == "" || len(n) > 5 {
+		return false
+	}
+	for _, r := range n {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// SafeCWEs keeps the valid CWE ids of in, at most SecurityHitCWEMax.
+func SafeCWEs(in []string) []string {
+	var out []string
+	for _, c := range in {
+		if len(out) == SecurityHitCWEMax {
+			break
+		}
+		if ValidCWE(c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ProjectMatch is the project audience match of section 7.11: the org
@@ -465,6 +620,9 @@ type Security struct {
 	// QuickScan is the commit quick scan's answer at a git_commit or
 	// git_push sink; QuickScanNone elsewhere.
 	QuickScan QuickScanVerdict
+	// QuickScanDetail says why QuickScan is unknown (the zero value when it
+	// is not, or when the scanner did not say).
+	QuickScanDetail QuickScanDetail
 	// Trust and TrustReasons are the repository trust verdict and its
 	// reason codes (section 5.1), at agent_launch and session start.
 	Trust        TrustVerdict

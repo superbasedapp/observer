@@ -180,7 +180,7 @@ func TestApplePinsMirrorThePlanner(t *testing.T) {
 }
 
 func TestAppleRunEnv(t *testing.T) {
-	// The box's environment is the allow-list (WINFIX2 R-167): a provider
+	// The box's environment is the allow-list (WINFIX2, ledger SBX-WIN-ENV-1): a provider
 	// variable the launch names crosses; an unnamed one (here a base URL,
 	// which Observer sets itself in the box) does not.
 	env := appleRunEnv([]string{"HOME=/Users/dev", "PATH=/opt/homebrew/bin", "SSH_AUTH_SOCK=/s", envOOBAuth + "=secret", "OBSERVER_SANDBOX=0", "ANTHROPIC_BASE_URL=http://127.0.0.1:8820", "ANTHROPIC_API_KEY=k", sandboxenv.EnvAllow + "=ANTHROPIC_API_KEY"})

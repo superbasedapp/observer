@@ -142,6 +142,36 @@ func TestMissingDatabaseStartsNothing(t *testing.T) {
 	}
 }
 
+// TestGitHubActionsDatabaseIsNotRequired: osv-scanner reads no workflow and
+// no Julia Manifest.toml, so a node with the databases it reads and no
+// GitHub Actions or Julia one still runs it, and the probe names no missing
+// database; its required set is the thirteen ecosystems it reads.
+func TestGitHubActionsDatabaseIsNotRequired(t *testing.T) {
+	eps := allEpochs()
+	delete(eps, "GitHub Actions")
+	delete(eps, "Julia")
+	ex := &extruntest.Executor{Facts: func(p extrun.Plan) extrun.ExecFacts {
+		if slices.Contains(p.Args, "--version") {
+			return extrun.ExecFacts{Stdout: []byte("osv-scanner version: 2.6.0\nosv-scalibr version: 0.5.2\n"), PeakChildren: -1}
+		}
+		return extrun.ExecFacts{ExitCode: 1, Stdout: fixture(t), PeakChildren: -1}
+	}}
+	d := newDriver(runnerWith(ex, true), eps)
+	if p := d.Probe(context.Background()); p.Reason == depscan.ReasonNoDatabase {
+		t.Fatalf("probe %+v: a missing GitHub Actions database must not stop osv-scanner", p)
+	}
+	res, err := d.Scan(context.Background(), secscan.Target{ProjectRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ex.Calls()) < 2 || res.Coverage.Reason == depscan.ReasonNoDatabase {
+		t.Fatalf("calls %d coverage %+v: osv-scanner must run", len(ex.Calls()), res.Coverage)
+	}
+	if len(depscan.OSVScannerEcosystems()) != 13 {
+		t.Fatalf("osv-scanner's required set is %v, want the thirteen", depscan.OSVScannerEcosystems())
+	}
+}
+
 // TestExitCodes maps JSP-8's exit-code table.
 func TestExitCodes(t *testing.T) {
 	out := fixture(t)
@@ -306,7 +336,7 @@ func TestExtractionFailuresAreGaps(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := ExtractionFailures([]byte(c.stderr), c.truncated, root, canary)
 			if c.every {
-				if len(got) != len(depscan.Ecosystems()) {
+				if len(got) != len(depscan.OSVScannerEcosystems()) {
 					t.Fatalf("an unplaced error must fail every ecosystem: %+v", got)
 				}
 				return
@@ -338,7 +368,7 @@ func TestExtractionFailuresAreGaps(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := ExtractionFailures([]byte(c.line+"\n"), false, c.root, canary)
 			if c.want == nil {
-				if len(got) != len(depscan.Ecosystems()) {
+				if len(got) != len(depscan.OSVScannerEcosystems()) {
 					t.Fatalf("a line naming no file under the root must fail every ecosystem: %+v", got)
 				}
 				return

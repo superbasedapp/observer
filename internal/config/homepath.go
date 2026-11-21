@@ -70,6 +70,7 @@ func expandHomePaths(cfg *Config) error {
 		{"loc.editor_token_file", &cfg.Loc.EditorTokenFile},
 		{"proxy.client_token_file", &cfg.Proxy.ClientTokenFile},
 		{"update.state_dir", &cfg.Update.StateDir},
+		{"workspace.default_dir", &cfg.Workspace.DefaultDir},
 	} {
 		v, err := expandHomeWith(*f.p, filepath.Separator, os.UserHomeDir)
 		if err != nil {

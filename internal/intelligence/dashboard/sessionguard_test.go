@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -295,5 +297,51 @@ func TestAPISessionGuardEvents_MessageAnchorResolution(t *testing.T) {
 	}
 	if resp.Events[0].MessageID != "msg_anchor_1" {
 		t.Errorf("message_id = %q, want %q (the LEFT JOIN onto actions must resolve it)", resp.Events[0].MessageID, "msg_anchor_1")
+	}
+}
+
+// TestAPISessionGuardEvents_SubagentAndLayer pins the 2026-11-10 fix: a
+// hook verdict on a sub-agent's call is stored under the ROOT session, and
+// the sub-agent's own feed must still show it, saying which sub-agent and
+// which policy layer (here the node's Code security pack) produced it.
+func TestAPISessionGuardEvents_SubagentAndLayer(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestServer(t)
+	st := store.New(s.opts.DB)
+	ctx := context.Background()
+	root := t.TempDir()
+	ts := time.Date(2026, 11, 10, 14, 6, 41, 0, time.UTC)
+	const parent, sub = "pRoot", "pRoot:agent:a1"
+	cmd := `git commit -m "x"`
+	if _, err := st.Ingest(ctx, []models.ToolEvent{{
+		SourceFile: "f", SourceEventID: "tu_sub", SessionID: sub, ProjectRoot: root, Timestamp: ts,
+		Tool: models.ToolClaudeCode, ActionType: models.ActionRunCommand, Target: cmd, MessageID: "msg_sub",
+	}}, nil, store.IngestOptions{}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	sum := sha256.Sum256([]byte(cmd))
+	if _, err := st.InsertGuardEvents(ctx, []store.GuardEventRow{{
+		TS: ts.Add(300 * time.Millisecond), SessionID: parent, Tool: "claude-code", EventKind: "shell_exec",
+		RuleID: "S-793", Decision: "ask", Enforced: true, Source: "pack:security",
+		TargetHash: hex.EncodeToString(sum[:]), TargetExcerpt: cmd,
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, sid := range []string{sub, parent} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/session/"+sid+"/guard", nil))
+		var resp struct {
+			Events []map[string]any `json:"events"`
+		}
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &resp) != nil {
+			t.Fatalf("%s: status %d: %s", sid, rec.Code, rec.Body.String())
+		}
+		if len(resp.Events) != 1 {
+			t.Fatalf("%s feed = %+v, want the one S-793 ask", sid, resp.Events)
+		}
+		e := resp.Events[0]
+		if e["subagent_session_id"] != sub || e["layer"] != "pack" || e["layer_label"] == "" {
+			t.Errorf("%s event = %+v, want subagent_session_id %q and the pack layer", sid, e, sub)
+		}
 	}
 }

@@ -1,0 +1,108 @@
+# Level "strict": balanced, tightened.
+#
+# Reads outside the project ask, uploads deny, package installs ask, raw IP
+# and private-range network targets ask, unpinned MCP servers deny, the
+# database family denies and the prompt guard blocks secrets and personal
+# data instead of asking.
+
+name = "strict"
+kind = "level"
+title = "Strict"
+summary = "Balanced plus: reads outside the project ask, uploads deny, package installs and private or raw-IP network targets ask, unpinned MCP servers and destructive SQL deny, and the prompt guard blocks."
+version = 1
+order = 40
+mode = "enforce"
+prompt_mode = "block"
+extends = "balanced"
+
+[[override]]
+rule = "R-150"
+decision = "ask"
+enforce = true
+note = "file reads outside the project ask, like writes"
+
+[[override]]
+rule = "R-171"
+decision = "deny"
+enforce = true
+note = "uploading file contents off the machine"
+
+[[override]]
+rule = "R-173"
+decision = "ask"
+enforce = true
+note = "DNS lookup of an encoded-looking subdomain"
+
+[[override]]
+rule = "R-175"
+decision = "ask"
+enforce = true
+note = "private, link-local and raw-IP network targets"
+
+[[override]]
+rule = "R-178"
+decision = "deny"
+enforce = true
+note = "a tunnel that exposes this machine to the internet"
+
+[[override]]
+rule = "R-121"
+decision = "deny"
+enforce = true
+note = "UPDATE without WHERE"
+
+[[override]]
+rule = "R-122"
+decision = "deny"
+enforce = true
+note = "dropping indexes, views, users, roles or columns"
+
+[[override]]
+rule = "R-124"
+decision = "ask"
+enforce = true
+note = "ORM and migration resets"
+
+[[override]]
+rule = "R-125"
+decision = "deny"
+enforce = true
+note = "a database command against a production pattern ([guard.database] prod_patterns)"
+
+[[override]]
+rule = "R-126"
+decision = "deny"
+enforce = true
+note = "a SQL file that drops, truncates or updates without WHERE"
+
+[[override]]
+rule = "R-301"
+decision = "deny"
+enforce = true
+note = "an MCP server without an approved pin"
+
+[[override]]
+rule = "R-303"
+decision = "ask"
+enforce = true
+note = "an MCP tool description shaped like a prompt injection"
+
+[[override]]
+rule = "T-503"
+decision = "ask"
+enforce = true
+note = "git push while the session carries untrusted content"
+
+# Package installs ask. The pattern matches the command text, so a wrapped
+# install (sudo, env) is caught; it is approximate (an echo naming an install
+# also matches), which errs toward asking.
+[[rule]]
+id = "RC-PKG-01"
+doc = "package install (strict level: installs ask)"
+advice = "Tell the developer which package and version you need and why; they can approve the install."
+category = "boundary"
+severity = "warn"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)((npm|pnpm|yarn|bun)\s+(install|i|add)|pip3?\s+install|uv\s+(pip\s+install|add)|poetry\s+add|cargo\s+(add|install)|go\s+(get|install)|gem\s+install|composer\s+require|dotnet\s+add\s+\S+\s+package|brew\s+install|apt(-get)?\s+install|dnf\s+install|yum\s+install)(\s|$)'

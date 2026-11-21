@@ -230,6 +230,13 @@ var effectActs = map[string]map[string]bool{
 	orgcontract.AccessGrantEffectSoften: {DecisionDeny: true},
 }
 
+// effectStrength orders the effects by how much they lift (MatchDetail's
+// second sort key).
+var effectStrength = map[string]int{
+	orgcontract.AccessGrantEffectSoften: 1,
+	orgcontract.AccessGrantEffectExempt: 2,
+}
+
 // MatchResult is MatchDetail's answer: the covering grant, and whether a
 // grant that would otherwise have matched was refused because the node's org
 // lock covers the rule and the grant lacks LockOverride (so the deny text can
@@ -238,6 +245,13 @@ type MatchResult struct {
 	Hit         Hit
 	OK          bool
 	LockRefused bool
+	// ScopeMissID is set when nothing covered the call although the node
+	// holds an honoured grant for this very rule whose effect would have
+	// changed the verdict: that grant is pinned to another lane, command or
+	// project. It names the grant (the lowest id), so the block text can say
+	// why a rule the developer holds a grant for still stopped them, rather
+	// than leaving them to ask for the same grant again.
+	ScopeMissID int64
 }
 
 // Match returns the grant that covers q, if any (MatchDetail without the
@@ -251,7 +265,9 @@ func Match(q Query, grants []Cached, rc Receipt, now time.Time) (Hit, bool) {
 // and only when their effect can change q.Decision (effectActs); on a rule the
 // node's org bundle locks, only a LockOverride grant. Every present narrowing
 // field must equal the query's (AND). Among several, the NARROWEST wins, then
-// the earliest expiry (a perpetual grant last), then the lowest id - a total
+// the stronger effect (exempt before soften: a developer who holds both for
+// the same scope is not asked to confirm what the org exempted), then the
+// earliest expiry (a perpetual grant last), then the lowest id - a total
 // order, so the answer is deterministic.
 func MatchDetail(q Query, grants []Cached, rc Receipt, now time.Time) MatchResult {
 	if q.RuleID == "" {
@@ -259,6 +275,7 @@ func MatchDetail(q Query, grants []Cached, rc Receipt, now time.Time) MatchResul
 	}
 	var hits []Hit
 	lockRefused := false
+	scopeMiss := int64(0)
 	for _, c := range grants {
 		g := c.Grant
 		if g.Type != TypeGuardExemption || g.RuleID != q.RuleID || !effectActs[g.Effect][q.Decision] {
@@ -276,10 +293,14 @@ func MatchDetail(q Query, grants []Cached, rc Receipt, now time.Time) MatchResul
 			}
 			narrow++
 		}
+		honoured, _ := Honoured(g, c.UsesUsed, rc, now)
 		if !ok {
+			if honoured && (!q.RuleLocked || g.LockOverride) && (scopeMiss == 0 || g.ID < scopeMiss) {
+				scopeMiss = g.ID
+			}
 			continue
 		}
-		if honoured, _ := Honoured(g, c.UsesUsed, rc, now); !honoured {
+		if !honoured {
 			continue
 		}
 		if q.RuleLocked && !g.LockOverride {
@@ -293,12 +314,15 @@ func MatchDetail(q Query, grants []Cached, rc Receipt, now time.Time) MatchResul
 		hits = append(hits, Hit{GrantID: g.ID, Effect: g.Effect, ExpiresAtNs: g.ExpiresAtNs, UsesLeft: left, Narrowness: narrow})
 	}
 	if len(hits) == 0 {
-		return MatchResult{LockRefused: lockRefused}
+		return MatchResult{LockRefused: lockRefused, ScopeMissID: scopeMiss}
 	}
 	sort.Slice(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
 		if a.Narrowness != b.Narrowness {
 			return a.Narrowness > b.Narrowness
+		}
+		if as, bs := effectStrength[a.Effect], effectStrength[b.Effect]; as != bs {
+			return as > bs
 		}
 		ae, be := expirySortKey(a.ExpiresAtNs), expirySortKey(b.ExpiresAtNs)
 		if ae != be {

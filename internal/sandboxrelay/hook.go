@@ -62,10 +62,17 @@ const (
 	// the helper sends it, on the link: the helper refuses it from a box
 	// (BoxKind), and the daemon treats it as lowering only.
 	KindRunHealth Kind = "run_health"
+	// KindEgressRefusal is the host helper's report of one refused egress
+	// attempt of its run's gateway (egress.go, lane N1). Like
+	// KindRunHealth, only the helper sends it, on the link: BoxKind leaves
+	// it out, so a box cannot write refusal rows.
+	KindEgressRefusal Kind = "egress_refusal"
 )
 
 // Valid reports whether k is in the closed vocabulary.
-func (k Kind) Valid() bool { return k == KindHook || k == KindLaunchGate || k == KindRunHealth }
+func (k Kind) Valid() bool {
+	return k == KindHook || k == KindLaunchGate || k == KindRunHealth || k == KindEgressRefusal
+}
 
 // BoxKind reports whether a box may send k (everything but the helper's
 // own health report).

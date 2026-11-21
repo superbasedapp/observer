@@ -1,6 +1,7 @@
 package sandboxadopt
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,31 +52,44 @@ func TestDecideTable(t *testing.T) {
 		edit   func(*Facts)
 		action Action
 		code   Code
+		row    string
 	}{
-		{"component off", func(f *Facts) { f.Active = false }, ActionReap, CodeComponentInactive},
-		{"record missing", func(f *Facts) { f.RecordIntact = false }, ActionReap, CodeRecordMissing},
-		{"record tampered ownership", func(f *Facts) { f.RecordOwned = false }, ActionReap, CodeRecordNotOwned},
-		{"plan missing", func(f *Facts) { f.PlanKept = false }, ActionReap, CodePlanMissing},
-		{"labels", func(f *Facts) { f.LabelsMatch = false }, ActionReap, CodeNotThisInstall},
-		{"not running", func(f *Facts) { f.Running = false }, ActionReap, CodeNotRunning},
-		{"cli run", func(f *Facts) { f.CLIRun = true }, ActionReap, CodeCLIRun},
-		{"docker rootless", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootless} }, ActionReap, CodeEngineEndsRun},
-		{"docker no live-restore", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootful} }, ActionReap, CodeEngineEndsRun},
-		{"read-back", func(f *Facts) { f.ReadBackOK, f.ReadBackReason = false, "network none: mode bridge" }, ActionReap, CodeBuiltBelowPlan},
-		{"protected", func(f *Facts) { f.ProtectedIntact = false }, ActionReap, CodeProtectedChanged},
-		{"declined", func(f *Facts) { f.Declined = true }, ActionReap, CodeDeclined},
-		{"update deferred past the bound", func(f *Facts) { f.UpdateDeferred, f.Now = true, t0.Add(time.Hour) }, ActionHold, CodeHeldForUpdate},
-		{"bound expired", func(f *Facts) { f.Now = t0.Add(DefaultBound) }, ActionReap, CodeBoundExpired},
-		{"offered podman", func(*Facts) {}, ActionOffer, CodeOffered},
-		{"offered docker live-restore", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootful, LiveRestore: true} }, ActionOffer, CodeOffered},
+		{"component off", func(f *Facts) { f.Active = false }, ActionReap, CodeComponentInactive, "component"},
+		{"record missing", func(f *Facts) { f.RecordIntact = false }, ActionReap, CodeRecordMissing, "record"},
+		{"record tampered ownership", func(f *Facts) { f.RecordOwned = false }, ActionReap, CodeRecordNotOwned, "owner"},
+		{"plan missing", func(f *Facts) { f.PlanKept = false }, ActionReap, CodePlanMissing, "plan"},
+		{"labels", func(f *Facts) { f.LabelsMatch = false }, ActionReap, CodeNotThisInstall, "labels"},
+		{"not running", func(f *Facts) { f.Running = false }, ActionReap, CodeNotRunning, "running"},
+		{"cli run", func(f *Facts) { f.CLIRun = true }, ActionReap, CodeCLIRun, "cli-run"},
+		{"docker rootless", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootless} }, ActionReap, CodeEngineEndsRun, "engine-mode"},
+		{"docker no live-restore", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootful} }, ActionReap, CodeEngineEndsRun, "engine-mode"},
+		{"read-back", func(f *Facts) { f.ReadBackOK, f.ReadBackReason = false, "network none: mode bridge FACT" }, ActionReap, CodeBuiltBelowPlan, "read-back"},
+		{"protected", func(f *Facts) {
+			f.ProtectedIntact, f.ProtectedReason = false, "the socket dir /tmp/observer-sbx-FACT is gone"
+		}, ActionReap, CodeProtectedChanged, "protected"},
+		{"declined", func(f *Facts) { f.Declined = true }, ActionReap, CodeDeclined, "declined"},
+		{"update deferred past the bound", func(f *Facts) { f.UpdateDeferred, f.Now = true, t0.Add(time.Hour) }, ActionHold, CodeHeldForUpdate, "update-deferred"},
+		{"bound expired", func(f *Facts) { f.Now = t0.Add(DefaultBound) }, ActionReap, CodeBoundExpired, "bound"},
+		{"offered podman", func(*Facts) {}, ActionOffer, CodeOffered, RowOffer},
+		{"offered docker live-restore", func(f *Facts) { f.Engine = EngineFacts{Engine: EngineDocker, Mode: ModeRootful, LiveRestore: true} }, ActionOffer, CodeOffered, RowOffer},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := good()
 			c.edit(&f)
 			d := Decide(f)
-			if d.Action != c.action || d.Code != c.code || d.Reason == "" {
-				t.Fatalf("Decide = %+v, want %s %s with a reason", d, c.action, c.code)
+			if d.Action != c.action || d.Code != c.code || d.Row != c.row || d.Reason == "" {
+				t.Fatalf("Decide = %+v, want %s %s row %q with a reason", d, c.action, c.code, c.row)
+			}
+			// The logged and kept line never carries the run's facts
+			// (audit FU10-A2); the full reason does, for the terminal.
+			if d.Summary == "" || strings.Contains(d.Summary, "FACT") {
+				t.Fatalf("Summary %q is empty or carries a run fact", d.Summary)
+			}
+			if strings.Contains(c.name, "read-back") || c.name == "protected" {
+				if !strings.Contains(d.Reason, "FACT") {
+					t.Fatalf("Reason %q lost the run's fact the terminal shows", d.Reason)
+				}
 			}
 			if live := d.CountsLive(); live != (c.action != ActionReap) {
 				t.Fatalf("CountsLive = %v for %s", live, c.action)

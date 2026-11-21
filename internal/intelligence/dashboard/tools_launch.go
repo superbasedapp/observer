@@ -65,12 +65,19 @@ func (s *Server) handleToolsLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Who launched it (lane cli-2 fixes-1, audit H1). The window this
+	// route opens is the OS's own terminal, outside the daemon, so it has
+	// no terminal_run row; the initiator is recorded in the audit log
+	// instead (an agent's request never gets here: holdAgentLaunch holds it
+	// for a human, and the confirmed replay records the agent).
+	initiator, parent := s.launchOrigin(r)
 	resp := map[string]any{
-		"tool":    req.Tool,
-		"routed":  routed,
-		"command": spec.Command,
-		"method":  spec.Method,
-		"spawned": false,
+		"initiator": initiator,
+		"tool":      req.Tool,
+		"routed":    routed,
+		"command":   spec.Command,
+		"method":    spec.Method,
+		"spawned":   false,
 	}
 	switch {
 	case len(spec.Argv) == 0:
@@ -80,7 +87,16 @@ func (s *Server) handleToolsLaunch(w http.ResponseWriter, r *http.Request) {
 			resp["detail"] = spawnErr.Error()
 		} else {
 			resp["spawned"] = true
+			s.recordManageAudit(r, "tools_launch", "tool="+req.Tool+" initiator="+initiator+parentDetail(parent))
 		}
 	}
 	writeJSON(w, resp)
+}
+
+// parentDetail is the audit detail's parent session, "" when none.
+func parentDetail(parent string) string {
+	if parent == "" {
+		return ""
+	}
+	return " parent_session=" + parent
 }

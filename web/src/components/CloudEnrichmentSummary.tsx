@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import type { CloudStatusWithDigestPlan } from "@/lib/cloud";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 import { Summary } from "@/components/Summary";
@@ -15,15 +15,15 @@ export function CloudEnrichmentSummary({ data }: { data: CloudStatusWithDigestPl
         <h3 className="text-[12px] font-semibold text-fg-1">
           Session enrichment · {automatic ? "Automatic" : "Choose sessions yourself"}
         </h3>
-        <Link to="/settings?section=cloud" className="text-[11px] font-medium text-accent hover:text-accent-strong">
+        <GatedLink to="/settings?section=cloud" className="text-[11px] font-medium text-accent hover:text-accent-strong">
           Enrichment settings
-        </Link>
+        </GatedLink>
       </div>
       <p className="mt-1 text-[11.5px] leading-relaxed text-fg-3">
         {automatic
           ? "Personal sessions are selected automatically, longest-waiting first. You can also choose a session yourself."
-          : "Automatic session enrichment is off. Choose Enrich session beside a session to review and enrich just that session. This also works for older sessions."}
-        {!signedIn && " Sign in to submit an enrichment; previewing stays local."}
+          : "Automatic session enrichment is off. Turn it on in Enrichment settings, or choose Enrich session beside a session to review and enrich just that session. This also works for older sessions."}
+        {!signedIn && " Sign in under Enrichment settings to submit an enrichment; previewing stays local."}
       </p>
       {plan?.daily_cap != null && plan?.monthly_cap != null && (
         <p className="mt-1 text-[11px] text-fg-3">

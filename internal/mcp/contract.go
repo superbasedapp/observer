@@ -103,12 +103,16 @@ var contractTools = []ContractTool{
 	// experimental until the field set settles, same posture as
 	// get_output_composition.
 	{Name: "get_session_tasks", Tier: TierExperimental},
+	// get_settings / set_setting (Plane A W2-8, ruling D19) are new:
+	// experimental until their result shape rides a minor release unchanged.
+	{Name: "get_settings", Tier: TierExperimental},
 	{Name: "get_suggestions", Tier: TierStable},
 	{Name: "get_symbols", Tier: TierConditional, ConfigGated: true},
 	{Name: "list_actions_around", Tier: TierStable},
 	{Name: "retrieve_stashed", Tier: TierConditional, ConfigGated: true},
 	{Name: "search_past_outputs", Tier: TierStable},
 	{Name: "search_symbols", Tier: TierStable},
+	{Name: "set_setting", Tier: TierExperimental},
 }
 
 // ContractTools returns the published tool-stability table, sorted by name

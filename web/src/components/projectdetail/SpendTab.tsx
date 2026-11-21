@@ -1,13 +1,16 @@
 import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { IdLink, ModelId, SegmentedControl, Table, Tooltip } from "@/components/primitives";
+import { ExecutionLocationBadge, IdLink, ModelId, SegmentedControl, Table, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { describeTruncation, TruncationBanner } from "@/components/projectdetail/TruncationBanner";
 import { windowKey, type WindowParams } from "@/lib/projectDrawer";
 import { useApi } from "@/lib/useApi";
 import { dollarsShown, fmtInt, fmtShortId, fmtUSD } from "@/lib/format";
-import type { ProjectCostBy, ProjectCostRowsResponse } from "@/lib/types";
+import type { CloudLaneResponse, ProjectCostBy, ProjectCostRowsResponse } from "@/lib/types";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
+import { CloudLaneView } from "@/components/projectdetail/CloudLane";
+import { SpendSplitLine } from "@/components/projectdetail/SpendSplit";
+import { laneShown, laneSplit } from "@/lib/cloudLane";
 
 // SpendTab — cost by session / tool / model / day / task / commit, one
 // SegmentedControl driving GET /api/project/<id>/cost?by= (plan §3.5
@@ -34,6 +37,12 @@ const KEY_CELL_BY: Partial<Record<ProjectCostBy, (key: string) => ReactNode>> = 
   model: (key) => <ModelId model={key} className="min-w-0 text-[11px]" />,
 };
 
+// FOLDED_BY: the groupings whose rows cover the project's whole folded spend
+// (the project plus any folded cloud twin, decision CA-D21), so their total
+// is the Overview Spend total and the location split applies. Task and commit
+// rows attribute only part of the spend, so the split is not shown there.
+const FOLDED_BY: ReadonlySet<ProjectCostBy> = new Set<ProjectCostBy>(["session", "tool", "model", "day"]);
+
 export function SpendTab({ projectId, win }: { projectId: number; win: WindowParams }) {
   const [by, setBy] = useState<ProjectCostBy>("session");
   const navigate = useNavigate();
@@ -43,9 +52,16 @@ export function SpendTab({ projectId, win }: { projectId: number; win: WindowPar
     { by, ...win },
     [projectId, by, windowKey(win)],
   );
+  // One read of the "Where it ran" lane feeds both the split under the
+  // total and the lane table (it renders nothing for an all-local project).
+  const lane = useApi<CloudLaneResponse>(`/api/project/${projectId}/cloud`, { ...win }, [projectId, windowKey(win)]);
   const rows = cost.data?.rows ?? [];
   const total = rows.reduce((a, r) => a + r.cost_usd, 0);
   const truncationNote = describeTruncation(cost.data, `spend by ${by}`);
+  const split = FOLDED_BY.has(by) ? laneSplit(lane.data) : null;
+  // The Ran column appears only when some session row is stamped: an
+  // all-unstamped table stays exactly as before.
+  const showRan = by === "session" && rows.some((r) => !!r.execution_location);
 
   return (
     <div className="space-y-3">
@@ -59,7 +75,18 @@ export function SpendTab({ projectId, win }: { projectId: number; win: WindowPar
         </span>
       </div>
 
+      {split && (
+        <div className="text-[11px]">
+          <SpendSplitLine split={split} showDollars={dollarsShown()} />
+        </div>
+      )}
+
       {truncationNote && <TruncationBanner>{truncationNote}</TruncationBanner>}
+
+      {/* Where it ran (cloud-agents lanes CA-B5, CA-C1): spend and provider
+          usage per execution location; nothing renders for an all-local
+          project. */}
+      {lane.data && laneShown(lane.data) && <CloudLaneView data={lane.data} view="spend" />}
 
       <ChartState
         loading={cost.loading && !cost.data}
@@ -74,6 +101,7 @@ export function SpendTab({ projectId, win }: { projectId: number; win: WindowPar
           head={
             <tr>
               <th className="py-1.5 pl-1 font-medium">{by === "session" ? "Session" : "Key"}</th>
+              {showRan && <th className="py-1.5 font-medium">Ran</th>}
               {dollarsShown() && <th className="py-1.5 text-right font-medium">Cost</th>}
               <th className="py-1.5 text-right font-medium">Turns</th>
               <th className="py-1.5 pr-1 text-right font-medium">Count</th>
@@ -102,13 +130,28 @@ export function SpendTab({ projectId, win }: { projectId: number; win: WindowPar
                   <span className="font-mono text-[11px] text-fg-1">{r.label || r.key}</span>
                 )}
               </td>
+              {showRan && (
+                <td className="py-1.5">
+                  {/* Blank when unstamped: unknown is never shown as local. */}
+                  <ExecutionLocationBadge location={r.execution_location} />
+                </td>
+              )}
               {dollarsShown() && <td className="py-1.5 text-right tabular-nums text-fg-1">
+                {by === "session" && !r.turns ? (
+                  // A session that reported no turns has an unknown cost, not
+                  // $0.00 (a metadata-only cloud session, or one whose
+                  // transcript carried no usage). Lane CA-C1.
+                  <Tooltip content="This session reported no turns, so its cost is unknown, not zero.">
+                    <span tabIndex={0} className="text-fg-3 focus:outline-none">not reported</span>
+                  </Tooltip>
+                ) : (
                 <Tooltip content={r.unpriced_turns ? `${fmtInt(r.unpriced_turns)} unpriced turn(s) in this bucket (unknown model) - the cost is a floor, not an exact figure` : undefined}>
                   <span tabIndex={r.unpriced_turns ? 0 : undefined} className="focus:outline-none">
                     {fmtUSD(r.cost_usd)}
                     {r.unpriced_turns ? <span className="ml-0.5 text-warn">*</span> : null}
                   </span>
                 </Tooltip>
+                )}
               </td>}
               <td className="py-1.5 text-right tabular-nums text-fg-3">
                 {r.turns != null ? fmtInt(r.turns) : "-"}

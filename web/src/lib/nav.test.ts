@@ -80,3 +80,22 @@ test("the cost entry reads Usage with a distinct glyph in token-usage mode", () 
     setCostDisplayMode("usd");
   }
 });
+
+// First-run plan revision 2, 2.4 / decision 4: the AI Apps group moves to
+// the top for the apps and both tracks, and nothing else changes.
+test("navGroupsForTrack: apps first for apps and both, unchanged otherwise", async () => {
+  const { navGroupsForTrack } = await import("./nav.ts");
+  const ids = (t: string | null) => navGroupsForTrack(NAV_GROUPS, t).map((g) => g.id);
+  const base = NAV_GROUPS.map((g) => g.id);
+  assert.deepEqual(ids("coding"), base);
+  assert.deepEqual(ids(null), base);
+  for (const t of ["apps", "both"]) {
+    const got = ids(t);
+    assert.equal(got[0], "apps");
+    assert.deepEqual([...got].sort(), [...base].sort(), "no group hidden or added");
+    assert.deepEqual(got.slice(1), base.filter((id) => id !== "apps"), "the rest keep their order");
+  }
+  // A filtered nav without the group is left alone.
+  const noApps = NAV_GROUPS.filter((g) => g.id !== "apps");
+  assert.deepEqual(navGroupsForTrack(noApps, "apps").map((g) => g.id), noApps.map((g) => g.id));
+});

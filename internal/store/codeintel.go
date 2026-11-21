@@ -65,9 +65,9 @@ func (s *Store) CodeIntelListProjects(ctx context.Context) ([]string, error) {
 func (s *Store) CodeIntelFileState(ctx context.Context, project, path string) (codeintel.FileState, bool, error) {
 	var st codeintel.FileState
 	row := s.db.QueryRowContext(ctx,
-		`SELECT content_hash, status, mtime, indexed_at FROM codeintel_files WHERE project = ? AND path = ?`,
+		`SELECT content_hash, status, mtime, indexed_at, extract_version FROM codeintel_files WHERE project = ? AND path = ?`,
 		project, path)
-	switch err := row.Scan(&st.ContentHash, &st.Status, &st.MTime, &st.IndexedAt); {
+	switch err := row.Scan(&st.ContentHash, &st.Status, &st.MTime, &st.IndexedAt, &st.ExtractVersion); {
 	case err == nil:
 		return st, true, nil
 	case errors.Is(err, sql.ErrNoRows):
@@ -75,6 +75,16 @@ func (s *Store) CodeIntelFileState(ctx context.Context, project, path string) (c
 	default:
 		return codeintel.FileState{}, false, fmt.Errorf("store.CodeIntelFileState: %w", err)
 	}
+}
+
+// nodeComplexity is codeintel_nodes.complexity for a parsed node: NULL when
+// the node was not counted (0), never a stored 0 a reader could take for a
+// figure.
+func nodeComplexity(c int) any {
+	if c <= 0 {
+		return nil
+	}
+	return c
 }
 
 // CodeIntelRegisterFile inserts a pending row for (project, path) if none
@@ -115,12 +125,13 @@ func (s *Store) CodeIntelSaveFile(ctx context.Context, res codeintel.FileResult)
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO codeintel_files(project, path, lang, content_hash, mtime, indexed_at, parser, status)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, 'indexed')
+		`INSERT INTO codeintel_files(project, path, lang, content_hash, mtime, indexed_at, parser, status, extract_version)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, 'indexed', ?)
 		 ON CONFLICT(project, path) DO UPDATE SET
 		   lang=excluded.lang, content_hash=excluded.content_hash, mtime=excluded.mtime,
-		   indexed_at=excluded.indexed_at, parser=excluded.parser, status='indexed'`,
-		res.Project, res.Path, string(res.Lang), res.ContentHash, res.MTime, time.Now().Unix(), res.Parser)
+		   indexed_at=excluded.indexed_at, parser=excluded.parser, status='indexed',
+		   extract_version=excluded.extract_version`,
+		res.Project, res.Path, string(res.Lang), res.ContentHash, res.MTime, time.Now().Unix(), res.Parser, res.ExtractVersion)
 	if err != nil {
 		return fmt.Errorf("store.CodeIntelSaveFile: upsert file: %w", err)
 	}
@@ -158,8 +169,8 @@ func (s *Store) CodeIntelSaveFile(ctx context.Context, res codeintel.FileResult)
 
 	nodeStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO codeintel_nodes(project, file_id, kind, name, fqn, lang,
-		   start_line, end_line, start_byte, end_byte, signature, sig_hash)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		   start_line, end_line, start_byte, end_byte, signature, sig_hash, complexity)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("store.CodeIntelSaveFile: prepare nodes: %w", err)
 	}
@@ -172,6 +183,7 @@ func (s *Store) CodeIntelSaveFile(ctx context.Context, res codeintel.FileResult)
 			ctx,
 			res.Project, fileID, n.Kind, n.Name, n.FQN, string(res.Lang),
 			n.StartLine, n.EndLine, n.StartByte, n.EndByte, n.Signature, sigHash(n.Signature),
+			nodeComplexity(n.Complexity),
 		)
 		if err != nil {
 			return fmt.Errorf("store.CodeIntelSaveFile: insert node: %w", err)
@@ -1025,6 +1037,106 @@ func (s *Store) CodeIntelImportsInFile(ctx context.Context, absPath string) ([]s
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// CodeIntelProjectImports returns a project's IMPORTS sites for one
+// language (distinct (file, specifier) pairs, ordered, at most limit; limit
+// <= 0 means MaxCodeIntelImportSites) with the language's file counts, for
+// the import-level reachability tier (internal/secreachsvc). Read-only.
+// Truncated is set when more sites exist than were returned.
+func (s *Store) CodeIntelProjectImports(ctx context.Context, project, lang string, limit int) (CodeIntelImports, error) {
+	if limit <= 0 || limit > MaxCodeIntelImportSites {
+		limit = MaxCodeIntelImportSites
+	}
+	var out CodeIntelImports
+	var indexed sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END)
+		 FROM codeintel_files WHERE project = ? AND lang = ?`, project, lang).Scan(&out.Files, &indexed); err != nil {
+		return CodeIntelImports{}, fmt.Errorf("store.CodeIntelProjectImports: files: %w", err)
+	}
+	out.Indexed = int(indexed.Int64)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT f.path, s.target_name
+		 FROM codeintel_sites s
+		 JOIN codeintel_edges e ON e.id = s.edge_id
+		 JOIN codeintel_files f ON f.id = s.file_id
+		 WHERE e.project = ? AND e.kind = 'IMPORTS' AND f.lang = ? AND s.target_name != ''
+		 ORDER BY f.path, s.target_name LIMIT ?`, project, lang, limit+1)
+	if err != nil {
+		return CodeIntelImports{}, fmt.Errorf("store.CodeIntelProjectImports: sites: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var site CodeIntelImportSite
+		if err := rows.Scan(&site.File, &site.Spec); err != nil {
+			return CodeIntelImports{}, fmt.Errorf("store.CodeIntelProjectImports: scan: %w", err)
+		}
+		if len(out.Sites) == limit {
+			out.Truncated = true
+			break
+		}
+		out.Sites = append(out.Sites, site)
+	}
+	if err := rows.Err(); err != nil {
+		return CodeIntelImports{}, fmt.Errorf("store.CodeIntelProjectImports: %w", err)
+	}
+	return out, nil
+}
+
+// CodeIntelProjectCalls returns a project's CALLS sites in files of one
+// language whose callee name is one of names (at most MaxCodeIntelCallNames
+// names; distinct (file, name, excerpt) triples, ordered, at most limit;
+// limit <= 0 means MaxCodeIntelCallSites), for the approximate Rust call
+// level of the reachability tier (internal/secreachsvc). Read-only.
+// Truncated is set when more sites exist than were returned, or names was
+// cut.
+func (s *Store) CodeIntelProjectCalls(ctx context.Context, project, lang string, names []string, limit int) (CodeIntelCalls, error) {
+	if limit <= 0 || limit > MaxCodeIntelCallSites {
+		limit = MaxCodeIntelCallSites
+	}
+	var out CodeIntelCalls
+	if len(names) == 0 {
+		return out, nil
+	}
+	if len(names) > MaxCodeIntelCallNames {
+		names, out.Truncated = names[:MaxCodeIntelCallNames], true
+	}
+	args := make([]any, 0, len(names)+3)
+	args = append(args, project, lang)
+	marks := make([]string, len(names))
+	for i, n := range names {
+		marks[i] = "?"
+		args = append(args, n)
+	}
+	args = append(args, limit+1)
+	//nolint:gosec // G202: marks is a run of "?" placeholders; every value binds via args.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT f.path, s.target_name, s.raw_text
+		 FROM codeintel_sites s
+		 JOIN codeintel_edges e ON e.id = s.edge_id
+		 JOIN codeintel_files f ON f.id = s.file_id
+		 WHERE e.project = ? AND e.kind = 'CALLS' AND f.lang = ? AND s.target_name IN (`+strings.Join(marks, ",")+`)
+		 ORDER BY f.path, s.target_name, s.raw_text LIMIT ?`, args...)
+	if err != nil {
+		return CodeIntelCalls{}, fmt.Errorf("store.CodeIntelProjectCalls: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var site CodeIntelCallSite
+		if err := rows.Scan(&site.File, &site.Name, &site.Text); err != nil {
+			return CodeIntelCalls{}, fmt.Errorf("store.CodeIntelProjectCalls: scan: %w", err)
+		}
+		if len(out.Sites) == limit {
+			out.Truncated = true
+			break
+		}
+		out.Sites = append(out.Sites, site)
+	}
+	if err := rows.Err(); err != nil {
+		return CodeIntelCalls{}, fmt.Errorf("store.CodeIntelProjectCalls: %w", err)
+	}
+	return out, nil
 }
 
 // codeIntelRefSelect is the shared column list for caller/callee/reachable

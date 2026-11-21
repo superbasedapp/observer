@@ -68,6 +68,12 @@ func (s *Store) LoadCommitOwnership(ctx context.Context, projectID int64, since,
 	res.Commits = rows
 	res.Linkage = projectroi.Link(prompts, edits, commits, projectroi.Options{LinkWindow: linkWindow})
 	res.Ownership = projectroi.Ownership(res.Linkage, commits)
+	// Cloud-agent credit (CA-C5): a commit a cloud session's PR or branch
+	// produced is owned by that session (projectroi.CreditCloud). A project
+	// no cloud link names reads nothing more and keeps the fold as is.
+	if res.Ownership, err = s.CreditCloudCommits(ctx, projectID, res.Ownership, rows); err != nil {
+		return res, fmt.Errorf("store.LoadCommitOwnership: %w", err)
+	}
 	res.PromptsTruncated, res.EditsTruncated, res.CommitsTruncated = pt, et, ct
 	return res, nil
 }

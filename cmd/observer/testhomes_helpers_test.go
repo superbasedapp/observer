@@ -130,13 +130,16 @@ var notAToolHome = map[string]string{
 	"GIT_DIR":            "a git repository variable read from a child process env, not a home",
 	"GIT_COMMON_DIR":     "a git repository variable read from a child process env, not a home",
 	"GIT_CONFIG":         "a git variable read from a child process env, not a home",
+	"GIT_TEMPLATE_DIR":   "dropped from the default workspace's git init env (workspaceGitEnv), never read as a home",
 	"CLAUDE_PROJECT_DIR": "the project directory Claude Code hands its hooks, not a home",
 	"COPILOT_HOOK_DIR":   "a host signal the Copilot CLI runtime sets on its hook processes; foreignhost.go reads only whether it is set, never the path",
 	"CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "a boolean Claude Code knob, not a path",
-	"CARGO_HOME":                "a toolchain install root read only to resolve binaries, never written",
-	"BUN_INSTALL_CACHE_DIR":     "a package manager cache, read only to resolve binaries, never written",
-	"OBSERVER_SANDBOX_SOCK_DIR": "set by the sandbox tests themselves for the helper socket",
-	"OBSERVER_SANDBOX_BOX_DIR":  "set by the sandbox tests themselves for the sandbox box",
+	"CARGO_HOME":                  "a toolchain install root read only to resolve binaries, never written",
+	"BUN_INSTALL_CACHE_DIR":       "a package manager cache, read only to resolve binaries, never written",
+	"OBSERVER_SANDBOX_SOCK_DIR":   "set by the sandbox tests themselves for the helper socket",
+	"OBSERVER_SANDBOX_BOX_DIR":    "set by the sandbox tests themselves for the sandbox box",
+	"DOCKER_CONFIG":               "docker's client config dir, only passed through by name to the openshell CLI and the docker canary (openShellEnvInherit); Observer never reads or writes under it",
+	"OBSERVER_OPENSHELL_SOCK_DIR": "the openshell row's in-box relay socket dir, set by the row's own init for the relay clients in the box (openShellEnvSocketDir), not a home",
 }
 
 // toolHomeEnv resolves the pin table against home: name -> value, where ""

@@ -5,7 +5,7 @@
 // compgen registry (SANDBOX_SETTINGS_CARD), so a build without the module
 // ships none of it and the page renders no sandbox element.
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChartShell,
   ConfirmButton,
@@ -22,16 +22,55 @@ import { SandboxWindowsPanel, type SandboxMXCConfig } from "@/components/Sandbox
 import { SandboxMacPanel, type SandboxAppleContainerConfig, type SandboxSeatbeltConfig } from "@/components/SandboxMacPanel";
 import { SandboxNativePanel } from "@/components/SandboxNativePanel";
 import { SandboxLandlockPanel, type SandboxLandlockConfig } from "@/components/SandboxLandlockPanel";
+import { SandboxOpenShellPanel, type SandboxOpenShellConfig } from "@/components/SandboxOpenShellPanel";
 import { SandboxVMPanel, type SandboxVMConfig } from "@/components/SandboxVMPanel";
 import { SandboxHostedPanel, type SandboxHostedConfig } from "@/components/SandboxHostedPanel";
-import { SandboxCredentialsPanel } from "@/components/SandboxCredentialsPanel";
-import { SandboxWindowsTiersPanel } from "@/components/SandboxWindowsTiersPanel";
+import { SandboxOrgShellCard } from "@/components/SandboxOrgShellCard";
+import { SandboxStraceSeizeCard } from "@/components/SandboxStraceSeizeToggle";
+import { SandboxCredentialsPanel, type SandboxReadoptConfig } from "@/components/SandboxCredentialsPanel";
+import {
+  SandboxWindowsTiersPanel,
+  type SandboxHCSConfig,
+  type SandboxWSLCConfig,
+  type SandboxWindowsConfig,
+} from "@/components/SandboxWindowsTiersPanel";
+import { SANDBOX_SETUP_PANEL } from "@/lib/components.gen";
+import { useLaunchDock } from "@/components/LaunchDock";
+import type { SandboxSetupSummary, SandboxSetupSummaryResponse } from "@/lib/sandboxSetupTypes";
+import { summaryOptionLabel, summarySetUp } from "@/lib/sandboxSetup";
+import { mxcTierLoosens } from "@/lib/sandboxParity";
 import { useApi } from "@/lib/useApi";
-import { useComponentState } from "@/lib/useComponents";
-import type { ComponentsView } from "@/lib/componentState";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { useComponentCatalog, useComponentState } from "@/lib/useComponents";
+import { isRouteInactive, type ComponentsView } from "@/lib/componentState";
+import { isRouteConcealed } from "@/lib/concealedRoutes";
+import { HelpTooltip } from "@shared/primitives/HelpTooltip";
+import {
+  SANDBOX_READ_PATIENCE_MS,
+  sandboxCardShape,
+  sandboxEditorState,
+  sandboxProbeLine,
+  sandboxReadPhase,
+  type SandboxModuleState,
+  type SandboxRead,
+} from "@/lib/sandboxSettingsView";
+import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
-import { classLabel } from "@/lib/sandboxIsolation";
+import {
+  applyLoaded,
+  canStartSave,
+  editDraft,
+  emptySave,
+  isDirty,
+  runSave,
+  saveErrorView,
+  type ConfigSaveState,
+  type ConfigSaved,
+} from "@/lib/configSave";
+import { Link } from "react-router-dom";
+import { SandboxModuleOffCard } from "@/components/SandboxModuleOffCard";
+import { SandboxReturnsPanel } from "@/components/SandboxReturnsPanel";
+import { COMPONENTS_SETTINGS_PATH, backendNotes, backendState, classLabel, gatewayModeLabel } from "@/lib/sandboxIsolation";
+import { TERMINALS_SANDBOX_BACKENDS_HASH } from "@/lib/nodePageTabs";
 import type { SandboxAvailability, SandboxBackendAvail, SandboxOrgSettings } from "@/lib/types";
 
 // Sandbox home / network modes: the mode name on the first line (what the
@@ -80,7 +119,7 @@ const SANDBOX_EGRESS_OPTIONS: ComboOption[] = [
 ];
 
 
-type TerminalSandboxConfig = {
+export type TerminalSandboxConfig = {
   enabled: boolean;
   backend: string;
   home_mode: "tmpfs" | "readonly";
@@ -90,6 +129,10 @@ type TerminalSandboxConfig = {
   allow_worktree_source: boolean;
   workspaces_dir: string;
   workspace_retention_days: number;
+  // SBXD-2: days a sandboxed run's copy is kept once its work came back (0
+  // never removes one by age). Optional so an older daemon (which omits
+  // it) still round-trips; the server keeps a saved value a save omits.
+  returned_copy_retention_days?: number;
   mask_paths: string[];
   extra_ro_binds: string[];
   extra_rw_binds: string[];
@@ -107,8 +150,8 @@ type TerminalSandboxConfig = {
   egress_allow_cidrs?: string[];
   // egress_allow_hosts: the agent-run host allow-list (lane LEFT-SBX).
   egress_allow_hosts?: string[];
-  // pass_env: the extra variables a sandboxed agent may receive (WINFIX2
-  // R-167). Optional for the same round-trip reason.
+  // pass_env: the extra variables a sandboxed agent may receive (WINFIX2,
+  // ledger SBX-WIN-ENV-1). Optional for the same round-trip reason.
   pass_env?: string[];
   // sign_in_seed_tools: the tools whose sign-in a sandboxed run copies into
   // its box without asking (lane BOXSIGNIN, local-only). The catalog (tools
@@ -137,7 +180,60 @@ type TerminalSandboxConfig = {
   hosted?: SandboxHostedConfig;
   // [terminal.sandbox.vm], the Cloud Hypervisor microVM row (lane SBX-P4, beta).
   vm?: SandboxVMConfig;
+  // [terminal.sandbox.readopt], [terminal.sandbox.wslc], [terminal.sandbox.hcs]
+  // and [terminal.sandbox.windows] (dashboard CLI parity lane L3: the daemon
+  // serves and saves them since; optional for the same round-trip reason).
+  readopt?: SandboxReadoptConfig;
+  wslc?: SandboxWSLCConfig;
+  hcs?: SandboxHCSConfig;
+  windows?: SandboxWindowsConfig;
+  // seccomp: Observer's own syscall filter for bwrap and process_lite (lane
+  // N2; the toggle is lane O4's). Optional for the same round-trip reason.
+  seccomp?: boolean;
+  // [terminal.sandbox.openshell], the OpenShell row (lanes O1A and O2; the
+  // panel is lane O4's). Optional for the same round-trip reason.
+  openshell?: SandboxOpenShellConfig;
+  // [terminal.sandbox.setup], the sandbox installation lifecycle
+  // (allow_elevated, default off, decision P-250; the toggle is P-254's).
+  // Optional for the same round-trip reason: an older daemon omits it and
+  // the server keeps the saved block when a save omits it.
+  setup?: SandboxSetupConfig;
 };
+
+// SandboxSetupConfig is [terminal.sandbox.setup]. Local-only: an
+// organization can never turn it on.
+export type SandboxSetupConfig = { allow_elevated: boolean };
+
+// SandboxSetupElevatedToggle edits [terminal.sandbox.setup].allow_elevated
+// (decision P-250, default off; the Settings control P-254 asked for).
+export function SandboxSetupElevatedToggle({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: SandboxSetupConfig | undefined;
+  disabled: boolean;
+  onChange: (next: SandboxSetupConfig) => void;
+}) {
+  return (
+    <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3" data-testid="sandbox-setup-allow-elevated">
+      <input
+        type="checkbox"
+        className="mt-0.5"
+        aria-label="Let a setup step ask for your password"
+        checked={value?.allow_elevated ?? false}
+        disabled={disabled}
+        onChange={(e) => onChange({ ...(value ?? { allow_elevated: false }), allow_elevated: e.target.checked })}
+      />
+      <span>
+        <span className="font-medium text-fg-1">Let a setup step ask for your password</span>
+        <span className="block text-[11px] text-fg-3">
+          Off: a step that needs administrator rights shows its command for you to run yourself. On: it opens in a setup terminal where you type your password. Your organization can never turn this on.
+        </span>
+      </span>
+    </label>
+  );
+}
 
 type SandboxEgress = "internet" | "proxy_only" | "none" | "host";
 
@@ -173,6 +269,11 @@ function numberOptions(values: number[], current: number, render: (n: number) =>
 
 function retentionLabel(n: number): string {
   return n === 0 ? "keep forever" : `${n} days`;
+}
+
+// copyRetentionLabel names a returned_copy_retention_days choice (SBXD-2).
+function copyRetentionLabel(n: number): string {
+  return n === 0 ? "never remove automatically" : `${n} days`;
 }
 
 function timeoutLabel(n: number): string {
@@ -253,64 +354,147 @@ const PIN_COMPOSES: Record<string, string> = {
 // SandboxBackendsList is the Card's backend list (sandbox plan v2 section 9):
 // every registry row from the probe with its status on this host (or the
 // selection rule that dropped it), a beta badge, the capture on the
-// configured network, and up/down buttons for the preference order the
-// backends key stores. Planned rows are listed, never offered.
-function SandboxBackendsList({
+// configured network, an Enabled checkbox that adds the row to or removes
+// it from the backends key, and up/down buttons for the enabled rows'
+// preference order. Planned rows are listed, never offered. A row the
+// daemon left out only for not being enabled says whether it would run here
+// once it is (when_enabled_*), so a checkbox is never offered as a fix for a
+// backend this host cannot run; one whose module is not installed links to
+// Settings > Components. When the setup routes answer (onSetup given), each
+// row also gets "Set up" (not ready) or "Manage" (ready), which opens the
+// sandbox setup panel under that row (sandbox installation lifecycle plan
+// section 3.7); the Enabled checkboxes stay as they are.
+export function SandboxBackendsList({
   backends,
   order,
   egress,
   writable,
   orgNote,
   onOrder,
+  onSetup,
+  setupRows,
+  setupOpen,
+  setupPanel,
 }: {
   backends: SandboxBackendAvail[];
+  /** The enabled backends in preference order (the draft's backends key). */
   order: string[];
   egress: string;
   writable: boolean;
   orgNote?: string;
   onOrder: (next: string[]) => void;
+  /** Opens (or closes) the setup panel for a row; absent, no Set up or
+   *  Manage button shows. */
+  onSetup?: (id: string) => void;
+  /** The setup summaries by backend id. Only a row they list (one that
+   *  runs on this host) gets "Set up" or "Manage"; a row whose setup is
+   *  beta reads "(beta)" on that button. */
+  setupRows?: Record<string, SandboxSetupSummary>;
+  /** The row whose setup panel is open. */
+  setupOpen?: string | null;
+  /** The open row's setup panel, rendered under it. */
+  setupPanel?: ReactNode;
 }) {
   const offered = backends.filter((b) => b.maturity !== "planned");
   const planned = backends.filter((b) => b.maturity === "planned");
-  const ranked = [...offered].sort((a, b) => {
-    const ia = order.indexOf(a.id);
-    const ib = order.indexOf(b.id);
-    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-  });
+  const enabledIds = order.filter((id) => offered.some((b) => b.id === id));
+  // Enabled rows first in preference order, then the rest in registry order.
+  const ranked = [
+    ...enabledIds.map((id) => offered.find((b) => b.id === id) as SandboxBackendAvail),
+    ...offered.filter((b) => !enabledIds.includes(b.id)),
+  ];
   const move = (id: string, dir: -1 | 1) => {
-    const ids = ranked.map((b) => b.id);
-    const i = ids.indexOf(id);
+    const i = enabledIds.indexOf(id);
     const j = i + dir;
-    if (i < 0 || j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-    onOrder(ids);
+    if (i < 0 || j < 0 || j >= enabledIds.length) return;
+    const a = enabledIds[i];
+    const b = enabledIds[j];
+    // Swap the two in place, so ids the probe does not list keep their spot.
+    onOrder(order.map((x) => (x === a ? b : x === b ? a : x)));
   };
+  const toggle = (id: string, on: boolean) => {
+    onOrder(on ? (order.includes(id) ? order : [...order, id]) : order.filter((x) => x !== id));
+  };
+  // The page scrolls to #sandbox-backends before this lazily loaded card
+  // exists, so the list scrolls itself into view once it renders.
+  useEffect(() => {
+    if (typeof window === "undefined" || window.location.hash !== TERMINALS_SANDBOX_BACKENDS_HASH) return;
+    document.getElementById(TERMINALS_SANDBOX_BACKENDS_HASH.slice(1))?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, []);
   return (
-    <div className="space-y-1">
+    <div id={TERMINALS_SANDBOX_BACKENDS_HASH.slice(1)} className="scroll-mt-6 space-y-1">
       <span className="block font-medium text-fg-1">Backends</span>
+      <span className="block text-[11px] text-fg-3">
+        Tick a backend to offer it in the New Terminal Isolation picker. Automatic uses the first enabled backend that runs
+        here, in this order.
+      </span>
       <ul className="space-y-1">
-        {ranked.map((b, i) => (
-          <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-2 border border-line-2 px-2 py-1">
-            <span className="font-mono text-fg-1">{b.id}</span>
-            <span className="text-fg-3">{b.label} - {classLabel(b.class)}</span>
-            {b.beta && <Pill variant="warn">beta</Pill>}
-            <span className={b.available ? "text-ok" : "text-fg-3"}>
-              {b.available ? "available" : b.reason || b.verdict || "not available"}
-            </span>
-            {b.capture_by_tier?.[egress] && <span className="text-fg-3">capture {b.capture_by_tier[egress]}</span>}
-            {b.hint && <span className="basis-full text-fg-3">note: {b.hint}</span>}
-            {ranked.length > 1 && (
-              <span className="ml-auto flex gap-1">
-                <button type="button" disabled={!writable || i === 0} onClick={() => move(b.id, -1)} aria-label={`Prefer ${b.id}`}>
-                  up
-                </button>
-                <button type="button" disabled={!writable || i === ranked.length - 1} onClick={() => move(b.id, 1)} aria-label={`Prefer ${b.id} less`}>
-                  down
-                </button>
-              </span>
-            )}
-          </li>
-        ))}
+        {ranked.map((b) => {
+          const checked = enabledIds.includes(b.id);
+          const last = checked && enabledIds.length === 1;
+          const st = backendState(b);
+          const i = enabledIds.indexOf(b.id);
+          let status: string;
+          let tone = "text-fg-3";
+          if (st.state === "available") {
+            status = checked ? "available" : "available; runs here once saved";
+            tone = "text-ok";
+          } else if (st.state === "not_enabled") {
+            status = checked ? "runs here once saved" : "not enabled; runs here once enabled";
+            tone = checked ? "text-ok" : "text-fg-2";
+          } else {
+            status = st.reason;
+          }
+          return (
+            <li key={b.id} className="flex flex-wrap items-center gap-2 rounded-2 border border-line-2 px-2 py-1">
+              <label className="flex items-center gap-2" title={last ? "At least one backend stays enabled. To turn sandboxing off, clear Enable sandbox support." : undefined}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!writable || last}
+                  onChange={(e) => toggle(b.id, e.target.checked)}
+                  aria-label={`Enable ${b.label}`}
+                />
+                <span className="font-mono text-fg-1">{b.id}</span>
+              </label>
+              <span className="text-fg-3">{b.label} - {classLabel(b.class)}</span>
+              {b.beta && <Pill variant="warn">beta</Pill>}
+              <span className={tone}>{status}</span>
+              {st.state === "needs_module" && (
+                <Link to={COMPONENTS_SETTINGS_PATH} className="text-accent hover:underline">
+                  Install its module
+                </Link>
+              )}
+              {b.capture_by_tier?.[egress] && <span className="text-fg-3">capture {b.capture_by_tier[egress]}</span>}
+              {b.gateway_mode && <span className="text-fg-3">gateway: {gatewayModeLabel(b.gateway_mode)}</span>}
+              {backendNotes(b).map((n) => (
+                <span key={n} className="basis-full text-fg-3">
+                  note: {n}
+                </span>
+              ))}
+              {onSetup && setupRows?.[b.id] && (
+                <SetupButton
+                  label={b.label}
+                  manage={summarySetUp(setupRows[b.id])}
+                  beta={!!setupRows[b.id].beta}
+                  open={setupOpen === b.id}
+                  onClick={() => onSetup(b.id)}
+                />
+              )}
+              {checked && enabledIds.length > 1 && (
+                <span className="ml-auto flex gap-1">
+                  <button type="button" disabled={!writable || i === 0} onClick={() => move(b.id, -1)} aria-label={`Prefer ${b.id}`}>
+                    up
+                  </button>
+                  <button type="button" disabled={!writable || i === enabledIds.length - 1} onClick={() => move(b.id, 1)} aria-label={`Prefer ${b.id} less`}>
+                    down
+                  </button>
+                </span>
+              )}
+              {onSetup && setupOpen === b.id && setupPanel && <div className="basis-full">{setupPanel}</div>}
+            </li>
+          );
+        })}
       </ul>
       {planned.length > 0 && (
         <span className="block text-[11px] text-fg-3">
@@ -318,6 +502,72 @@ function SandboxBackendsList({
         </span>
       )}
       <OrgSetNote show={!!orgNote} note={orgNote} />
+    </div>
+  );
+}
+
+// SetupButton is a backend row's "Set up" (not set up) or "Manage" (set up)
+// button, opening the setup panel under the row. A row whose setup is beta
+// reads "(beta)" after the verb (operator ruling P-256).
+function SetupButton({
+  label,
+  manage,
+  beta,
+  open,
+  onClick,
+}: {
+  label: string;
+  manage: boolean;
+  beta?: boolean;
+  open: boolean;
+  onClick: () => void;
+}) {
+  const verb = manage ? "Manage" : "Set up";
+  return (
+    <button type="button" onClick={onClick} aria-expanded={open} aria-label={`${verb} ${label}`} className="text-accent hover:underline">
+      {verb + (beta ? " (beta)" : "")}
+    </button>
+  );
+}
+
+// SandboxSetupRowsList is the backend list drawn from the setup summaries
+// alone, for a node whose sandbox probe lists no backend (the master switch
+// is off, so the probe answers disabled_by_config): each row that runs on
+// this host still gets "Set up" or "Manage", which is exactly how a fresh
+// node turns a backend on.
+export function SandboxSetupRowsList({
+  rows,
+  onSetup,
+  setupOpen,
+  setupPanel,
+}: {
+  rows: SandboxSetupSummary[];
+  onSetup: (id: string) => void;
+  setupOpen?: string | null;
+  setupPanel?: ReactNode;
+}) {
+  return (
+    <div id={TERMINALS_SANDBOX_BACKENDS_HASH.slice(1)} className="scroll-mt-6 space-y-1" data-testid="sandbox-setup-rows">
+      <span className="block font-medium text-fg-1">Backends</span>
+      <span className="block text-[11px] text-fg-3">
+        The sandbox is off, so no backend runs yet. Set one up here; its last step turns the sandbox on.
+      </span>
+      <ul className="space-y-1">
+        {rows.map((r) => (
+          <li key={r.backend} className="flex flex-wrap items-center gap-2 rounded-2 border border-line-2 px-2 py-1">
+            <span className="font-mono text-fg-1">{r.backend}</span>
+            <span className="text-fg-3">{summaryOptionLabel(r)}</span>
+            <SetupButton
+              label={r.label || r.backend}
+              manage={summarySetUp(r)}
+              beta={!!r.beta}
+              open={setupOpen === r.backend}
+              onClick={() => onSetup(r.backend)}
+            />
+            {setupOpen === r.backend && setupPanel && <div className="basis-full">{setupPanel}</div>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -353,7 +603,7 @@ function splitConfigList(value: string): string[] {
 // past a collapsed <details> block. An operator who flipped the switch and
 // walked away had, from the UI's point of view, done nothing at all - which
 // is exactly how "I enabled the sandbox and it is still greyed out" happens.
-function sandboxConfigEqual(
+export function sandboxConfigEqual(
   a: TerminalSandboxConfig | null,
   b: TerminalSandboxConfig | null | undefined,
 ): boolean {
@@ -374,8 +624,43 @@ function sandboxConfigEqual(
     allow_osc52_clipboard: c.allow_osc52_clipboard ?? false,
     backends: c.backends ?? [],
     min_isolation: c.min_isolation ?? "",
+    seccomp: c.seccomp ?? false,
+    setup: { allow_elevated: c.setup?.allow_elevated ?? false },
   });
   return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+}
+
+/** SandboxConfigPutReply is what the sandbox config PUT answers with. */
+export type SandboxConfigPutReply = {
+  restart_required?: boolean;
+  sandbox?: TerminalSandboxConfig;
+  config_etag?: string;
+};
+
+/**
+ * putSandboxConfig sends one save of the [terminal.sandbox] draft and
+ * returns the server's reply in the save model's shape (the saved block and
+ * the new etag), which the card adopts as its baseline.
+ */
+export async function putSandboxConfig(
+  draft: TerminalSandboxConfig,
+  baseEtag: string,
+  confirmToken: string,
+  fetcher: typeof fetchJSON = fetchJSON,
+): Promise<ConfigSaved<TerminalSandboxConfig> & { restart_required?: boolean }> {
+  const res = await fetcher<SandboxConfigPutReply>(
+    "/api/terminal/sandbox/config",
+    { base_etag: baseEtag },
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Observer-Confirm": confirmToken,
+      },
+      body: JSON.stringify(draft),
+    },
+  );
+  return { block: res.sandbox, etag: res.config_etag, restart_required: res.restart_required };
 }
 
 // LOCAL_ONLY_HINT recognizes the CapabilityLocal refusal
@@ -409,6 +694,57 @@ function localDashboardURL(): string {
 // already protecting launches: the master switch binds on the next launch
 // (the daemon re-resolves the seam when config.toml changes), while moving
 // the workspaces directory still needs a restart.
+/**
+ * SANDBOX_MASTER_SWITCH_HELP is the enable switch's help line. A save of the
+ * switch applies live (D-R4-1): it binds on the next launch, no restart.
+ */
+export const SANDBOX_MASTER_SWITCH_HELP =
+  "Master switch. A saved change binds on the next launch, with no daemon restart.";
+
+/** SANDBOX_COMPONENT is the Sandboxes and VMs module's catalog id. */
+const SANDBOX_COMPONENT = "terminals.sandbox";
+
+// useSlow turns true once `pending` has held for SANDBOX_READ_PATIENCE_MS, so
+// a read that never answers is reported (lane L2) instead of spinning.
+function useSlow(pending: boolean): boolean {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (!pending) return;
+    const t = setTimeout(() => setSlow(true), SANDBOX_READ_PATIENCE_MS);
+    return () => clearTimeout(t);
+  }, [pending]);
+  return slow;
+}
+
+// sandboxRead is one useApi read as lib/sandboxSettingsView sees it. A read
+// useApi skipped (the module is off, or the section is hidden here) has no
+// data and no error, which is NOT "still loading".
+function sandboxRead(
+  path: string,
+  q: { data: unknown; error: Error | null; notInstalled: { component: string; state: string } | null },
+  slow: boolean,
+  complete: boolean,
+): SandboxRead {
+  return {
+    phase: sandboxReadPhase({
+      skipped: isRouteInactive(path) || isRouteConcealed(path),
+      hasData: q.data != null,
+      error: q.error != null,
+      slow,
+    }),
+    complete,
+    notInstalled: q.notInstalled,
+    message: q.error?.message,
+  };
+}
+
+// moduleStateOf reads the module's resolver state from the component view.
+function moduleStateOf(view: ComponentsView | null | undefined): SandboxModuleState {
+  const row = view?.components.find((c) => c.id === SANDBOX_COMPONENT);
+  return row ? row.state : "unknown";
+}
+
 export function SandboxSettingsCard() {
   const settings = useApi<TerminalSandboxConfigResponse>(
     "/api/terminal/sandbox/config",
@@ -420,55 +756,94 @@ export function SandboxSettingsCard() {
   // panel stays hidden.
   const componentState = useComponentState();
   const ociSelected = ociDriverSelected(componentState.data?.view);
-  const [draft, setDraft] = useState<TerminalSandboxConfig | null>(null);
+  // The sandbox setup rows (lane sbxinstall-ui): a 404 or 501 (no setup in
+  // this build or module) leaves data null, so no Set up or Manage button
+  // shows. A setup step's terminal opens in the dock.
+  const setupRows = useApi<SandboxSetupSummaryResponse>("/api/terminal/sandbox/setup");
+  const [setupFor, setSetupFor] = useState<string | null>(null);
+  const dock = useLaunchDock();
+  const setupByID: Record<string, SandboxSetupSummary> = Object.fromEntries((setupRows.data?.backends ?? []).map((r) => [r.backend, r]));
+  const toggleSetup = (id: string) => setSetupFor((cur) => (cur === id ? null : id));
+  // The draft and the saved baseline it is compared to (lib/configSave.ts):
+  // a save adopts the PUT's own reply as the baseline, so "Unsaved changes"
+  // clears on the save itself, and a stale read after it is ignored (D-5).
+  const [save, setSave] = useState<ConfigSaveState<TerminalSandboxConfig>>(emptySave);
+  // The state a click on Save reads (never a render's stale closure).
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const busyRef = useRef(false);
+  const draft = save.draft;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A Save refused because the file changed under the editor (409): the card
+  // offers a reload that replaces the draft with what is on disk (D5).
+  const [conflict, setConflict] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  // reloadSettings re-reads the config; with discard, an unsaved draft is
+  // replaced by what the file holds now (the conflict's reload).
+  function reloadSettings(discard: boolean) {
+    if (discard) {
+      setSave(emptySave<TerminalSandboxConfig>());
+      setErr(null);
+      setConflict(false);
+    }
+    settings.reload();
+  }
+
   useEffect(() => {
-    if (settings.data?.sandbox) setDraft(settings.data.sandbox);
+    const data = settings.data;
+    if (data?.sandbox) {
+      setSave((cur) => applyLoaded(cur, { block: data.sandbox, etag: data.config_etag ?? "" }, sandboxConfigEqual));
+    }
   }, [settings.data]);
 
+  // The dock (above) also shows a terminal a sub-panel opens (the
+  // re-adoption re-attach).
   const localOnly = isLocalRouteRefusal(settings.error);
-  const dirty = !!draft && !sandboxConfigEqual(draft, settings.data?.sandbox);
+  const dirty = isDirty(save, sandboxConfigEqual);
+  // A move of the MXC tier floor off ProcessContainer loosens isolation
+  // (dashboard CLI parity B-G6): the Save asks first, the way it does for
+  // the authority-expanding keys. An organization pin overrides it anyway.
+  // The saved tier is the save model's baseline, the block "Unsaved
+  // changes" compares against.
+  const loosensMXCTier =
+    !!draft &&
+    !(probe.data?.org?.pins ?? []).some((p) => p.key === "windows.mxc_tier") &&
+    mxcTierLoosens(save.base?.windows?.mxc_tier, draft.windows?.mxc_tier);
   const expandsAuthority =
     !!draft &&
     (draft.allow_remote_clone ||
       draft.extra_rw_binds.some((p) => p.trim() !== "") ||
-      (draft.egress_allow_cidrs ?? []).some((p) => p.trim() !== ""));
+      (draft.egress_allow_cidrs ?? []).some((p) => p.trim() !== "") ||
+      loosensMXCTier);
 
   function update<K extends keyof TerminalSandboxConfig>(
     key: K,
     value: TerminalSandboxConfig[K],
   ) {
     setSaved(false);
-    setDraft((cur) => (cur ? { ...cur, [key]: value } : cur));
+    setSave((cur) => editDraft(cur, (d) => ({ ...d, [key]: value })));
   }
 
   async function saveSandbox() {
-    if (!draft || !settings.data?.confirm_token) {
-      setErr("Sandbox settings are not ready - reload the page.");
+    const token = settings.data?.confirm_token;
+    const start = canStartSave(saveRef.current, busyRef.current, token);
+    if (!start.ok) {
+      setErr(start.why);
       return;
     }
     // An authority-expanding config is confirmed in place by the Save
     // ConfirmButton (requireConfirm={expandsAuthority}), never window.confirm.
+    busyRef.current = true;
     setBusy(true);
     setErr(null);
+    setConflict(false);
     setSaved(false);
     try {
-      const res = await fetchJSON<{ restart_required: boolean }>(
-        "/api/terminal/sandbox/config",
-        { base_etag: settings.data.config_etag ?? "" },
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Observer-Confirm": settings.data.confirm_token,
-          },
-          body: JSON.stringify(draft),
-        },
-      );
-      if (res.restart_required) markRestartPending("terminal-sandbox");
+      const { state, reply } = await runSave(saveRef.current, (body, baseEtag) => putSandboxConfig(body, baseEtag, token ?? ""));
+      setSave(state);
+      if (reply.restart_required) markRestartPending("terminal-sandbox");
       setSaved(true);
       settings.reload();
       // Re-probe: the daemon re-resolves its sandbox seam when config.toml
@@ -478,25 +853,91 @@ export function SandboxSettingsCard() {
       // happened" reads from the operator's side.
       probe.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const v = saveErrorView(e);
+      setErr(v.message);
+      setConflict(v.conflict);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   const writable = !!settings.data?.config_writable;
   const live = probe.data;
+  // The three reads as the view model sees them (lib/sandboxSettingsView):
+  // a skipped, slow or failed read is said in words, never an endless
+  // spinner.
+  const settingsSlow = useSlow(settings.data == null && settings.error == null);
+  const probeSlow = useSlow(probe.data == null && probe.error == null);
+  const settingsRead = sandboxRead("/api/terminal/sandbox/config", settings, settingsSlow, !!settings.data?.sandbox);
+  const probeRead = sandboxRead("/api/terminal/sandbox", probe, probeSlow, true);
+  const moduleState = moduleStateOf(componentState.data?.view);
+  // The catalog's restart class per component, for the module-off card's
+  // "needs a restart" outcome (SBXD-9).
+  const catalog = useComponentCatalog();
+  const restartClassByID: Record<string, string | undefined> = Object.fromEntries(
+    (catalog.data?.components ?? []).map((c) => [c.id, c.restart_class]),
+  );
+  const shape = sandboxCardShape({
+    module: moduleState,
+    concealed: isRouteConcealed("/api/terminal/sandbox"),
+    settings: settingsRead,
+    probe: probeRead,
+  });
+  const editorState = sandboxEditorState(settingsRead, localOnly);
+  const probeLine = sandboxProbeLine(probeRead, live);
+  // The open row's setup panel (one node, under whichever list draws the
+  // rows).
+  const setupPanelNode = setupFor && SANDBOX_SETUP_PANEL && (
+    <Suspense fallback={null}>
+      <SANDBOX_SETUP_PANEL
+        backend={setupFor}
+        onTerminal={(handle, label) => dock.launch({ token: handle, tool: label, sessionId: "", hasProjectRoot: false })}
+        onReady={() => {
+          probe.reload();
+          setupRows.reload();
+        }}
+        onSettled={() => {
+          // A step (or its Undo) may have rewritten config.toml: the editor
+          // re-reads it, so its values and etag follow the file (D5).
+          reloadSettings(false);
+          probe.reload();
+          setupRows.reload();
+        }}
+      />
+    </Suspense>
+  );
   // Keys the organization pinned are shown read-only (lane SBX-P1B), except
   // the ones the pin composes with (PIN_COMPOSES), which stay editable.
   const pinned = new Set((live?.org?.pins ?? []).map((p) => p.key));
   const editable = (key: string) => writable && (!pinned.has(key) || key in PIN_COMPOSES);
   const composeNote = (key: string) => (pinned.has(key) ? PIN_COMPOSES[key] : undefined);
-  // The module is installed but not active here: its routes answer 404
-  // component_not_installed, and the page shows no sandbox element at all
-  // (sandbox plan v2 section 11.2, "skipped at setup means not there").
-  if (moduleNotInstalled(settings.error) || moduleNotInstalled(probe.error)) return null;
+  // The module is not in this build, or the section is hidden here: no
+  // sandbox element at all. Installed but not turned on (a fresh install of
+  // the developer edition): the card says so and turns it on in place
+  // (SBXD-9), instead of waiting on reads useApi never sends (lane L2).
+  if (shape === "hidden") return null;
+  if (shape === "module_off" || shape === "module_blocked") {
+    return (
+      <SandboxModuleOffCard
+        blocked={shape === "module_blocked"}
+        state={moduleState}
+        restartClass={restartClassByID}
+        onTurnedOn={() => {
+          // The component state lists the sandbox routes as active again,
+          // so useApi sends the card's reads and the editor replaces this
+          // card; the reloads re-read anything already cached.
+          componentState.reload();
+          settings.reload();
+          probe.reload();
+          setupRows.reload();
+        }}
+      />
+    );
+  }
 
   return (
+    <>
     <ChartShell
       title="Sandbox isolation"
       sub="Run supported agents inside an isolation backend (bubblewrap on Linux and WSL2 today) with an isolated home and an explicit workspace. The enable switch binds on the next launch; moving the workspaces directory needs a daemon restart."
@@ -529,15 +970,23 @@ export function SandboxSettingsCard() {
 
         <div
           className={`rounded-2 border px-3 py-2 ${
-            live?.available
+            probeLine.tone === "ok"
               ? "border-ok/40 bg-ok/10 text-ok"
-              : "border-line-2 bg-bg-2 text-fg-3"
+              : probeLine.tone === "warn"
+                ? "border-warn/40 bg-warn/10 text-warn"
+                : "border-line-2 bg-bg-2 text-fg-3"
           }`}
         >
           <span className="font-medium">Running daemon: </span>
-          {live?.available
-            ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}; network is ${live.egress ?? "internet"}.`
-            : live?.reason ?? "Sandbox probe has not returned yet."}
+          <span data-testid="sandbox-probe-line">{probeLine.text}</span>
+          {probeLine.technical && (
+            <HelpTooltip technical subject="the sandbox check" content={probeLine.technical} className="ml-1 align-middle" />
+          )}
+          {probeLine.retry && (
+            <button type="button" className="ml-2 text-accent hover:underline" onClick={probe.reload}>
+              Check again
+            </button>
+          )}
           {/* Three different "not available" stories, three different next
               steps. A saved enable switch rebinds the daemon's sandbox seam
               on the next launch, so the old blanket "restart the daemon"
@@ -548,25 +997,34 @@ export function SandboxSettingsCard() {
               launch.
             </span>
           )}
-          {live?.verdict === "runtime_init_failed" && (
-            <span className="ml-1 text-warn">
-              The sandbox is enabled but the daemon could not start it - fix the
-              setting named above and save again.
-            </span>
-          )}
         </div>
 
         {live?.org && <SandboxOrgPanel org={live.org} />}
 
         {!draft ? (
-          // Never an eternal "Loading": a refused local-only route and a
-          // genuinely failed load are different facts, and neither is
-          // "still fetching".
-          localOnly ? null : settings.error ? (
+          // Never an eternal "Loading": a refused local-only route, a failed
+          // load, a reply without the block and a read that is taking too
+          // long are different facts, and none is "still fetching"
+          // (lib/sandboxSettingsView, lane L2).
+          editorState === "local_only" || editorState === "editor" ? null : editorState === "load_error" ? (
             <ErrorState
               className="py-4"
               title="Could not load the sandbox configuration"
               error={settings.error}
+              onRetry={settings.reload}
+            />
+          ) : editorState === "incomplete" ? (
+            <ErrorState
+              className="py-4"
+              title="The daemon answered without the sandbox settings"
+              error="The reply did not include the sandbox settings. Try again; if it keeps happening, restart the daemon."
+              onRetry={settings.reload}
+            />
+          ) : editorState === "slow" ? (
+            <ErrorState
+              className="py-4"
+              title="The sandbox settings have not loaded"
+              error={`The daemon has not answered in ${SANDBOX_READ_PATIENCE_MS / 1000} seconds. Try again; if it keeps happening, restart the daemon.`}
               onRetry={settings.reload}
             />
           ) : (
@@ -586,7 +1044,7 @@ export function SandboxSettingsCard() {
                 <span>
                   <span className="font-medium text-fg-1">Enable sandbox support</span>
                   <span className="block text-[11px] text-fg-3">
-                    Master switch. Supported launches may use the boundary after restart.
+                    {SANDBOX_MASTER_SWITCH_HELP}
                   </span>
                 </span>
               </label>
@@ -643,6 +1101,9 @@ export function SandboxSettingsCard() {
               </div>
             </div>
 
+            {(live?.backends?.length ?? 0) === 0 && (setupRows.data?.backends?.length ?? 0) > 0 && SANDBOX_SETUP_PANEL && (
+              <SandboxSetupRowsList rows={setupRows.data?.backends ?? []} onSetup={toggleSetup} setupOpen={setupFor} setupPanel={setupPanelNode} />
+            )}
             {(live?.backends?.length ?? 0) > 0 && (
               <SandboxBackendsList
                 backends={live?.backends ?? []}
@@ -651,6 +1112,10 @@ export function SandboxSettingsCard() {
                 writable={editable("backends")}
                 orgNote={composeNote("backends")}
                 onOrder={(next) => update("backends", next)}
+                onSetup={setupRows.data && SANDBOX_SETUP_PANEL ? toggleSetup : undefined}
+                setupRows={setupByID}
+                setupOpen={setupFor}
+                setupPanel={setupPanelNode}
               />
             )}
 
@@ -687,17 +1152,60 @@ export function SandboxSettingsCard() {
                   </span>
                 </span>
               </label>
+              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-3 p-3">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={draft.seccomp ?? false}
+                  disabled={!editable("seccomp")}
+                  onChange={(e) => update("seccomp", e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-fg-1">Syscall filter (seccomp)</span>
+                  <span className="block text-[11px] text-fg-3">
+                    Observer&apos;s own syscall filter for the bubblewrap and Landlock-only sandboxes. On: a launch on either is refused if the filter cannot be built, applied or read back; it never runs unfiltered. Container rows keep their engine&apos;s own filter; on other rows Observer&apos;s filter does not run, and a launch on one says so. Off by default until it is checked live across the tools. Each run records what it got.
+                  </span>
+                  <OrgSetNote show={pinned.has("seccomp")} />
+                </span>
+              </label>
+              <SandboxStraceSeizeCard writable={writable} />
             </div>
 
             {draft.oci && ociSelected && <SandboxOCIPanel value={draft.oci} pinned={pinned} writable={writable} onChange={(v) => update("oci", v)} />}
             {draft.mxc && <SandboxWindowsPanel value={draft.mxc} view={componentState.data?.view} pinned={pinned} writable={writable} onChange={(v) => update("mxc", v)} />}
-            {draft.vm && <SandboxVMPanel value={draft.vm} view={componentState.data?.view} writable={writable} onChange={(v) => update("vm", v)} />}
+            {draft.vm && <SandboxVMPanel value={draft.vm} view={componentState.data?.view} writable={writable} onChange={(v) => update("vm", v)} confirmToken={settings.data?.confirm_token} />}
             {draft.landlock && <SandboxLandlockPanel value={draft.landlock} view={componentState.data?.view} pinned={pinned} writable={writable} onChange={(v) => update("landlock", v)} />}
+            {draft.openshell && (
+              <SandboxOpenShellPanel
+                value={draft.openshell}
+                row={live?.backends?.find((b) => b.id === "openshell")}
+                view={componentState.data?.view}
+                writable={writable}
+                onChange={(v) => update("openshell", v)}
+              />
+            )}
             {draft.seatbelt && draft.apple_container && <SandboxMacPanel seatbelt={draft.seatbelt} appleContainer={draft.apple_container} view={componentState.data?.view} pinned={pinned} writable={writable} onChange={(k, v) => update(k, v as never)} />}
             <SandboxNativePanel value={(draft as { vendor_forced_native?: string }).vendor_forced_native} pinned={pinned} writable={writable} onChange={(v) => update("vendor_forced_native" as never, v as never)} />
             {draft.hosted && <SandboxHostedPanel value={draft.hosted} view={componentState.data?.view} pinned={pinned} writable={writable} onChange={(v) => update("hosted", v)} />}
-            <SandboxCredentialsPanel value={(draft as { readopt?: never }).readopt} view={componentState.data?.view} pinned={pinned} writable={writable} onChange={(v) => update("readopt" as never, v as never)} />
-            <SandboxWindowsTiersPanel wslc={(draft as unknown as Record<string, never>)["wslc"]} hcs={(draft as unknown as Record<string, never>)["hcs"]} windows={(draft as unknown as Record<string, never>)["windows"]} view={componentState.data?.view} />
+            <SandboxOrgShellCard />
+            <SandboxCredentialsPanel
+              value={draft.readopt}
+              view={componentState.data?.view}
+              pinned={pinned}
+              writable={writable}
+              onChange={(v) => update("readopt", v)}
+              onOpenTerminal={(handle, label) => dock.launch({ token: handle, tool: label, sessionId: "", hasProjectRoot: false })}
+            />
+            <SandboxWindowsTiersPanel
+              wslc={draft.wslc}
+              hcs={draft.hcs}
+              windows={draft.windows}
+              savedTier={save.base?.windows?.mxc_tier}
+              view={componentState.data?.view}
+              pinned={pinned}
+              writable={writable}
+              onChange={(k, v) => update(k, v as never)}
+            />
 
             <SandboxListField
               label="Allowed private networks (internet mode)"
@@ -786,6 +1294,12 @@ export function SandboxSettingsCard() {
               </span>
             </label>
 
+            <SandboxSetupElevatedToggle
+              value={draft.setup}
+              disabled={!writable}
+              onChange={(v) => update("setup", v)}
+            />
+
             <div className="grid gap-3 md:grid-cols-2">
               <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
                 <input
@@ -867,6 +1381,24 @@ export function SandboxSettingsCard() {
                     <OrgSetNote show={pinned.has("workspace_retention_days")} />
                   </div>
                   <div className="space-y-1">
+                    <span id="sandbox-copy-retention-label" className="block font-medium text-fg-2">Copies whose work came back</span>
+                    <ComboChip
+                      label="Copies whose work came back"
+                      labelledBy="sandbox-copy-retention-label"
+                      hideTriggerLabel
+                      fullWidth
+                      value={String(draft.returned_copy_retention_days ?? 30)}
+                      disabled={!editable("returned_copy_retention_days")}
+                      onChange={(v) => update("returned_copy_retention_days", Number(v))}
+                      options={numberOptions(SANDBOX_RETENTION_DAYS, draft.returned_copy_retention_days ?? 30, copyRetentionLabel)}
+                      buttonValueRender={() => <span>{copyRetentionLabel(draft.returned_copy_retention_days ?? 30)}</span>}
+                    />
+                    <span className="block text-[11px] text-fg-3">
+                      After this many days a copy is removed, but only when its commits came back and it holds nothing else. A copy with unsaved work is always kept.
+                    </span>
+                    <OrgSetNote show={pinned.has("returned_copy_retention_days")} />
+                  </div>
+                  <div className="space-y-1">
                     <span id="sandbox-timeout-label" className="block font-medium text-fg-2">Preparation timeout</span>
                     <ComboChip
                       label="Preparation timeout"
@@ -927,8 +1459,17 @@ export function SandboxSettingsCard() {
             </details>
 
             {err && (
-              <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-                {err}
+              <div className="flex flex-wrap items-center gap-2 rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger" role="alert">
+                <span className="min-w-0 flex-1 basis-60">{err}</span>
+                {conflict && (
+                  <button
+                    type="button"
+                    className="rounded-2 border border-border px-2 py-0.5 text-[12px] text-fg-1 hover:bg-bg-2"
+                    onClick={() => reloadSettings(true)}
+                  >
+                    Reload the configuration
+                  </button>
+                )}
               </div>
             )}
             <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -939,7 +1480,14 @@ export function SandboxSettingsCard() {
                 requireConfirm={expandsAuthority}
                 onConfirm={() => void saveSandbox()}
                 confirmLabel="Save anyway?"
-                armedNote="This configuration expands authority: remote clone lets the daemon make a network git request with your ambient credentials, and read-write binds expose host paths inside the sandbox."
+                armedNote={
+                  loosensMXCTier
+                    ? "This configuration loosens isolation: it lets launches use MXC's weaker AppContainer tier, which sees every folder granted to ALL APPLICATION PACKAGES." +
+                      (draft.allow_remote_clone || draft.extra_rw_binds.some((p) => p.trim() !== "") || (draft.egress_allow_cidrs ?? []).some((p) => p.trim() !== "")
+                        ? " It also expands authority: remote clone, read-write binds or private networks are set."
+                        : "")
+                    : "This configuration expands authority: remote clone lets the daemon make a network git request with your ambient credentials, and read-write binds expose host paths inside the sandbox."
+                }
               >
                 {busy ? "saving…" : "Save sandbox configuration"}
               </ConfirmButton>
@@ -959,6 +1507,10 @@ export function SandboxSettingsCard() {
         )}
       </div>
     </ChartShell>
+    {/* The work sandboxed runs brought back (lane RETURNS), shown with the
+        module's own card so no core page imports a sandbox component. */}
+    <SandboxReturnsPanel />
+    </>
   );
 }
 
@@ -1006,8 +1558,6 @@ function ociDriverSelected(view: ComponentsView | undefined): boolean {
   return view.components.some((c) => c.id === "terminals.sandbox.oci" && c.state === "active");
 }
 
-// moduleNotInstalled reports whether err is the route guard's 404
-// component_not_installed answer.
-function moduleNotInstalled(err: Error | null): boolean {
-  return err instanceof ApiError && err.status === 404 && err.body.includes("component_not_installed");
-}
+// SandboxModuleOffCard (the module-off pointer with its Turn it on button,
+// ruling SBXD-9) lives in its own file; re-exported for existing importers.
+export { SandboxModuleOffCard } from "@/components/SandboxModuleOffCard";

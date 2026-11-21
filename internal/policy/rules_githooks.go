@@ -1024,7 +1024,7 @@ func matchGitAttributesWrite(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ev) || len(ev.Edits) == 0 {
 		return false, ""
 	}
-	if _, ok := pathPatternMatch(ctx.Path, ctx.Cfg.Home, gitAttributesPatterns); !ok {
+	if _, ok := homePathPatternMatch(ctx, ctx.Path, gitAttributesPatterns); !ok {
 		return false, ""
 	}
 	var current []byte
@@ -1050,12 +1050,12 @@ func matchGitAttributesWrite(ctx *MatchContext) (bool, string) {
 // .gitattributes and the command line names a custom driver.
 func matchGitAttributesShell(ctx *MatchContext, cmd *Command) (bool, string) {
 	anchors := unitAnchors(ctx, cmd)
-	for _, t := range sensitivePathTokens(cmd) {
+	for _, t := range sensitivePathTokensMemo(ctx, cmd) {
 		if !classifyWrite(cmd, t.text) {
 			continue
 		}
 		for _, c := range unitPathCandidates(ctx, anchors, t.text) {
-			if _, ok := pathPatternMatch(c.path, ctx.Cfg.Home, gitAttributesPatterns); !ok {
+			if _, ok := homePathPatternMatch(ctx, c.path, gitAttributesPatterns); !ok {
 				continue
 			}
 			if d, hit := newDriver("", shellLine(ctx.Event)); hit {

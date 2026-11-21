@@ -69,6 +69,35 @@ func TestBoundaryRules_FileAccess(t *testing.T) {
 			wantRule: "R-151", wantEnforce: DecisionAsk,
 		},
 		{
+			// Live 2026-11-15 (security-assessment pen test, session
+			// 9dc8bc8b): the proxy's response inspection carries no
+			// project root, and a run's write to its own run folder was
+			// reported as a write into "another" project, its own. With
+			// the session's project unknown, R-151 cannot tell own from
+			// other and stays quiet; the watcher judges the write.
+			name: "R-151 near-miss: own run folder, no project root", kind: KindFileAccess, actionType: "write_file",
+			target: "/home/u/notesapp/.observer/assessments/f0d1386d2b395e14/assessment.json",
+			cwd:    "-", root: "-",
+			known: []string{"/home/u/notesapp", "/home/u/confine-probe"},
+		},
+		{
+			// The same write on the lane that knows the session's project
+			// (the watcher: the session's recorded root): inside, no hit.
+			name: "R-151 near-miss: own run folder, session root known", kind: KindFileAccess, actionType: "write_file",
+			target: "/home/u/notesapp/.observer/assessments/f0d1386d2b395e14/report.md",
+			cwd:    "/home/u/notesapp", root: "/home/u/notesapp",
+			known: []string{"/home/u/notesapp", "/home/u/confine-probe"},
+		},
+		{
+			// A genuine write from the notesapp session into the other
+			// observed project still bleeds.
+			name: "R-151 hit: write into another observed project", kind: KindFileAccess, actionType: "write_file",
+			target: "/home/u/confine-probe/report.md",
+			cwd:    "/home/u/notesapp", root: "/home/u/notesapp",
+			known:    []string{"/home/u/notesapp", "/home/u/confine-probe"},
+			wantRule: "R-151", wantEnforce: DecisionAsk,
+		},
+		{
 			// Path and the session's root share no flavor (no drvfs
 			// mount to fold): outside-the-project is unknown, so the
 			// Windows-shaped known root must not be matched either.
@@ -139,6 +168,9 @@ func TestBoundaryRules_FileAccess(t *testing.T) {
 		{name: "R-160 hit: project claude settings", kind: KindFileAccess, actionType: "write_file", target: ".claude/settings.json", wantRule: "R-160", wantEnforce: DecisionDeny},
 		{name: "R-160 hit: codex config", kind: KindFileAccess, actionType: "write_file", target: "~/.codex/config.toml", wantRule: "R-160", wantEnforce: DecisionDeny},
 		{name: "R-160 hit: config-change kind", kind: KindConfigChange, actionType: "", target: "~/.claude/settings.json", wantRule: "R-160", wantEnforce: DecisionDeny},
+		{name: "R-160 hit: committed Copilot hook file", kind: KindFileAccess, actionType: "write_file", target: ".github/hooks/superbased-observer.json", wantRule: "R-160", wantEnforce: DecisionDeny},
+		{name: "R-160 near-miss: another Copilot hook file", kind: KindFileAccess, actionType: "write_file", target: ".github/hooks/team.json"},
+		{name: "R-160 near-miss: read committed Copilot hook file", kind: KindFileAccess, actionType: "read_file", target: ".github/hooks/superbased-observer.json"},
 		{name: "R-160 near-miss: settings.local.json is host-tool-owned", kind: KindFileAccess, actionType: "write_file", target: ".claude/settings.local.json"},
 		{name: "R-160 near-miss: read observer config", kind: KindFileAccess, actionType: "read_file", target: "~/.observer/config.toml"},
 

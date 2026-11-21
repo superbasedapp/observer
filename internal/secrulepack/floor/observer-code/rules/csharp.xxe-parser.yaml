@@ -1,0 +1,28 @@
+rules:
+  - id: csharp.xxe-parser
+    languages: [csharp]
+    severity: ERROR
+    message: An XML reader is set to process DTDs or to resolve external entities, so a document can read local files or reach internal hosts; keep DtdProcessing at Prohibit or Ignore and XmlResolver null.
+    metadata:
+      category: code_vuln
+      cwe: CWE-611
+    pattern-either:
+      # An external-entity resolver set on a document or reader.
+      - pattern: $D.XmlResolver = new XmlUrlResolver(...)
+      - pattern: 'new $T { ..., XmlResolver = new XmlUrlResolver(...), ... }'
+      # DTD processing turned on without the resolver taken away.
+      - patterns:
+          - pattern-either:
+              - pattern: $S.DtdProcessing = DtdProcessing.Parse
+              - pattern: 'new XmlReaderSettings { ..., DtdProcessing = DtdProcessing.Parse, ... }'
+              - pattern: $S.ProhibitDtd = false
+              - pattern: 'new XmlReaderSettings { ..., ProhibitDtd = false, ... }'
+          - pattern-not: 'new XmlReaderSettings { ..., XmlResolver = null, ... }'
+          - pattern-not-inside: |
+              $S.DtdProcessing = DtdProcessing.Parse;
+              ...
+              $S.XmlResolver = null;
+          - pattern-not-inside: |
+              $S.XmlResolver = null;
+              ...
+              $S.DtdProcessing = DtdProcessing.Parse;

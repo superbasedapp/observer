@@ -69,6 +69,11 @@ func (a *Adapter) attributeSubagent(path string, res *adapter.ParseResult) {
 			res.SessionSurfaces[i].SessionID = child
 		}
 	}
+	for i := range res.SessionExecutions {
+		if res.SessionExecutions[i].SessionID == parent {
+			res.SessionExecutions[i].SessionID = child
+		}
+	}
 	for i := range res.CacheObservations {
 		if res.CacheObservations[i].SessionID == parent {
 			res.CacheObservations[i].SessionID = child

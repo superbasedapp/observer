@@ -1,0 +1,35 @@
+{
+  "run_id": "7c1e2a40-0000-4000-8000-000000000001",
+  "conversation_id": "9a4f7c21-0000-4000-8000-0000000000c1",
+  "available": true,
+  "age_seconds": 42,
+  "usage": {
+    "metricsVersion": 1,
+    "harness": "CLAUDE_CODE",
+    "executionId": 7001,
+    "captureSequence": 12,
+    "capturedAt": "2026-10-30T09:21:10Z",
+    "snapshot": {
+      "coverage": {"tokenStatus": "known", "toolStatus": "known"},
+      "payload": {
+        "usage": {
+          "input_tokens": 1840,
+          "output_tokens": 6120,
+          "cache_read_input_tokens": 150200,
+          "cache_creation_input_tokens": 21400,
+          "cache_creation": {"ephemeral_5m_input_tokens": 20000, "ephemeral_1h_input_tokens": 1400}
+        },
+        "attribution": [
+          {
+            "model": "claude-sonnet-4-5",
+            "service_tier": "standard",
+            "inference_geo": null,
+            "speed": null,
+            "usage": {"input_tokens": 1840, "output_tokens": 6120, "cache_read_input_tokens": 150200, "cache_creation_input_tokens": 21400}
+          }
+        ],
+        "toolCalls": {"total": 9, "byName": {"Bash": 4, "Edit": 3, "Read": 2}}
+      }
+    }
+  }
+}

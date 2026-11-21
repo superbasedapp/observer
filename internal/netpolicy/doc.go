@@ -30,6 +30,14 @@
 // metadata address it really is while a legitimate IPv6-only network keeps
 // reaching public providers through NAT64.
 //
-// The package imports only the standard library's net/syscall/fmt/errors: no
-// database/sql, no net/http, no fsnotify (imports_test.go pins it).
+// IP classification itself lives in internal/ipclass, the one owner, which
+// this package re-exports unchanged (NetworkClass, the four Class values,
+// ClassifyIP and IsLoopbackHost in classify.go): the dial policy here and the
+// developer-side guard's network rules both classify an address through that
+// single leaf, so a metadata or private-range verdict can never fork between
+// the two. This package adds only the dial-time policy on top.
+//
+// The package imports only the standard library's net/syscall/fmt/errors plus
+// internal/ipclass: no database/sql, no net/http, no fsnotify (imports_test.go
+// pins it).
 package netpolicy

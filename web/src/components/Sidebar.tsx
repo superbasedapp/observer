@@ -1,14 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import clsx from "clsx";
-import { ChevronLeft, X } from "lucide-react";
-import { NAV_GROUPS } from "@/lib/nav";
+import { ChevronLeft, Telescope, X } from "lucide-react";
+import { APPS_NAV_IDS, NAV_GROUPS, navGroupsForTrack } from "@/lib/nav";
+import { FIRST_RUN_PATH, type FirstRunResponse } from "@/lib/firstRun";
 import { useApi } from "@/lib/useApi";
 import { filterNavGroups, useGovernance, useGovernanceVisibility } from "@/lib/governance";
 import { hiddenNavIds } from "@/lib/visibility";
 import { filterNavByComponents } from "@/lib/componentState";
 import { useInactiveNavIds } from "@/lib/useComponents";
-import { fmtBytes, fmtCompact, fmtInt } from "@/lib/format";
+import { useAppsNavHidden, useObsRoutesUp } from "@/lib/useObsRoutesUp";
+import { APPS_START_NAV_ID, APPS_START_PATH, appsStartNavShown, withAppsStart } from "@/lib/planeaFirstRun";
+import { PRODUCT_NAMES } from "@shared/lib/productNames";
+import { fmtBytes, fmtCompact } from "@/lib/format";
+import { navCounts, NO_NAV_COUNTS, type NavCounts } from "@/lib/navCounts";
 import { BrandMark, Icon, LiveDot, Tooltip } from "@/components/primitives";
 import { CAPTURE_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
 import { slideFromX } from "@shared/lib/motion";
@@ -37,12 +42,12 @@ export function Sidebar({
   // The nav reads only the badge counts, selected by value, so a poll that
   // moves only the per-request fields (uptime) re-renders nothing here; the
   // footer (which shows uptime) subscribes to the full payload itself.
-  const counts = useApi<StatusSnapshot, Record<string, number | null>>(
+  const counts = useApi<StatusSnapshot, NavCounts>(
     "/api/status",
     undefined,
     [],
     { refreshMs: 5000, select: navCounts },
-  ).data ?? NO_COUNTS;
+  ).data ?? NO_NAV_COUNTS;
   const setupClaude = useApi<SetupClaude>("/api/setup/claude");
   // Watcher health (P1.7): behind/orphan/misroute counts only — a
   // slow 60s cadence is plenty for a lag signal.
@@ -64,8 +69,29 @@ export function Sidebar({
   // Messages shows only on an enrolled node (D-695): until the summary says
   // so, or when it cannot be read, the item stays out of the nav.
   const messages = useMessagesSummary().data;
-  const navHidden = showMessagesNav(messages) ? inactiveNav : [...inactiveNav, "messages"];
-  const navGroups = filterNavByComponents(filterNavGroups(NAV_GROUPS, visibility.gov), navHidden);
+  // Your apps shows only once app observability answers here (Plane A B5).
+  const appsHidden = useAppsNavHidden();
+  const navHidden = [...(showMessagesNav(messages) ? inactiveNav : [...inactiveNav, "messages"]), ...appsHidden];
+  const governed = filterNavGroups(NAV_GROUPS, visibility.gov);
+  const filtered = filterNavByComponents(governed, navHidden);
+  // The persistent AI Apps item (review E-71): while the AI Apps pages are
+  // not in the nav it stands in for their group and opens the first-run
+  // page, after "Not now" too; never where the organization hides them.
+  const orgHidesApps = !governed.some((g) => g.items.some((it) => APPS_NAV_IDS.includes(it.id)));
+  const placed = appsStartNavShown(useObsRoutesUp(), orgHidesApps)
+    ? withAppsStart(NAV_GROUPS, filtered, {
+        id: "apps",
+        label: PRODUCT_NAMES.planea_local,
+        items: [{ id: APPS_START_NAV_ID, label: PRODUCT_NAMES.planea, path: APPS_START_PATH, icon: Telescope }],
+      })
+    : filtered;
+  // The getting-started track (first-run plan revision 2, 2.4): for apps or
+  // both, the AI Apps group moves to the top. Order only; the daemon decides
+  // the track (the brief first-run read, shared with the Overview surface).
+  const track = useApi<FirstRunResponse, string | null>(FIRST_RUN_PATH, { brief: "1" }, [], {
+    select: (d) => d.plane?.track ?? null,
+  }).data;
+  const navGroups = navGroupsForTrack(placed, track);
   const messagesBadge = navBadge(messages);
   // Desktop (lg+) icon-only rail collapse. The pref is persisted in
   // localStorage ("1"/"0", ProcessesSection pattern) and only bites at
@@ -228,21 +254,23 @@ export function Sidebar({
                             {messagesBadge}
                           </span>
                         )}
-                        {counts[it.id] != null && (
-                          // The gutter numbers are ALL-TIME totals, while the
+                        {counts[it.id] && (
+                          // Most gutter numbers are ALL-TIME totals, while the
                           // pages window their tables (T-803: "Sessions 5.2K"
-                          // here beside "1,871" on the 30-day Sessions table).
-                          // The label says so for screen readers and on hover.
+                          // here beside "1,871" on the 30-day Sessions table);
+                          // Live, Overview and Code security count something
+                          // else. Each badge's title says what it counts, for
+                          // screen readers and on hover (lib/navCounts).
                           <span
-                            title={`${fmtInt(counts[it.id] as number)} in total, all time`}
-                            aria-label={`${fmtInt(counts[it.id] as number)} in total, all time`}
+                            title={counts[it.id].title}
+                            aria-label={counts[it.id].title}
                             className={clsx(
                               "shrink-0 font-mono text-[10px] tabular-nums text-fg-4",
                               collapsed && "lg:hidden",
                               reveal,
                             )}
                           >
-                            {fmtCompact(counts[it.id] as number)}
+                            {fmtCompact(counts[it.id].value)}
                           </span>
                         )}
                       </>
@@ -253,9 +281,16 @@ export function Sidebar({
             </div>
           ))}
         </nav>
-        {/* Phone only (below sm): the top bar gives its room to the page
-            title, so the display preferences live here. */}
-        <div className="flex items-center justify-between gap-2 border-t border-line-1 px-3 py-2 sm:hidden">
+        {/* Below xl: the top bar gives its room to the page title (and,
+            from sm to xl, to its status chips: it shows the theme but not
+            the density there), so the display preferences live here too. */}
+        <div
+          className={clsx(
+            "flex items-center justify-between gap-2 border-t border-line-1 px-3 py-2 xl:hidden",
+            // The collapsed rail has no room for it; the drawer still shows it.
+            collapsed && "lg:hidden",
+          )}
+        >
           <span className="text-[11px] text-fg-3">Display</span>
           <DisplayControls />
         </div>
@@ -365,43 +400,6 @@ function Brand({
       </button>
     </div>
   );
-}
-
-// navCounts maps each NavItem.id to a compact stat for the right
-// gutter. Every data page carries a badge; only Overview (the home)
-// and the Configure group (Privacy / Settings — no event streams)
-// stay deliberately un-badged. The newer fields (live_sessions /
-// guard_events / router_decisions) are optional in the type because
-// an older daemon may serve a /api/status without them — `?? null`
-// keeps those badges hidden instead of rendering a bogus 0.
-const NO_COUNTS: Record<string, number | null> = {};
-
-function navCounts(s?: StatusSnapshot | null): Record<string, number | null> {
-  if (!s) return NO_COUNTS;
-  const c = s.counts;
-  return {
-    live: c.live_sessions ?? null,
-    sessions: c.sessions,
-    actions: c.actions,
-    security: c.guard_events ?? null,
-    // The search corpus IS the FTS5 excerpt index — same substrate the
-    // Compression badge counts, surfaced here as "how much is searchable".
-    search: c.action_excerpts,
-    cost: c.api_turns,
-    analysis: c.token_usage,
-    tools: distinctTools(s),
-    compression: c.action_excerpts,
-    cache: c.cache_events,
-    suggestions: c.suggestions,
-    routing: c.router_decisions ?? null,
-    discovery: c.file_state,
-    patterns: c.projects,
-    // settings and overview stay un-badged
-  };
-}
-
-function distinctTools(s: StatusSnapshot): number {
-  return s.per_tool_last_seen?.length ?? 0;
 }
 
 function Foot({

@@ -571,29 +571,29 @@ func elevateScript(schtasksArgs string) string {
 		// Stop on the first error so a failed Start-Process reaches the catch
 		// instead of falling through to the success line.
 		"$ErrorActionPreference = 'Stop'",
-		"Write-Output " + psQuote("SuperBased: registering the elevated ETW capturer task "+TaskName+"."),
-		"Write-Output " + psQuote("SuperBased: Windows will now show a User Account Control prompt. It must be "+
+		"Write-Output " + psQuote("superbased: registering the elevated ETW capturer task "+TaskName+"."),
+		"Write-Output " + psQuote("superbased: Windows will now show a User Account Control prompt. It must be "+
 			"approved ON THIS MACHINE - approve it to continue, or dismiss it to cancel."),
 		"try { $p = Start-Process -FilePath " + psQuote(SchtasksExe) +
 			" -Verb RunAs -Wait -PassThru -ArgumentList " + psQuote(schtasksArgs) + " }",
 		"catch {",
-		"  Write-Output ('SuperBased: the elevated helper did not start - ' + $_.Exception.Message)",
-		"  Write-Output " + psQuote("SuperBased: nothing was registered. If you dismissed the prompt, close this "+
+		"  Write-Output ('superbased: the elevated helper did not start - ' + $_.Exception.Message)",
+		"  Write-Output " + psQuote("superbased: nothing was registered. If you dismissed the prompt, close this "+
 			"terminal and press the button again - or run the command yourself from an elevated Windows shell."),
 		"  exit 3",
 		"}",
 		"if ($null -eq $p) {",
-		"  Write-Output " + psQuote("SuperBased: the elevated helper reported no process, so nothing can be said "+
+		"  Write-Output " + psQuote("superbased: the elevated helper reported no process, so nothing can be said "+
 			"about whether the task was registered. Check with: "+verify),
 		"  exit 3",
 		"}",
 		"if ($p.ExitCode -ne 0) {",
-		"  Write-Output ('SuperBased: schtasks exited ' + $p.ExitCode + ' - the task was NOT registered.')",
-		"  Write-Output " + psQuote("SuperBased: schtasks refuses to overwrite an existing task without /F, so "+
+		"  Write-Output ('superbased: schtasks exited ' + $p.ExitCode + ' - the task was NOT registered.')",
+		"  Write-Output " + psQuote("superbased: schtasks refuses to overwrite an existing task without /F, so "+
 			"this is also what an already-registered task looks like. Check with: "+verify),
 		"  exit $p.ExitCode",
 		"}",
-		"Write-Output " + psQuote("SuperBased: registered. The capturer starts at your next logon; to start it now "+
+		"Write-Output " + psQuote("superbased: registered. The capturer starts at your next logon; to start it now "+
 			"without logging out, run (elevated): schtasks.exe /Run /TN \""+TaskName+"\""),
 		"exit 0",
 	}

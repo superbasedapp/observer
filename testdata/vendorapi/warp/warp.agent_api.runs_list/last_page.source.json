@@ -1,0 +1,51 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-11-01",
+  "field_ledger": {
+    "as_of": "VerifiedOfficial",
+    "page_info": "VerifiedOfficial",
+    "page_info.has_next_page": "VerifiedOfficial",
+    "runs": "VerifiedOfficial",
+    "runs[]": "VerifiedOfficial",
+    "runs[].agent_config": "VerifiedOfficial",
+    "runs[].agent_config.harness": "VerifiedOfficial",
+    "runs[].agent_config.harness.type": "VerifiedOfficial",
+    "runs[].conversation_id": "VerifiedOfficial",
+    "runs[].created_at": "VerifiedOfficial",
+    "runs[].creator": "VerifiedOfficial",
+    "runs[].creator.type": "VerifiedOfficial",
+    "runs[].creator.uid": "VerifiedOfficial",
+    "runs[].execution_location": "VerifiedOfficial",
+    "runs[].finished_at": "VerifiedOfficial",
+    "runs[].prompt": "VerifiedOfficial",
+    "runs[].root_run_id": "VerifiedOfficial",
+    "runs[].run_id": "VerifiedOfficial",
+    "runs[].source": "VerifiedOfficial",
+    "runs[].state": "VerifiedOfficial",
+    "runs[].task_id": "VerifiedOfficial",
+    "runs[].title": "VerifiedOfficial",
+    "runs[].updated_at": "VerifiedOfficial",
+    "team_uid": "VerifiedOfficial"
+  },
+  "fixture_sha256": "8afb0ea4698518738cc389ac9ddce08e0019a0dfa242300c981d29dc77727fb9",
+  "http": {
+    "method": "GET",
+    "path": "/api/v1/agent/runs",
+    "query": {
+      "cursor": "synthRunsCursor0002",
+      "execution_location": "REMOTE",
+      "limit": "100",
+      "sort_by": "updated_at",
+      "sort_order": "desc"
+    },
+    "status": 200
+  },
+  "notes": "Built for lane CA-V1 from the Warp Agent API OpenAPI at the pinned docs commit (listRuns (GET /agent/runs), ListRunsResponse with RunItem, PageInfo and RequestUsage). The terminal page: page_info.has_next_page false and next_cursor omitted (PageInfo requires only has_next_page). The run uses the built-in oz harness. Ids, names and amounts are synthetic; every member name is the schema's own.",
+  "scenario": "last_page",
+  "sdk_or_spec_version_or_commit": "github.com/warpdotdev/docs at 4aa3f1207664a44ab3c4c5626ae0999ef03bbf14 (2026-10-30), developers/agent-api-openapi.yaml, server https://app.warp.dev/api/v1",
+  "source_kind": "openapi_spec",
+  "source_sha256": "ee4c2e0e8fdc711951b9936cc5bcdfc6102555a70d62512b8ecfb5a4238fa3ec",
+  "source_url": "https://github.com/warpdotdev/docs/blob/4aa3f1207664a44ab3c4c5626ae0999ef03bbf14/developers/agent-api-openapi.yaml",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "warp.agent_api.runs_list"
+}

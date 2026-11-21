@@ -104,7 +104,7 @@ func exfilRules() []Rule {
 			Match:     matchSecretsOnAPIRequest,
 			Observe:   DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "secret-shaped content in an outbound LLM API request",
-			Advice: "Check what placed the secret in the conversation (a file read, a shell output); rotate it if it already left, and add an [guard.proxy] egress_allow pattern only for known-fake fixtures.",
+			Advice: "Check what placed the secret in the conversation (a file read, a shell output); rotate it if it already left, and add an Egress allow pattern (Observer dashboard Settings > Guard, Proxy scans; [guard.proxy] egress_allow) only for known-fake fixtures.",
 		},
 		{
 			// F1 (phase-3a review): the prompt-submit-intervention
@@ -135,7 +135,7 @@ func exfilRules() []Rule {
 			Match:     matchSecretsOnAPIRequest,
 			Observe:   DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "secret-shaped content typed directly into a prompt to your coding-agent tool, before it reaches the model",
-			Advice: "Check what placed the secret in the conversation (a file read, a shell output, a pasted value); rotate it if it's real, and add a [guard.prompt] allow pattern only for known-fake test data.",
+			Advice: "Check what placed the secret in the conversation (a file read, a shell output, a pasted value); rotate it if it's real, and add an Allow pattern (Observer dashboard Settings > Guard, Prompt-submit intervention; a [guard.prompt] allow pattern) only for known-fake test data.",
 		},
 		{
 			ID: "R-173", Category: CategoryExfil, Severity: SeverityWarn,
@@ -178,14 +178,31 @@ func exfilRules() []Rule {
 			Match:     matchPromptFindings,
 			Observe:   DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text",
-			Advice: "Remove or redact the value before sending, or add a [guard.prompt] allow pattern only for known-fake test data.",
+			Advice: "Remove or redact the value before sending, or add an Allow pattern (Observer dashboard Settings > Guard, Prompt-submit intervention; a [guard.prompt] allow pattern) only for known-fake test data.",
 		},
 	}
 }
 
-// matchRemoteCodePipe implements R-170 over three shapes (documented
-// approximations — static analysis of substituted content is
-// best-effort by design, gap F1):
+// RemoteCodePipe reports whether parsed command units pipe remote content
+// into an interpreter, by R-170's own shapes, with R-170's reason. It is the
+// one matcher internal/secshellrisk reuses for scripts in CI workflows and
+// Dockerfiles, so the two never drift.
+func RemoteCodePipe(cmds []Command) (bool, string) {
+	return matchRemoteCodePipe(&MatchContext{Cmds: cmds})
+}
+
+// sourceEvaluatorBases run their operand (or their arguments) as shell code
+// in the current shell: `source <(curl ...)`, `eval "$(curl ...)"`.
+var sourceEvaluatorBases = map[string]bool{"source": true, ".": true, "eval": true}
+
+// matchRemoteCodePipe implements R-170 over five shapes (documented
+// approximations: static analysis of substituted content is best-effort by
+// design, gap F1). Each shape needs the fetched bytes to REACH an executor;
+// a fetch that only writes a file something else reads (grep, cat, jq) is
+// not remote-code execution (demo finding #22, 2026-11-10: `bash -lc 'curl
+// -o /tmp/x.json URL; grep ... /tmp/x.json'` used to deny as "bash -c
+// executing substituted curl output", because the -c payload's own units sit
+// one unwrap level down exactly like a substitution's do).
 //
 //  1. `curl … | sh` / `irm … | iex`: a remote-fetch unit marked as a
 //     pipeline segment followed by an interpreter pipeline segment at
@@ -194,12 +211,45 @@ func exfilRules() []Rule {
 //     a fetch form, or with a fetch unit elsewhere in the same event
 //     (PowerShell paren grouping does not lex into substitution
 //     units, so the raw-text check is load-bearing).
-//  3. `sh -c "$(curl …)"`: an interpreter unit with a -c/-Command
-//     payload whose substitution produced a fetch unit one level
-//     deeper.
+//  3. `sh -c "$(curl …)"`, `eval "$(curl …)"`: an interpreter with a
+//     -c/-Command payload (or eval) whose own text lost a command
+//     substitution, and a fetch that IS the top level of a substitution
+//     one level deeper. A fetch the -c payload merely runs is not this
+//     shape.
+//  4. `bash <(curl …)`, `source <(curl …)`: an interpreter or source
+//     reading a process substitution whose first command fetches.
+//  5. `curl -o x.sh URL; bash x.sh`, `curl -O URL/i.sh && ./i.sh`: a fetch
+//     that writes a file, and a later unit in the same event that runs
+//     that file (an interpreter or source operand, or the command word
+//     itself).
 func matchRemoteCodePipe(ctx *MatchContext) (bool, string) {
 	cmds := ctx.Cmds
-	// Shape 1: fetch piped into interpreter at the same depth.
+	if ok, reason := shapeFetchPipedToInterpreter(cmds); ok {
+		return true, reason
+	}
+	// Shapes 2-4 are evaluated per unit, in unit order, each unit trying
+	// the shapes in table order (the first match names the reason).
+	for i := range cmds {
+		for _, shape := range perUnitRemoteCodeShapes {
+			if ok, reason := shape(cmds, i); ok {
+				return true, reason
+			}
+		}
+	}
+	return shapeDownloadThenRun(cmds)
+}
+
+// perUnitRemoteCodeShapes are R-170's shapes 2-4, each judged from one unit
+// (cmds[i]) and the rest of the event, tried in this order per unit.
+var perUnitRemoteCodeShapes = []func(cmds []Command, i int) (bool, string){
+	shapeInvokeExpression,
+	shapeSubstitutedPayload,
+	shapeProcessSubstitution,
+}
+
+// shapeFetchPipedToInterpreter is shape 1: a remote-fetch pipeline segment
+// followed by an interpreter pipeline segment at the same unwrap depth.
+func shapeFetchPipedToInterpreter(cmds []Command) (bool, string) {
 	for i := range cmds {
 		c := &cmds[i]
 		if !remoteFetchBases[c.Base] || !c.Pipeline {
@@ -212,33 +262,252 @@ func matchRemoteCodePipe(ctx *MatchContext) (bool, string) {
 			}
 		}
 	}
+	return false, ""
+}
+
+// invokeExpressionFetchForms are the fetch forms whose presence in an
+// invoke-expression unit's raw text (lower-cased) marks shape 2.
+var invokeExpressionFetchForms = []string{
+	"irm ", "iwr ", "invoke-restmethod", "invoke-webrequest", "curl ", "wget ",
+}
+
+// shapeInvokeExpression is shape 2: invoke-expression over fetched content,
+// either named in its own raw text or fetched by another unit of the event.
+func shapeInvokeExpression(cmds []Command, i int) (bool, string) {
+	c := &cmds[i]
+	if c.Base != "invoke-expression" {
+		return false, ""
+	}
+	lr := strings.ToLower(c.Raw)
+	for _, form := range invokeExpressionFetchForms {
+		if strings.Contains(lr, form) {
+			return true, "invoke-expression over fetched content"
+		}
+	}
+	for j := range cmds {
+		if j != i && remoteFetchBases[cmds[j].Base] {
+			return true, "invoke-expression with a remote fetch in the same command"
+		}
+	}
+	return false, ""
+}
+
+// shapeSubstitutedPayload is shape 3: an interpreter -c payload (or eval)
+// built from a substitution whose top level fetches.
+func shapeSubstitutedPayload(cmds []Command, i int) (bool, string) {
+	c := &cmds[i]
+	runsPayload := pipeInterpreterBases[c.Base] && (c.HasShortFlag('c') || hasPSCommandFlag(c))
+	if !(runsPayload || c.Base == "eval") || !c.hadSub {
+		return false, ""
+	}
+	for j := range cmds {
+		n := &cmds[j]
+		if n.Depth == c.Depth+1 && n.fromSubst && remoteFetchBases[n.Base] {
+			if c.Base == "eval" {
+				return true, "eval executing substituted " + n.Base + " output"
+			}
+			return true, c.Base + " -c executing substituted " + n.Base + " output"
+		}
+	}
+	return false, ""
+}
+
+// shapeProcessSubstitution is shape 4: an interpreter or source reading a
+// process substitution whose first command fetches.
+func shapeProcessSubstitution(cmds []Command, i int) (bool, string) {
+	c := &cmds[i]
+	if !c.procSubIn || !(pipeInterpreterBases[c.Base] || sourceEvaluatorBases[c.Base]) {
+		return false, ""
+	}
+	for j := i + 1; j < len(cmds); j++ {
+		n := &cmds[j]
+		if n.Depth == c.Depth && n.procSubSrc && remoteFetchBases[n.Base] {
+			return true, c.Base + " running a process substitution of " + n.Base + " output"
+		}
+	}
+	return false, ""
+}
+
+// shapeDownloadThenRun is shape 5: a fetch that writes a file, and a later
+// unit of the same event that runs that file.
+func shapeDownloadThenRun(cmds []Command) (bool, string) {
 	for i := range cmds {
 		c := &cmds[i]
-		// Shape 2: invoke-expression over fetched content.
-		if c.Base == "invoke-expression" {
-			lr := strings.ToLower(c.Raw)
-			if strings.Contains(lr, "irm ") || strings.Contains(lr, "iwr ") ||
-				strings.Contains(lr, "invoke-restmethod") || strings.Contains(lr, "invoke-webrequest") ||
-				strings.Contains(lr, "curl ") || strings.Contains(lr, "wget ") {
-				return true, "invoke-expression over fetched content"
-			}
-			for j := range cmds {
-				if j != i && remoteFetchBases[cmds[j].Base] {
-					return true, "invoke-expression with a remote fetch in the same command"
-				}
-			}
+		if !remoteFetchBases[c.Base] {
+			continue
 		}
-		// Shape 3: interpreter -c payload built from a substitution
-		// that fetches.
-		if pipeInterpreterBases[c.Base] && (c.HasShortFlag('c') || hasPSCommandFlag(c)) {
-			for j := range cmds {
-				if cmds[j].Depth == c.Depth+1 && remoteFetchBases[cmds[j].Base] {
-					return true, c.Base + " -c executing substituted " + cmds[j].Base + " output"
+		for _, f := range fetchOutputFiles(c) {
+			for j := i + 1; j < len(cmds); j++ {
+				if runsFile(&cmds[j], f) {
+					return true, c.Base + " download " + f + " then executed by " + cmds[j].Base
 				}
 			}
 		}
 	}
 	return false, ""
+}
+
+// fetchOutputFiles names the files a fetch unit writes the downloaded body
+// to: curl -o/--output (or the remote name under -O/--remote-name), wget
+// -O/--output-document (or the remote name when absent), PowerShell
+// -OutFile, and any `> file` redirect. "-" (stdout) is not a file.
+func fetchOutputFiles(c *Command) []string {
+	var out []string
+	add := func(f string) {
+		if f != "" && f != "-" {
+			out = append(out, f)
+		}
+	}
+	for _, r := range c.RedirectTargets {
+		add(r)
+	}
+	switch c.Base {
+	case "curl":
+		if v, ok := shortOrLongValue(c, 'o', "--output"); ok {
+			add(v)
+		}
+		if c.HasShortFlag('O') || c.HasLongFlag("--remote-name", "--remote-name-all") {
+			for _, u := range urlOperands(c) {
+				add(urlBaseName(u))
+			}
+		}
+	case "wget":
+		if v, ok := shortOrLongValue(c, 'O', "--output-document"); ok {
+			add(v)
+		} else {
+			for _, u := range urlOperands(c) {
+				add(urlBaseName(u))
+			}
+		}
+	case "invoke-webrequest", "invoke-restmethod":
+		for i := 1; i+1 < len(c.Argv); i++ {
+			if strings.EqualFold(c.Argv[i], "-outfile") {
+				add(c.Argv[i+1])
+			}
+		}
+	}
+	return out
+}
+
+// shortOrLongValue reads a value flag in its long form (`--output f`,
+// `--output=f`) or from a short cluster (`-o f`, `-sSLo f`, and the
+// attached `-of`): the bytes after the letter are its value, else the next
+// word is.
+func shortOrLongValue(c *Command, short byte, long string) (string, bool) {
+	if v, ok := c.FlagValue(long); ok {
+		return v, true
+	}
+	for i := 1; i < len(c.Argv); i++ {
+		t := c.Argv[i]
+		if t == "--" {
+			break
+		}
+		if len(t) < 2 || t[0] != '-' || t[1] == '-' {
+			continue
+		}
+		k := strings.IndexByte(t[1:], short)
+		if k < 0 {
+			continue
+		}
+		if rest := t[k+2:]; rest != "" {
+			return rest, true
+		}
+		if i+1 < len(c.Argv) {
+			return c.Argv[i+1], true
+		}
+	}
+	return "", false
+}
+
+// urlOperands are the unit's http(s)/ftp URL arguments.
+func urlOperands(c *Command) []string {
+	var out []string
+	for _, t := range c.Args() {
+		lt := strings.ToLower(t)
+		if strings.HasPrefix(lt, "http://") || strings.HasPrefix(lt, "https://") || strings.HasPrefix(lt, "ftp://") {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// urlBaseName is the file name a remote-name download saves to: the URL
+// path's last segment, without query or fragment ("" when there is none).
+func urlBaseName(u string) string {
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+	}
+	i := strings.IndexByte(u, '/')
+	if i < 0 {
+		return ""
+	}
+	p := strings.TrimRight(u[i:], "/")
+	return p[strings.LastIndexByte(p, '/')+1:]
+}
+
+// runsFile reports whether unit n executes the file f: as the command word
+// itself (`./x.sh`, `/tmp/x`), or as an operand of an interpreter or of
+// source/. (`bash x.sh`, `python3 /tmp/x.py`, `. ./x.sh`). Reading the
+// file (grep, cat, jq, chmod) is not running it.
+func runsFile(n *Command, f string) bool {
+	if len(n.Argv) == 0 {
+		return false
+	}
+	if samePathLoose(n.Argv[0], f) {
+		return true
+	}
+	if !pipeInterpreterBases[n.Base] && !sourceEvaluatorBases[n.Base] {
+		return false
+	}
+	for _, a := range n.Args() {
+		if samePathLoose(a, f) {
+			return true
+		}
+	}
+	return false
+}
+
+// samePathLoose compares two shell path words without a filesystem: equal
+// after cleaning, or equal base names when either side is relative (a cd in
+// between can make `./i.sh` the `/tmp/i.sh` a download named). It errs
+// toward a match: R-170 is a deny rule for a remote-code shape, and a false
+// match needs a download and an execution of a same-named file in one
+// command line.
+func samePathLoose(a, b string) bool {
+	ca, cb := cleanShellPath(a), cleanShellPath(b)
+	if ca == "" || cb == "" {
+		return false
+	}
+	if ca == cb {
+		return true
+	}
+	ba, bb := ca[strings.LastIndexByte(ca, '/')+1:], cb[strings.LastIndexByte(cb, '/')+1:]
+	if ba == "" || ba != bb {
+		return false
+	}
+	return !absShellPath(ca) || !absShellPath(cb)
+}
+
+// cleanShellPath normalizes a path word for samePathLoose: backslashes to
+// slashes, leading "./" dropped; a flag or an empty word is "".
+func cleanShellPath(p string) string {
+	p = strings.ReplaceAll(strings.TrimSpace(p), `\`, "/")
+	for strings.HasPrefix(p, "./") {
+		p = p[2:]
+	}
+	if p == "" || p == "." || strings.HasPrefix(p, "-") {
+		return ""
+	}
+	return p
+}
+
+// absShellPath reports a path that does not depend on the working
+// directory: rooted, home-relative or a Windows drive path.
+func absShellPath(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") || (len(p) > 2 && p[1] == ':')
 }
 
 // hasPSCommandFlag reports a PowerShell-style -Command/-EncodedCommand

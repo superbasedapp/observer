@@ -45,7 +45,9 @@ func TestShimExcludeDirsCoverTheWindowsBridgeTarget(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	for i := range want {
-		if filepath.Clean(got[i]) != want[i] {
+		// ToSlash: the linux shape is checked on any test host (a Windows
+		// one joins with backslashes; a WSL daemon never does).
+		if filepath.ToSlash(filepath.Clean(got[i])) != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	}

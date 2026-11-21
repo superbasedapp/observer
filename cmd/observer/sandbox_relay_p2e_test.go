@@ -128,7 +128,7 @@ func TestSandboxRefusalReasonsAreTheWireSet(t *testing.T) {
 	node := []string{
 		sandboxRefusedPinned, sandboxRefusedNotAbsolute, sandboxRefusedBadCharacter, sandboxRefusedDotDot,
 		sandboxRefusedLeadingDash, sandboxRefusedWholeRoot, sandboxRefusedObserverDir, sandboxRefusedCIDRNotAllowable,
-		sandboxRefusedSensitive, sandboxRefusedPinnedEnabled,
+		sandboxRefusedSensitive, sandboxRefusedPinnedEnabled, sandboxRefusedExplicitOnly,
 	}
 	if strings.Join(node, ",") != strings.Join(orgcontract.SandboxNodeRefusalReasons, ",") {
 		t.Fatalf("node reasons %v, wire %v", node, orgcontract.SandboxNodeRefusalReasons)

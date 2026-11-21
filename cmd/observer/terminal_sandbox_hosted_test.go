@@ -17,11 +17,14 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/keystore"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/terminalsisolation"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxcred"
 	"github.com/marmutapp/superbased-observer/internal/sandboxnet"
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelay"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
@@ -138,6 +141,10 @@ func TestHostedProbeLadder(t *testing.T) {
 		{"credential", func(f *hostedProbeFacts, _ *config.TerminalSandboxHostedConfig) { f.credential = "" }, verdictHostedCredentialMissing},
 		{"box binary", func(f *hostedProbeFacts, _ *config.TerminalSandboxHostedConfig) { f.boxBinaryErr = errors.New("x") }, verdictHostedBoxBinary},
 		{"daily cap", func(f *hostedProbeFacts, _ *config.TerminalSandboxHostedConfig) { f.usedToday = 239 }, sandboxremote.VerdictDailyCapReached},
+		{"model key custody", func(f *hostedProbeFacts, _ *config.TerminalSandboxHostedConfig) {
+			v := sandboxcred.HomeKey(sandboxcred.HomeKeyFacts{})
+			f.homeKey = &v
+		}, sandboxselect.VerdictCustodyUnsatisfiable},
 	}
 	for _, c := range cases {
 		f, hc := ok, cfg
@@ -305,24 +312,31 @@ func TestHostedCreateRefusesByName(t *testing.T) {
 	t.Cleanup(func() { hostedListed.Store(false) })
 	calls := 0
 	cfg := hostedTestConfig(sandboxbackend.BackendE2B)
+	// An explicit home_relay (the old default) with nothing to add the key.
+	cfg.Hosted.KeyCustody = string(vocab.CustodyHomeRelay)
 	d := hostedTestDriver(t, sandboxbackend.BackendE2B, cfg, &calls)
 	_, err := d.Create(context.Background(), termsvc.PrepareRequest{Tool: "claude-code", ProjectRoot: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), sandboxselect.VerdictCustodyUnsatisfiable) {
 		t.Errorf("home_relay with no proxy-added key: %v", err)
 	}
-	if err := hostedCustodyCheck(true, vocab.CustodyHomeRelay); err != nil {
-		t.Errorf("home_relay with a key pool: %v", err)
+	var refusal *dashapi.SandboxStepRefusal
+	if !errors.As(err, &refusal) || refusal.Message == "" || strings.Contains(refusal.Message, "home_relay") {
+		t.Errorf("the custody refusal is not the typed, plain one: %v", err)
 	}
-	if err := hostedCustodyCheck(false, vocab.CustodyInBoxOAuthSeed); err == nil {
+	if err := hostedKeyCheck(sandboxcred.HomeKeyFacts{Custody: string(vocab.CustodyHomeRelay), OrgRoute: true}); err != nil {
+		t.Errorf("home_relay with the org route: %v", err)
+	}
+	if err := hostedKeyCheck(sandboxcred.HomeKeyFacts{Custody: string(vocab.CustodyInBoxOAuthSeed)}); err == nil {
 		t.Error("in_box_oauth_seed accepted before the seed projection exists")
 	}
-	if _, err := hostedToolDelivery("claude-code", "", vocab.TierProxyOnly, ""); err == nil || !strings.Contains(err.Error(), sandboxselect.VerdictToolUnavailableInImage) {
+	e2bRow, _ := sandboxremote.VendorFor(sandboxremote.VendorE2B)
+	if _, err := hostedToolDelivery("claude-code", "", vocab.TierProxyOnly, e2bRow); err == nil || !strings.Contains(err.Error(), sandboxselect.VerdictToolUnavailableInImage) {
 		t.Errorf("no template on proxy_only: %v", err)
 	}
-	if argv, err := hostedToolDelivery("claude-code", "", vocab.TierInternet, ""); err != nil || len(argv) == 0 {
+	if argv, err := hostedToolDelivery("claude-code", "", vocab.TierInternet, e2bRow); err != nil || len(argv) == 0 {
 		t.Errorf("internet install: %v %v", argv, err)
 	}
-	if argv, err := hostedToolDelivery("claude-code", "observer-box", vocab.TierNone, ""); err != nil || argv != nil {
+	if argv, err := hostedToolDelivery("claude-code", "observer-box", vocab.TierNone, e2bRow); err != nil || argv != nil {
 		t.Errorf("named template: %v %v", argv, err)
 	}
 	if calls != 0 {
@@ -341,6 +355,12 @@ func TestHostedBoxMinutesPlanCap(t *testing.T) {
 		{sandboxremote.VendorVercel, 30, 30},
 		{sandboxremote.VendorE2B, 240, 60},
 		{sandboxremote.VendorModal, 240, 240},
+		{sandboxremote.VendorDockerSandboxes, 2000, 1440},
+		{sandboxremote.VendorInstaBox, 600, 480},
+		{sandboxremote.VendorInstaBox, 60, 60},
+		// Daytona documents no plan cap: the row holds Observer's own 1440.
+		{sandboxremote.VendorDaytona, 240, 240},
+		{sandboxremote.VendorDaytona, 2000, 1440},
 	} {
 		v, _ := sandboxremote.VendorFor(tc.vendor)
 		if got := hostedBoxMinutes(v, tc.planned); got != tc.want {
@@ -379,14 +399,47 @@ var sandboxHostedSettingsInventory = map[string]adminHome{
 	"checkpoint_minutes":  {Pin: "terminal.sandbox.hosted.checkpoint_minutes"},
 	"memory_images":       {Pin: "terminal.sandbox.hosted.memory_images"},
 	"db_export":           {Pin: "terminal.sandbox.hosted.db_export"},
+	// The diff against the box's baseline (lane COPIES).
+	"diff_against": {Pin: "terminal.sandbox.hosted.diff_against"},
+	// SBXD-7: an org may only keep the private ranges denied.
+	"allow_private_ranges": {Pin: "terminal.sandbox.hosted.allow_private_ranges"},
+	"guard_hooks":          {Pin: "terminal.sandbox.hosted.guard_hooks"},
+	// The clone location (lane CLONE2, decision SBXD-5); its node home is
+	// the clone location field the panel mounts (sandboxHosted/).
+	"clone_where": {Pin: "terminal.sandbox.hosted.clone_where"},
+	// Uploading a folder that is not a repository (decision SBXD-8).
+	"upload_non_git": {Pin: "terminal.sandbox.hosted.upload_non_git"},
+	"upload_ignore":  {Pin: "terminal.sandbox.hosted.upload_ignore"},
 	// The org floor provider_key_injection removes provider_injected; the
 	// other custody values are the developer's choice.
 	"key_custody": {Floor: "provider_key_injection"},
+	// Decisions SBXD-1 and SBXD-4: the per-tool custody and the opt-in
+	// in-box key sources are the developer's own, like key_custody, which an
+	// organization cannot pin (orgcontract refuses key_custody by name).
+	"key_custody_by_tool": {Local: "the developer's own choice of where each agent's key sits, like key_custody, which no org body may carry"},
+	"tool_keys":           {Local: "an opt-in that puts the developer's own saved keys in a box; no org body may carry a credential choice"},
+	"login_seed":          {Local: "an opt-in that copies the developer's own login access token into a box; no org body may carry a credential choice"},
 	// The per-provider tables: region under the allowed_regions floor,
 	// template data, box_binary a machine path.
 	"e2b":    {Floor: "allowed_regions"},
 	"modal":  {Floor: "allowed_regions"},
 	"vercel": {Floor: "allowed_regions"},
+	"docker": {Floor: "allowed_regions"},
+	// InstaBox takes no region, so its table's region only ever resolves
+	// empty; the floor still governs it.
+	"instabox": {Floor: "allowed_regions"},
+	// The Daytona row's table (a hosted vendor), like the others.
+	"daytona": {Floor: "allowed_regions"},
+	// The org-hosted row's table: its admin home is the managed body's
+	// org_openshell field (the published gateway); the member's two keys
+	// (laptop_relay, hold_on_end) live on the Org-hosted OpenShell card.
+	"openshell-org": {Managed: "org_openshell"},
+}
+
+// sandboxHostedNodeHome names a key whose node home is not the Hosted
+// sandboxes panel (lane G4: the org-hosted row has its own card).
+var sandboxHostedNodeHome = map[string]string{
+	"openshell-org": "SandboxOrgShellCard.tsx",
 }
 
 // TestSandboxHostedSettingsInventory walks [terminal.sandbox.hosted]: every
@@ -396,6 +449,16 @@ func TestSandboxHostedSettingsInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The panel's own blocks under components/sandboxHosted/ (SBXD-8), each
+	// mounted from the panel with one line, are part of its node home.
+	parts, _ := filepath.Glob(filepath.Join("..", "..", "web", "src", "components", "sandboxHosted", "*.tsx"))
+	for _, p := range parts {
+		b, err := os.ReadFile(p) //nolint:gosec // G304: a repository source file
+		if err != nil {
+			t.Fatal(err)
+		}
+		panel = append(panel, b...)
+	}
 	typ := reflect.TypeOf(config.TerminalSandboxHostedConfig{})
 	for i := 0; i < typ.NumField(); i++ {
 		key := strings.SplitN(typ.Field(i).Tag.Get("toml"), ",", 2)[0]
@@ -404,7 +467,12 @@ func TestSandboxHostedSettingsInventory(t *testing.T) {
 			t.Errorf("[terminal.sandbox.hosted].%s has no inventory row", key)
 			continue
 		}
-		if !strings.Contains(string(panel), key) {
+		if card, ok := sandboxHostedNodeHome[key]; ok {
+			b, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "components", card))
+			if err != nil || !strings.Contains(string(b), "laptop-relay") || !strings.Contains(string(b), "hold-on-end") {
+				t.Errorf("[terminal.sandbox.hosted].%s has no node home in %s (%v)", key, card, err)
+			}
+		} else if !strings.Contains(string(panel), key) {
 			t.Errorf("[terminal.sandbox.hosted].%s has no node home in the panel", key)
 		}
 		switch {
@@ -416,6 +484,12 @@ func TestSandboxHostedSettingsInventory(t *testing.T) {
 			if _, ok := terminalsisolation.LookupFloorKey(home.Floor); !ok {
 				t.Errorf("%s: floor %q is not a terminals.isolation key", key, home.Floor)
 			}
+		case home.Managed != "":
+			if !managedBodyHasField(home.Managed) {
+				t.Errorf("%s: %q is not a field of the managed sandbox body", key, home.Managed)
+			}
+		case home.Local != "":
+			// Local by design: no admin home exists or may be built.
 		default:
 			t.Errorf("%s has no admin home", key)
 		}
@@ -433,12 +507,12 @@ func TestHostedVercelTemplateRule(t *testing.T) {
 		t.Fatal("Vercel names no template rule")
 	}
 	for _, tier := range []vocab.Tier{vocab.TierNone, vocab.TierProxyOnly} {
-		_, err := hostedToolDelivery("claude-code", "", tier, v.TemplateRule)
+		_, err := hostedToolDelivery("claude-code", "", tier, v)
 		if err == nil || !strings.Contains(err.Error(), sandboxselect.VerdictToolUnavailableInImage) || !strings.Contains(err.Error(), "team owns") {
 			t.Errorf("%s: %v", tier, err)
 		}
 	}
-	if argv, err := hostedToolDelivery("claude-code", "", vocab.TierInternet, v.TemplateRule); err != nil || len(argv) == 0 {
+	if argv, err := hostedToolDelivery("claude-code", "", vocab.TierInternet, v); err != nil || len(argv) == 0 {
 		t.Errorf("internet: %v %v", argv, err)
 	}
 	e2b, _ := sandboxremote.VendorFor(sandboxremote.VendorE2B)
@@ -456,6 +530,8 @@ func TestHostedProbeNamesAChangedCap(t *testing.T) {
 	t.Cleanup(func() { hostedListed.Store(false) })
 	calls := 0
 	cfg := hostedTestConfig(sandboxbackend.BackendE2B)
+	// A custody the node serves, so the probe reaches the consent rows.
+	cfg.Hosted.KeyCustody = string(vocab.CustodyInBoxAPIKey)
 	d := hostedTestDriver(t, sandboxbackend.BackendE2B, cfg, &calls)
 	static, ok := d.consentFactsStatic()
 	if !ok {
@@ -557,4 +633,16 @@ func TestBoxRedialWhileTheRelayReopens(t *testing.T) {
 	}); err == nil {
 		t.Error("a relay that never came back passed")
 	}
+}
+
+// managedBodyHasField reports whether the managed sandbox body has a field
+// with this JSON key.
+func managedBodyHasField(key string) bool {
+	t := reflect.TypeOf(orgcontract.SandboxManagedPolicyV1{})
+	for i := 0; i < t.NumField(); i++ {
+		if strings.SplitN(t.Field(i).Tag.Get("json"), ",", 2)[0] == key {
+			return true
+		}
+	}
+	return false
 }

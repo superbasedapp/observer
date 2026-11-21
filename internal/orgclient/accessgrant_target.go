@@ -13,10 +13,10 @@ import (
 // (request-grants G8) over the SAME re-verified grant read the guard uses
 // (accessgrant_claim.go): a launcher asking "may this tool start" and the
 // governance sidecar writer asking "which pinned settings are excepted" both
-// decode what a grant covers from the signed body, and a use is counted by
-// the same conditional UPDATE, so a hook, a launcher and the daemon racing on
-// a grant's last use cannot all win. Every failure is "no grant": the org's
-// block stands.
+// decode what a grant covers from the signed body, and a use-limited grant's
+// use is counted by the same conditional UPDATE, so a hook, a launcher and
+// the daemon racing on a grant's last use cannot all win. The decision is
+// made from reads; a read that fails is "no grant": the org's block stands.
 
 // TargetClaim is the answer to one tool / model / feature question.
 type TargetClaim struct {
@@ -48,7 +48,6 @@ func claimOrPeekTarget(ctx context.Context, s *store.Store, q accessgrant.Target
 	if err != nil || enr == nil {
 		return TargetClaim{}
 	}
-	_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
 		v, err := LoadVerifiedAccessGrants(ctx, s)
 		if err != nil {
@@ -71,10 +70,20 @@ func claimOrPeekTarget(ctx context.Context, s *store.Store, q accessgrant.Target
 			}
 		}
 		counted, err := s.ConsumeAccessGrantUse(ctx, hit.GrantID, maxUses)
+		if maxUses == 0 {
+			// An unlimited grant has no limit the write protects: its local
+			// counter is bookkeeping, so a database that cannot take the
+			// write right now does not undo the grant (ClaimAccessGrant).
+			if err == nil {
+				_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
+			}
+			return TargetClaim{Hit: hit, OK: true}
+		}
 		if err != nil {
 			return TargetClaim{}
 		}
 		if counted {
+			_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
 			if hit.UsesLeft > 0 {
 				hit.UsesLeft--
 			}

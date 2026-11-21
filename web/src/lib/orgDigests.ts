@@ -2,6 +2,8 @@
 // (T-490, GET /api/intel/digests). The org server scopes the rows to the
 // projects this member works in; this file only decides what the card says.
 
+import type { Place } from "./settingsPlaces.ts";
+
 export const ORG_DIGESTS_PATH = "/api/intel/digests";
 
 export type OrgDigest = {
@@ -26,15 +28,17 @@ export type OrgDigestsResponse = {
   digests: OrgDigest[];
 };
 
-export type OrgDigestNotice = { tone: "muted" | "warn"; text: string };
+/** A notice the card shows instead of digests. `place` is where this
+ *  machine changes it (settingsPlaces), when it can. */
+export type OrgDigestNotice = { tone: "muted" | "warn"; text: string; place?: Place };
 
 // NOTICE_RULES is an ordered table (first match wins): the sentence the card
 // shows when it has no digest to render. null means "render the digests".
 const NOTICE_RULES: ReadonlyArray<{ match: (r: OrgDigestsResponse) => boolean; notice: (org: string) => OrgDigestNotice | null }> = [
-  { match: (r) => r.state === "not_enrolled", notice: () => ({ tone: "muted", text: "This machine is not enrolled in an organization, so there are no organization project digests here." }) },
-  { match: (r) => r.state === "not_supported", notice: (org) => ({ tone: "muted", text: `${org} does not offer weekly project digests: its server predates them, or project digests are turned off.` }) },
-  { match: (r) => r.state === "auth_failed", notice: (org) => ({ tone: "warn", text: `${org} refused this machine's credentials. Check the enrolment under Organization enrolment.` }) },
-  { match: (r) => r.state === "channel_off", notice: (org) => ({ tone: "muted", text: `${org} has organization intelligence switched off.` }) },
+  { match: (r) => r.state === "not_enrolled", notice: () => ({ tone: "muted", text: "This machine is not connected to an organization, so there are no organization project digests here. Connect it in Settings > Account.", place: "account" }) },
+  { match: (r) => r.state === "not_supported", notice: (org) => ({ tone: "muted", text: `${org} does not offer weekly project digests: its server predates them, or project digests are turned off. That is set on the online dashboard, not on this machine.` }) },
+  { match: (r) => r.state === "auth_failed", notice: (org) => ({ tone: "warn", text: `${org} refused this machine's credentials. Check the connection in Settings > Account.`, place: "account" }) },
+  { match: (r) => r.state === "channel_off", notice: (org) => ({ tone: "muted", text: `${org} has organization intelligence switched off. That is set on the online dashboard, not on this machine.` }) },
   { match: (r) => r.state === "unreachable" || r.state === "malformed", notice: (org) => ({ tone: "warn", text: `Could not read the digests from ${org} right now. Try again later.` }) },
   { match: (r) => r.state !== "ok", notice: () => ({ tone: "warn", text: "The digests are not available right now." }) },
   { match: (r) => r.withheld === "posture", notice: (org) => ({ tone: "muted", text: `${org} does not share its enrichment with this machine: it is enrolled as an individual without an organization enrichment consent.` }) },

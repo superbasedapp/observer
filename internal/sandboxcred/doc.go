@@ -1,15 +1,17 @@
 // Package sandboxcred is the pure decision layer of credential injection
 // for sandboxed runs (sandbox plan v2 sections 7.2 and 7.3, gap G24, lane
-// GATES-SBX): the box holds a per-run sentinel in its tool's key variable,
+// GATES-SBX): the box holds a per-run sentinel in the key variable of each
+// provider the run binds (internal/sandboxkey bind.go),
 // and the home proxy swaps the sentinel for the user's own key on the way
 // out, only when every row of an ordered match table holds. It also holds
 // the `provider_injected` custody decisions: the vendor broker table (with
 // the documentation each row cites), the refusals and the disclosure text.
 //
-// It decides and does nothing: the provider table (providers.go), sentinel
-// and relay-token minting over an injected random source and their hashes
-// (sentinel.go), the match rules (match.go), and the custody rules
-// (custody.go). The keystore, the run files, the proxy and the hosted
+// It decides and does nothing: sentinel and relay-token minting over an
+// injected random source and their hashes (sentinel.go), the match rules
+// (match.go) and the local fold (fold.go). The provider table, the custody
+// rules and the key sources live in internal/sandboxkey, which every hosted
+// row needs, and are re-exported here (keyalias.go). The keystore, the run files, the proxy and the hosted
 // helper are the caller's (cmd/observer/sandbox_cred*.go and
 // internal/proxy/credinject.go).
 //

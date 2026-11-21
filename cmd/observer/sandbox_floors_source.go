@@ -36,6 +36,12 @@ import (
 // route does, instead of judging against no floor.
 var errOrgFloorsUnreadable = errors.New("org_floors_unreadable: the organization's isolation floors could not be read")
 
+// sandboxFloorsDBRecovery is how to recover when the node's own database
+// does not open (tracker F-032). A node that cannot read its database
+// cannot show it holds no organization floor, so a sandboxed launch stays
+// refused until the database opens again.
+const sandboxFloorsDBRecovery = "a node that cannot read its own database cannot show that no organization floor applies, so sandboxed launches stay refused until it opens; run `observer doctor` to see why it does not open, then repair it, or stop the daemon and move the database file aside together with its -wal and -shm files (observer.db, observer.db-wal and observer.db-shm by default; a write-ahead log left beside a new database can be replayed into it), after which Observer makes a new, empty database on the next start and a node that was enrolled in an organization must enroll again"
+
 // sandboxOrgFloorsFor returns the floors in force for this process. In a
 // CLI process an error means a floor may be in force that could not be
 // read; the caller refuses (fails closed) rather than judge against none.
@@ -50,6 +56,32 @@ func sandboxOrgFloorsFor(ctx context.Context, cfg config.Config) (sandboxselect.
 	return sandboxFloorsFromSpec(spec, ok), nil
 }
 
+// installCLIIsolationFloors puts the floors a CLI process must judge
+// against into this process's floor holder, so every sandboxOrgFloors()
+// reader (the probe's selection input and each driver's launch re-check)
+// sees the same floors the daemon would (O5 sweep G-H1: a sandboxed CLI
+// launch never loaded terminals.isolation and judged against none). A
+// process that installs the policy resources itself keeps its own; an
+// error means a floor may be in force that could not be read, and the
+// caller refuses.
+func installCLIIsolationFloors(ctx context.Context, cfg config.Config) error {
+	if policyResourceInstalledHere.Load() {
+		return nil
+	}
+	spec, ok, err := sandboxCachedIsolationSpec(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		isolationFloorsClear()
+		return nil
+	}
+	isolationFloors.mu.Lock()
+	isolationFloors.st = isolationFloorsState{hasOrgRail: true, spec: &spec}
+	isolationFloors.mu.Unlock()
+	return nil
+}
+
 // sandboxCachedIsolationSpec reads the terminals.isolation spec a CLI
 // process sees: the verified cache when it is applied and not inert. ok
 // false with a nil error is "no floor in force" (not enrolled, the family
@@ -61,7 +93,16 @@ var sandboxCachedIsolationSpec = func(ctx context.Context, cfg config.Config) (t
 		if errors.Is(err, fs.ErrNotExist) {
 			return terminalsisolation.PolicySpec{}, false, nil // no database: never enrolled
 		}
-		return terminalsisolation.PolicySpec{}, false, fmt.Errorf("%w: open the database: %w", errOrgFloorsUnreadable, err)
+		// The node's own database did not open, so this process cannot
+		// tell whether a floor is recorded and fails closed. The message
+		// names the database, not the organization (O5 audit finding
+		// O5-A5): on a node never enrolled the fault is local. It stays a
+		// refusal on a never-enrolled node too (tracker F-032): nothing
+		// outside the database proves the node was never enrolled (the
+		// enrolment, its generation and the recorded floor all live there,
+		// and the [org_client] config block is optional for an enrolment
+		// and editable by hand), so the message says how to recover.
+		return terminalsisolation.PolicySpec{}, false, fmt.Errorf("%w: the node database %s could not be read to check for organization floors: %w; %s", errOrgFloorsUnreadable, cfg.Observer.DBPath, err, sandboxFloorsDBRecovery)
 	}
 	defer cleanup()
 	raw, inert, ok := loadPolicyResourceFromCache(ctx, cfg, st, policyfam.FamilyTerminalsIsolation)

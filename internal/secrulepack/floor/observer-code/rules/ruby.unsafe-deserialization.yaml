@@ -1,0 +1,37 @@
+rules:
+  - id: ruby.unsafe-deserialization
+    languages: [ruby]
+    severity: ERROR
+    message: Data from a web request is deserialized with a loader that can build arbitrary objects (Marshal, an unsafe YAML load, Oj's object mode, JSON.load), so crafted input can run code; parse it as plain data (JSON.parse, YAML.safe_load).
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|query_string|raw_post|body|headers|cookies|GET|POST)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Marshal.load($D, ...)
+              - pattern: Marshal.restore($D, ...)
+              - pattern: YAML.unsafe_load($D, ...)
+              - pattern: Psych.unsafe_load($D, ...)
+              - pattern: YAML.unsafe_load_file($D, ...)
+              # Psych 4 (Ruby 3.1) made load a safe load; before it, load
+              # builds any object a YAML tag names.
+              - pattern: YAML.load($D, ...)
+              - pattern: Psych.load($D, ...)
+              - pattern: YAML.load_documents($D, ...)
+              - pattern: JSON.load($D, ...)
+              - pattern: JSON.restore($D, ...)
+              - pattern: Oj.object_load($D, ...)
+              # Oj's default mode is :object.
+              - pattern: Oj.load($D)
+              - pattern: 'Oj.load($D, mode: :object, ...)'
+          - focus-metavariable: $D

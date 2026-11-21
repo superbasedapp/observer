@@ -90,7 +90,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "How much of the assistant's output is explanation vs authored code (file writes + shell commands) and shown snippets - by language.",
     detail:
-      "Splits a session's assistant output into two axes. CHANNEL = where it came through: narrative prose, shown artifacts (fenced blocks in the chat), code written to files (Write/Edit), and shell commands (Bash/PowerShell). CATEGORY = what it is, by language: code, docs, config, data, prose. Shell/CLI counts as code wherever it appears. The headline 'code vs explanation' ratio answers 'am I getting code or talk?'. Byte counts are exact: visible prose/artifacts are segmented from the assistant's message text (a fenced go block counts as code; an untagged or quoted fence stays prose-ish), and authored code is the byte length the model wrote in each tool call (never the content itself). A session that wrote code BEFORE per-action capture landed shows a backfill hint - run `observer backfill` to include its authored code.",
+      "Splits a session's assistant output into two axes. CHANNEL = where it came through: narrative prose, shown artifacts (fenced blocks in the chat), code written to files (Write/Edit), and shell commands (Bash/PowerShell). CATEGORY = what it is, by language: code, docs, config, data, prose. Shell/CLI counts as code wherever it appears. The headline 'code vs explanation' ratio answers 'am I getting code or talk?'. Byte counts are exact: visible prose/artifacts are segmented from the assistant's message text (a fenced go block counts as code; an untagged or quoted fence stays prose-ish), and authored code is the byte length the model wrote in each tool call (never the content itself). A session that wrote code BEFORE per-action capture landed shows a backfill hint - run the backfill in Settings > Backfill (the same as `observer backfill`) to include its authored code.",
     formula:
       "code = Σ bytes where category=code across writes + commands + code fences; explanation = Σ category=prose (narrative + untagged/prose fences); ratio = code ÷ explanation",
     source:
@@ -104,7 +104,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Lines this session changed, classified code / comment / whitespace / blank and attributed to whoever authored them.",
     detail:
-      "Counted from each edit's own before/after text (the tool call's old_string/new_string, patch hunk or written content), never from a filesystem scan or a git diff. A replaced line counts once as MODIFIED, not as one delete plus one add; a pure reindent lands in WHITESPACE, not in modified. Attribution: AI = the agent's edit/write/patch calls, split into main-agent and SUBAGENT (sidechain) work because those are different actors doing different jobs and folding them hides half the story. HUMAN = editor-reported saves from the SuperBased VS Code extension, and nothing else - so it reads zero (and no AI share is shown anywhere) until that extension is installed. SYSTEM = the format-on-save reflow the editor reports between will-save and did-save. UNATTRIBUTED = an edit whose shape could not be parsed. Docs and config files are kept OUT of the code numbers. Generated, vendored and unrecognised files are skipped entirely and reported as a file count. CODE VS COMMENTS: under the two AI headlines the card shows how much of the agent's code-file writing was code and how much was comments (main agent and subagent separately). Comment lines are never in the code headlines; blank and whitespace-only lines are in neither number. This comment share needs no human measurement, so unlike an AI-vs-human share it is shown whether or not an editor is reporting saves. No productivity score is derived from any of this.",
+      "Counted from each edit's own before/after text (the tool call's old_string/new_string, patch hunk or written content), never from a filesystem scan or a git diff. A replaced line counts once as MODIFIED, not as one delete plus one add; a pure reindent lands in WHITESPACE, not in modified. Attribution: AI = the agent's edit/write/patch calls, split into main-agent and SUBAGENT (sidechain) work because those are different actors doing different jobs and folding them hides half the story. HUMAN = editor-reported saves from the superbased VS Code extension, and nothing else - so it reads zero (and no AI share is shown anywhere) until that extension is installed. SYSTEM = the format-on-save reflow the editor reports between will-save and did-save. UNATTRIBUTED = an edit whose shape could not be parsed. Docs and config files are kept OUT of the code numbers. Generated, vendored and unrecognised files are skipped entirely and reported as a file count. CODE VS COMMENTS: under the two AI headlines the card shows how much of the agent's code-file writing was code and how much was comments (main agent and subagent separately). Comment lines are never in the code headlines; blank and whitespace-only lines are in neither number. This comment share needs no human measurement, so unlike an AI-vs-human share it is shown whether or not an editor is reporting saves. No productivity score is derived from any of this.",
     formula:
       "code lines written = added_code + modified_code (deleted lines are NOT included); code vs comments: code = added_code + modified_code, comments = added_comment, comment share = comments ÷ (code + comments), AI actor, code category, computed server-side by internal/loc.SplitAuthored (ai_split / ai_sidechain_split); low confidence = files whose classification degraded at a fragment boundary or on a truncated input; overwrite = a whole-file write over an existing file, counted as added because the before-image came from the prior read, or from nothing",
     source:
@@ -131,7 +131,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Distill this session into a priced, scrubbed handover doc another AI tool can pick up - forked from any stable point.",
     detail:
-      "Session handoff re-reads the conversation from the source tool's own transcript files (nothing is stored in the SuperBased DB), distills it into a HANDOFF-*.md the target tool reads in the project root, and prices every carry mode at the target model: metadata (action-derived facts only), distilled (facts + mission), distilled + tail (adds the verbatim last exchanges), full (the whole context through the fork with tool results excerpted - every message tagged [msg <id>] with an MCP hint so a target with the SuperBased MCP pulls any full body on demand via get_session_message), and full + cache (the un-excerpted read bodies written into the doc; the target reads that doc to load the source read cache into the new session up front - for targets with no SuperBased MCP, or when you want a zero-round-trip warm start. Large docs are delivered as a read-this-file pointer because a launch prompt is a single OS argument capped near 128KB). The fork picker offers only STABLE boundaries - assistant exchanges whose tool calls all resolved; a request inside an unresolved tool chain or on an unanswered user message snaps backward with a reason. Important honesty note: this is NOT cache migration. Provider prompt caches are server-side and prefix-exact - they cannot move between tools; the estimate's rows show what rehydration actually costs.",
+      "Session handoff re-reads the conversation from the source tool's own transcript files (nothing is stored in the superbased DB), distills it into a HANDOFF-*.md the target tool reads in the project root, and prices every carry mode at the target model: metadata (action-derived facts only), distilled (facts + mission), distilled + tail (adds the verbatim last exchanges), full (the whole context through the fork with tool results excerpted - every message tagged [msg <id>] with an MCP hint so a target with the superbased MCP pulls any full body on demand via get_session_message), and full + cache (the un-excerpted read bodies written into the doc; the target reads that doc to load the source read cache into the new session up front - for targets with no superbased MCP, or when you want a zero-round-trip warm start. Large docs are delivered as a read-this-file pointer because a launch prompt is a single OS argument capped near 128KB). The fork picker offers only STABLE boundaries - assistant exchanges whose tool calls all resolved; a request inside an unresolved tool chain or on an unanswered user message snaps backward with a reason. Important honesty note: this is NOT cache migration. Provider prompt caches are server-side and prefix-exact - they cannot move between tools; the estimate's rows show what rehydration actually costs.",
     formula:
       "carry cost = rendered doc tokens × target-model input rate; full row = session prefix tokens × fork share × input rate",
     source:
@@ -151,7 +151,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tab",
     title: "Suggestions tab",
     oneLiner: "Prescriptive, dollar-quantified recommendations - what to change, with the arithmetic shown.",
-    detail: "The advisor engine walks your captured sessions and emits ranked suggestions, each with estimated avoidable spend and the counterfactual math behind it. 18 detectors across four categories: cost (session balloon, idle re-cache, long-context crossings, trivial-model over-provisioning, read-heavy expensive model, fast-tier premium, web-search spend, spend spike, …), latency (effort over-provisioning), quality (unrecovered failures, quality regression), and hygiene (wasteful stale re-reads, compression off, not proxied, MCP overhead, cache-health family). Savings estimates apply a 30% haircut for context you may have genuinely needed; thresholds were calibrated against real usage corpora. Everything is computed locally on read - nothing is stored or sent anywhere. Cards can be snoozed (7 days) or dismissed; a compact digest of the top suggestions is also available to your AI tools via the get_suggestions MCP tool and `observer advise --digest`.",
+    detail: "The advisor engine walks your captured sessions and emits ranked suggestions, each with estimated avoidable spend and the counterfactual math behind it. 18 detectors across four categories: cost (session balloon, idle re-cache, long-context crossings, trivial-model over-provisioning, read-heavy expensive model, fast-tier premium, web-search spend, spend spike, …), latency (effort over-provisioning), quality (unrecovered failures, quality regression), and hygiene (wasteful stale re-reads, compression off, not proxied, MCP overhead, cache-health family). Savings estimates apply a 30% haircut for context you may have genuinely needed; thresholds were calibrated against real usage corpora. Everything is computed locally on read - nothing is stored or sent anywhere. Cards can be snoozed (7 days) or dismissed; a compact digest of the top suggestions is also available to your AI tools via the get_suggestions MCP tool, and Copy digest on this page copies the markdown rollup (the same as `observer advise --digest`) for the window and filter you are looking at.",
     related: ["tile.suggestions.avoidable", "tile.suggestions.open", "glossary.suggestion_card", "tab.discovery", "tab.cache", "tab.cost"],
   },
   {
@@ -447,7 +447,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tile",
     title: "Cache efficiency tile",
     oneLiner: "Global cache read-to-write ratio across all proxied sessions - the headline cache-payback signal.",
-    detail: "Headline value is read_tokens ÷ write_tokens: tokens served from the Anthropic prefix cache divided by tokens written to it. Higher = more cache benefit (each write is paying off across more reads). The sub line shows event count and session count; the corner pill names the dominant non-baseline cause (suffix_growth excluded as the healthy baseline). The pill is warn (amber) for a flagged cause (currently tools_changed - legitimate MCP server toggles, a known cause worth a look if it dominates) and takes the cause's own tone otherwise (warn for real invalidations such as system_changed / expiry_rewrite / model_switch_rewrite). Renders as '-' when the corpus has no writes yet (avoids the misleading '0.0×' reading as 'no cache benefit'). Empty-state copy points operators to `[cachetrack].enabled` (default-on) and the cache-rescan backfill (Settings > Backfill, or `observer backfill --cache-rescan`).",
+    detail: "Headline value is read_tokens ÷ write_tokens: tokens served from the Anthropic prefix cache divided by tokens written to it. Higher = more cache benefit (each write is paying off across more reads). The sub line shows event count and session count; the corner pill names the dominant non-baseline cause (suffix_growth excluded as the healthy baseline). The pill is warn (amber) for a flagged cause (currently tools_changed - legitimate MCP server toggles, a known cause worth a look if it dominates) and takes the cause's own tone otherwise (warn for real invalidations such as system_changed / expiry_rewrite / model_switch_rewrite). Renders as '-' when the corpus has no writes yet (avoids the misleading '0.0×' reading as 'no cache benefit'). Empty-state copy points operators to Settings > Cache tracking (Enabled, on by default) and the cache-rescan backfill (Settings > Backfill, or `observer backfill --cache-rescan`).",
     formula: "SUM(tokens_read) / SUM(tokens_written) over cache_events",
     related: ["tab.cache", "tile.cache_ratio"],
   },
@@ -475,7 +475,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tile",
     title: "Mispredict rate tile",
     oneLiner: "The engine's self-grading rate - fraction of graded cache_events where the engine's predicted kind did not match the observed kind.",
-    detail: "Reads /api/cache/health. The engine looks at every cache_events row it persisted, compares what it PREDICTED would happen on each turn against what was OBSERVED on the upstream response, and counts mismatches as mispredicts. A healthy engine produces a low rate (the operator's own corpus typically lands at 0% once the engine is calibrated). The tile renders warn-toned when the corpus is big enough to grade (≥ 200 graded events) AND the rate is over the 5% pass threshold; info-toned when the corpus is below the grading minimum (the engine can't decide yet). Run `observer cache-health --json` for the full diagnostic surface. See Engine grading (glossary.cachetrack_grading_gate) for what's in/out of the denominator and why.",
+    detail: "Reads /api/cache/health. The engine looks at every cache_events row it persisted, compares what it PREDICTED would happen on each turn against what was OBSERVED on the upstream response, and counts mismatches as mispredicts. A healthy engine produces a low rate (the operator's own corpus typically lands at 0% once the engine is calibrated). The tile renders warn-toned when the corpus is big enough to grade (≥ 200 graded events) AND the rate is over the 5% pass threshold; info-toned when the corpus is below the grading minimum (the engine can't decide yet). The Full report at the bottom of the Overview tab shows the whole diagnostic surface (per-session grades, the cause breakdown, the events behind the diagnostics), with the four thresholds as inputs - the same report as `observer cache-health`. See Engine grading (glossary.cachetrack_grading_gate) for what's in/out of the denominator and why.",
     formula: "rate = mispredicts / graded_events; gate_passed = graded_events ≥ 200 AND rate ≤ 5%",
     source: "/api/cache/health → mispredict_rate + graded_events + gate_passed",
     related: ["tab.cache", "tile.cache_ratio", "glossary.cachetrack_grading_gate", "glossary.cachetrack_engine_health"],
@@ -1070,8 +1070,9 @@ export const HELP_REGISTRY: HelpEntry[] = [
   {
     id: "column.sessions.tokens",
     category: "column",
-    title: "Sessions › Total tokens (deprecated - split into Input/Cache R/Cache W/Output as of v1.4.51)",
-    oneLiner: "Sum of all four billable buckets. Still emitted in the JSON for back-compat; no longer rendered as a column.",
+    title: "Sessions › Tokens",
+    oneLiner: "All the tokens the session used: input, cache reads, cache writes and output added up.",
+    detail: "The thin bar under the number shows the mix of the four kinds; hover the number for each count, the cache-write split between the 5-minute and 1-hour tiers, and reasoning tokens when the model reported them. This column does not sort: sort by one kind from the Sort menu, or turn on its own column (Input, Cache R, Cache W, Output) from Columns.",
     formula: "Input + Output + CacheRead + CacheCreation",
     related: ["column.sessions.input_tokens", "column.sessions.output_tokens", "column.sessions.cache_read_tokens", "column.sessions.cache_creation_tokens"],
   },
@@ -1089,6 +1090,14 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "How the tool was driven: a terminal (cli), an editor (ide), a desktop app, a programmatic embedding (sdk), or a browser (web) - plus the host that ran it when known.",
     detail: "Read from the session's capture-surface stamp (sessions.surface / surface_host), which the adapter derives from the transcript's own discriminators (Claude Code entrypoint, Codex originator, an IDE's task record, …). Blank means no adapter stamped one - unknown, not a terminal run. The Client dropdown in the toolbar filters on the kind server-side across every page. Node-local; never shipped to an org server.",
     related: ["column.sessions.tool"],
+  },
+  {
+    id: "column.sessions.ran",
+    category: "column",
+    title: "Sessions › Ran",
+    oneLiner: "Where the session's agent ran: this machine (local), a vendor's cloud sandbox (cloud), or compute your organization runs for the vendor (worker).",
+    detail: "Read from the session's execution stamp (sessions.execution_location), set by the capture path that saw the session: a cloud transcript marker, a cloud connector, or a sandbox flush. Blank means nothing recorded where it ran - unknown, not local. The \"Where it ran\" dropdown in the toolbar filters on it server-side across every page; pick \"unknown\" to find unstamped sessions. Hover the pill for the vendor's own session id when one was captured.",
+    related: ["column.sessions.client"],
   },
   {
     id: "column.tools.actions",
@@ -1305,7 +1314,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Quality score",
     oneLiner: "Single 0-1 signal (shown as 0-100) of how efficiently a session's agent worked. Higher is better.",
-    detail: "Rule-based, local, no model involved: 40% low redundancy (1 - stale re-reads per read or command) + 30% tool success (1 - failed calls per call) + 20% exploration efficiency (files edited / files touched) + 10% continuity (grows with session length, so a very short session cannot score top marks). 80+ is strong, 60-79 fair, below 60 weak. The running daemon scores each session once it has been idle for [intelligence.scoring] idle_minutes (default 30) and re-scores it after new activity; Score all now (Sessions page), the session's Score now button, or `observer score` scores on demand. A session that was never scored shows no value, not zero.",
+    detail: "Rule-based, local, no model involved: 40% low redundancy (1 - stale re-reads per read or command) + 30% tool success (1 - failed calls per call) + 20% exploration efficiency (files edited / files touched) + 10% continuity (grows with session length, so a very short session cannot score top marks). 80+ is strong, 60-79 fair, below 60 weak. The running daemon scores each session once it has been idle for the scoring idle time (Settings > Intelligence, More settings: intelligence.scoring.idle_minutes, default 30) and re-scores it after new activity; Score all now (Sessions page), the session's Score now button, or `observer score` scores on demand. A session that was never scored shows no value, not zero.",
     related: ["metric.error_rate", "metric.redundancy_ratio"],
   },
   {
@@ -1473,7 +1482,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Conversation compression",
     oneLiner: "Pre-forward compression of conversation payloads in the API proxy.",
-    detail: "Compresses or drops large tool_result blocks before forwarding to the upstream API. Replaces dropped content with markers so the model still has a reference. Opt-in via `[compression.conversation].enabled` in observer config.",
+    detail: "Compresses or drops large tool_result blocks before forwarding to the upstream API. Replaces dropped content with markers so the model still has a reference. Opt-in: turn on Conversation in Settings > Compression ([compression.conversation] enabled). It applies only to tools routed through the proxy.",
     related: ["glossary.shell_compression", "glossary.marker"],
   },
   {
@@ -1619,7 +1628,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Shell-output compression",
     oneLiner: "Trimming shell command output BEFORE it gets recorded to the AI client's context.",
-    detail: "Different from conversation compression - runs upstream of recording. When the AI client invokes a Bash hook through the observer, declarative filters (git, go test, docker, kubectl, cargo, pytest, npm, gradle, go build, …) strip routine noise (compilation status banners, dependency-resolution chatter, retry messages) before the output is recorded as the tool_result. Always on for any of the bundled command families; opt-in for new commands via [compression.shell.filters] in observer config.",
+    detail: "Different from conversation compression - runs upstream of recording. When the AI client invokes a Bash hook through the observer, declarative filters (git, go test, docker, kubectl, cargo, pytest, npm, gradle, go build, …) strip routine noise (compilation status banners, dependency-resolution chatter, retry messages) before the output is recorded as the tool_result. Always on for the bundled command families. Settings > Compression > Shell output turns filtering off (Enabled) or keeps a command's output untouched (Exclude commands; [compression.shell] enabled / exclude_commands). There is no setting that adds a new command family: filters ship with the binary.",
     related: ["glossary.conversation_compression"],
   },
   {
@@ -1662,7 +1671,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Cache tracking - how data gets captured",
     oneLiner: "Two paths feed the same engine: the API proxy (live) and the transcript watcher (retroactive).",
-    detail: "The cachetrack engine never makes its own provider calls - it observes traffic that's already happening. Two ingest paths exist, both writing into the same three local-only tables (cache_segments / cache_entries / cache_events):\n\nProxy (live capture):\n• Point your AI client at the local proxy. For Anthropic-routed tools that's ANTHROPIC_BASE_URL=http://127.0.0.1:8820 (Claude Code). The proxy reads the upstream usage envelope (cache_read_input_tokens + cache_creation_input_tokens) the moment the response streams in, and the engine attributes the turn live.\n• Every cache event from a proxied turn surfaces on the dashboard in real time, with full attribution (predicted vs observed kind, cause, token deltas).\n\nWatcher (retroactive capture):\n• When a session DIDN'T route through the proxy, the watcher tails the AI client's on-disk JSONL transcripts and feeds the same engine retroactively. Run the cache-rescan backfill (Settings > Backfill, or `observer backfill --cache-rescan`) to retrofit history that pre-dates a fresh cachetrack install.\n• Currently the watcher path is wired for Claude Code transcripts only. Codex / OpenAI transcripts have a scaffold but emit no events - see Codex limitation (glossary.cachetrack_codex_limitation) for why.\n\nPrivacy: cachetrack tables are NODE-LOCAL. They are NEVER pushed to a Teams org server - pinned by a test invariant. The data exists only on the machine that observed it.\n\nEnable / disable: cachetrack is on by default. To turn it off, set `[cachetrack].enabled = false` in ~/.observer/config.toml and restart `observer start`. Inspect engine health from the CLI with `observer cache-health --json`.",
+    detail: "The cachetrack engine never makes its own provider calls - it observes traffic that's already happening. Two ingest paths exist, both writing into the same three local-only tables (cache_segments / cache_entries / cache_events):\n\nProxy (live capture):\n• Point your AI client at the local proxy. For Anthropic-routed tools that's ANTHROPIC_BASE_URL=http://127.0.0.1:8820 (Claude Code). The proxy reads the upstream usage envelope (cache_read_input_tokens + cache_creation_input_tokens) the moment the response streams in, and the engine attributes the turn live.\n• Every cache event from a proxied turn surfaces on the dashboard in real time, with full attribution (predicted vs observed kind, cause, token deltas).\n\nWatcher (retroactive capture):\n• When a session DIDN'T route through the proxy, the watcher tails the AI client's on-disk JSONL transcripts and feeds the same engine retroactively. Run the cache-rescan backfill (Settings > Backfill, or `observer backfill --cache-rescan`) to retrofit history that pre-dates a fresh cachetrack install.\n• Currently the watcher path is wired for Claude Code transcripts only. Codex / OpenAI transcripts have a scaffold but emit no events - see Codex limitation (glossary.cachetrack_codex_limitation) for why.\n\nPrivacy: cachetrack tables are NODE-LOCAL. They are NEVER pushed to a Teams org server - pinned by a test invariant. The data exists only on the machine that observed it.\n\nEnable / disable: cachetrack is on by default. To turn it off, clear Enabled in Settings > Cache tracking, then restart the daemon (Restart now in the banner, or Restart daemon in Settings > Health). The Full report on the Cache page's Overview tab shows the engine's health in full (the same report as `observer cache-health`).",
     related: ["tab.cache", "glossary.cachetrack_codex_limitation"],
   },
   {
@@ -1670,7 +1679,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Cache tracking - engine self-grading",
     oneLiner: "The engine grades its own predictions against observed reality and surfaces a single rate the operator can watch.",
-    detail: "Every turn the cachetrack engine sees, it makes a prediction about what the upstream provider will report - will this turn be a cache HIT (the provider serves part of the prompt from cache), a WRITE (a new prefix is being seeded), or one of the rewrite kinds (invalidation, expiry, model switch). When the response lands, the engine compares prediction vs observation and writes the result to cache_events.\n\nThe \"mispredict rate\" tile on the Cache page is the headline self-grading score: of every graded turn, what fraction did the engine call wrong?\n\nWhat's IN the denominator:\n• KindHit, KindWrite - the canonical hit-vs-write predictions\n• KindInvalidationRewrite, KindExpiryRewrite, KindModelSwitchRewrite - real cache-rebuild events the engine has rules for\n• KindMispredict itself - when the engine couldn't slot the outcome into any of its rule rows, it counts itself as one wrong answer\n\nWhat's EXCLUDED:\n• KindReanchor / KindBelowMin / KindCompactionReset - not hit-vs-write predictions, just observational labels\n• Zero-usage turns (tokens_read = 0 AND tokens_written = 0) - observationally vacant; the engine never claimed to predict them\n\nDefault thresholds: ≥ 200 graded events needed for the rate to be meaningful (otherwise the corpus is too thin); rate ≤ 5% for the gate to pass. Both are tunable via observer cache-health --max-rate / --min-events.",
+    detail: "Every turn the cachetrack engine sees, it makes a prediction about what the upstream provider will report - will this turn be a cache HIT (the provider serves part of the prompt from cache), a WRITE (a new prefix is being seeded), or one of the rewrite kinds (invalidation, expiry, model switch). When the response lands, the engine compares prediction vs observation and writes the result to cache_events.\n\nThe \"mispredict rate\" tile on the Cache page is the headline self-grading score: of every graded turn, what fraction did the engine call wrong?\n\nWhat's IN the denominator:\n• KindHit, KindWrite - the canonical hit-vs-write predictions\n• KindInvalidationRewrite, KindExpiryRewrite, KindModelSwitchRewrite - real cache-rebuild events the engine has rules for\n• KindMispredict itself - when the engine couldn't slot the outcome into any of its rule rows, it counts itself as one wrong answer\n\nWhat's EXCLUDED:\n• KindReanchor / KindBelowMin / KindCompactionReset - not hit-vs-write predictions, just observational labels\n• Zero-usage turns (tokens_read = 0 AND tokens_written = 0) - observationally vacant; the engine never claimed to predict them\n\nDefault thresholds: ≥ 200 graded events needed for the rate to be meaningful (otherwise the corpus is too thin); rate ≤ 5% for the gate to pass. Both are inputs of the Full report on the Cache page's Overview tab (the same as `observer cache-health --max-rate` / `--min-events`).",
     formula: "rate = COUNT(KindMispredict, !zero_usage) / COUNT(graded_kinds, !zero_usage); gate_passed = graded_events ≥ min_events AND rate ≤ max_rate",
     related: ["tab.cache", "tile.cache_mispredict_rate", "glossary.cachetrack_engine_health"],
   },
@@ -1721,7 +1730,23 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "5-hour / weekly limit gauge - needs the proxy",
     oneLiner: "Shows how much of your subscription rate-limit window the next message will consume - proxy-only.",
     detail: "The limit gauge expresses the next-message cost in LIMIT terms: '≈ N% of your 5-hour window (X% remaining, resets in …)' and the same for the weekly cap.\n\nThis half of the predictor REQUIRES routing the AI client through the observer proxy. The 5h/weekly utilization and reset timestamps live ONLY in the provider's HTTP response headers (e.g. Anthropic's anthropic-ratelimit-unified-5h-* headers), which the proxy is the only component positioned to read. A hooks/watcher-only install captures actions and the cost estimate, but never these headers - so the gauge stays in its 'route through the proxy to unlock' state.\n\nTo enable: route the client through the proxy with the route control on the Compression page (or Settings > Connected tools > Set up; the CLI twin is `observer init`). It sets ANTHROPIC_BASE_URL / codex base_url to the proxy on :8820 so the client's traffic flows through it. The gauge lights up automatically once the first proxied response carries the limit headers.\n\nThe captured limit snapshots are node-local telemetry - they are never shared with an org server (same privacy posture as the cache tables).",
-    related: ["glossary.cost_predictor", "glossary.forecaster_math"],
+    related: ["glossary.cost_predictor", "glossary.forecaster_math", "glossary.limit_projection"],
+  },
+  {
+    id: "glossary.limit_projection",
+    category: "glossary",
+    title: "Run-out projection",
+    oneLiner: "How fast the 5-hour and weekly limits are being used, and when they run out at the current rate.",
+    detail: "The projection takes the newest reading of each window (from the proxy's response headers, the tool's own session log, or the Plans & limits page when it holds a newer reading) and the usage this machine captured inside the window.\n\nUsed and left are the reading's share. Their sizes in tokens and dollars are estimates: the usage captured in the window divided by the share used. If the same plan is used on other devices or on the web, the real limit is larger than that estimate.\n\nBurn rate is the share used divided by the time elapsed in the window. The run-out time is now plus the share left divided by that rate; when that is after the reset, the window lasts until reset and the share projected to be left at reset is shown. The safe allowance spreads what is left evenly over the time to reset.\n\nMore sessions divides what is left by the window's average session. More prompts divides it by the predictor's next-message cost (typical, with a high and a low message for the range).\n\nA reading older than 10 minutes is carried forward with the usage captured since. A reading whose window has already reset is never projected from: for the weekly window the current window's start is inferred from the weekly cadence and only the usage captured since is shown; the 5-hour window starts on first use, so nothing is shown until a new reading arrives. Under an hour into a window, or nothing used, there is no rate yet.\n\nCounted tokens include sessions that did not route through the proxy (from their transcripts); a turn captured both ways counts once.",
+    related: ["glossary.limit_gauge", "glossary.budget_projection", "glossary.cost_predictor"],
+  },
+  {
+    id: "glossary.budget_projection",
+    category: "glossary",
+    title: "Budget projection",
+    oneLiner: "The same run-out numbers against a spend budget in force: yours or your org's.",
+    detail: "Shown only when a budget is in force: your own budget from the guard settings, or the org budget this machine applies. With no budget nothing is shown.\n\nUsed is the spend the budget is measured with, against its cap, in the cap's own unit (dollars or tokens; a token budget counts input and output tokens). What is left in the other unit is an estimate from this machine's dollars per token in the period.\n\nBurn rate, run-out, the safe daily allowance, sessions and prompts left follow the same rules as the limit projection. A rolling 7-day budget has no reset: its safe allowance is the cap spread over 7 days. An org budget's spend can include your other machines, while sessions are counted on this machine only, and its period is shown in UTC.",
+    related: ["glossary.limit_projection", "glossary.cost_predictor"],
   },
 
   // ===== Settings — config-section entries (usability arc P1.2–P1.4) =====
@@ -1746,7 +1771,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Settings - Guard section",
     oneLiner: "The security guard layer's config: posture, rule disables, boundary allowlists, taint, proxy scans, MCP pinning, budgets, alerts.",
-    detail: "Every key here binds at daemon start - saves write ~/.observer/config.toml (prior version kept at .bak) and raise the restart banner.\n\n• Enabled / Mode / Strict - the posture. observe (default) records and alerts but never blocks; enforce lets deny/ask-class rules actually block at the hook and proxy seams; strict inverts the fail-open default so a guard-internal error blocks instead of approving.\n• Rules - global rule disables (prefer a scoped approval or a policy override first) and the user/project policy file locations.\n• Boundary - allowlists the R-15x boundary rules treat as in-bounds. An EMPTY list here means 'keep the engine defaults' - explicitly running with no allowlist at all is a config-file edit, because the form can't express the difference.\n• Taint / Proxy scans / MCP security - the detection layers; defaults are tuned to be quiet.\n• Budgets - B-601/B-602 circuit-breakers (0 = off); 'hard' makes a breach answer proxied requests with a synthetic 403 in enforce mode.\n\n[guard.cloud] (LLM judge, reputation lookups, webhooks) is deliberately NOT editable from the dashboard: anything that makes the guard call out over the network stays a hand-written, eyes-open config decision - the save path preserves whatever is in the file, even against a body that tries to change it.",
+    detail: "Every key here binds at daemon start - saves write ~/.observer/config.toml (prior version kept at .bak) and raise the restart banner.\n\n• Enabled / Mode / Fail closed - the posture. observe (default) records and alerts but never blocks; enforce lets deny/ask-class rules actually block at the hook and proxy seams; Fail closed when the guard itself errors ([guard] strict) inverts the fail-open default so a guard-internal error blocks instead of approving. It is not a strictness level.\n• Level - the recipe level applied to the whole machine, shown read-only. Levels (none, loose, balanced, strict, lockdown) and packs are applied from Security > Rules > Recipes, which writes the level, the mode and the rules together.\n• Rules - global rule disables (prefer a scoped approval or a policy override first) and the user/project policy file locations.\n• Boundary - allowlists the R-15x boundary rules treat as in-bounds, and the branches R-110/R-111 protect. Each list is a three-way choice: Engine defaults (nothing written, the built-in list applies), Custom list (your entries replace the defaults), or None (an explicit empty list).\n• Database / Network - the inputs of the database rules (production patterns for R-125) and of the network rules (the allow list R-176 checks once a level or pack raises it, and the deny list R-174 adds). The network rules judge the hosts a command line names; they are not a firewall.\n• Taint / Proxy scans / MCP security - the detection layers; defaults are tuned to be quiet.\n• Budgets - B-601/B-602 circuit-breakers (0 = off); 'hard' makes a breach answer proxied requests with a synthetic 403 in enforce mode.\n\n[guard.cloud] (LLM judge, reputation lookups, webhooks) is not in this form: anything that makes the guard call out over the network is turned on through its own consent in the Network features card on the Security page's MCP tab (each change asks you to confirm, and an agent cannot give the consent). This form's save path preserves whatever [guard.cloud] holds, even against a body that tries to change it.",
     related: ["tab.security", "tab.settings", "glossary.guard_rules", "glossary.guard_decisions"],
   },
   {
@@ -1754,7 +1779,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Settings - Routing section",
     oneLiner: "Model routing's adoption-funnel knobs: master gate, advise/enforce mode, policy template, decision-log retention, stickiness, calibration, rate-limit window.",
-    detail: "Every key here binds at daemon start - saves write ~/.observer/config.toml (prior version kept at .bak) and raise the restart banner. Mode and policy validate at save, so a bad value can never reach the file.\n\n• Enabled / Mode - the gate and posture. Routing is opt-in and ships OFF. advise (default once enabled) only records what it would have done - decision rows accrue, requests are untouched. enforce actually rewrites the model on proxied requests, always within the same provider shape. Promoting advise → enforce is a deliberate step: the Routing page's Shadow card shows the readiness evidence and owns the promote control.\n• Policy template - value (quality floors + cost minimization, the default), frugal (budget-first), fast (latency-first), plan-exec (plan pinned flagship, execution downshifts), strict-privacy (local/allow-listed only), enterprise-default (value with conservative coherence), or custom (your [[routing.rules]] only - a config-file edit).\n• Decision log retention - prune horizon for router_decisions rows. Node-local data; never pushed to an org server.\n• Stickiness - session coherence: respect_cache holds switches whose prompt-cache forfeit costs more than they save; the turn floor spaces switches out.\n• Calibration - outcome grading of routed turns. Display is always-on; ACTING on a delta needs min samples, and auto-demote pulls a regressing rule back to advise (in-memory; clears on restart).\n• Rate-limit window - subscription-plan headroom: preserves flagship capacity for hard turn-kinds as the window fills.\n\nCustom [[routing.rules]] are editable in the lint-gated fragment editor below the form (see its own help entry). Tier overrides, benchmark files, budget scopes, privacy rules, key pools (API keys), and local upstreams are deliberately NOT editable here - complex shapes and secrets stay hand-written config decisions, and the save path preserves whatever the file holds, even against a body that tries to change them. Routing config is local-only by design: no org server can flip any of it remotely.",
+    detail: "Every key here binds at daemon start - saves write ~/.observer/config.toml (prior version kept at .bak) and raise the restart banner. Mode and policy validate at save, so a bad value can never reach the file.\n\n• Enabled / Mode - the gate and posture. Routing is opt-in and ships OFF. advise (default once enabled) only records what it would have done - decision rows accrue, requests are untouched. enforce actually rewrites the model on proxied requests, always within the same provider shape. Promoting advise → enforce is a deliberate step: the Routing page's Shadow card shows the readiness evidence and owns the promote control.\n• Policy template - value (quality floors + cost minimization, the default), frugal (budget-first), fast (latency-first), plan-exec (plan pinned flagship, execution downshifts), strict-privacy (local/allow-listed only), enterprise-default (value with conservative coherence), or custom (your [[routing.rules]] only, edited in the Custom rules card below the form).\n• Decision log retention - prune horizon for router_decisions rows. Node-local data; never pushed to an org server.\n• Stickiness - session coherence: respect_cache holds switches whose prompt-cache forfeit costs more than they save; the turn floor spaces switches out.\n• Calibration - outcome grading of routed turns. Display is always-on; ACTING on a delta needs min samples, and auto-demote pulls a regressing rule back to advise (in-memory; clears on restart).\n• Rate-limit window - subscription-plan headroom: preserves flagship capacity for hard turn-kinds as the window fills.\n\nCustom [[routing.rules]] are editable in the lint-gated fragment editor below the form (see its own help entry). Tier overrides, path classes, budget scopes, privacy rules, local upstreams and model fallbacks each have a card below it: a card saves only its own part, and a save the next daemon start would refuse is refused with the file untouched. Benchmark files are under More settings. Key pools hold API keys, so they stay hand-written in config.toml; every save here keeps whatever the file holds. Routing config is local-only by design: no org server can flip any of it remotely.",
     related: ["tab.routing", "tab.settings", "card.settings_routing_rules", "chart.routing_shadow", "chart.routing_decisions"],
   },
   {
@@ -1815,7 +1840,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "On the first visit after a fresh install, a dialog lists the AI tools found on this machine and shows how much of their existing history is captured.",
     detail:
-      "When SuperBased starts, its background watcher reads the session files your AI tools already wrote, so past work shows up without you doing anything. The first-run dialog makes that work visible.\n\nFor each tool found on this machine it shows where the tool's session folder was found, how it is captured (session files, hooks, and the optional proxy route), how many sessions and projects are captured so far, and whether its first pass is reading, done, paused or could not read some files. The overall bar counts the session files read out of those found, and updates every few seconds while it is moving. The projects list shows the most recently active projects found in that history.\n\nWhen it opens: by itself once, on the first dashboard visit after a fresh install (a database that was empty when the daemon first started with this version). An install that already had sessions never opens it by itself.\n\nClosing it while the capture is still running hides it for this browser visit, so the next visit shows the outcome. Closing it after the capture finished, or choosing Don't show this again, records that on this machine (beside its database), so every browser and the remote dashboard agree. The product tour waits until the dialog is closed.\n\nReopen it any time from the command palette (Show history capture) or Settings, Connected tools. Nothing here rescans your files: the numbers come from the watcher's own first pass since the daemon started, and a restart starts a new count.",
+      "When superbased starts, its background watcher reads the session files your AI tools already wrote, so past work shows up without you doing anything. The first-run dialog makes that work visible.\n\nFor each tool found on this machine it shows where the tool's session folder was found, how it is captured (session files, hooks, and the optional proxy route), how many sessions and projects are captured so far, and whether its first pass is reading, done, paused or could not read some files. The overall bar counts the session files read out of those found, and updates every few seconds while it is moving. The projects list shows the most recently active projects found in that history.\n\nWhen it opens: only when you ask, from the command palette (Show history capture), the Tools coverage view or Settings, Connected tools. The Get started panel on Overview is where a new install starts. The product tour waits while the dialog is open. Nothing here rescans your files: the numbers come from the watcher's own first pass since the daemon started, and a restart starts a new count.",
     related: ["glossary.onboarding", "glossary.connected_tools"],
   },
   {
@@ -1845,7 +1870,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Node-side control over what an enrolled agent shares: metadata-only by default (hashes + counts), full content only if YOU flip it here - the org admin has no remote switch.",
     detail:
-      "When this agent is enrolled in an organization's SuperBased server, the push loop ships activity rollups on a timer. This section controls what those batches may contain - and every switch lives in this node's own config.toml. On this individual machine the server can never raise any of it: an organization policy can only lower or lock what you set, and the Privacy page marks every key it decided. That's a designed-in invariant, not a default. (An organization-managed machine is different: there the org ships full content by its enrolment grant.)\n\n• Share mode OFF (the default): only sha256 hashes and counts cross the wire. Raw command bodies, assistant prose, and filesystem paths are stripped at the single SQL seam that builds push rows - there is exactly one place content can leave, and it's gated here.\n• Full content ON: raw commands, prose, and paths ship alongside the hashes, visible to your org admins. Deliberate opt-in only.\n• Per-action allowlist: the cautious middle - ship raw targets only for chosen action types (say, file paths for read_file/edit_file) while still withholding commands and prose.\n• Project scope: allow/deny lists by project root decide which projects push at all.\n\nEnrolment itself (server URL, credentials) is owned by `observer enroll` / `observer unenroll` and the Enrolment section - a save here can never detach or re-point it (test-pinned). Push-loop changes bind at daemon start: restart to apply.",
+      "When this agent is enrolled in an organization's superbased server, the push loop ships activity rollups on a timer. This section controls what those batches may contain - and every switch lives in this node's own config.toml. On this individual machine the server can never raise any of it: an organization policy can only lower or lock what you set, and the Privacy page marks every key it decided. That's a designed-in invariant, not a default. (An organization-managed machine is different: there the org ships full content by its enrolment grant.)\n\n• Share mode OFF (the default): only sha256 hashes and counts cross the wire. Raw command bodies, assistant prose, and filesystem paths are stripped at the single SQL seam that builds push rows - there is exactly one place content can leave, and it's gated here.\n• Full content ON: raw commands, prose, and paths ship alongside the hashes, visible to your org admins. Deliberate opt-in only.\n• Per-action allowlist: the cautious middle - ship raw targets only for chosen action types (say, file paths for read_file/edit_file) while still withholding commands and prose.\n• Project scope: allow/deny lists by project root decide which projects push at all.\n\nEnrolment itself (server URL, credentials) is owned by `observer enroll` / `observer unenroll` and the Enrolment section - a save here can never detach or re-point it (test-pinned). Push-loop changes bind at daemon start: restart to apply.",
     related: ["tab.settings", "glossary.health_doctor"],
   },
   {
@@ -1925,7 +1950,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Watcher lag warning (sidebar)",
     oneLiner: "The sidebar warns when the file watcher is behind on session files or a file looks misrouted - capture may be incomplete until it catches up.",
-    detail: "The observer's watcher tails each AI tool's session files and ingests new activity. Two health signals surface as a small warn line in the sidebar footer (polled every 60s from /api/health/watcher):\n\n• behind N files - an append-only transcript has grown past the watcher's saved read position. Usually transient (heavy write bursts); if it persists, recent activity isn't in the dashboard yet. Fix: a rescan from Settings → Backfill (or `observer scan --force --adapter <tool>`) replays the gap - ingestion is idempotent, so catching up never duplicates rows.\n• N misrouted - a transcript's cursor sits at end-of-file but zero rows were ever emitted from it (the pre-v1.4.51 misroute fingerprint). Worth a rescan or an `observer doctor` run.\n\nBoth counts deliberately EXCLUDE files where the comparison wouldn't mean anything, so the warn line stays actionable instead of becoming permanent. Excluded files are still listed in the endpoint's `files` array with a `cursor_kind` and an `excluded_reason`:\n\n• watermark - SQLite-backed tools (hermes, goose, devin, cline-cli, opencode, crush, kilo-cli, kiro-cli, openclaw) save a row id or a timestamp in the cursor column, not a byte count. Comparing it to a file size is meaningless in both directions, so neither signal applies. The `.db-wal` / `.db-shm` sidecars are fsnotify triggers only and follow the same rule.\n• encrypted - Antigravity's `.pb` conversation store is OSCrypt-encrypted. Where the secret or cipher isn't available on this host, emitting zero rows is the designed outcome, not a misroute. Byte lag still counts for these.\n• no_actions - files read for tokens or state only, which never produce activity rows: grok's global `logs/unified.jsonl`, qoder run-log segments, copilot-cli `process-*.log`, openclaw trajectory traces, kiro-cli `.json` bundle state (its events land on the sibling `.jsonl`). Byte lag still counts for these too.\n• zero actions possible - a Cursor chat `store.db` emits system-prompt, prompt-budget and todo rows when the store holds them, and none when it only names the answering model. Such a file keeps `cursor_kind` byte_offset and is listed as `zero_actions_expected`, not misrouted.\n\nThe line above the warning, \"Capturing\", says the daemon runs the file watcher (`observer start`); \"Not capturing\" means this process is a dashboard without one. It does not depend on any AI tool's proxy route.\n\nThe endpoint returns at most the 50 worst rows; `total_files` and `files_truncated` say what was left out. The counts are always computed over every row.\n\nNo warn line = the watcher is current on every file where being behind would mean something.",
+    detail: "The observer's watcher tails each AI tool's session files and ingests new activity. Two health signals surface as a small warn line in the sidebar footer (polled every 60s from /api/health/watcher):\n\n• behind N files - an append-only transcript has grown past the watcher's saved read position. Usually transient (heavy write bursts); if it persists, recent activity isn't in the dashboard yet. Fix: a rescan from Settings → Backfill (or `observer scan --force --adapter <tool>`) replays the gap - ingestion is idempotent, so catching up never duplicates rows.\n• N misrouted - a transcript's cursor sits at end-of-file but zero rows were ever emitted from it (the pre-v1.4.51 misroute fingerprint). Worth a rescan or a run of the checks in Settings > Health.\n\nBoth counts deliberately EXCLUDE files where the comparison wouldn't mean anything, so the warn line stays actionable instead of becoming permanent. Excluded files are still listed in the endpoint's `files` array with a `cursor_kind` and an `excluded_reason`:\n\n• watermark - SQLite-backed tools (hermes, goose, devin, cline-cli, opencode, crush, kilo-cli, kiro-cli, openclaw) save a row id or a timestamp in the cursor column, not a byte count. Comparing it to a file size is meaningless in both directions, so neither signal applies. The `.db-wal` / `.db-shm` sidecars are fsnotify triggers only and follow the same rule.\n• encrypted - Antigravity's `.pb` conversation store is OSCrypt-encrypted. Where the secret or cipher isn't available on this host, emitting zero rows is the designed outcome, not a misroute. Byte lag still counts for these.\n• no_actions - files read for tokens or state only, which never produce activity rows: grok's global `logs/unified.jsonl`, qoder run-log segments, copilot-cli `process-*.log`, openclaw trajectory traces, kiro-cli `.json` bundle state (its events land on the sibling `.jsonl`). Byte lag still counts for these too.\n• zero actions possible - a Cursor chat `store.db` emits system-prompt, prompt-budget and todo rows when the store holds them, and none when it only names the answering model. Such a file keeps `cursor_kind` byte_offset and is listed as `zero_actions_expected`, not misrouted.\n\nThe line above the warning, \"Capturing\", says the daemon runs the file watcher (`observer start`); \"Not capturing\" means this process is a dashboard without one. It does not depend on any AI tool's proxy route.\n\nThe endpoint returns at most the 50 worst rows; `total_files` and `files_truncated` say what was left out. The counts are always computed over every row.\n\nNo warn line = the watcher is current on every file where being behind would mean something.",
     related: ["tab.settings", "glossary.session"],
   },
   {
@@ -1933,7 +1958,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Restart-pending banner",
     oneLiner: "Appears after saving a config section that the daemon only reads at startup; clears itself once the daemon actually restarts.",
-    detail: "Most config sections are bound when the daemon starts (the proxy listener, watcher subscriptions, advisor floors, cachetrack engine…). Saving them writes ~/.observer/config.toml immediately, but the RUNNING daemon keeps its old values. The banner under the top bar names the saved sections and stays - across navigation and reloads - until either:\n\n• the daemon restarts (the banner compares the daemon's started_at against your last save time and clears itself automatically), or\n• you dismiss it manually.\n\nPricing is the exception: it hot-reloads on save and never triggers the banner. Restart with `observer start` (stop the old process first if it's running in the foreground).",
+    detail: "Most config sections are bound when the daemon starts (the proxy listener, watcher subscriptions, advisor floors, cachetrack engine…). Saving them writes ~/.observer/config.toml immediately, but the RUNNING daemon keeps its old values. The banner under the top bar names the saved sections and stays - across navigation and reloads - until either:\n\n• the daemon restarts (the banner compares the daemon's started_at against your last save time and clears itself automatically), or\n• you dismiss it manually.\n\nPricing is the exception: it hot-reloads on save and never triggers the banner. Restart with the banner's Restart now button or Restart daemon in Settings > Health: the daemon shuts down gracefully and starts again in place.",
     related: ["tab.settings", "glossary.settings_advisor"],
   },
   {
@@ -1941,7 +1966,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Settings - Secrets scrubbing section",
     oneLiner: "Redaction applied to captured tool output before anything is written to the database.",
-    detail: "SuperBased scrubs secrets from captured output BEFORE storage - the database never holds the raw value.\n\n• Scrubbing - default on. Built-in patterns cover common credential shapes: API keys (Anthropic, OpenAI, AWS, GitHub, …), bearer tokens, connection strings.\n• Extra patterns - your own regex additions, for org-specific shapes the built-ins can't know: internal token prefixes, license keys, hostnames. Comma-separated; each pattern's matches are replaced at capture time.\n\nScrubbing is capture-time and irreversible by design: rows written while a pattern was active stay scrubbed forever, and rows written before you added a pattern are NOT retroactively scrubbed (this node has no retroactive scrub; on an org server, `observer-org scrub-content` cleans what was already pushed, see docs/teams-operations.md). Restart required after saving.",
+    detail: "superbased scrubs secrets from captured output BEFORE storage - the database never holds the raw value.\n\n• Scrubbing - default on. Built-in patterns cover common credential shapes: API keys (Anthropic, OpenAI, AWS, GitHub, …), bearer tokens, connection strings.\n• Extra patterns - your own regex additions, for org-specific shapes the built-ins can't know: internal token prefixes, license keys, hostnames. Comma-separated; each pattern's matches are replaced at capture time.\n\nScrubbing is capture-time and irreversible by design: rows written while a pattern was active stay scrubbed forever, and rows written before you added a pattern are NOT retroactively scrubbed (this node has no retroactive scrub; on an org server, `observer-org scrub-content` cleans what was already pushed, see docs/teams-operations.md). Restart required after saving.",
     related: ["tab.settings", "tab.actions"],
   },
 
@@ -1979,7 +2004,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tile",
     title: "Audit chain tile",
     oneLiner: "Tamper-evidence over the verdict log: every guard_events row is SHA-256-chained to the previous one, so silent edits and deletions are detectable.",
-    detail: "Each verdict row stores chain_prev (the prior row's hash) and chain_hash = SHA-256(chain_prev ‖ 0x1e ‖ canonical row bytes). The tile re-verifies the chain on load: 'intact' means every row's hash recomputes from its content and predecessor; 'BROKEN' names the first divergent row id - meaning a row between genesis and there was altered or removed after the fact. Verify the whole chain with the Verify audit chain button on the Coverage tab (it runs `observer guard verify-audit`). The chain makes the log tamper-EVIDENT, not tamper-proof: an attacker with DB access can still truncate the tail, but cannot rewrite history undetected.",
+    detail: "Each verdict row stores chain_prev (the prior row's hash) and chain_hash = SHA-256(chain_prev ‖ 0x1e ‖ canonical row bytes). The tile re-verifies the chain on load: 'intact' means every row's hash recomputes from its content and predecessor; 'BROKEN' names the first divergent row id - meaning a row between genesis and there was altered or removed after the fact. Verify the whole chain with the Verify audit chain button on the Coverage tab (it runs `observer guard verify-audit`). When it is broken, the Repair audit chain card beside it shows a dry run of the repair first and applies it only after you confirm. The chain makes the log tamper-EVIDENT, not tamper-proof: an attacker with DB access can still truncate the tail, but cannot rewrite history undetected.",
     formula: "chain_hash[i] = SHA-256(chain_hash[i−1] ‖ 0x1e ‖ canonical_row[i])",
     source: "/api/guard/summary → chain",
     related: ["tab.security", "chart.security_timeline"],
@@ -1989,7 +2014,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Mode control",
     oneLiner: "Move the guard between off / observe / enforce with the evidence shown first - saved through the config seam, applied at the next daemon restart.",
-    detail: "Selecting enforce replays your last 7 days of captured actions against today's rules (GET /api/guard/simulate - a dry run, nothing persists) and shows what WOULD have blocked, so the promotion is an informed choice rather than a leap. The save writes [guard] enabled/mode to config.toml through the same PUT seam as Settings (prior version kept at .bak) and raises the restart banner - the running daemon keeps its current mode until restarted, and this card says so rather than pretending otherwise. Observe is the safe default: everything records, nothing blocks. Enforce can be undone the same way at any time. CLI parity: observer guard enable [--enforce] / disable / simulate.",
+    detail: "Selecting enforce replays your last 7 days of captured actions against today's rules (GET /api/guard/simulate - a dry run, nothing persists) and shows what WOULD have blocked, so the promotion is an informed choice rather than a leap. The save writes [guard] enabled/mode to config.toml through the same PUT seam as Settings (prior version kept at .bak) and raises the restart banner - the running daemon keeps its current mode until restarted, and this card says so rather than pretending otherwise. Observe is the safe default: everything records, and only the security pack's commit gate (S-791 to S-794) still asks, by design, before an agent commits or pushes (approve it in Approvals). Enforce can be undone the same way at any time. CLI parity: observer guard enable [--enforce] / disable / simulate.",
     related: ["tile.security.posture", "card.security_approvals", "glossary.guard_decisions", "glossary.settings_guard"],
   },
   {
@@ -2006,7 +2031,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Approvals - scoped exceptions",
     oneLiner: "The §6.3 exception register: grant a rule a scoped, expiring pass instead of disabling it; revoke any time.",
-    detail: "An approval downgrades a matching blocking verdict to a flag - the action proceeds, the event still records, and the grant itself is an audit row. Scopes: session (one session id), project (this session's project root, anchored as a hash - other checkouts of the same repo at different paths won't match), global (everywhere on this node). TTL defaults to 24h; 'never' is for the truly settled. Grants are DB writes through the same store seam as the CLI - live immediately, no restart. The \"approve…\" action on a verdict row pre-fills this form with the rule + session. Prefer an approval over rules.disable: disables are global, unconditional, and invisible in the audit story. CLI parity: observer guard approve <rule> --session|--project|--global [--ttl] / approvals / revoke <id>.",
+    detail: "An approval downgrades a matching blocking verdict to a flag - the action proceeds, the event still records, and the grant itself is an audit row. Scopes: session (one session id), project (this session's project root, anchored as a hash - other checkouts of the same repo at different paths won't match), global (everywhere on this node). TTL defaults to 24h; 'never' is for the truly settled. Grants are DB writes through the same store seam as the CLI - live immediately, no restart. The \"approve…\" action on a verdict row pre-fills this form with the rule + session (a subagent row names its parent session, which the tool-gate hook reports); it reads \"covered by #N\" when an active grant already covers that call, and is disabled on rules that only flag. Granting is idempotent: the same rule, scope and anchor keeps the existing grant and only extends it to the later expiry. \"Last used\" is the latest verdict the grant's scope covers that an approval downgraded; a verdict that still asked says why (no grant, another scope, a failed lookup, an org lock). Prefer an approval over rules.disable: disables are global, unconditional, and invisible in the audit story. CLI parity: observer guard approve <rule> --session|--project|--global [--ttl] / approvals / revoke <id>.",
     related: ["card.security_mode", "chart.security_timeline", "glossary.guard_rules", "glossary.settings_guard"],
   },
   {
@@ -2017,6 +2042,15 @@ export const HELP_REGISTRY: HelpEntry[] = [
     detail: "Distinct from the verdict timeline below (every guard rule): this card scopes to user_prompt events only - hits from either the hook lane (native per-client prompt-submit protocols, where wired) or the proxy lane (the latest turn on an outbound request). Ask-once interrupts the FIRST occurrence of a finding set and lets an identical resend within the reconsider window through as a confirmation - pending grants are listed with a Clear action to force a fresh interrupt. Active R-172/R-190 approvals (esp. global, never-expiring ones) show here too, with Revoke. 'Probe hooks' fires a synthetic, obviously-fake secret through every registered client and reports whether it actually blocked (the live counterpart of the wired/documented-only distinction in the status tiles). Nothing here is ever a matched value or prompt span - only detector types, counts, decisions, and an opaque fingerprint (a sha256 hex digest, safe to copy). Configure mode/lanes/detector overrides in Settings → Guard. CLI parity: observer guard prompt status / events / clear / allow.",
     source: "/api/guard/prompt/status, /api/guard/prompt/events",
     related: ["card.security_approvals", "tile.security.posture", "glossary.settings_guard"],
+  },
+  {
+    id: "card.security_org_prompt_judge",
+    category: "metric",
+    title: "Organization prompt judge",
+    oneLiner: "Whether your organization's LLM judge reads the prompts you type into coding agents on this machine (planeb.admission, J-801).",
+    detail: "Runs only on an organization-managed machine whose enrolment grant holds enforce.admission, and only while the organization's signed policy turns its node lane on; an individual machine never runs it and nothing remote can turn it on there. Every prompt-gate hook asks it through this machine's daemon, whatever your local guard settings say, and proxy-routed tools are also judged on the proxy. A prompt with a detected secret is never sent; a refused prompt never reaches the model. Strict decides what happens when the judge or the daemon cannot answer: strict under enforce refuses the prompt, otherwise it goes through and is recorded. The counts are the last day's J-801 verdict rows (refused, flagged), which reach the organization on the guard events push; they hold a fingerprint and a content-free reason, never the prompt. Read-only: there is no switch here, because a managed machine discloses the judge rather than opting into it. CLI parity: observer guard status, observer org status.",
+    source: "/api/guard/prompt/judge",
+    related: ["card.security_prompt_guard"],
   },
   {
     id: "card.session_prompt_guard",
@@ -2063,6 +2097,182 @@ export const HELP_REGISTRY: HelpEntry[] = [
     related: ["card.security_guard_test", "card.security_evidence", "tab.security"],
   },
   {
+    id: "card.code_security_fix",
+    category: "metric",
+    title: "Fix with an agent",
+    oneLiner: "Hand one finding, an issue group or the filtered findings to a coding agent in a dashboard terminal, in the right project.",
+    detail: "Code security > Findings has this action on every finding row, every group row, the finding drawer and the list header (Fix filtered). It opens the fix plan: the open findings the selection holds, split by project, with the exact task the agent gets. Pick one project, then Choose agent opens New terminal for that project. Only open findings are handed over; suppressed, accepted, false-positive and closed ones never are. The launch is an ordinary new terminal: the launch policy (allowed tools and project folders), the sandbox choice and your organization's rules apply as for any other launch. Nothing here changes a finding. A rescan decides whether it cleared, shown under Fix attempts.",
+    related: ["card.code_security_fix_plan", "glossary.task_seed", "card.code_security_fix_attempts"],
+  },
+  {
+    id: "card.code_security_fix_plan",
+    category: "metric",
+    title: "Fix plan",
+    oneLiner: "The open findings your selection holds, by project, with the task text the agent will get.",
+    detail: "The plan is built on this machine from the findings themselves, never from what the page shows: rule, severity, location, the fix hint, and for a dependency the package, installed version and fixed versions. One agent works on one project, so a group that spans several projects lists each one; fix one, then come back for the next. Projects with the most findings come first. A project whose folder is not on this machine is listed but cannot be launched. The task lists the most severe findings first, up to 30; the rest are counted, and a rescan after the fix shows them. The task tells the agent to make the smallest change, run the project's tests, not to suppress or except findings, not to weaken tests, and not to commit or push unless asked. A secret has to be rotated by a person; the task says so.",
+    related: ["card.code_security_fix", "glossary.task_seed"],
+  },
+  {
+    id: "glossary.task_seed",
+    category: "glossary",
+    title: "Starts on the task / Paste the task",
+    oneLiner: "Whether the agent is started with the task already typed in, or opens empty and the task has to be pasted.",
+    detail: "In task mode New terminal lists terminal agents only, and the project folder is fixed to the task's project. Starts on the task: the agent's own first-prompt option carries the task, so it begins working as soon as the terminal opens. Paste the task: this agent has no such option, so the terminal opens empty and the dialog shows the task with a Copy button; paste it into the terminal. If the project folder is not in the launch policy's allowed folders yet, the dialog offers to allow it first.",
+    related: ["card.code_security_fix", "card.code_security_fix_plan"],
+  },
+  {
+    id: "card.code_security_fix_attempts",
+    category: "metric",
+    title: "Fix attempts",
+    oneLiner: "Recent agents started on findings, and the current state of the findings each was given.",
+    detail: "Each row is one launch from Fix with an agent: the agent, the project, when, and the findings it was given. Their state is read live from the findings, so the scanners decide, not the agent. Cleared means none of them is still open. Cleared on rescan: a later scan no longer reports it. Verified fixed: a passing test run was seen after the last edit. Closed by triage: someone suppressed, accepted or marked it a false positive. No longer recorded: the finding is gone from this machine's records. Rescan project starts a scan of that one project, the same scan as Scan on this page. The attempt itself never changes a finding. The list is kept on this machine only and shows the most recent launches.",
+    related: ["card.code_security_fix", "card.code_security_fix_plan"],
+  },
+  {
+    id: "card.code_security_assess",
+    category: "metric",
+    title: "Security assessments",
+    oneLiner: "Start a coding agent in a dashboard terminal on one assessment of a project and read its report here: a threat model, a local penetration test or red team of your own app, a cloud posture review, or instrumented tests.",
+    detail: "Code security > Overview has this card. Each assessment is an ordinary new terminal started on a task, the same way Fix with an agent is: the launch policy (allowed tools and project folders), the sandbox rules and your organization's rules apply as for any other launch. The agent writes its results into .observer/assessments/<run>/ in the project: a report for people and, for a threat model, penetration test or red team, a structured assessment.json (the cloud review and the instrumented tests write a findings file instead). Observer runs no scanner for this: it reads those files. The report opens from the run's row. Findings go through the SARIF import you already have, only when you press Import, tagged with the run so they are easy to find: for a structured run Observer derives them from the checked model, for the others it cleans the agent's findings file. Imported findings are flags, never a verdict, and close nothing. Runtime protection (RASP) is listed with why it has no launch: it runs inside a deployed application, which a coding agent in a terminal is not. The list is kept on this machine only.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_runs", "glossary.task_seed", "card.code_security_fix"],
+  },
+  {
+    id: "card.code_security_assess_plan",
+    category: "metric",
+    title: "Assessment plan",
+    oneLiner: "What the agent will do, where it runs, what you confirm, and the exact task it gets.",
+    detail: "The plan is built on this machine for one kind and one project. Threat model reads the repository only. The penetration test and the red team exercise test your own app on loopback and run only in a sandbox whose network leaves the agent no route except Observer's model connection: the agent starts a copy of your app inside the sandbox on the address you confirm, so your own running copy is not the target and is not reachable. If no such sandbox exists on this machine, or the agent you pick cannot be sandboxed and routed through Observer's proxy, the launch is refused; it never falls back to running unsandboxed. The proxy also reaches the upstream lanes you configured, which can include a model server on this machine; the plan says so. Cloud posture review uses the cloud command line session you are already signed in to in that terminal: Observer never reads or stores a cloud credential, the agent is told to run read-only commands only and to list every command it ran, and the run shows that list counted by class (it is the agent's own list, checked by verb, not a trace). Instrumented tests is partial and is not full IAST: it adds assertions in a scratch git worktree and does not touch your checkout. Confirming a target is recorded in the run on this machine as evidence. On its own it creates no approval and no exception: your guard rules are unchanged, a network or vulnerability scanner the agent runs still raises R-179 (a flag in observe mode, an ask in enforce mode) and you answer it as for any command. Under Guardrails for this run you can lift that one rule, or allow a wider sandbox network, for this run only; see that help for who consents and how long it lasts. You start the task you read: the plan carries a digest of the task text, and if a setting or the project changed before you pressed Start, nothing starts and you are asked to open the assessment again to read the new one.",
+    related: ["card.code_security_assess", "card.code_security_assess_runs", "card.code_security_assess_relax", "card.code_security_assess_limits", "glossary.task_seed"],
+  },
+  {
+    id: "card.code_security_assess_relax",
+    category: "metric",
+    title: "Guardrails for one run",
+    oneLiner: "A penetration test or red team can need one of Observer's guard rules lifted, or a wider sandbox network, for that one run. You decide on a machine you manage yourself; your organization decides on a managed one.",
+    detail: "Nothing is lifted unless you tick it, and only the rows listed here exist: the network and vulnerability scanner rule (R-179) and, under a configured maximum, the wider sandbox network. Every other rule keeps applying, including the ones about credentials, tunnels, listeners, remote content piped into a shell, cloud metadata addresses and changes to the security configuration, and a refusal is still final. On a machine you manage yourself your tick is the consent: Observer creates one approval for the run, scoped to the run's own session (or, if you set the project scope in Settings, to the whole project, which also covers any session you start there outside the sandbox), renewed while the run's terminal is open and removed when it closes, never longer than the configured limit. On a machine your organization manages, a locked rule can be lifted only by your organization: Observer files the request for you, the run waits on the list as Waiting for your organization, and Approved: start appears once its grant is in force. A grant that is narrower than asked, for another project or a shorter time, is shown as such and does not start the run. The organization's grant ends at its own expiry, not at the end of the run, and Observer cannot revoke it. The wider network is the one you configured under [terminal.sandbox], limited to the hosts you listed; on a managed machine the sandbox network is the organization's setting and is not offered here. The prompt tells the agent which guardrails were lifted and that they cover the confirmed target only. A machine your organization manages reports each run to it (started, ended, imported, with the guardrails lifted and how many verdicts they changed); an individual machine reports only if you turn that on in Settings. All of it is configurable under Settings > Guard > Code security.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_runs", "card.code_security_assess"],
+  },
+  {
+    id: "card.code_security_assess_runs",
+    category: "metric",
+    title: "Assessment runs",
+    oneLiner: "Recent assessments started from this page: where each ran, whether the agent has written its report and findings, and what the import did.",
+    detail: "A run's state is read live from the files in .observer/assessments/<run>/, so it moves when the agent writes them, not when this page does. Running: no result file yet. Report ready: report.md exists. Findings ready: findings.sarif exists and has not been imported. Imported: the findings went through the SARIF import; the line says how many and how many were new. Import failed or import off: the line says why, and the report is still readable. Import is always your click, never automatic. A findings file that does not parse, is over the size cap or holds nothing usable is refused with that reason; the agent's own wording of a finding is never stored, only a templated message and the rule tag. For a cloud posture run the card counts the commands the agent listed as read-only, changing, returning secret material or unclassified; a changing or secret-returning command is shown as outside the read-only boundary. Reports are read as plain text only, up to a size cap. A threat model, penetration test or red team run also writes assessment.json, a structured model. Model written: the file exists and has not been checked. Validate (offered once the run has ended, or Validate anyway, which asks first) reads it through the same confined reader, checks its structure against the schema and checks each file reference against the project, then keeps a checked copy on this machine. Validated: the model was read; the line says how many items were refused, if any, and how many references were found near the cited line (the text the agent quoted is on a code line within the match window of the first line it cited, 5 lines by default, a setting under Settings > Guard > Code security; 1 means the cited line itself), exist with nothing matched near the cited line (the file and range exist, but the text is only further away, or the agent quoted none that can be matched), cite text that is nowhere in the cited range, are missing, are malformed or could not be checked. A reference counts as found only near the line the agent cited, never for a match elsewhere in a long range. The check reads project files within a budget (the most files, the most data and the longest time, each a setting); references it ran out of budget for read not checked, never found, the line says how many could not be checked within the check's budget, and the model then reads as only partly checked. Model refused: the whole file was refused, with the reason. A model rewritten after it was checked is marked changed and offered again, and a cited file that changed since the check is named in the stored copy. Once a model is validated, Import derives the findings from it: one for each missing mitigation (threat model) or reported weakness (penetration test) that points at a place in the code that exists, with Observer's own wording; the agent's own prose is never stored. The line says how many of the candidates were not imported and why (no location in the code, under your minimum band, repeating another, past your cap, or past the import's own 1000-result ceiling), so nothing is left out silently. Nothing to import means the model gave no candidate to import; it says nothing about the project and is never called clean. A checked model too large for Observer to keep (only one near the largest model size setting can be) cannot be imported from, and checking it again does not change that: the line says so, and the agent has to write a smaller assessment.json. The runs themselves are listed from a record, secassess-runs.json, in Observer's data folder. If it cannot be read the list says so and names the file instead of showing no runs, and until it can be read no run is started, stopped, checked or imported. To free it, close any other Observer that has it open, rename it to secassess-runs.json.bad and reopen this page; the run list and each listed run's stored evidence will then be gone, while the project files and the reports under .observer/assessments are untouched. Observer does not move the file for you. This is a check of structure and file references. It does not check that the agent's reasoning is right, and nothing here is called verified or confirmed.",
+    related: ["card.code_security_assess", "card.code_security_assess_plan", "card.code_security_assess_limits"],
+  },
+  {
+    id: "card.code_security_assess_limits",
+    category: "metric",
+    title: "Time box, Stop and the git check",
+    oneLiner: "How long the agent is told it has, what Observer does at the deadline, and a before-and-after comparison of the project's git state around the run.",
+    detail: "Each kind has a time box, set under Settings > Guard > Code security (threat model 60 minutes, penetration test 45, red team 60 by default). It is written into the task, where the agent is told to check the clock at the start and at each phase, and it is recorded on the run when you start it, so a later settings change never moves a deadline. Observer does not stop a run by default: past the deadline the row says Over its time box and offers Stop, which closes the run's terminal after you confirm. With At the time box set to Close the terminal, Observer closes it at the deadline and records that it did. A time box longer than the guardrail window means an approval you lifted ends first; the plan says so. The git check takes a snapshot of the project's git state (HEAD, branch, stash, refs, changed and untracked files, with the run's own folder left out) when the run starts and another when its terminal closes, and compares them. Each changed and untracked file is compared by its content, so a second edit of a file that was already modified is seen. It says No git change seen, Git state changed during the run window, No change seen in the files that could be compared; some changed files could not be compared (when more than 400 paths changed, or a file could not be read in time, is a folder or is over 32 MiB), or Could not be checked (git missing, not a repository, a timeout). It still never says clean, because it sees only what git sees: files git ignores (.env, local databases, caches, node_modules) are not covered, and a change you make yourself in the same window is counted. A penetration test or red team still ignores untracked churn such as build caches, so it compares tracked files by content only; a threat model counts any change, untracked files included. Cloud posture review and instrumented tests are not audited this way, because they legitimately create a branch or a worktree. Observer checks structure, file references and git state; it does not check that the agent's reasoning is right. For a threat model, penetration test or red team the same list also shows what the task asks for (the frameworks, abuse cases and attack trees, or the test categories, and whether the agent is told to check its own file before it finishes) and what Import will do (the lowest risk band, the cap, which is none by default though the importer keeps at most 1,000 results per run whatever it is, and whether a re-run updates the findings you already imported). Each of those is a setting under Settings > Guard > Code security, recorded on the run when you start it. Each run's stored evidence (its checked model and git snapshots) stays on this machine beside the run record, for as long as the run is listed unless you set a number of days; Delete evidence on a run's row removes it at any time and leaves the run, its report and its findings.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_runs", "card.code_security_assess"],
+  },
+  {
+    id: "card.code_security_assess_scope",
+    category: "metric",
+    title: "Scope of a threat model",
+    oneLiner: "Which folders or files the threat model covers, and a note in your own words.",
+    detail: "By default a threat model covers the whole project. Choose up to 8 folders or files and the task tells the agent to model only those, to read the rest only for what calls them or what they call, and to list everything else as out of scope. The agent is not stopped from reading anything: this narrows what it is asked to model, and the check afterwards warns when the model's own scope names a place outside yours. A path must be inside the project, written with forward slashes and without .. . The note (200 characters) is placed in the task as your own words, for example the component you care about this week, whether or not you choose any folder. Nothing here changes a setting; it applies to this run only and is recorded on the run.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_previous", "card.code_security_assess_grounding"],
+  },
+  {
+    id: "card.code_security_assess_grounding",
+    category: "metric",
+    title: "Project facts in the task",
+    oneLiner: "A short digest of what Observer read from the project's own files, placed in the task as data.",
+    detail: "Observer reads the top level of the project and a fixed list of well-known files (package manifests, a compose file, a launch file, an API spec in JSON, an example environment file) and gives the agent a digest: languages and frameworks, dependencies by role, infrastructure files, an API spec, how the development server starts and, when the setting allows, the rule ids and places of the project's open findings. It never contains file contents, environment values or secrets, every name in it is restricted to a strict character set, it is fenced as data from the repository rather than instructions, and it is capped at 6 KiB. Environment files are listed by name only; only the URL scheme of a value in an example file (postgres, redis) is used, never the value. Findings the assessments themselves imported are left out, and so are secrets and any finding in an environment or key file (the digest never hands the agent the place of a live secret); when the list is only the top of a larger set it says so (top 20 by severity of N). With the digest set to off the plan still reads the folder, for the scope picker and the AI-application step; only the digest is not sent. The digest is built when the plan is read and again at launch; if it changed in between, nothing starts and you are asked to read the task again. Change it under Settings > Guard > Code security > Project facts in the task: facts and open findings, facts only, or no digest.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_scope", "card.code_security_assess_start"],
+  },
+  {
+    id: "card.code_security_assess_previous",
+    category: "metric",
+    title: "Changes since an earlier run",
+    oneLiner: "Compare this threat model with an earlier checked one of the same project, after the new one is checked.",
+    detail: "Pick an earlier checked threat model of this project (the newest one is chosen for you) and Observer compares the two once the new model has been checked: which threats were added, which are gone, and which changed risk band or status. Observer gives the agent nothing from the earlier run and asks it not to open other runs' folders; that is a request, not a barrier, because the earlier run's report and model stay in the project's .observer/assessments folder, so a new model can still be shaped by the old one if the agent opens it anyway. Threats are matched by the exact element, category and title first, then by the agent's own id when its element and category agree; a component is matched by its name, not by the id the agent gave it. A threat the agent reworded shows as one removed and one added, so this compares what two runs reported and does not say which is right. The newest checked run with the same scope is chosen for you; a run whose check kept items out can be picked but is never the default. A run you picked whose copy is gone is recorded anyway and the run says the earlier copy is gone. Choose No comparison to skip it. The choice is recorded on the run.",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_scope", "card.code_security_assess_runs"],
+  },
+  {
+    id: "card.code_security_assess_start",
+    category: "metric",
+    title: "How the application starts",
+    oneLiner: "The command the agent is told to start your development server with, read from the project's own files, and what Observer noticed beforehand.",
+    detail: "A penetration test starts a copy of your application inside the sandbox. Observer reads where your project says it starts (the launch file, package scripts, a Procfile, a Django, Rails or Flask entry, a Makefile target) and offers the commands it found, most likely first. A command is a list of words with no shell: up to 8 words of letters, digits and . _ / : = @ + , - only. If yours needs quoting or pipes it cannot be written here: start it yourself and tell the agent. A command read from a project file is repository text: the task says which file it came from and fences the less predictable ones as data, and Observer only chooses one for you when its program is a well-known runner (npm, python, go, make and the like); otherwise nothing is chosen until you pick or type one. A launch file can name a folder to run it in, and the plan keeps that folder with the command. Preparation steps (a migrate or a seed) are off unless you tick Run the preparation steps first, because they can change local data in the project, for example a database file. The notes beside it are advice, never a refusal: packages missing in a sandbox that cannot install them, a database or cache the box cannot reach, environment files the box can read, an API spec that was found. Observer cannot see inside the sandbox, so the agent is also told to check what exists there itself. The tools list is the same: Observer looks in the sandbox's standard folders from outside, and a scanner may need your answer under rule R-179. Environment files in the project are readable inside the sandbox unless the Hide setting is in force for the run: then the sandbox hides the files whose names it recognises (a snapshot taken when the box starts, so a file created later, a link to a secret or a secret in a file with another name stays readable), and the run's row says how many it hid and how many places it could not cover, as a warning when some may still be readable. Hide acts as Warn where the run's sandbox cannot hide files, and the plan says why. Either way the task tells the agent not to open them, which is a request, not a barrier. The plan counts only the environment files at the top level of the project folder; one in a subfolder is not counted, though the Refuse setting still sees a secret that a scan found in one (it reads Observer's findings, not the files, and if the findings cannot be read it refuses rather than guess).",
+    related: ["card.code_security_assess_plan", "card.code_security_assess_grounding", "card.code_security_assess_relax"],
+  },
+  {
+    id: "card.code_security_assess_fix",
+    category: "metric",
+    title: "Fix with an agent (assessment)",
+    oneLiner: "Hand one threat or penetration test finding to a coding agent in a dashboard terminal, with a task Observer built from the places it located.",
+    detail: "A threat or a finding that cites a place in your code which Observer located offers Fix with an agent once its run has ended. The dialog shows the exact task before anything starts. The task is Observer's own words and the places it located (the file, the lines, and whether the cited text was found near the cited line), never the agent's prose: nothing the assessment's agent wrote as free text is in it, so a sentence in a model cannot become an instruction. A file name is printed only when it uses ordinary characters, is not long and is not in the .observer or .git folder; any other place is counted, not named. Choose agent opens New terminal for this project, and the launch sends back only a digest of the task you read; if a setting or the project changed in between, nothing starts and you read the new task. Unless you choose a clone or a sandbox, the agent you choose edits files in your live project folder. The New terminal dialog's own choices apply, including where the work happens and the sandbox; with no sandbox chosen the agent runs on this machine with your access, and your launch policy and your organization's rules apply as for any other terminal. The task tells the agent to read each place first and decide whether the weakness is real, to make the smallest change, to add a regression test that fails before the fix and succeeds after it (or to say that the place has no test setup), to run the project's own tests, not to suppress or add an exception for the weakness, not to weaken tests or rewrite history, and not to commit or push unless you ask. An item that cites no place Observer located has nothing to point an agent at, so it offers no fix. A fix does not change the model or any finding in it. Read the changes the agent makes before you keep them, and run a new assessment if you want a new model.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_checked", "card.code_security_fix", "glossary.task_seed"],
+  },
+  {
+    id: "card.code_security_assess_export",
+    category: "metric",
+    title: "Downloading an assessment",
+    oneLiner: "Two files from a checked run: a Markdown report and the checked model as a JSON file, both rendered by Observer.",
+    detail: "Download report (Markdown) and Download checked model (JSON) are buttons in the model view's footer, beside the two copy buttons. Both files are built on this machine by Observer from the stored, checked copy of the model. They are not the agent's own report: the Markdown is rendered from the model, with everything the agent wrote shown as plain text, and the JSON holds the checked model with the report of how it was checked. Recognised secrets are hidden in them while hiding is on, and only known secret shapes are recognised; file paths and names are as the agent wrote them. The files carry the limits of a threat model or a penetration test, and a result with nothing in it is not a clearance. A download that is refused (the run is no longer listed, or no checked copy is stored) says why and saves nothing. Nothing is sent anywhere.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_checked", "card.code_security_assess_fix"],
+  },
+  {
+    id: "card.code_security_assess_model",
+    category: "metric",
+    title: "The assessment model",
+    oneLiner: "The checked copy of what an agent wrote for a threat model or a penetration test: the system it described, its threats or findings, and how much of it Observer could check.",
+    detail: "Open model on a run row shows the copy Observer keeps on this machine, built from the agent's assessment.json after the check: the agent's own file is never shown as it was written. A short note above the tabs, on every tab, says what this view does not tell you, with a button to the full list on the last tab, and a partly checked result says so there too. For a threat model the tabs are the overview, the threats (every threat is listed in batches as you scroll or press Show more; filter by framework, element, status, band or best reference state, search, and sort), the matrix of every element against every category that applies to it, the system the agent described, the flows with a diagram source you can copy into any Mermaid viewer, and the attack trees. Observer draws no diagram and loads nothing to draw one. For a penetration test the tabs are the coverage matrix, the findings (every finding is listed in batches; filter by band, category or basis, search, and sort, the band highest first) and how the model was checked. One row is open at a time, under its row. Copy diagram source and Copy checked model are buttons in the footer, beside two downloads (a Markdown report and the checked model as JSON, both rendered by Observer) and, on a threat or finding that cites a place Observer located, a Fix with an agent button once the run has ended. Everything the agent said is labelled as the agent's. What Observer computed is its own: the band (likelihood times impact, an ordinal heuristic and not a probability), the CVSS 4.0 base score of a finding whose agent wrote a base vector (computed from the vector alone and the base score of the weakness as logged in an in-box copy, not a production risk), what it found when it looked at each reference, and each matrix cell. A threat's mitigation word is the best state among all the references it cites, and the row says how many stand behind it (1 of 5 references); the filter reads the same word, so Found near the cited line means at least one reference was found. A reference is Found near the cited line when the text the agent quoted is on a code line within the match window of the line it cited; that says the place exists and holds that text, not that the control works or is reachable. Location exists, nothing matched earns no credit. Claimed, not found means the agent quoted text that is not in the cited range. Not checked means the check ran out of its budget. Changes since another run compares this threat model with an earlier run of the same project and kind and lists the threats added, removed and changed; it compares what two runs reported and does not say which is right. If an agent left a threat out, no view here can show it. Recognised secrets are hidden in the text shown here (a setting), and only known secret shapes are recognised; names that link parts of the model together and file paths are shown as the agent wrote them, and the files in your project are as the agent wrote them. The diagram source is limited to a number of nodes and a label length (two settings) and says how many nodes and labels it left out or shortened; nothing else here is cut. If the agent wrote threats or findings that the check refused, the view says how many and sends you to the reasons; an empty list is never taken to mean the agent reported none.",
+    related: ["card.code_security_assess_runs", "card.code_security_assess_coverage", "card.code_security_assess_evidence", "card.code_security_assess_checked"],
+  },
+  {
+    id: "card.code_security_assess_coverage",
+    category: "metric",
+    title: "Coverage matrix",
+    oneLiner: "What the agent says it covered: every element against each threat category that applies to it, or each test category of a penetration test.",
+    detail: "Threat model: each row is a component, an actor or a flow, and each column a STRIDE category (and the LINDDUN privacy categories on a flow that carries personal data). A cell is analysed when the model records at least one threat for that pair, waived when the agent wrote a reason that none applies (shown separately, with the reason, as the agent's), and not considered when it did neither. The totals are three numbers and never one percentage, because a waiver is the agent's word and not a finding. The AI frameworks have no cells; their threats are only counted. Penetration test: one row per test category in force. Tested (claimed) means the agent says it tested the category and no request log backs it; Observer cannot see the agent's requests. Skipped, Not applicable and Tool unavailable are the agent's reasons. If the agent says the target did not start, every category reads as skipped and nothing was tested in a running application. A matrix with no findings in it is not a clearance: the line above it says what was and was not covered.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_evidence", "card.code_security_assess_checked"],
+  },
+  {
+    id: "card.code_security_assess_evidence",
+    category: "metric",
+    title: "Finding evidence",
+    oneLiner: "For each penetration test finding, how the agent says it knows next to what Observer found in the request helper's log: Helper log matches, No log or Not started.",
+    detail: "The agent's basis is its own claim: seen in a request, or read from code. Beside it Observer shows its own check. Before the agent starts, Observer writes a small request helper into the run folder and the agent sends its requests through it; the helper logs each one. Helper log matches means that, in this copy of the project, a logged request returned the response the finding indicates for its attack request and did not for its control request, and that the helper Observer wrote was unchanged when the run was checked. It is not proof of impact and it says nothing about a deployed system: the log is a file in your project that the agent can write, so a match is a record the agent could have made by hand. No log means nothing in a log backs the finding, and the reason is shown with it: the helper was off, left out or changed, the log could not be read or was not one the helper wrote, the finding cites no logged request or one that is not in the log, a request it cites was refused by the helper or got no response, or the finding does not name an attack request, a control request or what differs between them. Not started means the application did not start, so nothing was tested in a running application. A request made another way, with curl or the agent's own code, is not logged, and Observer cannot see loopback traffic inside the sandbox. A finding with no cited place in the code says so. The logged requests a finding cites are shown as text under it, with the first 1 KiB of each response and secrets Observer recognised hidden. Reproduction steps are the agent's, shown as text; they are not run by Observer. The target is a copy of your working tree with development settings inside a sandbox, so a result there says nothing about a deployed system.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_coverage", "card.code_security_assess_probe", "card.code_security_assess_checked"],
+  },
+  {
+    id: "card.code_security_assess_checked",
+    category: "metric",
+    title: "How a model was checked, and what that does not tell you",
+    oneLiner: "What Observer checked in the agent's file, what it did not, and the limits that apply to every threat model and penetration test.",
+    detail: "Observer checks structure (the file's shape, sizes and the closed word lists), the files and lines the agent cited, and, for the run as a whole, git state. It does not check that the agent's reasoning is right, that a flagged weakness can be exploited, or that nothing was missed. Two runs of the same task differ. Nothing reported is not a clearance, a result like this is not evidence for a compliance audit, and an imported finding is a low-confidence flag that closes nothing. A threat model is read from code and documents only: no deployed topology, no cloud or hosted service the code does not show, no organisational or physical threats. A penetration test runs against an in-sandbox copy of your working tree with development settings, on one origin, and its coverage matrix is the agent's claim with no request log behind it for now. The limits on the page are the ones that apply to the kind of run you are reading. The issues list is everything the check refused, dropped or noted, each as a sentence; the check's row and code are under the issue's details.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_runs", "card.code_security_assess_limits"],
+  },
+  {
+    id: "card.code_security_assess_probe",
+    category: "metric",
+    title: "The request helper",
+    oneLiner: "A small program Observer writes into a penetration test's run folder so the agent's requests to the target are logged.",
+    detail: "Before a penetration test or red team run starts, Observer writes two files into the run's folder under .observer/assessments: probe.py, a Python program that uses only the standard library of python3, and probe.json, its settings (the target address, the run id, the request budget, the pace and the size it keeps). The task tells the agent to send its requests to the target through the helper. The helper sends to the target address only and refuses any other host or port, keeps to the pace and the request budget, follows no redirect unless asked, reads only the start of each response, hides the Authorization, Cookie and Set-Cookie headers and tokens it recognises, and appends one line for each request, sent or refused, to probes.jsonl in the same folder. When the run is checked, Observer compares each finding with that log. That is what produces Helper log matches, No log or Not started beside a finding. The log is not proof. It is a file in your project, the agent runs as you and can edit it, and no Observer process sits between the helper and the target or between the agent and the log. So Observer also checks that the helper's files are as it wrote them (a changed helper makes every finding read No log), and it asks of a finding that its attack request and its control request are both in the log and that the response to the first meets the finding's condition and the response to the second does not. Even then a match says only what that copy of the project did for that request. A request the agent makes another way is not logged. Python 3 must be in the sandbox: when Observer does not see python3 in the sandbox's standard folders it leaves the helper out, says so in the plan, and every finding reads No log. The setting Request helper for penetration tests turns the helper off, and an organization can pin it off on a machine it manages; it cannot pin it on.",
+    related: ["card.code_security_assess_evidence", "card.code_security_assess_plan", "card.code_security_assess_coverage"],
+  },
+  {
+    id: "card.code_security_assess_retest",
+    category: "metric",
+    title: "Retest of earlier findings",
+    oneLiner: "Sends the stored requests of findings from an earlier penetration test or red team run again, and labels each finding. It closes nothing.",
+    detail: "Retest findings is a button on the Findings tab of a penetration test or red team model. It lists the findings whose checked model stored a request to send again, at most 8 to a retest, and says for each whether a response condition was stored (without one no label can be backed by the log) and whether a value in a stored request was hidden when the finding was kept (a replay of such a request may differ from the original, so a not reproduced label for it cannot be backed by the log). Choosing opens the retest's plan on the same project. The address of your app is chosen there and you tick that it is yours, as for any test, and the address the earlier run used is only a suggestion. A retest runs in the same sandbox as a penetration test and needs the request helper: the helper sends the stored requests itself, in order, and logs them, and the agent's own words about the earlier finding are not used. Each finding is then labelled reproduced, not reproduced or inconclusive. The label is one replay read against the response condition stored with the finding, in a copy of your working tree in a box. Reproduced draws attention. Not reproduced is a neutral label: it does not mean the weakness is gone from your code or from production, and it is never shown as a fix. A label is read against the helper's log: Helper log backs the label, or No log with the reason (findings call the first Helper log matches; beside a Not reproduced label that would read as the log matching the weakness, so a label is backed, not matched). The log is a file the agent can write, so neither is proof. A retest closes nothing, changes no finding's status and sends nothing to your organization. The labels are shown on the findings of the run that was retested, newest retest first with the older ones behind a disclosure, and the retest has a view of its own with its results and how it was checked. It has no report to copy or download.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_evidence", "card.code_security_assess_probe", "card.code_security_assess_checked"],
+  },
+  {
+    id: "card.code_security_assess_exercise",
+    category: "metric",
+    title: "The red team's objective and chain",
+    oneLiner: "An objective in your own words that a red team run works toward, and the chain of steps the agent says it took, shown in order.",
+    detail: "The objective is optional, one line of at most 200 characters, and Observer takes out line breaks and backticks. The agent works toward it. Leave it empty and the agent states an objective of its own. The Exercise tab of the model says whose objective it is: In your words, Stated by the agent, or that none was recorded. The steps are listed in the order the agent wrote them. Each says what was done, the finding it used when it named one that the model holds, and how it went: achieved, partly achieved or blocked. The text of a step, and the column What would have detected or stopped it, are the agent's words and the agent's opinion: Observer did not test any of it, and the chain is checked only for its shape. Nothing on the tab is written by Observer from the agent's report. A red team run is one application in one box: no pivoting, no social engineering, no persistence and no real detection testing, and Observer's own guard and observability were not tested by it. There is no list of attack techniques and no list of objectives to choose from.",
+    related: ["card.code_security_assess_model", "card.code_security_assess_plan", "card.code_security_assess_checked"],
+  },
+  {
     id: "card.security_evidence",
     category: "metric",
     title: "Compliance evidence",
@@ -2085,7 +2295,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "MCP package reputation",
     oneLiner: "Look up an MCP server's npm package (latest version, age, maintainers) before you trust it.",
-    detail: "The dashboard form of observer guard mcp reputation <package>: the server runs the same lookup the command runs. It is a cloud feature and OFF by default (D1): it works only when config.toml sets [guard.cloud] enabled = true and [guard.cloud.reputation] enabled = true, and that opt-in stays a hand-written config decision (the Settings page never edits [guard.cloud]). Each lookup is ONE outbound HTTPS request to registry.npmjs.org, made only when you press Look up, through the guard's egress worker (endpoint allowlist, size cap); nothing in the daemon queries the registry on its own. The result is the command's own output. A package under 14 days old is flagged for review. Lookups are owner-local (refused from a paired remote device) and recorded in the audit log by package name.",
+    detail: "The dashboard form of observer guard mcp reputation <package>: the server runs the same lookup the command runs. It is a cloud feature and OFF by default: it works only after you turn reputation lookups on in the Network features card on the Security page's MCP tab ([guard.cloud] enabled and [guard.cloud.reputation] enabled). The consent is yours alone: an agent cannot give it, and the general Settings forms never edit [guard.cloud]. Each lookup is ONE outbound HTTPS request to registry.npmjs.org, made only when you press Look up, through the guard's egress worker (endpoint allowlist, size cap); nothing in the daemon queries the registry on its own. The result is the command's own output. A package under 14 days old is flagged for review. Lookups are owner-local (refused from a paired remote device) and recorded in the audit log by package name.",
     source: "/api/guard/mcp/reputation",
     related: ["card.security_mcp_pins", "tab.security"],
   },
@@ -2130,8 +2340,8 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Guard rules (the R-1xx catalog)",
     oneLiner: "The built-in deterministic rule table - every rule has an ID, category, severity, an observe/enforce decision pair, a one-line definition, and remediation advice.",
-    detail: "Rule IDs like R-151 name rows in the built-in catalog, grouped by category: destructive (force-push, reset --hard, rm -rf …), boundary (reads/writes outside the project root; R-151 is a write into a DIFFERENT observed project's root - cross-project bleed), secrets (credential/profile locations), exfil (output egress shapes), pii (deterministic PII - credit card, SSN, IBAN, ... - typed into the developer's own prompt; R-190), posture (sandbox/yolo flags), mcp (server pinning), taint (untrusted-content flows), budget, and anomaly. Each rule carries two decisions - one for observe mode, one for enforce - plus the doc one-liner and advice you see when hovering a rule ID in the verdict timeline (served by /api/guard/rules). The full catalog: `observer guard rules` on the CLI, or docs/guard-rules.md. User / project / org policy layers can ADD rules and tighten built-ins, but a lower-trust layer can never relax a built-in's decision.",
-    source: "/api/guard/rules (built-ins; policy.Catalog)",
+    detail: "Rule IDs like R-151 name rows in the built-in catalog, grouped by category: destructive (force-push, reset --hard, rm -rf …), boundary (reads/writes outside the project root; R-151 is a write into a DIFFERENT observed project's root - cross-project bleed), secrets (credential/profile locations), exfil (output egress shapes), pii (deterministic PII - credit card, SSN, IBAN, ... - typed into the developer's own prompt; R-190), posture (sandbox/yolo flags), mcp (server pinning), taint (untrusted-content flows), budget, and anomaly. Each rule carries two decisions - one for observe mode, one for enforce - plus the doc one-liner and advice you see when hovering a rule ID in the verdict timeline (served by /api/guard/rules). This install's effective rules: `observer guard rules` on the CLI; the built-in catalog: `observer guard rules --catalog`, or docs/guard-rules.md. User / project / org policy layers can ADD rules and tighten built-ins, but a lower-trust layer can never relax a built-in's decision.",
+    source: "/api/guard/rules (this install's effective rules, guard.RuleListing; ?catalog=1 for the built-ins)",
     related: ["tab.security", "chart.security_timeline", "glossary.guard_decisions"],
   },
   {
@@ -2232,7 +2442,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "chart",
     title: "Policy rule table",
     oneLiner: "The compiled routing policy, expanded - ordered rules walked top-down, first match wins; the bases pipeline runs before any rule fires.",
-    detail: "Never a black box (§R17.1): this is the exact rule list the router walks for every turn, with each rule's matcher (turn-kind set, tier conditions), action (route to a tier or model), and closed-vocabulary reason code. Above the rules, the BASES line names the fixed candidate pipeline that runs first - capability → quality_floor → privacy → cost_minimize → budget → availability → rate_limit_window - filtering and ranking which models are even eligible before a rule picks one. Lint findings (a 14-check pass over the compiled policy) render above the table when present. Edit policy via [routing] in config; validate with `observer routing lint`; dry-run a turn with `observer routing simulate`.",
+    detail: "Never a black box (§R17.1): this is the exact rule list the router walks for every turn, with each rule's matcher (turn-kind set, tier conditions), action (route to a tier or model), and closed-vocabulary reason code. Above the rules, the BASES line names the fixed candidate pipeline that runs first - capability → quality_floor → privacy → cost_minimize → budget → availability → rate_limit_window - filtering and ranking which models are even eligible before a rule picks one. Lint findings (a 14-check pass over the compiled policy) render above the table when present. Edit the policy in Settings > Routing (template and mode, and the Custom rules card, whose Validate runs the same lint as `observer routing lint`); the Overview tab's preview (shown while routing is off) replays recorded turns the way `observer routing simulate` does.",
     source: "/api/routing/status → rules + bases + lint",
     related: ["tab.routing", "chart.routing_decisions", "chart.routing_tiers", "chart.routing_demotions"],
   },
@@ -2395,6 +2605,16 @@ export const HELP_REGISTRY: HelpEntry[] = [
     related: ["tab.projects", "glossary.projects_attribution"],
   },
   {
+    id: "glossary.projects_where_it_ran",
+    category: "glossary",
+    title: "Where it ran",
+    oneLiner:
+      "This project's sessions split by where the agent ran: this machine, a vendor's cloud sandbox, a worker your organization runs, or unknown.",
+    detail:
+      "A cloud session that left no local checkout is filed under a cloud project named after its repository (cloud:<host>/<owner>/<repo>) and grouped here once this project's checkout carries the same remote; from then on the Spend tile, the Spend tab and this lane all count it, so the lane's dollars add up to the Spend total. When two capture rails report the same cloud session (its own transcript and the vendor's run total, say), only the best report counts and the other is set aside, never added. Every figure carries a coverage badge: tokens and dollars come from the same per-turn pipeline as the Spend tab and show \"not reported\" when no capture rail reported them (unknown, never zero). Provider usage (ACUs, credits, quota, vendor-reported charges) stays in the vendor's own unit and is never added to dollars or to another unit. Unknown means nothing recorded where a session ran; those sessions are not assumed local.",
+    related: ["tab.projects", "column.sessions.ran"],
+  },
+  {
     id: "glossary.projects_alignment_grading",
     category: "glossary",
     title: "Alignment grading (delivered vs missed)",
@@ -2423,7 +2643,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "AI-touched commits that landed, out of those that landed or were abandoned. Work still in flight is left out of both sides.",
     formula: "landed / (landed + abandoned), over AI-touched commits committed in the window",
     detail:
-      "In-flight work (local only, pushed, in an open PR) is shown next to the rate, never counted against it. Squash and rebase merges count through patch matching. 'Likely landed' (content overlap) is excluded unless [delivery].count_likely is on. The tile is not coloured: a low number can mean exploratory work that was meant to be thrown away. With nothing landed or abandoned yet the rate is unknown, never 0. PR merge rate and open-and-mergeable counts need a code host connection; without one they read unknown.",
+      "In-flight work (local only, pushed, in an open PR) is shown next to the rate, never counted against it. Squash and rebase merges count through patch matching. 'Likely landed' (content overlap) is excluded unless you turn it on (Settings > Intelligence, More settings: delivery.count_likely). The tile is not coloured: a low number can mean exploratory work that was meant to be thrown away. With nothing landed or abandoned yet the rate is unknown, never 0. PR merge rate and open-and-mergeable counts need a code host connection; without one they read unknown.",
     related: ["glossary.delivery_landing", "glossary.delivery_funnel"],
   },
   {
@@ -2451,8 +2671,18 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Code hosts",
     oneLiner: "An opt-in GitHub connection for pull request state. A fine-grained read-only token is recommended; your gh login also works.",
     detail:
-      "The token is checked against GitHub before anything is saved, then kept in the system keychain (never the database). Permissions: Metadata, Pull requests, Contents and Commit statuses, all read. The gh option borrows your gh login and stores nothing, but that login is usually a read and write token on every repository you can reach; Observer only reads with it. Observer calls api.github.com only, with GET requests, no redirects, about every [delivery].poll_minutes while a repository has unlanded AI-touched commits. Test restarts a stopped connection; Disconnect deletes the keychain entry and the PR data it fetched. GitLab, Bitbucket and Azure DevOps are not supported yet.",
+      "The token is checked against GitHub before anything is saved, then kept in the system keychain (never the database). Permissions: Metadata, Pull requests, Contents and Commit statuses, all read. The gh option borrows your gh login and stores nothing, but that login is usually a read and write token on every repository you can reach; Observer only reads with it. Observer calls api.github.com only, with GET requests, no redirects, about once per poll interval (Settings > Intelligence, More settings: delivery.poll_minutes) while a repository has unlanded AI-touched commits. Test restarts a stopped connection; Disconnect deletes the keychain entry and the PR data it fetched. GitLab, Bitbucket and Azure DevOps are not supported yet.",
     related: ["glossary.delivery_sources", "glossary.delivery_mirrors"],
+  },
+  {
+    id: "glossary.cloud_agents",
+    category: "glossary",
+    title: "Cloud agents",
+    oneLiner:
+      "Pull the sessions your coding agents ran in a vendor's cloud (Codex Cloud, Copilot cloud agent, Cursor, Devin and more) into this dashboard. Off until you connect an account.",
+    detail:
+      "Each connector either runs your own signed-in vendor CLI (Observer stores no credential for it) or calls the vendor's API with a key you paste. A key is checked with the vendor first, then kept in the system keychain and nowhere else; it is never shown back, and Disconnect deletes it. Test checks a login or key and links nothing. Connect checks, links the account and pulls once; after that the daemon pulls on its own schedule, and Sync now or Sync all pulls immediately. Coverage says how much each signal (sessions, who started them, activity, tokens, usage, billing) can be trusted for that account, and a missing figure is shown as missing, never as zero. Some connectors read an organization's list, which holds every member's sessions: for those you choose your own user from the users the list reports, and nothing is pulled until you do. Disconnect unlinks the account; sessions already pulled stay.",
+    related: ["glossary.delivery_code_hosts"],
   },
   {
     id: "glossary.delivery_mirrors",
@@ -2460,8 +2690,256 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Observer mirrors",
     oneLiner: "A bare, blobless copy of a remote that Observer owns, so landing stays fresh without fetching in your repository.",
     detail:
-      "Off by default and per project. Created with a blobless bare clone under ~/.observer/delivery/mirrors, refreshed only by Check now or on the schedule you pick (at least every 30 minutes); each refresh first asks the remote whether the default branch moved and skips the download when it did not. It uses your own git credential helper read-only and never prompts: a remote that asks for a password reads 'needs non-interactive credentials'. All mirrors together are capped by [delivery].mirror_cap_mb (2 GB by default); sizes and Delete are on the Code hosts card.",
+      "Off by default and per project. Created with a blobless bare clone under ~/.observer/delivery/mirrors, refreshed only by Check now or on the schedule you pick (at least every 30 minutes); each refresh first asks the remote whether the default branch moved and skips the download when it did not. It uses your own git credential helper read-only and never prompts: a remote that asks for a password reads 'needs non-interactive credentials'. All mirrors together are capped by the mirror size cap (Settings > Intelligence, More settings: delivery.mirror_cap_mb, 2 GB by default); sizes and Delete are on the Code hosts card.",
     related: ["glossary.delivery_sources"],
+  },
+
+  // ----- sandbox backend setup (Terminals > Settings, "Set up a sandbox
+  // backend"; each step card's "How this step works" opens one of these,
+  // chosen by lib/sandboxSetup.ts setupHelpId) -----
+  {
+    id: "glossary.terminals_sandbox_setup",
+    category: "glossary",
+    title: "Setting up a sandbox backend",
+    oneLiner:
+      "A checklist per backend: each card is one thing this machine needs, with its state and the one action the dashboard can take for it.",
+    detail:
+      "Pick a backend in the list; its next missing step is named beside it. Each card reads Done, Needed, Not checked yet, In progress, Blocked on this machine, Not needed here or Not allowed by your organization. The button on a card does exactly one thing: Turn on changes a setting or selects a module in place; Install, Start, Pull or Sign in in terminal opens a setup terminal in the dock where you watch it run (a password prompt is yours to answer); Copy command copies a command for you to run yourself; a key step shows a field to paste the key into. A card with no button is something Observer never changes for you (a kernel setting, a group, the OS version, an account) and its text says what to do. Check this machine runs the backend's own probe once and judges the steps Observer cannot see without running anything. Undo reverses only what this dashboard did for that step. On a machine your organization manages, a backend the organization does not allow shows every step as not allowed, and steps can also turn into copy-only guides when guided installs are switched off.",
+    source: "docs/sandboxed-terminals.md and docs/sandbox-backend-checklist.md (section B, setup and installation)",
+    related: ["glossary.terminals_sandbox_setup_module", "glossary.terminals_sandbox_setup_enable", "glossary.terminals_sandbox_setup_hosted"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_module",
+    category: "glossary",
+    title: "Sandbox setup: the backend's module",
+    oneLiner: "Each sandbox backend's driver is its own module; Turn on selects it in Settings > Components.",
+    detail:
+      "Every backend other than Bubblewrap is a module you opt into, and most are off in every edition until selected. Turn on selects the backend's module the same way Settings > Components does, and Undo removes it again (its data is kept). The Bubblewrap planners belong to the isolation engine module, which sandboxed terminals require. When your organization chooses the components on this machine, this step says so and cannot be changed here.",
+    source: "docs/sandboxed-terminals.md, section \"The isolation engine (component isolation)\"",
+    related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_enable"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_enable",
+    category: "glossary",
+    title: "Sandbox setup: the backend enabled",
+    oneLiner: "The last step adds the backend to the sandbox backends list and turns sandbox support on when it is off.",
+    detail:
+      "Turn on appends the backend to the end of the backends list in the Sandbox isolation card (Terminals > Settings) and turns sandbox support on if it was off. The change takes effect in the running Observer at once, no restart: the next probe or launch reads it. Beta backends are never picked automatically; a launch uses one only when it names it (the New Terminal picker, or a launch that names the backend). Undo takes the backend off the list again, unless the list would then fall back to it anyway.",
+    source: "docs/sandboxed-terminals.md, section \"Enabling it\"",
+    related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_module"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_bwrap",
+    category: "glossary",
+    title: "Sandbox setup: Bubblewrap and user namespaces",
+    oneLiner: "The Bubblewrap backend needs bwrap 0.4.0 or newer and a kernel that lets your user create user and network namespaces.",
+    detail:
+      "On Debian and Ubuntu the step installs the bubblewrap package with the system package manager in a setup terminal (it asks for your password, so it needs \"Let a setup step ask for your password\" in the Sandbox isolation card). On other distributions it is a guide: install bubblewrap with your own package manager, then press Re-check. User namespaces are a kernel security setting (for example Ubuntu's AppArmor restriction on unprivileged user namespaces, or a container host); Observer never changes it, and the step says so when it is refused. Once both are present, enabling the backend in the Sandbox isolation card takes effect without a restart.",
+    source: "docs/sandboxed-terminals.md, section \"Enabling it\"",
+    related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_enable"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_engine",
+    category: "glossary",
+    title: "Sandbox setup: the container engine and its socket",
+    oneLiner: "The container backends drive a Podman or Docker Engine inside this Linux through a local socket you own; Docker Desktop's VM is refused.",
+    detail:
+      "Rootless engines are preferred: on Debian and Ubuntu the step installs Podman, which runs containers as your own user, and then starts Podman's socket for your user (a systemd user unit, no password). Only a local socket is ever used: a remote or TCP endpoint, a symlinked path or a socket that changed identity is refused. A rootful Docker socket counts only when the backend allows rootful use, because membership of the docker group is root on this machine; Observer never adds you to that group (the step tells you the command if you accept that). Docker Desktop's VM is not a same-kernel engine and is refused.",
+    source: "docs/sandboxed-terminals.md, section \"Which engine, which socket\"",
+    related: ["glossary.terminals_sandbox_setup_image", "glossary.terminals_sandbox_setup_gvisor"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_image",
+    category: "glossary",
+    title: "Sandbox setup: the sandbox image",
+    oneLiner: "The container the agent runs in starts from an image pulled by its digest, never by a moving tag.",
+    detail:
+      "The step pulls the configured image (or Observer's signed default image, once one is published) in a setup terminal, by repository and digest only. Before anything is fetched it says the source and the declared size, and it stops a pull that grows past that size or runs over ten minutes, removing what it fetched. Nothing is pulled in the background: only this step, a launch you start or the pull command does it.",
+    source: "docs/sandboxed-terminals.md, section \"The default image on this machine (pull and revoked images)\"",
+    related: ["glossary.terminals_sandbox_setup_engine"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_gvisor",
+    category: "glossary",
+    title: "Sandbox setup: gVisor (runsc)",
+    oneLiner: "The gVisor backend runs the container under gVisor's user-space kernel; it needs rootful Docker with runsc registered.",
+    detail:
+      "Install gVisor's runsc from gVisor's own release instructions (Observer only guides this step). Register it with Docker with host sockets open (the step shows the exact command; it edits Docker's daemon settings and asks for your password), then restart Docker, which stops every running container. The backend also needs rootful engine use allowed, because gVisor's Docker integration does not work rootless; with gVisor the boundary between the agent and this kernel is gVisor itself. It is beta and never picked automatically.",
+    source: "docs/sandboxed-terminals.md, section \"gVisor (oci-runsc, beta)\"",
+    related: ["glossary.terminals_sandbox_setup_engine"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_landlock",
+    category: "glossary",
+    title: "Sandbox setup: Landlock",
+    oneLiner: "The Landlock-only backend needs a kernel with Landlock at the ABI it asks for; there is nothing to install.",
+    detail:
+      "The lightest Linux backend: no namespaces and no container, only a Landlock ruleset applied before the agent starts. It is for a host where Bubblewrap cannot run. The check reads the running kernel's Landlock ABI and names what it found; an older kernel (WSL2's reports ABI 7 today, below the default floor of 9) cannot use it, and upgrading the kernel is yours to do. It is beta and used only when a launch names it.",
+    source: "docs/sandboxed-terminals.md, section \"Landlock only (process_lite, beta)\"",
+    related: ["glossary.terminals_sandbox_setup"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_vm",
+    category: "glossary",
+    title: "Sandbox setup: the Cloud Hypervisor microVM",
+    oneLiner: "The microVM backend runs the agent in its own kernel; it needs Cloud Hypervisor, virtiofsd, e2fsprogs and the signed guest images.",
+    detail:
+      "Cloud Hypervisor's pinned static release is downloaded into Observer's own tools folder after you agree to the version, size and checksum shown on the button, and checked against that checksum before it is placed. virtiofsd and e2fsprogs come from the system package manager on Debian and Ubuntu (a password step), or from your own package manager elsewhere. Nothing opens the hypervisor device, looks for a program or touches the network until the module is selected and the backend is listed.",
+    source: "docs/sandboxed-terminals.md, section \"microVM sandboxes (cloud-hypervisor, beta)\"",
+    related: ["glossary.terminals_sandbox_setup_kvm", "glossary.terminals_sandbox_setup_vm_images"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_kvm",
+    category: "glossary",
+    title: "Sandbox setup: hardware virtualization",
+    oneLiner: "The microVM backend needs a usable KVM device that your user can open; Observer never changes firmware, the hypervisor or your groups.",
+    detail:
+      "On a physical machine, turn on Intel VT-x or AMD-V in the firmware; on a VM, turn on nested virtualization. On WSL2, turn on nested virtualization in your Windows WSL settings and restart WSL. Your user must be able to open the device, usually through the kvm group: add yourself with your own administrator command, then sign out and back in. The check stops at the first thing missing and names it.",
+    source: "docs/sandboxed-terminals.md, section \"The probe\"",
+    related: ["glossary.terminals_sandbox_setup_vm"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_vm_images",
+    category: "glossary",
+    title: "Sandbox setup: the signed guest image set",
+    oneLiner: "The microVM boots only a signed root filesystem and guest helper, verified against keys compiled into Observer.",
+    detail:
+      "The set is a kernel, an initramfs, a read-only root filesystem with its verity tree, and a guest helper whose version equals this Observer's. The step imports it from a folder you name, verifying every file before any is installed (never a partial set), or fetches it once a set is published. Bytes arrive only on your action.",
+    source: "docs/sandboxed-terminals.md, section \"Image set and import\"",
+    related: ["glossary.terminals_sandbox_setup_vm"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_mxc",
+    category: "glossary",
+    title: "Sandbox setup: Windows MXC containers",
+    oneLiner: "The native Windows backends run the agent in a Microsoft Execution Containers process container, which needs a Windows 11 build that offers it.",
+    detail:
+      "The container tier comes with Windows itself: when this build does not offer it, the step says so and updating Windows is yours to do. The native code runs only in short-lived helper processes, never in Observer's daemon, and each Microsoft file is hash-checked and signature-checked before it is loaded. The AppContainer tier is weaker than the process container and is offered separately.",
+    source: "docs/sandboxed-terminals.md, section \"Native Windows: MXC ProcessContainer (mxc-process, beta)\"",
+    related: ["glossary.terminals_sandbox_setup_mxc_files"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_mxc_files",
+    category: "glossary",
+    title: "Sandbox setup: the MXC files",
+    oneLiner: "Microsoft's two MXC files are checked against pins compiled into Observer; a signed manifest can only narrow what is accepted.",
+    detail:
+      "The step fetches the signed MXC file set, or imports it from a folder you name. A signed manifest may revoke the set, raise the minimum version or expire, but it can never name a file, hash or size the compiled pins do not, so newer MXC files still need a newer Observer. A manifest that fails verification is refused, never used.",
+    source: "docs/sandboxed-terminals.md, section \"The MXC files as a signed kind\"",
+    related: ["glossary.terminals_sandbox_setup_mxc"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_macos",
+    category: "glossary",
+    title: "Sandbox setup: macOS Seatbelt and Apple container",
+    oneLiner: "Seatbelt uses macOS's built-in sandbox and needs macOS 12 or newer; Apple container needs macOS 26 on Apple silicon and Apple's container CLI.",
+    detail:
+      "Seatbelt needs nothing installed: the system's own sandbox tool is part of macOS. Apple container needs Apple's signed installer package from Apple's container releases page: check its signature (the signer must be Apple) and install it with an administrator, then press Re-check. Starting its system service runs in a setup terminal; the first start downloads a Linux kernel from Apple's own release, which Observer cannot verify. The image is pulled by digest from the reference you configure. Both backends are beta and used only when a launch names them.",
+    source: "docs/sandboxed-terminals.md, section \"macOS sandboxes (beta): Seatbelt and Apple container\"",
+    related: ["glossary.terminals_sandbox_setup"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_hosted",
+    category: "glossary",
+    title: "Sandbox setup: hosted sandboxes",
+    oneLiner:
+      "A hosted backend runs the agent in a box on a provider's machines (E2B, Modal, Vercel Sandbox, Docker Sandboxes, Daytona, InstaBox): you bring the account and its key, and agree to what leaves this machine.",
+    detail:
+      "Four steps: select the provider's module, store its key in this machine's keychain, agree to the upload, and enable the backend. Your project is uploaded to the provider's machines for each run (or the box clones the repository itself), model traffic and transcripts come back through your own daemon, and every box is deleted at the end of the run. Hosted backends are beta, never picked automatically, and run the host side on a Linux or WSL2 daemon only. The Hosted sandboxes card in Terminals > Settings shows each provider's credential source, the consent screen, today's box-minutes and leftover boxes.",
+    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\"",
+    related: ["glossary.terminals_sandbox_setup_hosted_account", "glossary.terminals_sandbox_setup_hosted_key", "glossary.terminals_sandbox_setup_hosted_consent"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_hosted_account",
+    category: "glossary",
+    title: "Sandbox setup: an account with the provider",
+    oneLiner: "You need your own account with the hosted provider; Observer never creates one.",
+    detail:
+      "This step has no button: sign up on the provider's own site. Observer cannot check an account by itself, so the step reads Not checked yet until a key is stored, and Done once one is. Billing is between you and the provider; the Hosted sandboxes card shows a dated estimate of today's box-minutes, and each provider row caps how many minutes a day this machine may use.",
+    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\"",
+    related: ["glossary.terminals_sandbox_setup_hosted_key"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_hosted_key",
+    category: "glossary",
+    title: "Sandbox setup: the provider's API key",
+    oneLiner:
+      "Paste the key into the field on this step's card and press Store in this machine's keychain; it is sent once to the local daemon, never shown again and never logged.",
+    detail:
+      "Make the key in the provider's own dashboard, then paste it into the step's field (a provider that needs more than one value shows one field per value). The daemon stores it in this machine's keychain, bound to the endpoint of the region saved for that provider, and the field is cleared as soon as you press the button. Values per provider: E2B, E2B_API_KEY; Modal, MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; Vercel Sandbox, VERCEL_TOKEN, VERCEL_TEAM_ID and VERCEL_PROJECT_ID; Docker Sandboxes, DOCKER_SANDBOXES_TOKEN (an access token with Cloud Sandboxes access) and DOCKER_SANDBOXES_ID; Daytona, DAYTONA_API_KEY (Keys, Create Key, with the write and delete sandbox permissions); InstaBox, INSTABOX_API_KEY (with the machines write and delete scopes). The same form is on the Hosted sandboxes card, which can also replace or disconnect a stored key. Instead of storing a key you can set those variables in the daemon's environment; they are then read at use time and bound to the provider's default endpoint only. The key field only works from this computer's own dashboard: a remote view cannot store it. When guided installs are switched off, the card shows the command that asks for the same values in a terminal of your own instead. A key is never written to a config file, a log, an error or the box.",
+    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\" (step 3) and the Daytona section",
+    related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_consent"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_hosted_custody",
+    category: "glossary",
+    title: "Sandbox setup: how the agent gets its model key",
+    oneLiner:
+      "A hosted box needs a way for the agent to reach its model provider: either this machine adds your key to the agent's requests, or the key is put in the box.",
+    detail:
+      "By default the model key stays on this machine. That works only when this machine can add it to the agent's requests: a key you stored for credential injection, or your organization's AI gateway. When neither is there, this step reads missing and offers one button, Put the API key in the box, which shows what it changes before it runs: the agent in the box can then read the key and use it directly. It is one setting for every hosted provider, so Undo changes it back for all of them and says which ones before it runs. Changing it reopens your consent, so you agree to the new way before the next upload.",
+    source: "docs/sandbox-credential-custody.md, section \"The four custody modes\"",
+    related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_key", "glossary.terminals_sandbox_setup_hosted_consent"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_hosted_consent",
+    category: "glossary",
+    title: "Sandbox setup: your consent for the provider",
+    oneLiner: "Before the first run you read exactly what leaves this machine for the provider and agree to it; any change to those facts asks again.",
+    detail:
+      "Pick the folder the consent is for, then open the consent screen: it runs in a setup terminal and lists the files that would be uploaded for that folder and the ones kept back. The step starts on the Observer workspace, a scratch folder that is not one of your projects, so agreeing here uploads nothing of a project; pick one of your projects instead to agree to uploading that project. Your home folder is never uploaded, so the step always needs a folder. The Hosted sandboxes card in Terminals > Settings records the same consent from the page: pick the project, read the list and press Agree. A clone-only launch (the box clones the repository itself, nothing is uploaded from here) asks for its own agreement, chosen on the same card. The agreement covers the provider, endpoint, region, credential source, network tier, capture, upload scope and the spend caps; changing any of them asks again.",
+    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\" (step 4)",
+    related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_key", "glossary.default_workspace"],
+  },
+  {
+    id: "glossary.default_workspace",
+    category: "glossary",
+    title: "Default workspace",
+    oneLiner:
+      "A scratch folder Observer uses when a step needs a folder that is not one of your projects, so that work never lands in a project.",
+    detail:
+      "Observer sets the folder up when it starts (and when you run observer init) if it is missing or empty: it creates it, writes a small .observer-workspace marker file and makes it its own git repository, because the hosted consent screen lists a repository's files. The marker is how Observer tells the folder apart from your projects; it never changes anything else in the folder, never sets up a folder that already holds files without the marker, and never touches a repository it did not create. Unless you choose another one it is the observer-workspace folder in your home folder. Change it on the Default workspace card in Terminals > Settings (also under Settings > Terminal): you see the exact config.toml change first, and the folder is set up when you save. Use the built-in folder puts it back. The folder must be a full path and must not be your home folder or a folder that holds it, a drive root, inside Observer's own data folder (.observer in your home folder), inside another git repository, a folder that holds your projects, or a folder that already holds files without the marker. Without git installed the folder is created but not set up, and the consent step does not start on it. Its first user is the hosted sandbox consent step, which starts on it so a consent never defaults to a real project; agreeing there sends only the marker file. It is not added to the New Terminal folder allow-list: launching an agent or a shell there still needs the folder in Folder Selection.",
+    source: "docs/sandboxed-terminals.md, section \"Default workspace\"",
+    related: ["glossary.terminals_sandbox_setup_hosted_consent"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_openshell",
+    category: "glossary",
+    title: "Sandbox setup: OpenShell",
+    oneLiner: "The OpenShell backend needs native Linux with Landlock ABI 3 or newer, Docker Engine, and OpenShell v0.1.6 installed root-owned.",
+    detail:
+      "WSL2 is refused before any OpenShell command runs (its seccomp profile breaks OpenShell's supervisor); macOS and Windows have no OpenShell backend. Install OpenShell (openshell and openshell-gateway) as OpenShell's own instructions describe; Observer only guides this step. Docker access through the docker group is root-equivalent on this machine, and Observer never adds you to it.",
+    source: "docs/sandbox-openshell.md, section \"What you need\"",
+    related: ["glossary.terminals_sandbox_setup_openshell_gateway"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_openshell_gateway",
+    category: "glossary",
+    title: "Sandbox setup: OpenShell's managed gateway",
+    oneLiner: "By default Observer runs its own private OpenShell gateway under your systemd user manager, on a loopback port of its own.",
+    detail:
+      "The private gateway never reads or switches your own OpenShell gateway or its settings, and its images are pinned by digest. It runs under your systemd user manager, which needs a user session; on a machine you do not stay signed in to, enabling lingering for your user keeps it running. You can point the backend at your own gateway instead (the external gateway mode).",
+    source: "docs/sandbox-openshell.md, section \"Managed gateway mode (the default)\"",
+    related: ["glossary.terminals_sandbox_setup_openshell"],
+  },
+  {
+    id: "glossary.terminals_sandbox_setup_org_shell",
+    category: "glossary",
+    title: "Sandbox setup: your organization's OpenShell gateway",
+    oneLiner: "The org-hosted backend runs boxes on your organization's own gateway; there is no provider key, you sign this machine in once.",
+    detail:
+      "It is offered only on a machine your organization manages whose enrolment holds the sandboxed terminals authority, and only to the teams the organization allows. The step opens the sign-in in a setup terminal: it prints a page on your organization's dashboard and a short code; open the page, sign in, and type the code. The grant lasts what your organization sets (12 hours by default). Each run then gets a short-lived token; model traffic and hooks travel through this laptop, which must stay online for the run.",
+    source: "docs/sandbox-openshell-org.md, section \"Turning it on\"",
+    related: ["glossary.terminals_sandbox_setup_hosted"],
+  },
+  {
+    id: "glossary.apps_end_user",
+    category: "glossary",
+    title: "End users of your AI apps",
+    oneLiner: "The person or account behind a request to an app you build, as the app names it with the SDK's user option.",
+    detail:
+      "An end user is personal data. This machine stores it as the app sent it. It leaves this machine when the app's data also goes to your organization: an SDK destination of online or both (Settings > AI Apps), or an AI apps share your organization turned on. Your organization's dashboard then shows the same end users. A trace without an end user is counted on its own.",
+    source: "docs/plans/plane-a-sdk-buildout/contracts/destination.md",
   },
 ];
 // The registry as the dashboard shows it: verbatim normally, the token-usage

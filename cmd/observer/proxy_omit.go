@@ -117,6 +117,10 @@ func buildProxy(ctx context.Context, configPath, _ string, portOverride int, bin
 	acquireProcessGuard(ctx, cfg, s, logger)
 	wireMCPRelay(cfg, s, nil, lookupProcessGuard(cfg.Observer.DBPath), logger)
 	admissionHandle := wireAdmission(ctx, cfg, database, relay, logger, emit.Nop())
+	// The org prompt judge's node lane has no proxy seam in this build, but
+	// the hook lane (lane adm-2) still judges every prompt-gate tool through
+	// it, so bind the engine, the org relay and the audit writer here too.
+	configurePlaneBNodeLane(relay, s, logger)
 	return proxyWiring{
 		Proxy:     inertProxy{engine: engine},
 		Cleanup:   func() { _ = database.Close() },

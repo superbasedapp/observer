@@ -1,7 +1,7 @@
 // Package sandboxselect is the sandbox module's single decision point
 // (sandbox plan v2 sections 4.4 and 4.5, phase P1a): the capture
 // computation table C1 to C8, the selection rule table S0 to S13 with S1b,
-// S2b, S4b, S6b, S7b to S7d, S11b and S12b, the nesting table for stacks,
+// S2b, S4b, S6b, S7b to S7e, S7g, S11b and S12b, the nesting table for stacks,
 // and the post-build re-check parser for bwrap.
 //
 // Every decision is an ordered data table walked top-down, one test per row

@@ -2,22 +2,61 @@ rules:
   - id: java.shell-interpolation
     languages: [java]
     severity: ERROR
-    message: A shell command line is built with values pasted in; run the program directly with a fixed argument list (ProcessBuilder with separate arguments) instead.
+    message: Web request input reaches a shell command line; run the program directly with a fixed argument list (ProcessBuilder with separate arguments) instead.
     metadata:
       category: code_vuln
       cwe: CWE-78
-    pattern-either:
+    # Pack 1.4.0: taint from web request input (the G4 rewrite the other
+    # languages' shell rules had); a shell run over the program's own values
+    # is no longer reported.
+    mode: taint
+    pattern-sources:
       - patterns:
           - pattern-either:
-              - pattern: new ProcessBuilder("$SH", "$C", <... "..." + $X ...>)
-              - pattern: new ProcessBuilder("$SH", "$C", String.format(...))
-              - pattern: '$RT.exec(new String[]{"$SH", "$C", <... "..." + $X ...>})'
-              - pattern: '$RT.exec(new String[]{"$SH", "$C", String.format(...)})'
+              - pattern: (HttpServletRequest $R).$M(...)
+              - patterns:
+                  - pattern: $R.$M(...)
+                  - metavariable-regex:
+                      metavariable: $R
+                      regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|getInputStream|getReader)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $FN(..., @$A $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RT $FN(..., @$A(...) $T $P, ...) { ... }
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|String\[\]|List<String>|Collection<String>|Set<String>|Optional<String>|CharSequence)$
+    pattern-sanitizers:
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+      - pattern: Integer.valueOf(...)
+      - pattern: Long.valueOf(...)
+      - pattern: UUID.fromString(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new ProcessBuilder("$SH", "$C", ..., $X, ...)
+              - pattern: '$RT.exec(new String[]{"$SH", "$C", ..., $X, ...})'
+              - pattern: $PB.command("$SH", "$C", ..., $X, ...)
           - metavariable-regex:
               metavariable: $SH
               regex: ^(sh|bash|zsh|/bin/sh|/bin/bash|cmd|cmd\.exe|powershell|powershell\.exe|pwsh)$
           - metavariable-regex:
               metavariable: $C
               regex: ^(-c|/c|/C|-Command)$
-      - pattern: Runtime.getRuntime().exec(<... "..." + $X ...>)
-      - pattern: Runtime.getRuntime().exec(String.format(...))
+          - focus-metavariable: $X
+      # One command string, split on spaces by Runtime.exec: the input picks
+      # the program or its arguments.
+      - patterns:
+          - pattern: Runtime.getRuntime().exec($X, ...)
+          - pattern-not: Runtime.getRuntime().exec(new String[]{...}, ...)
+          - focus-metavariable: $X

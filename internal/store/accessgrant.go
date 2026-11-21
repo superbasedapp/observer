@@ -198,6 +198,11 @@ type AccessGrantView struct {
 	// not (accessgrant.Reason*).
 	Honoured bool   `json:"honoured"`
 	Reason   string `json:"reason,omitempty"`
+	// CoveredBy is the id of another grant in force on this machine that
+	// already gives everything this one gives (accessgrant.Redundant), 0
+	// when there is none: the page says so, so two rows for one rule do not
+	// read as two different exceptions.
+	CoveredBy int64 `json:"covered_by,omitempty"`
 }
 
 // AccessGrantsView is the node's whole grant picture for one enrolment.
@@ -307,14 +312,54 @@ func (s *Store) NoteOutboxAttempt(ctx context.Context, id int64, errText string,
 	return nil
 }
 
+// draftProject is a guard event's project as a request draft carries it.
+type draftProject struct {
+	hash, root string
+}
+
+// draftProjectRules picks the project a request drafted from a guard event
+// is scoped on, an ordered table walked top down (GRANT-20):
+//
+//	| # | the guard_events row carries        | project                          |
+//	|---|-------------------------------------|----------------------------------|
+//	| 1 | project_root_hash (agent 253)       | the event's (hash + its root)    |
+//	| 2 | no hash (pre-253, or none resolved) | the session's project            |
+//
+// Row 1 is the project the gate matched grants on for that call (the hook's
+// cwd-derived root, the host-named root, or the session's project on the
+// proxy lane), so the grant the request yields matches the next identical
+// call. Row 2 keeps every older row drafting exactly as before. The event's
+// root is never mixed with the session's: a row whose hash is set but whose
+// root is not shows no root rather than a different project's.
+var draftProjectRules = []struct {
+	name  string
+	match func(event, session draftProject) bool
+	pick  func(event, session draftProject) draftProject
+}{
+	{"event", func(e, _ draftProject) bool { return e.hash != "" }, func(e, _ draftProject) draftProject { return e }},
+	{"session", func(_, _ draftProject) bool { return true }, func(_, s draftProject) draftProject { return s }},
+}
+
+// resolveDraftProject walks draftProjectRules.
+func resolveDraftProject(event, session draftProject) draftProject {
+	for _, r := range draftProjectRules {
+		if r.match(event, session) {
+			return r.pick(event, session)
+		}
+	}
+	return draftProject{}
+}
+
 // GuardEventRequestDraft reads one guard event and shapes it into a request draft.
 // CommandClass is "<category>/<event_kind>" (design §3.2) and OperandHash is
 // the event's target_hash, so an exact grant matches the same command again
-// and nothing else.
+// and nothing else. The project is the one the gate matched grants on for
+// that call when the row recorded it, else the session's (resolveDraftProject).
 func (s *Store) GuardEventRequestDraft(ctx context.Context, id int64) (orgcontract.AccessRequestCreate, bool, error) {
 	var (
 		ruleID, category, severity, decision, tool, eventKind, targetHash, excerpt string
-		sessionID, projectHash, projectRoot, branch                                string
+		sessionID, branch                                                          string
+		event, session                                                             draftProject
 		enforced                                                                   int64
 		ts                                                                         string
 	)
@@ -322,19 +367,22 @@ func (s *Store) GuardEventRequestDraft(ctx context.Context, id int64) (orgcontra
 		SELECT ge.rule_id, COALESCE(ge.category,''), COALESCE(ge.severity,''), COALESCE(ge.decision,''),
 		       COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), COALESCE(ge.target_hash,''),
 		       COALESCE(ge.target_excerpt,''), COALESCE(ge.session_id,''), COALESCE(ge.enforced,0), ge.ts,
+		       COALESCE(ge.project_root_hash,''), COALESCE(ge.project_root,''),
 		       COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''), COALESCE(s.git_branch,'')
 		  FROM guard_events ge
 		  LEFT JOIN sessions s ON s.id = ge.session_id
 		  LEFT JOIN projects p ON p.id = s.project_id
 		 WHERE ge.id = ?`, id).
 		Scan(&ruleID, &category, &severity, &decision, &tool, &eventKind, &targetHash, &excerpt,
-			&sessionID, &enforced, &ts, &projectHash, &projectRoot, &branch)
+			&sessionID, &enforced, &ts, &event.hash, &event.root, &session.hash, &session.root, &branch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return orgcontract.AccessRequestCreate{}, false, nil
 	}
 	if err != nil {
-		return orgcontract.AccessRequestCreate{}, false, err
+		return orgcontract.AccessRequestCreate{}, false, fmt.Errorf("store.GuardEventRequestDraft: %w", err)
 	}
+	project := resolveDraftProject(event, session)
+	projectHash, projectRoot := project.hash, project.root
 	var hits int64
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM guard_events WHERE rule_id = ? AND ts >= ?`,
 		ruleID, time.Now().UTC().Add(-7*24*time.Hour).Format(time.RFC3339)).Scan(&hits)

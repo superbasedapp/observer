@@ -248,7 +248,16 @@ function StateCallouts({ d }: { d: ProjectDelivery }) {
   const out: ReactNode[] = [];
   if (!d.local_enabled) {
     out.push(
-      <Callout key="local" tone="info" title="Local landing detection is off.">
+      <Callout
+        key="local"
+        tone="info"
+        title="Local landing detection is off."
+        action={
+          <Button size="sm" variant="secondary" onClick={() => navigate(CODE_HOSTS_HREF)}>
+            Open Code hosts
+          </Button>
+        }
+      >
         Landings shown are the last ones recorded. Turn local landing detection back on in Settings, Code hosts.
       </Callout>,
     );
@@ -273,7 +282,18 @@ function StateCallouts({ d }: { d: ProjectDelivery }) {
     );
   } else if (!d.provider_linked && d.source.kind === "mirror") {
     out.push(
-      <Callout key="connect" tone="info" title="Landing from your Observer mirror.">
+      <Callout
+        key="connect"
+        tone="info"
+        title="Landing from your Observer mirror."
+        action={
+          hasGitHub ? (
+            <Button size="sm" variant="secondary" iconLeft={Link2} onClick={() => navigate(CODE_HOSTS_HREF)}>
+              Connect a code host
+            </Button>
+          ) : undefined
+        }
+      >
         Landing is read from the Observer mirror{d.source.mirror_refresh_at ? `, refreshed ${fmtRelative(d.source.mirror_refresh_at)}` : ""}, including squash and
         rebase merges, without touching your repository.{" "}
         {hasGitHub

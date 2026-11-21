@@ -46,6 +46,39 @@ func TestWrapRunsTheProgramInsideBwrap(t *testing.T) {
 	}
 }
 
+// TestWrapKeepsASpacedProjectWhole: a project whose path holds a space is
+// wrapped, not refused, and every flag that names it gets it as one argv
+// element (operator ruling 2026-11-06).
+func TestWrapKeepsASpacedProjectWhole(t *testing.T) {
+	d := extrun.OneShotDirs{Project: "/mnt/d/programsx/future calculator", Output: "/tmp/run 1/out", Cache: "/tmp/run 1/cache"}
+	o, err := New(testHost(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := o.Wrap(context.Background(), extrun.Plan{Path: "/opt/s/bin/gosec", Args: []string{"./..."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Dir != d.Project {
+		t.Fatalf("dir = %q, want %q", out.Dir, d.Project)
+	}
+	named := 0
+	for i, a := range out.Args {
+		if a == "--" {
+			break
+		}
+		if strings.Contains(a, "future") {
+			if a != d.Project {
+				t.Fatalf("argv element %d = %q: the project path was split or altered", i, a)
+			}
+			named++
+		}
+	}
+	if named != 3 { // --ro-bind <p> <p>, --chdir <p>
+		t.Fatalf("the project is named %d times before --, want 3: %v", named, out.Args)
+	}
+}
+
 func TestNewAndWrapRefuse(t *testing.T) {
 	h := testHost()
 	if _, err := New(Host{Home: h.Home, ObserverDir: h.ObserverDir}, testDirs()); !errors.Is(err, ErrNoBwrap) {

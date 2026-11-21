@@ -165,6 +165,11 @@ func OpenForHost(fallbackDir, host string, logger *slog.Logger) Store {
 		)
 		return store
 	}
+	if !keystore.KeychainChosen(ServiceName) {
+		// The file store is this machine's choice (Linux by default,
+		// KEYSTORE-LINUX-1), not a fallback: no WARN.
+		return store
+	}
 	if _, err := os.Stat(sentinel); err != nil {
 		logger.Warn(
 			"cloud credentials: OS keychain unavailable, falling back to hardened 0600 file store",

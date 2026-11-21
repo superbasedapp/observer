@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/gitview"
 	"github.com/marmutapp/superbased-observer/internal/secexcept"
@@ -310,7 +311,7 @@ func (s *Server) handleSecurityGithooks(w http.ResponseWriter, r *http.Request) 
 		switch req.Action {
 		case "install":
 			if !active {
-				http.Error(w, "the Local git hooks component (security.githooks) is not active; turn it on in Settings > Components", http.StatusConflict)
+				writeNeedsComponent(w, http.StatusConflict, componentstate.NotActiveError, msgGithooksOff, "security.githooks")
 				return
 			}
 			exe, err := os.Executable()

@@ -52,6 +52,10 @@ type Adapter struct {
 	// xcodeRootFn, when set, replaces the Xcode Claude Agent projects root
 	// (xcode.go); tests only.
 	xcodeRootFn func() string
+	// lookupEnv / fileExists feed the CA-D20 second-signal table
+	// (surface.go); nil = os.LookupEnv / os.Stat. Tests only.
+	lookupEnv  func(string) (string, bool)
+	fileExists func(string) bool
 }
 
 // New returns a Claude Code adapter with the default scrubber and
@@ -273,6 +277,10 @@ type rawLine struct {
 	// decoded (gentiming.go classifies the kinds written with the
 	// response, which are never a request start).
 	Attachment *rawAttachment `json:"attachment"`
+	// RemoteSourced marks a line `claude --teleport` copied from the cloud
+	// session into a local transcript (teleport.go, CA-D20): it contributes
+	// nothing to the local session.
+	RemoteSourced bool `json:"remoteSourced"`
 }
 
 type rawMessage struct {
@@ -464,6 +472,16 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// carrying a non-empty `version` + sessionId. first-wins-unless-empty
 	// makes a later chunk's re-stamp harmless.
 	versionStamped := false
+	// executionStamped gates the cloud-execution stamp (cloud-agents
+	// CA-B4) the same way: at most once per parse, from the first line
+	// whose entrypoint has a claudeEntrypointExecution row. Independent of
+	// the surface stamp (a hosted Xcode surface never hides a cloud
+	// entrypoint). first-wins-unless-empty makes a later re-stamp harmless.
+	executionStamped := false
+	// teleportStamped gates the teleport lineage marker (teleport.go) to
+	// one per parse; the store write is preserve-on-empty, so a later
+	// chunk's re-stamp is harmless.
+	teleportStamped := false
 	// Per-file dedup for noisy state-assertion lines:
 	//   • agent-name re-emits the same persona name per assistant turn
 	//   • permission-mode re-emits the same mode per user prompt
@@ -565,6 +583,20 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			if fileAgent != "" && line.AgentID != "" && fileAgent != line.AgentID {
 				agentIdentityValid = false
 			}
+			// CA-D20 teleport (teleport.go): the remote_session_change
+			// attachment names the cloud session this local transcript
+			// continues (its lineage parent, recorded once per parse), and
+			// a cloud-origin copy (remoteSourced) contributes nothing to
+			// the local session, not even a timing record.
+			if !teleportStamped && line.SessionID != "" {
+				if parent, ok := teleportParent(line.Attachment); ok {
+					res.SessionLineages = append(res.SessionLineages, teleportLineage(line.SessionID, parent))
+					teleportStamped = true
+				}
+			}
+			if !lineContributes(line) {
+				continue
+			}
 			timingLines = append(timingLines, classifyRecord(line, true))
 			// NewOffset already committed for the underlying physical line
 			// above; the inner loop processes recovered sub-records that
@@ -623,6 +655,22 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 					})
 				}
 				surfaceStamped = true
+			}
+			if !executionStamped && line.Entrypoint != "" && line.SessionID != "" {
+				if loc, ok := resolveClaudeExecution(line.Entrypoint); ok {
+					// CA-D20: the entrypoint is a claim; stamp only when a
+					// second signal confirms it. One decision per parse:
+					// the signals are properties of the file and the
+					// process, not of a line.
+					if ref, _, confirmed := confirmClaudeCloudExecution(a.cloudSignals(path, line.SessionID, lastCwd)); confirmed {
+						res.SessionExecutions = append(res.SessionExecutions, models.SessionExecution{
+							SessionID:         line.SessionID,
+							ExecutionLocation: loc,
+							VendorSessionRef:  ref,
+						})
+					}
+					executionStamped = true
+				}
 			}
 
 			// Issue 2: captured Claude Code CLI version from the

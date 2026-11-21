@@ -86,6 +86,27 @@ func openHostedRelayLog(observerDir, runID string, secrets []string, now func() 
 	return l
 }
 
+// noteHostedRelayLog appends one line of the daemon's relay to runID's kept
+// relay log (lane FX6, F-P7-5: a hook the daemon refused path_outside_run
+// left no line there, though the box's answer points to it). The run's host
+// helper owns the log; this is its one other feed path: an append to a log
+// the helper already made (a run with no kept log, a local run, gets
+// nothing, and nothing is created), within the same cap. The line carries
+// the refusal's class, the payload key and the run, never a value.
+func noteHostedRelayLog(observerDir, runID, msg string) {
+	if observerDir == "" || !sandboxrelay.ValidRunID(runID) {
+		return
+	}
+	p := hostedRelayLogPath(observerDir, runID)
+	fi, err := os.Lstat(p)
+	if err != nil || !fi.Mode().IsRegular() {
+		return
+	}
+	// The size is read again at the append (appendLocked), as both writers do.
+	l := &hostedRelayLog{path: p, now: time.Now}
+	l.line("the daemon's relay %s", msg)
+}
+
 // cleanRelayLine redacts the run's secrets, replaces control characters
 // and bounds the length.
 func cleanRelayLine(s string, secrets []string) string {
@@ -113,14 +134,42 @@ func (l *hostedRelayLog) line(format string, a ...any) {
 	l.appendLocked(cleanRelayLine(fmt.Sprintf(format, a...), l.secrets))
 }
 
+// hostedRelayCapLine is the line that marks a full log (once).
+const hostedRelayCapLine = "the relay log reached its cap; later lines are not kept"
+
+// hostedRelayLineRoom is the most one appended line takes: the stamp, a
+// space, a bounded line and its newline. A log with less room than that
+// left under its cap is full (lane FX6, FX6-A6), so the cap line always
+// fits and two writers racing the last append pass the cap by at most
+// one line.
+const hostedRelayLineRoom = len(time.RFC3339) + 1 + hostedRelayLineMax + 1
+
+// appendLocked appends one line. The size is re-read from the file before
+// every append (lane FX6, FX6-A6): the daemon's relay appends to the same
+// log (noteHostedRelayLog), so a count kept by one writer misses the
+// other's lines and the log passed its cap. The cap line is written once:
+// a log that already ends with it gets no second one.
 func (l *hostedRelayLog) appendLocked(msg string) {
 	if l.full || msg == "" {
 		return
 	}
-	text := l.now().UTC().Format(time.RFC3339) + " " + msg + "\n"
-	if l.size+int64(len(text)) > hostedRelayLogMax {
-		text = l.now().UTC().Format(time.RFC3339) + " the relay log reached its cap; later lines are not kept\n"
+	l.size = 0
+	if fi, err := os.Lstat(l.path); err == nil { //nolint:gosec // G703: a metadata read of the run's own log under ~/.observer/sandbox-hosted, run id shape-checked
+		if !fi.Mode().IsRegular() {
+			return
+		}
+		l.size = fi.Size()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	stamp := l.now().UTC().Format(time.RFC3339)
+	text := stamp + " " + msg + "\n"
+	if l.size+int64(hostedRelayLineRoom) > hostedRelayLogMax {
 		l.full = true
+		if relayLogEndsCapped(l.path, l.size) {
+			return
+		}
+		text = stamp + " " + hostedRelayCapLine + "\n"
 	}
 	f, err := openRelayLogAppend(l.path)
 	if err != nil {
@@ -131,10 +180,29 @@ func (l *hostedRelayLog) appendLocked(msg string) {
 	l.size += int64(n)
 }
 
+// relayLogEndsCapped reports whether the log of the given size already
+// ends with the cap line (written by either writer).
+func relayLogEndsCapped(p string, size int64) bool {
+	tail := int64(len(hostedRelayCapLine) + 1)
+	if size < tail {
+		return false
+	}
+	f, err := os.Open(p) //nolint:gosec // G304: the run's own log under ~/.observer/sandbox-hosted
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, tail)
+	if _, err := f.ReadAt(buf, size-tail); err != nil {
+		return false
+	}
+	return string(buf) == hostedRelayCapLine+"\n"
+}
+
 // openRelayLogAppend opens the log for append, owner-only, never through a
 // link.
 func openRelayLogAppend(p string) (*os.File, error) {
-	if fi, err := os.Lstat(p); err == nil && !fi.Mode().IsRegular() {
+	if fi, err := os.Lstat(p); err == nil && !fi.Mode().IsRegular() { //nolint:gosec // G703: a metadata read of the run's own log under ~/.observer/sandbox-hosted, run id shape-checked
 		return nil, errors.New("the relay log is not a regular file")
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err

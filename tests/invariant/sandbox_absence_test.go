@@ -236,7 +236,7 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 			entry[m[2]] = true
 		}
 	}
-	for _, want := range []string{"components/SandboxSettingsCard", "components/SandboxIsolationPicker"} {
+	for _, want := range []string{"components/SandboxSettingsCard", "components/SandboxIsolationPicker", "components/SandboxSetupPanel"} {
 		if !entry[want] {
 			t.Errorf("%s is not a module-owned compgen feature row", want)
 		}
@@ -272,7 +272,10 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 		t.Fatal(walkErr)
 	}
 	moduleFile := func(rel string) bool {
-		return entry[rel] || strings.HasPrefix(rel, "components/Sandbox")
+		// components/sandboxHosted/ holds the Hosted sandboxes panel's own
+		// fields (the sandbox terminal decisions' settings), module files
+		// imported only by that panel or the module's dialog pieces.
+		return entry[rel] || strings.HasPrefix(rel, "components/Sandbox") || strings.HasPrefix(rel, "components/sandboxHosted/")
 	}
 	mods := make([]string, 0, len(importers))
 	for m := range importers {
@@ -293,8 +296,15 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`moduleNotInstalled\([^)]*\)[^\n]*return null`).Match(card) {
-		t.Error("SandboxSettingsCard.tsx no longer returns null on 404 component_not_installed: an inactive module would render its Card")
+	// The card's shape table (web/src/lib/sandboxSettingsView.ts): a build
+	// without the module, or a hidden section, renders nothing; an installed
+	// but inactive module renders only the pointer card with its Turn it on
+	// button (decision SBXD-9), which sends none of the module's reads.
+	if !strings.Contains(string(card), `if (shape === "hidden") return null;`) {
+		t.Error("SandboxSettingsCard.tsx no longer returns null for the hidden shape: a build without the module would render its Card")
+	}
+	if !regexp.MustCompile(`shape === "module_off"[^\n]*\{\s*return \(\s*<SandboxModuleOffCard`).Match(card) {
+		t.Error("SandboxSettingsCard.tsx renders more than the pointer card while the module is off")
 	}
 	dialog, err := os.ReadFile(filepath.Join(src, "components", "NewTerminalDialog.tsx"))
 	if err != nil {
@@ -302,5 +312,158 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 	}
 	if !strings.Contains(string(dialog), "!sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER") {
 		t.Error("NewTerminalDialog.tsx renders the Isolation picker without the module-absent check")
+	}
+}
+
+// The sandbox installation lifecycle's surfaces (plan
+// docs/plans/sandbox-installation-lifecycle-plan-2026-11-06.md section 8,
+// "Components fencing"): every route, verb and panel it added, one row each,
+// so a node with the module off proves none of them answers or renders.
+
+// sandboxSetupRouteRows are the setup routes and the hosted connect route.
+// path is a concrete request path; registered is the pattern a source file
+// registers it under (the setup subtree is one prefix registration, since
+// Go mux patterns "setup/op/{id}" and "setup/{backend}/check" conflict).
+var sandboxSetupRouteRows = []struct {
+	path       string
+	registered string
+	file       string
+}{
+	{"/api/terminal/sandbox/setup", `reg("/api/terminal/sandbox/setup", `, "internal/intelligence/dashboard/dashboard.go"},
+	{"/api/terminal/sandbox/setup/bwrap", `reg("/api/terminal/sandbox/setup/", `, "internal/intelligence/dashboard/dashboard.go"},
+	{"/api/terminal/sandbox/setup/bwrap/check", `reg("/api/terminal/sandbox/setup/", `, "internal/intelligence/dashboard/dashboard.go"},
+	{"/api/terminal/sandbox/setup/bwrap/run", `reg("/api/terminal/sandbox/setup/", `, "internal/intelligence/dashboard/dashboard.go"},
+	{"/api/terminal/sandbox/setup/op/op-1", `reg("/api/terminal/sandbox/setup/", `, "internal/intelligence/dashboard/dashboard.go"},
+	{"/api/terminal/sandbox/hosted/connect", `"POST /api/terminal/sandbox/hosted/connect"`, "cmd/observer/terminal_sandbox_hosted_connect_route.go"},
+}
+
+// TestSandboxSetupRoutesAnswerOnlyWhenActive: each setup route is
+// registered where the row says and is owned by the sandbox module, so the
+// route guard answers 404 component_not_installed for it while the module
+// is off; the hosted connect route's file is compiled out of a build
+// without the module.
+func TestSandboxSetupRoutesAnswerOnlyWhenActive(t *testing.T) {
+	root := repoRoot(t)
+	for _, row := range sandboxSetupRouteRows {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(row.file)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		if !strings.Contains(src, row.registered) {
+			t.Errorf("%s: %s does not register %s", row.path, row.file, row.registered)
+		}
+		if strings.HasPrefix(row.file, "cmd/") && !buildLineOmits(src, "sbo_omit_terminals_sandbox") {
+			t.Errorf("%s: %s is not compiled out of a build without the module", row.path, row.file)
+		}
+		if owner := sandboxRouteOwner(row.path); !inSandboxModule(owner) {
+			t.Errorf("%s is owned by %s, not by the sandbox module: it would answer while the module is off", row.path, owner)
+		}
+	}
+}
+
+// sandboxSetupVerbRows are the `observer sandbox setup` verbs and how
+// sandbox_setup_cmd.go declares each.
+var sandboxSetupVerbRows = []struct {
+	verb string
+	decl string
+}{
+	{"status", `Use:   "status `},
+	{"check", `Use:   "check `},
+	{"run", `Use:   "run `},
+	{"undo", `dashapi.SandboxSetupActionUndo`},
+	{"update", `dashapi.SandboxSetupActionUpdate`},
+	{"repair", `dashapi.SandboxSetupActionRepair`},
+	{"records", `Use:   "records"`},
+}
+
+// TestSandboxSetupVerbsRefuseWhenInactive: each setup verb is declared in
+// sandbox_setup_cmd.go, which the module's omit tags compile out; the
+// `setup` tree hangs under `observer sandbox` (a module verb, so the verb
+// gate refuses it and every subcommand with exit 3 while the module is
+// off); and neither omit twin of newSandboxCmd adds it.
+func TestSandboxSetupVerbsRefuseWhenInactive(t *testing.T) {
+	root := repoRoot(t)
+	dir := filepath.Join(root, "cmd", "observer")
+	b, err := os.ReadFile(filepath.Join(dir, "sandbox_setup_cmd.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	for _, tag := range []string{"sbo_omit_terminals_sandbox", "sbo_omit_isolation", "sbo_omit_terminals"} {
+		if !buildLineOmits(src, tag) {
+			t.Errorf("sandbox_setup_cmd.go is not compiled out by %s", tag)
+		}
+	}
+	for _, row := range sandboxSetupVerbRows {
+		if !strings.Contains(src, row.decl) {
+			t.Errorf("verb sandbox setup %s: %q not found in sandbox_setup_cmd.go", row.verb, row.decl)
+		}
+	}
+	owned := map[string]string{}
+	for _, c := range components.ForBinary(components.BinaryNode) {
+		for _, v := range c.Verbs {
+			owned[v] = c.ID
+		}
+	}
+	if owned["sandbox"] != sandboxModuleRoot {
+		t.Errorf("verb sandbox is owned by %q, want %s: the setup verbs would run with the module off", owned["sandbox"], sandboxModuleRoot)
+	}
+	status, err := os.ReadFile(filepath.Join(dir, "sandbox_status.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(funcBody(string(status), "func newSandboxCmd("), "newSandboxSetupCmd()") {
+		t.Error("newSandboxCmd does not add the setup tree: the rows above no longer describe where it lives")
+	}
+	for _, twin := range []string{"terminal_sandbox_omit.go", "terminals_omit.go"} {
+		tb, err := os.ReadFile(filepath.Join(dir, twin))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(funcBody(string(tb), "func newSandboxCmd("), "newSandboxSetupCmd") {
+			t.Errorf("%s adds the setup tree in a build without the module", twin)
+		}
+	}
+}
+
+// TestSandboxSetupPanelRendersNothingWhenOff: the setup panel is the
+// module-owned compgen row SANDBOX_SETUP_PANEL, and both places that render
+// it (the New Terminal dialog and the Settings card) render it only through
+// that row, the dialog also behind its module-absent check.
+func TestSandboxSetupPanelRendersNothingWhenOff(t *testing.T) {
+	root := repoRoot(t)
+	web := filepath.Join(root, "web")
+	gen, err := os.ReadFile(filepath.Join(web, "compgen", "main.go"))
+	if err != nil {
+		t.Skip("web tree not present") // public tree
+	}
+	row := regexp.MustCompile(`\{"SANDBOX_SETUP_PANEL",\s*"components/SandboxSetupPanel",\s*"[A-Za-z]+",\s*"([a-z.\-]+)"\}`)
+	m := row.FindStringSubmatch(string(gen))
+	if m == nil {
+		t.Fatal("no SANDBOX_SETUP_PANEL compgen feature row")
+	}
+	if !inSandboxModule(m[1]) {
+		t.Errorf("SANDBOX_SETUP_PANEL is owned by %s, not by the sandbox module", m[1])
+	}
+	src := filepath.Join(web, "src", "components")
+	dialog, err := os.ReadFile(filepath.Join(src, "NewTerminalDialog.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dialog), "!sandboxModuleAbsent && setupOffered && setupOpen && SANDBOX_SETUP_PANEL") {
+		t.Error("NewTerminalDialog.tsx renders the setup panel without the module-absent check and the compgen row")
+	}
+	for _, f := range []string{"NewTerminalDialog.tsx", "SandboxSettingsCard.tsx"} {
+		b, err := os.ReadFile(filepath.Join(src, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if regexp.MustCompile(`import\s+\{[^}]*\}\s+from\s+"@/components/SandboxSetupPanel"`).Match(b) {
+			t.Errorf("%s imports SandboxSetupPanel directly: it would render without the compgen row", f)
+		}
+		if !strings.Contains(string(b), "SANDBOX_SETUP_PANEL") {
+			t.Errorf("%s no longer renders the panel through SANDBOX_SETUP_PANEL", f)
+		}
 	}
 }

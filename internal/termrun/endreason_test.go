@@ -33,6 +33,8 @@ func TestEndLineNamesEveryReason(t *testing.T) {
 		EndChildExit:            "the run ended: the tool exited (exit code 1)",
 		EndConsoleClosed:        "the run ended: the console window was closed (exit code 1)",
 		EndDashboardStop:        "the run ended: stopped from the dashboard (Stop & close) (exit code 1)",
+		EndCLIStop:              "the run ended: stopped with observer terminals stop (exit code 1)",
+		EndLaunchRefused:        "the run ended: the launch was refused before the tool started (exit code 1)",
 		EndStoppedOutside:       "the run ended: stopped from outside (for example Stop-Process, taskkill /F or a kill signal) (exit code 1)",
 		EndProcessGone:          "the run ended: the run's process is gone (ended outside Observer); its exit code is not known (exit code 1)",
 		EndDaemonShutdown:       "the run ended: the Observer daemon stopped (exit code 1)",

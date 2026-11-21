@@ -9,5 +9,9 @@ package projectroi
 //
 // History: 1 - the original O1-O7 rule (lane F-PROJ). 2 - the O2b
 // foreign_author gate (review 2026-09-29 finding 8): a commit by another
-// author carries nothing and has no owner.
-const OwnershipRuleVersion = 2
+// author carries nothing and has no owner. 3 - cloud-agent credit (lane
+// CA-C5, cloudcredit.go): a commit a cloud session's PR or branch produced
+// is owned by that session (reasons cloud_pr_commit, cloud_pr_landing,
+// cloud_pr_subject; share basis cloud_claim) instead of reading
+// "none (human)" or "another author".
+const OwnershipRuleVersion = 3

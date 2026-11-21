@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
@@ -28,7 +29,8 @@ import (
 // sbo_omit_security) security_scanners_omit.go answers instead. Whether a
 // driver is selected, and whether osv-scanner is installed, are the CLI's
 // to say (`observer security scan status`); this card does not resolve
-// binaries. The route answers 404 unless the daemon's one opt-in rule
+// binaries, so the osv-scanner row carries the vendor install offer
+// (osv_install) for the page's "How to install". The route answers 404 unless the daemon's one opt-in rule
 // (Options.SecuritySelected, cmd/observer/security_optin.go) selects a
 // driver and its parent security.deps, so an install with no [components]
 // block sees no card, like the custom scanners and the git hooks.
@@ -79,6 +81,15 @@ type securityScannersResponse struct {
 	// DB is the database download's accept state (operator ruling PT-19
 	// (2)); absent when the seam is not wired.
 	DB any `json:"db,omitempty"`
+	// Image is the image OS package driver's state (lane OS-2 T): the
+	// driver in force, each driver's build state, Trivy's binary and
+	// database; absent when the seam carries none.
+	Image any `json:"image,omitempty"`
+	// OSVInstall is the osv-scanner row's "How to install": the vendor's
+	// own ways, the same offer `observer security scan install-osv-scanner`
+	// prints (dashapi.OSVScannerInstall, decision D-766: Observer installs
+	// nothing itself); absent in a build without security.scan.osv.
+	OSVInstall *dashapi.OSVScannerInstall `json:"osv_install,omitempty"`
 }
 
 func (s *Server) handleSecurityScanners(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +107,14 @@ func (s *Server) handleSecurityScanners(w http.ResponseWriter, r *http.Request) 
 	if !scalibrDriverCompiled {
 		scalNote = "Not in this build (developer and minimal distros): dependencies it would scan show as not scanned."
 	}
+	// The osv-scanner row points at its own "How to install" (the offer
+	// below), never at a terminal (dashboard CLI parity plan, B-CS3).
+	osvNote := "Not in this build: dependencies it would scan show as not scanned."
+	if osvDriverCompiled {
+		osvNote = "A separately installed osv-scanner, never bundled. If it is not installed, no process starts and dependencies show as not scanned; How to install lists the vendor's ways (Observer installs nothing itself)."
+		offer := dashapi.NewOSVScannerInstall(depscan.OSVScannerMinVersion, depscan.OSVScannerLinuxAMD64)
+		resp.OSVInstall = &offer
+	}
 	var st *store.Store
 	if db := s.db(); db != nil {
 		st = store.New(db)
@@ -106,7 +125,7 @@ func (s *Server) handleSecurityScanners(w http.ResponseWriter, r *http.Request) 
 		note     string
 	}{
 		{scal, scalibrDriverCompiled, scalNote},
-		{osv, osvDriverCompiled, "A separately installed osv-scanner, never bundled. Not installed: no process starts and dependencies show as not scanned; `observer security scan install-osv-scanner` shows how to install it."},
+		{osv, osvDriverCompiled, osvNote},
 	} {
 		labels := []string{}
 		if st != nil {
@@ -139,7 +158,10 @@ func (s *Server) handleSecurityScanners(w http.ResponseWriter, r *http.Request) 
 	}
 	if sdb := s.opts.ScannerDB; sdb != nil && sdb.Status != nil {
 		if st, err := sdb.Status(r.Context()); err == nil {
-			resp.DB = st
+			resp.DB = s.withScannerExploit(st)
+			if st.Image != nil {
+				resp.Image = st.Image
+			}
 		}
 	}
 	writeJSON(w, resp)

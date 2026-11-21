@@ -4,6 +4,7 @@ import { useTerminalTheme } from "@/lib/terminalTheme";
 import type { TerminalThemePref } from "@shared/lib/terminalTheme";
 import { isRemoteView } from "@/lib/remote";
 import { runPillLabel } from "@/lib/sandboxIsolation";
+import { RunIsolationPill } from "@/components/RunIsolationPill";
 import { terminalEndLine } from "@/lib/terminalEnd";
 import type { LaunchIsolation } from "@/lib/types";
 import { pushToast } from "@/components/Toast";
@@ -2155,14 +2156,7 @@ export function LaunchTerminal({
             {tool}
           </span>
           <StatusPill status={status} exitCode={exitCode} endReason={endReason} />
-          {runPill && (
-            <span
-              className={"rounded-pill border px-1.5 py-px text-[10px] text-fg-2" + (isTouch ? " min-w-0 truncate" : "")}
-              title={`Sandboxed: ${runPill}`}
-            >
-              {runPill}
-            </span>
-          )}
+          {runPill && <RunIsolationPill isolation={isolation} truncate={isTouch} />}
           {errMsg && (
             <span
               className={

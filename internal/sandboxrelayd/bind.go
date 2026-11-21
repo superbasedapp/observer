@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -142,10 +144,23 @@ type payloadFacts struct {
 	// bad is set when a directory or file value is not a clean absolute
 	// path, or the payload is past the walk's bounds.
 	bad bool
+	// dirKeys and fileKeys name the payload key (its canonical spelling
+	// from the closed key lists) each dir and file came from, and badKey the
+	// key whose value marked the facts bad ("" for the walk's bounds): the
+	// refusal's log names the key, never its value (lane FX6, F-P7-5).
+	dirKeys, fileKeys []string
+	badKey            string
+	// badFile: badKey is a file key, so the files row of the binding table
+	// reports it, not the working directories row (lane FX6, F-P8-2).
+	badFile bool
 	// syn is the path syntax the payload's paths are read in: the host's,
 	// which is the box's (sandboxrelay/paths.go; a POSIX-only check refused
 	// every Windows payload, Windows 11 Pro run 3).
 	syn sandboxrelay.PathSyntax
+	// remoteHome: the run's box is not on this machine (FX4-A1), so a "~/"
+	// file value is not expanded to this machine's home: it stays a
+	// relative path, which marks the facts bad (refused path_outside_run).
+	remoteHome bool
 }
 
 // readPayloadFacts reads the first JSON value of a payload the way the most
@@ -153,7 +168,15 @@ type payloadFacts struct {
 // follows the first value). A payload that is not a JSON object claims
 // nothing. Paths are read in syn.
 func readPayloadFacts(stdin []byte, syn sandboxrelay.PathSyntax) payloadFacts {
-	out := payloadFacts{syn: syn}
+	return readRunPayloadFacts(stdin, syn, true)
+}
+
+// readRunPayloadFacts is readPayloadFacts for a run: homeIsLocal false
+// (RunRecord.HomeIsThisMachines) refuses a "~/" file value instead of
+// expanding it to this machine's home (FX4-A1: a hosted box named
+// ~/.claude/projects/... and the host hook read this machine's login).
+func readRunPayloadFacts(stdin []byte, syn sandboxrelay.PathSyntax, homeIsLocal bool) payloadFacts {
+	out := payloadFacts{syn: syn, remoteHome: !homeIsLocal}
 	body := bytes.TrimPrefix(stdin, []byte{0xEF, 0xBB, 0xBF})
 	var raw json.RawMessage
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&raw); err != nil {
@@ -185,9 +208,13 @@ func walkPayload(raw json.RawMessage, depth int, nodes *int, out *payloadFacts) 
 			switch {
 			case keyMatches(k, payloadOperandKeys):
 			case keyMatches(k, payloadDirKeys):
-				out.addPaths(stringValues(v), &out.dirs)
+				out.addPaths(stringValues(v), &out.dirs, &out.dirKeys, canonicalKey(k, payloadDirKeys), false)
 			case keyMatches(k, payloadFileKeys):
-				out.addPaths(expandHome(stringValues(v)), &out.files)
+				vs := stringValues(v)
+				if !out.remoteHome {
+					vs = expandHome(vs)
+				}
+				out.addPaths(vs, &out.files, &out.fileKeys, canonicalKey(k, payloadFileKeys), true)
 			case keyMatches(k, payloadSessionKeys):
 				for _, s := range stringValues(v) {
 					if s != "" {
@@ -212,18 +239,84 @@ func walkPayload(raw json.RawMessage, depth int, nodes *int, out *payloadFacts) 
 // addPaths appends the clean absolute paths of vs (in the facts' syntax,
 // a trailing separator dropped) to dst and marks the facts bad for any
 // other non-empty value.
-func (f *payloadFacts) addPaths(vs []string, dst *[]string) {
+func (f *payloadFacts) addPaths(vs []string, dst, dstKeys *[]string, key string, file bool) {
 	for _, v := range vs {
 		if v == "" {
 			continue
 		}
 		c, ok := f.syn.Clean(v)
 		if !ok {
+			if !f.bad {
+				f.badKey, f.badFile = key, file
+			}
 			f.bad = true
 			continue
 		}
 		*dst = append(*dst, c)
+		*dstKeys = append(*dstKeys, key)
 	}
+}
+
+// canonicalKey is the spelling in keys that k matches (keyMatches is
+// case-insensitive), so a log names a key from the closed list, never a
+// spelling the box chose.
+func canonicalKey(k string, keys []string) string {
+	for _, want := range keys {
+		if strings.EqualFold(k, want) {
+			return want
+		}
+	}
+	return ""
+}
+
+// The payload-bounds key: what a path refusal's log names when the walk's
+// bounds, not one key's value, marked the facts bad.
+const keyPayloadBounds = "payload_bounds"
+
+// outsideDir is the payload key of a working directory outside the run's
+// directories ("" and false when every one lies in them). Bad facts are
+// outside by their key, here when the key is a directory key or the
+// walk's bounds (a bad file key is the files row's: lane FX6, F-P8-2).
+func outsideDir(in bindInput) (string, bool) {
+	if in.facts.bad && !in.facts.badFile {
+		if in.facts.badKey == "" {
+			return keyPayloadBounds, true
+		}
+		return in.facts.badKey, true
+	}
+	allowed := runDirs(in.run)
+	for i, d := range in.facts.dirs {
+		if !RootsContain(allowed, d) {
+			return in.facts.dirKeys[i], true
+		}
+	}
+	return "", false
+}
+
+// outsideFile is the payload key of a file outside the run's read roots,
+// or of a file value that is not a clean absolute path (F-P8-2).
+func outsideFile(in bindInput) (string, bool) {
+	if in.facts.bad && in.facts.badFile {
+		return in.facts.badKey, true
+	}
+	allowed := append(runDirs(in.run), in.run.ReadRoots()...)
+	for i, f := range in.facts.files {
+		if !RootsContain(allowed, f) {
+			return in.facts.fileKeys[i], true
+		}
+	}
+	return "", false
+}
+
+// pathRefusalKey is the payload key a path_outside_run refusal is for (lane
+// FX6, F-P7-5): the first of the two path rows of the binding table that
+// refuses, read the same way the rows read it. "" when neither refuses.
+func pathRefusalKey(in bindInput) string {
+	if k, out := outsideDir(in); out {
+		return k
+	}
+	k, _ := outsideFile(in)
+	return k
 }
 
 // expandHome turns a leading "~/" into this user's home, the way the one
@@ -343,6 +436,28 @@ type bindInput struct {
 	req   sandboxrelay.HookRequest
 	facts payloadFacts
 	now   time.Time
+	// roots caches this request's SessionOwner answers, so the session
+	// rows look each id up once.
+	roots map[string]ownerLookup
+}
+
+// ownerLookup is one SessionOwner answer.
+type ownerLookup struct {
+	root string
+	err  error
+}
+
+// sessionOwner looks id up through SessionOwner once per request (roots
+// may be nil: no cache).
+func (d *Daemon) sessionOwner(ctx context.Context, roots map[string]ownerLookup, id string) (string, error) {
+	if l, ok := roots[id]; ok {
+		return l.root, l.err
+	}
+	root, err := d.SessionOwner(ctx, id)
+	if roots != nil {
+		roots[id] = ownerLookup{root: root, err: err}
+	}
+	return root, err
 }
 
 // bindCheck is one row of the binding table: check returns the refusal,
@@ -378,14 +493,8 @@ var bindChecks = []bindCheck{
 	{
 		name: "the payload's working directories lie in the run",
 		check: func(_ context.Context, in bindInput) sandboxrelay.Refusal {
-			if in.facts.bad {
+			if _, out := outsideDir(in); out {
 				return sandboxrelay.RefusedPath
-			}
-			allowed := runDirs(in.run)
-			for _, d := range in.facts.dirs {
-				if !RootsContain(allowed, d) {
-					return sandboxrelay.RefusedPath
-				}
 			}
 			return ""
 		},
@@ -393,11 +502,8 @@ var bindChecks = []bindCheck{
 	{
 		name: "the payload's files lie under the run's roots",
 		check: func(_ context.Context, in bindInput) sandboxrelay.Refusal {
-			allowed := append(runDirs(in.run), in.run.Roots...)
-			for _, f := range in.facts.files {
-				if !RootsContain(allowed, f) {
-					return sandboxrelay.RefusedPath
-				}
+			if _, out := outsideFile(in); out {
+				return sandboxrelay.RefusedPath
 			}
 			return ""
 		},
@@ -406,7 +512,7 @@ var bindChecks = []bindCheck{
 		name: "the payload's sessions are not another project's",
 		check: func(ctx context.Context, in bindInput) sandboxrelay.Refusal {
 			for _, id := range in.facts.sessions {
-				if !in.d.sessionMayBind(ctx, in.run, id) {
+				if !in.d.sessionMayBind(ctx, in.run, id, in.roots) {
 					return sandboxrelay.RefusedSession
 				}
 			}
@@ -415,8 +521,20 @@ var bindChecks = []bindCheck{
 	},
 	{
 		name: "the payload's sessions are claimed by this run, within its cap",
-		check: func(_ context.Context, in bindInput) sandboxrelay.Refusal {
-			return in.d.claimSessions(in.st, in.run.RunID, in.facts.sessions)
+		check: func(ctx context.Context, in bindInput) sandboxrelay.Refusal {
+			r, fresh := in.d.claimSessions(in.st, in.run.RunID, in.facts.sessions, in.d.freshEligible(ctx, in.run.RunID, in.facts.sessions, in.roots))
+			if r == "" && len(fresh) > 0 && in.d.FreshStore != nil {
+				keep, skipped := freshToPersist(fresh)
+				// The first skip of the run is one log line (audit FU11-A4);
+				// later ones are only counted.
+				if skipped > 0 && in.st.FreshSkipped.Add(int64(skipped)) == int64(skipped) && in.d.Log != nil {
+					in.d.Log(in.run.RunID, fmt.Sprintf("a session id the box named is longer than %d bytes; it is claimed but not kept as fresh across a dropped claim (counted per run)", MaxFreshSessionID))
+				}
+				if len(keep) > 0 {
+					in.d.FreshStore.AddFresh(in.run.RunID, keep)
+				}
+			}
+			return r
 		},
 	},
 }
@@ -445,7 +563,7 @@ func runDirs(run RunRecord) []string {
 // root inside a managed clone of the run's project counts as the project
 // (CloneOrigin), so a clone run's session can be resumed by a later run of
 // the same project.
-func (d *Daemon) sessionMayBind(ctx context.Context, run RunRecord, id string) bool {
+func (d *Daemon) sessionMayBind(ctx context.Context, run RunRecord, id string, roots map[string]ownerLookup) bool {
 	d.mu.Lock()
 	owner, claimed := d.sessions[id]
 	d.mu.Unlock()
@@ -461,7 +579,7 @@ func (d *Daemon) sessionMayBind(ctx context.Context, run RunRecord, id string) b
 	if d.SessionOwner == nil {
 		return true
 	}
-	root, err := d.SessionOwner(ctx, id)
+	root, err := d.sessionOwner(ctx, roots, id)
 	if err != nil {
 		return false
 	}
@@ -490,9 +608,12 @@ func (d *Daemon) runLive(runID string) bool {
 
 // endGone ends a run runLive found over: a helper that died leaves its
 // record and lock file, which go first, so nothing can speak for the run
-// again; then EndRun releases what the daemon holds.
+// again; then EndRun releases what the daemon holds. A run the dead-run
+// hold names (SetDeadRunHold) keeps its record and lock file for the step
+// that decides it (tracker F-045); its in-memory state is released all the
+// same, and a re-adoption claims anew.
 func (d *Daemon) endGone(runID string) {
-	if helperOf(d.ObserverDir, runID) == helperGone {
+	if helperOf(d.ObserverDir, runID) == helperGone && !deadRunHeld(d.ObserverDir, runID) {
 		rec, rerr := ReadRun(d.ObserverDir, runID)
 		if RemoveRun(d.ObserverDir, runID) == nil {
 			_ = os.Remove(alivePath(d.ObserverDir, runID))
@@ -529,6 +650,7 @@ func (d *Daemon) EndRun(runID string) {
 	for id, owner := range d.sessions {
 		if owner == runID {
 			delete(d.sessions, id)
+			delete(d.fresh, id)
 		}
 	}
 	d.mu.Unlock()
@@ -562,15 +684,93 @@ func (d *Daemon) Sweep() int {
 			n++
 		}
 	}
+	if d.OnSweep != nil {
+		d.OnSweep()
+	}
 	return n
 }
 
+// MaxFreshSessionID bounds a session id the daemon persists as fresh
+// (tracker F-039). The ids are named by the box with no length bound of
+// their own; a run's kept ids past the store's file bound would make the
+// store refuse the file and the next write replace it, dropping the run's
+// earlier ids. Real session ids are far shorter.
+const MaxFreshSessionID = 256
+
+// freshToPersist splits newly fresh ids into those the daemon persists and
+// the count it skips for being longer than MaxFreshSessionID. A skipped id
+// stays claimed and fresh in memory; only its survival across a dropped
+// claim is lost (fail safe: it is not fresh after a drop).
+func freshToPersist(ids []string) (keep []string, skipped int) {
+	for _, id := range ids {
+		if len(id) > MaxFreshSessionID {
+			skipped++
+			continue
+		}
+		keep = append(keep, id)
+	}
+	return keep, skipped
+}
+
+// FreshSessions keeps, per run, the session ids the run claimed fresh
+// (audit FU3-R1), so freshness outlives the run's in-memory claims: the
+// daemon's claims are dropped when a killed helper's run is swept (and the
+// run may then be re-adopted under the same id) and when the daemon
+// restarts. Only ids this daemon judged fresh are ever added, so a session
+// the node recorded before the run's first claim never becomes fresh. An
+// implementation may bound what it keeps per run; an id past the bound is
+// simply not fresh after a drop (fail safe).
+type FreshSessions interface {
+	// Fresh returns the run's kept fresh session ids.
+	Fresh(runID string) []string
+	// AddFresh adds ids to the run's kept fresh session ids.
+	AddFresh(runID string, ids []string)
+}
+
+// freshEligible reports, for each of ids no run has claimed yet, whether a
+// claim by runID now would be fresh: the run kept it as fresh before its
+// claims were dropped (FreshStore), or the node records no such session
+// (looked up before claimSessions takes the lock, so no database or file
+// read runs under it). An id whose lookup fails, or a daemon with no
+// SessionOwner, is not fresh (F-003 audit FU3-A1).
+func (d *Daemon) freshEligible(ctx context.Context, runID string, ids []string, roots map[string]ownerLookup) map[string]bool {
+	var unclaimed []string
+	d.mu.Lock()
+	for _, id := range ids {
+		if _, ok := d.sessions[id]; !ok {
+			unclaimed = append(unclaimed, id)
+		}
+	}
+	d.mu.Unlock()
+	out := make(map[string]bool, len(unclaimed))
+	if len(unclaimed) == 0 {
+		return out
+	}
+	var kept []string
+	if d.FreshStore != nil {
+		kept = d.FreshStore.Fresh(runID)
+	}
+	for _, id := range unclaimed {
+		switch {
+		case slices.Contains(kept, id):
+			out[id] = true
+		case d.SessionOwner == nil:
+			out[id] = false
+		default:
+			root, err := d.sessionOwner(ctx, roots, id)
+			out[id] = err == nil && root == ""
+		}
+	}
+	return out
+}
+
 // claimSessions records ids as spoken for by runID, within the run's cap,
-// under one lock (two runs racing for one new id: exactly one claims it).
-// It claims nothing when it refuses.
-func (d *Daemon) claimSessions(st *RunState, runID string, ids []string) sandboxrelay.Refusal {
+// under one lock (two runs racing for one new id: exactly one claims it),
+// and remembers each new claim as fresh when freshOK says so. It returns
+// the ids it newly claimed as fresh, and claims nothing when it refuses.
+func (d *Daemon) claimSessions(st *RunState, runID string, ids []string, freshOK map[string]bool) (sandboxrelay.Refusal, []string) {
 	if len(ids) == 0 {
-		return ""
+		return "", nil
 	}
 	limit := d.MaxSessions
 	if limit <= 0 {
@@ -585,22 +785,32 @@ func (d *Daemon) claimSessions(st *RunState, runID string, ids []string) sandbox
 	for _, id := range ids {
 		if owner, ok := d.sessions[id]; ok {
 			if owner != runID {
-				return sandboxrelay.RefusedSession
+				return sandboxrelay.RefusedSession, nil
 			}
 			continue
 		}
 		fresh++
 	}
 	if st.sessionCount+fresh > limit {
-		return sandboxrelay.RefusedSessionCap
+		return sandboxrelay.RefusedSessionCap, nil
 	}
+	if d.fresh == nil {
+		d.fresh = map[string]bool{}
+	}
+	var newFresh []string
 	for _, id := range ids {
 		if _, ok := d.sessions[id]; !ok {
 			d.sessions[id] = runID
 			st.sessionCount++
+			// An id absent from freshOK was not looked up (claimed
+			// between the lookup and this lock): never fresh.
+			if freshOK[id] {
+				d.fresh[id] = true
+				newFresh = append(newFresh, id)
+			}
 		}
 	}
-	return ""
+	return "", newFresh
 }
 
 // bind walks bindChecks for one request and returns the first refusal.
@@ -609,7 +819,7 @@ func (d *Daemon) bind(ctx context.Context, st *RunState, run RunRecord, req sand
 	if d.Now != nil {
 		now = d.Now()
 	}
-	in := bindInput{d: d, st: st, run: run, req: req, facts: facts, now: now}
+	in := bindInput{d: d, st: st, run: run, req: req, facts: facts, now: now, roots: map[string]ownerLookup{}}
 	for _, c := range bindChecks {
 		if r := c.check(ctx, in); r != "" {
 			return r, c.name

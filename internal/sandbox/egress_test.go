@@ -667,7 +667,7 @@ func TestPlaceholderContent(t *testing.T) {
 func TestRelayOfWrap(t *testing.T) {
 	t.Parallel()
 	n := NetRequest{Egress: EgressProxyOnly, HostSocketDir: "/tmp/s", ProxyPort: 8820}
-	argv, err := hostArgvRelay("/o/observer", n, nil, RelayRequest{RunID: "run-1", HostObserverDir: "/home/u/.observer"})
+	argv, err := hostArgvRelay("/o/observer", n, nil, RelayRequest{RunID: "run-1", HostObserverDir: "/home/u/.observer"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

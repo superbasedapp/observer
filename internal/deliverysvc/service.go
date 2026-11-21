@@ -45,6 +45,11 @@ type Store interface {
 	DeleteProviderLink(ctx context.Context, id int64) error
 	UpsertPullRequest(ctx context.Context, pr delivery.PullRequest, commits []delivery.PRCommit) (int64, error)
 	FindPullRequestsForSHA(ctx context.Context, sha string) ([]delivery.PullRequest, error)
+	// ListCloudPRClaims / FindPullRequestByNumber feed the cloud-claim pass
+	// (lane CA-C5): the PRs and branches cloud sessions claimed on a
+	// repository, and whether a claimed PR is already stored.
+	ListCloudPRClaims(ctx context.Context, remote string, since time.Time, limit int) ([]delivery.CloudPRClaim, error)
+	FindPullRequestByNumber(ctx context.Context, host, slug string, number int64) (delivery.PullRequest, bool, error)
 	UpsertDeliveryMirror(ctx context.Context, m delivery.Mirror) (int64, error)
 	ListDeliveryMirrors(ctx context.Context) ([]delivery.Mirror, error)
 	DeleteDeliveryMirror(ctx context.Context, id int64) error
@@ -59,6 +64,7 @@ type Net interface {
 	CommitPulls(ctx context.Context, auth deliverynet.Auth, slug, sha string) ([]delivery.PullRequest, bool, error)
 	PullRequest(ctx context.Context, auth deliverynet.Auth, slug string, number int64) (delivery.PullRequest, error)
 	PullCommits(ctx context.Context, auth deliverynet.Auth, slug string, number int64) ([]delivery.PRCommit, error)
+	PullsForHead(ctx context.Context, auth deliverynet.Auth, slug, branch string) ([]delivery.PullRequest, error)
 	MirrorDir(rawURL string) (string, error)
 	SanitizeRemoteURL(raw string) (string, error)
 	Clone(ctx context.Context, rawURL, dir string) error
@@ -341,6 +347,81 @@ func (s *Service) syncRepo(ctx context.Context, l delivery.ProviderLink, auth de
 				return rr, fmt.Errorf("deliverysvc.syncRepo: %w", err)
 			}
 			rr.PRsUpserted++
+		}
+	}
+	return s.syncCloudClaims(ctx, l, auth, r, since, seen, rr)
+}
+
+// syncCloudClaims fetches the PRs cloud sessions claimed on this repository
+// (lane CA-C5): a claimed PR number is read directly, a branch-only claim
+// (a Cursor run) through its head branch. A claimed PR already stored as
+// merged or closed is final and is not asked about again, so a repository
+// whose claimed PRs all ended makes no further call for them. The PR rows
+// land through the same UpsertPullRequest as every other PR; credit itself
+// is decided at read time by internal/projectroi.CreditCloud.
+func (s *Service) syncCloudClaims(ctx context.Context, l delivery.ProviderLink, auth deliverynet.Auth, r delivery.Remote, since time.Time, seen map[string]bool, rr RepoResult) (RepoResult, error) {
+	claims, err := s.o.Store.ListCloudPRClaims(ctx, r.Host+"/"+r.RepoSlug, since, s.o.CommitsPerRun)
+	if err != nil {
+		return rr, fmt.Errorf("deliverysvc.syncCloudClaims: %w", err)
+	}
+	repoKey := strings.ToLower(r.Host) + "|" + r.RepoSlug
+	upsert := func(pr delivery.PullRequest) error {
+		prKey := repoKey + "|#" + fmt.Sprint(pr.Number)
+		if seen[prKey] {
+			return nil
+		}
+		seen[prKey] = true
+		pc, err := s.o.Net.PullCommits(ctx, auth, r.RepoSlug, pr.Number)
+		if err != nil {
+			return err
+		}
+		pr.LinkID = l.ID
+		if _, err := s.o.Store.UpsertPullRequest(ctx, pr, pc); err != nil {
+			return fmt.Errorf("deliverysvc.syncCloudClaims: %w", err)
+		}
+		rr.PRsUpserted++
+		return nil
+	}
+	for _, c := range claims {
+		switch {
+		case c.PRNumber > 0:
+			if seen[repoKey+"|#"+fmt.Sprint(c.PRNumber)] {
+				continue
+			}
+			stored, ok, err := s.o.Store.FindPullRequestByNumber(ctx, r.Host, r.RepoSlug, c.PRNumber)
+			if err != nil {
+				return rr, fmt.Errorf("deliverysvc.syncCloudClaims: %w", err)
+			}
+			if ok && (stored.State == delivery.PRMerged || stored.State == delivery.PRClosedUnmerged) {
+				continue
+			}
+			pr, err := s.o.Net.PullRequest(ctx, auth, r.RepoSlug, c.PRNumber)
+			if err != nil {
+				return s.failRepo(rr, err)
+			}
+			if err := upsert(pr); err != nil {
+				return s.failRepo(rr, err)
+			}
+		case c.Branch != "" && deliverynet.ValidBranch(c.Branch):
+			key := repoKey + "|branch:" + c.Branch
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			prs, err := s.o.Net.PullsForHead(ctx, auth, r.RepoSlug, c.Branch)
+			if err != nil {
+				return s.failRepo(rr, err)
+			}
+			for _, pr := range prs {
+				if pr.State == delivery.PROpen || pr.State == delivery.PRDraft {
+					if pr, err = s.o.Net.PullRequest(ctx, auth, r.RepoSlug, pr.Number); err != nil {
+						return s.failRepo(rr, err)
+					}
+				}
+				if err := upsert(pr); err != nil {
+					return s.failRepo(rr, err)
+				}
+			}
 		}
 	}
 	return rr, nil

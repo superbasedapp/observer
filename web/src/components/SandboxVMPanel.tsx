@@ -6,9 +6,20 @@
 // selects terminals.sandbox.vm (the driver is opt-in and inactive in every
 // distro). No key widens what a VM may reach: it has no network device in
 // any tier, and the guest image set is never a path.
+//
+// Dashboard CLI parity (plan docs/plans/dashboard-cli-parity-plan-2026-11-06.md,
+// item B-G7): "Import image set" installs a signed guest image set from a
+// folder on this machine (POST /api/terminal/sandbox/content/import, the
+// form of `observer sandbox content import <dir>`): offline, every kind
+// verified against the vendor key built into this agent before anything is
+// installed, all or nothing. A debug image set stays a CLI-only step
+// (--debug-set and --debug-key), so this form refuses one.
 
-import { ComboChip } from "@/components/primitives";
+import { useState } from "react";
+import { Button, ComboChip, Input } from "@/components/primitives";
+import { fetchJSON } from "@/lib/api";
 import type { ComponentsView } from "@/lib/componentState";
+import { importDirProblem } from "@/lib/sandboxParity";
 
 export type SandboxVMConfig = {
   vmm: string;
@@ -36,16 +47,100 @@ function choices(list: number[], current: number, unit: string) {
   return all.map((n) => ({ value: String(n), label: <span>{n} {unit}</span>, searchable: `${n} ${unit}` }));
 }
 
+/** ImportedKind is one kind the import installed (the route's answer). */
+export type ImportedKind = { kind: string; version: number; status: string };
+
+export type SandboxVMImportViewProps = {
+  dir: string;
+  onDir: (v: string) => void;
+  busy: boolean;
+  err: string | null;
+  installed: ImportedKind[] | null;
+  onImport: () => void;
+};
+
+/** SandboxVMImportView renders the import form from props only, so a render
+ * test needs no fetch. */
+export function SandboxVMImportView({ dir, onDir, busy, err, installed, onImport }: SandboxVMImportViewProps) {
+  const problem = dir === "" ? null : importDirProblem(dir);
+  return (
+    <form
+      className="space-y-2 rounded-2 border border-line-2 p-3"
+      aria-label="Import a guest image set"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!importDirProblem(dir)) onImport();
+      }}
+    >
+      <span className="block font-medium text-fg-1">Import image set</span>
+      <span className="block text-[11px] text-fg-3">
+        The folder on this machine that holds the signed set, one folder per kind (as the release&apos;s image set archive
+        unpacks). Nothing is fetched: each kind is checked against the vendor key built into this agent, its last accepted
+        version and every file&apos;s size and sha256 before anything is installed, and a refusal keeps what was installed
+        before. Same as <span className="font-mono">observer sandbox content import &lt;folder&gt;</span>; a debug image set is
+        imported only from a terminal with that command&apos;s --debug-set and --debug-key.
+      </span>
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <Input mono value={dir} placeholder="/path/to/observer-vm-image-set" aria-label="Image set folder" disabled={busy} error={problem ?? undefined} onChange={(e) => onDir(e.target.value)} />
+        </div>
+        <Button type="submit" size="sm" variant="soft" disabled={busy || dir.trim() === "" || !!problem}>
+          {busy ? "importing…" : "Import image set"}
+        </Button>
+      </div>
+      {err && <p className="text-[11px] text-danger">{err}</p>}
+      {installed && installed.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-fg-2">
+          {installed.map((k) => (
+            <li key={k.kind}>
+              Installed <span className="font-mono">{k.kind}</span> version {k.version}: {k.status}
+            </li>
+          ))}
+        </ul>
+      )}
+    </form>
+  );
+}
+
+// SandboxVMImport holds the form's state and posts the import.
+function SandboxVMImport({ confirmToken }: { confirmToken: string }) {
+  const [dir, setDir] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [installed, setInstalled] = useState<ImportedKind[] | null>(null);
+  async function run() {
+    setBusy(true);
+    setErr(null);
+    setInstalled(null);
+    try {
+      const res = await fetchJSON<{ installed: ImportedKind[] | null }>("/api/terminal/sandbox/content/import", undefined, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Observer-Confirm": confirmToken },
+        body: JSON.stringify({ dir: dir.trim() }),
+      });
+      setInstalled(res.installed ?? []);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <SandboxVMImportView dir={dir} onDir={setDir} busy={busy} err={err} installed={installed} onImport={() => void run()} />;
+}
+
 export function SandboxVMPanel({
   value,
   view,
   writable,
   onChange,
+  confirmToken,
 }: {
   value: SandboxVMConfig;
   view: ComponentsView | undefined;
   writable: boolean;
   onChange: (next: SandboxVMConfig) => void;
+  /** confirmToken lets the panel import an image set; absent, no import form renders. */
+  confirmToken?: string;
 }) {
   if (!vmDriverSelected(view)) return null;
   const set = <K extends keyof SandboxVMConfig>(key: K, v: SandboxVMConfig[K]) => onChange({ ...value, [key]: v });
@@ -61,10 +156,10 @@ export function SandboxVMPanel({
           Used only when <span className="font-mono">cloud-hypervisor</span> is in the backend list above and a launch picks
           it by name: automatic selection never does. Each run is its own microVM with no network device; the terminal and
           the capture relay cross vsock. Needs Linux or WSL2 with a usable <span className="font-mono">/dev/kvm</span>,
-          Cloud Hypervisor 54 and virtiofsd, and a signed guest image set imported with{" "}
-          <span className="font-mono">observer sandbox content import</span>. Not yet proven end to end on real hardware
-          (register LIN-2 onward).
+          Cloud Hypervisor 54 and virtiofsd, and a signed guest image set (import one below). Not yet proven end to end on
+          real hardware (register LIN-2 onward).
         </p>
+        {confirmToken && <SandboxVMImport confirmToken={confirmToken} />}
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
             <span id="sandbox-vm-vcpus" className="block font-medium text-fg-1">vCPUs</span>

@@ -1,4 +1,4 @@
-/* SuperBased shared motion layer.
+/* superbased shared motion layer.
  *
  * ONE owner for every keyframe and composite motion class used by the
  * application surfaces (web/, web2/, webcloud/). Each app's entry CSS imports
@@ -313,12 +313,19 @@
 /* Obs riding the progress line on a slow route load (TopProgress `rider`,
    D-665..D-669). Same 250 ms threshold as the bar. The run box is the host
    minus Obs's own width (28 px in the wide frame = 50.4 px), so a
-   translateX of 100% of itself carries Obs to the far edge without
-   overflowing. Transform and opacity only. */
+   translateX of 100% of itself carries Obs to the far edge. The run box
+   itself then sits a whole box width past the host's right edge, so the
+   host clips its x axis: without that the invisible box adds up to a page
+   width of scrollable overflow on every lap, and the page's scrollbars grow
+   and shrink while Obs flies (2026-11-06). Only x is clipped: the host is
+   the full width of the column, so Obs, its cape and its afterimages stay
+   whole, and y stays visible (height 0). Transform and opacity only. */
 .sb-progress-rider {
   position: absolute;
   inset: 0 0 auto 0;
   height: 0;
+  overflow-x: clip;
+  overflow-y: visible;
   pointer-events: none;
   animation: sb-fade-in var(--dur) var(--ease) 250ms both;
 }
@@ -439,7 +446,7 @@
 }
 
 /* ------------------------------------------------ brand + live + illustration
-   (2026-09-28 dashboard visual upgrade). Brand loader: the SuperBased mark
+   (2026-09-28 dashboard visual upgrade). Brand loader: the superbased mark
    (U+259E: two squares on the upper-right / lower-left diagonal) hops to the
    other diagonal and back; the BrandLoader primitive. Uses --brand-blueprint
    (tokens.css). */

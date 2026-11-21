@@ -8,16 +8,16 @@
 # the full runs on main (the key carries the commit sha) and falling back to
 # the newest entry of the same family.
 #
-# Restore only. The caller saves with actions/cache/save, gated to the
-# nightly (schedule) or a workflow_dispatch on main (D-612: pushes and pull
-# requests restore only), using this action's `key`, `gocache` and
-# `gomodcache` outputs:
+# Restore only. The caller saves with actions/cache/save, gated to a
+# workflow_dispatch on main (D-612: pushes and pull requests restore only;
+# the nightly schedule that also saved was removed 2026-10-20), using this
+# action's `key`, `gocache` and `gomodcache` outputs:
 #
 #   - uses: ./.github/actions/go-cache
 #     id: go
-#     with: { family: go-test-3 }
+#     with: { family: go-test }
 #   ...
-#   - if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+#   - if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
 #     uses: actions/cache/save@v4
 #     with:
 #       path: |
@@ -43,6 +43,13 @@ inputs:
     description: go.sum whose hash is part of the key
     required: false
     default: go.sum
+  free-disk:
+    description: >-
+      'false' skips removing the runner's unused SDKs before the restore. Only
+      for a small family (the plan job restores `lint`, about 0.8 GB): the
+      large families need the room.
+    required: false
+    default: 'true'
 outputs:
   key:
     description: The exact key to save under
@@ -63,12 +70,25 @@ runs:
     # left on device" (2026-10-15, runner 2.337.0): the go family's GOCACHE
     # plus GOMODCACHE no longer fits beside the preinstalled toolchains.
     # Drop the large SDKs no job here uses before restoring.
+    #
+    # One rm per tree, in parallel (lane CICD, 2026-11-01): a single
+    # sequential rm of all six trees took 53 to 148 s (median about 100 s)
+    # in every Go job of the v1.37.0 full run, about 25 billed minutes per
+    # full run across 15 jobs and the first 1.5 minutes of the critical
+    # path. The go job's own parallel step frees the same trees in about
+    # 50 s. Unlinking is bound by file count, so the slowest tree sets the
+    # time. A failed rm leaves less free disk, never a wrong result, as
+    # before (the old step ended in || true).
     - shell: bash
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.free-disk == 'true'
       run: |
         before=$(df -BG --output=avail / | tail -1)
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
-        echo "free disk on /: ${before} -> $(df -BG --output=avail / | tail -1)"
+        start=$SECONDS
+        for d in /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift; do
+          sudo rm -rf "$d" &
+        done
+        wait || true
+        echo "free disk on /: ${before} -> $(df -BG --output=avail / | tail -1) in $((SECONDS - start))s"
 
     - uses: actions/setup-go@v6
       with:

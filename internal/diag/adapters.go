@@ -88,11 +88,13 @@ func checkAdapters(cfg config.Config) Check {
 	// it rather than each surface having its own opinion. Downgrades the
 	// check to warn — this is a real, silent capture hole, not informational.
 	status := StatusOK
+	rems := []remedy.Remediation{remedy.Of(remedy.DoctorTool, "")}
 	if unwatched := AllowedToolsNotWatched(cfg); len(unwatched) > 0 {
 		status = StatusWarn
 		details = append(details, "launchable but NOT watched (in [terminal.launch].allowed_tools, "+
 			"missing from an explicit [observer.watch].enabled_adapters): "+strings.Join(unwatched, ", ")+
-			" - add them to enabled_adapters or delete the key to watch the default set")
+			" - add them to enabled_adapters (Settings > Watcher) or delete the key to watch the default set")
+		rems = append(rems, remedy.Of(remedy.OpenSettings, "watcher"))
 	}
 
 	details = append(details, "run "+remedy.Quote(remedy.Of(remedy.DoctorTool, ""))+" for a per-adapter capture check")
@@ -103,7 +105,7 @@ func checkAdapters(cfg config.Config) Check {
 	}
 	return Check{
 		Name: "adapters", Status: status, Message: msg, Details: details,
-		Remediations: []remedy.Remediation{remedy.Of(remedy.DoctorTool, "")},
+		Remediations: rems,
 	}
 }
 
@@ -154,6 +156,7 @@ func CheckAdapterIn(tool string, cfg config.Config, homeDir string) (Check, bool
 	}
 
 	var details []string
+	var rems []remedy.Remediation
 	worst := StatusOK
 	note := func(s Status, m string) {
 		details = append(details, m)
@@ -161,9 +164,11 @@ func CheckAdapterIn(tool string, cfg config.Config, homeDir string) (Check, bool
 			worst = s
 		}
 	}
+	fix := func(r remedy.Remediation) { rems = append(rems, r) }
 
 	if enabled := enabledSet(cfg); enabled != nil && !enabled[tool] {
-		note(StatusWarn, "disabled in [observer.watch] enabled_adapters - the watcher will skip it (add \""+tool+"\" to re-enable)")
+		note(StatusWarn, "disabled in [observer.watch] enabled_adapters - the watcher will skip it (add \""+tool+"\" to re-enable, in Settings > Watcher)")
+		fix(remedy.Of(remedy.OpenSettings, "watcher"))
 	}
 
 	ic, _ := integration.For(tool)
@@ -177,7 +182,7 @@ func CheckAdapterIn(tool string, cfg config.Config, homeDir string) (Check, bool
 	// name: HookBrowserExtension gets a probe of the signals that actually
 	// exist for this topology instead.
 	if ic.Hook.Mechanism == integration.HookBrowserExtension {
-		browserExtensionHealthNote(tool, cfg, note)
+		browserExtensionHealthNote(tool, cfg, note, fix)
 	} else {
 		var present []string
 		for _, p := range found.WatchPaths() {
@@ -292,7 +297,7 @@ func CheckAdapterIn(tool string, cfg config.Config, homeDir string) (Check, bool
 	if worst != StatusOK {
 		msg = tool + " - see notes below"
 	}
-	return Check{Name: tool, Status: worst, Message: msg, Details: details}, true
+	return Check{Name: tool, Status: worst, Message: msg, Details: details, Remediations: rems}, true
 }
 
 // lifecycleNote renders a harness-lifecycle status as a doctor note: the

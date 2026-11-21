@@ -88,6 +88,8 @@ type appleDriver struct {
 	mu     sync.Mutex
 	last   sandboxapple.ProbeResult
 	lastAt time.Time
+	// lastGen is the probe-cache generation last was taken under.
+	lastGen uint64
 	// sweptAt is when the orphan sweep last ran (zero: never).
 	sweptAt time.Time
 }
@@ -146,17 +148,18 @@ func (d *appleDriver) version() string {
 // appleSweepEvery.
 func (d *appleDriver) probeResult() sandboxapple.ProbeResult {
 	d.mu.Lock()
-	if !d.lastAt.IsZero() && time.Since(d.lastAt) < sandboxProbeTTL {
+	if sandboxProbeFresh(d.lastAt, d.lastGen, time.Now()) {
 		res := d.last
 		d.mu.Unlock()
 		return res
 	}
 	d.mu.Unlock()
+	gen := sandboxProbeGeneration()
 	env := appleProbeEnvFn(d.cfg)
 	env.Active = d.listed()
 	res := sandboxapple.Probe(env)
 	d.mu.Lock()
-	d.last, d.lastAt = res, time.Now()
+	d.last, d.lastAt, d.lastGen = res, time.Now(), gen
 	sweep := res.Verdict.OK() && d.r.inDaemon && (d.sweptAt.IsZero() || time.Since(d.sweptAt) >= appleSweepEvery)
 	if sweep {
 		d.sweptAt = time.Now()
@@ -284,7 +287,7 @@ func (d *appleDriver) compose(created termsvc.CreateResult, cli string) ([]strin
 	tier := vocab.Tier(r.egress.Mode)
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs, HostSocketDir: dirs.SocketDir}
 	if capture := sandboxRunCaptureFor(appleRow(), created.ProxyRouted, tier, r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
-		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHosts
+		netReq.ProviderBlock, netReq.ProviderHosts = true, r.providerHostList()
 	}
 	overlays, pins, err := r.protection(home, run.Dir, spec)
 	if err != nil {
@@ -545,7 +548,7 @@ func tokenLike(s string) bool {
 // without the host socket and interop variables, the trusted launcher
 // channel and the host-only paths, plus the sandbox marker.
 func appleRunEnv(environ []string) []string {
-	// The allow-list first (WINFIX2 R-167): the container runs Linux.
+	// The allow-list first (WINFIX2, ledger SBX-WIN-ENV-1): the container runs Linux.
 	environ = sandboxBoxEnv("linux", environ)
 	drop := []string{"XDG_RUNTIME_DIR", envOOBFD, envOOBAuth, sandboxEnvMarker}
 	drop = append(drop, sandbox.GuestUnsetEnv...)

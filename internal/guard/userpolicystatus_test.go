@@ -57,7 +57,11 @@ func TestCheckUserPolicy(t *testing.T) {
 			}
 			read := func(p string) ([]byte, error) {
 				// The product joins the path natively (backslashes on
-				// Windows); compare it in slash form.
+				// Windows); compare it in slash form. The applied recipe
+				// sibling is read too (none here).
+				if filepath.ToSlash(p) == strings.TrimSuffix(path, ".toml")+RecipeFileSuffix {
+					return nil, fs.ErrNotExist
+				}
 				if filepath.ToSlash(p) != path {
 					t.Errorf("read %q, want %q", p, path)
 				}

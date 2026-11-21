@@ -1,0 +1,53 @@
+# Pack "regulated": regulated data and audited environments.
+#
+# Reading a secrets file asks in every mode, personal data typed into a
+# prompt is denied, only approved MCP servers run, a git push while the
+# session carries untrusted content asks, and a push or commit while a
+# secret finding is open is held (the Code security commit gate, when that
+# module is on).
+
+name = "regulated"
+kind = "pack"
+title = "Regulated"
+summary = "Secret-file reads ask, personal data in prompts denies, only approved MCP servers, and pushes are gated."
+version = 1
+advice = ["Turn on Code security (Settings > Components) so the commit and push gate (S-791 to S-794) holds a secret before it is pushed."]
+
+[[override]]
+rule = "R-153"
+enforce = true
+note = "reading .env files, key material and credentials asks in every mode"
+
+[[override]]
+rule = "R-152"
+enforce = true
+note = "credential and profile locations"
+
+[[override]]
+rule = "R-190"
+decision = "deny"
+enforce = true
+note = "personal data (card numbers, national ids, IBANs) typed into a prompt"
+
+[[override]]
+rule = "R-301"
+decision = "deny"
+enforce = true
+note = "an MCP server without an approved pin"
+
+[[override]]
+rule = "R-306"
+enforce = true
+note = "an MCP call to a server the node did not approve"
+
+[[override]]
+rule = "T-503"
+decision = "ask"
+enforce = true
+note = "git push while the session carries untrusted content"
+
+[[override]]
+rule = "T-504"
+decision = "deny"
+enforce = true
+note = "network command after the session read a secrets file"

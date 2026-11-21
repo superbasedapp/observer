@@ -44,7 +44,16 @@ import {
 import { GranControl } from "@/components/GranControl";
 import { asGranularity, perBucketTitle } from "@shared/lib/granularity";
 import { useApi } from "@/lib/useApi";
-import { gradingGateFailed } from "@/lib/cacheHealth";
+import {
+  CACHE_HEALTH_DEFAULTS,
+  cacheHealthFullParams,
+  cacheHealthInputErrors,
+  cacheHealthVerdict,
+  gradingGateFailed,
+  type CacheHealthFullResponse,
+  type CacheHealthInputs,
+} from "@/lib/cacheHealth";
+import { fetchJSON } from "@/lib/api";
 import {
   fmtCompact,
   fmtDateTime,
@@ -732,6 +741,7 @@ function CacheContent({
       </ChartShell>
 
       <EngineDiagnostics health={health} />
+      <CacheHealthFullReport onOpenSession={onOpenSession} />
       </TabPanel>
 
       <TabPanel id="events" active={tab} idPrefix="cache" className="space-y-6">
@@ -1049,8 +1059,208 @@ function EngineDiagnostics({ health }: { health: CacheHealthSummary | null }) {
         )}
       </ul>
       <p className="mt-1.5">
-        The full report, with the sessions involved, is the cache-health command.
+        The full report below lists the sessions and events involved.
       </p>
+    </InfoDisclosure>
+  );
+}
+
+// CacheHealthFullReport is the `observer cache-health` report on the page
+// (lane L5 B-R1): the grading gate at the thresholds you choose, sessions
+// worst first, the cause breakdown, and the events behind the engine
+// diagnostics. It walks every cache event, so it loads on demand and is
+// never polled.
+function CacheHealthFullReport({ onOpenSession }: { onOpenSession: (sid: string) => void }) {
+  const [inputs, setInputs] = useState<CacheHealthInputs>(CACHE_HEALTH_DEFAULTS);
+  const [report, setReport] = useState<CacheHealthFullResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputErrors = cacheHealthInputErrors(inputs);
+
+  async function load() {
+    if (inputErrors.length > 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setReport(await fetchJSON<CacheHealthFullResponse>("/api/cache/health", cacheHealthFullParams(inputs)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const field = (key: keyof CacheHealthInputs, label: string, suffix: string, step: number) => (
+    <label className="flex flex-col gap-1 text-[11px] text-fg-3">
+      <span>{label}</span>
+      <span className="flex items-center gap-1">
+        <input
+          type="number"
+          step={step}
+          value={Number.isFinite(inputs[key]) ? inputs[key] : ""}
+          onChange={(ev) =>
+            setInputs((v) => ({ ...v, [key]: ev.target.value === "" ? Number.NaN : Number(ev.target.value) }))
+          }
+          className="h-7 w-24 rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[11.5px] text-fg-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+        />
+        <span className="text-fg-4">{suffix}</span>
+      </span>
+    </label>
+  );
+
+  const full = report?.full;
+  const verdict = report ? cacheHealthVerdict(report) : null;
+  const sessionLink = (sid: string) => (
+    <button
+      type="button"
+      className="font-mono text-accent hover:underline"
+      onClick={() => onOpenSession(sid)}
+      title={sid}
+    >
+      {fmtShortId(sid)}
+    </button>
+  );
+
+  return (
+    <InfoDisclosure summary="Full report" persistKey="cache.fullReport">
+      <p>
+        The engine&apos;s self-check in full, the same report as <code>observer cache-health</code>: the grading
+        gate at the thresholds below, every session&apos;s grade, the cause breakdown and the events behind the
+        diagnostics. It reads every cache event, so it loads when you ask.
+      </p>
+      <div className="mt-2 flex flex-wrap items-end gap-3">
+        {field("minEvents", "Minimum graded events", "events", 1)}
+        {field("maxRatePct", "Maximum mispredict rate", "%", 0.5)}
+        {field("maxRewriteReadRatio", "Rewrite read:write over", "x", 0.5)}
+        {field("maxCauseSharePct", "Dominant cause share over", "%", 5)}
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => void load()}
+          loading={loading}
+          disabled={inputErrors.length > 0}
+        >
+          {report ? "Reload report" : "Load report"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setInputs(CACHE_HEALTH_DEFAULTS)}>
+          Defaults
+        </Button>
+      </div>
+      {inputErrors.length > 0 && (
+        <ul className="mt-1.5 list-disc pl-4 text-[11px] text-danger">
+          {inputErrors.map((m) => (
+            <li key={m}>{m}</li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="mt-1.5 text-[11px] text-danger">Couldn&apos;t load the report: {error}</p>}
+      {report && verdict && (
+        <div className="mt-3 space-y-3 text-[11.5px]">
+          <p
+            className={
+              verdict.tone === "danger" ? "text-danger" : verdict.tone === "success" ? "text-success" : "text-fg-2"
+            }
+          >
+            {verdict.text}
+          </p>
+          {report.dominant_cause && (
+            <p className="text-warn">
+              One cause ({report.dominant_cause.cause}) explains {fmtPct(report.dominant_cause.share)} of graded
+              events, over the {fmtPct(full?.max_cause_share_threshold ?? 0)} share line.
+            </p>
+          )}
+          {full && (
+            <>
+              <div>
+                <div className="mb-1 font-medium text-fg-1">
+                  Sessions, worst first ({fmtInt(full.per_session_total)})
+                </div>
+                {full.per_session.length === 0 ? (
+                  <p className="text-fg-3">No cache events yet.</p>
+                ) : (
+                  <Table
+                    size="sm"
+                    head={
+                      <tr>
+                        <Th>Session</Th>
+                        <Th align="right">Graded</Th>
+                        <Th align="right">Mispredicts</Th>
+                        <Th align="right">Rate</Th>
+                      </tr>
+                    }
+                  >
+                    {full.per_session.slice(0, 25).map((r) => (
+                      <tr key={r.session_id}>
+                        <Td>{sessionLink(r.session_id)}</Td>
+                        <Td align="right">{fmtInt(r.graded_events)}</Td>
+                        <Td align="right">{fmtInt(r.mispredicts)}</Td>
+                        <Td align="right">{fmtPct(r.mispredict_rate)}</Td>
+                      </tr>
+                    ))}
+                  </Table>
+                )}
+              </div>
+              {full.cause_breakdown.length > 0 && (
+                <div>
+                  <div className="mb-1 font-medium text-fg-1">Causes</div>
+                  <p className="text-fg-2">
+                    {full.cause_breakdown.map((c) => `${c.cause} ${fmtInt(c.count)}`).join(" · ")}
+                  </p>
+                </div>
+              )}
+              <div>
+                <div className="mb-1 font-medium text-fg-1">
+                  Mispredict events ({fmtInt(full.mispredict_events_total)})
+                </div>
+                {full.mispredict_events.length === 0 ? (
+                  <p className="text-fg-3">None.</p>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {full.mispredict_events.slice(0, 25).map((e, i) => (
+                      <li key={`${e.session_id}-${e.timestamp}-${i}`} className="text-fg-2">
+                        {fmtDateTime(e.timestamp)} {sessionLink(e.session_id)} {e.model}: cause {e.cause || "-"},
+                        predicted {e.predicted_kind || "-"}
+                        {e.zero_usage && <span className="text-fg-4"> (zero usage, not counted)</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <div className="mb-1 font-medium text-fg-1">
+                  Rewrites that read more than {full.max_rewrite_read_ratio_threshold}x what they wrote (
+                  {fmtInt(full.inconsistent_rewrite_events_total)})
+                </div>
+                {full.inconsistent_rewrite_events.length === 0 ? (
+                  <p className="text-fg-3">None.</p>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {full.inconsistent_rewrite_events.slice(0, 25).map((e, i) => (
+                      <li key={`${e.session_id}-${e.timestamp}-${i}`} className="text-fg-2">
+                        {fmtDateTime(e.timestamp)} {sessionLink(e.session_id)} {e.kind} ({e.cause || "-"}): read{" "}
+                        {fmtCompact(e.tokens_read)}, wrote {fmtCompact(e.tokens_written)}
+                        {e.ratio > 0 ? `, ${e.ratio.toFixed(1)}x` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {full.bucket_mispredicts_per_session.length > 0 && (
+                <div>
+                  <div className="mb-1 font-medium text-fg-1">Landed differently than predicted, by session</div>
+                  <ul className="space-y-0.5">
+                    {full.bucket_mispredicts_per_session.slice(0, 25).map((r) => (
+                      <li key={r.session_id} className="text-fg-2">
+                        {sessionLink(r.session_id)} {fmtInt(r.bucket_mispredicts)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </InfoDisclosure>
   );
 }

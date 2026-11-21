@@ -18,6 +18,10 @@ import (
 
 const backfill2File = "196_tooltax_action_type_backfill_2.sql"
 
+// backfill3File is the third full backfill (PT-88): 196 shipped in v1.37.0
+// and is frozen, so the tooltax rows added after it land here.
+const backfill3File = "223_tooltax_action_type_backfill_3.sql"
+
 // lineageWithout copies the embedded node lineage minus the named files.
 func lineageWithout(t *testing.T, drop ...string) fstest.MapFS {
 	t.Helper()
@@ -76,6 +80,17 @@ var backfill2Cases = []backfill2Case{
 	{"kiro-cli", "NoSuchTool", "unknown", "unknown"},
 }
 
+// backfill3Cases are the names the tooltax table added after 196 shipped
+// (the Cursor run-stream calls of 489663da46): 077 and 196 leave them
+// unknown, 223 classifies them.
+var backfill3Cases = []backfill2Case{
+	{"cursor", "communicate_update", "unknown", "harness_call"},
+	{"cursor", "send_message", "unknown", "harness_call"},
+	{"cursor", "run_terminal_cmd", "unknown", "run_command"},
+	{"cursor", "file_search", "unknown", "search_files"},
+	{"cursor", "create_agent", "unknown", "spawn_subagent"},
+}
+
 // TestMigration196ReRunsSafelyAfter077 grades the frozen-077 hand-over
 // (D-880, T-982): a database that ran the v1.36.0 077 then gets 196, the
 // full current backfill. 196 must classify only what 077 could not, never
@@ -116,6 +131,10 @@ func TestMigration196ReRunsSafelyAfter077(t *testing.T) {
 	if bodies[196] == "" || !strings.Contains(bodies[196], "WHY A SECOND STEP") {
 		t.Fatalf("%s is not embedded or lacks its header", backfill2File)
 	}
+	if bodies[223] == "" || !strings.Contains(bodies[223], "WHY A THIRD STEP") {
+		t.Fatalf("%s is not embedded or lacks its header", backfill3File)
+	}
+	allCases := append(append([]backfill2Case(nil), backfill2Cases...), backfill3Cases...)
 	if _, err := database.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES ('version', '76')
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`); err != nil {
 		t.Fatalf("pin version 76: %v", err)
@@ -124,7 +143,7 @@ func TestMigration196ReRunsSafelyAfter077(t *testing.T) {
 		t.Fatalf("seed project: %v", err)
 	}
 	seenTool := map[string]bool{}
-	for _, c := range backfill2Cases {
+	for _, c := range allCases {
 		if seenTool[c.tool] {
 			continue
 		}
@@ -144,18 +163,19 @@ func TestMigration196ReRunsSafelyAfter077(t *testing.T) {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	for _, c := range backfill2Cases {
+	for _, c := range allCases {
 		seed("pre", "unknown", c)
 		// CONTROL: an adapter-classified row with the same name never moves.
 		seed("classified", "post_tool_batch", c)
 	}
 
-	// The v1.36.0 upgrade: every step up to 176, including the frozen 077.
-	if err := runMigrationsFrom(ctx, database, defaultMigrationLockWait, lineageWithout(t, backfill2File), lateSteps); err != nil {
-		t.Fatalf("run through 176: %v", err)
+	// The v1.36.0 upgrade: every step up to the head, including the frozen
+	// 077, without the two later backfills.
+	if err := runMigrationsFrom(ctx, database, defaultMigrationLockWait, lineageWithout(t, backfill2File, backfill3File), lateSteps); err != nil {
+		t.Fatalf("run without 196 and 223: %v", err)
 	}
 	snap := taxBackfillSnapshot(ctx, t, database)
-	for _, c := range backfill2Cases {
+	for _, c := range allCases {
 		if got := snap["pre|"+c.tool+"|"+c.raw]; got != c.after077 {
 			t.Errorf("after 077: %s %s = %q, want %q", c.tool, c.raw, got, c.after077)
 		}
@@ -167,7 +187,7 @@ func TestMigration196ReRunsSafelyAfter077(t *testing.T) {
 
 	// The upgrade that carries 196: the runner applies exactly 196 (the
 	// first pass already ran every other step, up to the head).
-	if err := runMigrationsFrom(ctx, database, defaultMigrationLockWait, migrations.Files, lateSteps); err != nil {
+	if err := runMigrationsFrom(ctx, database, defaultMigrationLockWait, lineageWithout(t, backfill3File), lateSteps); err != nil {
 		t.Fatalf("run 196: %v", err)
 	}
 	meta := ledgertest.Meta(t, database)
@@ -192,8 +212,46 @@ func TestMigration196ReRunsSafelyAfter077(t *testing.T) {
 		}
 	}
 
-	// Re-running either body changes nothing.
-	for _, v := range []int{196, 77} {
+	for _, c := range backfill3Cases {
+		if got := after["pre|"+c.tool+"|"+c.raw]; got != "unknown" {
+			t.Errorf("after 196: %s %s = %q, want unknown (only 223 names it)", c.tool, c.raw, got)
+		}
+		// Rows ingested after 196 ran, still unknown.
+		seed("post196", "unknown", c)
+	}
+
+	// The upgrade that carries 223: the runner applies exactly 223, which
+	// classifies only what 196 could not and leaves every other row alone.
+	if err := runMigrationsFrom(ctx, database, defaultMigrationLockWait, migrations.Files, lateSteps); err != nil {
+		t.Fatalf("run 223: %v", err)
+	}
+	meta = ledgertest.Meta(t, database)
+	if meta[migplan.StepKey(223)] != migplan.RecordApplied || meta["version"] != strconv.Itoa(LatestSchemaVersion()) {
+		t.Fatalf("after the 223 upgrade: migration:223=%q version=%q, want applied at the head %d", meta[migplan.StepKey(223)], meta["version"], LatestSchemaVersion())
+	}
+	after223 := taxBackfillSnapshot(ctx, t, database)
+	for id, want := range after {
+		if strings.HasPrefix(id, "pre|cursor|") || strings.HasPrefix(id, "post196|") {
+			continue
+		}
+		if after223[id] != want {
+			t.Errorf("223 moved %s from %q to %q; it may only move the rows 196 left unknown", id, want, after223[id])
+		}
+	}
+	for _, c := range backfill3Cases {
+		for _, phase := range []string{"pre", "post196"} {
+			if got := after223[phase+"|"+c.tool+"|"+c.raw]; got != c.want {
+				t.Errorf("after 223: %s %s %s = %q, want %q", phase, c.tool, c.raw, got, c.want)
+			}
+		}
+		if got := after223["classified|"+c.tool+"|"+c.raw]; got != "post_tool_batch" {
+			t.Errorf("CONTROL %s %s: an adapter-classified row moved to %q", c.tool, c.raw, got)
+		}
+	}
+	after = after223
+
+	// Re-running any body changes nothing.
+	for _, v := range []int{223, 196, 77} {
 		if _, err := database.ExecContext(ctx, bodies[v]); err != nil {
 			t.Fatalf("re-run %d: %v", v, err)
 		}

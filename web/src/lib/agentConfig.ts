@@ -122,9 +122,19 @@ export type OrgStateRow = {
   observed_at?: string;
 };
 
+/** OrgManagementStatus is the Organization tab's state (agentconfig_org.go's orgManagementTable). */
+export type OrgManagementStatus = "not_enrolled" | "unmanaged" | "managed_inactive" | "managed";
+
 /** OrgPolicyView is GET /api/agent-config/org. */
 export type OrgPolicyView = {
   managed: boolean;
+  /** Absent from an older daemon: orgStatusOf derives it from `managed`. */
+  status?: OrgManagementStatus;
+  enrolled?: boolean;
+  org_name?: string;
+  tenancy?: string;
+  /** The governance verdict (govern.State) when managed but not in force. */
+  grant_state?: string;
   has_policy: boolean;
   version?: number;
   received_at?: string;
@@ -740,5 +750,67 @@ export function errorBody(raw: string): AgentConfigErrorBody | null {
     return b && typeof b.error === "string" ? b : null;
   } catch {
     return null;
+  }
+}
+
+// ---------- Organization tab ----------
+
+/** orgStatusOf reads the tab's state, falling back for an older daemon that sends only `managed`. */
+export function orgStatusOf(v: Pick<OrgPolicyView, "managed" | "status">): OrgManagementStatus {
+  return v.status ?? (v.managed ? "managed" : "not_enrolled");
+}
+
+/** Why a managed machine's grant is not in force, by govern.State. */
+export const GRANT_STATE_REASON: Record<string, string> = {
+  no_grant: "it has not received its management grant yet",
+  grant_expired: "its management grant has expired",
+  identity_changed: "its management grant was issued for a different enrolment",
+  key_pin_mismatch: "your organization's signing key no longer matches the one this machine pinned",
+  grant_signature_invalid: "its stored management grant no longer verifies",
+};
+
+/** OrgNotice is the empty state the Organization tab shows instead of a policy. */
+export type OrgNotice = { title: string; body: string; to?: string; toLabel?: string };
+
+const ENROLMENT_LINK = "/settings?section=enrolment";
+
+/**
+ * orgNotice says which of the tab's states this machine is in, or null when
+ * the organization's policy is in force and the policy itself is shown. An
+ * enrolled machine is never told to enrol: an individual (teams) enrolment
+ * names its org and says how management would be turned on.
+ */
+export function orgNotice(v: Pick<OrgPolicyView, "managed" | "status" | "org_name" | "grant_state" | "has_policy">): OrgNotice | null {
+  const org = v.org_name?.trim() || "your organization";
+  switch (orgStatusOf(v)) {
+    case "not_enrolled":
+      return {
+        title: "Not enrolled with an organization",
+        body: "This machine is not enrolled with an organization, so no organization sets its AI tool settings. Everything on this page is yours to edit. To join your organization, enrol this machine in Settings > Enrolment with the server address and the enrolment code or link your admin gave you.",
+        to: ENROLMENT_LINK,
+        toLabel: "Open Settings > Enrolment",
+      };
+    case "unmanaged":
+      return {
+        title: `Enrolled with ${org}, not managed`,
+        body: `This machine is enrolled with ${org} with an individual (teams) enrolment. It shares what you chose to share, but ${org} does not manage its AI tool settings, so everything on this page is yours to edit. An organization manages AI tool settings only on managed machines: that turns on when your admin switches the organization to enterprise (this machine picks it up the next time it reaches the org server), or when you enrol again with a managed enrolment code from your admin.`,
+        to: ENROLMENT_LINK,
+        toLabel: "Open Settings > Enrolment",
+      };
+    case "managed_inactive": {
+      const reason = GRANT_STATE_REASON[v.grant_state ?? ""] ?? "its management grant is not in force";
+      return {
+        title: `Managed by ${org}, not in force`,
+        body: `This machine is managed by ${org}, but ${reason}. Until it is in force, ${org}'s AI tool settings do not apply here and everything on this page is yours to edit.`,
+        to: ENROLMENT_LINK,
+        toLabel: "Review the grant in Settings > Enrolment",
+      };
+    }
+    case "managed":
+      if (v.has_policy) return null;
+      return {
+        title: "No AI tool policy yet",
+        body: `${org === "your organization" ? "Your organization" : org} manages this machine but has not sent an AI tool policy. Until it does, AI tool settings are read-only here.`,
+      };
   }
 }

@@ -175,7 +175,7 @@ export function mcpAccessNotes(v: MCPAccessView): string[] {
   }
   if (s.enabled && !v.daemon_relay) {
     notes.push(
-      "The relay is on in config but this daemon was started with it off: restart the daemon to bind it (route OFF -> stop -> relaunch -> route ON).",
+      "The relay is on in config but this daemon was started with it off: restart the daemon to bind it (Settings > Health, Restart daemon; its dialog shows any live proxied requests first).",
     );
   }
   if (!s.enabled && v.daemon_relay) {

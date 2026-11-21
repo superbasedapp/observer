@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/otelident"
 )
 
 // defaultTracesPath is the OTLP/HTTP traces path a path-less endpoint URL
@@ -143,7 +144,7 @@ func newExporter(cfg Config, src TurnSource, resolver ProjectResolver, logger *s
 // telemetry we emitted, preventing a round-trip when the emit endpoint and the
 // receiver share a collector (echo guard — native-console template §3.2).
 func newResource(serviceName string) *resource.Resource {
-	emittedBy := attribute.String("sbo.emitted_by", "observer")
+	emittedBy := attribute.String(otelident.EchoAttr, otelident.EchoValue)
 	r, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(serviceName), emittedBy),

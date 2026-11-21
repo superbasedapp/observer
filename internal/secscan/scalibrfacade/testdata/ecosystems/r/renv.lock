@@ -1,0 +1,27 @@
+{
+  "R": {
+    "Version": "4.4.1",
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://cloud.r-project.org"
+      }
+    ]
+  },
+  "Packages": {
+    "glue": {
+      "Package": "glue",
+      "Version": "1.8.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "00000000000000000000000000000000"
+    },
+    "localpkg": {
+      "Package": "localpkg",
+      "Version": "0.0.1",
+      "Source": "Local",
+      "RemoteType": "local",
+      "Hash": "00000000000000000000000000000001"
+    }
+  }
+}

@@ -44,11 +44,14 @@
 
 1. **Install the extension.** Each platform build bundles the `observer` binary, so there is nothing
    else to install.
-2. **Nothing to start.** In the default `auto` mode the extension attaches to a running daemon or
+2. **Nothing to start.** In the default `auto` mode the extension uses a running daemon or
    starts one, and only ever stops a daemon it started.
-3. **Open the dashboard:** run **SuperBased: Open Dashboard**, or click the spend item in the status
+3. **Sign in and connect (recommended).** Click **SuperBased · not signed in** in the status bar, or
+   run **SuperBased: Sign in and connect**. Your browser shows what this machine will share before
+   anything is sent; pick your personal dashboard or a team. Everything else works with no account.
+4. **Open the dashboard:** run **SuperBased: Open Dashboard**, or click the spend item in the status
    bar.
-4. **Capture a session with exact tokens:** open a terminal with the **AI Coding Tool
+5. **Capture a session with exact tokens:** open a terminal with the **AI Coding Tool
    (SuperBased-proxied)** profile (terminal panel, the arrow next to `+`), then run `claude`,
    `codex` or another agent CLI. Or use **SuperBased: Launch Claude Code (proxied)** / **Launch Codex
    (proxied)**.
@@ -114,7 +117,9 @@ Click any session to open its detail view. Four of its tabs:
 
 No account needed. After the binary is in place, the extension talks only to
 `127.0.0.1` on your workspace host; it contacts GitHub Releases only if it finds neither a bundled
-nor a local binary. Remote-SSH, WSL, Dev Containers and Codespaces keep the data on the remote host.
+nor a local binary. **Sign in and connect** runs `observer connect`, which sends this machine's name,
+OS and Observer version to start the request and nothing about your AI sessions until you approve in
+your browser. Remote-SSH, WSL, Dev Containers and Codespaces keep the data on the remote host.
 
 ## Learn more
 

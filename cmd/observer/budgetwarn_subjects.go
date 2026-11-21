@@ -94,6 +94,7 @@ func budgetWarnSubjectWindows(subjects []orgbudget.SubjectCap, snap guard.Budget
 					Window: sc.Window, Unit: "usd", Cap: sc.CapUSD, Spent: spent + sc.BaselineUSD,
 					Scope: sc.ScopeUSD, Enforcement: sc.Enforcement, Thresholds: sc.Thresholds,
 					Timezone: sc.Timezone, Subject: subject,
+					DeniesOnLocal: sc.BaselineFlagOnly && sc.Hard, LocalSpent: spent,
 				})
 			}
 		}
@@ -103,6 +104,7 @@ func budgetWarnSubjectWindows(subjects []orgbudget.SubjectCap, snap guard.Budget
 					Window: sc.Window, Unit: "tokens", Cap: float64(sc.CapTokens), Spent: float64(spent + sc.BaselineTokens),
 					Scope: sc.ScopeTokens, Enforcement: sc.Enforcement, Thresholds: sc.Thresholds,
 					Timezone: sc.Timezone, Subject: subject,
+					DeniesOnLocal: sc.BaselineFlagOnly && sc.Hard, LocalSpent: float64(spent),
 				})
 			}
 		}

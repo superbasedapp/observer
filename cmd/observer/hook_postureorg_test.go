@@ -161,14 +161,18 @@ func TestPostureFallbackLatency(t *testing.T) {
 			t.Errorf("%s: worst %v exceeds a quarter of the hook budget %v", tc.name, worst, defaultHookMaxRuntime)
 		}
 	}
-	// A node whose daemon never ran: the fallback's first DB open creates
-	// and migrates it (bounded by hookFallbackDBTimeout).
+	// A node whose daemon never ran: there is no DB, so the fallback reads
+	// no pin or tenancy and creates nothing (migrating a fresh DB inside
+	// hookFallbackDBTimeout could overrun and roll back).
 	n := newPostureOrgNode(t, "[guard]\nenabled = true\nmode = \"observe\"")
 	writeOrgBundle(t, n.bundle, "[[override]]\nrule = \"R-101\"\nenforce = true\n")
 	forgeOpenPosture(t, n.cp)
 	start := time.Now()
 	resolveHookFailurePlan("claude-code", "pre-tool", n.cp)
-	t.Logf("posture fallback, fresh DB (first open migrates): %v", time.Since(start))
+	t.Logf("posture fallback, no DB yet: %v", time.Since(start))
+	if _, err := os.Stat(n.dbPath); !os.IsNotExist(err) {
+		t.Errorf("the fallback created the node DB (stat err %v); it must only read an existing one", err)
+	}
 }
 
 func pinOf(pub ed25519.PublicKey) string { return orgcontract.PublicKeyPinHash(pub) }

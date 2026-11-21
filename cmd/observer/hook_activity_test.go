@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/hookspool"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/latencygate"
 )
 
 // recordingActivityDeps captures the records an emission appends.
@@ -228,8 +229,16 @@ func BenchmarkHookActivity(b *testing.B) {
 // TestHookActivityLatencyP95 holds the added hook-path work under 1 ms at
 // the 95th percentile over 400 invocations into a real temp spool. The
 // bound is the review's acceptance line; the measured p95 is typically two
-// orders of magnitude below it, so the test is not timing-flaky.
+// orders of magnitude below it on an idle host. It is a wall-clock bound,
+// so it runs where the bound means something: ci.yml's no-race latency step
+// (scripts/ci/latency-tests.txt), never in a loaded -race test shard, where
+// the detector's instrumentation and the shared 2-vCPU runner measured a
+// p95 of 2.2 ms (p50 182 us, max 9.8 ms) for the same work.
 func TestHookActivityLatencyP95(t *testing.T) {
+	latencygate.Gate(t) // listed, and skipped under -short and in a loaded CI shard
+	if raceDetectorOn {
+		t.Skip("wall-clock latency bound is not measurable under the race detector; ci.yml's no-race latency step runs this")
+	}
 	dir := t.TempDir()
 	body := claudePreToolBody()
 	deps := productionHookActivityDeps(func(string) string { return "" })

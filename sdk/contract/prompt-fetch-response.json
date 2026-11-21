@@ -1,0 +1,44 @@
+{
+  "_comment": "Recorded 2026-11-19 from internal/orgserver/sdkapi GET /v1/sdk/prompts/support-reply?label=production (version 3 under production, version 4 under staging). The ETag is the SHA-256 of the exact body bytes the server wrote (compact JSON, no HTML escaping, one trailing newline), so a client compares it, never recomputes it. Header names are as Go canonicalises them; clients must match case-insensitively. Pinned by internal/promptreg TestFetchGolden and internal/orgserver/sdkapi TestPromptFetchFixture; the machine route /api/obs/sdk/prompts serves the same body (contract section 7).",
+  "request": {
+    "method": "GET",
+    "path": "/v1/sdk/prompts/support-reply",
+    "query": "label=production"
+  },
+  "status": 200,
+  "headers": {
+    "Cache-Control": "private, no-cache",
+    "Content-Type": "application/json",
+    "Etag": "\"d4cdc59cd4251f08650303e3d08124a92e77694da3851b75a35108afe53cdf69\"",
+    "X-Sbo-Request-Id": "id1",
+    "X-Sbo-Sdk-Api-Version": "1"
+  },
+  "body": {
+    "api_version": "v1",
+    "name": "support-reply",
+    "version": 3,
+    "type": "text",
+    "prompt": "Hello {{customer}}, thanks for writing about {{topic}}.",
+    "config": {
+      "model": "gpt-5.1-mini",
+      "temperature": 0.2
+    },
+    "labels": [
+      "production"
+    ],
+    "resolved_by": "label:production",
+    "variables": [
+      "customer",
+      "topic"
+    ],
+    "digest": "sha256:8223611afcd169818ba1574fa13c2d7a51f8afe94770600b86c44e51c5411481",
+    "commit_message": "tone fix",
+    "created_at": "2026-11-19T10:00:00Z"
+  },
+  "not_modified": {
+    "request_header": {
+      "If-None-Match": "\"d4cdc59cd4251f08650303e3d08124a92e77694da3851b75a35108afe53cdf69\""
+    },
+    "status": 304
+  }
+}

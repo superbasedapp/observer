@@ -76,6 +76,23 @@ type SecurityLookupResponse struct {
 // (its last-known-good content stays and is reported stale, never clean).
 const AgentSecurityContentPath = "/api/agent/security/content/"
 
+// AgentSecurityShardsPath is the prefix of the org mirror's shard route
+// (lane RM-3, OS and CI vulnerability scanning plan 13.5 "or the org server
+// on a managed node"): GET AgentSecurityShardsPath + "<Set>/index/<sha256>.json"
+// or "<Set>/obj/<sha256>.json.gz" serves one content-addressed object of the
+// security.osv_shards kind the org mirrors (osvshardkey.ParseObjectPath is
+// the one path check), with the digest as its ETag. It serves a managed
+// enrolment whose org's signed security policy turns the package lookup on
+// (package_lookup = org_mirror) and answers 403
+// SecurityShardsNotEnabledCode otherwise, 404 not_supported while the relay
+// is not configured or its mode is off, and 404 not_mirrored for an object
+// the org's mirror does not hold.
+const AgentSecurityShardsPath = "/api/agent/security/shards/"
+
+// SecurityShardsNotEnabledCode is the shard route's refusal for a caller
+// whose org's security policy does not turn the package lookup on.
+const SecurityShardsNotEnabledCode = "lookup_not_enabled"
+
 // SecurityContentManifestFile is the envelope's file name on the content
 // route (the content channel's own name for it).
 const SecurityContentManifestFile = "manifest.json"

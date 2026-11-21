@@ -53,6 +53,7 @@ type ghPull struct {
 	MergeableState string  `json:"mergeable_state"`
 	Head           struct {
 		SHA string `json:"sha"`
+		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -197,6 +198,43 @@ func (c *Client) PullRequest(ctx context.Context, auth Auth, slug string, number
 		}
 	}
 	return c.normalise(auth, slug, p, d, c.now()), nil
+}
+
+// PullsForHead calls GET /repos/{o}/{r}/pulls?state=all&head={o}:{branch}
+// and returns every PR whose head is that branch of the repository's own
+// owner, normalised from the list shape (readiness of an open PR stays
+// unknown until PullRequest fetches it). Cloud delivery credit (lane
+// CA-C5) uses it for a branch-only claim (a Cursor run's git.branches).
+func (c *Client) PullsForHead(ctx context.Context, auth Auth, slug, branch string) ([]delivery.PullRequest, error) {
+	rp, err := repoPath(slug)
+	if err != nil {
+		return nil, err
+	}
+	if !ValidBranch(branch) {
+		return nil, newErr(KindInvalid, 0, "bad branch name")
+	}
+	owner, _, _ := strings.Cut(slug, "/")
+	q := url.Values{}
+	q.Set("state", "all")
+	q.Set("head", owner+":"+branch)
+	q.Set("per_page", strconv.Itoa(perPage))
+	b, _, err := c.get(ctx, auth, rp+"/pulls?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var list []ghPull
+	if err := decode(b, &list); err != nil {
+		return nil, err
+	}
+	now := c.now()
+	var prs []delivery.PullRequest
+	for _, p := range list {
+		if p.Number <= 0 || p.Head.Ref != branch {
+			continue
+		}
+		prs = append(prs, c.normalise(auth, slug, p, prDetail{}, now))
+	}
+	return prs, nil
 }
 
 // PullCommits calls GET /repos/{o}/{r}/pulls/{n}/commits, paging up to
@@ -345,6 +383,9 @@ func (c *Client) normalise(auth Auth, slug string, p ghPull, d prDetail, now tim
 	}
 	if ValidSHA(p.Head.SHA) {
 		pr.HeadSHA = p.Head.SHA
+	}
+	if ValidBranch(p.Head.Ref) {
+		pr.HeadRef = p.Head.Ref
 	}
 	// An OPEN PR carries GitHub's test merge commit (Phase 0); it is never a
 	// landing, so the sha is kept only for a merged PR.

@@ -8,13 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/standin"
 )
 
 func TestRefreshInstallManifestRetainsOnlyLiveNativeLifetimes(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	launcher := filepath.Join(dir, "goose")
-	data, err := os.ReadFile("/bin/sleep")
+	// A sleep that keeps running as "goose" (a multi-call coreutils's
+	// /bin/sleep exits at once under that name; internal/testsupport/standin).
+	data, err := os.ReadFile(standin.SingleProgramBinary(t, "sleep"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/standin"
 	"github.com/marmutapp/superbased-observer/internal/watcher"
 )
 
@@ -91,7 +92,9 @@ func TestNodeInterventionDirectProcessStopsFromNativeSpend(t *testing.T) {
 	root := t.TempDir()
 	launcher := filepath.Join(root, "muse")
 	native := filepath.Join(root, "muse-bin-1.2.3")
-	bytes, err := os.ReadFile("/bin/sleep")
+	// A sleep that runs under the vendor's name (a multi-call coreutils's
+	// /bin/sleep exits at once as muse-bin-1.2.3, so no workload is bound).
+	bytes, err := os.ReadFile(standin.SingleProgramBinary(t, "sleep"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +241,8 @@ func TestNodeInterventionScopesAccountingFailureToItsOwnTool(t *testing.T) {
 	}
 
 	install := t.TempDir()
-	sleepBytes, err := os.ReadFile("/bin/sleep")
+	// A sleep that runs under each vendor's name (internal/testsupport/standin).
+	sleepBytes, err := os.ReadFile(standin.SingleProgramBinary(t, "sleep"))
 	if err != nil {
 		t.Fatal(err)
 	}

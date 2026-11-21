@@ -759,7 +759,7 @@ func newCloudStatusCmd() *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 
-			fmt.Fprintln(w, "SuperBased cloud (Signed-in Free) - status")
+			fmt.Fprintln(w, "superbased cloud (Signed-in Free) - status")
 			if resolved == "" {
 				fmt.Fprintf(w, "  base URL:            (unset - pass --base-url, set %s, or set [cloud].base_url in config.toml)\n", cloudBaseURLEnv)
 			} else {
@@ -787,17 +787,17 @@ func newCloudStatusCmd() *cobra.Command {
 				cloudPrintEnrichPolicyLine(cmd.Context(), policySt, w)
 				cloudPrintLastSyncLine(cmd.Context(), policySt, w)
 				cloudPrintPlanLine(cmd.Context(), policySt, w)
+				cloudPrintEvidenceBudgetLine(cmd.Context(), policySt, w)
 				policyCleanup()
 			} else {
 				fmt.Fprintln(w, "  enrichment policy:   not set (run observer cloud enable)")
 				fmt.Fprintln(w, "  last sync:           never")
 				fmt.Fprintln(w, "  plan:                unknown until the next sync")
 			}
-			// D16: the node never learns its server-side allowance in this arc —
-			// there is no wire field for it — so status says so honestly rather
-			// than printing a fabricated number (mirrors the dashboard's
-			// honest-unknown allowance card).
-			fmt.Fprintln(w, "  allowance:           unknown (server-reported at sync; not disclosed to the node in this release)")
+			// D16 / W5: the allowance is what the last sync's GET /v1/usage
+			// read reported (the plan, token and evidence-budget lines above);
+			// status itself makes no network call, so it never has a live figure.
+			fmt.Fprintln(w, "  allowance:           as of the last sync (plan lines above); status does not contact the service")
 			fmt.Fprintf(w, "  credential backend:  %s\n", gw.CredentialBackend())
 			if diag := gw.CredentialDiagnostic(); diag != "" {
 				fmt.Fprintf(w, "  security:            DEGRADED - %s\n", diag)
@@ -919,8 +919,49 @@ func cloudPrintPlanLine(ctx context.Context, st *store.Store, w io.Writer) {
 	if last.ResultsRetentionDays != nil {
 		retention = fmt.Sprintf("%d days", *last.ResultsRetentionDays)
 	}
+	if last.BudgetUnit == cloudBudgetUnitTokens {
+		// Plan v5 (R-AI1): no count cap; the budget is tokens, and the count
+		// caps read 0, so printing them would say "0/day".
+		fmt.Fprintf(w, "  plan:                %s (token budget; weekly digests %s; results kept %s)\n",
+			label, digestWeekly, retention)
+		fmt.Fprintf(w, "  tokens today:        %s\n", cloudTokenWindowText(last.DailyTokensUsed, last.DailyTokenBudget))
+		fmt.Fprintf(w, "  tokens this month:   %s\n", cloudTokenWindowText(last.MonthlyTokensUsed, last.MonthlyTokenBudget))
+		session := "unknown"
+		if last.SessionTokenBudget != nil {
+			session = fmt.Sprintf("%d tokens", *last.SessionTokenBudget)
+		}
+		fmt.Fprintf(w, "  per session:         %s in total across re-enrichments\n", session)
+		return
+	}
 	fmt.Fprintf(w, "  plan:                %s (%s/day, %s/month; weekly digests %s; results kept %s)\n",
 		label, daily, monthly, digestWeekly, retention)
+}
+
+// cloudTokenWindowText renders one token window as "used of budget, left
+// remaining", or "unknown" when the last usage read did not report it.
+func cloudTokenWindowText(used, budget *int64) string {
+	if used == nil || budget == nil {
+		return "unknown"
+	}
+	left := max(*budget-*used, 0)
+	return fmt.Sprintf("%d of %d used, %d left", *used, *budget, left)
+}
+
+// cloudPrintEvidenceBudgetLine prints `observer cloud status`'s evidence
+// budget line: the per-upload cap the preview and consent build fit to, and
+// whether it came from the plan or is the default.
+func cloudPrintEvidenceBudgetLine(ctx context.Context, st *store.Store, w io.Writer) {
+	budget, known, err := cloudEvidenceBudget(ctx, st)
+	switch {
+	case err != nil:
+		fmt.Fprintln(w, "  evidence budget:     unknown")
+	case !known:
+		fmt.Fprintf(w, "  evidence budget:     %d tokens per upload (default until a sync reads your plan)\n", budget)
+	case budget <= 0:
+		fmt.Fprintln(w, "  evidence budget:     none on your plan")
+	default:
+		fmt.Fprintf(w, "  evidence budget:     %d tokens per upload (larger sessions are sent with a smaller selection)\n", budget)
+	}
 }
 
 func presentOrNot(present bool) string {
@@ -957,12 +998,14 @@ func newCloudLoginCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Sign in with WorkOS (PKCE) and exchange for a device-bound API token",
-		Long: "Signs in with WorkOS AuthKit via a browser (PKCE loopback flow) and\n" +
-			"exchanges the result for a short-lived, device-bound SuperBased API token.\n" +
-			"Set " + cloudWorkOSClientIDEnv + " to the WorkOS client id. For local testing\n" +
-			"without WorkOS, pass --dev-token (in-memory only, never stored).",
-		Args: cobra.NoArgs,
+		Short: "Sign in to superbased in your browser.",
+		Long: "Signs in to superbased in your browser and keeps a sign-in for this machine.\n" +
+			"`observer connect` does this and also connects the machine in one step.\n" +
+			"For local testing, pass --dev-token (in memory only, never stored).",
+		// Getting started v2: hidden from help (`observer connect` is the
+		// front door); it keeps working, and the dashboard still runs it.
+		Hidden: true,
+		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
 			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
@@ -1005,7 +1048,7 @@ func newCloudLoginCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Cloud base URL (else $"+cloudBaseURLEnv+", else [cloud].base_url)")
-	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev WorkOS access token for the stub broker (never stored)")
+	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev access token for local testing (never stored)")
 	return cmd
 }
 
@@ -1222,6 +1265,7 @@ func cloudPrintEnvelopeSummary(w io.Writer, res cloudEnvelopeResult) {
 	if res.EvidenceSettingsJSON != "" {
 		fmt.Fprintf(w, "evidence settings: %s\n", res.EvidenceSettingsJSON)
 	}
+	cloudPrintBudgetLine(w, res.Budget)
 	env := res.Envelope
 	if env == nil {
 		return
@@ -1498,20 +1542,27 @@ func newCloudSyncCmd() *cobra.Command {
 			// number from a prior run.
 			var planName, planLabel string
 			var planDigestWeekly, planRetentionDays, planDailyCap, planMonthlyCap *int
+			// R-AI1: the usage view this run read, nil when it read none. Its
+			// token budgets (and the evidence budget the builder fits to) are
+			// recorded beside the plan; nil keeps the last-known evidence
+			// budget (store.RecordCloudSyncLast).
+			var usageRead *cloudgateway.UsageView
 			defer func() {
 				err = cloudScopedSyncError(sessionID, err, failed, reconf)
 				errClass := ""
 				if err != nil {
 					errClass = cloudErrClass(err)
 				}
-				_ = st.RecordCloudSyncLast(cmd.Context(), store.CloudSyncLast{
+				rec := store.CloudSyncLast{
 					StartedAt: syncStarted, FinishedAt: time.Now().UTC(), OK: err == nil,
 					Sent: sent, WaitingProvider: waiting, Reconfirm: reconf, Failed: failed,
 					Results: associated, SignInExpired: signInExpired, ErrorClass: errClass,
 					PlanName: planName, PlanLabel: planLabel,
 					DigestWeekly: planDigestWeekly, ResultsRetentionDays: planRetentionDays,
 					DailyCap: planDailyCap, MonthlyCap: planMonthlyCap,
-				})
+				}
+				cloudApplyUsageTokens(&rec, usageRead)
+				_ = st.RecordCloudSyncLast(cmd.Context(), rec)
 			}()
 
 			// The same pricer preview and consent used, so a rebuild at send
@@ -1634,6 +1685,7 @@ func newCloudSyncCmd() *cobra.Command {
 				return perr
 			}); {
 			case uerr == nil:
+				usageRead = &usage
 				planName, planLabel = usage.Plan, usage.PlanLabel
 				dailyCap, monthlyCap := usage.DailyCap, usage.MonthlyCap
 				planDailyCap, planMonthlyCap = &dailyCap, &monthlyCap
@@ -1659,7 +1711,7 @@ func newCloudSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Cloud base URL (else $"+cloudBaseURLEnv+", else [cloud].base_url)")
-	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev WorkOS access token for the stub broker (never stored)")
+	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev access token for local testing (never stored)")
 	cmd.Flags().StringVar(&sessionID, "session", "", "Upload only this session; skip structural/community uploads and still pull available results")
 	return cmd
 }
@@ -1751,7 +1803,7 @@ func newCloudJobCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Cloud base URL (else $"+cloudBaseURLEnv+", else [cloud].base_url)")
-	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev WorkOS access token for the stub broker (never stored)")
+	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev access token for local testing (never stored)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the job status as JSON")
 	return cmd
 }

@@ -31,6 +31,44 @@ import (
 // offers and end, checkpoint or restore one. A checkpoint or restore runs
 // only from these, never from a timer, a sweep or the update path.
 
+// The dashboard's "Re-attach in a terminal" (dashboard CLI parity plan item
+// B-G3, decision P-3) runs `observer sandbox readopt <run>` in a dashboard
+// terminal; readoptAttachCheck answers whether the run is one it offers now,
+// since this file alone owns the offer files. The registration with the
+// dashboard lives in sandbox_readopt_attach_dash_linux.go, behind the
+// dashboard's own build tag, so a build without the dashboard links none of
+// it (tests/invariant TestComponentsL1PackageAbsence).
+
+// readoptAttachStates are the run states a re-attach takes: an offer that
+// is still open, or one held while an update waits (readoptViews' states).
+var readoptAttachStates = map[string]bool{"offered": true, "held": true}
+
+// readoptAttachCheck reports why run cannot be re-attached now (nil when it
+// can): the component off, a malformed id, no offer, or an offer in a state
+// a re-attach does not take (checkpointed, already re-adopted, expiring).
+func readoptAttachCheck(ctx context.Context, run string) error {
+	if !readoptLoadSettings(ctx).active {
+		return fmt.Errorf("re-adoption is off on this node; select %s in Settings > Components", readoptComponent)
+	}
+	if !sandboxoci.ValidToken(run) {
+		return errors.New("not a run id")
+	}
+	obs, err := readoptCLIObserverDir()
+	if err != nil {
+		return err
+	}
+	for _, v := range readoptViews(obs) {
+		if v.RunID != run {
+			continue
+		}
+		if !readoptAttachStates[v.State] {
+			return fmt.Errorf("run %s is %s, so it cannot be re-attached now", run, v.State)
+		}
+		return nil
+	}
+	return readoptNotOffered(obs, run)
+}
+
 // readoptRunView is one offer as the CLI and the dashboard show it.
 type readoptRunView struct {
 	RunID        string    `json:"run_id"`
@@ -38,6 +76,7 @@ type readoptRunView struct {
 	Project      string    `json:"project"`
 	State        string    `json:"state"`
 	Code         string    `json:"code"`
+	Row          string    `json:"row,omitempty"`
 	Reason       string    `json:"reason"`
 	OfferedAt    time.Time `json:"offered_at"`
 	Expires      time.Time `json:"expires,omitzero"`
@@ -53,7 +92,7 @@ func readoptViews(observerDir string) []readoptRunView {
 	for _, e := range readoptOffered(observerDir) {
 		v := readoptRunView{
 			RunID: e.kept.RunID, Tool: e.kept.Facts.Tool, Project: e.kept.Facts.ProjectRoot,
-			Code: string(e.offer.Code), Reason: e.offer.Reason, OfferedAt: e.offer.OfferedAt,
+			Code: string(e.offer.Code), Row: e.offer.Row, Reason: e.offer.Reason, OfferedAt: e.offer.OfferedAt,
 			Expires: e.offer.Expires, ReadoptedAt: e.offer.ReadoptedAt, Checkpointed: e.offer.Checkpointed,
 		}
 		switch {
@@ -91,31 +130,50 @@ func newSandboxRunsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			views := readoptViews(obs)
-			if asJSON {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"runs": views})
-			}
-			if len(views) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No local container run is offered for re-adoption.")
-				return nil
-			}
-			for _, v := range views {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %s  %s\n", v.RunID, v.State, v.Tool, v.Project)
-				if !v.Expires.IsZero() && v.State == "offered" {
-					fmt.Fprintf(cmd.OutOrStdout(), "  removed at %s unless re-adopted\n", v.Expires.Local().Format(time.RFC3339))
-				}
-				if !v.Expires.IsZero() && v.State == "checkpointed" {
-					fmt.Fprintf(cmd.OutOrStdout(), "  checkpoint removed at %s unless restored\n", v.Expires.Local().Format(time.RFC3339))
-				}
-				if v.Command != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", v.Command)
-				}
-			}
-			return nil
+			return renderReadoptRuns(cmd.OutOrStdout(), obs, asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
+}
+
+// renderReadoptRuns prints the offers under obs, each with the table row
+// that decided it, then the runs the re-adoption step recently ended with
+// the row that ended each (F-046).
+func renderReadoptRuns(w io.Writer, obs string, asJSON bool) error {
+	views := readoptViews(obs)
+	ended := readoptEndedList(obs)
+	if asJSON {
+		if ended == nil {
+			ended = []readoptEnded{}
+		}
+		return json.NewEncoder(w).Encode(map[string]any{"runs": views, "ended": ended})
+	}
+	if len(views) == 0 {
+		fmt.Fprintln(w, "No local container run is offered for re-adoption.")
+	}
+	for _, v := range views {
+		fmt.Fprintf(w, "%s  %s  %s  %s\n", v.RunID, v.State, v.Tool, v.Project)
+		if v.Row != "" {
+			fmt.Fprintf(w, "  decided by row %s (%s)\n", v.Row, v.Code)
+		}
+		if !v.Expires.IsZero() && v.State == "offered" {
+			fmt.Fprintf(w, "  removed at %s unless re-adopted\n", v.Expires.Local().Format(time.RFC3339))
+		}
+		if !v.Expires.IsZero() && v.State == "checkpointed" {
+			fmt.Fprintf(w, "  checkpoint removed at %s unless restored\n", v.Expires.Local().Format(time.RFC3339))
+		}
+		if v.Command != "" {
+			fmt.Fprintf(w, "  %s\n", v.Command)
+		}
+	}
+	if len(ended) > 0 {
+		fmt.Fprintln(w, "Recently ended by the re-adoption step (newest first):")
+		for _, x := range ended {
+			fmt.Fprintf(w, "%s  ended %s  row %s (%s): %s\n", x.RunID, x.At.Local().Format(time.RFC3339), x.Row, x.Code, x.Reason)
+		}
+	}
+	return nil
 }
 
 func newSandboxReadoptCmd() *cobra.Command {
@@ -191,7 +249,7 @@ func readoptEndByUser(ctx context.Context, observerDir, runID string, out io.Wri
 	}
 	e := readoptRead(observerDir, runID)
 	if !e.hasOffer {
-		return fmt.Errorf("run %s is not offered for re-adoption", runID)
+		return readoptNotOffered(observerDir, runID)
 	}
 	readoptEndOrDecline(observerDir, runID, e)
 	fmt.Fprintf(out, "Run %s ended; its container is removed at the daemon's next sweep.\n", runID)

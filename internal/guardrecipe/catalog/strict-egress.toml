@@ -1,0 +1,25 @@
+# Pack "strict-egress": the organization's strict egress starter, as a local pack.
+#
+# The same rows as the org dashboard's "Strict egress" starter bundle
+# (internal/orgserver/setuptemplates/bundles.go; a test keeps the two in
+# step): the baseline floor plus file uploads denied and encoded DNS lookups
+# stopping for a person.
+
+name = "strict-egress"
+kind = "pack"
+title = "Strict egress (org starter)"
+summary = "Baseline guard plus the exfiltration family: file uploads deny and encoded-looking DNS lookups ask, in every mode."
+version = 1
+extends = "baseline-guard"
+
+[[override]]
+rule = "R-171"
+decision = "deny"
+enforce = true
+note = "shell command uploading file contents to a remote destination"
+
+[[override]]
+rule = "R-173"
+decision = "ask"
+enforce = true
+note = "DNS lookup of an encoded-looking subdomain"

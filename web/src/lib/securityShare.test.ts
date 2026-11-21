@@ -18,8 +18,9 @@ test("the picker offers exactly the schema's three values", () => {
 });
 
 test("the level reads the config; unset is off; an unknown value offers no picker", () => {
-  assert.equal(securityShareLevel({ OrgClient: { Share: {} } }), "off");
-  assert.equal(securityShareLevel({ OrgClient: { Share: { Security: "" } } }), "off");
+  assert.equal(securityShareLevel({ OrgClient: { Share: {} } }), "posture");
+  assert.equal(securityShareLevel({ OrgClient: { Share: { Security: "" } } }), "posture");
+  assert.equal(securityShareLevel({ OrgClient: { Share: { Security: "off" } } }), "off");
   assert.equal(securityShareLevel({ OrgClient: { Share: { Security: "posture" } } }), "posture");
   assert.equal(securityShareLevel({ OrgClient: { Share: { Security: "everything" } } }), null);
   assert.equal(securityShareLevel(null), null);

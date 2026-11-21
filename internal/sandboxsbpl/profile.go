@@ -40,7 +40,7 @@ import (
 // change the profile's structure.
 
 // ProfileVersion moves when the shape of a generated profile changes.
-const ProfileVersion = 1
+const ProfileVersion = 2
 
 // SandboxExecPath is Apple's sandbox-exec. Only this path is ever run: a
 // sandbox-exec found on PATH could be anything.
@@ -199,15 +199,37 @@ func (p Profile) Argv(sandboxExec string, inner []string) []string {
 // notifications and validate TLS certificates. The list follows the base
 // policies Chromium and the Codex CLI publish; each entry is a register
 // item (MAC-3), and adding one is adding a row.
+//
+// com.apple.trustd.agent is not in this list (F-015 R3, audit finding
+// N4-R3): see TLSMachServices.
 var baseMachServices = []string{
 	"com.apple.system.opendirectoryd.libinfo",    // getpwuid, getgrgid (home, user name)
 	"com.apple.system.opendirectoryd.membership", // group membership
 	"com.apple.system.logger",                    // asl logging
 	"com.apple.logd",                             // os_log
 	"com.apple.system.notification_center",       // notify(3)
-	"com.apple.trustd.agent",                     // certificate validation
 	"com.apple.bsd.dirhelper",                    // confstr temp and cache dirs
 	"com.apple.lsd.mapdb",                        // LaunchServices database reads
+}
+
+// TLSMachServices are the services a box needs to validate a TLS server's
+// certificate, allowed only on a tier whose profile runs the egress
+// gateway (EgressProfile.Gateway: the one way a box reaches a remote TLS
+// server). They are a known side path out of the box's network rules
+// (F-015 R3, audit finding N4-R3): trustd runs outside the box and, while
+// it validates a certificate the box hands it, may fetch that
+// certificate's OCSP, CRL or issuer (AIA) URLs on the box's behalf. Those
+// fetches are not the box's connections, so the SBPL network rules do not
+// govern them and Observer's gateway never sees or records them. On a tier
+// with no gateway (proxy_only: the model proxy is plain http on loopback;
+// none) the box reaches no TLS server, so the service is left out and the
+// side path is closed there, which keeps "nothing can leave but the model
+// proxy" true on those tiers. On the gateway tier it stays, because the
+// box validates the real server's certificate through the CONNECT tunnel:
+// ledger row SBX-MAC-6 (drafted in docs/plans/openshell/build/ledger-rows.md,
+// lane FU5), live check N4-L2.
+var TLSMachServices = []string{
+	"com.apple.trustd.agent", // certificate validation
 }
 
 // NotifyShmName is the one POSIX shared-memory segment a box may read: the
@@ -269,7 +291,7 @@ func Build(req Request) (Profile, error) {
 	b := &builder{byKey: map[string]string{}, counts: map[string]int{}}
 	g := collectGrants(req)
 	// The sections in their load-bearing order (last match wins).
-	b.header(req)
+	b.header(req, prof)
 	if req.HomeMode == "" || req.HomeMode == HomeModeTmpfs {
 		b.blindHome(req, g)
 	}
@@ -345,7 +367,7 @@ func collectGrants(req Request) grants {
 
 // header writes the version, the default deny and the process, IPC and
 // mach rules.
-func (b *builder) header(req Request) {
+func (b *builder) header(req Request, prof sandbox.EgressProfile) {
 	b.rule("(version 1)")
 	b.comment(fmt.Sprintf("Observer Seatbelt profile v%d (internal/sandboxsbpl): built from the bwrap plan's tables", ProfileVersion))
 	b.rule("(deny default)")
@@ -362,7 +384,11 @@ func (b *builder) header(req Request) {
 	b.rule(`(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "` + NotifyShmName + `"))`)
 	b.rule("(allow ipc-posix-sem)")
 	b.rule("(allow user-preference-read)")
-	mach := append(append([]string(nil), baseMachServices...), req.MachServices...)
+	mach := append([]string(nil), baseMachServices...)
+	if prof.Gateway {
+		mach = append(mach, TLSMachServices...)
+	}
+	mach = append(mach, req.MachServices...)
 	b.rule("(allow mach-lookup" + machFilters(mach) + ")")
 	b.comment("files: the whole root reads, as bwrap's --ro-bind / /")
 	b.rule("(allow file-read*)")

@@ -35,6 +35,11 @@ import (
 // only these are removed before the services are served there again.
 var readoptStaleNames = []string{sandboxrelayd.BoxRecordName, sandboxrelayd.RelaySocketName, sandbox.ProxySocketName, sandbox.GatewaySocketName}
 
+// readoptCredNotes holds, per run (keyed by the host args' RelayRun, as
+// stored and read; audit FU3-A6), why a re-adopted run's credential lane
+// stayed closed (F-004), shown with the re-adoption marker.
+var readoptCredNotes sync.Map
+
 // readoptHostServices serves the run's host services in its existing
 // socket dir: the relay (holding the run's liveness lock and writing the
 // re-keyed box record), the model proxy forward and the egress gateway, as
@@ -63,14 +68,14 @@ func readoptHostServices(h sandbox.HostArgs) (func(), error) {
 	// a run whose list cannot be read is not re-adopted at all (fail
 	// closed, OSH-R-153), rather than coming back with a gateway that has
 	// lost [terminal.sandbox].egress_allow_hosts or an org pin of it.
+	ctx, cancel := context.WithCancel(context.Background())
+	undo = append(undo, cancel)
 	var gw *sandboxnet.Gateway
 	if h.Gateway {
-		if gw, err = hostEgressGateway(h, allow); err != nil {
+		if gw, err = hostEgressGateway(ctx, h, allow); err != nil {
 			return stop, fmt.Errorf("the egress host list: %w", err)
 		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	undo = append(undo, cancel)
 	if h.RelayRun != "" {
 		relayStop, err := serveRelay(ctx, h)
 		if err != nil {
@@ -85,14 +90,15 @@ func readoptHostServices(h sandbox.HostArgs) (func(), error) {
 			if lerr != nil {
 				return stop, fmt.Errorf("listen for the model proxy: %w", lerr)
 			}
-			undo = append(undo, func() { _ = ln.Close() })
-			target := h.ProxyAddr
-			go func() {
-				_ = sandboxnet.ServeForward(ctx, ln, func(ctx context.Context) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "tcp", target)
-				})
-			}()
+			// The run's credential lane is re-opened before the forward
+			// serves (F-004), so a re-adopted run keeps injection: the
+			// forward is the stamping one the launch used (raw when the
+			// run has no lane), and a lane that cannot re-open is named
+			// on the terminal (the box's sentinel is then refused, 401).
+			if why := localCredReopen(h); why != "" {
+				readoptCredNotes.Store(h.RelayRun, why)
+			}
+			undo = append(undo, serveModelProxyForward(ctx, ln, h))
 		}
 	}
 	if h.Gateway {
@@ -132,7 +138,7 @@ func readoptPrepare(ctx context.Context, observerDir, runID string) (readoptPrep
 	}
 	e := readoptRead(observerDir, runID)
 	if !e.hasOffer {
-		return p, fmt.Errorf("run %s is not offered for re-adoption (see observer sandbox runs)", runID)
+		return p, readoptNotOffered(observerDir, runID)
 	}
 	if e.offer.Checkpointed {
 		return p, fmt.Errorf("run %s is checkpointed; restore it first (observer sandbox restore %s)", runID, runID)
@@ -206,6 +212,9 @@ func readoptRunHelper(ctx context.Context, observerDir, runID string, t ociTerm)
 	_ = readoptWriteFile(readoptRunDir(observerDir, runID), readoptOfferFile, offer)
 	fmt.Fprintf(t.out, "%s\r\n", sandboxadopt.RingMarker)
 	fmt.Fprintf(t.out, "[observer] capture gap: %s to %s\r\n", offer.GapFrom.Format(time.RFC3339), offer.ReadoptedAt.Format(time.RFC3339))
+	if why, ok := readoptCredNotes.LoadAndDelete(p.h.RelayRun); ok {
+		fmt.Fprintf(t.out, "[observer] credential injection not restored: %s; the box's placeholder key will be refused by the provider\r\n", why)
+	}
 	code := readoptAttach(ctx, p.c, p.ct.ID, p.eng.id.Engine, t)
 	release()
 	_ = os.RemoveAll(p.h.SockDir)

@@ -1,0 +1,83 @@
+rules:
+  - id: kotlin.open-redirect
+    languages: [kotlin]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; redirect only to a path on this site or a host on an allow-list.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      # Spring and JAX-RS handler parameters that carry text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) = $E
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) = $E
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|RequestHeader|CookieValue|QueryParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|List<String>|Set<String>|Collection<String>|Array<String>|CharSequence)\??$
+      # Servlet requests, by call or by Kotlin property.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.$GET(...)
+              - pattern: $REQ.$GET
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getQueryString|queryString|parameterMap)$
+      # Ktor.
+      - pattern: call.parameters
+      - pattern: call.request.queryParameters
+      - pattern: call.request.headers
+      - pattern: call.request.cookies
+      - pattern: call.request.uri
+      - pattern: call.receiveText()
+      - pattern: call.receiveParameters()
+      - pattern: call.receive<String>()
+    pattern-sanitizers:
+      - pattern: URLEncoder.encode(...)
+      - pattern: UriUtils.encode(...)
+      - pattern: $X.toInt()
+      - pattern: $X?.toInt()
+      - pattern: $X.toLong()
+      - pattern: $X?.toLong()
+      - pattern: $X.toIntOrNull()
+      - pattern: $X?.toIntOrNull()
+      - pattern: $X.toLongOrNull()
+      - pattern: $X?.toLongOrNull()
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RESP.sendRedirect($U)
+              - pattern: $RESP.setHeader("Location", $U)
+              - pattern: $RESP.addHeader("Location", $U)
+              - pattern: RedirectView($U, ...)
+              - pattern: call.respondRedirect($U, ...)
+              - pattern: '"redirect:" + $U'
+          - metavariable-pattern:
+              metavariable: $U
+              patterns:
+                - pattern-not-regex: ^"(/[^/\\"$]|https?://[^/"#?{}$]+[/?#])
+          - focus-metavariable: $U
+      # A Spring view name in a template: "redirect:$target".
+      - patterns:
+          - pattern: $S
+          - metavariable-regex:
+              metavariable: $S
+              regex: ^"redirect:(/{0,2}|https?://)\$

@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/proccapture"
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
 )
 
@@ -93,6 +94,13 @@ type ProcessRunRow struct {
 	ThreadCount     int32
 	HandleCount     int32
 	MetricSamples   []procmodel.MetricSample
+	// Capture budget (migration 212). CaptureClass is "exemplar",
+	// "service_root" or "service", and empty on a legacy row;
+	// ServiceRootKey the service root the run is under; FoldCount how many
+	// folded runs (console hosts, probes) this row absorbed.
+	CaptureClass   string
+	ServiceRootKey string
+	FoldCount      int64
 }
 
 // ProcessNetworkBodyRow is the optional diagnostic body row attached to a
@@ -214,10 +222,11 @@ INSERT INTO process_runs (
     cpu_user_ms, cpu_system_ms, max_rss_bytes, working_set_bytes,
     read_bytes, write_bytes, read_ops, write_ops, thread_count, handle_count,
     metric_samples_json,
-    metadata_json
+    metadata_json,
+    capture_class, service_root_key
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(process_key) DO UPDATE SET
     -- ATTRIBUTION MAX-UPGRADE (§9.2.5). session_id / project_id / tool /
     -- attribution_source / attribution_confidence are ONE logical fact — the
@@ -261,7 +270,12 @@ ON CONFLICT(process_key) DO UPDATE SET
     write_ops              = COALESCE(excluded.write_ops, process_runs.write_ops),
     thread_count           = COALESCE(excluded.thread_count, process_runs.thread_count),
     handle_count           = COALESCE(excluded.handle_count, process_runs.handle_count),
-    metric_samples_json    = COALESCE(excluded.metric_samples_json, process_runs.metric_samples_json)`
+    metric_samples_json    = COALESCE(excluded.metric_samples_json, process_runs.metric_samples_json),
+    -- Capture budget (migration 212). fold_count is NOT in this set: it is
+    -- only ever incremented, by addFoldCountsTx (PersistCapture), so a re-persist of the
+    -- row never resets what folded into it.
+    capture_class          = COALESCE(excluded.capture_class, process_runs.capture_class),
+    service_root_key       = COALESCE(excluded.service_root_key, process_runs.service_root_key)`
 
 // PersistRuns implements [procmodel.Sink]. It upserts a batch of process
 // runs by process_key in one transaction: the exec snapshot inserts the
@@ -291,22 +305,105 @@ func (s *Store) PersistRuns(ctx context.Context, runs []procmodel.ProcessRun) (i
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.PrepareContext(ctx, upsertProcessRunSQL)
-	if err != nil {
-		return 0, fmt.Errorf("store.PersistRuns: prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	for i := range runs {
-		r := &runs[i]
-		if _, err := stmt.ExecContext(ctx, processRunArgs(r)...); err != nil {
-			return 0, fmt.Errorf("store.PersistRuns: exec[%d]: %w", i, err)
-		}
+	if err := persistRunsTx(ctx, tx, runs); err != nil {
+		return 0, fmt.Errorf("store.PersistRuns: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store.PersistRuns: commit: %w", err)
 	}
 	return len(runs), nil
+}
+
+// persistRunsTx upserts runs inside tx. It is the one statement that writes
+// process_runs rows from capture, shared by PersistRuns and PersistCapture
+// (processrollups.go), so the capture-budget path keeps this file as the one
+// writer of process_runs.
+func persistRunsTx(ctx context.Context, tx *sql.Tx, runs []procmodel.ProcessRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx, upsertProcessRunSQL)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+	for i := range runs {
+		if _, err := stmt.ExecContext(ctx, processRunArgs(&runs[i])...); err != nil {
+			return fmt.Errorf("exec[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// addFoldCountsTx increments process_runs.fold_count for each anchor row a
+// folded run was counted into (capture budget, migration 212). A key with no
+// row (its anchor was itself rolled up, or already pruned) is a no-op: the
+// fold is still counted in the fold rollup and the session stats.
+func addFoldCountsTx(ctx context.Context, tx *sql.Tx, folds map[string]int64) error {
+	if len(folds) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `UPDATE process_runs SET fold_count = fold_count + ? WHERE process_key = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare fold: %w", err)
+	}
+	defer stmt.Close()
+	for key, n := range folds {
+		if _, err := stmt.ExecContext(ctx, n, key); err != nil {
+			return fmt.Errorf("fold %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// setCaptureClassTx stamps kept legacy rows with the capture class (and
+// service root) a compaction gave them (`observer process compact`,
+// store.CompactProcessSession). Only a row whose class is still NULL is
+// touched: a class the live path wrote is final.
+func setCaptureClassTx(ctx context.Context, tx *sql.Tx, updates []proccapture.ClassUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE process_runs SET capture_class = ?, service_root_key = COALESCE(service_root_key, ?)
+		 WHERE id = ? AND capture_class IS NULL`)
+	if err != nil {
+		return fmt.Errorf("prepare capture class: %w", err)
+	}
+	defer stmt.Close()
+	for _, u := range updates {
+		if _, err := stmt.ExecContext(ctx, string(u.Class), nullableString(u.ServiceRootKey), u.ID); err != nil {
+			return fmt.Errorf("capture class %d: %w", u.ID, err)
+		}
+	}
+	return nil
+}
+
+// deleteRunsByIDTx deletes process_runs rows by id for a compaction
+// (store.CompactProcessSession), the copy-then-delete's delete half: the
+// caller has already written the rows' rollups and stats in the same tx. The
+// planner never selects a run with process_events (a side effect keeps it),
+// so no event row references what is deleted; the foreign key would refuse
+// the delete otherwise. Returns the rows removed.
+func deleteRunsByIDTx(ctx context.Context, tx *sql.Tx, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM process_runs WHERE id = ?`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare delete: %w", err)
+	}
+	defer stmt.Close()
+	var n int64
+	for _, id := range ids {
+		res, err := stmt.ExecContext(ctx, id)
+		if err != nil {
+			return n, fmt.Errorf("delete %d: %w", id, err)
+		}
+		k, _ := res.RowsAffected()
+		n += k
+	}
+	return n, nil
 }
 
 // ClassifySinkError implements [procmodel.SinkErrorClassifier]: it tells the
@@ -535,6 +632,8 @@ func processRunArgs(r *procmodel.ProcessRun) []any {
 		nullableInt64(int64(r.HandleCount)),
 		nullableString(marshalMetricSamples(r.MetricSamples)),
 		nil, // metadata_json (unused)
+		nullableString(r.CaptureClass),
+		nullableString(r.ServiceRootKey),
 	}
 }
 
@@ -563,7 +662,8 @@ const selectProcessRunCols = `
     COALESCE(pr.read_bytes, 0), COALESCE(pr.write_bytes, 0),
     COALESCE(pr.read_ops, 0), COALESCE(pr.write_ops, 0),
     COALESCE(pr.thread_count, 0), COALESCE(pr.handle_count, 0),
-    COALESCE(pr.metric_samples_json, '')`
+    COALESCE(pr.metric_samples_json, ''),
+    COALESCE(pr.capture_class, ''), COALESCE(pr.service_root_key, ''), COALESCE(pr.fold_count, 0)`
 
 // ProcessRunsForSession returns every process run attributed to a session,
 // ordered by start time then pid — the substrate for the session process
@@ -913,8 +1013,8 @@ func (s *Store) loadCrossOSSession(ctx context.Context, sessionID string) (procm
 	return ref, true, nil
 }
 
-// loadCrossOSProcRefs reads the candidate pool for the cross-OS pass via three
-// recursive walks rooted at the same SEEDS — this session's own rows plus the
+// loadCrossOSProcRefs reads the candidate pool for the cross-OS pass via recursive
+// walks rooted at the same SEEDS — this session's own rows plus the
 // UNATTRIBUTED rows started within [lo, hi] (the anchor window around session
 // start):
 //   - DOWN parent_process_key to pull every DESCENDANT of a seed (so a
@@ -926,6 +1026,12 @@ func (s *Store) loadCrossOSSession(ctx context.Context, sessionID string) (procm
 //     launcher-ancestor anchoring needs it to identify a generic project-cwd
 //     worker's subtree). The up-walk adds only the chain to the root, NOT the
 //     launcher's other-project descendants, so the pool stays bounded.
+//   - and the env-token CHILDREN of every row on those ancestor chains, so the
+//     correlator sees every session a host process's children name (a
+//     long-lived claude.exe that ran this session and another) and not just
+//     the chain it was reached through (procmodel.crossOSIdentityRules). Only
+//     env-token rows are added: a branded launcher's other children carry no
+//     session token, so the pool still stays bounded.
 //
 // This keeps the load to the AI subtree(s) + this session's tree + the seed
 // ancestor chains instead of scanning every unattributed row in the table — the
@@ -953,11 +1059,13 @@ func (s *Store) loadCrossOSProcRefs(ctx context.Context, sessionID, lo, hi strin
 			  JOIN up u ON pr.process_key = u.parent_process_key
 		)
 		SELECT process_key, COALESCE(parent_process_key, ''), COALESCE(exe_basename, ''),
-		       COALESCE(cwd, ''), started_at, attribution_source, attribution_confidence
+		       COALESCE(cwd, ''), started_at, attribution_source, attribution_confidence,
+		       COALESCE(session_id, ''), COALESCE(tool, ''), COALESCE(project_id, 0)
 		  FROM process_runs
 		 WHERE process_key IN (SELECT process_key FROM down)
-		    OR process_key IN (SELECT process_key FROM up)`
-	rows, err := s.db.QueryContext(ctx, q, sessionID, lo, hi)
+		    OR process_key IN (SELECT process_key FROM up)
+		    OR (attribution_source = ? AND parent_process_key IN (SELECT process_key FROM up))`
+	rows, err := s.db.QueryContext(ctx, q, sessionID, lo, hi, string(procmodel.AttrEnvToken))
 	if err != nil {
 		return nil, fmt.Errorf("store.loadCrossOSProcRefs: query: %w", err)
 	}
@@ -966,7 +1074,8 @@ func (s *Store) loadCrossOSProcRefs(ctx context.Context, sessionID, lo, hi strin
 	for rows.Next() {
 		var r procmodel.CrossOSProcRef
 		var started, src, conf string
-		if err := rows.Scan(&r.ProcessKey, &r.ParentProcessKey, &r.ExeBasename, &r.CWD, &started, &src, &conf); err != nil {
+		if err := rows.Scan(&r.ProcessKey, &r.ParentProcessKey, &r.ExeBasename, &r.CWD, &started, &src, &conf,
+			&r.SessionID, &r.Tool, &r.ProjectID); err != nil {
 			return nil, fmt.Errorf("store.loadCrossOSProcRefs: scan: %w", err)
 		}
 		r.StartedAt = parseStamp(started)
@@ -1415,6 +1524,28 @@ func (s *Store) ProcessFindingsForSession(ctx context.Context, sessionID string)
 	return buildFindingRows(facts, meta), nil
 }
 
+// ProcessFindingsForSessionAfter derives the findings for one session's runs
+// whose row id is above afterID, and returns how many runs it read. A finding
+// depends only on its own run, so a caller holding the count up to afterID
+// can add these to it when the session grew only by new rows.
+func (s *Store) ProcessFindingsForSessionAfter(ctx context.Context, sessionID string, afterID int64) ([]ProcessFindingRow, int, error) {
+	if sessionID == "" {
+		return nil, 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+findingFactsCols+` FROM process_runs WHERE session_id = ? AND id > ? ORDER BY started_at ASC, pid ASC`,
+		sessionID, afterID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store.ProcessFindingsForSessionAfter: query: %w", err)
+	}
+	defer rows.Close()
+	facts, meta, err := scanFindingFacts(rows, "ProcessFindingsForSessionAfter")
+	if err != nil {
+		return nil, 0, err
+	}
+	return buildFindingRows(facts, meta), len(facts), nil
+}
+
 // RecentProcessFindings derives observe-only findings across all attributed
 // runs started within the window — the substrate for the dashboard anomaly
 // rollup (§13.1 Security/Observability tab). since ≤ 0 uses 24h.
@@ -1467,6 +1598,7 @@ func scanProcessRunRows(rows *sql.Rows, who string) ([]ProcessRunRow, error) {
 			&r.CPUUserMs, &r.CPUSystemMs, &r.MaxRSSBytes, &r.WorkingSetBytes,
 			&r.ReadBytes, &r.WriteBytes, &r.ReadOps, &r.WriteOps,
 			&r.ThreadCount, &r.HandleCount, &metricSamplesJSON,
+			&r.CaptureClass, &r.ServiceRootKey, &r.FoldCount,
 		); err != nil {
 			return nil, fmt.Errorf("store.%s: scan: %w", who, err)
 		}

@@ -97,7 +97,7 @@ func (*Adapter) Name() string { return models.ToolCline }
 // the v1.4.51 dispatch contract — basename-only predicates can't
 // accidentally claim foreign files that happen to share the name.
 func (a *Adapter) IsSessionFile(path string) bool {
-	if filepath.Base(path) != "api_conversation_history.json" {
+	if filepath.Base(path) != "api_conversation_history.json" || projectedCloudTask(sessionIDFromPath(path)) {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
@@ -281,6 +281,11 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		return adapter.ParseResult{}, fmt.Errorf("cline.ParseSessionFile: stat: %w", err)
 	}
 	res := adapter.ParseResult{NewOffset: fi.Size()}
+	if projectedCloudTask(sessionIDFromPath(path)) {
+		// A cloud session projected into task history: the cline-cloud
+		// pull connector owns it (cloudguard.go).
+		return res, nil
+	}
 	if fromOffset > 0 && fromOffset >= fi.Size() {
 		// File hasn't grown — nothing new. Skip full re-parse.
 		return res, nil

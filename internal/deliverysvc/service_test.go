@@ -27,6 +27,7 @@ type fakeStore struct {
 	prCommits map[int64][]delivery.PRCommit
 	mirrors   []delivery.Mirror
 	settings  map[int64]delivery.ProjectSettings
+	claims    map[string][]delivery.CloudPRClaim // "host/owner/repo" -> claims
 	nextID    int64
 }
 
@@ -123,6 +124,19 @@ func (f *fakeStore) FindPullRequestsForSHA(_ context.Context, sha string) ([]del
 	return out, nil
 }
 
+func (f *fakeStore) ListCloudPRClaims(_ context.Context, remote string, _ time.Time, _ int) ([]delivery.CloudPRClaim, error) {
+	return f.claims[remote], nil
+}
+
+func (f *fakeStore) FindPullRequestByNumber(_ context.Context, _ string, slug string, n int64) (delivery.PullRequest, bool, error) {
+	for _, p := range f.prs {
+		if p.RepoSlug == slug && p.Number == n {
+			return p, true, nil
+		}
+	}
+	return delivery.PullRequest{}, false, nil
+}
+
 func (f *fakeStore) UpsertDeliveryMirror(_ context.Context, m delivery.Mirror) (int64, error) {
 	for i := range f.mirrors {
 		if f.mirrors[i].URLHash == m.URLHash {
@@ -176,6 +190,7 @@ type fakeNet struct {
 	lastToken   string
 	cloneErr    error
 	lsRemoteErr error
+	heads       map[string][]delivery.PullRequest // branch -> PRs
 }
 
 func (n *fakeNet) rec(s string) { n.calls = append(n.calls, s) }
@@ -209,6 +224,11 @@ func (n *fakeNet) PullRequest(_ context.Context, _ deliverynet.Auth, _ string, n
 func (n *fakeNet) PullCommits(_ context.Context, _ deliverynet.Auth, _ string, num int64) ([]delivery.PRCommit, error) {
 	n.rec("pr commits")
 	return n.commitsOf[num], nil
+}
+
+func (n *fakeNet) PullsForHead(_ context.Context, _ deliverynet.Auth, slug, branch string) ([]delivery.PullRequest, error) {
+	n.rec("head " + slug + " " + branch)
+	return n.heads[branch], nil
 }
 
 func (n *fakeNet) MirrorDir(u string) (string, error) {
@@ -675,5 +695,60 @@ func TestMirrorNeedsNonInteractiveCredentials(t *testing.T) {
 	res, _ = f.svc.CheckProject(ctx, 3)
 	if res.Repos[0].Status != resultUnchanged || f.st.mirrors[0].Status != MirrorOK || f.net.count("clone") != 0 {
 		t.Fatalf("recovered: %+v %+v %v", res.Repos, f.st.mirrors, f.net.calls)
+	}
+}
+
+// TestCloudClaimsFetchClaimedPRs (lane CA-C5): a PR number a cloud session
+// claimed is fetched by number, a branch-only claim through its head
+// branch; a claimed PR already stored as merged is final and not asked
+// about again; with no claim nothing extra is sent.
+func TestCloudClaimsFetchClaimedPRs(t *testing.T) {
+	f := connected(t)
+	f.st.claims = map[string][]delivery.CloudPRClaim{"github.com/o/r": {
+		{PRNumber: 21},
+		{Branch: "cursor/fix-a"},
+		{Branch: "bad branch"}, // never sent
+	}}
+	f.net.detail[21] = delivery.PullRequest{Number: 21, State: delivery.PRMerged, RepoSlug: "o/r", MergeCommitSHA: sha(9)}
+	f.net.heads = map[string][]delivery.PullRequest{"cursor/fix-a": {{Number: 22, State: delivery.PROpen, RepoSlug: "o/r", HeadRef: "cursor/fix-a"}}}
+	f.net.detail[22] = delivery.PullRequest{Number: 22, State: delivery.PROpen, Readiness: delivery.ReadyToMerge, RepoSlug: "o/r", HeadRef: "cursor/fix-a"}
+	f.net.commitsOf[21] = []delivery.PRCommit{{SHA: sha(1)}}
+	f.net.commitsOf[22] = []delivery.PRCommit{{SHA: sha(2)}}
+
+	f.svc.RunOnce(context.Background())
+
+	if f.net.count("head o/r cursor/fix-a") != 1 || f.net.count("head o/r bad") != 0 {
+		t.Fatalf("head calls: %v", f.net.calls)
+	}
+	if f.net.count("pr detail") != 2 || f.net.count("pr commits") != 2 {
+		t.Fatalf("calls: %v", f.net.calls)
+	}
+	if len(f.st.prs) != 2 || f.st.prs[0].LinkID == 0 {
+		t.Fatalf("prs %+v", f.st.prs)
+	}
+	if got := f.st.prCommits[f.st.prs[0].ID]; len(got) != 1 {
+		t.Fatalf("commits of the claimed PR not stored: %+v", got)
+	}
+
+	// The next due pass: #21 is stored merged (final) and is not asked
+	// about again; the open branch PR is refreshed.
+	f.net.calls = nil
+	f.now = t0.Add(DefaultPollEvery)
+	f.svc.RunOnce(context.Background())
+	for _, c := range f.net.calls {
+		if c == "pr commits" && len(f.st.prs) > 2 {
+			t.Fatalf("a new PR appeared: %+v", f.st.prs)
+		}
+	}
+	if f.net.count("head o/r cursor/fix-a") != 1 || f.net.count("pr detail") != 1 {
+		t.Fatalf("second pass calls: %v", f.net.calls)
+	}
+}
+
+func TestNoCloudClaimNoExtraCall(t *testing.T) {
+	f := connected(t)
+	f.svc.RunOnce(context.Background())
+	if f.net.count("head") != 0 || f.net.count("pr detail") != 0 {
+		t.Fatalf("calls with no claim: %v", f.net.calls)
 	}
 }

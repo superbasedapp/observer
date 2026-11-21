@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 import { ChartShell, InlineLoading, ErrorState, Pill, SinglePicker, SuccessCheck } from "@/components/primitives";
 import { apiReason, fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -164,7 +166,7 @@ export function RemoteSystemsCard() {
     <div id="remote-systems" className="scroll-mt-6">
       <ChartShell
         title="Remote systems (SSH)"
-        sub="Machines New Terminal may open an SSH shell on, and whose own SuperBased dashboard the top-bar switcher can open. Owner-local: only this machine can change the list. Applies to the next launch - no restart."
+        sub="Machines New Terminal may open an SSH shell on, and whose own superbased dashboard the top-bar switcher can open. Owner-local: only this machine can change the list. Applies to the next launch - no restart."
         right={
           <div className="flex flex-wrap items-center gap-1.5">
             <Pill variant={data?.enabled ? "success" : "neutral"}>{data?.enabled ? "SSH on" : "SSH off"}</Pill>
@@ -194,10 +196,10 @@ export function RemoteSystemsCard() {
               </div>
             )}
             {!data.terminal_enabled && (
-              <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
-                The terminal surface is off ([terminal].enabled = false), so no SSH terminal can open until it
-                is on.
-              </div>
+              <NeedsSettingNotice
+                text="The terminal surface is off on this machine ([terminal].enabled = false), so no SSH terminal can open until it is on. Turn it on in Settings > Session attach, under More settings."
+                link={placeLink("session_attach")}
+              />
             )}
 
             <label className="flex items-start gap-2">

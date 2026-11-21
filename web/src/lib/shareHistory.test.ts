@@ -61,14 +61,14 @@ test("shareHistoryPreviewLine says what a confirm will ship, in plain words", ()
   }
 });
 
-test("Share history warns about sessions from a previous enrolment before the confirm (M3-12, D-273)", () => {
+test("Share history says what goes and what stays before the confirm (M3-12, D-273, D-43)", () => {
   const w = shareHistoryCrossEnrolmentWarning("Acme");
   assert.match(w, /previous enrolment/);
-  assert.match(w, /another organization/);
+  assert.match(w, /another organization stay on this machine/);
   assert.match(w, /personal use/);
   assert.match(w, /go to Acme/);
   assert.doesNotMatch(w, new RegExp("[" + String.fromCharCode(0x2013, 0x2014) + "]"));
   const card = readFileSync(new URL("../pages/settings/EnrolmentSection.tsx", import.meta.url), "utf8");
   assert.match(card, /shareHistoryCrossEnrolmentWarning\(orgDisplayLabel\(ov\.org_display\)\)/);
-  assert.match(card, /including any captured under a previous enrolment/);
+  assert.match(card, /including personal use from before this machine first connected/);
 });

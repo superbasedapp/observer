@@ -107,5 +107,5 @@ export function packageChecksIndexLine(i: PackageChecksIndex): string {
  */
 export function packageChecksIndexDownloadNote(s: PackageChecksStatus | null | undefined): string | null {
   if (!s || s.index_download !== false) return null;
-  return "Index download off (security.deps.index_download): the checks use the index already on disk and nothing is fetched from superbased.app.";
+  return "Index download off (Package index download in Settings > Guard > Code security): the checks use the index already on disk and nothing is fetched from superbased.app.";
 }

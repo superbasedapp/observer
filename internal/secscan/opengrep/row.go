@@ -2,6 +2,7 @@ package opengrep
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secengine"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
+	"github.com/marmutapp/superbased-observer/internal/secrulepack"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 )
 
@@ -167,6 +169,14 @@ var (
 	FlagsNever = []string{"--config auto", "--enable-version-check", "--error", "--test"}
 )
 
+// PackFlags are the flags a pack may ask for through its manifest, passed
+// only when the running pack declares them (FlagsAlways are passed on every
+// run). --taint-intrafile is listed by `opengrep scan --help` at v1.30.1
+// ("Enable intra-file inter-procedural taint analysis") and changes what the
+// taint rules report, so it is never a default: a pack that was measured
+// without it must not run with it.
+var PackFlags = []string{secrulepack.FlagTaintIntrafile}
+
 // FullExcludes are the directories a full scan skips (dependency trees,
 // virtual environments, git itself). --exclude-minified-files is listed by
 // `opengrep scan --help` at v1.30.1 but refused as "No such option", so it
@@ -245,9 +255,25 @@ func Args(mode Mode, rulesDir, canary, jsonOut, base string, jobs int) []string 
 }
 
 // ArgsFor is Args with a files-mode target list (each passed as "./path",
-// so none can read as a flag, followed by the canary).
+// so none can read as a flag, followed by the canary). It passes no pack
+// flag; the driver calls ArgsForPack with the running pack's.
 func ArgsFor(mode Mode, rulesDir, canary, jsonOut, base string, paths []string, jobs int) []string {
+	return ArgsForPack(mode, rulesDir, canary, jsonOut, base, paths, jobs, nil)
+}
+
+// ArgsForPack is ArgsFor with the engine flags the running pack declares
+// (secrulepack.Pack.EngineFlags: --taint-intrafile when, and only when, the
+// manifest sets taint_intrafile), placed after FlagsAlways in every mode,
+// the self-test and the canary included, so the engine behaves in each run
+// as it did when the pack was measured. A flag outside PackFlags is
+// dropped, so a pack can ask for no flag this driver has not listed.
+func ArgsForPack(mode Mode, rulesDir, canary, jsonOut, base string, paths []string, jobs int, packFlags []string) []string {
 	args := append([]string{"scan"}, FlagsAlways...)
+	for _, f := range packFlags {
+		if slices.Contains(PackFlags, f) {
+			args = append(args, f)
+		}
+	}
 	args = append(args, "-j", strconv.Itoa(ClampJobs(jobs)), "--config", rulesDir, "--json-output="+jsonOut)
 	switch mode {
 	case ModeDiff:

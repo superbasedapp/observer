@@ -15,23 +15,27 @@ import "strings"
 // organization hid" reads the way the sidebar does.
 
 // NavSectionIDs is the closed set of hideable/lockable node-dashboard nav
-// sections (28 today; "plans" joined with the Plans & limits page, "requests" with the request-grants design, G6,
+// sections (29 today; "you" joined with the You page; "plans" joined with the Plans & limits page, "requests" with the request-grants design, G6,
 // "agent-config" with adapter config P4/P5, "messages" with admin and
 // developer messaging, T-854, and "code-security" with the security pillar's
-// Code security page).
+// Code security page; the eight "app-*" Your apps pages joined with Plane A
+// lane B5, 2026-11-19; Egress and Policies moved into that group in the SPA
+// but keep their place here, since this list is a set).
 var NavSectionIDs = []string{
 	"overview", "live", "sessions", "actions", "projects", "security", "code-security", "egress", "search",
 	"cost", "plans", "analysis", "tools",
 	"compression", "cache", "suggestions", "routing", "benchmarks", "discovery", "patterns",
-	"policies", "agent-config", "privacy", "terminals", "remote", "messages", "requests", "settings",
+	"app-traces", "app-sessions", "app-analytics", "app-end-users", "app-evals", "app-scores", "app-prompts", "app-alerts",
+	"you", "policies", "agent-config", "privacy", "terminals", "remote", "messages", "requests", "settings",
 }
 
 // SettingsSectionIDs is the closed set of node-dashboard Settings
-// sub-sections (32 today; "tasks" joined with the 2026-09-10 merge of the
-// session task-tracking Settings section from origin/main, and "intel", the
-// org-plane Cloud Intelligence section, with the 2026-10-03 parity arc).
+// sub-sections (33 today; "tasks" joined with the 2026-09-10 merge of the
+// session task-tracking Settings section from origin/main, "intel", the
+// org-plane Cloud Intelligence section, with the 2026-10-03 parity arc, and
+// "general", the focus control, with the Plane A build-out at level 13).
 var SettingsSectionIDs = []string{
-	"pricing", "backfill", "tools", "health", "storage", "enrolment", "intelligence",
+	"general", "pricing", "backfill", "tools", "health", "storage", "enrolment", "intelligence",
 	"observer", "watcher", "freshness", "retention", "hooks", "proxy", "dashboard",
 	"compression", "profiles", "org", "guard", "routing", "otel", "mcp", "advisor",
 	"cachetrack", "observability", "secrets", "antigravity", "process", "browser",
@@ -56,7 +60,10 @@ var SettingsSectionIDs = []string{
 // is how a developer receives, so no policy may hide or lock it. Keeping it
 // on the floor also means no org body ever names it, so an older agent that
 // predates the id never meets it in a directive.
-var UnhideableNavSectionIDs = []string{"settings", "privacy", "requests", "messages"}
+// "you" joined it with the You page (2026-11-07): it carries the developer's
+// own consent withdrawals and the view of what this machine shares, so no
+// policy may hide or lock it; as with messages, no org body ever names it.
+var UnhideableNavSectionIDs = []string{"settings", "privacy", "requests", "messages", "you"}
 
 // UnhideableSettingsSectionIDs is the same floor one level down: the
 // Settings sub-sections that render the enrolment, the grant, and the org

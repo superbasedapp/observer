@@ -179,6 +179,19 @@ type UsageView struct {
 	DigestWeekly         *bool
 	ResultsRetentionDays *int
 	DigestsThisWeek      int
+
+	// Token budgets (ruling R-AI1, plan v5). BudgetUnit is "count" or
+	// "tokens" ("" from a server that predates it); on a token plan DailyCap /
+	// MonthlyCap read 0 and these carry the budget. EvidenceTokenBudget is the
+	// per-envelope cap the node fits to (0 = none).
+	BudgetUnit          string
+	EnrichmentTier      string
+	EvidenceTokenBudget int
+	SessionTokenBudget  int64
+	DailyTokensUsed     int64
+	DailyTokenBudget    int64
+	MonthlyTokensUsed   int64
+	MonthlyTokenBudget  int64
 }
 
 // JobStatus is one hosted enrichment job's status, mirroring
@@ -230,6 +243,14 @@ func (s ReadSession) Usage(ctx context.Context) (UsageView, error) {
 		DigestWeekly:         v.DigestWeekly,
 		ResultsRetentionDays: v.ResultsRetentionDays,
 		DigestsThisWeek:      v.DigestsThisWeek,
+		BudgetUnit:           v.BudgetUnit,
+		EnrichmentTier:       v.EnrichmentTier,
+		EvidenceTokenBudget:  v.EvidenceTokenBudget,
+		SessionTokenBudget:   v.SessionTokenBudget,
+		DailyTokensUsed:      v.DailyTokensUsed,
+		DailyTokenBudget:     v.DailyTokenBudget,
+		MonthlyTokensUsed:    v.MonthlyTokensUsed,
+		MonthlyTokenBudget:   v.MonthlyTokenBudget,
 	}, nil
 }
 

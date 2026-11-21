@@ -44,3 +44,22 @@ func TestSandboxPostureCompatBothDirections(t *testing.T) {
 		t.Fatalf("round trip: %v %+v", err, round.SandboxCapability)
 	}
 }
+
+// TestSandboxManagedRefusedKeepsEveryKey (lane G4 fix round 2, G4-R4): one
+// refusal per managed key survives the clamp, every key included, so a
+// key added to SandboxManagedKeys is never silently truncated.
+func TestSandboxManagedRefusedKeepsEveryKey(t *testing.T) {
+	var in []SandboxManagedRefusedKeyRow
+	for _, k := range SandboxManagedKeys {
+		in = append(in, SandboxManagedRefusedKeyRow{Key: k, Reason: SandboxNodeRefusalReasons[0]})
+	}
+	out := ClampSandboxManagedRefused(append(in, in...))
+	if len(out) != len(SandboxManagedKeys) || maxSandboxManagedRefused() != len(SandboxManagedKeys) {
+		t.Fatalf("kept %d of %d keys (cap %d)", len(out), len(SandboxManagedKeys), maxSandboxManagedRefused())
+	}
+	for i, r := range out {
+		if r.Key != SandboxManagedKeys[i] {
+			t.Errorf("row %d is %q, want %q", i, r.Key, SandboxManagedKeys[i])
+		}
+	}
+}

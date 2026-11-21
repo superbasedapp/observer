@@ -8,6 +8,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard/mcpsec"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/promptturn"
 )
 
 // Request-body content extraction for the §8.4 injection scan. The
@@ -82,6 +83,11 @@ type proxyParsedBody struct {
 	// to decode).
 	latestUserText   string
 	latestUserTextOK bool
+	// generated is the newest exchange's model and tool content
+	// (promptturn.Turn.Generated), from the same decode. Empty for a
+	// shape parseProxyBody does not cover (scanPrompt classifies those
+	// itself).
+	generated string
 }
 
 // parseProxyBody dispatches on the wire shape — a body-format branch
@@ -209,11 +215,10 @@ func schemaParamDoc(schema json.RawMessage) string {
 	return b.String()
 }
 
-// anthropicMessage is the minimal Messages-API message shape.
-type anthropicMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
+// anthropicMessage is the minimal Messages-API message shape, owned by
+// internal/promptturn so the latest-user-turn classification and this
+// package's segment walk share one decode.
+type anthropicMessage = promptturn.AnthropicMessage
 
 // anthropicBlock is the minimal content-block shape (tool_use on
 // assistant messages, tool_result/text on user messages).
@@ -269,7 +274,7 @@ func parseAnthropicProxyBody(body []byte) proxyParsedBody {
 		}
 		appendAnthropicSegments(&out, msgs[i].Content, toolNames)
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromAnthropicMessages(msgs)
+	out.setTurn(promptturn.FromAnthropicMessages(msgs))
 	return out
 }
 
@@ -353,18 +358,9 @@ func parseOpenAIProxyBody(body []byte) proxyParsedBody {
 	return out
 }
 
-// openAIChatMessage is the minimal Chat Completions message shape.
-type openAIChatMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	ToolCallID string          `json:"tool_call_id"`
-	ToolCalls  []struct {
-		ID       string `json:"id"`
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
-	} `json:"tool_calls"`
-}
+// openAIChatMessage is the minimal Chat Completions message shape (owned by
+// internal/promptturn, see anthropicMessage).
+type openAIChatMessage = promptturn.ChatMessage
 
 // parseOpenAIChatSegments walks Chat Completions messages: trailing
 // role=tool results (+ trailing user pastes) after the last assistant
@@ -405,18 +401,12 @@ func parseOpenAIChatSegments(out *proxyParsedBody, rawMsgs []json.RawMessage) {
 			out.addUserText(text)
 		}
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromChatMessages(msgs)
+	out.setTurn(promptturn.FromChatMessages(msgs))
 }
 
-// openAIResponsesItem is the minimal Responses-API input-item shape.
-type openAIResponsesItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Name    string          `json:"name"`
-	CallID  string          `json:"call_id"`
-	Output  json.RawMessage `json:"output"`
-	Content json.RawMessage `json:"content"`
-}
+// openAIResponsesItem is the minimal Responses-API input-item shape (owned
+// by internal/promptturn, see anthropicMessage).
+type openAIResponsesItem = promptturn.ResponsesItem
 
 // parseOpenAIResponsesSegments walks Responses-API input items:
 // trailing function_call_output items (+ trailing user messages)
@@ -462,7 +452,7 @@ func parseOpenAIResponsesSegments(out *proxyParsedBody, rawItems []json.RawMessa
 			out.addUserText(text)
 		}
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromResponsesItems(items)
+	out.setTurn(promptturn.FromResponsesItems(items))
 }
 
 // flattenResponsesContent flattens a Responses-API content array
@@ -563,230 +553,54 @@ func boundSegment(s string) string {
 // SINGLE latest user turn — the developer's own typed text, with
 // tool_result blocks explicitly EXCLUDED (§10 item 2: the developer
 // did not type a tool's output, so it must never trip a prompt-submit
-// interrupt) — for guard.EvaluatePrompt, mirroring what each hook
-// dialect's own extractor (internal/hook/promptsubmit.go) hands the
-// same seam on that lane. One extractor per WIRE SHAPE, dispatched by
-// provider (a body-format branch, never a tool-name branch — CLAUDE.md
-// rule 3); tolerant like every other parser in this file — a shape
-// mismatch or an absent user turn yields ok=false, never an error.
+// interrupt), for guard.EvaluatePrompt. The classification itself is
+// owned by internal/promptturn (P-228), shared with the org AI gateway's
+// and the node proxy's coding-agent admission judge so the three can
+// never disagree on what "the developer's newest prompt" is.
 
 // extractLatestUserPromptText returns the developer's latest user-role
 // turn as plain text for the four wire shapes the proxy serves.
-// ok=false means no recognizable user turn was found on this request
-// (an unsupported provider lane, or a request shape with no
-// messages/contents at all — e.g. a model-list or count-tokens call) —
-// the caller treats this as "nothing to scan", never a degrade; a
-// genuinely oversize or field-missing PROMPT (once one is found) is
-// scrub.DetectPromptFindings' / policy.Event's own concern downstream,
-// not this function's.
+// ok=false means there is nothing NEW to scan on this request: no
+// recognizable user turn (an unsupported provider lane, a model-list or
+// count-tokens call), or a tool-loop continuation whose prompt was
+// already scanned when it was newest. A genuinely oversize or
+// field-missing PROMPT (once one is found) is
+// scrub.DetectPromptFindings' / policy.Event's own concern downstream.
 func extractLatestUserPromptText(provider string, body []byte) (text string, ok bool) {
-	switch provider {
-	case models.ProviderAnthropic:
-		return latestUserTextAnthropic(body)
-	case models.ProviderOpenAI:
-		return latestUserTextOpenAI(body)
-	case models.ProviderGoogle:
-		return latestUserTextGemini(body)
-	default:
+	text, ok, _ = classifyPromptTurn(provider, body)
+	return text, ok
+}
+
+// classifyPromptTurn is extractLatestUserPromptText plus the newest
+// exchange's generated content (promptturn.Turn.Generated), which the
+// prompt lane notes even when there is no prompt to judge.
+func classifyPromptTurn(provider string, body []byte) (text string, ok bool, generated string) {
+	t := promptturn.ClassifyProvider(provider, body)
+	text, ok = promptTurnText(t)
+	return text, ok, t.Generated
+}
+
+// promptTurnText maps a promptturn classification onto the prompt
+// lane's (text, ok) contract: only a user_prompt turn is scanned.
+func promptTurnText(t promptturn.Turn) (string, bool) {
+	if t.Kind != promptturn.KindUserPrompt {
 		return "", false
 	}
+	return t.Text, true
 }
 
-// latestUserTextAnthropic implements the Anthropic Messages API row of
-// contract §3.2: the LAST messages[] entry with role:"user" — not the
-// trailing post-assistant run parseAnthropicProxyBody walks for the
-// injection scan (an intervention only ever judges the NEWEST
-// submission; earlier turns were already judged when THEY were
-// newest). Content is a string or a block array; only type:"text"
-// blocks count toward the scanned text — tool_result (and any other
-// block type) contributes nothing, reusing the same anthropicMessage/
-// anthropicBlock wire-shape structs the injection-scan parser above
-// already defines.
-func latestUserTextAnthropic(body []byte) (string, bool) {
-	var raw struct {
-		Messages []json.RawMessage `json:"messages"`
-	}
-	if json.Unmarshal(body, &raw) != nil {
-		return "", false
-	}
-	msgs := make([]anthropicMessage, 0, len(raw.Messages))
-	for _, m := range raw.Messages {
-		var am anthropicMessage
-		if json.Unmarshal(m, &am) == nil {
-			msgs = append(msgs, am)
-		}
-	}
-	return latestUserTextFromAnthropicMessages(msgs)
-}
-
-// latestUserTextFromAnthropicMessages implements the Anthropic Messages
-// row of contract §3.2 over an ALREADY-DECODED message slice — shared
-// by latestUserTextAnthropic (which decodes the body itself, the
-// standalone extractLatestUserPromptText call path) and
-// parseAnthropicProxyBody (F6, phase-3b review: reuses the SAME decode
-// the §8.4 segment walk already performed, so a proxy-routed Anthropic
-// request is unmarshaled once per scan, not twice).
-func latestUserTextFromAnthropicMessages(msgs []anthropicMessage) (string, bool) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != "user" {
-			continue
-		}
-		return anthropicUserPromptText(msgs[i].Content), true
-	}
-	return "", false
-}
-
-// anthropicUserPromptText flattens one user message's content into
-// plain text for the prompt-submit scan: text blocks only, in order;
-// tool_result (and any other block type) is skipped outright — the
-// developer did not type a tool's output.
-func anthropicUserPromptText(content json.RawMessage) string {
-	var s string
-	if json.Unmarshal(content, &s) == nil {
-		return s
-	}
-	var blocks []anthropicBlock
-	if json.Unmarshal(content, &blocks) != nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, blk := range blocks {
-		if blk.Type != "text" || blk.Text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(blk.Text)
-	}
-	return b.String()
-}
-
-// latestUserTextOpenAI dispatches between the two OpenAI wire shapes
-// the proxy serves, exactly like parseOpenAIProxyBody: Chat Completions
-// (messages[]) when populated, else the Responses API (input).
-func latestUserTextOpenAI(body []byte) (string, bool) {
-	var raw struct {
-		Messages []json.RawMessage `json:"messages"`
-		Input    json.RawMessage   `json:"input"`
-	}
-	if json.Unmarshal(body, &raw) != nil {
-		return "", false
-	}
-	if len(raw.Messages) > 0 {
-		return latestUserTextChatMessages(raw.Messages)
-	}
-	return latestUserTextResponsesInput(raw.Input)
-}
-
-// latestUserTextChatMessages implements the Chat Completions row: the
-// last messages[] entry with role:"user"; content is a string or a
-// [{"type":"text","text":…}] parts array (flattenResponsesContent only
-// reads each element's "text" field, so it applies unchanged to this
-// shape too).
-func latestUserTextChatMessages(rawMsgs []json.RawMessage) (string, bool) {
-	msgs := make([]openAIChatMessage, 0, len(rawMsgs))
-	for _, m := range rawMsgs {
-		var cm openAIChatMessage
-		if json.Unmarshal(m, &cm) == nil {
-			msgs = append(msgs, cm)
-		}
-	}
-	return latestUserTextFromChatMessages(msgs)
-}
-
-// latestUserTextFromChatMessages implements the Chat Completions row of
-// contract §3.2 over an ALREADY-DECODED message slice — shared by
-// latestUserTextChatMessages and parseOpenAIChatSegments (F6).
-//
-// F3 (phase-3b review): a role:"tool" message AFTER the last
-// role:"user" message means this request is mid-tool-loop — a
-// continuation re-sending the SAME original prompt (Chat Completions
-// carries the WHOLE conversation on every request; a tool result only
-// ever follows the assistant's own tool call, never a fresh user
-// submission), not a new one. Without this guard the scanner would
-// re-extract and re-fire an already-resolved interrupt against stale
-// text on every subsequent turn of the tool loop. ok=false here means
-// "nothing NEW to scan", exactly like an absent user turn.
-func latestUserTextFromChatMessages(msgs []openAIChatMessage) (string, bool) {
-	lastUser := -1
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			lastUser = i
-			break
-		}
-	}
-	if lastUser < 0 {
-		return "", false
-	}
-	for i := lastUser + 1; i < len(msgs); i++ {
-		if msgs[i].Role == "tool" {
-			return "", false
-		}
-	}
-	m := msgs[lastUser]
-	var s string
-	if json.Unmarshal(m.Content, &s) == nil {
-		return s, true
-	}
-	return flattenResponsesContent(m.Content), true
-}
-
-// latestUserTextResponsesInput implements the Responses API row:
-// `input` is either a bare string (the whole prompt) or an array of
-// items, the last role:"user" one's content parts.
-func latestUserTextResponsesInput(input json.RawMessage) (string, bool) {
-	if len(input) == 0 {
-		return "", false
-	}
-	var whole string
-	if json.Unmarshal(input, &whole) == nil {
-		return whole, true
-	}
-	var rawItems []json.RawMessage
-	if json.Unmarshal(input, &rawItems) != nil {
-		return "", false
-	}
-	items := make([]openAIResponsesItem, 0, len(rawItems))
-	for _, it := range rawItems {
-		var ri openAIResponsesItem
-		if json.Unmarshal(it, &ri) == nil {
-			items = append(items, ri)
-		}
-	}
-	return latestUserTextFromResponsesItems(items)
-}
-
-// latestUserTextFromResponsesItems implements the Responses-API array
-// row of contract §3.2 over an ALREADY-DECODED item slice — shared by
-// latestUserTextResponsesInput and parseOpenAIResponsesSegments (F6).
-//
-// F3 (phase-3b review): a function_call_output item AFTER the last
-// role:"user" item means this request is mid-tool-loop, re-sending the
-// SAME original prompt — see latestUserTextFromChatMessages's doc
-// comment for the identical rationale applied to this wire shape.
-func latestUserTextFromResponsesItems(items []openAIResponsesItem) (string, bool) {
-	lastUser := -1
-	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].Role == "user" {
-			lastUser = i
-			break
-		}
-	}
-	if lastUser < 0 {
-		return "", false
-	}
-	for i := lastUser + 1; i < len(items); i++ {
-		if items[i].Type == "function_call_output" {
-			return "", false
-		}
-	}
-	it := items[lastUser]
-	var part string
-	if json.Unmarshal(it.Content, &part) == nil {
-		return part, true
-	}
-	return flattenResponsesContent(it.Content), true
+// setTurn records a promptturn classification of an ALREADY-DECODED
+// message/item slice on the parsed view (F6, phase-3b review: the parse
+// functions reuse the decode the §8.4 segment walk performed): the
+// prompt lane's (text, ok) pair and the newest exchange's generated
+// content (promptturn.Turn.Generated), which scanPrompt notes so a value
+// the conversation already carried is never judged as typed. F3
+// (phase-3b review): a role:"tool" message or a function_call_output
+// after the newest user turn is a mid-tool-loop continuation, never
+// re-scanned.
+func (out *proxyParsedBody) setTurn(t promptturn.Turn) {
+	out.latestUserText, out.latestUserTextOK = promptTurnText(t)
+	out.generated = t.Generated
 }
 
 // geminiRequestContentPart / geminiRequestContent are the minimal
@@ -799,41 +613,6 @@ type geminiRequestContentPart struct {
 type geminiRequestContent struct {
 	Role  string                     `json:"role"`
 	Parts []geminiRequestContentPart `json:"parts"`
-}
-
-// latestUserTextGemini implements the Gemini generateContent row: the
-// last contents[] entry with role:"user" (or role OMITTED — F4,
-// phase-3b review: the generateContent API allows a single-turn
-// request to drop `role` entirely, defaulting it to "user" server-side;
-// treating a role-less entry as unscanned silently skipped that valid
-// shape) — Gemini's own turns always carry an EXPLICIT role:"model",
-// never "user" and never omitted, so this can never misclassify a
-// model turn — parts[].text joined in order.
-func latestUserTextGemini(body []byte) (string, bool) {
-	var raw struct {
-		Contents []geminiRequestContent `json:"contents"`
-	}
-	if json.Unmarshal(body, &raw) != nil {
-		return "", false
-	}
-	for i := len(raw.Contents) - 1; i >= 0; i-- {
-		c := raw.Contents[i]
-		if c.Role != "" && c.Role != "user" {
-			continue
-		}
-		var b strings.Builder
-		for _, p := range c.Parts {
-			if p.Text == "" {
-				continue
-			}
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(p.Text)
-		}
-		return b.String(), true
-	}
-	return "", false
 }
 
 // jsonStringField returns the first present string field from a JSON

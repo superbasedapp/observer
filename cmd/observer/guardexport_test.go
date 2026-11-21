@@ -81,9 +81,18 @@ func TestGuardExportCmd_JSONL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard export: %v\n%s", err, out)
 	}
+	// Three verdicts plus the seeded approval's guard_approval audit event
+	// (P-232 fix round 1): the export is the whole chain.
 	lines := jsonLines(out)
-	if len(lines) != 3 {
-		t.Fatalf("got %d JSONL lines, want 3:\n%s", len(lines), out)
+	if len(lines) != 4 {
+		t.Fatalf("got %d JSONL lines, want 4:\n%s", len(lines), out)
+	}
+	var last map[string]any
+	if err := json.Unmarshal([]byte(lines[3]), &last); err != nil {
+		t.Fatalf("line 3 not JSON: %v", err)
+	}
+	if last["rule_id"] != store.GuardApprovalAuditRuleID {
+		t.Errorf("last line = %v, want the approval audit event", last)
 	}
 	var first map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
@@ -92,7 +101,7 @@ func TestGuardExportCmd_JSONL(t *testing.T) {
 	if first["rule_id"] != "R-001" || first["severity"] != "info" {
 		t.Errorf("chain order violated, first = %v", first)
 	}
-	if !strings.Contains(out, "exported 3 event(s) as jsonl") {
+	if !strings.Contains(out, "exported 4 event(s) as jsonl") {
 		t.Errorf("missing summary line:\n%s", out)
 	}
 }
@@ -143,8 +152,8 @@ func TestGuardExportCmd_OutFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read out file: %v", err)
 	}
-	if got := len(jsonLines(string(body))); got != 3 {
-		t.Errorf("out file has %d JSONL lines, want 3", got)
+	if got := len(jsonLines(string(body))); got != 4 {
+		t.Errorf("out file has %d JSONL lines, want 4 (3 verdicts + the approval audit event)", got)
 	}
 }
 
@@ -206,7 +215,9 @@ func TestGuardReportCmd(t *testing.T) {
 		"total 3, enforced 0",
 		"by severity:",
 		"== Audit-chain verification ==",
-		"OK - 3 row(s) verified",
+		// The chain holds the approval's audit event too; the verdict
+		// stats above do not count it.
+		"OK - 4 row(s) verified",
 		"== Coverage matrix (§6.5) ==",
 		"claude-code",
 		"== Exception register (active approvals) ==",
@@ -239,7 +250,7 @@ func TestGuardReportCmd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("report JSON: %v\n%s", err, out)
 	}
-	if r.Period.Label != "24h" || r.Stats.Total != 3 || !r.Chain.OK || r.Chain.Checked != 3 {
+	if r.Period.Label != "24h" || r.Stats.Total != 3 || !r.Chain.OK || r.Chain.Checked != 4 {
 		t.Errorf("report JSON fields wrong: %+v", r)
 	}
 	if len(r.PolicyChanges) != 1 || len(r.Coverage) == 0 || len(r.Approvals) != 1 {

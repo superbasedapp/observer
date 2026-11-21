@@ -1,11 +1,11 @@
 # superbased-observer
 
-<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/mascot/obs-idle-light-512.png" alt="Obs, the SuperBased mascot: a small robot with a terminal prompt for a face and a cape" width="112" align="right">
+<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/mascot/obs-idle-light-512.png" alt="Obs, the superbased mascot: a small robot with a terminal prompt for a face and a cape" width="112" align="right">
 
-<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/brand/superbased-lockup-light.png" alt="SuperBased" height="32">
+<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/brand/superbased-lockup-light.png" alt="superbased" height="32">
 
-**Track what every AI coding agent costs. See the limit coming.** See what Claude Code, Codex,
-Cursor and 37 more AI coding tools cost, per session and per model, from the tokens your provider
+**Track what every AI coding agent costs. See the limit coming.** See what 50 AI coding tools cost,
+Claude Code, Codex and Cursor included, per session and per model, from the tokens your provider
 actually billed. Free, Apache-2.0, and it runs on your machine.
 
 [![PyPI](https://img.shields.io/pypi/v/superbased-observer.svg)](https://pypi.org/project/superbased-observer/)
@@ -13,7 +13,7 @@ actually billed. Free, Apache-2.0, and it runs on your machine.
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/superbasedapp/observer/blob/main/LICENSE)
 [![Website](https://img.shields.io/badge/website-superbased.app-2EC4B6.svg)](https://superbased.app/)
 
-![Session detail in the SuperBased dashboard: total cost, a low, typical and high cost for the next message, the 5-hour and weekly limit, and the cost of switching to a cheaper model](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/session-cost-and-limits.png)
+![Session detail in the superbased dashboard: total cost, a low, typical and high cost for the next message, the 5-hour and weekly limit, and the cost of switching to a cheaper model](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/session-cost-and-limits.png)
 
 ## Try it without installing
 
@@ -38,7 +38,7 @@ same binary ships on [npm](https://www.npmjs.com/package/@superbased/observer) a
 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=superbased.superbased-observer)
 with the same version numbers; install from one channel only.
 
-## Why SuperBased
+## Why superbased
 
 **One local binary that tracks Claude Code token usage, Codex cost and Cursor spend side by side,
 and helps you control them.**
@@ -47,8 +47,9 @@ and helps you control them.**
   returned: net input, 5-minute vs 1-hour cache writes, reasoning tokens and long-context repricing.
 - **Every coding agent in one place.** 50 adapters normalize Claude Code, Codex, Cursor, GitHub
   Copilot, Gemini CLI, Cline, Aider, Kiro, Devin, OpenCode, Junie and more into one local database.
-- **Local-first, no account.** No sign-in. Everything lives in one SQLite file under
-  `~/.observer/`, and your session content is never uploaded without your explicit consent.
+- **Runs on your computer.** Everything lives in one SQLite file under `~/.observer/`. Sign in
+  for a personal dashboard you can open anywhere; your sessions leave your computer only when you
+  connect, after you approve it.
 - **Know the next bill before it lands.** Prompt-cache tracking with expiry warnings, a cost band
   for your next message, and a 5-hour and weekly limit gauge for proxied sessions.
 - **Guardrails on your own agents.** Built-in and custom rules for destructive commands, secrets
@@ -56,7 +57,7 @@ and helps you control them.**
 - **Your agents as terminals.** Launch agent CLIs from the dashboard, join a running session from a
   paired device over your Tailscale tailnet, and hand a session from one tool to another.
 
-![Overview page of the SuperBased dashboard: 30-day spend, sessions, actions and proxy-accurate API turns, cache efficiency, cost over time by billing bucket and actions over time by coding tool](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/overview-dashboard.png)
+![Overview page of the superbased dashboard: 30-day spend, sessions, actions and proxy-accurate API turns, cache efficiency, cost over time by billing bucket and actions over time by coding tool](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/overview-dashboard.png)
 
 ## Get started
 
@@ -67,6 +68,37 @@ observer start    # proxy + watcher + dashboard; opens http://localhost:8081
 observer scan     # backfill history from the session logs already on disk
 observer doctor   # check the install
 ```
+
+## Sign in (recommended)
+
+```bash
+observer connect          # your personal dashboard
+observer connect acme     # or the team with the short name acme
+```
+
+One command signs you in and connects this machine. Your browser opens a page on
+cloud.superbased.app that shows the machine and what will be shared; nothing is sent until you
+click **Connect**. A personal dashboard gets **Summary only** (usage totals, not your prompts or
+file paths). A team gets **Full detail** (prompts, responses and file paths, readable by the
+team's admins). **Not now** keeps you signed in with nothing sent, and `observer disconnect`
+stops sending at any time. You can also click **Sign in** in the local dashboard's top bar.
+On a machine with no browser, `observer connect --no-browser` prints a code to enter at
+cloud.superbased.app/connect.
+
+Starting from scratch on a new machine? One command installs Observer, runs it as a background
+service and connects:
+
+```bash
+curl -fsSL https://superbased.app/connect.sh | sh              # macOS and Linux
+curl -fsSL https://superbased.app/connect.sh | sh -s -- acme   # straight into a team
+```
+
+```powershell
+irm https://superbased.app/connect.ps1 | iex                   # Windows
+```
+
+Everything else in this README works without an account. See
+[Start here](https://superbased.app/docs/getting-started/start-here).
 
 For provider-exact tokens, route your agent through the proxy: in the dashboard open Compression,
 click your tool's status pill and choose **Route through the observer proxy** (it previews the
@@ -117,19 +149,32 @@ Click any session to open its detail view. Four of its tabs:
 ## Privacy
 
 No account needed. Today the default install sends us no usage statistics, analytics or crash
-reports, and your session content is never uploaded without your explicit consent. SuperBased stores
-paths, commands and short excerpts, scrubs secrets before writing, and binds the proxy and dashboard
-to `127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the provider you
-already use. By default SuperBased also makes a few small requests of its own that carry none of
-your data, such as a daily download of the public model price table from superbased.app (turn it
-off with `[pricing.feed] enabled = false`). See
-[PRIVACY.md](https://github.com/superbasedapp/observer/blob/main/PRIVACY.md).
+reports, and your sessions leave your computer only when you connect. superbased stores paths,
+commands and short excerpts, scrubs secrets before writing, and binds the proxy and dashboard to
+`127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the provider you
+already use. See [PRIVACY.md](https://github.com/superbasedapp/observer/blob/main/PRIVACY.md).
+
+### What Observer contacts by default
+
+<!-- Hand-written from tests/invariant/egress_lanes_test.go and cmd/observer/privacy.go
+     (2026-11-17). Regenerate from `observer privacy --markdown` once that output exists. -->
+
+| What | Host | When | What it sends | Turn it off |
+|---|---|---|---|---|
+| Model price list | superbased.app | when Observer starts, then daily | nothing about you: a plain download of a signed public file | `[pricing.feed] enabled = false` |
+| Package lists for the install check | superbased.app | every 6 hours | nothing about your projects: the same signed public files for everyone | `[security.deps] index_download = false` |
+| Connection warm-up | chatgpt.com, api.openai.com | once when the proxy starts | a bare HEAD request, no body and none of your data | `[proxy] prewarm_targets = []` |
+
+Everything else needs you to turn it on: your AI tool's own requests pass through the proxy only
+when you route that tool through it, and your sessions go to cloud.superbased.app only after you
+run `observer connect` and approve the machine. The vulnerability databases download only after
+you accept them once. `observer privacy` lists every outbound request this build can make.
 
 ## Learn more
 
 - [Documentation](https://superbased.app/docs) and [quickstart](https://superbased.app/docs/getting-started/quickstart)
 - [Supported agents and per-tool setup](https://superbased.app/docs/track/overview)
-- [How SuperBased compares](https://superbased.app/docs/compare/overview)
+- [How superbased compares](https://superbased.app/docs/compare/overview)
 - [Source, issues and changelog](https://github.com/superbasedapp/observer)
 
 ## Troubleshooting

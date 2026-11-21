@@ -18,34 +18,44 @@ import {
 
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 
-// [app, storage key, modes, fallback, honours ?theme=]
-const ROWS: Array<[ThemeApp, string, string[], string, boolean]> = [
-  ["web", "superbased.theme", ["light", "dark", "system"], "system", false],
-  ["web2", "superbased.org.theme", ["light", "dark", "system"], "system", false],
-  ["webcloud", "sb_theme", ["light", "dark"], "dark", true],
+// [app, storage key, modes, fallback, honours ?theme=, how "system" is stored]
+// webcloud (hosted sign-in fix, lane A): light / dark / system, system the
+// default, "system" stored as an ABSENT sb_theme key (the marketing site
+// reads only light / dark and follows the OS otherwise).
+const ROWS: Array<[ThemeApp, string, string[], string, boolean, string]> = [
+  ["web", "superbased.theme", ["light", "dark", "system"], "system", false, "value"],
+  ["web2", "superbased.org.theme", ["light", "dark", "system"], "system", false, "value"],
+  ["webcloud", "sb_theme", ["light", "dark", "system"], "system", true, "absent"],
 ];
 
-for (const [app, key, modes, fallback, query] of ROWS) {
-  test(`theme row ${app}: key, modes, fallback and query override are the pre-merge contract`, () => {
+for (const [app, key, modes, fallback, query, systemStorage] of ROWS) {
+  test(`theme row ${app}: key, modes, fallback, query override and system storage are the contract`, () => {
     const row = THEME_APPS[app];
     assert.equal(row.storageKey, key);
     assert.deepEqual([...row.modes], modes);
     assert.equal(row.fallback, fallback);
     assert.equal(row.queryOverride, query);
+    assert.equal(row.systemStorage, systemStorage);
   });
 }
 
 function mem(init: Record<string, string> = {}) {
   const m = new Map(Object.entries(init));
-  return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), m };
+  return {
+    getItem: (k: string) => m.get(k) ?? null,
+    setItem: (k: string, v: string) => void m.set(k, v),
+    removeItem: (k: string) => void m.delete(k),
+    m,
+  };
 }
 
 test("readThemeMode: stored value, unknown value, missing value, throwing storage", () => {
   assert.equal(readThemeMode(mem({ "superbased.theme": "light" }), THEME_APPS.web), "light");
   assert.equal(readThemeMode(mem({ "superbased.theme": "sepia" }), THEME_APPS.web), "system");
-  assert.equal(readThemeMode(mem(), THEME_APPS.webcloud), "dark");
-  // The portal offers no "system": a stored "system" is unknown there.
-  assert.equal(readThemeMode(mem({ sb_theme: "system" }), THEME_APPS.webcloud), "dark");
+  // The portal's default is system: an absent sb_theme follows the OS.
+  assert.equal(readThemeMode(mem(), THEME_APPS.webcloud), "system");
+  assert.equal(readThemeMode(mem({ sb_theme: "light" }), THEME_APPS.webcloud), "light");
+  assert.equal(readThemeMode(mem({ sb_theme: "sepia" }), THEME_APPS.webcloud), "system");
   const boom = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
   assert.equal(readThemeMode(boom, THEME_APPS.web2), "system");
   writeThemeMode(boom, THEME_APPS.web2, "dark"); // must not throw
@@ -56,6 +66,26 @@ test("writeThemeMode writes the app's own key", () => {
   writeThemeMode(s, THEME_APPS.web2, "light");
   assert.equal(s.m.get("superbased.org.theme"), "light");
   assert.equal(s.m.get("superbased.theme"), undefined);
+});
+
+test("webcloud stores system by removing sb_theme, never by writing a value the website does not read", () => {
+  const s = mem({ sb_theme: "dark" });
+  writeThemeMode(s, THEME_APPS.webcloud, "system");
+  assert.equal(s.m.has("sb_theme"), false);
+  assert.equal(readThemeMode(s, THEME_APPS.webcloud), "system");
+  writeThemeMode(s, THEME_APPS.webcloud, "light");
+  assert.equal(s.m.get("sb_theme"), "light");
+  // Only light / dark are ever written to the shared key.
+  for (const mode of THEME_APPS.webcloud.modes) {
+    const t = mem();
+    writeThemeMode(t, THEME_APPS.webcloud, mode);
+    const v = t.m.get("sb_theme");
+    assert.ok(v === undefined || v === "light" || v === "dark", `${mode} wrote ${v}`);
+  }
+  // A row that stores "system" as a value still does.
+  const w = mem();
+  writeThemeMode(w, THEME_APPS.web, "system");
+  assert.equal(w.m.get("superbased.theme"), "system");
 });
 
 test("queryThemeMode: only where the app honours it, only offered modes", () => {
@@ -123,12 +153,13 @@ const PREPAINT_CASES: Array<[ThemeApp, FakeEnv, string]> = [
   ["web", { throws: true, dark: false }, "light"],
   ["web", { stored: "dark", search: "?theme=light" }, "dark"],
   ["web2", { stored: "light" }, "light"],
-  ["webcloud", { stored: null }, "dark"],
-  ["webcloud", { stored: "light" }, "light"],
-  ["webcloud", { stored: "system" }, "dark"],
+  ["webcloud", { stored: null, dark: true }, "dark"],
+  ["webcloud", { stored: null, dark: false }, "light"],
+  ["webcloud", { stored: "light", dark: true }, "light"],
+  ["webcloud", { stored: "sepia", dark: false }, "light"],
   ["webcloud", { stored: "dark", search: "?theme=light" }, "light"],
   ["webcloud", { stored: "light", search: "?theme=system" }, "light"],
-  ["webcloud", { throws: true }, "dark"],
+  ["webcloud", { throws: true, dark: false }, "light"],
 ];
 for (const [app, env, want] of PREPAINT_CASES) {
   test(`pre-paint ${app} ${JSON.stringify(env)} -> ${want}`, () => {

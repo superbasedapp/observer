@@ -1,0 +1,91 @@
+rules:
+  - id: kotlin.xss-request-input
+    languages: [kotlin]
+    severity: ERROR
+    message: Web request input is written to the response as it is, so a caller can run script in the page; encode it for HTML (HtmlUtils.htmlEscape, OWASP Encoder's Encode.forHtml) or render it through an escaping template.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      # Spring and JAX-RS handler parameters that carry text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) = $E
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) = $E
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|List<String>|Set<String>|Collection<String>|Array<String>|CharSequence)\??$
+      # Servlet requests, by call or by Kotlin property.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.$GET(...)
+              - pattern: $REQ.$GET
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|parameterMap|queryString|cookies|pathInfo|requestURI)$
+      # Ktor.
+      - pattern: call.parameters
+      - pattern: call.request.queryParameters
+      - pattern: call.request.headers
+      - pattern: call.request.cookies
+      - pattern: call.request.uri
+      - pattern: call.receiveText()
+      - pattern: call.receiveParameters()
+      - pattern: call.receive<String>()
+    pattern-sanitizers:
+      - pattern: Encode.forHtml(...)
+      - pattern: Encode.forHtmlContent(...)
+      - pattern: Encode.forHtmlAttribute(...)
+      - pattern: StringEscapeUtils.escapeHtml4(...)
+      - pattern: HtmlUtils.htmlEscape(...)
+      - pattern: $X.escapeHTML()
+      - pattern: $X.toInt()
+      - pattern: $X?.toInt()
+      - pattern: $X.toLong()
+      - pattern: $X?.toLong()
+      - pattern: $X.toIntOrNull()
+      - pattern: $X?.toIntOrNull()
+      - pattern: $X.toLongOrNull()
+      - pattern: $X?.toLongOrNull()
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RESP.writer.$W(...)
+              - pattern: $RESP.getWriter().$W(...)
+              - pattern: $RESP.outputStream.$W(...)
+              - pattern: $RESP.getOutputStream().$W(...)
+          - metavariable-regex:
+              metavariable: $RESP
+              regex: (?i)^(resp|response|res|httpResponse|servletResponse|httpServletResponse)$
+          - metavariable-regex:
+              metavariable: $W
+              regex: ^(write|print|println|printf|format|append)$
+      # Ktor: text sent as HTML, or kotlinx.html's unsafe block.
+      - patterns:
+          - pattern-either:
+              - pattern: call.respondText($X, ContentType.Text.Html, ...)
+              - pattern: 'call.respondText($X, contentType = ContentType.Text.Html, ...)'
+          - focus-metavariable: $X
+      - patterns:
+          - pattern-inside: |
+              unsafe { ... }
+          - pattern: +$X
+          - focus-metavariable: $X

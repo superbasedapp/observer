@@ -12,7 +12,7 @@ import (
 )
 
 // sandbox_env_test.go pins the box environment rule (WINFIX2 audit finding
-// 1, tracker R-167, ledger SBX-WIN-ENV-1): every sandbox backend builds the
+// 1, ledger SBX-WIN-ENV-1): every sandbox backend builds the
 // box's environment from the allow-list of internal/sandboxenv
 // (cmd/observer's sandboxBoxEnv), never from the parent's minus a
 // deny-list. It walks the sandbox driver files of cmd/observer and fails
@@ -24,7 +24,7 @@ import (
 var sandboxEnvFilters = map[string]bool{
 	"sandboxBoxEnv": true, "sandboxHostChildEnv": true, "mxcBoxEnv": true,
 	"ociContainerEnv": true, "vmRunEnv": true, "landlockEnv": true,
-	"seatbeltAgentEnv": true, "appleRunEnv": true,
+	"seatbeltAgentEnv": true, "appleRunEnv": true, "openShellBoxEnv": true,
 }
 
 // sandboxEnvHostSide are the functions of the driver files that read
@@ -38,8 +38,14 @@ var sandboxEnvHostSide = map[string]map[string]string{
 	"terminal_sandbox_mxc.go":                  {"runMXCProbeHelper": "the MXC host helper's own environment on the host (mxcHelperEnv)"},
 	"terminal_sandbox_mxc_windows.go":          {"serveAndRun": "wxc-exec's own environment, its own allow-list (mxcExecEnv); the box's is mxcBoxEnv"},
 	"terminal_sandbox.go":                      {"gitPrepEnv": "the daemon's host-side workspace git step"},
-	"terminal_sandbox_cli.go":                  {"runSandboxCLI": "the host helper's own environment (the box boundary filters it)"},
+	"terminal_sandbox_hosted_homeclone.go":     {"hostedAnonLsRemoteExec": "the daemon's host-side anonymous git ls-remote (decision SBXD-5): the hardened git env with no credential helper, askpass or SSH agent, an empty HOME, never the box's"},
+	"terminal_sandbox_cli.go":                  {"runSandboxCLIStart": "the host helper's own environment (the box boundary filters it)"},
 	"terminal_sandbox_applecontainer_linux.go": {"runAppleInit": "the container's init: its environment is appleRunEnv's"},
+	"terminal_sandbox_openshell_linux.go": {
+		"runOpenShellInit":    "the box's init: its environment is the box's own plus the env file the host helper built through openShellBoxEnv",
+		"openShellHostCLIEnv": "the openshell CLI on the host (the create, talking to the gateway): openShellCLIEnv's fixed list, never the box's",
+	},
+	"sandbox_guest_orgshell_linux.go": {"guestGitEnv": "in the box: the guest's own git step for the org box's return verbs; its environment is the one the host side built"},
 }
 
 // sandboxDriverFile reports whether a cmd/observer file is a sandbox driver

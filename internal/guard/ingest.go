@@ -145,11 +145,29 @@ type ActionVerdict struct {
 	// normal push and is part of the row's chain input (version 2). 0 = no
 	// grant.
 	GrantID int64
+	// GrantProject is the project the grant question for this verdict was
+	// asked under (grantProject: the event's ProjectRoot, else the boundary's
+	// ProjectLookupRoot, else the session's project). Persisted as
+	// guard_events.project_root / project_root_hash (agent migration 253) so
+	// a request drafted from the row is scoped where the gate matches the
+	// next call (GRANT-20). Zero when the lane stamped nothing; the draft
+	// then falls back to the session's project.
+	GrantProject GrantProject
 	// RequestBase is the node dashboard origin the org-locked deny line
 	// links the request form under (request-grants G4; stamped by
 	// stampOrgOverride from SetRequestAccessBase, "" = the CLI command
 	// only). Derived state like Overridable/OrgLocked, never persisted.
 	RequestBase string
+	// BlockNotice is the guard's Options.BlockNotice (stamped by
+	// stampOrgOverride beside RequestBase): which human-first line
+	// HumanBlockLine renders. Derived state, never persisted.
+	BlockNotice BlockNotice
+	// ApprovalPageHidden reports that the dashboard Security page, where an
+	// approval is granted, is hidden on this machine (the guard's
+	// SetApprovalPageHidden, stamped by stampOrgOverride on a blocking
+	// verdict only). The block texts then name the CLI (approvalpointer.go).
+	// Derived state, never persisted.
+	ApprovalPageHidden bool
 	// softenedBy is a soften grant offered to the developer WITHOUT
 	// counting a use (orggrant.go approvalOutcome); it steers the deny
 	// text only. Derived state, never persisted.
@@ -274,6 +292,7 @@ func (g *Guard) EvaluateActions(inputs []ActionInput) []ActionVerdict {
 			}
 			g.stampOrgOverride(es, &av)
 			appr.stamp(&av)
+			g.stampGrantProject(&av, &ev)
 			out = append(out, av)
 		}
 		eng := es.engineForEvent(g, ev.ProjectRoot, ev.Cwd)

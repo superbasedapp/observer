@@ -4,10 +4,12 @@ import { Summary } from "@/components/Summary";
 import type { Status as LaunchTerminalStatus } from "@/lib/launchStatus";
 // Settings is in every distro; the terminal is not (lib/components.gen.ts).
 import { LAUNCH_TERMINAL as LaunchTerminal } from "@/lib/components.gen";
-import { fetchJSON } from "@/lib/api";
+import { fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
 import { saveConfigSection } from "@/lib/configSectionSave";
 import { useApi } from "@/lib/useApi";
-import { markRestartPending } from "@/lib/restartPending";
+import { markRestartPending, RESTART_HINT } from "@/lib/restartPending";
 
 // ETWCapturerCard — the dashboard-driven setup surface for the ELEVATED
 // Windows ETW process capturer (docs/plans/etw-dashboard-setup-plan-2026-07-27.md
@@ -136,7 +138,7 @@ export function ETWCapturerCard() {
   });
   const [handle, setHandle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | string | null>(null);
   const [enableMsg, setEnableMsg] = useState<string | null>(null);
   const [reattached, setReattached] = useState(false);
 
@@ -150,15 +152,17 @@ export function ETWCapturerCard() {
     setBusy(true);
     setErr(null);
     try {
-      const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-      const ctok = cfg.confirm_token ?? "";
-      if (!ctok) {
+      // The owner-local confirm token (localConfirmHeaders), never
+      // /api/remote/config: that is a Remote dashboard route, refused while
+      // that component is off.
+      const headers = await localConfirmHeaders();
+      if (!headers["X-Observer-Confirm"]) {
         setErr("No confirm token - reload the page.");
         return;
       }
       const res = await fetchJSON<RegisterResult>("/api/process/etw/register", undefined, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Observer-Confirm": ctok },
+        headers,
         body: "{}",
       });
       // already_running means the daemon handed back a registration terminal
@@ -169,7 +173,7 @@ export function ETWCapturerCard() {
       setReattached(Boolean(res.already_running));
       setHandle(res.handle);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorNote(e));
     } finally {
       setBusy(false);
     }
@@ -199,12 +203,12 @@ export function ETWCapturerCard() {
       if (res.restart_required) markRestartPending("process");
       setEnableMsg(
         res.restart_required
-          ? "Saved. Restart the observer daemon - the accept listener binds at start - then come back here to register the task."
+          ? `Saved. The accept listener binds at daemon start, so restart the daemon (${RESTART_HINT}), then come back here to register the task.`
           : "Saved.",
       );
       status.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorNote(e));
     } finally {
       setBusy(false);
     }
@@ -280,7 +284,7 @@ export function ETWCapturerCard() {
     return (
       <Shell badge={<Pill variant="neutral">off</Pill>} subtitle={SUBTITLE}>
         <p className="text-[11.5px] leading-relaxed text-fg-2">
-          Windows process telemetry is off. With it on, SuperBased can attribute{" "}
+          Windows process telemetry is off. With it on, superbased can attribute{" "}
           <strong className="text-fg-0">per-process network bytes</strong> to the AI-tool
           session that caused them - the one thing the zero-privilege poll backend cannot
           see, because reading it needs an ETW trace session and ETW session control always
@@ -313,7 +317,7 @@ export function ETWCapturerCard() {
                 {busy ? "saving…" : "Turn on Windows process telemetry"}
               </button>
               {enableMsg && <SuccessCheck label={enableMsg} className="!text-[11.5px]" />}
-              {err && <span className="text-[11.5px] text-danger">{err}</span>}
+              <ApiErrorNotice note={err} className="w-full" plainClassName="text-[11.5px] text-danger" />
             </>
           )}
         </div>
@@ -358,7 +362,7 @@ export function ETWCapturerCard() {
             <CommandRow label="start now" text={`schtasks.exe /Run /TN "${data.task_name}"`} />
             <CommandRow label="remove" text={`schtasks.exe /Delete /TN "${data.task_name}" /F`} />
             <p className="text-[11px] text-fg-3">
-              Delete and remove both need an elevated Windows shell. SuperBased never
+              Delete and remove both need an elevated Windows shell. superbased never
               reconfigures or replaces a task you already have.
             </p>
           </div>
@@ -398,7 +402,7 @@ export function ETWCapturerCard() {
       {!handle && !data.local_detail_withheld && (
         <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 px-3 py-2">
           <p className="text-[11px] leading-relaxed text-fg-2">
-            <strong className="text-fg-0">What happens:</strong> SuperBased opens a terminal
+            <strong className="text-fg-0">What happens:</strong> superbased opens a terminal
             below and runs a fixed command that asks Windows to elevate. Windows shows a{" "}
             <strong className="text-fg-0">User Account Control prompt</strong> - that prompt
             cannot be suppressed and must be approved{" "}
@@ -409,7 +413,7 @@ export function ETWCapturerCard() {
           <button type="button" disabled={busy} onClick={register} className={PRIMARY_BTN}>
             {busy ? "opening terminal…" : "Set it up for me"}
           </button>
-          {err && <p className="text-[11px] text-danger">{err}</p>}
+          <ApiErrorNotice note={err} plainClassName="text-[11px] text-danger" />
           <p className="text-[10.5px] text-fg-3">
             No UAC prompt can be answered on a headless machine or over a remote session -
             this button is owner-local only. Use the command below there.

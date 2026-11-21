@@ -261,7 +261,7 @@ func (s *Server) statusSnapshot(ctx context.Context) (diag.StatusSnapshot, error
 	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusScanTimeout)
 	defer cancel()
 
-	snap, err := s.snapshot(scanCtx, database, s.opts.DBPath)
+	snap, err := s.scanStatus(scanCtx, database)
 	if err != nil {
 		return diag.StatusSnapshot{}, err
 	}
@@ -293,12 +293,29 @@ func (s *Server) refreshStatusSnapshotAsync(ctx context.Context, database *sql.D
 		if _, fresh := s.statusSnap.load(database, s.now()); fresh {
 			return
 		}
-		snap, err := s.snapshot(scanCtx, database, s.opts.DBPath)
+		snap, err := s.scanStatus(scanCtx, database)
 		if err != nil || snap.QueryErrors != 0 {
 			return
 		}
 		s.statusSnap.storeIfGen(gen, database, s.now(), snap)
 	}()
+}
+
+// scanStatus is one full /api/status scan: the plain-SQL diag snapshot, then
+// the counts only the dashboard can compute, because they need a store read
+// internal/diag must not import (statusOpenIssues: the store's issue
+// grouping of security findings). Both cache paths call it under the
+// singleflight gate, so those counts are memoized with the snapshot for
+// statusSnapshotTTL like every other number on it. A stamped count that
+// could not be read is nil (omitted), never a zero, and does not mark the
+// snapshot degraded: QueryErrors counts fabricated zeros only.
+func (s *Server) scanStatus(ctx context.Context, database *sql.DB) (diag.StatusSnapshot, error) {
+	snap, err := s.snapshot(ctx, database, s.opts.DBPath)
+	if err != nil {
+		return diag.StatusSnapshot{}, err
+	}
+	snap.Counts.OpenIssues = s.statusOpenIssues(ctx, database)
+	return snap, nil
 }
 
 // snapshot is the injected-IO seam in front of diag.Snapshot. Production

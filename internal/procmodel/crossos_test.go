@@ -535,3 +535,136 @@ func TestRefreshLauncherPrefixesAreNarrow(t *testing.T) {
 		}
 	}
 }
+
+// envChild is a high-confidence env-token child already attributed to sid.
+func envChild(key, parent, basename, sid string, started time.Time) CrossOSProcRef {
+	c := cproc(key, parent, basename, `C:\proj`, started)
+	c.Source, c.Confidence = AttrEnvToken, ConfHigh
+	c.SessionID, c.Tool, c.ProjectID = sid, "claude-code", 7
+	return c
+}
+
+// TestCrossOSIdentityRules pins one case per row of crossOSIdentityRules.
+func TestCrossOSIdentityRules(t *testing.T) {
+	one := []CrossOSSessionRef{{SessionID: "main"}}
+	two := []CrossOSSessionRef{{SessionID: "main"}, {SessionID: "other"}}
+	cases := []struct {
+		name    string
+		named   []CrossOSSessionRef
+		session string
+		want    bool
+	}{
+		{"no env-token children", nil, "main", true},
+		{"children name this session", one, "main", true},
+		{"children name another session", one, "stub", false},
+		{"children name several sessions", two, "main", false},
+	}
+	if len(cases) != len(crossOSIdentityRules) {
+		t.Fatalf("%d cases for %d rules: add a case per row", len(cases), len(crossOSIdentityRules))
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := identityAllows(tc.named, tc.session); got != tc.want {
+				t.Fatalf("identityAllows = %v, want %v", got, tc.want)
+			}
+			for j, rule := range crossOSIdentityRules {
+				if rule.matches(tc.named, tc.session) {
+					if j != i {
+						t.Fatalf("case matched row %d (%q), want row %d", j, rule.name, i)
+					}
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestCorrelateCrossOSChildIdentityOutranksTime covers the live shapes where a
+// Windows claude.exe was pinned to the wrong session: its children carry the
+// env token for "main", but a session row ("stub") started right next to the
+// launch (a resume's stub session), or a sub-agent session anchored one of its
+// children and the climb reached it.
+func TestCorrelateCrossOSChildIdentityOutranksTime(t *testing.T) {
+	launch := sessT0.Add(26 * time.Hour)
+	main := CrossOSSessionRef{SessionID: "main", Tool: "claude-code", ProjectID: 7, ProjectRoot: `C:\proj`, StartedAt: sessT0}
+	stub := CrossOSSessionRef{SessionID: "stub", Tool: "claude-code", ProjectID: 7, ProjectRoot: `C:\proj`, StartedAt: launch.Add(2 * time.Second)}
+	sub := CrossOSSessionRef{SessionID: "main:agent:a1", Tool: "claude-code", ProjectID: 7, ProjectRoot: `C:\proj`, StartedAt: launch.Add(3 * time.Hour)}
+	cases := []struct {
+		name     string
+		sessions []CrossOSSessionRef
+		runs     []CrossOSProcRef
+	}{
+		{"resume stub next to the launch", []CrossOSSessionRef{stub}, []CrossOSProcRef{
+			cproc("host", "wt", "claude.exe", `C:\proj`, launch),
+			envChild("sh1", "host", "bash.exe", "main", launch.Add(time.Minute)),
+			cproc("con", "host", "conhost.exe", `C:\proj`, launch.Add(time.Second)),
+		}},
+		{"sub-agent child climbs to the host", []CrossOSSessionRef{sub}, []CrossOSProcRef{
+			cproc("host", "wt", "claude.exe", `C:\proj`, launch),
+			envChild("sh1", "host", "bash.exe", "main", launch.Add(time.Minute)),
+			cproc("con", "host", "node.exe", `C:\proj`, launch.Add(3*time.Hour)),
+		}},
+		{"no session near the launch at all", []CrossOSSessionRef{main}, []CrossOSProcRef{
+			cproc("host", "wt", "claude.exe", `C:\proj`, launch),
+			envChild("sh1", "host", "bash.exe", "main", launch.Add(time.Minute)),
+			cproc("con", "host", "conhost.exe", `C:\proj`, launch.Add(time.Second)),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CorrelateCrossOS(tc.sessions, tc.runs, nil, 0)
+			by := map[string]CrossOSAttribution{}
+			for _, a := range got {
+				by[a.ProcessKey] = a
+			}
+			for _, k := range []string{"host", "con"} {
+				if a := by[k]; a.SessionID != "main" || a.Tool != "claude-code" || a.ProjectID != 7 {
+					t.Errorf("%s = %+v, want session main (claude-code, project 7)", k, a)
+				}
+			}
+			if _, ok := by["sh1"]; ok {
+				t.Error("the env-token child is authoritative and must not be re-emitted")
+			}
+			if len(got) != 2 {
+				t.Errorf("attributed %d, want 2: %+v", len(got), got)
+			}
+		})
+	}
+}
+
+// TestCorrelateCrossOSMultiSessionHostNeverCorrelated: a host whose children
+// name two sessions anchors to neither, and an ancestor anchor's walk stops at
+// it instead of carrying its other children into one session.
+func TestCorrelateCrossOSMultiSessionHostNeverCorrelated(t *testing.T) {
+	runs := []CrossOSProcRef{
+		cproc("host", "", "claude.exe", `C:\proj`, sessT0.Add(time.Second)),
+		envChild("sh1", "host", "bash.exe", "s1", sessT0.Add(time.Minute)),
+		envChild("sh2", "host", "bash.exe", "s2", sessT0.Add(2*time.Hour)),
+		cproc("con", "host", "conhost.exe", `C:\proj`, sessT0.Add(2*time.Second)),
+	}
+	if got := CorrelateCrossOS([]CrossOSSessionRef{claudeSession()}, runs, nil, 0); len(got) != 0 {
+		t.Fatalf("a multi-session host must not be correlated: %+v", got)
+	}
+
+	// Nested under a time-matched launcher: the walk stops at the host.
+	launcher := cproc("top", "", "node.exe", `C:\proj`, sessT0)
+	runs[0].ParentProcessKey = "top"
+	runs[0].CWD = `C:\elsewhere` // so the climb does not re-home the anchor onto it
+	got := CorrelateCrossOS([]CrossOSSessionRef{claudeSession()}, append([]CrossOSProcRef{launcher}, runs...), nil, 0)
+	if len(got) != 1 || got[0].ProcessKey != "top" {
+		t.Fatalf("only the launcher should be attributed: %+v", got)
+	}
+}
+
+// TestCorrelateCrossOSShellNeverIdentityAnchors: a plain shell whose children
+// carry an env token is not the tool's host (its basename is not in the
+// tool's set), so it does not anchor on its children alone.
+func TestCorrelateCrossOSShellNeverIdentityAnchors(t *testing.T) {
+	runs := []CrossOSProcRef{
+		cproc("sh", "", "bash.exe", `C:\proj`, sessT0.Add(5*time.Hour)),
+		envChild("go", "sh", "go.exe", "s1", sessT0.Add(5*time.Hour)),
+	}
+	if got := CorrelateCrossOS([]CrossOSSessionRef{claudeSession()}, runs, nil, 0); len(got) != 0 {
+		t.Fatalf("a shell must not anchor on its children's identity: %+v", got)
+	}
+}

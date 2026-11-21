@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,7 +22,6 @@ import (
 	extrunhost "github.com/marmutapp/superbased-observer/internal/extrun/host"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
-	"github.com/marmutapp/superbased-observer/internal/secscan/depdriver"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/osvdb"
 )
@@ -44,8 +45,14 @@ func securityScanSubcommands() []*cobra.Command {
 	scan.Flags().String("driver", "", "only this driver: scalibr or osv (default: every selected driver)")
 	scan.Flags().Bool("refresh-db", false, "refresh the local OSV databases first (when the download is allowed)")
 	scan.Flags().Bool("json", false, "print the results as JSON")
-	scan.Flags().Bool("online", false, "match ecosystems with no local database against api.osv.dev (ecosystem, public package name and version only)")
-	scan.AddCommand(newSecurityScanStatusCmd(), newSecurityScanDBCmd(), newSecurityScanInstallCmd())
+	scan.Flags().Bool("online", false, "match ecosystems with no local database against api.osv.dev (ecosystem, public package name and version only), and git submodules by their pinned commit ids only (never a submodule's url or path)")
+	scan.Flags().String("reach", "", "run the Go source check instead of the dependency scan: `go-source` runs osv-scanner's Go call analysis once per go.mod, which runs this machine's Go toolchain on the project (opted in per project with `scan reach enable`; isolated, no network; component security.reach.go)")
+	scan.Flags().Bool("allow-unisolated", false, "with --reach go-source: run even where the isolation component's no-network run is not available (labelled \"not isolated\")")
+	scan.Flags().StringArray("artifacts", nil, "also read the executables, Java archives and wheels under this directory of the project for this run (Go build info, cargo auditable; repeatable); folders you turned on with `scan artifacts enable` are read as well, every other folder is not; SCALIBR driver only")
+	// The image verb carries the driver switch (security_scan_image_driver.go,
+	// lane OS-2 T); trivy-db is the Trivy image driver's database.
+	sbomCmd := newSecuritySBOMCmd()
+	scan.AddCommand(newSecurityScanArtifactsCmd(), newSecurityScanReachCmd(), newSecurityScanStatusCmd(), newSecurityScanDBCmd(), newSecurityScanInstallCmd(), withImageDriver(newSecurityScanImageCmd()), newSecurityScanTrivyDBCmd())
 	child := &cobra.Command{
 		Use:    "scan-child",
 		Short:  "The dependency scan child process (started by the daemon through the runner)",
@@ -55,7 +62,8 @@ func securityScanSubcommands() []*cobra.Command {
 			return runScanChild(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	return []*cobra.Command{scan, child}
+	// The package lookup posture (lane RM-2): `observer security lookup`.
+	return []*cobra.Command{scan, child, newSecurityLookupCmd(), sbomCmd, newSecurityLicensesCmd()}
 }
 
 // depsScanComponents returns the selected driver components, filtered by
@@ -123,6 +131,23 @@ func runSecurityScanCmd(cmd *cobra.Command, args []string) error {
 	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", root)
 	}
+	named, _ := cmd.Flags().GetStringArray("artifacts")
+	reach, _ := cmd.Flags().GetString("reach")
+	allowUnisolated, _ := cmd.Flags().GetBool("allow-unisolated")
+	switch {
+	case reach != "" && reach != reachSourceValue:
+		return fmt.Errorf("unknown --reach %q: use %s", reach, reachSourceValue)
+	case reach == "" && allowUnisolated:
+		return errors.New("--allow-unisolated goes with --reach go-source")
+	case reach != "" && (only != "" || refresh || online || len(named) > 0):
+		return errReachSourceFlags
+	case reach != "":
+		return runReachSourceCmd(cmd, configPath, root, allowUnisolated, asJSON)
+	}
+	artifactDirs, err := resolveArtifactDirs(root, named)
+	if err != nil {
+		return err
+	}
 	ctx := cmd.Context()
 	e, err := openDepsScanEnv(ctx, configPath)
 	if err != nil {
@@ -133,6 +158,9 @@ func runSecurityScanCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(artifactDirs) > 0 && !slices.Contains(ids, depscan.ScalibrComponent) {
+		return fmt.Errorf("--artifacts needs the SCALIBR driver (%s): osv-scanner reads no build artifact", depscan.ScalibrComponent)
+	}
 	w := cmd.OutOrStdout()
 	if refresh {
 		if err := writeDBRefresh(ctx, w, e); err != nil {
@@ -140,16 +168,22 @@ func runSecurityScanCmd(cmd *cobra.Command, args []string) error {
 		}
 	}
 	runner := extrunhost.NewRunner(extrunhost.Options{})
-	var matcher depdriver.OnlineMatcher
-	if online {
-		if blocked := e.onlineBlockedAt(root); blocked != "" {
-			return fmt.Errorf("online matching is not allowed here: %s", blocked)
-		}
-		matcher = e.onlineMatcher(root)
+	// The SuperBased lookup (lane RM-2) answers first in lookup mode remote
+	// or both; --online (api.osv.dev) takes what it does not answer. Ruling
+	// Q9 (a) kept --online a CLI option; decision P-1 of
+	// docs/plans/dashboard-cli-parity-plan-2026-11-06.md supersedes it: the
+	// dashboard's Scan now runs the same check ("Also check online") through
+	// the same depsRunMatchers and the same gate. Here a closed gate refuses
+	// the run.
+	e.remoteFetchAlways = true
+	run := e.depsRunMatchers(root, online)
+	if run.blocked != "" {
+		return fmt.Errorf("online matching is not allowed here: %s", run.blocked)
 	}
+	matcher := run.matcher
 	var all []depsScanReport
 	for _, id := range ids {
-		d, err := e.depsDriverFor(id, runner, matcher)
+		d, err := e.depsDriverAt(id, runner, matcher, root, artifactDirs)
 		if err != nil {
 			return err
 		}
@@ -161,14 +195,49 @@ func runSecurityScanCmd(cmd *cobra.Command, args []string) error {
 		}
 		all = append(all, depsScanReport{Driver: d.Row().ID, Component: id, Beta: depscan.Beta(d.Row(), runtime.GOOS, runtime.GOARCH), Result: res})
 	}
+	symbols := e.reachGoRunsAfterScan(root, ids)
 	if asJSON {
-		return writeSecurityJSON(w, map[string]any{"results": all, "attribution": OSVAttribution})
+		out := map[string]any{"results": all, "attribution": OSVAttribution}
+		if symbols != nil {
+			out["symbol_checks"] = symbols
+		}
+		return writeSecurityJSON(w, out)
 	}
 	for _, r := range all {
 		writeScanReport(w, r)
 	}
+	writeReachGoSummary(w, symbols)
 	fmt.Fprintf(w, "\n%s\n", OSVAttribution)
 	return nil
+}
+
+// resolveArtifactDirs turns the --artifacts directories into the child's
+// form: a relative one is read against the project root, each must be an
+// existing directory inside the root (the scan's paths are all relative to
+// it), and the result is relative, forward slashes, cleaned and sorted
+// (depscan.CleanArtifactDirs).
+func resolveArtifactDirs(root string, named []string) ([]string, error) {
+	rels := make([]string, 0, len(named))
+	for _, d := range named {
+		abs := d
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, d)
+		}
+		abs = filepath.Clean(abs)
+		if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("--artifacts %s: not a directory", d)
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("--artifacts %s: must be a directory inside the project %s", d, root)
+		}
+		rels = append(rels, filepath.ToSlash(rel))
+	}
+	out, err := depscan.CleanArtifactDirs(rels)
+	if err != nil {
+		return nil, fmt.Errorf("--artifacts: %w", err)
+	}
+	return out, nil
 }
 
 // depsScanReport is one driver's result as the CLI prints it.
@@ -193,8 +262,11 @@ func writeScanReport(w io.Writer, r depsScanReport) {
 		fmt.Fprintf(w, " (%s)", cov.Reason)
 	}
 	fmt.Fprintf(w, ", %d finding(s), %d dependency file(s)\n", len(r.Result.Findings), cov.FilesScanned)
-	if cov.Reason == depscan.ReasonDBNotAccepted {
+	switch cov.Reason {
+	case depscan.ReasonDBNotAccepted:
 		fmt.Fprintln(w, "  "+depsAcceptHint)
+	case depscan.ReasonLookupNotChosen, depscan.ReasonRemoteNotAccepted:
+		fmt.Fprintln(w, "  "+lookupChooseHint)
 	}
 	for _, s := range cov.Skipped {
 		what := strings.TrimPrefix(s.Path, depscan.EcosystemSkipPrefix)
@@ -282,17 +354,24 @@ func writeScanStatus(ctx context.Context, w io.Writer, e *depsScanEnv) {
 			fmt.Fprintln(w, "  not installed: dependencies show as not scanned; `observer security scan install-osv-scanner` shows how to install it")
 		}
 	}
+	writeLookupState(ctx, w, e) // lane RM-2
 	writeDBDownloadState(w, e)
+	writeDBSourceState(w, e)
+	writeOSDBState(w, e)
+	writeImageDriverState(ctx, w, e) // lane OS-2 T
 	eps, _ := e.db.Epochs()
 	for _, eco := range depscan.Ecosystems() {
 		ep, ok := eps[eco]
 		switch {
 		case !ok:
-			fmt.Fprintf(w, "  %-10s no database\n", eco)
+			fmt.Fprintf(w, "  %-14s no database\n", eco)
 		case !ep.Installed():
-			fmt.Fprintf(w, "  %-10s no database (last error: %s)\n", eco, ep.LastError)
+			fmt.Fprintf(w, "  %-14s no database (last error: %s)\n", eco, ep.LastError)
 		default:
-			fmt.Fprintf(w, "  %-10s %s, %d bytes, fetched %s", eco, ep.LastModified, ep.Size, ep.FetchedAt.Format("2006-01-02 15:04"))
+			fmt.Fprintf(w, "  %-14s %s, %d bytes, fetched %s", eco, ep.LastModified, ep.Size, ep.FetchedAt.Format("2006-01-02 15:04"))
+			if ep.Source != "" {
+				fmt.Fprintf(w, " from %s", osvSourceName(ep.Source))
+			}
 			if ep.LastError != "" {
 				fmt.Fprintf(w, " (last refresh failed: %s)", ep.LastError)
 			}
@@ -322,7 +401,7 @@ func writeDBDownloadState(w io.Writer, e *depsScanEnv) {
 
 func newSecurityScanDBCmd() *cobra.Command {
 	db := &cobra.Command{Use: "db", Short: "The local OSV databases"}
-	db.AddCommand(newSecurityScanDBAcceptCmd())
+	db.AddCommand(newSecurityScanDBAcceptCmd(), newSecurityScanDBImportCmd())
 	db.AddCommand(&cobra.Command{
 		Use:   "refresh",
 		Short: "Refresh the local OSV databases now (individual node, after the one-time accept)",
@@ -354,14 +433,48 @@ func writeDBRefresh(ctx context.Context, w io.Writer, e *depsScanEnv) error {
 		fmt.Fprintf(w, "database download not allowed: %s\n", blocked)
 		return nil
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		fmt.Fprintf(w, "databases: %d updated, %d current, %d failed\n", len(rep.Changed), len(rep.Unchanged), len(rep.Failed))
+		for eco, why := range rep.Failed {
+			fmt.Fprintf(w, "  %s: %s\n", eco, why)
+		}
 	}
-	fmt.Fprintf(w, "databases: %d updated, %d current, %d failed\n", len(rep.Changed), len(rep.Unchanged), len(rep.Failed))
-	for eco, why := range rep.Failed {
-		fmt.Fprintf(w, "  %s: %s\n", eco, why)
+	// The exploit kinds (security_exploit.go) ride the same accept and are
+	// refreshed with the databases, here as on the daemon's tick, under the
+	// OSV database feed's own gate. An import-only node fetches none: `scan
+	// db import` installs them from the directory instead.
+	if !e.osvImportOnly() {
+		writeExploitRefresh(w, e.refreshExploitNow(ctx, time.Now()))
 	}
-	return nil
+	return err
+}
+
+// newSecurityScanDBImportCmd is `observer security scan db import <dir>`:
+// an individual node installs a signed security.osv_export set a person
+// copied in (the org mirror's import layout, <dir>/security.osv_export/
+// manifest.json and its artifacts), verified exactly as the signed mirror's
+// download, and, when present, the exploit kinds beside it
+// (<dir>/security.kev/ and <dir>/security.epss/, importExploitSets). With [security.deps] db_source = "import" it is the node's only
+// source and nothing is fetched. Guard rule R-165 denies it to an agent:
+// what it installs is what every dependency scan matches against.
+func newSecurityScanDBImportCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "import DIR",
+		Short: "Install a signed OSV database set from a directory (DIR/security.osv_export/manifest.json and its artifacts, plus DIR/security.kev and DIR/security.epss when present); individual node",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, _ := cmd.Flags().GetString("config")
+			if err := requireDepsScanSelected(configPath); err != nil {
+				return err
+			}
+			e, err := openDepsScanEnv(cmd.Context(), configPath)
+			if err != nil {
+				return err
+			}
+			defer e.cleanup()
+			return runDBImport(cmd.Context(), cmd.OutOrStdout(), e, args[0])
+		},
+	}
 }
 
 // newSecurityScanDBAcceptCmd is `observer security scan db accept`: the
@@ -369,11 +482,16 @@ func writeDBRefresh(ctx context.Context, w io.Writer, e *depsScanEnv) error {
 // ruling PT-19 (2)). It shows the size and the source, then asks on a
 // terminal; without a terminal it records only with --yes. Guard rule
 // R-165 denies it to an agent.
+//
+// With --os it is the OS release databases' one accept instead (OS-2,
+// ruling Q1 (b), runDBAcceptOS): its own signed record, its own text,
+// superbased.app only; the same terminal and --yes rules, and R-165 denies
+// it in every spelling.
 func newSecurityScanDBAcceptCmd() *cobra.Command {
-	var yes bool
+	var yes, osDBs bool
 	cmd := &cobra.Command{
 		Use:   "accept",
-		Short: fmt.Sprintf("Accept, once, the OSV database download (about %d MB from %s); refreshes are automatic after that", osvdb.ApproxDownloadMB, osvdb.Source),
+		Short: fmt.Sprintf("Accept, once, the OSV database download (about %d MB from %s), or with --os the OS release databases (from %s only, on demand); refreshes are automatic after that", osvdb.ApproxDownloadMB, osvdb.Source, osvdb.OSSource),
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			configPath, _ := cmd.Flags().GetString("config")
@@ -385,10 +503,15 @@ func newSecurityScanDBAcceptCmd() *cobra.Command {
 				return err
 			}
 			defer e.cleanup()
-			return runDBAccept(cmd.OutOrStdout(), cmd.InOrStdin(), e, yes, term.IsTerminal(int(os.Stdin.Fd())), time.Now())
+			isTerminal := term.IsTerminal(int(os.Stdin.Fd()))
+			if osDBs {
+				return runDBAcceptOS(cmd.OutOrStdout(), cmd.InOrStdin(), e, yes, isTerminal, time.Now())
+			}
+			return runDBAccept(cmd.OutOrStdout(), cmd.InOrStdin(), e, yes, isTerminal, time.Now())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "record the accept without asking (you read the text above)")
+	cmd.Flags().BoolVar(&osDBs, "os", false, "accept the OS release databases instead: the per-release databases your scanned container images use, fetched on demand from "+osvdb.OSSource+" only")
 	return cmd
 }
 

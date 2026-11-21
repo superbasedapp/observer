@@ -147,6 +147,9 @@ func (p *projectionAdapter) bindToRun(ctx context.Context, res *adapter.ParseRes
 	for i := range res.SessionToolVersions {
 		res.SessionToolVersions[i].SessionID = p.sessionFor(ctx, res.SessionToolVersions[i].SessionID)
 	}
+	for i := range res.SessionExecutions {
+		res.SessionExecutions[i].SessionID = p.sessionFor(ctx, res.SessionExecutions[i].SessionID)
+	}
 	// A process id the box reports names a process in the box, never one
 	// on this host: no pid bridge is seeded from a projection.
 	res.SessionProcessSeeds = nil

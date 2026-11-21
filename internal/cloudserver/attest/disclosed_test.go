@@ -31,6 +31,37 @@ func TestDisclosedAttestorHealthyForAttestedResourceAndPolicy(t *testing.T) {
 	}
 }
 
+// TestDisclosedAttestorListCoversEachNamedResourceOnly pins the ruling R-AI1
+// shape: one disclosure lists the free and paid tier models (two resource
+// identities), each is covered exactly, and nothing else is - not a prefix,
+// not an empty entry, not a resource the list does not name.
+func TestDisclosedAttestorListCoversEachNamedResourceOnly(t *testing.T) {
+	d := DisclosedAttestor{
+		AttestedResourceID: " openai_compatible:chat:gpt-oss-20b , openai_compatible:chat:gpt-oss-120b,,",
+		PolicyVersion:      "3", AttestedBy: "operator",
+	}
+	bind := func(res string) Binding {
+		return Binding{
+			TenantID: "openai_compatible", SubscriptionID: "default", ARMResourceID: res,
+			EndpointAudience: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", RouteGeneration: 2,
+		}
+	}
+	for res, want := range map[string]bool{
+		"openai_compatible:chat:gpt-oss-20b":  true,
+		"openai_compatible:chat:gpt-oss-120b": true,
+		"openai_compatible:chat:gpt-oss":      false,
+		"openai_compatible:chat:qwen3":        false,
+	} {
+		att, err := d.Attest(context.Background(), bind(res), time.Now())
+		if err != nil || att.Healthy != want {
+			t.Errorf("%s: healthy=%v err=%v, want %v", res, att.Healthy, err, want)
+		}
+		if want && !strings.Contains(att.Reason, res) {
+			t.Errorf("%s: the verdict must name the covered resource, got %q", res, att.Reason)
+		}
+	}
+}
+
 // TestDisclosedAttestorAnthropicResource pins the Anthropic shape: a route
 // bound to the provider-neutral "anthropic:messages:<model>" identity attests
 // under the disclosed mode, and the verdict says retention is not verified.

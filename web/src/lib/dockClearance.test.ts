@@ -44,9 +44,16 @@ test("the floating dock is desktop-only and its phone replacement lives in the t
 
 // Phone top bar room: the display preferences leave the bar below sm (the
 // page title had shrunk to "M.") and are reachable from the nav drawer.
-test("below sm the density and theme controls move from the top bar to the drawer", () => {
+test("below sm the display controls leave the top bar for the drawer; below xl the density does too", () => {
+  // Below sm the top bar has no room for either control; from sm to xl it
+  // keeps the theme but not the density (its status chips need the room,
+  // 2026-11-06), so the sidebar's Display row shows below xl, except on the
+  // collapsed rail.
   const top = readFileSync(new URL("../components/TopBar.tsx", import.meta.url), "utf8");
-  assert.match(top, /<span className="hidden items-center gap-2 sm:flex">\s*<TopBarDensity \/>\s*<ThemeToggle dataTour="topbar-theme" \/>/);
+  assert.match(
+    top,
+    /<span className="hidden items-center gap-2 sm:flex">\s*<span className="hidden xl:inline-flex">\s*<TopBarDensity \/>\s*<\/span>\s*<ThemeToggle dataTour="topbar-theme" \/>/,
+  );
   const side = readFileSync(new URL("../components/Sidebar.tsx", import.meta.url), "utf8");
-  assert.match(side, /sm:hidden">\s*<span className="text-\[11px\] text-fg-3">Display<\/span>\s*<DisplayControls \/>/);
+  assert.match(side, /px-3 py-2 xl:hidden",[\s\S]{0,160}collapsed && "lg:hidden",[\s\S]{0,40}>\s*<span className="text-\[11px\] text-fg-3">Display<\/span>\s*<DisplayControls \/>/);
 });

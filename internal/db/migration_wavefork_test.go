@@ -106,14 +106,19 @@ func hasColumn(ctx context.Context, t *testing.T, d *sql.DB, table, column strin
 	return n > 0
 }
 
-// TestNodeLateStepsAreTheWaveFork pins the node late-step table to exactly the
-// wave lineage fork's two rows (see lateSteps), and each probe to a column its
-// own step creates. A new row belongs here only for a real pre-ledger
-// interleaving, with a staged test like TestWaveLineageFork.
-func TestNodeLateStepsAreTheWaveFork(t *testing.T) {
+// TestNodeLateStepsTable pins the node late-step table to exactly its rows
+// (see lateSteps): the wave lineage fork's two, the main merge's two
+// (P-247) and the sandbox installation lifecycle's one (PT-89), and each
+// probe to a column its own step creates. A new row
+// belongs here only for a real interleaving, with a staged test like
+// TestWaveLineageFork or TestMergeMainLedgerShapes.
+func TestNodeLateStepsTable(t *testing.T) {
 	want := []migplan.LateStep{
 		{Version: 177, Table: "sec_findings", Column: "local_key"},
 		{Version: 197, Table: "guard_events", Column: "action_anchor"},
+		{Version: 220, Table: "terminal_run", Column: "initiator"},
+		{Version: 221, Table: "project_quality_daily", Column: "complexity_state"},
+		{Version: 222, Table: "tool_installs", Column: "subject_kind"},
 	}
 	if !reflect.DeepEqual(lateSteps, want) {
 		t.Fatalf("lateSteps = %+v, want %+v", lateSteps, want)

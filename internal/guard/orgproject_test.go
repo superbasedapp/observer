@@ -276,7 +276,7 @@ func TestOrgProjectRulesAreOrgLockedOnAnIndividualNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("guard.New: %v", err)
 	}
-	g.SetApprovalLookup(func(string, string, string) bool { return true })
+	g.SetApprovalLookup(func(string, string, string) (bool, error) { return true, nil })
 	hook := func(root string) ActionVerdict {
 		av, _ := g.EvaluateHook(policy.Event{
 			Kind: policy.KindShellExec, ActionType: "run_command", Target: "git push --force origin main",

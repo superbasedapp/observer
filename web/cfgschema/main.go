@@ -83,8 +83,11 @@ var docSources = []string{
 
 // keyPattern is what a dotted key must look like to be emitted into a
 // TypeScript literal union; a key with other punctuation is a mistake
-// upstream, not something to render faithfully.
-var keyPattern = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)*$`)
+// upstream, not something to render faithfully. A hyphen is allowed in a
+// segment: it is a legal bare TOML key and a TypeScript string literal
+// holds it, and a table named after a backend row id carries one
+// ([terminal.sandbox.hosted.openshell-org], the org-hosted OpenShell row).
+var keyPattern = regexp.MustCompile(`^[a-z0-9_-]+(\.[a-z0-9_-]+)*$`)
 
 func main() {
 	jsonOut := flag.String("json", defaultJSONOut, "path of the generated schema JSON")
@@ -100,10 +103,12 @@ func main() {
 	for i := range desc.Leaves {
 		l := &desc.Leaves[i]
 		l.Doc = docs[l.Owner+"."+l.Field]
+		l.Help = helpFor(l.Path, l.Doc, l.Field)
 	}
 	for i := range desc.Tables {
 		t := &desc.Tables[i]
 		t.Doc = docs[t.Owner]
+		t.Help = helpFor(t.Path, t.Doc, typeName(t.Owner))
 	}
 
 	var buf bytes.Buffer
@@ -197,6 +202,14 @@ func harvestDocs(root string) (map[string]string, error) {
 	return out, nil
 }
 
+// typeName is the bare type name of an "<import path>.<Type>" owner.
+func typeName(owner string) string {
+	if i := strings.LastIndex(owner, "."); i >= 0 {
+		return owner[i+1:]
+	}
+	return owner
+}
+
 // commentText returns the first non-empty comment group's text, trimmed.
 func commentText(groups ...*ast.CommentGroup) string {
 	for _, g := range groups {
@@ -257,6 +270,7 @@ func renderTypes(desc configschema.Descriptor) ([]byte, error) {
 	b.WriteString("  min?: number;\n")
 	b.WriteString("  max?: number;\n")
 	b.WriteString("  doc?: string;\n")
+	b.WriteString("  help?: string;\n")
 	b.WriteString("};\n\n")
 	b.WriteString("export type ConfigSchemaTable = {\n")
 	b.WriteString("  path: string;\n")
@@ -264,6 +278,7 @@ func renderTypes(desc configschema.Descriptor) ([]byte, error) {
 	b.WriteString("  owner: string;\n")
 	b.WriteString("  block: string;\n")
 	b.WriteString("  doc?: string;\n")
+	b.WriteString("  help?: string;\n")
 	b.WriteString("};\n\n")
 	b.WriteString("export type ConfigSchemaDescriptor = {\n")
 	b.WriteString("  schema_version: number;\n")

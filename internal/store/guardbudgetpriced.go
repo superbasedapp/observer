@@ -97,8 +97,8 @@ type GuardBudgetSpendResult struct {
 	// true miss choose the wording for every model on it - which is how a
 	// correctly family-priced model that had just tripped a live cap was
 	// reported as having "no rate at all".
-	// Sorted and bounded by guardBudgetMaxUnpricedModels; filled by managed
-	// reads only.
+	// Sorted and bounded by guardBudgetMaxUnpricedModels; filled by managed and
+	// advisory reads alike (reporting only: the cap math never reads it).
 	FallbackModels []string
 	// UnpricedModels names the distinct models behind the TRUE MISSES in
 	// UnpricedRows: rows nothing in the ladder could price, not even the
@@ -110,8 +110,17 @@ type GuardBudgetSpendResult struct {
 	// It deliberately does NOT include invalid rows: those are unpriced because
 	// their counters or timestamp are broken, and naming their model would
 	// accuse a model that may well have a perfectly good rate.
-	// Filled by managed reads only.
+	// Filled by managed and advisory reads alike (reporting only).
 	UnpricedModels []string
+	// InvalidRows counts the invalid rows among UnpricedRows, and
+	// InvalidReasons splits them by reason (the GuardBudgetInvalid*
+	// vocabulary), so a status line can say WHY they count as $0 instead of
+	// a bare count (demo bug #5). InvalidTools names the tools behind them,
+	// sorted and bounded like the model lists. All three are zero when no row
+	// is invalid.
+	InvalidRows    int
+	InvalidReasons map[string]int
+	InvalidTools   []string
 	// WeeklyExpiresAt is the first instant a counted positive row leaves the
 	// rolling seven-day window. A measured weekly denial must be re-evaluated
 	// at this boundary even when policy and prices have not changed.
@@ -207,6 +216,11 @@ type guardBudgetSpendRow struct {
 	storedUSD        float64
 	fast             bool
 	incomplete       bool
+	// unverified: a token_usage row whose reliability is neither accurate
+	// nor approximate, or whose source is not a capture source. A managed
+	// read counts it as invalid (reason unverified_tokens); an advisory
+	// read prices it like any other row.
+	unverified bool
 }
 
 // GuardBudgetSpendPriced is the bounded read-time companion to
@@ -283,44 +297,17 @@ func (s *Store) GuardBudgetSpendPriced(
 	monthStamp := guardBudgetWindowStamp(monthStart)
 	fallbackModels := map[string]struct{}{}
 	unpricedModels := map[string]struct{}{}
+	invalidTools := map[string]struct{}{}
 	subjects := newSubjectSpend(budgetSubjectResolver(options))
 
 	for rows.Next() {
-		var r guardBudgetSpendRow
-		var source, fast, lift, incomplete int
-		if err := rows.Scan(
-			&source, &r.sessionID, &r.timestamp, &r.tool, &r.model,
-			&r.inputTokens, &r.outputTokens, &r.cacheReadTokens,
-			&r.cacheCreation, &r.cacheCreation1h, &r.reasoningTokens,
-			&r.webSearchRequest, &r.storedUSD, &fast, &lift, &incomplete,
-		); err != nil {
+		r, err := scanGuardBudgetSpendRow(rows)
+		if err != nil {
 			return GuardBudgetSpendResult{}, fmt.Errorf("store.GuardBudgetSpendPriced: scan: %w", err)
-		}
-		r.source = source
-		r.fast = fast != 0
-		r.incomplete = incomplete != 0
-		if lift != 0 && !r.fast {
-			// The row's fast transcript twin lifts it to the fast tier; its
-			// stored cost was priced at the standard wire tier, so it no
-			// longer stands (the cost engine's rule, loadProxyRows).
-			r.fast = true
-			r.storedUSD = 0
 		}
 
 		usd, sourceName, priced, invalid := priceGuardBudgetRow(r, pricer, managed)
-		// TWO CLASSES, TWO LISTS (BUDGET-COV-3). A row the org's own rates did
-		// not price is either priced by a fallback rung - real dollars, counted
-		// against the cap, just not the org's number - or a true miss that counts
-		// as $0. Invalid rows name no model on either list: they are unpriced
-		// because their counters or timestamp are broken, not because of what
-		// produced them.
-		if managed && !invalid && !guardBudgetOrgPriced(sourceName) && r.model != "" {
-			if priced {
-				fallbackModels[r.model] = struct{}{}
-			} else {
-				unpricedModels[r.model] = struct{}{}
-			}
-		}
+		classifyGuardBudgetRow(&result, r, sourceName, priced, invalid, fallbackModels, unpricedModels, invalidTools)
 		if managed && !validGuardBudgetTimestamp(r.timestamp) {
 			// A malformed time cannot be assigned to a known calendar window.
 			result.UnpricedWindows.Daily, result.UnpricedWindows.Weekly, result.UnpricedWindows.Monthly = true, true, true
@@ -379,12 +366,79 @@ func (s *Store) GuardBudgetSpendPriced(
 	result.ByTool, result.ByModel, result.SessionTool, result.SessionModel = subjects.fold()
 	result.FallbackModels = sortedBoundedModels(fallbackModels, guardBudgetMaxUnpricedModels)
 	result.UnpricedModels = sortedBoundedModels(unpricedModels, guardBudgetMaxUnpricedModels)
+	result.InvalidTools = sortedBoundedModels(invalidTools, guardBudgetMaxUnpricedModels)
 	// A session observed through BOTH the proxy and the native parser is the
 	// ordinary shape for any tool the daemon launches through :8820 and also
 	// parses from its own store. It is not ambiguity: the stored dedup
 	// verdicts count each turn once, and the overlap is never marked
 	// unavailable (accounting-readiness correction, 2026-09-14).
 	return result, nil
+}
+
+// guardBudgetRowScanner is the one method of *sql.Rows the row scan uses.
+type guardBudgetRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanGuardBudgetSpendRow reads one row of guardBudgetSpendPricedSQL and
+// applies the fast-twin lift: a row whose fast transcript twin lifts it to
+// the fast tier had its stored cost priced at the standard wire tier, so that
+// cost no longer stands (the cost engine's rule, loadProxyRows).
+func scanGuardBudgetSpendRow(rows guardBudgetRowScanner) (guardBudgetSpendRow, error) {
+	var r guardBudgetSpendRow
+	var source, fast, lift, incomplete, unverified int
+	if err := rows.Scan(
+		&source, &r.sessionID, &r.timestamp, &r.tool, &r.model,
+		&r.inputTokens, &r.outputTokens, &r.cacheReadTokens,
+		&r.cacheCreation, &r.cacheCreation1h, &r.reasoningTokens,
+		&r.webSearchRequest, &r.storedUSD, &fast, &lift, &incomplete, &unverified,
+	); err != nil {
+		return guardBudgetSpendRow{}, err
+	}
+	r.source = source
+	r.fast = fast != 0
+	r.incomplete = incomplete != 0
+	r.unverified = unverified != 0
+	if lift != 0 && !r.fast {
+		r.fast = true
+		r.storedUSD = 0
+	}
+	return r, nil
+}
+
+// classifyGuardBudgetRow files one priced row on the coverage lists.
+//
+// TWO CLASSES, TWO LISTS (BUDGET-COV-3). A row the org's own rates did not
+// price is either priced by a fallback rung - real dollars, counted against
+// the cap, just not the org's number - or a true miss that counts as $0.
+// Invalid rows name no model on either list: they are unpriced because their
+// counters or timestamp are broken, not because of what produced them; they
+// are named by reason and tool, never by model (see UnpricedModels).
+func classifyGuardBudgetRow(
+	result *GuardBudgetSpendResult,
+	r guardBudgetSpendRow,
+	sourceName string,
+	priced, invalid bool,
+	fallbackModels, unpricedModels, invalidTools map[string]struct{},
+) {
+	if !invalid && !guardBudgetOrgPriced(sourceName) && r.model != "" {
+		if priced {
+			fallbackModels[r.model] = struct{}{}
+		} else {
+			unpricedModels[r.model] = struct{}{}
+		}
+	}
+	if !invalid {
+		return
+	}
+	result.InvalidRows++
+	if result.InvalidReasons == nil {
+		result.InvalidReasons = map[string]int{}
+	}
+	result.InvalidReasons[sourceName]++
+	if r.tool != "" {
+		invalidTools[r.tool] = struct{}{}
+	}
 }
 
 // sortedBoundedModels renders a model set as the deterministic, bounded slice
@@ -451,15 +505,8 @@ func hasGuardBudgetBillableUsage(r guardBudgetSpendRow) bool {
 // Advisory (individual) accounting is UNCHANGED: it keeps its adapter-reported
 // cost first, exactly as it always has.
 func priceGuardBudgetRow(r guardBudgetSpendRow, pricer GuardBudgetPricer, managed bool) (float64, string, bool, bool) {
-	if managed && !validGuardBudgetTimestamp(r.timestamp) {
-		return 0, "invalid_timestamp", false, true
-	}
-	invalidStored := math.IsNaN(r.storedUSD) || math.IsInf(r.storedUSD, 0) || r.storedUSD < 0
-	invalidUsage := r.inputTokens < 0 || r.outputTokens < 0 || r.cacheReadTokens < 0 ||
-		r.cacheCreation < 0 || r.cacheCreation1h < 0 || r.reasoningTokens < 0 || r.webSearchRequest < 0
-	invalidUsage = invalidUsage || (managed && (r.incomplete || (r.storedUSD > 0 && !hasGuardBudgetBillableUsage(r))))
-	if invalidStored || invalidUsage {
-		return 0, "invalid_stored", false, true
+	if reason := guardBudgetInvalidReason(r, managed); reason != "" {
+		return 0, reason, false, true
 	}
 	if !managed && r.storedUSD > 0 {
 		return r.storedUSD, "stored", true, false
@@ -488,6 +535,67 @@ func priceGuardBudgetRow(r guardBudgetSpendRow, pricer GuardBudgetPricer, manage
 		sourceName = "miss"
 	}
 	return 0, sourceName, false, false
+}
+
+// Invalid-row reasons, the closed vocabulary GuardBudgetSpendResult.
+// InvalidReasons is keyed by (demo bug #5: `observer guard status` printed
+// "unpriced_models=none-named(invalid-rows)" for 17,777 rows and nothing said
+// what made them invalid). Each is the pricing source an invalid row reports.
+const (
+	// GuardBudgetInvalidTimestamp: a timestamp that belongs to no window
+	// (managed reads only).
+	GuardBudgetInvalidTimestamp = "invalid_timestamp"
+	// GuardBudgetInvalidStored: a stored cost that is NaN, infinite or
+	// negative.
+	GuardBudgetInvalidStored = "invalid_stored"
+	// GuardBudgetInvalidCounters: a negative token counter.
+	GuardBudgetInvalidCounters = "invalid_counters"
+	// GuardBudgetIncompleteCounters: a NULL token counter (managed only).
+	GuardBudgetIncompleteCounters = "incomplete_counters"
+	// GuardBudgetUnverifiedTokens: token counts the capture itself marks as
+	// not provider-verified (reliability other than accurate/approximate,
+	// or a non-capture source) - for example Claude Code transcripts, whose
+	// output counts are streaming-time placeholders. A managed hard cap does
+	// not count them (managed only).
+	GuardBudgetUnverifiedTokens = "unverified_tokens"
+	// GuardBudgetStoredWithoutUsage: a stored cost on a row with no billable
+	// usage (managed only).
+	GuardBudgetStoredWithoutUsage = "stored_without_usage"
+)
+
+// guardBudgetInvalidRules is the ordered invalid-row table: the first row
+// whose test holds names the reason. "" (no row holds) is a valid row.
+var guardBudgetInvalidRules = []struct {
+	reason      string
+	managedOnly bool
+	test        func(guardBudgetSpendRow) bool
+}{
+	{GuardBudgetInvalidTimestamp, true, func(r guardBudgetSpendRow) bool { return !validGuardBudgetTimestamp(r.timestamp) }},
+	{GuardBudgetInvalidStored, false, func(r guardBudgetSpendRow) bool {
+		return math.IsNaN(r.storedUSD) || math.IsInf(r.storedUSD, 0) || r.storedUSD < 0
+	}},
+	{GuardBudgetInvalidCounters, false, func(r guardBudgetSpendRow) bool {
+		return r.inputTokens < 0 || r.outputTokens < 0 || r.cacheReadTokens < 0 ||
+			r.cacheCreation < 0 || r.cacheCreation1h < 0 || r.reasoningTokens < 0 || r.webSearchRequest < 0
+	}},
+	{GuardBudgetIncompleteCounters, true, func(r guardBudgetSpendRow) bool { return r.incomplete }},
+	{GuardBudgetUnverifiedTokens, true, func(r guardBudgetSpendRow) bool { return r.unverified }},
+	{GuardBudgetStoredWithoutUsage, true, func(r guardBudgetSpendRow) bool {
+		return r.storedUSD > 0 && !hasGuardBudgetBillableUsage(r)
+	}},
+}
+
+// guardBudgetInvalidReason walks guardBudgetInvalidRules for one row.
+func guardBudgetInvalidReason(r guardBudgetSpendRow, managed bool) string {
+	for _, rule := range guardBudgetInvalidRules {
+		if rule.managedOnly && !managed {
+			continue
+		}
+		if rule.test(r) {
+			return rule.reason
+		}
+	}
+	return ""
 }
 
 // guardBudgetMaxUnpricedModels bounds each coverage list (FallbackModels and
@@ -836,7 +944,8 @@ func guardBudgetSpendPricedSQL(managed bool) string {
 		       COALESCE(web_search_requests, 0), COALESCE(cost_usd, 0),
 		       COALESCE(fast, 0), ` + spendverdict.ProxyInheritedFastOf("api_turns") + `,
 		       input_tokens IS NULL OR output_tokens IS NULL OR
-		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL
+		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL,
+		       0
 		  FROM api_turns` + guardBudgetUsageWhere(managed, "api_turns", spendverdict.CountedProxyRowOf("api_turns")) + `
 		 UNION ALL
 		SELECT 1 AS source, COALESCE(session_id, ''), timestamp,
@@ -850,7 +959,7 @@ func guardBudgetSpendPricedSQL(managed bool) string {
 		       COALESCE(estimated_cost_usd, 0), COALESCE(fast, 0), 0,
 		       input_tokens IS NULL OR output_tokens IS NULL OR
 		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL OR
-		       reasoning_tokens IS NULL OR
+		       reasoning_tokens IS NULL,
 		       COALESCE(reliability, '') NOT IN ('accurate', 'approximate') OR
 		       source NOT IN ('jsonl', 'otel', 'hook', 'proxy')
 		  FROM token_usage` + guardBudgetUsageWhere(managed, "token_usage", spendverdict.CountedTokenRow("token_usage"))

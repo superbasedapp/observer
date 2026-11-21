@@ -122,4 +122,17 @@ type SessionProcessRow struct {
 	// count is all that crosses). This is the "process-event counts" half of
 	// W2.2 — no event body, no target, no network body ever rides this row.
 	EventCount int64 `json:"event_count,omitempty"`
+
+	// CaptureClass / ServiceRootKey / FoldCount are the process capture
+	// budget's per-row decision (agent migration 212, docs/plans/
+	// process-capture-budget-plan-2026-11-04.md §4.8): CaptureClass is
+	// "exemplar", "service_root" or "service" (empty for a row the node stored
+	// before the budget), ServiceRootKey the RunKey of the service root a
+	// service row ran under, FoldCount how many folded console-host runs this
+	// row absorbed. Content-free closed vocabulary and counters; additive and
+	// omitempty both directions (an old server ignores them, an old agent
+	// sends none and the server stores empty / 0).
+	CaptureClass   string `json:"capture_class,omitempty"`
+	ServiceRootKey string `json:"service_root_key,omitempty"`
+	FoldCount      int64  `json:"fold_count,omitempty"`
 }

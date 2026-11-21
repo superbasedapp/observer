@@ -1,0 +1,40 @@
+rules:
+  - id: ruby.xss-request-input
+    languages: [ruby]
+    severity: ERROR
+    message: Web request input is marked as safe HTML (raw, html_safe, render html:), so Rails no longer escapes it and a caller can run script in the page; leave it to the view's escaping, or pass it through sanitize or h first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|path_parameters|query_string|raw_post|body|headers|cookies|GET|POST|referer|referrer|user_agent)$
+    pattern-sanitizers:
+      - pattern: h(...)
+      - pattern: html_escape(...)
+      - pattern: ERB::Util.html_escape(...)
+      - pattern: ERB::Util.h(...)
+      - pattern: CGI.escapeHTML(...)
+      - pattern: Rack::Utils.escape_html(...)
+      - pattern: sanitize(...)
+      - pattern: strip_tags(...)
+      - pattern: json_escape(...)
+      - pattern: ERB::Util.json_escape(...)
+      - pattern: $X.to_i
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: raw($X)
+              - pattern: view_context.raw($X)
+              - pattern: helpers.raw($X)
+              - pattern: $X.html_safe
+              - pattern: 'render(..., html: $X, ...)'
+              - pattern: 'render(..., inline: $X, ...)'
+              - pattern: 'render(..., body: $X, content_type: "text/html", ...)'
+          - focus-metavariable: $X

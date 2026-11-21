@@ -62,6 +62,10 @@ type hookFailurePlan struct {
 	// Started is when this invocation started (runHookInvocation's start):
 	// the quick scan's clamp counts the time spent since (LEFT2 audit E4).
 	Started time.Time
+	// Deadline is when this invocation's watchdog fires (zero: no watchdog
+	// armed). Work that waits inside the invocation (the org prompt judge's
+	// ask, adm-2 fixes-1 M2) sizes its wait from it.
+	Deadline time.Time
 }
 
 // hookPlanPtr is the current invocation's plan (nil = the zero, fail-open
@@ -339,14 +343,24 @@ func settleHookFailurePlan(plan hookFailurePlan, configPath string, interim func
 func hookPreliminaryFailsClosed(resolvedConfig, configPath string, c integration.HookCap) bool {
 	ld := guardposture.Load(guardposture.PosturePath(resolvedConfig), guardposture.KeyPath(resolvedConfig))
 	if ld.State == guardposture.StateValid && ld.Posture.Stale(time.Now(), fileModTime(resolvedConfig)) == "" {
-		return ld.Posture.FailsClosed(string(c))
+		return ld.Posture.FailsClosed(string(c)) || promptJudgeClosesGate(c, ld.Posture)
 	}
+	// The org prompt judge's interim answer (adm-2 lows, L2): only the
+	// daemon's own signed answer, here a posture that verifies but is stale
+	// (the daemon stopped, or config.toml changed since). The daemon computed
+	// prompt_judge_fail_closed from the node lane's gate: managed tenancy
+	// (managedNow) and the CURRENT enrolment's installed policy, the org key
+	// and generation the hook cannot read without the database. No cached
+	// body is read here, so a node the daemon never marked (every individual
+	// node) and a stale body under another org key or generation are never
+	// closed by it; with no verifying posture the full derivation decides.
+	judgeClosed := ld.State == guardposture.StateValid && promptJudgeClosesGate(c, ld.Posture)
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
 	if err != nil {
-		return false
+		return judgeClosed
 	}
 	p := postureFromEnforcement(guard.PreliminaryGateEnforcement(cfg.Guard, userHomeOrEmpty(), pathExists))
-	return p.FailsClosed(string(c))
+	return p.FailsClosed(string(c)) || judgeClosed
 }
 
 // registrationToolGateFailsClosed answers hook.Options.ToolGateFailsClosed
@@ -445,7 +459,7 @@ func hookPostureFailsClosed(resolvedConfig, configPath string, c integration.Hoo
 	if ld.State == guardposture.StateValid {
 		now, mod := time.Now(), fileModTime(resolvedConfig)
 		postureAnswer := hookPostureAnswer{
-			FailsClosed:          ld.Posture.FailsClosed(string(c)),
+			FailsClosed:          ld.Posture.FailsClosed(string(c)) || promptJudgeClosesGate(c, ld.Posture),
 			UserPolicyFailClosed: ld.Posture.UserPolicyClosesGate(string(c)),
 		}
 		why := ld.Posture.Stale(now, mod)
@@ -472,9 +486,30 @@ func hookPostureFailsClosed(resolvedConfig, configPath string, c integration.Hoo
 	}
 	p := postureFromEnforcement(hookFallbackGateEnforcement(cfg))
 	return hookPostureAnswer{
-		FailsClosed:          held.FailsClosed || p.FailsClosed(string(c)),
+		FailsClosed:          held.FailsClosed || p.FailsClosed(string(c)) || promptJudgeFallbackClosesGate(c, cfg),
 		UserPolicyFailClosed: held.UserPolicyFailClosed || p.UserPolicyClosesGate(string(c)),
 	}
+}
+
+// promptJudgeClosesGate reports whether a failure on a hook of capability c
+// must refuse because the organization's prompt judge is strict and enforced
+// here, as the daemon's signed posture says (adm-2 fixes-1, M2): a watchdog
+// timeout or a crash on a prompt gate then refuses the prompt, the same
+// answer an unreachable judge gets. Only a prompt gate; a policy that is not
+// strict changes nothing.
+func promptJudgeClosesGate(c integration.HookCap, p *guardposture.Posture) bool {
+	return c == integration.HookCapPromptGate && p != nil && p.PromptJudgeFailClosed
+}
+
+// promptJudgeFallbackClosesGate is promptJudgeClosesGate with no trusted
+// posture: the same durable-state derivation the hook's ask uses, after its
+// cheap local check (so an individual node opens no database for it).
+func promptJudgeFallbackClosesGate(c integration.HookCap, cfg config.Config) bool {
+	if c != integration.HookCapPromptGate || !planeBJudgeMayApply(cfg) {
+		return false
+	}
+	_, failClosed := hookPromptJudgeFallbackFn(cfg)
+	return failClosed
 }
 
 // postureFromEnforcement is the ONE mapping from the shared gate-enforcement
@@ -561,9 +596,17 @@ func hookFallbackGateEnforcement(cfg config.Config) guard.GateEnforcement {
 	ctx, cancel := context.WithTimeout(context.Background(), hookFallbackDBTimeout)
 	defer cancel()
 	var st *store.Store
-	if database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath}); err == nil {
-		defer database.Close()
-		st = store.New(database)
+	// No database yet means no enrolment pin and no tenancy to read: the
+	// same answer as a store that cannot be opened. Opening one here would
+	// create it and run every migration inside hookFallbackDBTimeout, which
+	// on a slow machine overruns and rolls back, leaving the event's own
+	// capture (which opens the database right after, under the hook's own
+	// deadline) to start over.
+	if fileExists(cfg.Observer.DBPath) {
+		if database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath}); err == nil {
+			defer database.Close()
+			st = store.New(database)
+		}
 	}
 	gd := nodeGuard(ctx, cfg, st)
 	if gd == nil {
@@ -587,7 +630,7 @@ func nodeGuard(ctx context.Context, cfg config.Config, st *store.Store) *guard.G
 	if err != nil {
 		home = ""
 	}
-	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: bundleExpected})
+	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: bundleExpected, ApprovalPageHidden: approvalPageHiddenLookup(cfg, storeOpenerFor(st), nil)})
 	if err != nil {
 		return nil
 	}

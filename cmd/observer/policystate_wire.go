@@ -532,8 +532,11 @@ type policyStateReporter struct {
 	seq          *orgclient.ReportSeqCounter
 	agentVersion string
 	enabled      bool
-	logger       *slog.Logger
-	notifier     *policyStateNotifier
+	// localSwitch, when set, is the live [org_client.share].policy_state
+	// (policystate_liveswitch.go) and wins over the start-time enabled.
+	localSwitch *liveConfigSwitch
+	logger      *slog.Logger
+	notifier    *policyStateNotifier
 
 	// ngov is the node.governance handle, consulted (W-9, raise added §5.3) so
 	// an org "policy_state" share directive can LOWER this channel off even
@@ -618,6 +621,10 @@ type policyStateReporter struct {
 	// gen7 server, so every send strips the security.scanning row's
 	// not_applicable list.
 	latchGen7 atomic.Bool
+	// latchGen8 is true once the gen9 rung (managed policy visibility,
+	// 2026-11-12) latched: a gen8 server, so every send strips the local
+	// rule report from the guard row's LocalGuard posture.
+	latchGen8 atomic.Bool
 	// latchGen3 is true once the gen4 rung (T-864) latched: a gen3 server
 	// refused the guard tamper record (or the "missing" integrity value) but
 	// took the gen3 snapshot, so every later send strips only those
@@ -900,11 +907,21 @@ func mergeRoutingOutcome(prev, o orgclient.RoutingFetchOutcome) orgclient.Routin
 // — the same fail-open posture every other org-directive consumer in this
 // codebase uses when its handle is absent.
 func (r *policyStateReporter) effectiveEnabled(ctx context.Context) bool {
+	local := r.localEnabled()
 	if r.ngov == nil {
-		return r.enabled
+		return local
 	}
 	eff := r.ngov.Effective(ctx)
-	return policyStateReportingEnabled(r.enabled, eff)
+	return policyStateReportingEnabled(local, eff)
+}
+
+// localEnabled is the node's own [org_client.share].policy_state: the live
+// switch when the daemon wired one, else the value it started with.
+func (r *policyStateReporter) localEnabled() bool {
+	if r.localSwitch != nil {
+		return r.localSwitch.value()
+	}
+	return r.enabled
 }
 
 // policyStateReportingEnabled is the pure decision behind effectiveEnabled:
@@ -928,6 +945,10 @@ func (r *policyStateReporter) postLatched(ctx context.Context, rows, gen1Full []
 	switch {
 	case r.latchGen1.Load():
 		r.post(ctx, rowsAtDepth(gen1Full, depth), "")
+	case r.latchGen8.Load():
+		// A gen8 server: every gen8 field, the gen9 local rule report
+		// stripped from the LocalGuard posture.
+		r.post(ctx, rowsAtDepth(projectGen8(rows), depth), r.poster.ManagedMachineIdentity(ctx))
 	case r.latchGen7.Load():
 		// A gen7 server: every gen7 field, the gen8 not_applicable list
 		// stripped (lane LEFT-SHARED).
@@ -1016,7 +1037,22 @@ func (r *policyStateReporter) report(ctx context.Context) {
 	if !r.probed.CompareAndSwap(false, true) {
 		return
 	}
-	// Gen8 rung first (lane LEFT-SHARED): a gen7 server 400s the
+	// Gen9 rung first (managed policy visibility, 2026-11-12): a gen8 server
+	// 400s the local rule report inside the guard row's LocalGuard posture
+	// but understands every gen8 field, so strip ONLY that. Skipped when the
+	// snapshot carries no gen9 content (an individual node, or a managed one
+	// with no local rule change).
+	gen8Full := projectGen8(rows)
+	if !rowsEqualContent(rows, gen8Full) {
+		if r.post(ctx, gen8Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen8.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen9 local rule report but accepted the gen8 snapshot - older server, dropping local_guard rule_changes for this daemon lifetime")
+			return
+		}
+	}
+	// Gen8 rung next (lane LEFT-SHARED): a gen7 server 400s the
 	// security.scanning row's not_applicable list but understands every
 	// gen7 field, so strip ONLY that. Skipped when the snapshot carries no
 	// gen8 content (every node whose floor keys all apply, or that holds no
@@ -1222,6 +1258,7 @@ func foldPostureLoosened(reason string) string {
 func projectGen3(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
 	out := make([]orgcontract.PolicyStateRow, len(rows))
 	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
 		row.GuardTamper = nil
 		row.ProjectSectionStatus = nil
 		row.ProjectSectionTruncated = false
@@ -1237,12 +1274,26 @@ func projectGen3(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 	return out
 }
 
+// projectGen8 returns a copy of rows in the shape a gen8 server validates
+// (managed policy visibility, 2026-11-12): the gen9 local rule report
+// stripped from the guard row's LocalGuard posture (a copy; the input's
+// posture is not modified). Every gen8 field survives.
+func projectGen8(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
+		out[i] = row
+	}
+	return out
+}
+
 // projectGen7 returns a copy of rows in the shape a gen7 server validates
 // (lane LEFT-SHARED): the gen8 security.scanning not_applicable list
 // cleared. Every gen7 field survives.
 func projectGen7(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
 	out := make([]orgcontract.PolicyStateRow, len(rows))
 	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
 		row.FamilyNotApplicable = nil
 		out[i] = row
 	}
@@ -1256,6 +1307,7 @@ func projectGen7(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 func projectGen6(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
 	out := make([]orgcontract.PolicyStateRow, len(rows))
 	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
 		row.ProjectSectionTruncated = row.ProjectSectionTruncated || row.ProjectFamilyTruncated
 		row.ProjectFamilyTruncated = false
 		row.FamilyNotApplicable = nil
@@ -1270,6 +1322,7 @@ func projectGen6(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 func projectGen5(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
 	out := make([]orgcontract.PolicyStateRow, len(rows))
 	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
 		row.ProjectFamilyStatus = nil
 		row.ProjectFamilyTruncated = false
 		row.FamilyNotApplicable = nil
@@ -1284,6 +1337,7 @@ func projectGen5(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 func projectGen4(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
 	out := make([]orgcontract.PolicyStateRow, len(rows))
 	for i, row := range rows {
+		row.LocalGuard = orgcontract.StripLocalRuleReport(row.LocalGuard)
 		row.ProjectSectionStatus = nil
 		row.ProjectSectionTruncated = false
 		row.ProjectFamilyStatus = nil
@@ -1544,13 +1598,16 @@ func buildPolicyStateReporter(
 	moduleActive := componentSnapshotForConfig(cfg).ModuleActive
 	rep.liveCaps = func() []string { return nodeLiveCapabilitiesFor(admission, moduleActive) }
 	rep.readers = map[string]policystate.PointReader{
-		policystate.PointGuard: withProjectFamilyStatus(withProjectSectionStatus(withGuardTamper(newGuardPointReader(
+		// gen9: the managed machine's own rule changes ride the LocalGuard
+		// posture (policystate_localrules.go).
+		policystate.PointGuard: withLocalRuleChanges(withProjectFamilyStatus(withProjectSectionStatus(withGuardTamper(newGuardPointReader(
 			guardBundleCheckFrom(bundleVerifierOf(poster), orgBundleCachePath(cfg)),
 			guardRunningFromGuard(g),
 			rep.guardSlot,
 			localGuardPostureFromDisk(daemonConfigPath),
 			now,
 		), guardTamperFromStore(guardTamperSource(st), now)), projectSectionStatusFrom(g, now)), projectFamilyStatusFrom(g, now)),
+			localRuleReportFrom(g, st, daemonConfigPath, rep.logger)),
 		policystate.PointRouter: newRouterPointReader(
 			routingHandle,
 			routerCachedVersionFromStore(st),

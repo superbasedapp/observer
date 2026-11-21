@@ -45,9 +45,22 @@ func TestRunOnARealRepository(t *testing.T) {
 	}
 	remote := filepath.Join(base, "remote.git")
 	user := filepath.Join(base, "user")
+	// The harness's own writes (commit, merge, cherry-pick, push, fetch) end
+	// by starting automatic maintenance, and git detaches it into the
+	// background (gc.autoDetach, and maintenance.autoDetach since git 2.47).
+	// On a recent git that background job packs refs or writes into the
+	// object store while the landing scan runs, so the before/after snapshot
+	// would blame the scan for a write the fixture started. Auto maintenance
+	// is turned off for the harness commands only; the scan's own commands
+	// run through the production envelope unchanged.
+	noAutoMaintenance := []string{
+		"-c", "gc.auto=0", "-c", "gc.autoDetach=false",
+		"-c", "maintenance.auto=false", "-c", "maintenance.autoDetach=false",
+	}
 	run := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		full := append(append([]string{"-C", dir}, noAutoMaintenance...), args...)
+		cmd := exec.Command("git", full...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -207,8 +220,8 @@ func TestRunOnARealRepository(t *testing.T) {
 	}
 
 	after := snapshotGitDir(t, filepath.Join(user, ".git"))
-	if before != after {
-		t.Fatalf("the user's repository changed during the landing scan:\nbefore %s\nafter  %s", before, after)
+	if diff := snapshotDiff(before, after); len(diff) > 0 {
+		t.Fatalf("the user's repository changed during the landing scan:\n%s", strings.Join(diff, "\n"))
 	}
 }
 
@@ -217,19 +230,23 @@ func TestRunOnARealRepository(t *testing.T) {
 // alternates file and FETCH_HEAD (content and mtime). The index and logs are
 // excluded: a read-only command with --no-optional-locks does not refresh
 // the index, but they are not part of the never-write contract either way.
-func snapshotGitDir(t *testing.T, gitDir string) string {
+// The result maps each entry's path to its fingerprint, so a failure names
+// the entries that changed.
+func snapshotGitDir(t *testing.T, gitDir string) map[string]string {
 	t.Helper()
-	h := sha256.New()
+	out := map[string]string{}
 	add := func(rel string) {
 		p := filepath.Join(gitDir, rel)
 		b, err := os.ReadFile(p)
 		if err != nil {
-			h.Write([]byte(rel + ":absent\n"))
+			out[rel] = "absent"
 			return
 		}
 		fi, _ := os.Stat(p)
-		h.Write([]byte(rel + ":" + fi.ModTime().String() + ":"))
+		h := sha256.New()
+		h.Write([]byte(fi.ModTime().String() + ":"))
 		h.Write(b)
+		out[rel] = hex.EncodeToString(h.Sum(nil))
 	}
 	for _, f := range []string{"config", "packed-refs", "info/alternates", "FETCH_HEAD", "HEAD"} {
 		add(f)
@@ -243,10 +260,31 @@ func snapshotGitDir(t *testing.T, gitDir string) string {
 			if sub == "refs" {
 				add(rel)
 			} else {
-				h.Write([]byte(rel + "\n"))
+				out[rel] = "present"
 			}
 			return nil
 		})
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return out
+}
+
+// snapshotDiff lists the entries that differ between two snapshots, sorted.
+func snapshotDiff(before, after map[string]string) []string {
+	var diff []string
+	for k, b := range before {
+		a, ok := after[k]
+		switch {
+		case !ok:
+			diff = append(diff, "removed "+k)
+		case a != b:
+			diff = append(diff, "changed "+k)
+		}
+	}
+	for k := range after {
+		if _, ok := before[k]; !ok {
+			diff = append(diff, "added   "+k)
+		}
+	}
+	sort.Strings(diff)
+	return diff
 }

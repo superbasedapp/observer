@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -126,7 +127,33 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "no_route", "could not resolve the plan for this account")
 		return
 	}
-	route, fallback, err := s.store.ResolveRouteForPlan(ctx, store.FeatureSessionEnrichment, plan.RouteID)
+	// A token-budgeted plan (ruling R-AI1) runs on its enrichment TIER: the
+	// tier names the route and caps the evidence. The tier is platform
+	// configuration; a plan naming a tier with no published version is a
+	// configuration fault and refuses before anything is reserved.
+	// The reservation itself (worst-case hold, daily/monthly/session token
+	// budgets) is the store's, inside SubmitJob's transaction.
+	pinnedRoute := plan.RouteID
+	if plan.TokenBudgeted() {
+		t, terr := s.store.ResolveTier(ctx, plan.EnrichmentTier)
+		if terr != nil {
+			s.log.Error("cloudserver/api: resolve enrichment tier", "tier", plan.EnrichmentTier, "err", terr)
+			writeErr(w, http.StatusServiceUnavailable, "no_route", "the enrichment configuration for this plan is unavailable")
+			return
+		}
+		pinnedRoute = t.RouteID
+		// The evidence budget: how much of a session is sent. The node steps
+		// its evidence settings down to fit (cloudevidence.FitToBudget); an
+		// envelope that still does not fit is refused, never truncated here.
+		if !cloudcontract.EvidenceFitsBudget(len(raw), t.EvidenceTokens) {
+			s.audit(ctx, p.AccountID, "job_rejected_evidence_budget")
+			writeErr(w, http.StatusRequestEntityTooLarge, "evidence_over_budget",
+				fmt.Sprintf("this session's evidence is about %d tokens, over this plan's budget of %d; rebuild it with smaller evidence settings",
+					cloudcontract.EstimateEvidenceTokens(len(raw)), t.EvidenceTokens))
+			return
+		}
+	}
+	route, fallback, err := s.store.ResolveRouteForPlan(ctx, store.FeatureSessionEnrichment, pinnedRoute)
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, "no_route", "no active route for this feature")
 		return
@@ -240,6 +267,17 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 func writeJobSubmitError(w http.ResponseWriter, log *slog.Logger, err error) {
 	switch {
+	// The token-budget refusals first: the daily and monthly ones wrap the
+	// count sentinels below.
+	case errors.Is(err, store.ErrDailyTokenBudget):
+		writeErr(w, http.StatusTooManyRequests, "daily_token_budget",
+			"today's enrichment token budget is used; it resets at 00:00 UTC")
+	case errors.Is(err, store.ErrMonthlyTokenBudget):
+		writeErr(w, http.StatusTooManyRequests, "monthly_token_budget",
+			"this month's enrichment token budget is used; it resets on the 1st (UTC)")
+	case errors.Is(err, store.ErrSessionTokenBudget):
+		writeErr(w, http.StatusTooManyRequests, "session_token_budget",
+			"this session has used its enrichment budget; other sessions can still be enriched")
 	case errors.Is(err, store.ErrDailyLimit):
 		writeErr(w, http.StatusTooManyRequests, "daily_limit", "daily allowance exhausted")
 	case errors.Is(err, store.ErrMonthlyLimit):

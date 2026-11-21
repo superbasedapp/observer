@@ -3380,6 +3380,87 @@
    "status": "synthetic, awaiting live validation"
   },
   {
+   "id": "qoder.ca.environment_retrieve",
+   "vendor_group": "qoder",
+   "vendor": "qoder",
+   "plane": "qoder.ca",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "PAT or SAT"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "single document"
+   },
+   "rate": {
+    "documented": true,
+    "doc": "nd"
+   },
+   "tier": {
+    "doc": "personal space or enterprise space (Teams/Enterprise)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "nd",
+   "per_user_doc": "per environment",
+   "mechanism_doc": "REST GET CA/cloud/environments/{environment_id}",
+   "read_write_doc": "R/W",
+   "class_doc": "Sessions",
+   "grain_doc": "PerEnvironment (id, config.type cloud or self_hosted, scope, archived_at)",
+   "build": "buildable",
+   "build_doc": "Driverable (Cloud Agents runs only, not IDE/CLI)",
+   "sensitivity": "metadata",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "unspecified",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://docs.qoder.com/cloud-agents/environments.md",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/qoder CloudEnvironment (lane CA-V2): GET /api/v1/cloud/environments/{environment_id}; one qoder.cloud_environment snapshot carrying config.type, which the node connector maps to execution_location through a table (cloud = vendor_cloud, self_hosted = customer_worker). The setup script, networking, packages and name are never decoded. Synthetic only, from the qca-sdk types at 54e7a314.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V2: pure driver internal/vendorapi/qoder CloudEnvironment (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "keyword: bearer"
+   },
+   "status": "synthetic, awaiting live validation",
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.qoder.com",
+     "port": 443
+    },
+    {
+     "scheme": "https",
+     "host": "api.qoder.com.cn",
+     "port": 443
+    }
+   ]
+  },
+  {
    "id": "qoder.ca.forward_sa_tokens",
    "vendor_group": "qoder",
    "vendor": "qoder",
@@ -3875,6 +3956,34 @@
       "synthetic": "doc_only",
       "live": "live_pending"
      }
+    },
+    {
+     "class": "Audit",
+     "grain": "event",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "event",
+     "unit": "credits",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
     }
    ],
    "controls": [],
@@ -3886,16 +3995,141 @@
     {
      "url": "https://docs.qoder.com/cloud-agents/permission-policies.md",
      "checked_on": "2026-10-07"
+    },
+    {
+     "url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python",
+     "checked_on": "2026-11-01"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/qoder CloudEvents (lane CA-V2): GET /api/v1/cloud/sessions/{id}/events (limit 100, order asc, page, created_at[gte|lt]); one metadata-only qoder.cloud_event audit row per event (tool name, tool result success, stop reason) and no usage row: the event credits (span.model_request_end model_usage, session.usage) repeat the session's cumulative total, which qoder.ca.sessions lands, and session.status_idle carries no usage live (2026-11-02). Message content, tool input and output are never decoded (the Content supply is the catalog's description of the endpoint, not what the driver lands). Synthetic only, from the qca-sdk types at 54e7a314.",
    "derivation": {
     "reach_rule": "http",
-    "build_rule": "build column",
+    "build_rule": "lane CA-V2: pure driver internal/vendorapi/qoder CloudEvents (node consumed, no driver-table entry)",
     "source_rule": "literal_url",
     "auth_rule": "keyword: bearer"
    },
-   "status": "synthetic, awaiting live validation"
+   "status": "synthetic, awaiting live validation",
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.qoder.com",
+     "port": 443
+    },
+    {
+     "scheme": "https",
+     "host": "api.qoder.com.cn",
+     "port": 443
+    }
+   ]
+  },
+  {
+   "id": "qoder.ca.session_retrieve",
+   "vendor_group": "qoder",
+   "vendor": "qoder",
+   "plane": "qoder.ca",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "PAT or SAT"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "single document"
+   },
+   "rate": {
+    "documented": true,
+    "doc": "nd"
+   },
+   "tier": {
+    "doc": "personal space or enterprise space (Teams/Enterprise)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "nd",
+   "per_user_doc": "per session (no creator field in example)",
+   "mechanism_doc": "REST GET CA/cloud/sessions/{session_id}",
+   "read_write_doc": "R/W",
+   "class_doc": "Sessions, Usage, Cost",
+   "grain_doc": "PerSession (sess_..., agent incl model id + tools + mcp_servers, status, stats active_seconds/duration_seconds, usage model_credits, sandbox_runtime_credits, total_credits, created/updated/archived)",
+   "build": "buildable",
+   "build_doc": "Driverable (Cloud Agents runs only, not IDE/CLI)",
+   "sensitivity": "pii",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "credits",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://docs.qoder.com/cloud-agents/api/sessions/retrieve.md",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/qoder CloudSession (lane CA-V2): GET /api/v1/cloud/sessions/{session_id}; lands what one qoder.ca.sessions item lands. Synthetic only, from the qca-sdk types at 54e7a314; the docs page URL is the SDK's naming pattern, not re-read.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V2: pure driver internal/vendorapi/qoder CloudSession (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "keyword: bearer"
+   },
+   "status": "synthetic, awaiting live validation",
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.qoder.com",
+     "port": 443
+    },
+    {
+     "scheme": "https",
+     "host": "api.qoder.com.cn",
+     "port": 443
+    }
+   ]
   },
   {
    "id": "qoder.ca.sessions",
@@ -3948,7 +4182,7 @@
     {
      "class": "Usage",
      "grain": "per_session",
-     "unit": "unspecified",
+     "unit": "tokens",
      "accuracy": "exact",
      "coverage": {
       "completeness": "segment"
@@ -3962,7 +4196,7 @@
     {
      "class": "Cost",
      "grain": "per_session",
-     "unit": "unspecified",
+     "unit": "credits",
      "accuracy": "exact",
      "coverage": {
       "completeness": "segment"
@@ -3979,16 +4213,32 @@
     {
      "url": "https://docs.qoder.com/cloud-agents/api/sessions/list.md",
      "checked_on": "2026-10-07"
+    },
+    {
+     "url": "https://github.com/QoderAI/qoder-cloud-agents-sdk-python",
+     "checked_on": "2026-11-01"
     }
    ],
-   "notes": "",
+   "notes": "Pure driver internal/vendorapi/qoder CloudSessions (lane CA-V2, cloud agents arc): GET /api/v1/cloud/sessions (limit 100, order desc, page = next_page); one qoder.cloud_session snapshot per session plus one token usage row (revision updated_at) where usage reports tokens and one cumulative qoder_credit row from usage.total_credits (model and sandbox runtime split as flags), the one credit figure the connector lands. environment_variables, metadata, title and the agent system prompt are never decoded. Region host api.qoder.com or api.qoder.com.cn, the connector's choice. Consumed by the node cloud-agents connector qoder-cloud, not by the org runner. Synthetic only, from the qca-sdk types at 54e7a314.",
    "derivation": {
     "reach_rule": "http",
-    "build_rule": "build column",
+    "build_rule": "lane CA-V2: pure driver internal/vendorapi/qoder CloudSessions (node consumed, no driver-table entry)",
     "source_rule": "literal_url",
     "auth_rule": "keyword: bearer"
    },
-   "status": "synthetic, awaiting live validation"
+   "status": "synthetic, awaiting live validation",
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.qoder.com",
+     "port": 443
+    },
+    {
+     "scheme": "https",
+     "host": "api.qoder.com.cn",
+     "port": 443
+    }
+   ]
   },
   {
    "id": "qoder.ca.usage_identities",

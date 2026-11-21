@@ -220,7 +220,7 @@ func hookLifecycleLoop(ctx context.Context, configPath string) {
 	}
 	defer cleanup()
 	logger := newLogger(cfg.Observer.LogLevel)
-	st := store.New(database)
+	st := hookIngestStore(database)
 	resolved, _ := config.ResolveGlobalPath(configPath)
 	spool := hookspool.Path(resolved)
 	recorder := compaction.New(database)

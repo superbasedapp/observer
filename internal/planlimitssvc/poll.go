@@ -142,6 +142,7 @@ func (s *Service) refresh(ctx context.Context, a store.PlanAccountRow, in planli
 		}
 	}
 	if err == nil {
+		s.storeUsage(ctx, a, src, snap.Usage, started)
 		held = s.holdSuspicious(a.ID, in.Latest[a.ID], snap, started)
 		if !held {
 			if ierr := s.st.InsertPlanSnapshot(ctx, a.ID, "", snap); ierr != nil {
@@ -368,4 +369,18 @@ func (s *Service) ProbeAccount(ctx context.Context, id string) (planlimits.Snaps
 		err = planlimits.Validate(snap)
 	}
 	return snap, err
+}
+
+// storeUsage persists the daily usage a reading carried (Snapshot.Usage) for
+// a source that declares it (SourceDef.DailyUsage). It is fail-soft: a store
+// error is logged and never changes the reading's outcome, the same way the
+// driver never fails a reading over its usage call. It is independent of the
+// suspicious-reset hold, which concerns the limit windows only.
+func (s *Service) storeUsage(ctx context.Context, a store.PlanAccountRow, src planlimits.SourceDef, u *planlimits.UsageReport, at time.Time) {
+	if u == nil || !src.DailyUsage || len(u.Days) == 0 {
+		return
+	}
+	if err := s.st.UpsertPlanUsageDaily(ctx, a.ID, a.Provider, u.Days, at); err != nil {
+		s.log.Debug("planlimits: daily usage not stored", "account", a.ID, "err", s.detail(err))
+	}
 }

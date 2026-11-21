@@ -1,0 +1,5 @@
+# sha256 of go-cvss v0.6.4's output over every base vector, one line per vector, "vector<TAB>score<LF>",
+# in the canonical nested order (AV outermost; each metric's values in the order of the generated baseMetricDefs).
+# The test regenerates the same lines from the scorer, replaces the scores listed in oracle_base_divergence.tsv by
+# go-cvss's, and requires this digest and the count: the whole base space agrees with go-cvss except those rows.
+7a89b11f0eadd2a93403e3cb6031798110bacc82a53e52256dbcf38511de2651 104976

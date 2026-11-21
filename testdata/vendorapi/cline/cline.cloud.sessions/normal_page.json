@@ -1,0 +1,51 @@
+{
+  "data": [
+    {
+      "id": "ses-synth0001",
+      "userId": "usr-synth0001",
+      "sandboxId": "ins-synth0001",
+      "origin": "remote",
+      "status": "active",
+      "sandboxType": "resumable",
+      "title": "Synthetic title placeholder",
+      "sandboxUrl": "https://sandbox.invalid/synthetic",
+      "repoContext": {
+        "repoUrl": "https://github.com/acme/widget",
+        "branch": "main"
+      },
+      "metadata": {
+        "sandboxType": "resumable",
+        "modelId": "anthropic/claude-sonnet-4.5",
+        "taskId": "task-synth-0001",
+        "statusReason": "synthetic reason placeholder",
+        "provisioningPhase": "ready",
+        "createRequestTitle": "Synthetic request title placeholder",
+        "cwd": "/workspace",
+        "handoff": {
+          "sourceSessionId": "1793351400123"
+        }
+      },
+      "historyUrl": "https://sandbox.invalid/synthetic-history",
+      "expiredAt": null,
+      "lastActivityAt": "2026-10-30T09:40:12.000Z",
+      "createdAt": "2026-10-30T09:12:00.000Z",
+      "updatedAt": "2026-10-30T09:40:12.000Z"
+    },
+    {
+      "id": "ses-synth0002",
+      "status": "suspended",
+      "sandboxType": "standard",
+      "sandboxUrl": "https://sandbox.invalid/synthetic-2",
+      "repoContext": {},
+      "metadata": {
+        "modelId": "anthropic/claude-sonnet-4.5",
+        "taskId": "task-synth-0002",
+        "provisioningPhase": "ready"
+      },
+      "expiredAt": "2026-10-29T12:00:00.000Z",
+      "createdAt": "2026-10-29T10:00:00.000Z",
+      "updatedAt": "2026-10-29T12:00:00.000Z"
+    }
+  ],
+  "success": true
+}

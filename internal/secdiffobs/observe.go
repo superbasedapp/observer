@@ -80,7 +80,7 @@ var ruleInference = func() map[string]bool {
 var disabledVerification = regexp.MustCompile(`(?i)(\bverify\s*=\s*false\b|insecureskipverify\s*:\s*true|rejectunauthorized\s*:\s*false|node_tls_reject_unauthorized\s*[=:]\s*['"]?0|_create_unverified_context|cert_none\b|check_hostname\s*=\s*false|curlopt_ssl_verifypeer\s*,\s*(false|0)|\bcurl\b[^\n]*\s(-k|--insecure)\b|\bwget\b[^\n]*--no-check-certificate|ssl_verify\s*[=:]\s*false|strict-ssl\s*[=:]?\s*false)`)
 
 // skipMarkers are test skip, xfail and only markers (S-767).
-var skipMarkers = regexp.MustCompile(`(@pytest\.mark\.(skip|skipif|xfail)\b|@unittest\.(skip|expectedFailure)\b|\bt\.Skip(Now|f)?\(|\b(it|describe|test|context)\.(skip|only)\(|\b(xit|xdescribe|xtest|fit|fdescribe)\(|#\[ignore\]|@Disabled\b|@Ignore\b|\[Ignore\]|\bpending\(\))`)
+var skipMarkers = regexp.MustCompile(`(@pytest\.mark\.(skip|skipif|xfail)\b|@unittest\.(skip|expectedFailure)\b|\bt\.Skip(Now|f)?\(|\b(it|describe|test|context)\.(skip|only)\(|\b(xit|xdescribe|xtest|fit|fdescribe)\(|#\[ignore\]|@Disabled\b|@Ignore\b|\[Ignore\]|\bpending\(\)|^\s*//\s*(go:build|\+build)\s+ignore\b|\bos\.Exit\(0\)|\bcollect_ignore(_glob)?\s*[=+]|\bitems\.clear\(\))`)
 
 // assertion matches an assertion line in a test file (S-768).
 var assertion = regexp.MustCompile(`(\bassert\w*\s*[(\s]|\bexpect\(|\bt\.(Error|Errorf|Fatal|Fatalf|Fail)\b|\brequire\.\w+\(|\bself\.assert\w+\(|\bAssert\.\w+\(|\bshould\.\w+|\.should\b|\bassert_\w+!?\()`)

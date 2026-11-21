@@ -1,0 +1,15 @@
+# Level "none": the guard is off.
+#
+# Nothing is evaluated, nothing is recorded and the prompt guard is off. Use
+# it to pause the guard for a while, not as a posture. At project scope the
+# rules are switched off in that one project (the guard's own integrity rules
+# stay on: no recipe can switch them off).
+
+name = "none"
+kind = "level"
+title = "None"
+summary = "Guard off: no rule is checked or recorded and the prompt guard is off."
+version = 1
+order = 10
+mode = "off"
+prompt_mode = "off"

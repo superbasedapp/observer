@@ -241,6 +241,56 @@ func TestOneShotStartsANewSession(t *testing.T) {
 	}
 }
 
+// TestOneShotAcceptsASpaceInEveryPath pins the operator ruling of
+// 2026-11-06: a project such as "future calculator" is scanned, not refused.
+// Each spaced path stays ONE argv element after its flag, so it cannot split
+// or start a flag, and the shape properties still hold.
+func TestOneShotAcceptsASpaceInEveryPath(t *testing.T) {
+	req := OneShotRequest{
+		Home:        "/home/u",
+		ObserverDir: "/home/u/.observer",
+		ProjectRoot: "/mnt/d/programsx/future calculator/logs/run 1",
+		OutputDir:   "/tmp/obs run-1/out",
+		CacheDir:    "/tmp/obs run-1/cache",
+		ProgramDirs: []string{"/opt/my scanners/bin"},
+		MaskPaths:   []string{"/mnt/c/Users/A B"},
+	}
+	ops := buildOneShot(t, req)
+	want := map[bindOp]bool{
+		{flag: flagROBind, src: req.ProjectRoot, dst: req.ProjectRoot}:          false,
+		{flag: flagChdir, dst: req.ProjectRoot}:                                 false,
+		{flag: flagBind, src: req.OutputDir, dst: req.OutputDir}:                false,
+		{flag: flagBind, src: req.CacheDir, dst: req.CacheDir}:                  false,
+		{flag: flagROBindTry, src: req.ProgramDirs[0], dst: req.ProgramDirs[0]}: false,
+		{flag: flagTmpfs, dst: req.MaskPaths[0]}:                                false,
+	}
+	for _, op := range ops {
+		if _, ok := want[op]; ok {
+			want[op] = true
+		}
+		if isRW(op.flag) && op.dst != req.OutputDir && op.dst != req.CacheDir {
+			t.Errorf("unexpected writable bind %v", op)
+		}
+	}
+	for op, seen := range want {
+		if !seen {
+			t.Errorf("argv lacks %v", op)
+		}
+	}
+}
+
+// TestOnlyTheOneShotCheckAcceptsASpace pins the scope of the ruling: the
+// terminal planner's validateAbs still refuses a space.
+func TestOnlyTheOneShotCheckAcceptsASpace(t *testing.T) {
+	const p = "/mnt/d/programsx/future calculator"
+	if err := validateAbs(p, true); err == nil {
+		t.Error("validateAbs accepted a space; the terminal planner keeps the strict rule")
+	}
+	if err := validateOneShotAbs(p, true); err != nil {
+		t.Errorf("validateOneShotAbs refused a space: %v", err)
+	}
+}
+
 func TestOneShotRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -263,6 +313,14 @@ func TestOneShotRefuses(t *testing.T) {
 		{"output with a dotdot", func(r *OneShotRequest) { r.OutputDir = "/tmp/../home/u/.observer" }, ".."},
 		{"output is the root", func(r *OneShotRequest) { r.OutputDir = "/" }, "whole-root"},
 		{"empty observer dir", func(r *OneShotRequest) { r.ObserverDir = "" }, "observer dir"},
+		{"project with a tab", func(r *OneShotRequest) { r.ProjectRoot = "/home/u/src/a\tb" }, "other than a space"},
+		{"project with a newline", func(r *OneShotRequest) { r.ProjectRoot = "/home/u/src/a\nb" }, "other than a space"},
+		{"project with a NUL", func(r *OneShotRequest) { r.ProjectRoot = "/home/u/src/a\x00b" }, "other than a space"},
+		{"project with a DEL", func(r *OneShotRequest) { r.ProjectRoot = "/home/u/src/a\x7fb" }, "other than a space"},
+		{"program dir with a newline", func(r *OneShotRequest) { r.ProgramDirs = []string{"/opt/a\nb"} }, "other than a space"},
+		{"mask path with a tab", func(r *OneShotRequest) { r.MaskPaths = []string{"/mnt/a\tb"} }, "other than a space"},
+		{"spaced output is still flag-shaped", func(r *OneShotRequest) { r.OutputDir = "-x y" }, "'-'"},
+		{"spaced project still has a dotdot", func(r *OneShotRequest) { r.ProjectRoot = "/home/u/my src/../.observer" }, ".."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := baseOneShot()

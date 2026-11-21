@@ -1,0 +1,17 @@
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only: ["/usr","/lib","/bin","/etc","/proc"]
+  read_write: ["/tmp","/dev/null"]
+landlock:
+  compatibility: best_effort
+network_policies:
+  "observer_egress_allow_hosts":
+    name: "observer_egress_allow_hosts"
+    endpoints:
+      - host: "github.com"
+        ports: [443]
+        enforcement: "enforce"
+      - host: "pastebin.com"
+        ports: [443, 8443]
+        enforcement: "enforce"

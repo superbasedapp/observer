@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // The dashboard control for `observer guard mcp reputation <package>`
@@ -21,8 +22,8 @@ import (
 // The route is whole-route Local: a lookup makes ONE outbound HTTPS request
 // to registry.npmjs.org, which a remote viewer must never be able to cause,
 // and the POST carries the owner-local confirm token like every other
-// owner-local action. The verb has no mutation; the opt-in itself stays a
-// [guard.cloud] config decision (Settings never edits [guard.cloud]).
+// owner-local action. The verb has no mutation; the opt-in itself is the
+// consent card's write (PUT /api/guard/cloud, guard_cloud.go), human-only.
 
 // guardReputationDoer is the dashboard lookup transport; a var so tests can
 // stub the registry (nil = the egress worker's production client).
@@ -122,7 +123,7 @@ func (s *Server) guardReputationLookup(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, notify.ErrReputationOff):
-		writeJSONStatus(w, http.StatusConflict, map[string]any{"error": "reputation_off", "message": err.Error()})
+		writeNeedsSetting(w, http.StatusConflict, "reputation_off", msgReputationOff, settingslink.GuardNetwork)
 		return
 	case errors.Is(err, notify.ErrPackageNotFound):
 		s.recordManageAudit(r, "guard_mcp_reputation", "package="+pkg+" result=not_found")

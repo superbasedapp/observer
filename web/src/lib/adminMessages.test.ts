@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ackPrompt,
   addAttachment,
+  ATTACHMENT_MANAGED_SUB,
   attachmentLink,
   attachmentView,
   budgetAttachOptions,
@@ -146,6 +147,22 @@ test("attachmentView prefers the label and excerpt, else plain fallbacks", () =>
   const u = attachmentView({ type: "weird", ref: "abcdefghijklmnop" });
   assert.equal(u.icon, "other");
   assert.equal(u.title, "Item abcdefgh");
+  assert.equal(u.to, "/messages");
+});
+
+// CG-21: a guard-event card on a managed node, where Security is hidden by
+// default, gets no link and says why; other cards keep theirs.
+test("attachmentView drops the link of a card whose page is hidden here", () => {
+  const hidden = (href: string) => href.startsWith("/security");
+  const g = attachmentView({ type: "guard_event", ref: "g1", label: "Blocked rm -rf" }, hidden);
+  assert.equal(g.to, null);
+  assert.equal(g.sub, ATTACHMENT_MANAGED_SUB);
+  assert.equal(g.title, "Blocked rm -rf");
+  assert.equal(g.icon, "guard_event");
+  const s = attachmentView({ type: "session", ref: "s-1" }, hidden);
+  assert.equal(s.to, "/sessions?session=s-1");
+  assert.equal(s.sub, "Open your session");
+  assert.equal(attachmentView({ type: "guard_event", ref: "g1" }).to, "/security?tab=verdicts");
 });
 
 test("kindView maps the closed kind set and reads an unknown kind as a note", () => {
@@ -260,7 +277,7 @@ test("readReceiptNote shows only when read receipts are on", () => {
 });
 
 test("sendErrorText maps every refusal code to a plain sentence", () => {
-  assert.match(sendErrorText(409, '{"error":"not_enrolled","message":"x"}'), /not enrolled/);
+  assert.match(sendErrorText(409, '{"error":"not_enrolled","message":"x"}'), /not connected to one\. Connect it in Settings > Account\./);
   assert.match(sendErrorText(403, '{"error":"threads_disabled"}'), /start conversations/);
   assert.match(sendErrorText(403, '{"error":"topic_not_allowed"}'), /this topic/);
   assert.match(sendErrorText(429, '{"error":"outbox_full"}'), /Too many/);

@@ -96,6 +96,7 @@ func (g *Guard) EvaluateHook(ev policy.Event) (ActionVerdict, bool) {
 	// downgraded from (§14.4 exception register) and, for an org grant,
 	// which grant.
 	appr.stamp(&av)
+	g.stampGrantProject(&av, &ev)
 	return av, verdict.Decision >= policy.DecisionFlag || guardErr != nil
 }
 

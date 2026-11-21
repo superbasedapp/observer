@@ -38,3 +38,12 @@ func (r *ProcResolver) ResolveTool(context.Context, string) (string, bool, error
 func (r *ProcResolver) ResolveCWD(context.Context, string) (string, bool, error) {
 	return "", false, nil
 }
+
+// ResolveOwnTool always reports a clean miss on non-Linux: the process
+// table is not introspected, so no process is known to be a tool's own.
+func (r *ProcResolver) ResolveOwnTool(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
+// SetToolBinaries is a no-op on non-Linux: there is no own-process check.
+func (r *ProcResolver) SetToolBinaries(func(tool string) []string) {}

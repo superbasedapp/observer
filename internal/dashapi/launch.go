@@ -179,6 +179,10 @@ type LaunchSpec struct {
 	FromMessage int
 	Rows        uint16
 	Cols        uint16
+	// Initiator and ParentSessionID: who started this launch (lane cli-2),
+	// as FreshLaunchSpec. Additive.
+	Initiator       string
+	ParentSessionID string
 }
 
 // FreshLaunchSpec is the dashboard's server-derived FRESH-launch request (F1).
@@ -227,6 +231,10 @@ type FreshLaunchSpec struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote"
 	// WorkspaceSource. Ignored otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's choice of where a hosted row
+	// clones a "clone-remote" URL (auto, box or home; decision SBXD-5),
+	// re-validated by the hosted driver; "" takes the config.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/
 	// worktree. Ignored for "live".
 	WorkspaceBranch string
@@ -240,6 +248,68 @@ type FreshLaunchSpec struct {
 	// BOXSIGNIN; termsvc.FreshRequest). Ignored when Sandbox is false.
 	SignInSeed *bool
 	SignInAsk  bool
+	// MaskWorkspaceSecrets asks the sandbox to hide the workspace's secret
+	// files (.env variants, key files, registry credentials) inside the box
+	// (termsvc.FreshRequest.MaskWorkspaceSecrets; decision D32 of the security
+	// assessments plan). Server-decided only: no client body field sets it. The
+	// caller asks only for a backend whose probe row says
+	// SandboxBackendAvail.MasksWorkspaceSecrets and through a manager that
+	// implements FreshLaunchDetailer, so the outcome can be read; a launch
+	// that asks otherwise is refused by the application service. Ignored when
+	// Sandbox is false. Additive.
+	MaskWorkspaceSecrets bool
+	// Initiator and ParentSessionID are who started this launch (lane
+	// cli-2, migration 220): one of termrun's closed Initiator set and, for
+	// an agent, its parent session. The dashboard handler fills them from
+	// Options.LaunchCaller; "" records nothing. Additive.
+	Initiator       string
+	ParentSessionID string
+	// TaskPrompt is a server-built first prompt for the agent (the Code
+	// security page's "Fix with an agent"; internal/secfixtask). It is never
+	// client text: the handler builds it from its own store rows. The
+	// application service places it on the tool's argv by the registry's
+	// task-seed shape (integration.TaskSeedFor) and refuses the launch when
+	// the tool has none. "" launches as before. Ignored when Shell. Additive.
+	TaskPrompt string
+}
+
+// FreshLaunchResult is what a fresh launch reports beyond its handle (additive).
+type FreshLaunchResult struct {
+	Handle string
+	// SecretMask is what the workspace secret mask covered, nil when the launch
+	// did not ask for it or the sandbox built none.
+	SecretMask *SecretMaskOutcome
+	// Backend is the sandbox backend that built the box, as the launcher
+	// resolved it ("" when the launch was not sandboxed or the launcher named
+	// none). An Automatic request is resolved only there, so a caller that
+	// records which backend a run used reads it from here, never from what it
+	// asked for. Additive.
+	Backend string
+}
+
+// SecretMaskOutcome is what the workspace secret mask covered for one launch,
+// as counts and closed reason words only: no path crosses this seam (the
+// application service's own outcome lists paths, which stay in the daemon).
+type SecretMaskOutcome struct {
+	// Masked is the number of files hidden in the box.
+	Masked int
+	// Complete: no limit was reached, no folder was unreadable and every
+	// secret-named entry the walk met is hidden.
+	Complete bool
+	// Gaps is how many places the mask does not cover (the listed ones and the
+	// ones past the list), Reasons how many of the listed ones per closed
+	// reason word.
+	Gaps    int
+	Reasons map[string]int
+}
+
+// FreshLaunchDetailer is the optional extension of LaunchManager a manager
+// implements when it can report a fresh launch's outcome: the dashboard asks
+// for the workspace secret mask only through one that does. CreateFresh and
+// CreateFreshDetailed start the same launch; CreateFresh returns the handle
+// alone.
+type FreshLaunchDetailer interface {
+	CreateFreshDetailed(spec FreshLaunchSpec) (FreshLaunchResult, error)
 }
 
 // SSHLaunchSpec is the dashboard's server-derived SSH remote-system request.
@@ -249,6 +319,10 @@ type SSHLaunchSpec struct {
 	Profile string
 	Rows    uint16
 	Cols    uint16
+	// Initiator and ParentSessionID: who opened the shell (lane cli-2
+	// fixes-1, the caller's attribution rather than an assumed human).
+	Initiator       string
+	ParentSessionID string
 }
 
 // SSHProfileInfo is one picker row. It carries what the UI needs to let an
@@ -280,6 +354,10 @@ type ResumeLaunchSpec struct {
 	ExtraArgs   []string
 	Rows        uint16
 	Cols        uint16
+	// Initiator and ParentSessionID: who started this launch (lane cli-2),
+	// as FreshLaunchSpec. Additive.
+	Initiator       string
+	ParentSessionID string
 }
 
 // SetupSpec is a server-derived local operator setup command run in a PTY (the
@@ -351,6 +429,11 @@ type LaunchInfo struct {
 	// (sandbox plan v2 section 9): closed enums only, no path, so it is
 	// safe on the snapshot remote viewers see. Nil for an unsandboxed run.
 	Isolation *LaunchIsolation `json:"isolation,omitempty"`
+	// Initiator and ParentSessionID are who started the run, as recorded
+	// (lane cli-2, migration 220): the Terminals list shows them. "" when
+	// not recorded.
+	Initiator       string `json:"initiator,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
 }
 
 // LaunchIsolation is the run pill's view of a sandboxed run: the class
@@ -371,6 +454,10 @@ type LaunchIsolation struct {
 	// is no longer complete).
 	CaptureDegraded bool     `json:"capture_degraded,omitempty"`
 	CaptureCauses   []string `json:"capture_causes,omitempty"`
+	// Seccomp is what the syscall filter gave the run (the closed
+	// sandboxvocab.SeccompRun vocabulary, tracker F-002); omitted when not
+	// recorded.
+	Seccomp string `json:"seccomp,omitempty"`
 }
 
 // ErrLaunchTooMany signals the concurrent-session cap was hit (429).

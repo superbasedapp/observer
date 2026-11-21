@@ -76,8 +76,11 @@ func TestMXCRunDocumentEnumeratesTheToolsParents(t *testing.T) {
 
 // TestSandboxCLIToolPath: the launcher's own binary-path flag, read from the
 // command tree, names the tool a sandboxed CLI launch runs, and the plan
-// grants that binary's directory like a pinned [launch.tools] path.
+// grants that binary's directory like a pinned [launch.tools] path. The host
+// env capture is stubbed (tracker F-031): toolBinDirs resolves through
+// dashResolveEnv, and the real one started the developer's login shell.
 func TestSandboxCLIToolPath(t *testing.T) {
+	stubDashResolveEnv(t)
 	if f := sandboxCLIBinaryPathFlag("claude"); f != "claude-path" {
 		t.Fatalf("claude's binary-path flag: %q", f)
 	}

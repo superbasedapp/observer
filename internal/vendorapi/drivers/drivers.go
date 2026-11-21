@@ -120,6 +120,19 @@ var table = withFamilies(map[vs.SurfaceID]func() vendorapi.Driver{
 	// daily activity (unattributed gateway:litellm facts).
 	jetbrains.SurfaceHubSCIM: jetbrains.HubSCIM,
 	poolside.SurfaceLiteLLM:  poolside.LiteLLM,
+
+	// cloud agents arc, lane CA-C3: the cloud-session lists the org's
+	// vendor-connection projection reads (internal/orgserver/cloudproj).
+	// The same pure drivers serve the node connector (lane CA-B2).
+	cursor.SurfaceCloudAgents:    cursor.CloudAgents,
+	cognition.SurfaceOrgSessions: cognition.OrgSessions,
+
+	// cloud agents arc, lane CA-C8: the vendor-stated owners of Cursor cloud
+	// agents. The key-info call names a user key's owner (the node
+	// connector's connect probe parses it through the same function); the
+	// cloud-filtered Admin API usage events name who ran each cloud agent.
+	cursor.SurfaceCloudAgentMeta:   cursor.CloudAgentMeta,
+	cursor.SurfaceCloudAgentOwners: cursor.CloudAgentOwners,
 },
 	// The GitHub activity families of lane L8 (T-611): each family is one
 	// closed surface table in its package.

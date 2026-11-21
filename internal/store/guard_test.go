@@ -657,8 +657,15 @@ func TestGuardApprovals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PruneGuardRows: %v", err)
 	}
-	if removed != 1 {
-		t.Errorf("pruned = %d, want 1 (only the expired+old grant)", removed)
+	// The total also counts guard_events: since P-232 every grant writes an
+	// audit event at its grant time, and the two 100-day-old ones age out
+	// under the same retention. The register itself loses exactly one row.
+	var approvalsLeft int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM guard_approvals`).Scan(&approvalsLeft); err != nil {
+		t.Fatal(err)
+	}
+	if approvalsLeft != 3 || removed < 1 {
+		t.Errorf("pruned = %d, approvals left = %d, want the one expired+old grant gone (3 left)", removed, approvalsLeft)
 	}
 	remaining, err := s.ActiveGuardApprovals(ctx, "", now.Add(-2*time.Hour))
 	if err != nil {

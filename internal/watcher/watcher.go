@@ -549,6 +549,16 @@ func (w *Watcher) SetRootCommitResolver(fn store.RootCommitResolverFunc) {
 	w.store.SetRootCommitResolver(fn)
 }
 
+// SetProjectRootResolver wires the project-root resolver the watcher's
+// store applies to every ingested event (store.SetProjectRootResolver): the
+// same rule the hook processes use, so an adapter that reports the folder a
+// tool opened (Cursor, VS Code Copilot) files its session under the same git
+// root the hook path does, and a writer can never move a session between
+// two spellings of one repository. nil (the default) resolves nothing.
+func (w *Watcher) SetProjectRootResolver(fn store.ProjectRootResolver) {
+	w.store.SetProjectRootResolver(fn)
+}
+
 // SurfaceSeams exposes the watcher store's two capture-surface seams —
 // LoadSessionSurface (found=false on a missing session, never an error
 // for that case) and SetSessionSurface — for the daemon-lifetime
@@ -1571,6 +1581,7 @@ func (w *Watcher) ingestProcessResult(ctx context.Context, a adapter.Adapter, re
 		SessionLineages:     res.SessionLineages,
 		SessionSurfaces:     res.SessionSurfaces,
 		SessionToolVersions: res.SessionToolVersions,
+		SessionExecutions:   res.SessionExecutions,
 		OutcomeUpdates:      res.OutcomeUpdates,
 		ToolAccounts:        res.ToolAccounts,
 	})

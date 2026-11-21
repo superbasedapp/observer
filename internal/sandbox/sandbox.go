@@ -67,6 +67,10 @@ type Availability struct {
 	// Egress echoes the configured network tier for display (populated by
 	// the caller, like HomeMode).
 	Egress string
+	// ReasonListsRows: Reason is the list of every row of this host (the
+	// overall answer when no row is available), not one row's own reason,
+	// so a refusal naming one row may append it (lane FX1, FX1-A4).
+	ReasonListsRows bool
 }
 
 // Env is the injected I/O surface for Probe. Every field is data or a func so
@@ -175,7 +179,7 @@ func Probe(env Env) Availability {
 				Verdict:        VerdictNetNSDenied,
 				Backend:        BackendBwrap,
 				BackendVersion: version,
-				Reason:         fmt.Sprintf("bwrap could not create a private network namespace, which the configured egress tier needs (set [terminal.sandbox].egress = \"host\" to share the host network, which leaves the dashboard reachable from inside the sandbox): %s", canaryErrorText(nerr)),
+				Reason:         fmt.Sprintf("bwrap could not create a private network namespace, which the configured egress tier needs (the host tier, chosen under Network in Terminals > Settings > Sandbox isolation ([terminal.sandbox].egress = \"host\"), shares the host network instead: a loosening that leaves the dashboard reachable from inside the sandbox): %s", canaryErrorText(nerr)),
 			}
 		}
 	}

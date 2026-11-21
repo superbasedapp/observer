@@ -57,6 +57,9 @@ export type ToolKey =
   | "kimchi"
   | "stakpak"
   | "vtcode"
+  // A developer's own agent on a raw provider API or SDK (P-228), captured
+  // through the proxy when it sends X-Superbased-Agent.
+  | "custom-agent"
   // Browser-chatbot rail (Phase 2) — captured by the opt-in MV3 browser
   // extension, NOT coding CLIs. Tokens are ALWAYS estimated.
   | "chatgpt-web"
@@ -327,6 +330,7 @@ const TOOLS: Record<string, ToolMeta> = {
   kimchi: { key: "kimchi", label: "Kimchi", colorVar: "var(--tool-kimchi)", provider: "agnostic" },
   stakpak: { key: "stakpak", label: "Stakpak", colorVar: "var(--tool-stakpak)", provider: "agnostic" },
   vtcode: { key: "vtcode", label: "VT Code", colorVar: "var(--tool-vtcode)", provider: "agnostic" },
+  "custom-agent": { key: "custom-agent", label: "Own agent", colorVar: "var(--tool-custom-agent)", provider: "agnostic" },
   // Browser-chatbot rail (Phase 2). provider names the vendor whose web app
   // the extension observes; browser:true forces the mandatory "est." label
   // on every token/cost figure (§9).

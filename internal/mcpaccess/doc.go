@@ -36,9 +36,10 @@
 // actions are typed feature_unavailable lint ERRORS, never silently
 // dropped. The task refusal was grounded in agentgateway v1.5.0, whose
 // mcpAuthorization CEL context carried mcp.task{target,name} and no request
-// method. The pinned v1.6.0 now sets mcp.methodName (rbac.rs
-// McpAuthorizationSet::validate; session.rs authorize_task_request passes
-// tasks/get, tasks/update and tasks/cancel as distinct methods; T-749), but
+// method. v1.6.0 began setting mcp.methodName and the pinned v1.7.0 still
+// does (rbac.rs McpAuthorizationSet::validate; session.rs
+// authorize_task_request passes tasks/get, tasks/update and tasks/cancel as
+// distinct methods; T-749, re-checked at the v1.7.0 re-pin, PT-95), but
 // no compiler here emits a method-keyed task rule yet, so a tasks/get-only
 // grant would still compile to a rule that also allows tasks/cancel - a
 // silent widening. The three task actions stay in the vocabulary (a request

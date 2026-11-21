@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { SlideOver, SurfaceBadge, TabPanel, TabStrip, ToolBadge, Tooltip, TruncatedPath, type TabDef } from "@/components/primitives";
+import { ExecutionLocationBadge, SlideOver, SurfaceBadge, TabPanel, TabStrip, ToolBadge, Tooltip, TruncatedPath, type TabDef } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { sessionTabIcon } from "@shared/components/sessiondetail";
 import { toolVersionView } from "@shared/lib/toolVersion";
@@ -592,6 +592,10 @@ export function SessionDetailPanel({
             {/* Capture surface (migration 107). Renders nothing when the
                 session carries no stamp — absence is UNKNOWN, never "cli". */}
             <SurfaceBadge surface={d.surface} host={d.surface_host} />
+            {/* Where it ran (migration 240). Renders nothing when unstamped:
+                absence is UNKNOWN, never "local". The vendor's own session
+                id, when captured, is in the pill's tooltip. */}
+            <ExecutionLocationBadge location={d.execution_location} vendorRef={d.vendor_session_ref} />
             {/* Captured tool/CLI version (migrations 125 and 162). Rendered
                 only when stamped; absence is UNKNOWN, never a fabricated
                 version. An upgrade inside the session shows both builds. */}

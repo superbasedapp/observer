@@ -49,7 +49,7 @@ export function RemoteMachineChip() {
   const verdict = buildVerdict(status.data?.version, status.data?.schema_version, id.localVersion, id.localSchema);
   const name = machineName(id);
   const tip = [
-    `You are on the SuperBased dashboard of a REMOTE machine: ${name}.`,
+    `You are on the superbased dashboard of a REMOTE machine: ${name}.`,
     id.target ? `Reached through the SSH profile ${id.label} (${id.target}).` : `Reached through the SSH profile ${id.label}.`,
     status.data?.version ? `Its build: v${status.data.version}, database schema ${status.data.schema_version ?? "unknown"}.` : "",
     verdict.outdated ? `Older than the machine you opened it from: ${verdict.reason}.` : "",

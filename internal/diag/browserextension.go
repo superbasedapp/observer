@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/browserhost"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
 
 // browserExtensionHealthNote is CheckAdapter's capability-shape special
@@ -39,12 +40,18 @@ import (
 //     browser-health.json heartbeat, and how fresh is it.
 //
 // Neither signal is StatusFail — a fresh install genuinely has neither yet,
-// and the fix in both cases is one command (`observer init --browser`).
-func browserExtensionHealthNote(tool string, cfg config.Config, note func(Status, string)) {
+// and the fix in both cases is one command (`observer init --browser`, or
+// Settings > Browser capture in the dashboard), reported through fix as a
+// structured remediation.
+func browserExtensionHealthNote(tool string, cfg config.Config, note func(Status, string), fix func(remedy.Remediation)) {
 	if ok, detail := browserManifestStatus(); ok {
 		note(StatusOK, detail)
 	} else {
-		note(StatusWarn, detail+" - run `observer init --browser` to write it")
+		setup := remedy.Of(remedy.BrowserHostSetup, "")
+		note(StatusWarn, detail+" - set it up in Settings > Browser capture, or run "+remedy.Quote(setup)+" to write it")
+		if fix != nil {
+			fix(setup)
+		}
 	}
 
 	ok, detail := browserHeartbeatStatus(tool, cfg)

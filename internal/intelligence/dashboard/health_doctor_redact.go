@@ -129,8 +129,15 @@ func newPathRedactor(candidates []pathSub) pathRedactor {
 		// form would match nothing at all. Registering both costs one entry and
 		// removes a silent-miss class; the dedupe collapses them whenever
 		// cleaning was a no-op, which is the normal case.
-		add(strings.TrimRight(filepath.Clean(trimmed), `/\`), c.placeholder)
+		cleaned := strings.TrimRight(filepath.Clean(trimmed), `/\`)
+		add(cleaned, c.placeholder)
 		add(trimmed, c.placeholder)
+		// The forward-slash spelling too. On Windows filepath.Clean rewrites
+		// every "/" to `\`, yet text quotes a root either way ("C:/Users/x"
+		// from a TOML value or a ToSlash'd path, `C:\Users\x` from
+		// filepath.Join), so registering only the backslash form would be the
+		// same silent miss. On POSIX this equals cleaned and dedupes away.
+		add(filepath.ToSlash(cleaned), c.placeholder)
 	}
 	sort.Slice(subs, func(i, j int) bool {
 		if len(subs[i].root) != len(subs[j].root) {

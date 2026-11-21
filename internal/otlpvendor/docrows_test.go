@@ -297,7 +297,9 @@ func TestClaimAndEcho(t *testing.T) {
 	if len(ccNoService.Turns) != 1 || ccNoService.Turns[0].Tool != "claude-code" || len(ccNoService.Unclaimed) != 0 {
 		t.Errorf("claude code on an unclaimed resource: %+v unclaimed=%v", ccNoService.Turns, ccNoService.Unclaimed)
 	}
-	if !ClaimsService("github-copilot") || ClaimsService("my-llm-app") || ClaimsService("") {
-		t.Errorf("ClaimsService wrong")
+	for svc, want := range map[string]bool{"github-copilot": true, "my-llm-app": false, "": false} {
+		if _, got := claim(svc); got != want {
+			t.Errorf("claim(%q) = %v, want %v", svc, got, want)
+		}
 	}
 }

@@ -82,18 +82,32 @@ func TestEnrolWritesFullContentByTenancy(t *testing.T) {
 	}
 }
 
-// TestEnrolShareDefaultsTable pins the table itself: exactly one row per
-// tenancy class, managed = true / individual = false, and an unmatched
-// lookup falls back to the individual row (never INTO full content).
+// TestEnrolShareDefaultsTable pins the table itself: one row per tenancy
+// class plus the owner-managed row (a personal organization, managed by its
+// owner since 2026-11-19): managed = true, owner-managed = false (the owner
+// approved a summary-only personal dashboard), individual = false; an
+// unmatched lookup falls back to the individual row (never INTO full
+// content).
 func TestEnrolShareDefaultsTable(t *testing.T) {
-	if len(enrolShareDefaults) != 2 {
-		t.Fatalf("enrolShareDefaults has %d rows, want 2 (one per tenancy class)", len(enrolShareDefaults))
+	if len(enrolShareDefaults) != 3 {
+		t.Fatalf("enrolShareDefaults has %d rows, want 3", len(enrolShareDefaults))
 	}
-	if got := enrolShareDefaultFor(true); got.name != "managed" || !got.fullContent {
-		t.Fatalf("managed row = %+v", got)
+	for _, tc := range []struct {
+		managed, owner bool
+		name           string
+		full           bool
+	}{
+		{true, false, "managed", true},
+		{true, true, "owner-managed", false},
+		{false, false, "individual", false},
+		{false, true, "individual", false}, // no such row: the fallback
+	} {
+		if got := enrolShareDefaultOf(tc.managed, tc.owner); got.name != tc.name || got.fullContent != tc.full {
+			t.Errorf("enrolShareDefaultOf(%v, %v) = %+v, want %s full=%v", tc.managed, tc.owner, got, tc.name, tc.full)
+		}
 	}
-	if got := enrolShareDefaultFor(false); got.name != "individual" || got.fullContent {
-		t.Fatalf("individual row = %+v", got)
+	if got := enrolShareDefaultFor(true); got.name != "managed" {
+		t.Fatalf("enrolShareDefaultFor(true) = %+v", got)
 	}
 	if last := enrolShareDefaults[len(enrolShareDefaults)-1]; last.fullContent {
 		t.Fatal("the fallback (last) row must be the metadata-only one")
@@ -340,6 +354,43 @@ func TestEnterpriseContentLineRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := enterpriseContentLineFor(tc.eff); !strings.Contains(got, tc.want) {
 				t.Fatalf("line = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCLIOrgClientShipsUnderGovernedShare: a push from a client built outside
+// the daemon (`observer org push-now`, the dashboard's push-now) ships under
+// the same governed posture as the daemon's own pushes. On a managed node
+// holding a signed extract.managed grant that is the raw-content raise; the
+// identical grant on an individual enrolment stays at the node's own
+// metadata-only floor. Before this, such a client shipped the raw config
+// block in both cases.
+func TestCLIOrgClientShipsUnderGovernedShare(t *testing.T) {
+	cases := []struct {
+		name    string
+		tenancy string
+		raw     bool
+	}{
+		{"managed grant raises", orgcontract.TenancyManaged, true},
+		{"individual grant inert", orgcontract.TenancyIndividual, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _, _ := signedGrantFixture(t, tc.tenancy, []string{govern.AuthorityExtractManaged})
+			path, _ := w4fMetadataOnlyConfig(t)
+			cfg, err := config.Load(config.LoadOptions{GlobalPath: path})
+			if err != nil {
+				t.Fatalf("config.Load: %v", err)
+			}
+			client := idpTestOrgClient(t, st)
+			client.SetShareProvider(cliGovernanceShareProvider(cfg, st, nil))
+			share := client.ShareOptions()
+			if share.ShipsRawContent() != tc.raw || share.EnterpriseGranted != tc.raw {
+				t.Fatalf("CLI client share = %+v, want raw content %v", share, tc.raw)
+			}
+			if share.FullContent {
+				t.Fatal("the node's own full_content must stay false; the raise rides EnterpriseGranted")
 			}
 		})
 	}

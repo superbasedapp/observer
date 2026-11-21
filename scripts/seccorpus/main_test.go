@@ -52,8 +52,8 @@ func TestReadRepos(t *testing.T) {
 	for _, r := range committed {
 		self = self || r.URL == selfURL
 	}
-	if len(committed) != 61 || !self {
-		t.Fatalf("corpus/repos.tsv: %d repositories, this one listed %v (want 50 JSP-7, 10 Java and C# from SEC-G5, plus this one)", len(committed), self)
+	if len(committed) != 71 || !self {
+		t.Fatalf("corpus/repos.tsv: %d repositories, this one listed %v (want 50 JSP-7, 10 Java and C# from SEC-G5, 10 Ruby, PHP and Kotlin from M3L-2 1c, plus this one)", len(committed), self)
 	}
 }
 

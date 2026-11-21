@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +26,18 @@ const SchemaV1 = "sbo.content-manifest.v1"
 const (
 	SigningDomain = "sbo-content-manifest-v1"
 	MirrorDomain  = "sbo-content-mirror-v1"
+	// FeedSigningDomain is the content-feed key's domain (static feed
+	// mirroring plan section 6.4): a feed-key signature never verifies as a
+	// release-key one, nor the reverse, even if the two keys were the same.
+	FeedSigningDomain = "sbo-content-feed-v1"
 )
+
+// SignerFeed is the Envelope.Signer value of a manifest signed with the
+// content-feed key (SignFeed). An empty Signer is the release vendor key.
+const SignerFeed = "feed"
+
+// MaxDeltaDrop caps the names one delta entry removes from its base.
+const MaxDeltaDrop = 100000
 
 // Caps.
 const (
@@ -46,13 +58,27 @@ const (
 	MaliciousPackages Kind = "security.malicious_packages"
 	PopularNames      Kind = "security.popular_names"
 	OSVExport         Kind = "security.osv_export"
-	AgentCVETable     Kind = "security.agent_cve_table"
-	RulePack          Kind = "security.rule_pack"
-	Engine            Kind = "security.engine"
-	SandboxRootfs     Kind = "sandbox.rootfs"
-	SandboxImage      Kind = "sandbox.image"
-	SandboxGuest      Kind = "sandbox.guest_binary"
-	SandboxNative     Kind = "sandbox.native_files"
+	OSVOSExport       Kind = "security.osv_os_export"
+	// OSVShards is the remote-matching shard manifest (OS and CI scanning
+	// plan sections 13.3 and 13.11, lane RM-1): one entry per shard set, its
+	// descriptor (<Set>.set.json, internal/secscan/osvshardkey is the format
+	// owner), which pins the set's content-addressed index files and shards
+	// by digest. The shard objects themselves are served from the public
+	// shard bucket, never as entries of this kind.
+	OSVShards Kind = "security.osv_shards"
+	// KEV and EPSS are the exploit-likelihood kinds (OS and CI scanning plan
+	// section 14.7): the CISA Known Exploited Vulnerabilities catalog and
+	// the FIRST EPSS daily scores, compacted by the publisher
+	// (internal/secexploit is the format owner).
+	KEV           Kind = "security.kev"
+	EPSS          Kind = "security.epss"
+	AgentCVETable Kind = "security.agent_cve_table"
+	RulePack      Kind = "security.rule_pack"
+	Engine        Kind = "security.engine"
+	SandboxRootfs Kind = "sandbox.rootfs"
+	SandboxImage  Kind = "sandbox.image"
+	SandboxGuest  Kind = "sandbox.guest_binary"
+	SandboxNative Kind = "sandbox.native_files"
 )
 
 // Class groups kinds by what they carry.
@@ -118,6 +144,10 @@ var kindTable = []KindSpec{
 	{Kind: MaliciousPackages, Class: ClassFeed, MaxValidity: 14 * day, AgeFloor: 30 * day, Owner: "security 8.5, D1"},
 	{Kind: PopularNames, Class: ClassFeed, MaxValidity: 60 * day, AgeFloor: 180 * day, Owner: "security 8.5, D1"},
 	{Kind: OSVExport, Class: ClassFeed, MaxValidity: 7 * day, AgeFloor: 14 * day, Owner: "security 8.2, D2"},
+	{Kind: OSVOSExport, Class: ClassFeed, MaxValidity: 7 * day, AgeFloor: 14 * day, Owner: "OS and CI scanning 6.4 and 6.6.1, OS-2"},
+	{Kind: OSVShards, Class: ClassFeed, MaxValidity: 7 * day, AgeFloor: 14 * day, Owner: "OS and CI scanning 13.3 and 13.11, RM-1"},
+	{Kind: KEV, Class: ClassFeed, MaxValidity: 7 * day, AgeFloor: 14 * day, Owner: "OS and CI scanning 14.7, M3L-1"},
+	{Kind: EPSS, Class: ClassFeed, MaxValidity: 7 * day, AgeFloor: 14 * day, Owner: "OS and CI scanning 14.7, M3L-1"},
 	{Kind: AgentCVETable, Class: ClassFeed, MaxValidity: 30 * day, AgeFloor: 90 * day, Owner: "security 8.5"},
 	{Kind: RulePack, Class: ClassFeed, MaxValidity: 90 * day, AgeFloor: 365 * day, Owner: "security 8.5, G"},
 	{Kind: Engine, Class: ClassEngine, MaxValidity: 180 * day, AgeFloor: 365 * day, Owner: "security 8.1, D2 and G", ManifestIsContent: true},
@@ -168,12 +198,17 @@ const (
 	// UpstreamAuthenticode: a Windows Authenticode signature checked at
 	// build (sandbox native files).
 	UpstreamAuthenticode UpstreamMethod = "authenticode"
+	// UpstreamGCSObjectHash: the upstream object's generation, CRC32C and
+	// MD5 as served by the OSV bucket, checked where the manifest was built
+	// (the OSV exports; Object, Generation, CRC32C and MD5 are recorded).
+	// For a delta entry they name the object the delta was cut from.
+	UpstreamGCSObjectHash UpstreamMethod = "gcs_object_hash"
 )
 
 // knownUpstreamMethods is the closed method set.
 var knownUpstreamMethods = map[UpstreamMethod]bool{
 	UpstreamNone: true, UpstreamCosignKeylessOnline: true, UpstreamSHA256Sums: true,
-	UpstreamSLSABundle: true, UpstreamAuthenticode: true,
+	UpstreamSLSABundle: true, UpstreamAuthenticode: true, UpstreamGCSObjectHash: true,
 }
 
 // UpstreamCheck records an entry's upstream check.
@@ -191,6 +226,30 @@ type UpstreamCheck struct {
 	SHA256SumsB64 string `json:"sha256sums,omitempty"`
 	// BundleB64 is the provenance bundle (base64).
 	BundleB64 string `json:"bundle,omitempty"`
+	// Object is the upstream object's https URL, and Generation, CRC32C
+	// (base64 big-endian Castagnoli, the x-goog-hash spelling) and MD5
+	// (base64) what the bucket served for it (gcs_object_hash).
+	Object     string `json:"object,omitempty"`
+	Generation string `json:"generation,omitempty"`
+	CRC32C     string `json:"crc32c,omitempty"`
+	MD5        string `json:"md5,omitempty"`
+}
+
+// DeltaOf marks an entry as a cumulative delta over another entry of the
+// same manifest (the OSV exports, static feed mirroring plan section 6.2):
+// a node holding the base applies the delta's records over it and removes
+// Drop, never a chain of deltas.
+type DeltaOf struct {
+	// Base is the base entry's Name.
+	Base string `json:"base"`
+	// BaseSHA256 is the base entry's digest; it must equal that entry's.
+	BaseSHA256 string `json:"base_sha256"`
+	// Records is the entry count of the export after applying the delta
+	// (the node checks it).
+	Records int `json:"records"`
+	// Drop names the entries removed from the base, sorted, each a valid
+	// base name.
+	Drop []string `json:"drop,omitempty"`
 }
 
 // Entry is one artifact a manifest covers.
@@ -211,6 +270,9 @@ type Entry struct {
 	// License is the SPDX expression of the data or binary.
 	License  string        `json:"license,omitempty"`
 	Upstream UpstreamCheck `json:"upstream"`
+	// Delta, when set, makes the entry a cumulative delta over another
+	// entry of the manifest (DeltaOf).
+	Delta *DeltaOf `json:"delta,omitempty"`
 }
 
 // Revocation withdraws an artifact by digest.
@@ -241,6 +303,10 @@ type Envelope struct {
 	ManifestHash string `json:"manifest_hash"`
 	VendorKeyID  string `json:"vendor_key_id"`
 	VendorSig    string `json:"vendor_sig"`
+	// Signer names which vendor key signed: empty is the release vendor key
+	// (SigningMessage), SignerFeed the content-feed key (FeedSigningMessage,
+	// ClassFeed kinds only). VendorKeyID and VendorSig carry either key's.
+	Signer string `json:"signer,omitempty"`
 	// OrgKeyID and OrgSig are added by the org mirror (Countersign).
 	OrgKeyID string `json:"org_key_id,omitempty"`
 	OrgSig   string `json:"org_sig,omitempty"`
@@ -258,6 +324,12 @@ func KeyID(pub ed25519.PublicKey) string {
 // document of another kind nor a version-bumped capture verifies.
 func SigningMessage(kind Kind, version int64, manifestHash string) []byte {
 	return message(SigningDomain, kind, version, manifestHash, "")
+}
+
+// FeedSigningMessage is what the content-feed key signs: SigningMessage's
+// fields under FeedSigningDomain.
+func FeedSigningMessage(kind Kind, version int64, manifestHash string) []byte {
+	return message(FeedSigningDomain, kind, version, manifestHash, "")
 }
 
 // MirrorMessage is what the org countersigns: the vendor message's
@@ -308,11 +380,28 @@ func CanonicalJSON(m Manifest) ([]byte, error) {
 // the builder's half (the release pipeline, the index builder); a node
 // never holds the private key.
 func Sign(m Manifest, priv ed25519.PrivateKey) (Envelope, error) {
+	return sign("update.Sign", m, priv, "", SigningMessage)
+}
+
+// SignFeed validates m and signs it with the content-feed private key
+// (static feed mirroring plan section 6.4): FeedSigningMessage, Signer
+// SignerFeed. Only ClassFeed kinds may be signed this way, because only
+// those verify (ruleVendor); the daily publisher holds this key and never
+// the release key.
+func SignFeed(m Manifest, priv ed25519.PrivateKey) (Envelope, error) {
+	if spec, ok := KindOf(m.Kind); ok && spec.Class != ClassFeed {
+		return Envelope{}, fmt.Errorf("update.SignFeed: kind %q is not a feed kind; the content-feed key signs feed kinds only", m.Kind)
+	}
+	return sign("update.SignFeed", m, priv, SignerFeed, FeedSigningMessage)
+}
+
+// sign is Sign and SignFeed's shared body.
+func sign(op string, m Manifest, priv ed25519.PrivateKey, signer string, msg func(Kind, int64, string) []byte) (Envelope, error) {
 	if len(priv) != ed25519.PrivateKeySize {
-		return Envelope{}, errors.New("update.Sign: not an Ed25519 private key")
+		return Envelope{}, fmt.Errorf("%s: not an Ed25519 private key", op)
 	}
 	if err := Validate(m); err != nil {
-		return Envelope{}, fmt.Errorf("update.Sign: %w", err)
+		return Envelope{}, fmt.Errorf("%s: %w", op, err)
 	}
 	body, err := CanonicalJSON(m)
 	if err != nil {
@@ -320,10 +409,11 @@ func Sign(m Manifest, priv ed25519.PrivateKey) (Envelope, error) {
 	}
 	hash := HashBytes(body)
 	pub, _ := priv.Public().(ed25519.PublicKey)
-	sig := ed25519.Sign(priv, SigningMessage(m.Kind, m.ManifestVersion, hash))
+	sig := ed25519.Sign(priv, msg(m.Kind, m.ManifestVersion, hash))
 	return Envelope{
 		ManifestB64: base64.StdEncoding.EncodeToString(body), ManifestHash: hash,
 		VendorKeyID: KeyID(pub), VendorSig: base64.StdEncoding.EncodeToString(sig),
+		Signer: signer,
 	}, nil
 }
 
@@ -431,6 +521,57 @@ func Validate(m Manifest) error {
 			return bad("entry %q upstream: %v", e.Name, err)
 		}
 	}
+	for _, e := range m.Entries {
+		if err := validateDelta(m, e); err != nil {
+			return bad("entry %q delta: %v", e.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateDelta checks a delta entry against its base: the base is another
+// entry of the same manifest with the stated digest and is not itself a
+// delta (a node applies one delta over one base, never a chain), the
+// record count is positive, and the dropped names are valid, sorted,
+// distinct and capped.
+func validateDelta(m Manifest, e Entry) error {
+	d := e.Delta
+	if d == nil {
+		return nil
+	}
+	if d.Base == "" || d.Base == e.Name {
+		return errors.New("base must name another entry")
+	}
+	if !isHexSHA256(d.BaseSHA256) {
+		return errors.New("base_sha256 must be 64 hex characters")
+	}
+	found := false
+	for _, b := range m.Entries {
+		if b.Name != d.Base || !strings.EqualFold(b.SHA256, d.BaseSHA256) {
+			continue
+		}
+		if b.Delta != nil {
+			return fmt.Errorf("base %q is itself a delta", d.Base)
+		}
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("no entry %q with sha256 %s in the manifest", d.Base, d.BaseSHA256)
+	}
+	if d.Records <= 0 {
+		return errors.New("records must be positive")
+	}
+	if len(d.Drop) > MaxDeltaDrop {
+		return fmt.Errorf("%d dropped names (at most %d)", len(d.Drop), MaxDeltaDrop)
+	}
+	for i, name := range d.Drop {
+		if err := validBaseName(name); err != nil {
+			return fmt.Errorf("drop %d: %w", i, err)
+		}
+		if i > 0 && d.Drop[i-1] >= name {
+			return fmt.Errorf("drop is not sorted and distinct at %q", name)
+		}
+	}
 	return nil
 }
 
@@ -455,8 +596,28 @@ func validateUpstream(e Entry) error {
 		if u.Method == UpstreamSLSABundle && u.BundleB64 == "" {
 			return errors.New("slsa_provenance_bundle needs the bundle")
 		}
+	case UpstreamGCSObjectHash:
+		obj, err := url.Parse(u.Object)
+		if err != nil || obj.Scheme != "https" || obj.Host == "" {
+			return errors.New("gcs_object_hash needs the object's https URL")
+		}
+		if u.CRC32C == "" && u.MD5 == "" {
+			return errors.New("gcs_object_hash needs the object's crc32c or md5")
+		}
+		if u.CRC32C != "" && !isB64Len(u.CRC32C, 4) {
+			return errors.New("crc32c must be base64 of 4 bytes")
+		}
+		if u.MD5 != "" && !isB64Len(u.MD5, 16) {
+			return errors.New("md5 must be base64 of 16 bytes")
+		}
 	}
 	return nil
+}
+
+// isB64Len reports whether s is standard base64 of exactly n bytes.
+func isB64Len(s string, n int) bool {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	return err == nil && len(raw) == n
 }
 
 // SumsListDigest reports whether a base64 SHA256SUMS file lists digest.
@@ -493,6 +654,11 @@ type VerifyInput struct {
 	// compiled into the agent (internal/update.VendorPublicKeys); none
 	// verifies nothing (fail closed).
 	VendorKeys []ed25519.PublicKey
+	// FeedKeys are the content-feed keys compiled into the agent
+	// (internal/update.ContentFeedPublicKeys). They verify only an envelope
+	// whose Signer is SignerFeed, and only for ClassFeed kinds; an engine or
+	// artifact kind always needs a VendorKeys signature.
+	FeedKeys []ed25519.PublicKey
 	// RequireOrg demands the org mirror's countersignature under OrgKey
 	// (a managed node: content comes only from its org mirror).
 	RequireOrg bool
@@ -536,6 +702,11 @@ const (
 	// entry for the node's platform and no revocation; the node keeps its
 	// last good one (WINFIX4 audit finding 6).
 	ContentReasonNotCoveredHere Reason = "not_covered_here"
+	// ContentReasonFeedKeyNotAllowed: a manifest signed with the
+	// content-feed key (Signer SignerFeed) is of a kind that is not
+	// ClassFeed; only the release vendor key may sign an engine or artifact
+	// kind (static feed mirroring plan section 6.4).
+	ContentReasonFeedKeyNotAllowed Reason = "feed_key_not_allowed"
 )
 
 // Refusal is a verification refusal.
@@ -656,26 +827,58 @@ func (p *pass) probeKindVersion() (Kind, int64, error) {
 	return probe.Kind, probe.ManifestVersion, nil
 }
 
+// ruleVendor checks the vendor signature. The envelope's Signer picks the
+// key set and the domain: empty is the release vendor key over
+// SigningMessage (every kind); SignerFeed is the content-feed key over
+// FeedSigningMessage, accepted only for a ClassFeed kind, so a feed-key
+// compromise can never swap an engine or a sandbox artifact; any other
+// value is refused. Signer is not itself signed, and needs not be: each
+// key set verifies only its own domain, so relabelling an envelope makes
+// its signature verify nothing.
 func ruleVendor(p *pass) error {
-	keys := p.in.VendorKeys
-	if len(keys) == 0 {
-		return &Refusal{Reason: ContentReasonNoKey, Detail: "this build carries no vendor key"}
+	var (
+		keys  []ed25519.PublicKey
+		msgOf func(Kind, int64, string) []byte
+		what  string
+	)
+	switch p.env.Signer {
+	case "":
+		keys, msgOf, what = p.in.VendorKeys, SigningMessage, "vendor"
+	case SignerFeed:
+		keys, msgOf, what = p.in.FeedKeys, FeedSigningMessage, "content-feed"
+	default:
+		return fmt.Errorf("unknown signer %q", p.env.Signer)
+	}
+	noKey := &Refusal{Reason: ContentReasonNoKey, Detail: "this build carries no " + what + " key"}
+	if p.env.Signer == "" && len(keys) == 0 {
+		return noKey
 	}
 	kind, version, err := p.probeKindVersion()
 	if err != nil {
 		return err
 	}
+	if p.env.Signer == SignerFeed {
+		// The kind's class decides before the key set does: a feed
+		// signature on an engine or artifact kind is refused as such even
+		// on a build that carries no feed key.
+		if spec, ok := KindOf(kind); !ok || spec.Class != ClassFeed {
+			return &Refusal{Reason: ContentReasonFeedKeyNotAllowed, Detail: fmt.Sprintf("kind %q is not a feed kind", kind)}
+		}
+		if len(keys) == 0 {
+			return noKey
+		}
+	}
 	sig, err := base64.StdEncoding.DecodeString(p.env.VendorSig)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return errors.New("vendor signature is not a base64 Ed25519 signature")
 	}
-	msg := SigningMessage(kind, version, p.env.ManifestHash)
+	msg := msgOf(kind, version, p.env.ManifestHash)
 	for _, k := range keys {
 		if len(k) == ed25519.PublicKeySize && ed25519.Verify(k, msg, sig) {
 			return nil
 		}
 	}
-	return errors.New("no accepted vendor key verifies the signature")
+	return fmt.Errorf("no accepted %s key verifies the signature", what)
 }
 
 func ruleOrg(p *pass) error {

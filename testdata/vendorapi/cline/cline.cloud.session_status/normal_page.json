@@ -1,0 +1,9 @@
+{
+  "data": {
+    "sessionId": "ses-synth0001",
+    "status": "active",
+    "phase": "ready",
+    "statusReason": "synthetic reason placeholder"
+  },
+  "success": true
+}

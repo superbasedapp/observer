@@ -137,6 +137,14 @@ func TestGuestAttachAgainstAFakeBox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the second attach: %v", err)
 	}
+	// dialAttach returns at the keeper's OK, before the keeper makes this
+	// connection the client; output in between is dropped by design. The
+	// keeper reads input only once the client is set, so the agent seeing
+	// this input means "two" below reaches the second client.
+	if err := second.input([]byte("pwd\r")); err != nil {
+		t.Fatal(err)
+	}
+	readSome(t, box.agent, "pwd\r")
 	pr2, pw2 := io.Pipe()
 	codeCh := make(chan [2]int, 1)
 	go func() {

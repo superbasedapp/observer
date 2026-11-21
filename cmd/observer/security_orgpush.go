@@ -20,7 +20,8 @@ import (
 // internal/store/secorgrows.go; this file adds what only the daemon knows:
 //
 //   - the share level: an INDIVIDUAL node follows its own
-//     [org_client.share].security (default off, never remote, Q7); a MANAGED
+//     [org_client.share].security (posture while unset, ruling R1 of lane
+//     CODESEC-ORG; never remote, Q7); a MANAGED
 //     node follows the finding_share of its in-force enforce.security pull,
 //     posture by default (store.ResolveSecurityShare is the table);
 //   - org_key ships only when the in-force pull carries the org dedupe key;

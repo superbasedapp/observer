@@ -116,13 +116,50 @@ type Facts struct {
 type Decision struct {
 	Action Action
 	Code   Code
+	// Row names the table row that decided (RowOffer when every refusal
+	// row let the run through). It is logged and shown beside the code, so
+	// a reaped run says which fact ended it (tracker F-046).
+	Row string
+	// Reason is the full line for the user's own terminal: it may carry the
+	// run's facts (a socket dir path, an engine error).
 	Reason string
+	// Summary is Reason without those facts: the line that is logged and
+	// kept on disk (lane FU10 fix round 1, audit FU10-A2). It equals Reason
+	// for every row whose line is fixed.
+	Summary string
 	// Expires is when an offered run is reaped (zero unless offered).
 	Expires time.Time
 }
 
+// rowSummaries are the fact-free lines of the rows whose Reason carries
+// the run's facts (read-back: the engine's refusal or error text;
+// protected: the socket dir's path).
+var rowSummaries = map[string]string{
+	"read-back": "the container no longer matches its plan",
+	"protected": "the run's protected paths or socket dir changed",
+}
+
+// summaryOf is a row's fact-free line.
+func summaryOf(row, reason string) string {
+	if s, ok := rowSummaries[row]; ok {
+		return s
+	}
+	return reason
+}
+
+// RowOffer is Decision.Row when no refusal row matched and the run is
+// offered.
+const RowOffer = "offer"
+
+// RowContainerGone is Decision.Row when the engine no longer lists a run's
+// container, so there is nothing for the table to decide (the caller ends
+// the run with CodeNotRunning).
+const RowContainerGone = "container-gone"
+
 // rule is one row of the decision table: when match holds, the action and
-// code apply; reason renders the line shown to the user.
+// code apply; reason renders the line shown to the user. name is the row's
+// stable id (Decision.Row), which the Row column of the re-adoption table
+// in docs/sandboxed-terminals.md is to be written as (lane FU10 doc draft).
 type rule struct {
 	name   string
 	match  func(Facts) bool
@@ -138,19 +175,19 @@ func fixed(s string) func(Facts) string { return func(Facts) string { return s }
 // once its bound ran out, and otherwise offered.
 var rules = []rule{
 	{
-		"component off", func(f Facts) bool { return !f.Active }, ActionReap, CodeComponentInactive,
+		"component", func(f Facts) bool { return !f.Active }, ActionReap, CodeComponentInactive,
 		fixed("re-adoption is off on this node (terminals.sandbox.oci.readopt), so the run ends as before"),
 	},
 	{
-		"record missing", func(f Facts) bool { return !f.RecordIntact }, ActionReap, CodeRecordMissing,
+		"record", func(f Facts) bool { return !f.RecordIntact }, ActionReap, CodeRecordMissing,
 		fixed("the run's kept record is missing or unreadable"),
 	},
 	{
-		"record not owned", func(f Facts) bool { return !f.RecordOwned }, ActionReap, CodeRecordNotOwned,
+		"owner", func(f Facts) bool { return !f.RecordOwned }, ActionReap, CodeRecordNotOwned,
 		fixed("the run's kept record is not an owner-only file of this user"),
 	},
 	{
-		"plan missing", func(f Facts) bool { return !f.PlanKept }, ActionReap, CodePlanMissing,
+		"plan", func(f Facts) bool { return !f.PlanKept }, ActionReap, CodePlanMissing,
 		fixed("the run's plan was not kept when it started (it started before re-adoption was on)"),
 	},
 	{
@@ -158,15 +195,15 @@ var rules = []rule{
 		fixed("the container does not carry this install's and this run's labels"),
 	},
 	{
-		"not running", func(f Facts) bool { return !f.Running }, ActionReap, CodeNotRunning,
+		"running", func(f Facts) bool { return !f.Running }, ActionReap, CodeNotRunning,
 		fixed("the container is not running"),
 	},
 	{
-		"cli run", func(f Facts) bool { return f.CLIRun }, ActionReap, CodeCLIRun,
+		"cli-run", func(f Facts) bool { return f.CLIRun }, ActionReap, CodeCLIRun,
 		fixed("a sandboxed CLI launch owns its terminal; it ends as before and its tool's own resume applies"),
 	},
 	{
-		"engine mode", func(f Facts) bool { keeps, _ := EngineKeeps(f.Engine); return !keeps }, ActionReap, CodeEngineEndsRun,
+		"engine-mode", func(f Facts) bool { keeps, _ := EngineKeeps(f.Engine); return !keeps }, ActionReap, CodeEngineEndsRun,
 		func(f Facts) string { _, why := EngineKeeps(f.Engine); return why },
 	},
 	{
@@ -174,7 +211,7 @@ var rules = []rule{
 		func(f Facts) string { return "the container no longer matches its plan: " + f.ReadBackReason },
 	},
 	{
-		"protected paths", func(f Facts) bool { return !f.ProtectedIntact }, ActionReap, CodeProtectedChanged,
+		"protected", func(f Facts) bool { return !f.ProtectedIntact }, ActionReap, CodeProtectedChanged,
 		func(f Facts) string { return "the run's protected paths or socket dir changed: " + f.ProtectedReason },
 	},
 	{
@@ -182,7 +219,7 @@ var rules = []rule{
 		fixed("you chose to end the run"),
 	},
 	{
-		"update deferred", func(f Facts) bool { return f.UpdateDeferred }, ActionHold, CodeHeldForUpdate,
+		"update-deferred", func(f Facts) bool { return f.UpdateDeferred }, ActionHold, CodeHeldForUpdate,
 		fixed("an update waits on live sandboxed runs; this run counts as live until it is re-adopted or ended"),
 	},
 	{
@@ -203,16 +240,18 @@ func expiry(f Facts) time.Time {
 func Decide(f Facts) Decision {
 	for _, r := range rules {
 		if r.match(f) {
-			d := Decision{Action: r.action, Code: r.code, Reason: r.reason(f)}
+			why := r.reason(f)
+			d := Decision{Action: r.action, Code: r.code, Row: r.name, Reason: why, Summary: summaryOf(r.name, why)}
 			if r.action == ActionHold {
 				d.Expires = expiry(f)
 			}
 			return d
 		}
 	}
+	const offered = "the container is still running and matches its plan; re-attach it from the re-adoption list in Terminals > Settings > Sandbox isolation (same as `observer sandbox readopt <run>`)"
 	return Decision{
-		Action: ActionOffer, Code: CodeOffered, Expires: expiry(f),
-		Reason: "the container is still running and matches its plan; re-adopt it with `observer sandbox readopt <run>`",
+		Action: ActionOffer, Code: CodeOffered, Row: RowOffer, Expires: expiry(f),
+		Reason: offered, Summary: offered,
 	}
 }
 

@@ -238,7 +238,7 @@ func TestTerminalSessionsCarriesGUIKeys(t *testing.T) {
 	}
 	for _, key := range []string{
 		"sessions", "launchable_tools", "launchable_tool_info",
-		"allowed_project_roots", "shell_enabled", "gui_launchables", "gui_runs",
+		"allowed_project_roots", "shell_enabled", "fresh_enabled", "gui_launchables", "gui_runs",
 	} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("missing key %q", key)

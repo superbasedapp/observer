@@ -97,8 +97,13 @@ func TestEveryShareKeyResolvesInConfig(t *testing.T) {
 			t.Errorf("ShareKeys names %q, which does NOT resolve in config.Default()", path)
 			continue
 		}
-		if got := kindFor(fv.Kind(), fv.Type()); got != row.Kind {
-			t.Errorf("ShareKeys row %q declares Kind %q but the config field is %q", path, row.Kind, got)
+		if got := kindFor(fv.Kind(), fv.Type()); got != row.ConfigFieldKind() {
+			t.Errorf("ShareKeys row %q declares config kind %q but the config field is %q", path, row.ConfigFieldKind(), got)
+		}
+		// Only a raise directive may act on a field of another kind: a
+		// tier row IS its config field's value.
+		if row.ConfigKind != "" && row.Raise == "" {
+			t.Errorf("ShareKeys row %q sets ConfigKind without being a raise directive", row.Key)
 		}
 	}
 }

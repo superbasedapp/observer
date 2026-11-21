@@ -225,11 +225,11 @@ func listLocalJudgeModels(base string) []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil) //nolint:gosec // G704: false positive; base passed IsLoopbackJudgeEndpoint above, so only a local model server is asked
 	if err != nil {
 		return nil
 	}
-	resp, err := (&http.Client{Timeout: 1500 * time.Millisecond}).Do(req)
+	resp, err := (&http.Client{Timeout: 1500 * time.Millisecond}).Do(req) //nolint:gosec // G704: false positive; the loopback request built above
 	if err != nil {
 		return nil
 	}
@@ -524,10 +524,32 @@ func runInteractiveAdmissionSetup(ctx context.Context, out io.Writer, in io.Read
 		fmt.Fprintln(out, "not written.")
 		return nil
 	}
-	if err := config.WriteToml(configPath, newCfg); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err := writeAdmissionSetup(configPath, cfg, newCfg); err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "wrote %s (a .bak backup was kept).\n", configPath)
+	return nil
+}
+
+// writeAdmissionSetup writes only the keys the wizard changed (prev -> next)
+// into the config file at path, the way `observer config set` does (L-11):
+// every untouched line and comment keeps its bytes and a key the file left
+// unset stays unset, so its default keeps applying (for example the
+// push_interval_seconds `observer org enroll` omits on purpose). A change the
+// key-by-key editor cannot express falls back to config.PatchFile's
+// re-serialize, which keeps a .bak. A file that does not exist yet gets only
+// the edited keys.
+func writeAdmissionSetup(path string, prev, next config.Config) error {
+	patches, err := config.StructuralPatches(prev, next)
+	if err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	if len(patches) == 0 {
+		return nil
+	}
+	if _, err := config.PatchFile(path, next, patches); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
 	return nil
 }
 

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { setCostDisplayMode } from "../../../shared/lib/format.ts";
-import { PROVIDER_LABELS, type CatalogProvider, type PlanAccount, type PlanCard, type PlanHeadline } from "./plans.ts";
+import { PROVIDER_LABELS, type CatalogProvider, type PlanAccount, type PlanCard, type PlanHeadline, type PlanUsageView } from "./plans.ts";
 import {
   HIDDEN_MONEY_NOTE,
   PROVIDER_MARKS,
@@ -28,6 +28,7 @@ import {
   showsText,
   balanceGroups,
   suggestions,
+  usageBlock,
   vendorCount,
   windowPhrase,
 } from "./plansView.ts";
@@ -421,4 +422,63 @@ test("balance groups: one currency per group, headline currency first, rows reco
   assert.equal(one.length, 1);
   assert.equal(one[0].label, "", "a single currency needs no heading");
   assert.equal(headlineView(cnyOnly.headline).also, undefined);
+});
+
+// ---------- daily usage reconciliation ----------
+
+const usageFixture: PlanUsageView = {
+  account_id: "a1",
+  provider: "chatgpt",
+  available: true,
+  days: 30,
+  fetched_at: "2026-11-01T09:00:00Z",
+  tools: ["codex"],
+  reconciliation: {
+    from: "2026-10-03",
+    to: "2026-11-01",
+    days: [
+      { day: "2026-10-30", vendor_reported: true, vendor_tokens: 136_533_390, captured_tokens: 0, uncaptured_tokens: 136_533_390, ratio: 0 },
+      { day: "2026-10-09", vendor_reported: false, vendor_tokens: 0, captured_tokens: 5, uncaptured_tokens: 0 },
+      { day: "2026-10-08", vendor_reported: true, vendor_tokens: 23_252_828, captured_tokens: 21_921_453, uncaptured_tokens: 1_331_375, ratio: 0.9427 },
+    ],
+    totals: { vendor_tokens: 159_786_218, captured_tokens: 21_921_458, uncaptured_tokens: 137_864_765, ratio: 0.137 },
+  },
+};
+
+test("usageBlock: nothing before a reading or without the capability", () => {
+  assert.equal(usageBlock(null), null);
+  assert.equal(usageBlock({ ...usageFixture, reconciliation: undefined }), null);
+  assert.equal(usageBlock({ ...usageFixture, available: false }), null);
+});
+
+test("usageBlock: Codex wording, tokens only, honest gap label", () => {
+  const b = usageBlock(usageFixture)!;
+  assert.equal(b.title, "Codex usage by day");
+  assert.equal(b.window, "Last 30 days, UTC");
+  assert.deepEqual(b.totals.map((t) => t.label), ["OpenAI total", "Captured here", "Not captured here"]);
+  assert.equal(b.rows.length, 3);
+  assert.equal(b.rows[0].vendor, "136.5M");
+  assert.equal(b.rows[0].label, "Oct 30");
+  assert.equal(b.rows[1].vendor, "none reported");
+  assert.equal(b.rows[1].share, "");
+  assert.equal(b.rows[2].share, "94% captured");
+  assert.equal(b.max, 136_533_390);
+  assert.match(b.notes[0], /^Not captured here: Codex cloud chats, other devices or sessions Observer did not run on\.$/);
+  assert.match(b.notes.join(" "), /every surface and device on the login/);
+  assert.match(b.notes.join(" "), /this machine's codex sessions for any login/);
+  assert.match(b.notes.join(" "), /does not document its day boundary/);
+  const all = JSON.stringify(b);
+  assert.ok(!all.includes("$") && !/USD/.test(all), "tokens only, never dollars");
+  assert.ok(!/cloud usage/i.test(all), "the gap is never called cloud usage");
+  assert.ok(!all.includes("\u2014"), "no em-dashes in copy");
+});
+
+test("usageBlock: an empty window says so", () => {
+  const b = usageBlock({
+    ...usageFixture,
+    days: 1,
+    reconciliation: { ...usageFixture.reconciliation!, days: [], totals: { vendor_tokens: 0, captured_tokens: 0, uncaptured_tokens: 0 } },
+  })!;
+  assert.equal(b.window, "Last 1 day, UTC");
+  assert.equal(b.empty, "No usage on any day in this window.");
 });

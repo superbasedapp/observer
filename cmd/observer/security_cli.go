@@ -150,6 +150,9 @@ func newSecurityCmd() *cobra.Command {
 	// security.scan.actionlint, lane sec-g5); none when compiled out.
 	cmd.AddCommand(securitySARIFImportSubcommands()...)
 	cmd.AddCommand(securityActionlintSubcommands()...)
+	// The local passive DAST checker (security.dast, plan 14.9, M3L-5):
+	// loopback dev servers only; none when compiled out.
+	cmd.AddCommand(securityDASTSubcommands()...)
 	// IaC checks (security.scan.trivy and security.scan.kics, lane
 	// GATES-SEC): status, scan and install; refuses while not selected.
 	cmd.AddCommand(securityIaCSubcommands()...)
@@ -159,6 +162,10 @@ func newSecurityCmd() *cobra.Command {
 	mergeSecurityScanCmds(cmd)
 	// AI change records (component security.provenance, lane sec-f2a).
 	cmd.AddCommand(securityProvenanceSubcommands()...)
+	// Agent-run security assessments: the self-check a model run's agent runs
+	// on its own assessment.json (built with the module, no component of its
+	// own).
+	cmd.AddCommand(securityAssessSubcommands()...)
 	return cmd
 }
 

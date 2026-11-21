@@ -68,12 +68,18 @@ func budgetStatusPayload(path string, budgets []orgclient.RequestableBudget) map
 	if file.Windows == nil {
 		windows = []any{}
 	}
-	return map[string]any{
+	out := map[string]any{
 		"available":  true,
 		"written_at": file.WrittenAt,
 		"windows":    windows,
 		"active":     budgetNoticeViews(file.Active, budgets),
 	}
+	// The last organization budget pull, so the banner can say when this
+	// machine cannot get its budgets (budget enforce consistency, 2026-11-19).
+	if file.Fetch != nil {
+		out["fetch"] = file.Fetch
+	}
+	return out
 }
 
 // budgetNoticeView is one active warning notice with the budget it measures,

@@ -168,6 +168,11 @@ func (c *Client) Create(ctx context.Context, spec sandboxremote.BoxSpec) (sandbo
 	if spec.TimeoutSeconds <= 0 {
 		return sandboxremote.BoxInfo{}, errors.New("modal: a box needs a timeout")
 	}
+	// The vendor's create takes no deny rule (decision SBXD-7): a deny it
+	// cannot carry is refused, never dropped into an open box.
+	if len(spec.DenyCIDRs) > 0 {
+		return sandboxremote.BoxInfo{}, fmt.Errorf("modal: %w", sandboxremote.ErrDenyNotRenderable)
+	}
 	tags := maps.Clone(spec.Labels)
 	if tags == nil {
 		tags = map[string]string{}

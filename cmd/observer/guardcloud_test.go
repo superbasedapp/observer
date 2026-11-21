@@ -209,7 +209,7 @@ func TestCloudDispatcher_JudgeFlow(t *testing.T) {
 			}
 
 			// Approval only for the high-confidence allow on an ask.
-			got := st.ApprovalActiveFor(ctx, "R-110", "s1", "", time.Now().UTC())
+			got := mustApprovalActive(t, st, ctx, "R-110", "s1", "", time.Now().UTC())
 			if got != tc.wantApproval {
 				t.Errorf("approval active = %v, want %v", got, tc.wantApproval)
 			}

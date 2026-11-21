@@ -49,8 +49,10 @@ func TestGovernanceOverlayIsTheLastMergeStep(t *testing.T) {
 	if !cfg.Guard.Enabled || cfg.Guard.Mode != "enforce" {
 		t.Fatalf("governance did not win the merge: enabled=%v mode=%q", cfg.Guard.Enabled, cfg.Guard.Mode)
 	}
-	if !out.Governed() || len(out.Applied) != 2 {
-		t.Fatalf("outcome = %+v", out)
+	// The guard.mode pin also decides the prompt guard's stance
+	// (governancePinFollowers), reported as the organization's too.
+	if want := []string{"guard.enabled", "guard.mode", "guard.prompt.enforce_independent"}; !out.Governed() || !reflect.DeepEqual(out.Applied, want) {
+		t.Fatalf("outcome = %+v, want applied %v", out, want)
 	}
 }
 

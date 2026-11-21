@@ -63,17 +63,21 @@ var gatedWireFamilies = map[string]snapFamily{
 	"SessionCacheEvents":   snapFamSessionCacheEvents,
 	"SessionProcesses":     snapFamSessionProcess,
 	"SessionNetworkEvents": snapFamSessionNetwork,
-	"ProjectPatterns":      snapFamProjectPatterns,
-	"BenchmarkRuns":        snapFamBenchmark,
-	"BenchmarkAttempts":    snapFamBenchmark,
-	"CompressionStats":     snapFamCompressionStats,
-	"RoutingDevRows":       snapFamRoutingDev,
-	"CodeintelDevRows":     snapFamCodeintelDev,
-	"TerminalRuns":         snapFamTerminalRuns,
-	"TerminalCommands":     snapFamTerminalCommands,
-	"RemoteAudit":          snapFamRemoteAuditRows,
-	"GuardPins":            snapFamGuardPins,
-	"GuardApprovals":       snapFamGuardApprovals,
+	// The process capture budget's org wire (layer O1): ONE recompute feeding
+	// two slices, the benchmark arrangement.
+	"SessionProcessRollups":      snapFamSessionProcessCapture,
+	"SessionProcessCaptureStats": snapFamSessionProcessCapture,
+	"ProjectPatterns":            snapFamProjectPatterns,
+	"BenchmarkRuns":              snapFamBenchmark,
+	"BenchmarkAttempts":          snapFamBenchmark,
+	"CompressionStats":           snapFamCompressionStats,
+	"RoutingDevRows":             snapFamRoutingDev,
+	"CodeintelDevRows":           snapFamCodeintelDev,
+	"TerminalRuns":               snapFamTerminalRuns,
+	"TerminalCommands":           snapFamTerminalCommands,
+	"RemoteAudit":                snapFamRemoteAuditRows,
+	"GuardPins":                  snapFamGuardPins,
+	"GuardApprovals":             snapFamGuardApprovals,
 	// Lines-of-Code (W5). Both families share one probe over the single
 	// source table, the same arrangement the three router_decisions-backed
 	// wires use.
@@ -101,6 +105,9 @@ var gatedWireFamilies = map[string]snapFamily{
 	// The sandbox posture aggregate (sandboxposture.go), probed over
 	// terminal_run like the other terminal wires.
 	"SandboxPosture": snapFamSandboxPosture,
+	// The sandbox egress refusal counts (sandboxegress_org.go, audit CG-15),
+	// probed over the refusal audit and its drop counts.
+	"SandboxEgressRefusals": snapFamSandboxEgressCounts,
 	// The security pillar wire (secorgrows.go), probed over the sec_* tables.
 	"SecurityFindings": snapFamSecurityFindings,
 	"AIChangeRecords":  snapFamSecurityChangeRecords,

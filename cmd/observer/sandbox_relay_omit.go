@@ -27,6 +27,8 @@ type sandboxRelayDeps struct {
 	StampEndReason func(ctx context.Context, runID, reason string) error
 	// EndGoneRun mirrors the full build's field.
 	EndGoneRun func(ctx context.Context, runID, reason string) (bool, error)
+	// Refusals mirrors the full build's field.
+	Refusals any
 }
 
 // bindSandboxRelayRun binds nothing: no box is ever planned.

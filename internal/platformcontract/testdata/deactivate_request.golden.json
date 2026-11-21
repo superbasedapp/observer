@@ -1,0 +1,5 @@
+{
+  "tenant_id": "org_1",
+  "sub": "user_2",
+  "idempotency_key": "idem-2"
+}

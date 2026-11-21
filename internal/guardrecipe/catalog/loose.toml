@@ -1,0 +1,50 @@
+# Level "loose": record everything, block only the catastrophic set.
+#
+# The mode is observe, so every rule records what it sees without stopping
+# anything, except the rows below, which block in any mode: a recursive
+# delete of a root or home, a disk format, a download piped into a shell, a
+# secret sent off the machine, and the guard's own integrity rules.
+
+name = "loose"
+kind = "level"
+title = "Loose"
+summary = "Records everything; blocks only root or home deletes, disk formats, downloads piped into a shell, secrets leaving the machine and changes to the guard itself."
+version = 1
+order = 20
+mode = "observe"
+prompt_mode = "warn"
+
+[[override]]
+rule = "R-101"
+enforce = true
+note = "recursive delete of a filesystem root, the home directory or a path outside the project"
+
+[[override]]
+rule = "R-142"
+enforce = true
+note = "disk or device level operation (mkfs, dd to a device, format)"
+
+[[override]]
+rule = "R-170"
+enforce = true
+note = "remote content piped into an interpreter"
+
+[[override]]
+rule = "R-172"
+enforce = true
+note = "a secret-shaped value on a network command or in an outbound request"
+
+[[override]]
+rule = "R-160"
+enforce = true
+note = "an agent changing Observer's own guard or hook configuration"
+
+[[override]]
+rule = "R-162"
+enforce = true
+note = "an agent turning a coding agent's hooks off"
+
+[[override]]
+rule = "R-165"
+enforce = true
+note = "an agent approving its own guard exception"

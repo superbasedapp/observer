@@ -1,6 +1,8 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { SANDBOX_SETTINGS_CARD } from "@/lib/components.gen";
-import { useLocation, useNavigate } from "react-router-dom";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
+import { SANDBOX_REFUSALS_CARD, SANDBOX_SETTINGS_CARD } from "@/lib/components.gen";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LayoutGrid, SlidersHorizontal, Swords, type LucideIcon } from "lucide-react";
 import { useUrlTab } from "@/lib/useUrlTab";
 import { usePageTabs } from "@/lib/governance";
@@ -38,14 +40,18 @@ import type {
 } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
 import { unwatchedAllowedToolsMsg } from "@/lib/toolInstall";
+import { LAUNCH_SWITCHES_OFF, launchSwitchesOff } from "@/lib/launchSwitches";
+import { initiatorLabel, isAgentInitiated } from "@/lib/terminalInitiator";
 import {
   useTerminalStatuses,
   AgentStatusBadge,
   type AgentStatusInfo,
 } from "@/components/useTerminalStatuses";
 import { WorkspaceGrid } from "@/components/workspace/WorkspaceGrid";
+import { HeldLaunches } from "@/components/HeldLaunches";
 import { ArenaTab } from "@/components/arena/ArenaTab";
 import { RemoteSystemsCard } from "@/components/RemoteSystemsCard";
+import { DefaultWorkspaceCard } from "./settings/DefaultWorkspaceCard";
 import { FolderRootPicker, FolderSuggestions, rootsWithAdded, sortSuggestions } from "@/components/FolderSelection";
 import { useHostOS } from "@/lib/keyPlatform";
 
@@ -121,6 +127,10 @@ type RunRow = {
   best_session_id?: string;
   best_confidence?: number;
   command_count: number;
+  // Who started the run and, for an agent, its parent session (lane cli-2,
+  // agent migration 220); absent when not recorded.
+  initiator?: string;
+  parent_session_id?: string;
 };
 
 // rootSeenHint renders a compact "N sessions · last seen …" suffix for a
@@ -385,6 +395,10 @@ export function TerminalsPage() {
         sub={TERMINALS_TAB_SUBS[tab]}
       />
 
+      {/* Launches an agent asked for wait here for the owner (lane cli-2
+          fixes-1); renders nothing while none is held. */}
+      <HeldLaunches onStarted={() => runs.reload()} />
+
       <TabStrip
         tabs={TERMINALS_TAB_DEFS.filter((t) => pageTabs.ids.includes(t.id))}
         value={tab}
@@ -407,6 +421,11 @@ export function TerminalsPage() {
             policyHint={
               p && (!p.terminal_enabled || !p.allow_fresh_agent)
                 ? "Fresh launch is off - enable it in Settings → Fresh-agent launch policy."
+                : ""
+            }
+            launchOffHint={
+              p && launchSwitchesOff(p.terminal_enabled && p.allow_fresh_agent, p.terminal_enabled && p.allow_shell)
+                ? LAUNCH_SWITCHES_OFF
                 : ""
             }
             onOpenSettings={() => setTab("settings")}
@@ -459,10 +478,10 @@ export function TerminalsPage() {
             </div>
           )}
           {p?.terminal_enabled === false && (
-            <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
-              The terminal surface is disabled ([terminal].enabled = false). Fresh launch needs both it and
-              the master toggle below.
-            </div>
+            <NeedsSettingNotice
+              text="The terminal surface is off on this machine ([terminal].enabled = false). Fresh launch needs both it and the master toggle below. Turn it on in Settings > Session attach, under More settings."
+              link={placeLink("session_attach")}
+            />
           )}
 
           <label className="flex items-start gap-2">
@@ -643,7 +662,7 @@ export function TerminalsPage() {
               ))}
               {roots.length === 0 && (
                 <div className="text-[11px] text-fg-3">
-                  None - no project_root may be set. A fresh launch with no project root runs in the SuperBased
+                  None - no project_root may be set. A fresh launch with no project root runs in the superbased
                   daemon's own working directory (the directory <code className="text-fg-2">observer start</code> /{" "}
                   <code className="text-fg-2">observer dashboard</code> was launched from).
                 </div>
@@ -705,6 +724,13 @@ export function TerminalsPage() {
           </div>
         </div>
       </ChartShell>
+      </div>
+
+      {/* Default workspace: Observer's own scratch folder ([workspace].default_dir),
+          kept beside Folder Selection because both answer "which folder". It is
+          NOT added to the allow-list above: launching there still needs a root. */}
+      <div id="default-workspace" className="scroll-mt-6">
+        <DefaultWorkspaceCard readOnly={!p?.config_writable} />
       </div>
 
       {/* Remote systems (T-488): the [[terminal.ssh.profiles]] editor the
@@ -830,7 +856,7 @@ export function TerminalsPage() {
               maxHeight={320}
               stickyHead
               size="sm"
-              minWidth={520}
+              minWidth={620}
               tableClassName="font-mono"
               head={
                 <tr>
@@ -838,6 +864,7 @@ export function TerminalsPage() {
                   <th className="py-1 pr-2 font-medium">Tool</th>
                   <th className="py-1 pr-2 font-medium">Kind</th>
                   <th className="py-1 pr-2 font-medium">State</th>
+                  <th className="py-1 pr-2 font-medium">Started by</th>
                   <th className="py-1 pr-2 font-medium">Session</th>
                   <th className="py-1 font-medium">Cmds</th>
                 </tr>
@@ -856,6 +883,9 @@ export function TerminalsPage() {
                     ) : (
                       <Pill variant="danger">exit {r.exit_code}</Pill>
                     )}
+                  </td>
+                  <td className="whitespace-nowrap py-1 pr-2">
+                    <RunInitiator initiator={r.initiator} parent={r.parent_session_id} />
                   </td>
                   <td className="py-1 pr-2">
                     {r.best_session_id ? (
@@ -878,9 +908,42 @@ export function TerminalsPage() {
           )}
         </div>
       </ChartShell>
+
+      {/* Refused connections (OpenShell lane N5): the sandbox egress refusal
+          audit, a compgen feature row: null in a build without the
+          Sandboxes and VMs module, so the page renders no sandbox element. */}
+      {SANDBOX_REFUSALS_CARD && (
+        <Suspense fallback={null}>
+          <SANDBOX_REFUSALS_CARD />
+        </Suspense>
+      )}
         </>
       </TabPanel>
     </div>
+  );
+}
+
+// RunInitiator is the run history's "Started by" cell (lane cli-2): who
+// started the run, and for an agent a link to the session that launched it.
+// A run recorded before agent migration 220 shows a hyphen.
+function RunInitiator({ initiator, parent }: { initiator?: string; parent?: string }) {
+  const label = initiatorLabel(initiator);
+  if (!label) return <span className="text-fg-3">-</span>;
+  if (!isAgentInitiated(initiator)) return <span>{label}</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Pill variant="warn">{label}</Pill>
+      {parent ? (
+        <Tooltip content={`Launched by session ${parent}`}>
+          <Link
+            to={`/sessions?session=${encodeURIComponent(parent)}`}
+            className="text-accent underline decoration-dotted decoration-accent/50 underline-offset-[3px] hover:decoration-accent"
+          >
+            {fmtShortId(parent, 8)}
+          </Link>
+        </Tooltip>
+      ) : null}
+    </span>
   );
 }
 

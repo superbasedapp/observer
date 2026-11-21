@@ -1,5 +1,8 @@
-import { FlaskConical, History, RefreshCw, ScanSearch, ShieldCheck, FileText } from "lucide-react";
+import { FlaskConical, History, RefreshCw, ScanSearch, ShieldCheck, FileText, Wrench } from "lucide-react";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Button, ChartShell, ConfirmButton, Input, Pill, SegmentedControl } from "@/components/primitives";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
@@ -15,13 +18,24 @@ import {
   type GuardJobsView,
   type GuardTestResponse,
 } from "@/lib/guardTools";
+import {
+  CHAIN_REPAIR_STEPS,
+  chainApplyNote,
+  chainApplyReady,
+  chainRepairSteps,
+  type ChainRepairJob,
+  type ChainRepairKind,
+  type ChainRepairStep,
+  type GuardChainState,
+} from "@/lib/guardOrgEnforcement";
 
 // Guard tools (T-154): the Security page's twins of `observer guard test`,
 // `guard rescan`, `guard compile [--diff]` and `guard mcp scan | report`.
 // The test is answered in process by the shared internal/guardtest; the rest
 // run as jobs in the shared registry (the Compliance evidence card's
 // pattern), each argv from a closed server-side table. A kind that changes
-// state carries the confirm token its route's GET minted.
+// state carries the confirm token its route's GET minted. The audit chain
+// repairs (ChainRepairCard, B-G8) ride the same machinery.
 
 const BOX = "rounded-2 border border-line-2 bg-bg-3 p-3 text-[11.5px]";
 
@@ -31,7 +45,7 @@ function errText(e: unknown): string {
 
 // useGuardJobs drives one guard job route: its GET view (kinds + confirm
 // token) and the job it last started, polled until it settles.
-function useGuardJobs(route: "/api/guard/jobs/policy" | "/api/guard/jobs/mcp") {
+function useGuardJobs(route: "/api/guard/jobs/policy" | "/api/guard/jobs/mcp" | "/api/guard/jobs/chain") {
   const view = useApi<GuardJobsView>(route);
   const [job, setJob] = useState<GuardJob | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -253,7 +267,8 @@ export function ApplyPolicyCard() {
           </ConfirmButton>
           {!compileOn && (
             <span className="text-fg-3">
-              Native rule compilation is off. Turn on Compile on init in Settings &gt; Guard &gt; Native dialects to use it.
+              Native rule compilation is off. Turn on Compile on init in Settings &gt; Guard &gt; Native dialects to use it.{" "}
+              <NeedsSettingLink link={placeLink("guard_settings")} />
             </span>
           )}
         </div>
@@ -299,5 +314,118 @@ export function MCPToolsBar({ onScanned }: { onScanned: () => void }) {
       <JobResult job={jobs.job} />
       {jobs.error && <div className="mt-2 text-[11.5px] text-danger">{jobs.error}</div>}
     </div>
+  );
+}
+
+// ChainRepairCard is the Coverage tab's "Repair audit chain" (plan
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md, B-G8): the dashboard
+// twin of `observer guard repair-anchors`, `dedup-events` and `relink-gaps`.
+// The daemon's repair line (repair_hint) is the entry point; each repair runs
+// its dry run first (a read), and only then offers its apply, which rewrites
+// guard_events rows, behind a confirm that asks for a database backup first
+// and the confirm token the route's GET minted.
+export function ChainRepairCard({ chain, onRepaired }: { chain: GuardChainState | null; onRepaired: () => void }) {
+  const jobs = useGuardJobs("/api/guard/jobs/chain");
+  const [dryRuns, setDryRuns] = useState<Partial<Record<ChainRepairKind, ChainRepairJob>>>({});
+
+  // Track each repair's dry run, so its apply is offered only after it; a
+  // finished apply re-reads the chain state and clears the dry runs (what
+  // they reported no longer holds).
+  const job = jobs.job;
+  useEffect(() => {
+    if (!job) return;
+    const kind = job.mode.replace(/^guard:/, "");
+    if (kind.endsWith("-apply")) {
+      if (job.status !== "running") {
+        setDryRuns({});
+        onRepaired();
+      }
+      return;
+    }
+    setDryRuns((d) => ({ ...d, [kind as ChainRepairKind]: { mode: job.mode, status: job.status } }));
+  }, [job?.id, job?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const suggested = chain ? chainRepairSteps(chain) : [];
+  const others = CHAIN_REPAIR_STEPS.filter((s) => !suggested.some((x) => x.kind === s.kind));
+  const locked = jobs.running || jobs.busy !== null || !jobs.view.data;
+
+  const stepRow = (step: ChainRepairStep) => (
+    <div key={step.kind} className="rounded-2 border border-line-2 bg-bg-3 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-fg-1">{step.title}</span>
+        <span className="ml-auto flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            iconLeft={ScanSearch}
+            disabled={locked}
+            loading={jobs.busy === step.kind}
+            onClick={() => void jobs.start(step.kind)}
+          >
+            Dry run
+          </Button>
+          <ConfirmButton
+            size="sm"
+            variant="secondary"
+            armedVariant="danger"
+            iconLeft={Wrench}
+            disabled={locked || !chainApplyReady(step.kind, dryRuns)}
+            loading={jobs.busy === `${step.kind}-apply`}
+            title={chainApplyReady(step.kind, dryRuns) ? undefined : "Run the dry run first to see what this changes"}
+            confirmLabel="Rewrite the rows"
+            armedNote={chainApplyNote(step)}
+            holdArmed
+            onConfirm={() => void jobs.start(`${step.kind}-apply`)}
+          >
+            Apply
+          </ConfirmButton>
+        </span>
+      </div>
+      <p className="m-0 mt-1 text-fg-3">{step.finds}</p>
+    </div>
+  );
+
+  return (
+    <ChartShell
+      title="Repair audit chain"
+      icon={Wrench}
+      sub="Fixes the break shapes routine maintenance and old transcript re-parses leave behind, the same repairs the CLI runs. Each repair reports what it would change first; nothing is rewritten until you apply it."
+    >
+      <div className="space-y-3 text-[11.5px]">
+        {!chain ? null : chain.ok ? (
+          <p className="m-0 text-fg-3">The audit chain is intact ({chain.checked} rows verified). There is nothing to repair.</p>
+        ) : chain.repair_hint ? (
+          <div className="rounded-2 border border-warn/30 bg-warn-soft p-3 text-warn" data-testid="chain-repair-hint">
+            {chain.repair_hint}
+          </div>
+        ) : (
+          <p className="m-0 text-fg-2">
+            No repair here explains this break. Verify audit chain above lists each failing row; a row edited in any
+            other way stays reported, which is what the chain is for.
+          </p>
+        )}
+        {suggested.length > 0 && <div className="space-y-2">{suggested.map(stepRow)}</div>}
+        {others.length > 0 && (
+          <details className="group">
+            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+              {suggested.length > 0 ? "Other repairs" : "All repairs"}
+            </summary>
+            <div className="mt-2 space-y-2">{others.map(stepRow)}</div>
+          </details>
+        )}
+        <p className="m-0 text-fg-3">
+          An apply rewrites rows in observer.db.{" "}
+          <Link to="/settings?section=storage" className="text-accent hover:underline">
+            Back up the database first (Settings &gt; Storage)
+          </Link>
+          .
+        </p>
+      </div>
+      <JobResult
+        job={jobs.job}
+        failNote="A refused repair changes nothing; the output below says why."
+      />
+      {jobs.error && <div className="mt-2 text-[11.5px] text-danger">{jobs.error}</div>}
+    </ChartShell>
   );
 }

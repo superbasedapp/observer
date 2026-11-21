@@ -1,4 +1,5 @@
 import { useState, memo } from "react";
+import { Link } from "react-router-dom";
 import {
   CacheKpiStrip,
   CacheTierBadge,
@@ -40,9 +41,15 @@ export const CacheTab = memo(function CacheTab({ d }: { d: SessionDetail }) {
           graded no turns here (<span className="font-mono">cache_summary</span>{" "}
           is absent from{" "}
           <span className="font-mono">/api/session/{d.id}</span>). That happens
-          when <span className="font-mono">[cachetrack]</span> is disabled, or
-          when the session predates it, or when the provider returns no cache
-          token counts. Nothing is hidden here.
+          when cache tracking is off (
+          <Link to="/settings?section=cachetrack" className="text-accent hover:underline">
+            Settings &gt; Cache tracking
+          </Link>
+          ), when the session predates it (the cache-rescan backfill in{" "}
+          <Link to="/settings?section=backfill" className="text-accent hover:underline">
+            Settings &gt; Backfill
+          </Link>{" "}
+          fills older sessions in), or when the provider returns no cache token counts. Nothing is hidden here.
         </p>
       )}
       <p className="text-[10.5px] text-fg-4">

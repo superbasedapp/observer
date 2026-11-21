@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchJSON } from "../../lib/api";
+import { fetchJSON, localConfirmHeaders } from "../../lib/api";
 import { arenaUsageLine } from "../../lib/costSurfaces";
 import { ComboChip, ConfirmButton, EntityMultiPicker, ModelId, Pill, Tooltip } from "@/components/primitives";
 import { joinList, keepSelected, splitList } from "@/lib/pickerOptions";
@@ -203,9 +203,11 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   );
 }
 
+// getConfirmToken is the owner-local confirm token (localConfirmHeaders: the
+// core command-job list mints it), never /api/remote/config, a Remote
+// dashboard route that is refused while that component is off.
 async function getConfirmToken(): Promise<string> {
-  const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-  return cfg.confirm_token ?? "";
+  return (await localConfirmHeaders())["X-Observer-Confirm"] ?? "";
 }
 
 function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {

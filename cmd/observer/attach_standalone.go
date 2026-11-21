@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/agentlaunch"
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
@@ -131,6 +132,26 @@ type terminalStack struct {
 	// (tool_installs, agent migration 149), settled by this stack's OnExit.
 	// Nil when no DB is wired.
 	toolInstalls *toolInstallLedger
+	// runHistory reads the node-local terminal_run history for `observer
+	// terminals` (launch_control.go). Nil when no DB is wired.
+	runHistory func(ctx context.Context, limit int) ([]store.TerminalRunSummary, error)
+	// sandboxedRunRows reads the sandboxed rows of given runs, ended or not,
+	// for the loopback exposure gate (loopback_exposure.go). Nil when no DB
+	// is wired.
+	sandboxedRunRows func(ctx context.Context, runIDs []string) ([]store.TerminalRunSummary, error)
+	// modelOffered is the New Terminal picker's model rule for `observer
+	// launch --model` (dashboard.ModelOffered over the recent-models seam).
+	modelOffered func(ctx context.Context, tool, model string) bool
+	// observerDir is the daemon's observer directory (beside the DB), where
+	// the sandboxed CLI launches keep their watch markers.
+	observerDir string
+	// liveSession is the session bridge's live row for a pid (lane cli-2's
+	// launch initiator, launch_initiator.go); nil when no DB is wired.
+	liveSession func(ctx context.Context, pid int) (string, bool)
+	// pending is the ONE store of launches held for a human because an
+	// agent asked for them (lane cli-2 fixes-1, launch_pending.go), shared
+	// by the attach endpoint and the dashboard.
+	pending *pendingLaunchStore
 	// close stops the status-hub reaper and kills every live session; wire it
 	// into the command's teardown BEFORE the DB is closed (start.go relies on
 	// defer-LIFO ordering to run it first).
@@ -331,6 +352,8 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 		EndGoneRun: func(ctx context.Context, runID, reason string) (bool, error) {
 			return store.New(database).EndTerminalRunGone(ctx, runID, reason, time.Now())
 		},
+		// The egress refusal audit's one store seam (lane N1).
+		Refusals: store.New(database),
 	})
 
 	// T-488/T-489: the [terminal] launch policy and SSH profiles have ONE
@@ -559,6 +582,12 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 		repoTrust:        dashboardRepoTrust(cfg, database),
 		nf:               nf,
 		toolInstalls:     installLedger,
+		runHistory:       terminalRunHistory(database),
+		sandboxedRunRows: terminalSandboxedRunRows(database),
+		observerDir:      filepath.Dir(cfg.Observer.DBPath),
+		liveSession:      liveSessionFor(database),
+		pending:          newPendingLaunchStore(),
+		modelOffered:     launchModelOffered(database),
 		close: func() {
 			// Stop the discovery sweep FIRST — before ANY DB write below and before
 			// mgr.Shutdown() — and WAIT for its goroutine to drain, so no in-flight
@@ -705,7 +734,7 @@ func resumableSessionSet(runs []store.TerminalRunSummary) map[string][]string {
 		}
 		switch r.EndReason {
 		case store.EndReasonResumed, store.EndReasonChildExit, store.EndReasonOrgFloorHooksDrifted,
-			store.EndReasonConsoleClosed, store.EndReasonDashboardStop, store.EndReasonStoppedOutside, store.EndReasonProcessGone:
+			store.EndReasonConsoleClosed, store.EndReasonDashboardStop, store.EndReasonCLIStop, store.EndReasonLaunchRefused, store.EndReasonStoppedOutside, store.EndReasonProcessGone:
 			continue // superseded, an exit, a stop, or ended by the org's floor: not resumable-by-restart
 		}
 		// Accumulate EVERY eligible orphan for the session (newest first, since
@@ -758,11 +787,61 @@ func (s *terminalStack) attachHost() attachsock.Host {
 		ids := s.resumableRuns[sessionID]
 		return ids, len(ids) > 0
 	}
+	li := s.launchInitiator()
 	return newAttachHost(s.svc, s.mgr, s.attachAudit).
 		withResume(s.hub, resumable).
 		withDurableResume(s.attachDir, s.supersedeResumed, predecessors).
 		withResumeAuthority(s.resumeAuthority).
-		withReclaim(s.reclaimOnInput)
+		withReclaim(s.reclaimOnInput).
+		withControl(newLaunchControl(s)).
+		withPending(s.pending).
+		withCallerSnapshot(li.snapshotCaller).
+		withOrigin(attachSpawnOrigin(li))
+}
+
+// attachSpawnOrigin is the origin check of an attach launch (`observer
+// <tool> --attach`): the endpoint's caller judged with the spawn's hint,
+// refused with agentlaunch.CodeCallerGone when it is gone (lane cli-2
+// fixes-3, audit M1).
+func attachSpawnOrigin(li launchInitiator) func(ctx context.Context, req attachsock.SpawnRequest) (termrun.Origin, error) {
+	return func(ctx context.Context, req attachsock.SpawnRequest) (termrun.Origin, error) {
+		o, gone := li.attachCaller(ctx, req.AgentEnv, req.AgentEnvSession)
+		if gone != "" {
+			return termrun.Origin{}, agentlaunch.CallerGoneError(gone)
+		}
+		return o, nil
+	}
+}
+
+// launchModelOffered is the picker's model rule (dashapi.ModelOffered, the
+// one owner the dashboard's launch route shares) over database's recent
+// models; without a database only the registry's known models count.
+func launchModelOffered(database *sql.DB) func(ctx context.Context, tool, model string) bool {
+	recent := func(context.Context, string) ([]store.RecentToolModel, error) { return nil, nil }
+	if database != nil {
+		recent = recentModelsSeam(database)
+	}
+	return func(ctx context.Context, tool, model string) bool {
+		return dashapi.ModelOffered(ctx, recent, tool, model)
+	}
+}
+
+// terminalSandboxedRunRows is the gate's row reader over database, nil
+// without one.
+func terminalSandboxedRunRows(database *sql.DB) func(ctx context.Context, runIDs []string) ([]store.TerminalRunSummary, error) {
+	if database == nil {
+		return nil
+	}
+	return store.New(database).SandboxedTerminalRunsByID
+}
+
+// terminalRunHistory is the run-history reader over database, nil without one.
+func terminalRunHistory(database *sql.DB) func(ctx context.Context, limit int) ([]store.TerminalRunSummary, error) {
+	if database == nil {
+		return nil
+	}
+	st := store.New(database)
+	return st.ListTerminalRuns
 }
 
 // buildTerminalSurfaces constructs the shared terminal stack ONCE and derives
@@ -805,6 +884,11 @@ func buildTerminalSurfaces(ctx context.Context, cfg config.Config, database *sql
 	// Independent of the launch-manager gate below: the endpoint is always
 	// registered and reports honestly whether sandbox support exists.
 	surf.sandboxProber = stack.sandboxProber
+	// LAUNCH-1: the dashboard's spawn routes refuse while a live box can
+	// reach this daemon's loopback listener (loopback_exposure.go).
+	surf.loopbackCallerGate = stack.loopbackCallerGate()
+	surf.launchCaller = stack.launchInitiator().dashboardOrigin
+	surf.pendingLaunches = dashboardPending{p: stack.pending}
 	// Assign the launch manager only when the gate is on so the field stays a
 	// nil interface (not a non-nil interface over a nil pointer) when disabled —
 	// the dashboard keys off that nil to hide the button, and

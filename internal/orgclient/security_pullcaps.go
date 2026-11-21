@@ -11,7 +11,10 @@ import "github.com/marmutapp/superbased-observer/internal/orgcontract"
 // without it sends nothing.
 func init() {
 	managedPullCapabilities["security"] = append(managedPullCapabilities["security"],
-		orgcontract.SecurityCapabilityBaselineApprovals, orgcontract.SecurityCapabilityOrgDedupe)
+		orgcontract.SecurityCapabilityBaselineApprovals, orgcontract.SecurityCapabilityOrgDedupe,
+		// The authored package lookup fields (lane RM-3): this build
+		// decodes them, so the server serves them.
+		orgcontract.SecurityCapabilityPackageLookup)
 	// The served dedupe key lives only in the node's owner-only key file:
 	// the cache keeps the signed body with the key blanked and restores it
 	// from that file on load (merge audit finding 4).

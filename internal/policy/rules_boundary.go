@@ -153,6 +153,14 @@ var observerConfigPatterns = []pathPattern{
 	{"~/.claude/settings.json", "Claude Code hook settings"},
 	{"**/.claude/settings.json", "project Claude Code hook settings"},
 	{"~/.codex/config.toml", "Codex configuration"},
+	// Observer's own committed Copilot cloud agent hook file (`observer
+	// cloud-session init --agent copilot`): it carries the sandbox gate and
+	// flush hooks, so an agent editing it could unhook the gate that judges
+	// it (ledger CLOUDSESS-5). Every cloud-session agent's hook file must
+	// match a row here; tests/invariant/cloudsession_hookfile_test.go walks
+	// the agent table (internal/policy imports no observer package, so the
+	// row is listed here and the table is checked against it).
+	{"**/.github/hooks/superbased-observer.json", "Observer's committed Copilot hook file"},
 }
 
 // clientConfigDirPatterns is the R-150 exclusion set: the AI clients'
@@ -180,7 +188,7 @@ func boundaryRules() []Rule {
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			SafePat: boundarySafe,
 			Doc:     "file read outside the project root",
-			Advice:  "Reads outside the project are recorded; add a [guard.boundary] allow_paths entry if this location is routine.",
+			Advice:  "Reads outside the project are recorded; if this location is routine, add it to Allowed paths (Observer dashboard Settings > Guard, Boundary; a [guard.boundary] allow_paths entry).",
 		},
 		{
 			ID: "R-150", Category: CategoryBoundary, Severity: SeverityWarn,
@@ -188,7 +196,7 @@ func boundaryRules() []Rule {
 			Observe: DecisionFlag, Enforce: DecisionAsk,
 			SafePat: boundarySafe,
 			Doc:     "file write outside the project root",
-			Advice:  "Write inside the project, or add a [guard.boundary] allow_paths entry for this location.",
+			Advice:  "Write inside the project, or add this location to Allowed paths (Observer dashboard Settings > Guard, Boundary; a [guard.boundary] allow_paths entry).",
 		},
 		{
 			ID: "R-151", Category: CategoryBoundary, Severity: SeverityHigh,
@@ -356,9 +364,7 @@ func boundaryRules() []Rule {
 		},
 		{
 			ID: "R-160", Category: CategoryBoundary, Severity: SeverityCritical,
-			AppliesTo: shell, MatchCmd: shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
-				return observerConfigPath(p, ctx.Cfg.Home)
-			}, true),
+			AppliesTo: shell, MatchCmd: shPathMatchBy(observerConfigPathAt, true),
 			Observe: DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "shell command modifying observer/guard/hook configuration",
 			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
@@ -368,6 +374,19 @@ func boundaryRules() []Rule {
 			AppliesTo: shell, MatchCmd: inlineDeletePathMatch(observerConfigPatterns),
 			Observe: DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "interpreter one-liner or inline script deleting observer/guard/hook configuration",
+			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
+		},
+		{
+			// SA-1: the guard-owned path lives inside interpreter program
+			// text (`python3 -c "open('…/.observer/config.toml','a')"`,
+			// `node -e "appendFileSync(…)"`, a python heredoc), not in the
+			// unit's positionals — the inline mirror of the shell row above.
+			// It uses observerConfigPath, like the shell row, so a consent
+			// record stays R-165's (the self-approval rule), ahead of R-160.
+			ID: "R-160", Category: CategoryBoundary, Severity: SeverityCritical,
+			AppliesTo: shell, MatchCmd: matchObserverConfigInline,
+			Observe: DecisionFlag, Enforce: DecisionDeny,
+			Doc:    "interpreter one-liner or inline script naming observer/guard/hook configuration",
 			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
 		},
 		{
@@ -394,6 +413,12 @@ func boundaryRules() []Rule {
 	rules = append(rules, gitHookRules()...)
 	rules = append(rules, selfApprovalRules()...)
 	rules = append(rules, consentRecordRules()...)
+	// R-167: an agent widening its own sandbox egress host list
+	// (rules_sandboxallow.go, OpenShell lane N5).
+	rules = append(rules, sandboxAllowRules()...)
+	// R-168 (lane cli-2): an agent launching another agent asks the
+	// human on each launch (rules_agentlaunch.go).
+	rules = append(rules, agentLaunchRules()...)
 	return append(rules, protectedPathRules()...)
 }
 
@@ -410,17 +435,50 @@ func observerConfigPath(p, home string) (string, bool) {
 	return pathPatternMatch(p, home, observerConfigPatterns)
 }
 
+// observerConfigPathAt is observerConfigPath(p, ctx.Cfg.Home) over the
+// evaluation's memoized forms of p (evalmemo.go).
+func observerConfigPathAt(ctx *MatchContext, p string) (string, bool) {
+	if _, ok := homePathPatternMatch(ctx, p, consentRecordPatterns); ok {
+		return "", false
+	}
+	return homePathPatternMatch(ctx, p, observerConfigPatterns)
+}
+
 // matchObserverConfigWriteFA is the R-160 file-access row over
 // observerConfigPath (faPathMatch's shape).
 func matchObserverConfigWriteFA(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) {
 		return false, ""
 	}
-	desc, ok := observerConfigPath(ctx.Path, ctx.Cfg.Home)
+	desc, ok := observerConfigPathAt(ctx, ctx.Path)
 	if !ok {
 		return false, ""
 	}
 	return true, desc + " (" + ctx.Event.Target + ")"
+}
+
+// matchObserverConfigInline is the R-160 inline-script row (SA-1): a path
+// literal inside interpreter program text that resolves to a guard-owned
+// file. It mirrors inlinePathMatch but judges the path with observerConfigPath
+// (not the raw observerConfigPatterns), so a consent record named inline
+// stays R-165's, exactly as the file-access and shell rows route it.
+func matchObserverConfigInline(ctx *MatchContext, cmd *Command) (bool, string) {
+	if ctx == nil || ctx.Cfg == nil {
+		return false, ""
+	}
+	ops := inlineOperands(ctx, cmd)
+	if len(ops) == 0 {
+		return false, ""
+	}
+	anchors := unitAnchors(ctx, cmd)
+	for _, op := range ops {
+		for _, c := range unitPathCandidates(ctx, anchors, op.text) {
+			if desc, ok := observerConfigPathAt(ctx, c.path); ok {
+				return true, movedReason(desc+" ("+op.text+", named in a "+op.kind+" inline script)", c.moved)
+			}
+		}
+	}
+	return false, ""
 }
 
 // --- shared path matching ---------------------------------------------
@@ -428,15 +486,27 @@ func matchObserverConfigWriteFA(ctx *MatchContext) (bool, string) {
 // homeRelative rewrites an absolute path under home into its
 // "~/"-anchored form for pattern matching. ok is false when p is not
 // under home (or home is unknown).
+//
+// The byte math runs on the FLAVOR-ALIGNED forms (alignFlavors), so a path
+// in one flavor under a home in the other — a drvfs mount
+// (`/mnt/c/users/u/x` under `C:/Users/u`) or a WSL UNC path
+// (`\\wsl.localhost\Ubuntu\home\u\x` under `/home/u`) — is trimmed at the
+// right offset rather than mid-segment (SA-3). Without the alignment,
+// isUnder answered true (it aligns internally) while the suffix was sliced
+// off the un-aligned np, yielding a garbage "~/" form that matched nothing.
 func homeRelative(p, home string) (string, bool) {
 	np, nh := normPath(p), normPath(home)
-	if nh == "" || !isUnder(np, nh) {
+	if nh == "" {
 		return "", false
 	}
-	if len(np) <= len(nh) {
+	a, h, ok := alignFlavors(np, nh)
+	if !ok || !isUnder(a, h) {
+		return "", false
+	}
+	if len(a) <= len(h) {
 		return "~", true
 	}
-	return "~/" + np[len(nh)+1:], true
+	return "~/" + a[len(h)+1:], true
 }
 
 // pathPatternMatch matches a resolved path against a pattern table,
@@ -447,13 +517,46 @@ func pathPatternMatch(p, home string, pats []pathPattern) (string, bool) {
 	if p == "" {
 		return "", false
 	}
+	return matchPathForms(pathMatchForms(p, home), pats)
+}
+
+// pathMatchForms is the form list pathPatternMatch tries: p itself and, when
+// under home, its "~/"-anchored form. Split out so a caller matching ONE path
+// against many tables (hookSwitchesAt) derives the forms once.
+func pathMatchForms(p, home string) []string {
 	forms := []string{p}
 	if rel, ok := homeRelative(p, home); ok {
 		forms = append(forms, rel)
 	}
+	return forms
+}
+
+// matchPathForms is pathPatternMatch over precomputed forms.
+func matchPathForms(forms []string, pats []pathPattern) (string, bool) {
+	if len(pats) == 0 {
+		return "", false
+	}
+	return matchPathFormSegs(pathFormSegs(forms), pats)
+}
+
+// pathFormSegs splits each form once for case-insensitive glob matching
+// (matchGlob's path side), so a table of N patterns costs one split per
+// form rather than N (demo bug #14, R3-5).
+func pathFormSegs(forms []string) [][]string {
+	out := make([][]string, len(forms))
+	for i, f := range forms {
+		out[i] = globPathSegs(f, true)
+	}
+	return out
+}
+
+// matchPathFormSegs is matchPathForms over pre-split forms: the same
+// pattern-major, form-minor order, so the same pattern names the hit.
+func matchPathFormSegs(formSegs [][]string, pats []pathPattern) (string, bool) {
 	for _, pat := range pats {
-		for _, f := range forms {
-			if matchGlob(pat.glob, f, true) {
+		ps := globSegs(pat.glob, true)
+		for _, fs := range formSegs {
+			if matchSegs(ps, fs) {
 				return pat.desc, true
 			}
 		}
@@ -468,7 +571,7 @@ func faPathMatch(pats []pathPattern, wantWrite bool) MatchFn {
 		if isWriteEvent(ctx.Event) != wantWrite {
 			return false, ""
 		}
-		desc, ok := pathPatternMatch(ctx.Path, ctx.Cfg.Home, pats)
+		desc, ok := homePathPatternMatch(ctx, ctx.Path, pats)
 		if !ok {
 			return false, ""
 		}
@@ -482,7 +585,7 @@ func faPathMatch(pats []pathPattern, wantWrite bool) MatchFn {
 // classifies as write or read access within the unit.
 func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 	return shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
-		return pathPatternMatch(p, ctx.Cfg.Home, pats)
+		return homePathPatternMatch(ctx, p, pats)
 	}, wantWrite)
 }
 
@@ -490,13 +593,17 @@ func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 // judges a path by its place in the project, not by its absolute form).
 func shPathMatchBy(match func(ctx *MatchContext, p string) (string, bool), wantWrite bool) MatchCmdFn {
 	return func(ctx *MatchContext, cmd *Command) (bool, string) {
-		tokens := sensitivePathTokens(cmd)
+		tokens := sensitivePathTokensMemo(ctx, cmd)
 		if len(tokens) == 0 {
 			return false, ""
 		}
 		anchors := unitAnchors(ctx, cmd)
 		for _, t := range tokens {
-			if classifyWrite(cmd, t.text) != wantWrite {
+			write := classifyWrite(cmd, t.text)
+			if t.write != nil {
+				write = *t.write // a valuedWriteToken carries its own direction
+			}
+			if write != wantWrite {
 				continue
 			}
 			for _, c := range unitPathCandidates(ctx, anchors, t.text) {
@@ -526,6 +633,12 @@ type pathToken struct {
 	// directory (T-526): `tee .bashrc` typed in home, `cp x evil.desktop`
 	// typed in ~/.config/autostart.
 	bare bool
+	// write, when non-nil, is the DEFINITE access direction of this token,
+	// set by an extractor that already knows it because the direction lives
+	// in a valued flag or a KEY=value operand, not in the token's position
+	// (valuedWriteTokens — dd of=/if=, a cp/tar/unzip target directory). nil
+	// means "ask classifyWrite from the command shape" (SA-1).
+	write *bool
 }
 
 // skipBareCandidate reports whether a sensitive-path row skips one resolved
@@ -535,8 +648,9 @@ func skipBareCandidate(t pathToken, c anchoredPath, write bool) bool {
 	return t.bare && !c.moved && !write
 }
 
-// sensitivePathTokens returns a unit's positionals (bare ones marked) and
-// its redirect targets, which are always path candidates.
+// sensitivePathTokens returns a unit's positionals (bare ones marked), its
+// redirect targets, and the valued-flag write operands whose direction the
+// token position does not carry (valuedWriteTokens) — all path candidates.
 func sensitivePathTokens(cmd *Command) []pathToken {
 	pos := cmd.Positionals()
 	out := make([]pathToken, 0, len(pos)+len(cmd.RedirectTargets))
@@ -546,32 +660,85 @@ func sensitivePathTokens(cmd *Command) []pathToken {
 	for _, r := range cmd.RedirectTargets {
 		out = append(out, pathToken{text: r})
 	}
-	return out
+	return append(out, valuedWriteTokens(cmd)...)
 }
 
 // writeBases are command bases whose pathish operands are written
-// regardless of position.
+// regardless of position. `sponge FILE` buffers stdin and overwrites FILE
+// (SA-1), the same shape as tee/truncate.
 var writeBases = map[string]bool{
-	"tee": true, "truncate": true, "install": true,
+	"tee": true, "truncate": true, "install": true, "sponge": true,
 	"set-content": true, "add-content": true, "out-file": true, "new-item": true,
 }
 
 // destBases are copy/move-style commands whose LAST operand is the
-// written destination.
+// written destination. `ln` creates its link at the last operand (SA-1:
+// `ln -sf X ~/.observer/config.toml` writes the config path).
 var destBases = map[string]bool{
-	"cp": true, "mv": true, "rsync": true, "scp": true,
+	"cp": true, "mv": true, "rsync": true, "scp": true, "ln": true,
 	"copy-item": true, "move-item": true,
+}
+
+// inPlaceEditorMode maps an editor / stream processor to the test that
+// reports it is EDITING IN PLACE — writing its file operands rather than
+// reading them (SA-1). Each is the vendor's own in-place switch; outside
+// that mode the tool only reads, so the row must not fire.
+var inPlaceEditorMode = map[string]func(*Command) bool{
+	"sed":  func(c *Command) bool { return c.HasShortFlag('i') || c.HasLongFlag("--in-place") },
+	"perl": func(c *Command) bool { return c.HasShortFlag('i') },
+	"ruby": func(c *Command) bool { return c.HasShortFlag('i') || c.HasLongFlag("--inplace") },
+	"awk":  awkInPlace,
+	"gawk": awkInPlace,
+	"mawk": awkInPlace,
+	"ex":   hasEditorCommand,
+	"vim":  hasEditorCommand,
+	"vi":   hasEditorCommand,
+	"nvim": hasEditorCommand,
+	"view": hasEditorCommand,
+}
+
+// awkInPlace reports gawk's in-place mode, loaded as `-i inplace`,
+// `--include inplace` / `--load inplace` (or their inline `=` spellings).
+func awkInPlace(c *Command) bool {
+	for i := 1; i < len(c.Argv); i++ {
+		t := strings.ToLower(c.Argv[i])
+		if (t == "-i" || t == "--include" || t == "-l" || t == "--load") && i+1 < len(c.Argv) && c.Argv[i+1] == "inplace" {
+			return true
+		}
+		if t == "-iinplace" || t == "--include=inplace" || t == "--load=inplace" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEditorCommand reports an ex/vi/vim batch edit — an invocation carrying
+// a command to run (`-c 'wq'`, `-sc '…'`, `--cmd`, `-S script`, `+{cmd}`),
+// which writes the file. A bare interactive `vim FILE` is deliberately not
+// treated as a write (it only opens).
+func hasEditorCommand(c *Command) bool {
+	if c.HasShortFlag('c') || c.HasShortFlag('S') || c.HasLongFlag("--cmd", "--source") {
+		return true
+	}
+	for _, a := range c.Args() {
+		if len(a) > 1 && a[0] == '+' {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyWrite classifies one path token's access direction within a
 // unit (documented approximation, pinned by tests): redirect targets
-// are writes; writeBases write all operands; copy/move write their
-// last positional operand, path-like or bare (T-526: `cp /tmp/x.desktop
-// evil.desktop` after a `cd` writes evil.desktop; reading only path-like
-// operands took the source for the destination); sed -i writes in place;
-// delete commands write (destroy) their targets; everything else reads.
-// A `cp -t DIR` target-directory form is not modelled (its last operand
-// is a source).
+// are writes; writeBases write all operands; an in-place editor
+// (inPlaceEditorMode — sed/perl/ruby/awk -i, ex/vim batch edits) writes
+// its operands; copy/move/ln write their last positional operand,
+// path-like or bare (T-526: `cp /tmp/x.desktop evil.desktop` after a `cd`
+// writes evil.desktop; reading only path-like operands took the source for
+// the destination); delete commands write (destroy) their targets;
+// everything else reads. The `cp -t DIR` / `--target-directory` form's
+// destination is the DIR (a valuedWriteToken), so the last-operand rule
+// is suppressed for it.
 func classifyWrite(cmd *Command, tok string) bool {
 	for _, r := range cmd.RedirectTargets {
 		if r == tok {
@@ -581,17 +748,78 @@ func classifyWrite(cmd *Command, tok string) bool {
 	if writeBases[cmd.Base] {
 		return true
 	}
+	if mode, ok := inPlaceEditorMode[cmd.Base]; ok && mode(cmd) {
+		return true
+	}
 	if _, isDelete := deleteShape(cmd); isDelete {
 		return true
 	}
-	if cmd.Base == "sed" && (cmd.HasShortFlag('i') || cmd.HasLongFlag("--in-place")) {
-		return true
-	}
 	if destBases[cmd.Base] {
+		if _, ok := targetDir(cmd); ok {
+			return false // the destination is the -t DIR, a valuedWriteToken
+		}
 		pos := cmd.Positionals()
 		return len(pos) >= 2 && pos[len(pos)-1] == tok
 	}
 	return false
+}
+
+// targetDir returns a copy/move/install target-directory value (`-t DIR`,
+// `--target-directory=DIR`), into which the sources are written.
+func targetDir(cmd *Command) (string, bool) {
+	return cmd.FlagValue("-t", "--target-directory")
+}
+
+// tarExtracts reports a tar invocation in EXTRACT mode (`-x`, `--extract`,
+// `--get`, or the old dashless `tar xf …` mode word), where a `-C DIR`
+// directory is written into rather than read from.
+func tarExtracts(cmd *Command) bool {
+	if cmd.HasShortFlag('x') || cmd.HasLongFlag("--extract", "--get") {
+		return true
+	}
+	if pos := cmd.Positionals(); len(pos) > 0 {
+		m := pos[0]
+		if m != "" && m[0] != '-' && !strings.ContainsAny(m, `/\.`) && strings.IndexByte(m, 'x') >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// valuedWriteTokens extracts the path operands whose WRITE/READ direction is
+// carried in a valued flag or a KEY=value operand rather than in the token's
+// position, so the sensitive-path rows judge them with the right direction
+// (SA-1): dd `of=` (write) / `if=` (read), a cp/mv/install target directory,
+// tar's `-C` under extract, and unzip's `-d`.
+func valuedWriteTokens(cmd *Command) []pathToken {
+	write, read := true, false
+	var out []pathToken
+	switch cmd.Base {
+	case "dd":
+		for _, a := range cmd.Args() {
+			if v, ok := strings.CutPrefix(a, "of="); ok && v != "" {
+				out = append(out, pathToken{text: v, write: &write})
+			}
+			if v, ok := strings.CutPrefix(a, "if="); ok && v != "" {
+				out = append(out, pathToken{text: v, write: &read})
+			}
+		}
+	case "cp", "mv", "install", "copy-item", "move-item":
+		if dir, ok := targetDir(cmd); ok {
+			out = append(out, pathToken{text: dir, write: &write})
+		}
+	case "tar":
+		if tarExtracts(cmd) {
+			if dir, ok := cmd.FlagValue("-C", "--directory"); ok {
+				out = append(out, pathToken{text: dir, write: &write})
+			}
+		}
+	case "unzip":
+		if dir, ok := cmd.FlagValue("-d"); ok {
+			out = append(out, pathToken{text: dir, write: &write})
+		}
+	}
+	return out
 }
 
 // --- R-150 / R-151 ----------------------------------------------------
@@ -615,15 +843,29 @@ func matchOutsideProject(wantWrite bool) MatchFn {
 // matchCrossProjectWrite implements R-151: a write landing inside a
 // DIFFERENT observed project's root — detectable only because the
 // daemon knows every project root it watches.
+//
+// "Different" needs the event's own project. With no ProjectRoot the
+// session's project is unknown, so every known root, the session's own
+// among them, would read as another project's: unknown is not a
+// violation (R-150's contract). Before 2026-11-16 an empty root fell
+// through to the loop below, and the proxy's response inspection (it
+// carries no root, guard.InspectProxyResponse) raised R-151 on every
+// write an agent made into its own project; live, a security-assessment
+// run's writes to its own run folder were reported as cross-project
+// bleed. A lane with no root leaves the write to the watcher, which
+// judges it against the session's recorded project.
 func matchCrossProjectWrite(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) || ctx.Path == "" {
 		return false, ""
 	}
 	cur := ctx.Event.ProjectRoot
-	if cur != "" && isUnder(ctx.Path, cur) {
+	if cur == "" {
+		return false, ""
+	}
+	if isUnder(ctx.Path, cur) {
 		return false, "" // inside the current project: never cross-bleed
 	}
-	if cur != "" && !comparableFlavors(ctx.Path, cur) {
+	if !comparableFlavors(ctx.Path, cur) {
 		// The path is in a flavor the event's own root cannot be
 		// compared with, so "outside the current project" is unknown,
 		// and a match against another root would be a guess (live: a
@@ -636,7 +878,7 @@ func matchCrossProjectWrite(ctx *MatchContext) (bool, string) {
 		// A known root that is not an absolute path in either flavor
 		// (FU-193's "Xcode (project unknown)", a placeholder) names no
 		// directory to bleed into (audit row 8).
-		if root == "" || !isAbsPath(root) || (cur != "" && pathsEqual(root, cur)) {
+		if root == "" || !isAbsPath(root) || pathsEqual(root, cur) {
 			continue
 		}
 		if isUnder(ctx.Path, root) {
@@ -1494,7 +1736,7 @@ func matchProjectPolicyWriteFA(ctx *MatchContext) (bool, string) {
 
 // matchProjectPolicyWriteShell implements the R-161 shell row.
 func matchProjectPolicyWriteShell(ctx *MatchContext, cmd *Command) (bool, string) {
-	tokens := sensitivePathTokens(cmd)
+	tokens := sensitivePathTokensMemo(ctx, cmd)
 	if len(tokens) == 0 {
 		return false, ""
 	}

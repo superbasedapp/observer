@@ -124,6 +124,9 @@ var ccResponseSideAttachments = map[string]bool{
 // (bodies such as system-prompt snapshots and tool lists are skipped).
 type rawAttachment struct {
 	Type string `json:"type"`
+	// URL is read only for the "remote_session_change" kind (teleport.go):
+	// the cloud session's claude.ai URL.
+	URL string `json:"url"`
 }
 
 // UnmarshalJSON tolerates an attachment value of any shape: a non-object
@@ -132,9 +135,10 @@ type rawAttachment struct {
 func (a *rawAttachment) UnmarshalJSON(b []byte) error {
 	var v struct {
 		Type string `json:"type"`
+		URL  string `json:"url"`
 	}
 	if json.Unmarshal(b, &v) == nil {
-		a.Type = v.Type
+		a.Type, a.URL = v.Type, v.URL
 	}
 	return nil
 }

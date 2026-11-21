@@ -20,7 +20,7 @@ func RelayHostArgv(observerBin string, n NetRequest, placeholders []Overlay, rel
 	if err := validateSockDir(n.HostSocketDir); err != nil {
 		return nil, fmt.Errorf("sandbox.RelayHostArgv: %w", err)
 	}
-	return hostArgvRelay(observerBin, n, placeholders, relay)
+	return hostArgvRelay(observerBin, n, placeholders, relay, "")
 }
 
 // GuestArgv is the in-box guest helper prefix for a network request (the

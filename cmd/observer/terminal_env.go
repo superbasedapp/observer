@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
+
+	"github.com/marmutapp/superbased-observer/internal/procmodel"
 )
 
 // terminal_env.go holds the launcher environment contract every build
@@ -170,4 +173,27 @@ func isInternalChildEnv(kv string) bool {
 		// The checked-launch marker names one launch's repository; a child
 		// gets it only from the launch that checked it (launch_trust.go).
 		strings.HasPrefix(kv, repoTrustCheckedEnv+"=")
+}
+
+// isAgentSessionMarkerEnv reports whether an env entry is an agent
+// session's marker (procmodel.SessionTokenEnvKeys; lane cli-2 fixes-3,
+// audit L4). Every child the daemon spawns for the dashboard (a terminal, a
+// GUI launch, a setup session) drops it: the daemon's own environment is
+// that of whoever started the daemon, so a daemon started from an agent's
+// shell would otherwise pass that agent's marker to every dashboard
+// terminal, and a human's launches and confirms there would read as the
+// agent's. An agent a terminal runs sets its own marker for its own tools.
+// Windows keys an environment block without regard to case, so there the
+// name is matched that way (a platform capability, not a caller identity).
+func isAgentSessionMarkerEnv(kv string) bool {
+	name, _, ok := strings.Cut(kv, "=")
+	if !ok {
+		return false
+	}
+	for _, k := range procmodel.SessionTokenEnvKeys {
+		if name == k || (runtime.GOOS == "windows" && strings.EqualFold(name, k)) {
+			return true
+		}
+	}
+	return false
 }

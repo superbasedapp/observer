@@ -164,6 +164,52 @@ func TestExtractLatestUserPromptText(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			// Fix round 1: Gemini's tool loop. A role:"function" (or
+			// role:"tool") content after the user's prompt is a
+			// continuation, never a re-scan of the prompt that opened it.
+			name:     "gemini generateContent: role function continuation skipped",
+			provider: models.ProviderGoogle,
+			body: m{"contents": []any{
+				m{"role": "user", "parts": []any{m{"text": "original prompt with sk-ant-api03-xxxx"}}},
+				m{"role": "model", "parts": []any{m{"functionCall": m{"name": "ls"}}}},
+				m{"role": "function", "parts": []any{m{"functionResponse": m{"name": "ls", "response": m{"ok": true}}}}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:     "gemini generateContent: role tool continuation skipped",
+			provider: models.ProviderGoogle,
+			body: m{"contents": []any{
+				m{"role": "user", "parts": []any{m{"text": "original prompt with sk-ant-api03-xxxx"}}},
+				m{"role": "model", "parts": []any{m{"functionCall": m{"name": "ls"}}}},
+				m{"role": "tool", "parts": []any{m{"functionResponse": m{"name": "ls"}}}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:     "gemini generateContent: user functionResponse-only content skipped",
+			provider: models.ProviderGoogle,
+			body: m{"contents": []any{
+				m{"role": "user", "parts": []any{m{"text": "original prompt with sk-ant-api03-xxxx"}}},
+				m{"role": "model", "parts": []any{m{"functionCall": m{"name": "ls"}}}},
+				m{"role": "user", "parts": []any{m{"functionResponse": m{"name": "ls"}}}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:     "gemini generateContent: a new prompt after a finished loop is scanned",
+			provider: models.ProviderGoogle,
+			body: m{"contents": []any{
+				m{"role": "user", "parts": []any{m{"text": "first"}}},
+				m{"role": "model", "parts": []any{m{"functionCall": m{"name": "ls"}}}},
+				m{"role": "function", "parts": []any{m{"functionResponse": m{"name": "ls"}}}},
+				m{"role": "model", "parts": []any{m{"text": "done"}}},
+				m{"role": "user", "parts": []any{m{"text": "next one"}}},
+			}},
+			wantText: "next one",
+			wantOK:   true,
+		},
+		{
 			name:     "unsupported provider yields ok=false",
 			provider: "cohere",
 			body:     m{"messages": []any{m{"role": "user", "content": "hi"}}},

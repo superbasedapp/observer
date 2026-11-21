@@ -1,9 +1,24 @@
 package config
 
 import (
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// vmTestPath is an absolute path on the OS the test runs on, built from its
+// parts WITHOUT cleaning them (so a ".." part stays). The rules check
+// filepath.IsAbs and filepath.Clean, and a Unix path such as
+// /usr/local/bin/cloud-hypervisor is not absolute on Windows, so the
+// expectations are built per OS (F-023).
+func vmTestPath(parts ...string) string {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return root + strings.Join(parts, string(filepath.Separator))
+}
 
 // TestTerminalSandboxVMDefaults (lane SBX-P4): the [terminal.sandbox.vm]
 // defaults are the plan's (section 10.1): cloud-hypervisor, the newest
@@ -34,10 +49,13 @@ func TestValidateTerminalSandboxVM(t *testing.T) {
 		{"vcpus high", func(c *TerminalSandboxVMConfig) { c.VCPUs = 65 }, "vcpus"},
 		{"memory low", func(c *TerminalSandboxVMConfig) { c.MemoryMB = 256 }, "memory_mb"},
 		{"relative vmm path", func(c *TerminalSandboxVMConfig) { c.CloudHypervisorPath = "bin/cloud-hypervisor" }, "cloud_hypervisor_path"},
-		{"unclean virtiofsd path", func(c *TerminalSandboxVMConfig) { c.VirtiofsdPath = "/usr/../usr/libexec/virtiofsd" }, "virtiofsd_path"},
+		{"unclean virtiofsd path", func(c *TerminalSandboxVMConfig) {
+			c.VirtiofsdPath = vmTestPath("usr", "..", "usr", "libexec", "virtiofsd")
+		}, "virtiofsd_path"},
 		{"good", func(c *TerminalSandboxVMConfig) {
 			c.ImageSet, c.VCPUs, c.MemoryMB, c.InstallCache = "1.2.3", 4, 8192, true
-			c.CloudHypervisorPath, c.VirtiofsdPath = "/usr/local/bin/cloud-hypervisor", "/usr/libexec/virtiofsd"
+			c.CloudHypervisorPath = vmTestPath("usr", "local", "bin", "cloud-hypervisor")
+			c.VirtiofsdPath = vmTestPath("usr", "libexec", "virtiofsd")
 		}, ""},
 	}
 	for _, tc := range cases {

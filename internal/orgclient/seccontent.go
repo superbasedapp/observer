@@ -48,6 +48,10 @@ var SecurityContentKinds = []SecurityContentKind{
 	{content.MaliciousPackages, "the install gate's index (security.deps)"},
 	{content.PopularNames, "the install gate's index (security.deps)"},
 	{content.OSVExport, "the dependency scanners' databases (security.scan.scalibr, security.scan.osv)"},
+	{content.OSVOSExport, "the image OS-package scanner's per-release databases (security.scan.os)"},
+	{content.OSVShards, "the remote lookup's shard set descriptors (security.deps match = remote, lane RM-2; the shard objects are mirrored by RM-3)"},
+	{content.KEV, "the exploit-likelihood labels and ranking of dependency findings (security.deps, CISA KEV)"},
+	{content.EPSS, "the exploit-likelihood labels and ranking of dependency findings (security.deps, FIRST EPSS)"},
 	{content.AgentCVETable, "the agent CVE table (not consumed yet)"},
 	{content.RulePack, "the code rules' rule pack (SEC-G2)"},
 	{content.Engine, "the code rules' engine pins (SEC-G2)"},
@@ -234,6 +238,49 @@ type SecurityContentResult struct {
 	// Unchanged: the server's envelope is the accepted one (or a 304).
 	Unchanged bool
 	State     content.State
+	// Reused counts the artifacts taken from the installed copy (same name,
+	// platform, size and sha256) instead of being fetched again.
+	Reused int
+}
+
+// stageInstalledArtifact stages the installed artifact src under a fresh
+// ".incoming-*" name in root, as a downloaded artifact is staged: a hard
+// link (no second copy of an export of hundreds of megabytes), or a copy
+// where the filesystem refuses the link. The caller removes the staged name.
+func stageInstalledArtifact(root, src string) (string, error) {
+	f, err := os.CreateTemp(root, ".incoming-*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Remove(name); err != nil {
+		return "", err
+	}
+	if err := os.Link(src, name); err == nil {
+		return name, nil
+	}
+	in, err := os.Open(src) //nolint:gosec // G304: a file of the content channel's own kind directory
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	_, err = io.Copy(out, in)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 // securityContentETagFile keeps the mirror envelopes' ETags beside the
@@ -267,8 +314,10 @@ func writeSecurityContentETag(st contentchan.Store, kind content.Kind, tag strin
 // SandboxContentKinds) from the org mirror and installs it
 // into st under tr (the vendor keys; the org server's own key is never a
 // trust root for content). The envelope is revalidated with its ETag; each
-// artifact for this platform is streamed to a file under st's root and
-// handed to contentchan.InstallFiles, which checks every size and digest
+// artifact for this platform is streamed to a file under st's root (or,
+// when the same bytes are already installed, staged from the installed
+// copy: contentchan.Store.InstalledArtifact) and handed to
+// contentchan.InstallFiles, which checks every size and digest
 // before anything is installed. On any failure nothing changes and the
 // last-known-good stays.
 func (c *Client) InstallSecurityContent(ctx context.Context, st contentchan.Store, kind content.Kind, tr contentchan.Trust) (SecurityContentResult, error) {
@@ -298,7 +347,7 @@ func (c *Client) InstallSecurityContent(ctx context.Context, st contentchan.Stor
 	// Read the entry list from a verified envelope (the same checks run
 	// again inside InstallFiles, against the accepted high-water mark).
 	v, err := content.Verify(content.VerifyInput{
-		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys, RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey,
+		Envelope: envelope, Kind: kind, VendorKeys: tr.VendorKeys, FeedKeys: tr.FeedKeys, RequireOrg: tr.RequireOrg, OrgKey: tr.OrgKey,
 		Accepted: prev.Accepted, Now: time.Now(),
 	})
 	if err != nil {
@@ -322,6 +371,18 @@ func (c *Client) InstallSecurityContent(ctx context.Context, st contentchan.Stor
 	for _, e := range v.Manifest.Entries {
 		if (e.OS != "" && e.OS != runtime.GOOS) || (e.Arch != "" && e.Arch != runtime.GOARCH) || content.IsRevoked(v.Manifest, e.SHA256) {
 			continue
+		}
+		// The same bytes are already installed (same name and platform,
+		// size and sha256): stage them instead of downloading them again,
+		// so a manifest that changes one OSV export fetches that export
+		// only (static feed mirroring plan, B2). InstallFiles checks the
+		// staged file like a downloaded one.
+		if src, ok := st.InstalledArtifact(kind, e); ok {
+			if p, err := stageInstalledArtifact(st.Root, src); err == nil {
+				files[e.Name] = p
+				res.Reused++
+				continue
+			}
 		}
 		f, err := os.CreateTemp(st.Root, ".incoming-*")
 		if err != nil {

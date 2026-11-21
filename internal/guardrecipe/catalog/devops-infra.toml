@@ -1,0 +1,64 @@
+# Pack "devops-infra": infrastructure, clusters and cloud accounts.
+#
+# Infrastructure destruction asks in every mode, and so does anything aimed
+# at production: a terraform apply or destroy naming prod, kubectl or helm
+# with a prod context, a cloud CLI with a prod profile, project or
+# subscription. Reading a secret from a secret manager asks. The prod
+# patterns match the command text ("prod" anywhere in the value); add your
+# own rule with a different pattern if your environments are named
+# otherwise.
+
+name = "devops-infra"
+kind = "pack"
+title = "DevOps & infra"
+summary = "Infrastructure destruction, prod-targeted terraform, kubectl, helm and cloud CLI commands, and secret-manager reads ask."
+version = 1
+
+[[override]]
+rule = "R-130"
+enforce = true
+note = "terraform, pulumi or cdk destroy, cluster deletes and docker prunes ask in every mode"
+
+[[rule]]
+id = "RC-OPS-01"
+doc = "infrastructure apply or destroy naming prod (devops pack)"
+advice = "Run a plan against a non-production workspace and have a person apply to prod."
+category = "destructive"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(terraform|tofu|pulumi|cdk)\s+(apply|destroy|import|up|deploy)\b.*prod'
+
+[[rule]]
+id = "RC-OPS-02"
+doc = "kubectl or helm against a prod context (devops pack)"
+advice = "Use a non-production context, or ask the developer to run it against prod."
+category = "destructive"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(kubectl|helm|oc)\s.*(--(kube-)?context[= ]\S*prod|config\s+use-context\s+\S*prod)'
+
+[[rule]]
+id = "RC-OPS-03"
+doc = "cloud CLI with a prod profile, project or subscription (devops pack)"
+advice = "Use a non-production profile, or ask the developer to run it against prod."
+category = "destructive"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '((^|\s)(aws|gcloud|az)\s.*--(profile|project|subscription)[= ]\S*prod|(AWS_PROFILE|CLOUDSDK_CORE_PROJECT|AZURE_SUBSCRIPTION_ID)=\S*prod)'
+
+[[rule]]
+id = "RC-OPS-04"
+doc = "reading a secret from a secret manager (devops pack)"
+advice = "Reference the secret by name in configuration the program reads itself; do not print it."
+category = "boundary"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(aws\s+secretsmanager\s+get-secret-value|aws\s+ssm\s+get-parameters?\b.*--with-decryption|gcloud\s+secrets\s+versions\s+access|az\s+keyvault\s+secret\s+(show|download)|vault\s+(kv\s+get|read)|op\s+(read|item\s+get)|doppler\s+secrets|kubectl\s+get\s+secrets?\b.*-o\s*=?\s*(yaml|json|jsonpath))'

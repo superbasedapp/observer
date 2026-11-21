@@ -71,10 +71,16 @@ func CheckRemoteBind(addr string, rc RemoteController) error {
 func (s *Server) guardedHandler(addr string) http.Handler {
 	var h http.Handler
 	if rc := s.opts.Remote; rc != nil && rc.Ready() && !hostIsLoopback(hostnameOnly(addr)) {
-		h = s.remoteGuardedHandler(rc)
+		// The remote handler does not go through Handler, so it takes the
+		// database identity guard here (db_identity_guard.go, L-125).
+		h = s.dbIdentityGuard(s.remoteGuardedHandler(rc))
 	} else {
+		// Handler carries the database identity guard itself.
 		h = browserGuard(s.Handler(), hostIsLoopback)
 	}
+	// The caller check rides outside the route guards, so it covers every
+	// route of both handlers by construction (caller_guard.go).
+	h = s.callerGuard(h)
 	if s.opts.ReadCaches {
 		h = costRowCacheMiddleware(h)
 	}

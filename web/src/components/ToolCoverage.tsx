@@ -88,7 +88,7 @@ export function ToolCoverageSection() {
     <ChartShell
       title="Tool coverage"
       icon={Plug}
-      sub="Every AI tool SuperBased supports: whether it was found on this machine, how it is captured, and what to do next. Not affected by the date window."
+      sub="Every AI tool superbased supports: whether it was found on this machine, how it is captured, and what to do next. Not affected by the date window."
       right={
         <Button variant="secondary" size="sm" iconLeft={RefreshCw} onClick={reload} loading={refreshing}>
           Refresh
@@ -172,7 +172,7 @@ function CoverageReady({ view }: { view: Extract<CoverageView, { kind: "ready" }
       )}
       {view.watcherRunning === false && (
         <Callout tone="warn" title="The background watcher is not running here">
-          Start SuperBased with <code className="font-mono">observer start</code> to capture past and new sessions.
+          Start superbased with <code className="font-mono">observer start</code> to capture past and new sessions.
         </Callout>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2">

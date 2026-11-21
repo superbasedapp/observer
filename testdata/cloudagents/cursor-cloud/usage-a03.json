@@ -1,0 +1,3 @@
+{"totalUsage":{"inputTokens":2000,"outputTokens":500,"cacheWriteTokens":0,"cacheReadTokens":7900,"totalTokens":10400},"cost":{"rawCostCents":0.98,"chargedCents":0},"runs":[
+ {"id":"run-c1000000-0000-4000-8000-0000000000c1","usageUuid":"0f1e2d3c-4b5a-4968-8776-c1c1c1c1c1c1","usage":{"inputTokens":1200,"outputTokens":300,"cacheWriteTokens":0,"cacheReadTokens":5000,"totalTokens":6500},"cost":{"rawCostCents":0.61,"chargedCents":0}}
+]}

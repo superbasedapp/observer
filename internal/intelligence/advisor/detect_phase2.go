@@ -354,7 +354,7 @@ func detectMCPOverhead(f *Facts, t Thresholds) []Suggestion {
 		Category: CategoryHygiene, Scope: ScopeGlobal, Severity: SeverityAdvice,
 		Title: fmt.Sprintf("MCP schemas taxed ~%d turns but were called %d times", turns, f.MCPCalls),
 		Nudge: fmt.Sprintf(
-			"MCP tool schemas add ~1,900 tokens to every turn (≈$%.2f across this window) but the tools were called only %d times in %d turns. If you rarely query the observer mid-session, `observer init --skip-mcp` removes the per-turn tax.",
+			"MCP tool schemas add ~1,900 tokens to every turn (≈$%.2f across this window) but the tools were called only %d times in %d turns. If you rarely query the observer mid-session, removing Observer's MCP server entry removes the per-turn tax (Settings > Connected tools > Set up > Remove Observer's wiring > MCP server, or `observer uninstall --<tool> --skip-hooks`).",
 			taxCost, f.MCPCalls, turns,
 		),
 		SavingsUSD: round2(taxCost * 0.9), Confidence: 0.6,
@@ -440,7 +440,7 @@ func detectNotProxied(f *Facts, _ Thresholds) []Suggestion {
 		Category: CategoryHygiene, Scope: ScopeGlobal, Severity: SeverityInfo,
 		Title: fmt.Sprintf("$%.0f of spend isn't routed through the proxy", spend),
 		Nudge: fmt.Sprintf(
-			"%d sessions ($%.2f) ran outside the proxy this window - without it you miss exact token accounting, conversation compression (~7%%, ≈$%.2f here), and prompt-cache tracking. `observer init` wires the routing.",
+			"%d sessions ($%.2f) ran outside the proxy this window - without it you miss exact token accounting, conversation compression (~7%%, ≈$%.2f here), and prompt-cache tracking. Route your tools through the proxy on the Compression page (or with `observer init`).",
 			unproxied, spend, saving,
 		),
 		SavingsUSD: round2(saving), Confidence: 0.5,

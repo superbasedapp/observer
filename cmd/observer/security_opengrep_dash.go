@@ -168,6 +168,9 @@ func (e *codeEnv) dashStatus(ctx context.Context) dashapi.OpengrepStatus {
 		if r, ok, err := e.st.SecLatestRun(ctx, opengrep.DriverID); err == nil && ok {
 			out.LastRunAt, out.LastRunOutcome, out.LastRunLabels = r.StartedAt.UTC().Format(time.RFC3339), r.Outcome, codeRunLabels(r.Notes)
 		}
+		if words, at, ok := codeLastTaintPass(ctx, e.st); ok {
+			out.LastTaintPass, out.LastTaintPassAt = words, at.UTC().Format(time.RFC3339)
+		}
 	}
 	oc := e.cfg.Security.Scan.Opengrep
 	out.PostWrite, out.CommitDiff, out.ScheduleHours = oc.PostWrite, oc.CommitDiff, oc.ScheduleHours

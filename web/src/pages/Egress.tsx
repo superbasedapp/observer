@@ -1,17 +1,20 @@
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
+import { GatedLink } from "@/components/GatedLink";
 import {
   Button,
   ChartShell,
   EmptyState,
   ErrorState,
-  HeroStat,
   HostMark,
+  InlineEmpty,
   InlineLoading,
   ModelId,
   PageHeader,
   Pill,
-  Stagger,
+  StatCard,
+  StatStrip,
   Tooltip,
+  buttonClasses,
 } from "@/components/primitives";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
@@ -24,17 +27,26 @@ import { VocabPill } from "@shared/lib/vocabPill";
 import { EGRESS_OUTCOME, POLICY_MODE } from "@/lib/vocabTones";
 import { navIcon } from "@/lib/nav";
 import { MetricIcon } from "@/components/MetricIcon";
+import {
+  EGRESS_ACTION_LABEL,
+  EGRESS_OUTCOME_LABEL,
+  EGRESS_REASON_LABEL,
+  ON_UNAVAILABLE_LABEL,
+  POLICY_MODE_LABEL,
+  TARGET_SHAPE_LABEL,
+  wordsFor,
+} from "./policies/vocab";
 
 // Egress page (G22 Plane-A policy egress routing): the read-only node surface
 // over the installed [observability.egress] policy and the NODE-LOCAL
-// obs_egress_decisions audit log — the decision half (rule / action / verdict)
+// obs_egress_decisions audit log: the decision half (rule / action / verdict)
 // plus the realized outcome the proxy reported back (applied / fail_closed /
-// realized_outcome). Everything renders VERBATIM from the store; this page
-// computes nothing. The data never rides the org push (design §8: no org
-// tier), so this node view — like `observer obs egress` — is the ONLY place
-// the audit log is viewable. Distinct from the Security page's Plane-B guard
-// (the developer's own coding-agent tool calls); this governs a hosted app's
-// end-user traffic.
+// realized_outcome). Every value renders from the store through the
+// policies/vocab.ts words; this page computes nothing. The data never rides
+// the org push (design section 8: no org tier), so this node view (like
+// `observer obs egress`) is the ONLY place the audit log is viewable.
+// Distinct from the Security page's Plane-B guard (the developer's own
+// coding-agent tool calls); this governs a hosted app's end-user traffic.
 
 type EgressRule = {
   name: string;
@@ -83,6 +95,9 @@ type EgressDecision = {
 };
 type DecisionsResponse = { decisions: EgressDecision[] | null };
 
+const ROUTING_HREF = "/policies?tab=routing";
+const ROUTING_MANAGED = "Policies > Routing (managed by your organization)";
+
 // The realized-outcome tone table is EGRESS_OUTCOME (@/lib/vocabTones) and
 // the verdict tone is the guard decision's (@shared/lib/guardCatalog); an
 // unknown label renders neutral with the CircleHelp glyph, never invented.
@@ -93,7 +108,7 @@ export function EgressPage() {
 
   // The /api/obs/* routes are registered only when [observability] is
   // enabled. When they are absent, the dashboard's SPA catch-all serves the
-  // index.html shell with a 200 — so "obs off" manifests as a JSON parse
+  // index.html shell with a 200, so "obs off" manifests as a JSON parse
   // error (a non-ApiError), or as a 404 from an older/stricter mux. A real
   // handler failure is an ApiError with a 5xx and renders as an error below.
   const obsOff = [status.error, decisions.error].some(
@@ -105,89 +120,109 @@ export function EgressPage() {
   const totalDecisions = st
     ? Object.values(st.decisions_by_action).reduce((a, n) => a + n, 0)
     : 0;
+  const ruleCount = (st?.rules ?? []).length;
+  const targetCount = (st?.targets ?? []).length;
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
         icon={navIcon("egress")}
         title="Egress"
-        sub="Plane-A policy egress routing: route a hosted app's end-user requests to another resource by admission verdict, end-user budget, or cohort. This audit log is node-local - it never rides the org push - so this page (and observer obs egress) is its only view. Read-only; policy is authored in config.toml."
+        sub="Where your AI apps' end-user requests were routed, by verdict, budget or cohort. Kept on this machine."
+        right={
+          <GatedLink to={ROUTING_HREF} managed={null} className={buttonClasses({ size: "sm" })}>
+            Edit routing
+          </GatedLink>
+        }
       />
       {obsOff ? (
         <ObsDisabled>
-          Egress routing rides the observability subsystem, and its API routes are not registered.
+          Egress routing is part of AI Apps, which is not running on this machine.
         </ObsDisabled>
       ) : status.error ? (
-        <ErrorNote label="status" error={status.error} onRetry={status.reload} page />
+        <ErrorState
+          title="Couldn't load egress status"
+          error={status.error}
+          onRetry={status.reload}
+          variant="page"
+        />
       ) : (
         <>
-          <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <HeroStat
+          <StatStrip cols={4} ariaLabel="Egress summary" className="">
+            <StatCard
               label="Mode"
               icon={<MetricIcon metric="policyMode" />}
               loading={status.loading}
-              variant={st?.mode === "enforce" ? "warn" : "accent"}
-              value={st ? st.mode : "-"}
+              stale={status.isStale}
+              value={st ? wordsFor(POLICY_MODE_LABEL, st.mode) : "-"}
               sub={
-                st?.enabled
-                  ? st.policy_hash
-                    ? <span title={st.policy_hash}>{`policy ${fmtShortId(st.policy_hash, 12)}`}</span>
-                    : "policy installed"
-                  : "no egress policy installed"
+                st
+                  ? st.enabled
+                    ? st.policy_hash
+                      ? <span title={st.policy_hash}>{`Policy ${fmtShortId(st.policy_hash, 12)}`}</span>
+                      : "Policy installed"
+                    : "No policy installed"
+                  : undefined
               }
+              linkTo={st && !st.enabled ? ROUTING_HREF : undefined}
             />
-            <HeroStat
-              label="Rules / targets"
+            <StatCard
+              label="Rules"
               icon={<MetricIcon metric="rules" />}
               loading={status.loading}
               stale={status.isStale}
-              value={st ? `${(st.rules ?? []).length} / ${(st.targets ?? []).length}` : "-"}
-              sub="first-match-wins · typed targets"
+              value={st ? fmtInt(ruleCount) : "-"}
+              sub={st ? `${fmtInt(targetCount)} ${targetCount === 1 ? "target" : "targets"}, first match wins` : undefined}
             />
-            <HeroStat
+            <StatCard
               label="Decisions"
               icon={<MetricIcon metric="verdicts" />}
               loading={status.loading}
               stale={status.isStale}
               value={st ? fmtInt(totalDecisions) : "-"}
-              sub={st ? `${fmtInt(st.decisions_24h)} in the last 24h` : ""}
+              sub={st ? `${fmtInt(st.decisions_24h)} in the last 24h` : undefined}
             />
-            <HeroStat
-              label="Audit chain"
+            <StatCard
+              label="Audit log"
               icon={<MetricIcon metric={st && !st.chain.ok ? "auditChainBroken" : "auditChain"} />}
               loading={status.loading}
               stale={status.isStale}
-              variant={st && !st.chain.ok ? "danger" : "accent"}
-              value={st ? (st.chain.ok ? "intact" : "BROKEN") : "-"}
+              warn={!!st && !st.chain.ok}
+              value={st ? (st.chain.ok ? "Intact" : "Broken") : "-"}
+              cornerPill={
+                st && !st.chain.ok ? <Pill variant="danger">tampered or damaged</Pill> : undefined
+              }
               sub={
                 st
                   ? st.chain.ok
                     ? `${fmtInt(st.chain.rows)} hash-chained rows`
-                    : (st.chain.detail ?? "verification failed")
-                  : ""
+                    : (st.chain.detail ?? "Verification failed")
+                  : undefined
               }
             />
-          </Stagger>
+          </StatStrip>
 
           {st && !st.enabled && <EgressDisabled />}
 
           {st && st.enabled && (
-            <ChartShell
-              title="Policy"
-              sub="The installed (compiled) policy - authored node-side in [observability.egress]; there is no dashboard write path."
-            >
+            <ChartShell title="Policy" sub="The installed policy. Rules are checked top to bottom.">
               <PolicyTables rules={st.rules ?? []} targets={st.targets ?? []} />
             </ChartShell>
           )}
 
           <ChartShell
             title="Decisions"
-            sub="Newest first. Each row is the immutable decision plus the realized outcome the proxy reported back after the forward."
+            sub="Newest first. Each row is the decision and what the proxy did with it."
           >
-            {decisions.loading ? (
+            {decisions.loading && !decisions.data ? (
               <InlineLoading label="Loading decisions" block />
             ) : decisions.error ? (
-              <ErrorNote label="decisions" error={decisions.error} onRetry={decisions.reload} />
+              <ErrorState
+                title="Couldn't load egress decisions"
+                error={decisions.error}
+                onRetry={decisions.reload}
+                className="py-6"
+              />
             ) : rows.length === 0 ? (
               <DecisionsEmpty enabled={!!st?.enabled} mode={st?.mode ?? "off"} />
             ) : (
@@ -215,7 +250,7 @@ const RULE_COLUMNS: ColumnDef<EgressRule, unknown>[] = [
     header: "Action",
     accessorKey: "action",
     enableSorting: false,
-    cell: ({ row }) => <span className="font-mono text-[11px] text-fg-2">{row.original.action}</span>,
+    cell: ({ row }) => <span className="text-fg-2">{wordsFor(EGRESS_ACTION_LABEL, row.original.action)}</span>,
   },
   {
     id: "target",
@@ -231,40 +266,39 @@ const RULE_COLUMNS: ColumnDef<EgressRule, unknown>[] = [
   },
   {
     id: "on_unavailable",
-    header: "On unavailable",
+    header: "If unavailable",
     accessorKey: "on_unavailable",
     enableSorting: false,
     cell: ({ row }) => {
       const r = row.original;
       return (
-        <>
-          <Pill variant={r.on_unavailable === "deny" ? "danger" : "neutral"}>{r.on_unavailable}</Pill>
+        <span className="inline-flex flex-wrap items-center gap-1">
+          <span className="text-fg-2">{wordsFor(ON_UNAVAILABLE_LABEL, r.on_unavailable)}</span>
           {r.pinned && (
             <Pill
-              variant="warn"
-              className="ml-1"
-              title="Proxy-pinned: retries never substitute another target; if the target is unavailable the request fails CLOSED (provider-shaped 403), never leaking to the default upstream."
+              variant="info"
+              title="Pinned: retries never use another target. If this one is down the request is refused, never sent to the default upstream."
             >
               pinned
             </Pill>
           )}
-        </>
+        </span>
       );
     },
   },
   {
     id: "reason_code",
-    header: "Reason code",
+    header: "Reason",
     accessorKey: "reason_code",
     enableSorting: false,
-    cell: ({ row }) => <span className="font-mono text-[11px] text-fg-3">{row.original.reason_code}</span>,
+    cell: ({ row }) => <span className="text-fg-3">{wordsFor(EGRESS_REASON_LABEL, row.original.reason_code)}</span>,
   },
 ];
 
 const TARGET_COLUMNS: ColumnDef<EgressTarget, unknown>[] = [
   {
     id: "id",
-    header: "Typed target",
+    header: "Target",
     accessorKey: "id",
     cell: ({ row }) => (
       <span className="inline-flex items-center gap-1.5 font-semibold text-fg-1">
@@ -275,9 +309,9 @@ const TARGET_COLUMNS: ColumnDef<EgressTarget, unknown>[] = [
   },
   {
     id: "shape",
-    header: "Shape",
+    header: "API shape",
     accessorKey: "shape",
-    cell: ({ row }) => <Pill variant="info">{row.original.shape}</Pill>,
+    cell: ({ row }) => <Pill variant="neutral" case="none">{wordsFor(TARGET_SHAPE_LABEL, row.original.shape)}</Pill>,
   },
   {
     id: "url",
@@ -291,10 +325,14 @@ function PolicyTables({ rules, targets }: { rules: EgressRule[]; targets: Egress
   return (
     <div className="space-y-4">
       {rules.length === 0 ? (
-        <p className="py-2 text-[12px] text-fg-3">
-          No rules - add <code className="rounded-1 bg-bg-3 px-1 font-mono">[[observability.egress.rules]]</code>{" "}
-          entries to config.toml.
-        </p>
+        <InlineEmpty
+          message="No rules yet"
+          body={
+            <GatedLink to={ROUTING_HREF} managed={ROUTING_MANAGED} className="text-accent hover:underline">
+              Add a rule on Policies &gt; Routing
+            </GatedLink>
+          }
+        />
       ) : (
         <DataTable<EgressRule>
           data={rules}
@@ -315,6 +353,14 @@ function PolicyTables({ rules, targets }: { rules: EgressRule[]; targets: Egress
   );
 }
 
+function ModeWords({ mode }: { mode: string }) {
+  return (
+    <VocabPill vocab="guardMode" table={POLICY_MODE} value={mode}>
+      {wordsFor(POLICY_MODE_LABEL, mode)}
+    </VocabPill>
+  );
+}
+
 const DECISION_COLUMNS: ColumnDef<EgressDecision, unknown>[] = [
   {
     id: "ts",
@@ -326,7 +372,7 @@ const DECISION_COLUMNS: ColumnDef<EgressDecision, unknown>[] = [
     id: "mode",
     header: "Mode",
     accessorKey: "mode",
-    cell: ({ row }) => <VocabPill vocab="guardMode" table={POLICY_MODE} value={row.original.mode} />,
+    cell: ({ row }) => <ModeWords mode={row.original.mode} />,
   },
   {
     id: "rule_name",
@@ -341,16 +387,12 @@ const DECISION_COLUMNS: ColumnDef<EgressDecision, unknown>[] = [
     cell: ({ row }) => {
       const d = row.original;
       return (
-        <span className="font-mono text-[11px] text-fg-2">
-          {d.action}
+        <span className="inline-flex flex-wrap items-center gap-1 text-fg-2">
+          {wordsFor(EGRESS_ACTION_LABEL, d.action)}
           <ActionDetail d={d} />
-          {d.must_use_target && (
-            <Pill variant="warn" className="ml-1">
-              pinned
-            </Pill>
-          )}
+          {d.must_use_target && <Pill variant="info">pinned</Pill>}
           {d.switch_held && (
-            <Pill variant="neutral" className="ml-1">
+            <Pill variant="neutral" title="A recent model switch is still cooling down, so this one was held.">
               held
             </Pill>
           )}
@@ -375,7 +417,7 @@ const DECISION_COLUMNS: ColumnDef<EgressDecision, unknown>[] = [
   },
   {
     id: "realized",
-    header: "Realized",
+    header: "Outcome",
     accessorFn: (d) => d.realized_outcome ?? "",
     cell: ({ row }) => <RealizedCell d={row.original} />,
   },
@@ -392,7 +434,7 @@ const DECISION_COLUMNS: ColumnDef<EgressDecision, unknown>[] = [
   },
   {
     id: "user",
-    header: "End-user",
+    header: "End user",
     accessorFn: (d) => d.user ?? "",
     cell: ({ row }) => <span className="font-mono text-[11px] text-fg-3">{row.original.user || "-"}</span>,
   },
@@ -417,7 +459,7 @@ function ActionDetail({ d }: { d: EgressDecision }) {
     return (
       <span className="inline-flex items-center gap-1 text-fg-3">
         {" "}→ <HostMark host={d.upstream_id} size={11} />
-        {d.upstream_id}
+        <span className="font-mono text-[11px]">{d.upstream_id}</span>
       </span>
     );
   }
@@ -434,13 +476,13 @@ function ActionDetail({ d }: { d: EgressDecision }) {
   return null;
 }
 
-// RealizedCell renders the proxy-reported outcome VERBATIM, or an honest
-// pending dash when the proxy has not (yet) reported one — advise-mode rows
-// are never routed, so they legitimately stay unreported.
+// RealizedCell renders the proxy-reported outcome through its words, or an
+// honest pending dash when the proxy has not (yet) reported one: advise-only
+// rows are never routed, so they legitimately stay unreported.
 function RealizedCell({ d }: { d: EgressDecision }) {
   if (!d.realized_outcome) {
     return (
-      <Tooltip content="No realized outcome reported - advise-mode decisions are recorded but never routed, so the proxy reports nothing back.">
+      <Tooltip content="No outcome reported. Advise-only decisions are recorded but never routed.">
         <span tabIndex={0} className="cursor-help text-fg-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring">
           -
         </span>
@@ -448,34 +490,35 @@ function RealizedCell({ d }: { d: EgressDecision }) {
     );
   }
   return (
-    <>
-      <VocabPill vocab="egressOutcome" table={EGRESS_OUTCOME} value={d.realized_outcome} />
-      {d.fail_closed && d.realized_outcome !== "fail_closed" && (
-        <Pill variant="danger" className="ml-1">
-          fail-closed
-        </Pill>
-      )}
-    </>
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <VocabPill vocab="egressOutcome" table={EGRESS_OUTCOME} value={d.realized_outcome}>
+        {wordsFor(EGRESS_OUTCOME_LABEL, d.realized_outcome)}
+      </VocabPill>
+      {d.fail_closed && d.realized_outcome !== "fail_closed" && <Pill variant="danger">refused</Pill>}
+    </span>
   );
 }
 
 // --- empty / error states ---------------------------------------------------
 
-// EgressDisabled names the exact gate: [observability.egress] enabled (and its
-// admission dependency — egress composes on the admission verdict).
+// EgressDisabled names where the policy is turned on: Policies > Routing
+// saves the rules and sets [observability.egress] enabled, and egress needs
+// admission on (it composes on the admission verdict), which the Policies
+// page's own empty state turns on (B-S1).
 function EgressDisabled() {
   return (
-    <EmptyCard title="No egress policy installed">
-      <p>
-        Egress is default-off. It needs{" "}
-        <code className="rounded-1 bg-bg-2 px-1 font-mono">[observability.egress] enabled = true</code>{" "}
-        plus at least one rule, and{" "}
-        <code className="rounded-1 bg-bg-2 px-1 font-mono">[observability.admission] enabled = true</code>{" "}
-        - egress composes on the admission verdict. A policy that fails to compile is also reported
-        here as not installed (the daemon logs the compile error and keeps admission running).
-      </p>
+    <EmptyState
+      illustration="connect"
+      title="No routing policy installed"
+      body="Routing is off until a policy with at least one rule is saved. It also needs admission checks on."
+    >
+      <div className="flex justify-center">
+        <GatedLink to={ROUTING_HREF} managed={ROUTING_MANAGED} className={buttonClasses({ variant: "primary", size: "sm" })}>
+          Add a rule on Policies &gt; Routing
+        </GatedLink>
+      </div>
       <EgressLintCheck />
-    </EmptyCard>
+    </EmptyState>
   );
 }
 
@@ -501,17 +544,21 @@ function EgressLintCheck() {
     }
   }
   return (
-    <div className="mt-3">
-      <Button variant="secondary" size="sm" onClick={() => void run()} disabled={busy}>
-        {busy ? "Checking…" : "Check the saved policy"}
-      </Button>
-      {err && <p className="mt-2 text-danger">{err}</p>}
-      {res && res.ok && <p className="mt-2 text-success">The saved egress policy compiles with no lint findings.</p>}
+    <div className="mx-auto mt-3 max-w-xl text-[12px] text-fg-3">
+      <p>A saved policy that fails to compile also shows here as not installed.</p>
+      <div className="mt-2 flex justify-center">
+        <Button size="sm" onClick={() => void run()} loading={busy} disabled={busy}>
+          {busy ? "Checking" : "Check the saved policy"}
+        </Button>
+      </div>
+      {err && <ErrorState className="mt-2" variant="compact" title="Couldn't check the policy" error={err} onRetry={() => void run()} />}
+      {res && res.ok && <p className="mt-2 text-success">The saved policy compiles with no findings.</p>}
       {res && !res.ok && (
-        <ul className="mt-2 space-y-0.5 font-mono text-[11px]">
+        <ul className="mt-2 space-y-1 text-left font-mono text-[11px] text-fg-2">
           {res.issues.map((is) => (
-            <li key={is} className={is.includes("FATAL") ? "text-danger" : "text-warn"}>
-              {is}
+            <li key={is} className="flex items-start gap-1.5">
+              <Pill variant={is.includes("FATAL") ? "danger" : "warn"}>{is.includes("FATAL") ? "error" : "warning"}</Pill>
+              <span className="pt-0.5">{is}</span>
             </li>
           ))}
         </ul>
@@ -527,50 +574,10 @@ function DecisionsEmpty({ enabled, mode }: { enabled: boolean; mode: string }) {
       illustration="inbox"
       title="No egress decisions recorded"
       body={
-        enabled ? (
-          <>
-            The policy is installed in <b>{mode}</b> mode. A row appears when an admission-judged
-            request matches a rule - {mode === "advise" ? "advise records the directive without applying it" : "enforce applies it on the proxy path and reports the realized outcome back"}.
-          </>
-        ) : (
-          "Decisions are recorded only while an egress policy is installed."
-        )
+        enabled
+          ? `The policy is ${wordsFor(POLICY_MODE_LABEL, mode).toLowerCase()}. A row appears when a checked request matches a rule.`
+          : "Decisions are recorded only while a routing policy is installed."
       }
     />
-  );
-}
-
-// ErrorNote renders a failed egress read through the shared ErrorState
-// (CircleAlert + Retry); `page` is the page-level status failure.
-function ErrorNote({
-  label,
-  error,
-  onRetry,
-  page,
-}: {
-  label: string;
-  error: Error;
-  onRetry?: () => void;
-  page?: boolean;
-}) {
-  return (
-    <ErrorState
-      title={`Couldn't load egress ${label}`}
-      error={error}
-      onRetry={onRetry}
-      variant={page ? "page" : "inline"}
-      className={page ? undefined : "py-6"}
-    />
-  );
-}
-
-// EmptyCard: the page-level "not configured" state, through the shared
-// EmptyState with the connect illustration. The children carry the exact
-// config gate to flip.
-function EmptyCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <EmptyState illustration="connect" title={title}>
-      <div className="mx-auto max-w-xl text-[12px] leading-relaxed text-fg-3">{children}</div>
-    </EmptyState>
   );
 }

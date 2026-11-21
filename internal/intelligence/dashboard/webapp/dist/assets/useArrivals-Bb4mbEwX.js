@@ -1,1 +1,0 @@
-import{f as s}from"./vendor-react-BT-Z05uK.js";import{d0 as a,el as l}from"./index-BP4_IqB0.js";function f(t,e){const r=s.useRef(null);s.useEffect(()=>{r.current=e?a(r.current,t):null});const n=e?r.current:null;return u=>l(n,u)}export{f as u};

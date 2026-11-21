@@ -322,3 +322,79 @@ func TestMalformedNoPanic(t *testing.T) {
 	_ = res
 	_ = err // either nil (partial) or a wrapped goast.Parse error is fine.
 }
+
+// TestComplexityRows is one case per Go row of parse/complexity's rule
+// table: each body holds exactly one decision of that row, so the function
+// reads 2; the default arms read 1.
+func TestComplexityRows(t *testing.T) {
+	cases := []struct {
+		row  string
+		body string
+		want int
+	}{
+		{"IfStmt if", "if x > 0 { return }", 2},
+		{"IfStmt else-if counts once more", "if x > 0 { return } else if x < 0 { return }", 3},
+		{"ForStmt for", "for i := 0; i < x; i++ {}", 2},
+		{"ForStmt bare for", "for { break }", 2},
+		{"RangeStmt for", "for range x {}", 2},
+		{"CaseClause case", "switch x { case 1: }", 2},
+		{"CaseClause default not counted", "switch x { default: }", 1},
+		{"CommClause case", "var c chan int; select { case <-c: }", 2},
+		{"CommClause default not counted", "select { default: }", 1},
+		{"BinaryExpr &&", "_ = x > 0 && x < 9", 2},
+		{"BinaryExpr ||", "_ = x > 0 || x < 9", 2},
+		{"BinaryExpr + is not a decision", "_ = x + 1", 1},
+		{"func literal counts toward the enclosing function", "f := func() { if x > 0 {} }; f()", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.row, func(t *testing.T) {
+			src := "package p\n\nfunc f(x int) {\n\t" + tc.body + "\n}\n"
+			res, err := New().(parse.OptionParser).ParseWith(context.Background(), []byte(src), "go", "p.go", parse.Options{Complexity: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Nodes) != 1 || res.Nodes[0].Complexity != tc.want {
+				t.Fatalf("nodes %+v, want one function of complexity %d", res.Nodes, tc.want)
+			}
+		})
+	}
+}
+
+func TestComplexityPerFunctionAndKind(t *testing.T) {
+	src := `package p
+
+type T struct{}
+
+func (T) M(x int) int {
+	if x > 0 && x < 9 {
+		return 1
+	}
+	return 0
+}
+
+func g() {}
+`
+	res, err := New().(parse.OptionParser).ParseWith(context.Background(), []byte(src), "go", "p.go", parse.Options{Complexity: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := New().Parse(context.Background(), []byte(src), "go", "p.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range plain.Nodes {
+		if n.Complexity != 0 {
+			t.Errorf("Parse without the option counted %s: %d", n.Name, n.Complexity)
+		}
+	}
+	got := map[string]int{}
+	for _, n := range res.Nodes {
+		got[n.Kind+" "+n.Name] = n.Complexity
+	}
+	want := map[string]int{"class T": 0, "method M": 3, "function g": 1}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: complexity %d, want %d (all %v)", k, got[k], v, got)
+		}
+	}
+}

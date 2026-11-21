@@ -32,8 +32,8 @@ func TestCatalogShape(t *testing.T) {
 			feature++
 		}
 	}
-	if adapter != 55 {
-		t.Errorf("adapter rows = %d, want 55 (one per integration registry tool)", adapter)
+	if adapter != 56 {
+		t.Errorf("adapter rows = %d, want 56 (one per integration registry tool)", adapter)
 	}
 	if core != 2 {
 		t.Errorf("core rows = %d, want 2 (node core and org.core)", core)
@@ -45,9 +45,11 @@ func TestCatalogShape(t *testing.T) {
 	// have their own row: 57 after lanes SBX-P5 and SBX-P6 merged; lane
 	// SBX-P7 adds the e2b, modal and vercel hosted drivers; lane GATES-SBX
 	// adds readopt, credentials, mxc.appcontainer, wslc and hcs; lane GATES-SEC
-	// the trivy and kics drivers and isolation.seal).
-	if got := feature + integration; got < 38 || got > 76 {
-		t.Errorf("optional node rows = %d, want 38 to 76", got)
+	// the trivy and kics drivers and isolation.seal; plan 14.5 item 3b the
+	// Go symbol check, security.reach.go; the 2026-11-11 hosted rows the
+	// docker, instabox and daytona drivers).
+	if got := feature + integration; got < 38 || got > 85 {
+		t.Errorf("optional node rows = %d, want 38 to 85", got)
 	}
 	if server < 21 {
 		t.Errorf("server rows = %d, want at least 21", server)
@@ -202,11 +204,12 @@ func TestDistros(t *testing.T) {
 	if len(InDistro(DistroMinimal)) >= len(InDistro(DistroDeveloper)) {
 		t.Error("minimal must be smaller than developer")
 	}
-	// D-389: Plane A observability is out of developer.
-	for _, id := range InDistro(DistroDeveloper) {
-		if id == "obs" {
-			t.Error("obs must be out of the developer distro (D-389)")
-		}
+	// D7 (plan of record 2026-11-19, amended; supersedes D-389): Plane A
+	// observability is compiled into developer, off by default, and stays
+	// out of minimal and managed.
+	if c, _ := Get("obs"); c.Distros[DistroDeveloper] != DefaultOff ||
+		c.Distros[DistroMinimal].Compiled() || c.Distros[DistroManaged].Compiled() {
+		t.Errorf("obs distros = %v, want developer off and out of minimal and managed (D7)", c.Distros)
 	}
 	// D-374: the pricing feed stays on by default in developer.
 	if c, _ := Get("egress.pricing-feed"); c.Distros[DistroDeveloper] != DefaultOn {
@@ -230,9 +233,12 @@ func TestDigestOrderIndependent(t *testing.T) {
 
 func TestImages(t *testing.T) {
 	core := InImage(ImageCore)
-	want := map[string]bool{"org.core": true, "org.oidc": true}
+	// org.sandbox was part of org.core until wave 17 lane pooled-sandbox gave
+	// it a row of its own (so a pooled host can switch it per org); it stays
+	// in the core image, which therefore serves exactly what it did.
+	want := map[string]bool{"org.core": true, "org.oidc": true, "org.sandbox": true}
 	if len(core) != len(want) {
-		t.Fatalf("core image = %v, want org.core and org.oidc (Q11)", core)
+		t.Fatalf("core image = %v, want org.core, org.oidc and org.sandbox (Q11)", core)
 	}
 	for _, id := range core {
 		if !want[id] {
@@ -242,19 +248,21 @@ func TestImages(t *testing.T) {
 }
 
 // TestDigestMixesCatalogVersion pins the digest to the catalog version
-// (3 since lane SEC-F2B, 4 since lane GATES-SEC): a version bump changes every binary's
-// components digest once, the release-note line.
+// (3 since lane SEC-F2B, 4 since lane GATES-SEC, 5 since wave 17's
+// org.vendorconn, org.sandbox, org.coding, org.agent-config and org.entities
+// rows): a version bump changes every binary's components digest once, the
+// release-note line.
 func TestDigestMixesCatalogVersion(t *testing.T) {
-	if CatalogVersion != 4 {
-		t.Fatalf("CatalogVersion = %d; the wave-6 bump is 4", CatalogVersion)
+	if CatalogVersion != 5 {
+		t.Fatalf("CatalogVersion = %d; the wave 17 bump is 5", CatalogVersion)
 	}
 	ids := []string{"core", "security", "security.provenance"}
-	h := sha256.Sum256([]byte("sbo-components-v4\ncore\nsecurity\nsecurity.provenance"))
+	h := sha256.Sum256([]byte("sbo-components-v5\ncore\nsecurity\nsecurity.provenance"))
 	if got := Digest(ids); got != hex.EncodeToString(h[:]) {
-		t.Fatalf("digest %s does not mix in catalog v4", got)
+		t.Fatalf("digest %s does not mix in catalog v5", got)
 	}
-	v3 := sha256.Sum256([]byte("sbo-components-v3\ncore\nsecurity\nsecurity.provenance"))
-	if Digest(ids) == hex.EncodeToString(v3[:]) {
-		t.Fatal("the digest still reads as catalog v3")
+	v4 := sha256.Sum256([]byte("sbo-components-v4\ncore\nsecurity\nsecurity.provenance"))
+	if Digest(ids) == hex.EncodeToString(v4[:]) {
+		t.Fatal("the digest still reads as catalog v4")
 	}
 }

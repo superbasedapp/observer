@@ -119,7 +119,7 @@ func launcherAttach(ctx context.Context, spec launcherAttachSpec) (launcherAttac
 		// stdout is the scripted row, silent by design). Outside a box this
 		// writes nothing.
 		appendBoxInnerLog(attachDecisionNote(in, decision) + boxConsoleNote(os.Getenv, boxConsoleWindow()))
-		// The box's environment in the run's posture (WINFIX2 R-167).
+		// The box's environment in the run's posture (WINFIX2, ledger SBX-WIN-ENV-1).
 		sandboxEnvPosture(spec.stderr)
 	}
 

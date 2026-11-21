@@ -1,0 +1,22 @@
+-- 245_session_reported_via_token.sql - tag the sessions a cloud-session
+-- ship token landed on this node (cloud-agents arc, lane CA-F1; decision
+-- CA-D18 of docs/plans/cloud-agents/cloud-agents-implementation-plan-2026-10-31.md;
+-- ledger CLOUDSESS-8 / CLOUDSESS-9).
+--
+-- sessions.reported_via_token holds the public id ("cst_...") of the
+-- node-minted ship token whose batch first landed the session through
+-- POST /api/cloud-session/ingest (internal/store/cloudsessionland.go, the
+-- one writer, first-wins-unless-empty). NULL for every session this node
+-- captured itself. It says "a vendor cloud sandbox reported this", which is
+-- what a reader needs before trusting a sandbox-reported figure the same as
+-- a locally captured one.
+--
+-- NODE-LOCAL: the push seam (internal/store/orgpush.go) never selects it,
+-- in any share mode, and the column is NOT in the org_push_change_sessions
+-- trigger's column list, so stamping it never re-pushes a session. The
+-- privacy sentinel (tests/invariant/privacy_test.go) asserts it stays off
+-- the wire. The org server carries its own, server-set copy of the tag
+-- (server migration 302), written from the org route, never from the wire.
+--
+-- Numbered 245 inside the cloud-agents reservation (node 240-249, CA-D14).
+ALTER TABLE sessions ADD COLUMN reported_via_token TEXT;

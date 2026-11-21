@@ -1,0 +1,60 @@
+{
+  "items": [
+    {
+      "id": "5b8f0c3e-0000-4000-8000-000000000001",
+      "created_by_user_id": "user-synth-0001",
+      "sandbox_id": "sandbox-synth-0001",
+      "selected_repository": "acme/widget",
+      "selected_branch": "main",
+      "git_provider": "github",
+      "title": "Summarize this repository",
+      "trigger": "openhands_api",
+      "pr_number": [
+        42
+      ],
+      "llm_model": "litellm_proxy/claude-sonnet-4-5",
+      "metrics": {
+        "accumulated_cost": 0.4215,
+        "accumulated_token_usage": {
+          "prompt_tokens": 182340,
+          "completion_tokens": 6120,
+          "cache_read_tokens": 150200,
+          "cache_write_tokens": 21400,
+          "reasoning_tokens": 0
+        }
+      },
+      "parent_conversation_id": null,
+      "sub_conversation_ids": [
+        "5b8f0c3e-0000-4000-8000-000000000002"
+      ],
+      "created_at": "2026-10-30T09:12:00Z",
+      "updated_at": "2026-10-30T09:40:12Z",
+      "sandbox_status": "PAUSED",
+      "execution_status": "finished",
+      "conversation_url": "https://runtime-synth-0001.example.invalid/api/conversations/5b8f0c3e-0000-4000-8000-000000000001",
+      "session_api_key": "synthetic-session-placeholder"
+    },
+    {
+      "id": "5b8f0c3e-0000-4000-8000-000000000002",
+      "created_by_user_id": "user-synth-0001",
+      "sandbox_id": "sandbox-synth-0001",
+      "selected_repository": "acme/widget",
+      "selected_branch": "main",
+      "git_provider": "github",
+      "title": "Subagent: inspect the test suite",
+      "trigger": "openhands_api",
+      "pr_number": [],
+      "llm_model": "litellm_proxy/claude-sonnet-4-5",
+      "metrics": null,
+      "parent_conversation_id": "5b8f0c3e-0000-4000-8000-000000000001",
+      "sub_conversation_ids": [],
+      "created_at": "2026-10-30T09:20:00Z",
+      "updated_at": "2026-10-30T09:25:00Z",
+      "sandbox_status": "RUNNING",
+      "execution_status": "running",
+      "conversation_url": null,
+      "session_api_key": null
+    }
+  ],
+  "next_page_id": "synthpage0002"
+}

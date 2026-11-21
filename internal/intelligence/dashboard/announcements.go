@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/announce"
@@ -28,6 +29,11 @@ var releaseAnnouncementSource = announce.Release
 // must be able to stand either side of an expiry instant.
 var announcementNow = func() time.Time { return time.Now().UTC() }
 
+// announcementGOOS is the operating system platform-scoped announcements
+// are matched against (runtime.GOOS), indirected so a test can stand on
+// either side of a scope.
+var announcementGOOS = func() string { return runtime.GOOS }
+
 // handleAnnouncements serves GET /api/announcements: the merged,
 // unexpired banner list (plan §5 — all rails converge here except R2,
 // which stays frontend-only inside the click-gated update check).
@@ -49,9 +55,11 @@ func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 		s.orgAnnouncements(r.Context()),
 	}
 	// An announcement whose fixed_in this node has reached is no news here
-	// (WINNODE2 16b).
+	// (WINNODE2 16b), and one scoped to another operating system is not
+	// about this machine (U-01).
+	list := announce.ForVersion(announce.Merge(announcementNow(), sources...), s.opts.Version)
 	writeJSON(w, announcementsResponse{
-		Announcements: announce.ForVersion(announce.Merge(announcementNow(), sources...), s.opts.Version),
+		Announcements: announce.ForPlatform(list, announcementGOOS()),
 	})
 }
 

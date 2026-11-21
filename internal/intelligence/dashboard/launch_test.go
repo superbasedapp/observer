@@ -939,3 +939,34 @@ func TestSiblingLaunchFeatureGates(t *testing.T) {
 		})
 	}
 }
+
+// TestTerminalSessionsIncludesFreshEnabled (D-12): the sessions meta carries
+// fresh_enabled beside shell_enabled, following the policy PUT, so the New
+// terminal dialog can say when both switches are off and nothing can start.
+func TestTerminalSessionsIncludesFreshEnabled(t *testing.T) {
+	h := newManageServerWithLaunch(t, &fakeLaunchManager{})
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"allow_fresh_agent":false}`, false},
+		{`{"allow_fresh_agent":true}`, true},
+	} {
+		if code, out := putPolicy(t, h, tc.body); code != http.StatusOK {
+			t.Fatalf("PUT policy %s = %d (%v)", tc.body, code, out)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/terminal/sessions", nil)
+		req.Host = "127.0.0.1:8080"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out struct {
+			FreshEnabled *bool `json:"fresh_enabled"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if out.FreshEnabled == nil || *out.FreshEnabled != tc.want {
+			t.Fatalf("after %s fresh_enabled = %v, want %v", tc.body, out.FreshEnabled, tc.want)
+		}
+	}
+}

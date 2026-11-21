@@ -1,0 +1,197 @@
+{
+ "group": "openhands",
+ "research_file": "docs/plans/cloud-agents/cloud-agent-integration-reference-2026-10-31.md",
+ "checked_on": "2026-10-31",
+ "surfaces": [
+  {
+   "id": "openhands.cloud.app_conversations_search",
+   "vendor_group": "openhands",
+   "vendor": "openhands",
+   "plane": "openhands.cloud",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "OpenHands Cloud API key (Settings > API Keys) as Bearer; never the separate OpenHands LLM key or a sandbox session_api_key"
+   },
+   "paging": {
+    "style": "cursor",
+    "doc": "page_id in, next_page_id out (null on the last page); limit at most 100"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published; older conversations may be paused under concurrency"
+   },
+   "tier": {
+    "doc": "OpenHands Cloud (individual and Teams)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (the account's conversations)",
+   "mechanism_doc": "GET /api/v1/app-conversations/search (limit, page_id, include_sub_conversations, filters); GET /api/v1/app-conversations?ids=...; records: id, created_by_user_id, selected_repository/branch, trigger, parent/sub conversation ids, status, timestamps, tags, accumulated token and cost metrics, session_api_key (a secret)",
+   "read_write_doc": "R",
+   "class_doc": "Sessions, Usage, Cost",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "pii",
+   "secret_class": "returns_secret",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "usd_micros",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.all-hands.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://docs.openhands.dev/openhands/usage/cloud/api-reference/conversations/search-app-conversations",
+     "checked_on": "2026-10-31"
+    },
+    {
+     "url": "https://docs.openhands.dev/openhands/usage/cloud/cloud-api",
+     "checked_on": "2026-10-31"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/openhands AppConversations (lane CA-A4, cloud agents arc): one openhands.app_conversation snapshot per conversation plus one usage row (tokens and accumulated cost in USD, revision updated_at) where metrics are reported. The driver is closed-DTO and never decodes session_api_key (returns_secret). include_sub_conversations=true is always sent (the default omits child conversations). Conformance against the vendormock mock through the pure adapter. Consumed by the node cloud-agents connector (lane CA-B2), not by the org runner. Synthetic only; member names and the updated_at window filter names are Inferred from the reference (sources OH01, OH04).",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-A4: pure driver internal/vendorapi/openhands AppConversations (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenHands Cloud overview, Authorization: Bearer <Cloud API key> (reference OH01)"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "openhands.cloud.events_search",
+   "vendor_group": "openhands",
+   "vendor": "openhands",
+   "plane": "openhands.cloud",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "OpenHands Cloud API key (Settings > API Keys) as Bearer; never the separate OpenHands LLM key or a sandbox session_api_key"
+   },
+   "paging": {
+    "style": "cursor",
+    "doc": "page_id in, next_page_id out (null on the last page); limit at most 100"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "no numeric limit published; older conversations may be paused under concurrency"
+   },
+   "tier": {
+    "doc": "OpenHands Cloud (individual and Teams)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (a conversation of the account)",
+   "mechanism_doc": "GET /api/v1/conversation/{conversation_id}/events/search (kind, timestamp bounds, sort_order, page_id, limit at most 100); GET .../events/count; GET .../download (ZIP of events and metadata). Events: message, action, observation, LLM completion logs, token events, hook execution, deltas, errors",
+   "read_write_doc": "R",
+   "class_doc": "Content, Audit",
+   "grain_doc": "Event",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "content",
+   "secret_class": "may_return_secret",
+   "supplies": [
+    {
+     "class": "Content",
+     "grain": "event",
+     "unit": "text",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Audit",
+     "grain": "event",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "app.all-hands.dev",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://docs.openhands.dev/openhands/usage/cloud/api-reference/events/search-events",
+     "checked_on": "2026-10-31"
+    }
+   ],
+   "notes": "Pure driver internal/vendorapi/openhands Events (lane CA-A4, cloud agents arc): a MessageEvent lands as a content item (user prompt, agent response); every other event kind lands as a metadata-only event row (tool call, tool result, error, state change; the tool name and call id, never arguments or output); an undocumented kind lands as other and trips the canary. Closed-DTO: action and observation bodies are never decoded (may_return_secret). Conformance against the vendormock mock through the pure adapter. Consumed by the node connector (lane CA-B2), not by the org runner. Synthetic only; member names, the event kind names and the timestamp filter names are Inferred from the reference (source OH08).",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-A4: pure driver internal/vendorapi/openhands Events (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: OpenHands Cloud overview, Authorization: Bearer <Cloud API key> (reference OH01)"
+   },
+   "status": "synthetic, awaiting live validation"
+  }
+ ]
+}

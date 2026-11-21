@@ -23,6 +23,7 @@ import (
 // or losing its tab, is a visible change here rather than a silent widening.
 var expectedTabRoutes = map[string]string{
 	"/api/guard/prompt/status":                "security/prompt-guard",
+	"/api/guard/prompt/judge":                 "security/prompt-guard",
 	"/api/guard/prompt/clear":                 "security/prompt-guard",
 	"/api/guard/prompt/allow/":                "security/prompt-guard",
 	"/api/guard/prompt/probe":                 "security/prompt-guard",
@@ -72,6 +73,7 @@ var expectedTabRoutes = map[string]string{
 	"/api/arena/runs/{id}/diff/{cid}":         "terminals/arena",
 	"/api/terminal/sandbox/config":            "terminals/settings",
 	"/api/terminal/sandbox/install-versions":  "terminals/settings",
+	"/api/terminal/sandbox/ptrace-seize":      "terminals/settings",
 	"/api/terminal/ssh/profiles":              "terminals/settings",
 	"/api/terminal/ssh/profiles/test":         "terminals/settings",
 	"/api/remote/audit":                       "remote/audit",
@@ -81,19 +83,55 @@ var expectedTabRoutes = map[string]string{
 	"/api/remote/standing-revoke-on-takeover": "remote/terminal-control",
 	"/api/remote/allow-remote-takeover":       "remote/terminal-control",
 	"/api/security/scan-history":              "code-security/findings",
+	"/api/security/findings/{id}":             "code-security/findings",
 	"/api/security/findings/{id}/explain":     "code-security/findings",
-	"/api/security/scanners":                  "code-security/findings",
-	"/api/security/scanners/db":               "code-security/findings",
-	"/api/security/import-sarif":              "code-security/findings",
-	"/api/security/code/install":              "code-security/findings",
-	"/api/security/iac/install":               "code-security/findings",
+	"/api/security/fix/plan":                  "code-security/findings",
+	"/api/security/fix/launch":                "code-security/findings",
+	"/api/security/fix/attempts":              "code-security/findings",
+	"/api/security/assessments":               "code-security/overview",
+	"/api/security/assessments/plan":          "code-security/overview",
+	"/api/security/assessments/launch":        "code-security/overview",
+	"/api/security/assessments/report":        "code-security/overview",
+	"/api/security/assessments/import":        "code-security/overview",
+	"/api/security/assessments/request":       "code-security/overview",
+	"/api/security/assessments/cancel":        "code-security/overview",
+	"/api/security/assessments/stop":          "code-security/overview",
+	"/api/security/assessments/delete-data":   "code-security/overview",
+	"/api/security/assessments/validate":      "code-security/overview",
+	"/api/security/assessments/model":         "code-security/overview",
+	"/api/security/assessments/fix":           "code-security/overview",
+	"/api/security/assessments/export":        "code-security/overview",
+	"/api/security/scanners":                  "code-security/scanners",
+	"/api/security/scanners/db":               "code-security/scanners",
+	"/api/security/scanners/trivydb":          "code-security/scanners",
+	"/api/security/artifacts":                 "code-security/scanners",
+	"/api/security/reach/go-source":           "code-security/scanners",
+	"/api/security/reach/go-source/run":       "code-security/scanners",
+	"/api/security/import-sarif":              "code-security/scanners",
+	"/api/security/code/install":              "code-security/scanners",
+	"/api/security/iac/install":               "code-security/scanners",
 	"/api/security/provenance":                "code-security/baselines",
-	"/api/security/scanners/custom":           "code-security/findings",
-	"/api/security/scanners/custom/":          "code-security/findings",
-	"/api/security/deps":                      "code-security/findings",
+	"/api/security/scanners/custom":           "code-security/scanners",
+	"/api/security/scanners/custom/":          "code-security/scanners",
+	"/api/security/deps":                      "code-security/scanners",
+	"/api/security/dast":                      "code-security/scanners",
+	"/api/security/dast/accept":               "code-security/scanners",
+	"/api/security/dast/run":                  "code-security/scanners",
+	"/api/security/sbom":                      "code-security/projects",
 	"/api/security/exceptions/revoke":         "code-security/exceptions",
 	"/api/security/baseline":                  "code-security/baselines",
 	"/api/security/githooks":                  "code-security/baselines",
+	// Dashboard CLI parity (docs/plans/dashboard-cli-parity-plan-2026-11-06.md).
+	"/api/guard/cloud":      "security/mcp",
+	"/api/guard/jobs/chain": "security/coverage",
+	// Guard recipes (guard_recipes.go): the Rules tab's Recipes card.
+	"/api/guard/recipes":             "security/rules",
+	"/api/guard/recipes/show":        "security/rules",
+	"/api/guard/recipes/preview":     "security/rules",
+	"/api/guard/recipes/apply":       "security/rules",
+	"/api/guard/recipes/remove":      "security/rules",
+	"/api/guard/recipes/user":        "security/rules",
+	"/api/guard/recipes/user/delete": "security/rules",
 }
 
 func TestSectionTabGrammar(t *testing.T) {
@@ -225,30 +263,42 @@ func TestGovernanceResponseCarriesHiddenTabs(t *testing.T) {
 	}
 }
 
-// TestGovernanceAPIRefusesHiddenCodeSecurityFindingsTab: the Findings tab's
-// own routes go with it; the page-level reads other tabs, other pages and the
-// export use stay.
-func TestGovernanceAPIRefusesHiddenCodeSecurityFindingsTab(t *testing.T) {
-	s := newRemoteTestServer(t, Options{
-		Governance: governedProvider(t, []string{"code-security/findings"}, nil, nil, nil),
-	})
-	h := s.guardedHandler("127.0.0.1:8081")
+// TestGovernanceAPIRefusesHiddenCodeSecurityTabs: a hidden tab's own routes
+// go with it; the page-level reads other tabs, other pages and the export use
+// stay (the findings list, its facets and groups, and the coverage read: the
+// Overview reads them too). Since the 2026-11-06 redesign the scanner and
+// setup routes belong to the Scanners tab, not Findings.
+func TestGovernanceAPIRefusesHiddenCodeSecurityTabs(t *testing.T) {
 	cases := []struct {
+		hidden       string
 		method, path string
 		refused      bool
 	}{
-		{http.MethodPost, "/api/security/scan-history", true},
-		{http.MethodGet, "/api/security/scanners", true},
-		{http.MethodGet, "/api/security/scanners/custom", true},
-		{http.MethodPost, "/api/security/scanners/custom/accept", true},
-		{http.MethodGet, "/api/security/deps", true},
-		{http.MethodGet, "/api/security/findings", false},
-		{http.MethodGet, "/api/security/exceptions", false},
-		{http.MethodGet, "/api/security/status", false},
-		{http.MethodPost, "/api/security/exceptions/revoke", false},
+		{"code-security/findings", http.MethodPost, "/api/security/scan-history", true},
+		{"code-security/findings", http.MethodGet, "/api/security/scanners", false},
+		{"code-security/findings", http.MethodGet, "/api/security/deps", false},
+		{"code-security/findings", http.MethodGet, "/api/security/findings", false},
+		{"code-security/findings", http.MethodGet, "/api/security/findings/facets", false},
+		{"code-security/findings", http.MethodGet, "/api/security/findings/groups", false},
+		{"code-security/findings", http.MethodGet, "/api/security/exceptions", false},
+		{"code-security/findings", http.MethodGet, "/api/security/status", false},
+		{"code-security/findings", http.MethodPost, "/api/security/exceptions/revoke", false},
+		{"code-security/scanners", http.MethodGet, "/api/security/scanners", true},
+		{"code-security/scanners", http.MethodGet, "/api/security/scanners/custom", true},
+		{"code-security/scanners", http.MethodPost, "/api/security/scanners/custom/accept", true},
+		{"code-security/scanners", http.MethodGet, "/api/security/deps", true},
+		{"code-security/scanners", http.MethodPost, "/api/security/import-sarif", true},
+		{"code-security/scanners", http.MethodPost, "/api/security/scan-history", false},
+		{"code-security/scanners", http.MethodGet, "/api/security/coverage", false},
+		{"code-security/scanners", http.MethodGet, "/api/security/scan", false},
+		{"code-security/coverage", http.MethodGet, "/api/security/coverage", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+		t.Run(tc.hidden+" "+tc.method+" "+tc.path, func(t *testing.T) {
+			s := newRemoteTestServer(t, Options{
+				Governance: governedProvider(t, []string{tc.hidden}, nil, nil, nil),
+			})
+			h := s.guardedHandler("127.0.0.1:8081")
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, loopbackRequest(tc.method, tc.path))
 			var refusal governanceRefusal
@@ -257,7 +307,7 @@ func TestGovernanceAPIRefusesHiddenCodeSecurityFindingsTab(t *testing.T) {
 			if isRefusal != tc.refused {
 				t.Fatalf("%s %s = %d %s, refused=%v want %v", tc.method, tc.path, rec.Code, rec.Body.String(), isRefusal, tc.refused)
 			}
-			if tc.refused && refusal.Section != "code-security/findings" {
+			if tc.refused && refusal.Section != tc.hidden {
 				t.Fatalf("refusal must name the tab, got %+v", refusal)
 			}
 		})

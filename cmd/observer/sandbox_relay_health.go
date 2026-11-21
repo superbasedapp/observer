@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -23,6 +25,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/hookdisable"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/peerproc"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelay"
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelayd"
@@ -100,6 +103,7 @@ func relayOnRunEnd(run sandboxrelayd.RunRecord) {
 		relayHealthByRun.Delete(run.TerminalRunID)
 	}
 	relayEndedByFloor.Delete(run.RunID)
+	relayRunEnded(run.RunID)
 }
 
 // relayLowerTimeout bounds one evidence write.
@@ -186,7 +190,7 @@ func relayHookProbe(run sandboxrelayd.RunRecord) func() (sandboxrelayd.HookRegis
 // P2 audit finding 1: a project settings.local.json with disableAllHooks).
 func relayHooksDisabled(run sandboxrelayd.RunRecord) []string {
 	home, _ := os.UserHomeDir()
-	roots := append([]string{run.WorkspaceDir}, run.Roots...)
+	roots := append([]string{run.WorkspaceDir}, run.ReadRoots()...)
 	var out []string
 	for _, f := range hookdisable.Detect(diag.HookSwitchInputs(hookdisable.Options{Home: home, GOOS: runtime.GOOS, ProjectRoots: roots, ReadFile: diag.ReadHookSwitchFile})) {
 		if slices.Contains(f.Tools, run.Tool) {
@@ -403,6 +407,150 @@ func sandboxCLIEndPaths(observerDir, runID string) (watch, end string) {
 	return filepath.Join(dir, runID+".watch"), filepath.Join(dir, runID+".end")
 }
 
+// sandboxCLIMarkerBody is a watch marker's content: the CLI process that
+// watches the run, and a token naming that process's start
+// (peerproc.StartToken: the boot id and start time on Linux, the creation
+// time on Windows), so a pid reused after a reboot or by a later process
+// is not read as the CLI (lane callerid, L1). A marker an older build wrote
+// is empty (PID 0, unknown) or has no start ("": the pid alone decides).
+type sandboxCLIMarkerBody struct {
+	PID   int    `json:"pid"`
+	Start string `json:"start,omitempty"`
+}
+
+// sandboxCLIProcessAlive reports whether the marker's CLI still runs: its
+// pid is live and, when the marker recorded a start, the process at that
+// pid is that same start.
+func sandboxCLIProcessAlive(pid int, start string) bool {
+	if pid <= 0 || !oneShotProcessAlive(pid) {
+		return false
+	}
+	if start == "" {
+		return true
+	}
+	now, ok := peerproc.StartToken(pid)
+	return ok && now == start
+}
+
+// sandboxCLIMarkerMax bounds the marker a reader accepts.
+const sandboxCLIMarkerMax = 4 << 10
+
+// sandboxCLIMarkers lists the watch markers under observerDir: one per
+// sandboxed CLI launch whose CLI marked itself as watching, with the PID it
+// recorded (0 when unknown). Only regular files named after a well-formed
+// run id count. A missing directory has none.
+func sandboxCLIMarkers(observerDir string) []sandboxCLIMarker {
+	if observerDir == "" {
+		return nil
+	}
+	dir := sandboxCLIEndDir(observerDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []sandboxCLIMarker
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".watch")
+		if !ok || !e.Type().IsRegular() || !sandboxCLIRunIDRE.MatchString(id) {
+			continue
+		}
+		m := sandboxCLIMarker{RunID: id, Path: filepath.Join(dir, e.Name())}
+		if f, err := os.Open(m.Path); err == nil { //nolint:gosec // G304: a regular file under the observer's own relay directory, name shape-checked
+			var body sandboxCLIMarkerBody
+			if json.NewDecoder(io.LimitReader(f, sandboxCLIMarkerMax)).Decode(&body) == nil && body.PID > 0 {
+				m.PID, m.Start = body.PID, body.Start
+			}
+			_ = f.Close()
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// cliMarkerFacts are what the sweep knows about one marker's run.
+type cliMarkerFacts struct {
+	// RowKnown: the run has a terminal_run row that recorded a sandbox.
+	RowKnown bool
+	// RowEndedForGood: that row records an end other than daemon_shutdown.
+	// A graceful daemon stop stamps daemon_shutdown on every live
+	// non-attach row while a CLI launch and its box keep running (P-074),
+	// so that stamp alone never proves the box is gone (fixes-4, N1).
+	RowEndedForGood bool
+	// BoxLive: a relay run bound to it still has a live helper.
+	BoxLive bool
+	// PIDKnown / CLIAlive: the marker names a CLI process, and it runs.
+	PIDKnown, CLIAlive bool
+	// RowEnded: the row records any end, daemon_shutdown included.
+	RowEnded bool
+}
+
+// cliMarkerRules decide whether a marker stays (the run counts as a live
+// box for the loopback exposure gate) or is dropped as stale, walked
+// top-down; the first deciding row wins (TestCLIMarkerRules). A live box or
+// a live CLI keeps the marker before any end the row records is read, and
+// every undecided case keeps it: an unseen live box would be an escape.
+var cliMarkerRules = []struct {
+	id     string
+	decide func(f cliMarkerFacts) (keep, decided bool)
+}{
+	{"K1-no-sandboxed-row", func(f cliMarkerFacts) (bool, bool) { return false, !f.RowKnown }},
+	{"K2-box-live", func(f cliMarkerFacts) (bool, bool) { return true, f.BoxLive }},
+	{"K3-cli-alive", func(f cliMarkerFacts) (bool, bool) { return true, f.PIDKnown && f.CLIAlive }},
+	{"K4-row-ended", func(f cliMarkerFacts) (bool, bool) { return false, f.RowEndedForGood }},
+	{"K5-cli-and-box-gone", func(f cliMarkerFacts) (bool, bool) { return false, f.PIDKnown && !f.CLIAlive }},
+	// An older build's marker names no CLI: with its box gone (K2 did not
+	// keep it) and any end recorded, daemon_shutdown included, nothing
+	// shows it is still running (lane callerid, L2).
+	{"K6-unknown-cli-row-ended", func(f cliMarkerFacts) (bool, bool) { return false, !f.PIDKnown && f.RowEnded }},
+	{"K7-unknown-cli", func(cliMarkerFacts) (bool, bool) { return true, true }},
+}
+
+// cliMarkerKeep walks cliMarkerRules for one marker.
+func cliMarkerKeep(f cliMarkerFacts) (keep bool, rule string) {
+	for _, r := range cliMarkerRules {
+		if k, ok := r.decide(f); ok {
+			return k, r.id
+		}
+	}
+	return true, ""
+}
+
+// sweepSandboxCLIMarkers removes the markers (and any end request) that the
+// rules call stale and returns the ones that stay. rows holds the sandboxed
+// terminal_run rows of the markers' runs, ended or not; alive and boxLive
+// are the process and helper probes.
+func sweepSandboxCLIMarkers(observerDir string, markers []sandboxCLIMarker, rows map[string]cliRunState, alive func(pid int, start string) bool, boxLive func(runID string) bool) []sandboxCLIMarker {
+	var kept []sandboxCLIMarker
+	for _, m := range markers {
+		row, known := rows[m.RunID]
+		f := cliMarkerFacts{RowKnown: known, RowEndedForGood: known && row.endedForGood(), RowEnded: known && row.Ended, PIDKnown: m.PID > 0}
+		if known {
+			f.BoxLive = boxLive(m.RunID)
+			if f.PIDKnown {
+				f.CLIAlive = alive(m.PID, m.Start)
+			}
+		}
+		if keep, _ := cliMarkerKeep(f); keep {
+			kept = append(kept, m)
+			continue
+		}
+		_, end := sandboxCLIEndPaths(observerDir, m.RunID)
+		_ = os.Remove(m.Path)
+		_ = os.Remove(end)
+	}
+	return kept
+}
+
+// sandboxCLIMarkerSweeper binds the sweep to observerDir and the real
+// probes (the CLI process, the run's relay helper).
+func sandboxCLIMarkerSweeper(observerDir string) func(markers []sandboxCLIMarker, rows map[string]cliRunState) []sandboxCLIMarker {
+	return func(markers []sandboxCLIMarker, rows map[string]cliRunState) []sandboxCLIMarker {
+		return sweepSandboxCLIMarkers(observerDir, markers, rows, sandboxCLIProcessAlive, func(runID string) bool {
+			return sandboxrelayd.TerminalRunLive(observerDir, runID)
+		})
+	}
+}
+
 // relayCLIRunEnder is the floor ender for a sandboxed CLI launch: false when
 // no CLI process watches terminalRunID; otherwise the end reason is stamped
 // on the row (stamp may be nil) and the end request written, create-only (an
@@ -572,27 +720,44 @@ var (
 // an end request. On one it writes the request's line to out, asks the child
 // to stop through sigs (SIGHUP, then SIGKILL after sandboxCLIEndGrace) and
 // keeps the reason, which reason returns for the run's end record. stop ends
-// the watch and removes the marker and the request. A launch with no run id
-// or no marker watches nothing (reason stays "").
-func watchSandboxCLIEnd(observerDir, runID string, sigs chan<- os.Signal, out io.Writer) (reason func() string, stop func()) {
+// the watch and removes the marker and the request. A marker that cannot be
+// written (no run id, no directory, a write failure) is an error: the
+// caller refuses the launch.
+func watchSandboxCLIEnd(observerDir, runID string, sigs chan<- os.Signal, out io.Writer) (reason func() string, stop func(), err error) {
 	var got atomic.Value
 	got.Store("")
 	reason = func() string { return got.Load().(string) }
+	// The marker is how the daemon's loopback exposure gate finds this box
+	// (cli-1b fixes-3 C), so a launch that cannot write it is refused
+	// rather than run unseen (fixes-4 N2).
+	refuse := func(why error) (func() string, func(), error) {
+		return reason, func() {}, fmt.Errorf("the run's watch marker cannot be written (%w), and the daemon finds a sandboxed CLI box through it; the launch is refused and nothing was started", why)
+	}
 	if observerDir == "" || !sandboxCLIRunIDRE.MatchString(runID) {
-		return reason, func() {}
+		return refuse(errors.New("no observer directory or no run id"))
 	}
 	watch, end := sandboxCLIEndPaths(observerDir, runID)
 	if err := mkdirSandboxOwned(filepath.Dir(watch)); err != nil {
-		return reason, func() {}
+		return refuse(err)
 	}
 	f, err := os.OpenFile(watch, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304: a fixed name under the observer's relay directory, run id shape-checked
 	if err != nil {
-		return reason, func() {}
+		return refuse(err)
 	}
-	_ = f.Close()
+	// The marker names this CLI process, so the daemon's sweep can tell a
+	// marker a killed CLI left behind from a live one (cli-1b fixes-3, B).
+	start, _ := peerproc.StartToken(os.Getpid())
+	werr := json.NewEncoder(f).Encode(sandboxCLIMarkerBody{PID: os.Getpid(), Start: start})
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(watch)
+		return refuse(werr)
+	}
 	if err := ownSandboxRecord(watch); err != nil {
 		_ = os.Remove(watch)
-		return reason, func() {}
+		return refuse(err)
 	}
 	done := make(chan struct{})
 	var once sync.Once
@@ -644,5 +809,5 @@ func watchSandboxCLIEnd(observerDir, runID string, sigs chan<- os.Signal, out io
 			_ = os.Remove(watch)
 			_ = os.Remove(end)
 		})
-	}
+	}, nil
 }

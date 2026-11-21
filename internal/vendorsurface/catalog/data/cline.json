@@ -4817,6 +4817,292 @@
     "auth_rule": "reach"
    },
    "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "cline.cloud.sessions",
+   "vendor_group": "cline",
+   "vendor": "cline",
+   "plane": "cline.cloud",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "the user's Cline account token as Authorization: Bearer (the client's own sign-in token; whether a Console API key is accepted is a live-check item)"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "none (the client reads the whole list)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undoc; product limits 10 concurrent sessions and 50 new per day"
+   },
+   "tier": {
+    "doc": "any signed-in Cline account with a GitHub connection (rolling out, VS Code feature flag ext-cloud-sessions)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (the account's cloud sessions; ?organizationId= scopes to an organization)",
+   "mechanism_doc": "GET /api/v1/session[?organizationId=] -> {data: [CloudSessionRecord]}: id, status, sandboxType, title, sandboxUrl, repoContext {repoUrl, branch}, metadata {sandboxType, modelId, taskId, statusReason, provisioningPhase, createRequestTitle, cwd, handoff {sourceSessionId}}, expiredAt, lastActivityAt, createdAt, updatedAt",
+   "read_write_doc": "R",
+   "class_doc": "Sessions",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "pii",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cline.bot",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://registry.npmjs.org/@cline/core/-/core-0.2.0.tgz",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/a6507a62a147db4a35e27f4294589742ccac5060/apps/vscode/src/sdk/sdk-cloud-session-coordinator.ts",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/main/docs/usage/cloud-agents.mdx",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Observed in vendor client, undocumented (lane CA-V6, operator ruling C6 Q2 2026-11-01): api.cline.bot's session API has no published reference. Read from npm @cline/core 0.2.0 (dist/cloud/api.d.ts, dist/cloud/index.js), npm @cline/shared 0.2.0 (dist/llms/messages.d.ts) and github.com/cline/cline main at a6507a62a147db4a35e27f4294589742ccac5060; it can change or break without notice, so the driver carries a schema-drift test. Pure driver internal/vendorapi/cline Sessions: one cline.cloud_session snapshot per record; title, sandboxUrl, statusReason, createRequestTitle and cwd are never decoded. Consumed by the node cloud-agents connector cline-cloud, not by the org runner.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V6: pure driver internal/vendorapi/cline Sessions (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: @cline/core 0.2.0 CloudSessionApi.request sends Authorization: Bearer <account token>"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "cline.cloud.session_status",
+   "vendor_group": "cline",
+   "vendor": "cline",
+   "plane": "cline.cloud",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "the user's Cline account token as Authorization: Bearer (the client's own sign-in token; whether a Console API key is accepted is a live-check item)"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "none (the client reads the whole list)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undoc; product limits 10 concurrent sessions and 50 new per day"
+   },
+   "tier": {
+    "doc": "any signed-in Cline account with a GitHub connection (rolling out, VS Code feature flag ext-cloud-sessions)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (one session of the account)",
+   "mechanism_doc": "GET /api/v1/session/{id}/status -> {data: {sessionId, status, phase, statusReason}}; status provisioning|ready|active|failed|suspended, phase provisioning|cloning_repo|agent_starting|ready|failed; 404 session_not_found, 410 session_expired",
+   "read_write_doc": "R",
+   "class_doc": "Sessions",
+   "grain_doc": "PerSession",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "metadata",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Sessions",
+     "grain": "per_session",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cline.bot",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://registry.npmjs.org/@cline/core/-/core-0.2.0.tgz",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/a6507a62a147db4a35e27f4294589742ccac5060/apps/vscode/src/sdk/sdk-cloud-session-coordinator.ts",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/main/docs/usage/cloud-agents.mdx",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Observed in vendor client, undocumented (lane CA-V6, operator ruling C6 Q2 2026-11-01): api.cline.bot's session API has no published reference. Read from npm @cline/core 0.2.0 (dist/cloud/api.d.ts, dist/cloud/index.js), npm @cline/shared 0.2.0 (dist/llms/messages.d.ts) and github.com/cline/cline main at a6507a62a147db4a35e27f4294589742ccac5060; it can change or break without notice, so the driver carries a schema-drift test. Pure driver internal/vendorapi/cline SessionStatus: one cline.cloud_session_status snapshot (status, phase); statusReason is never decoded. Consumed by the node connector cline-cloud.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V6: pure driver internal/vendorapi/cline SessionStatus (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: @cline/core 0.2.0 CloudSessionApi.request sends Authorization: Bearer <account token>"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "cline.cloud.session_history",
+   "vendor_group": "cline",
+   "vendor": "cline",
+   "plane": "cline.cloud",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "the user's Cline account token as Authorization: Bearer (the client's own sign-in token; whether a Console API key is accepted is a live-check item)"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "none (the client reads the whole list)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undoc; product limits 10 concurrent sessions and 50 new per day"
+   },
+   "tier": {
+    "doc": "any signed-in Cline account with a GitHub connection (rolling out, VS Code feature flag ext-cloud-sessions)"
+   },
+   "freshness_doc": "live",
+   "lookback_doc": "no retention duration published",
+   "per_user_doc": "caller (one session of the account)",
+   "mechanism_doc": "GET /api/v1/session/{id}/history -> {version: 1, messages: [MessageWithMetadata]} (not wrapped in data; 404 = no archive): role, content (text or blocks: text, image, file, tool_use, tool_result, thinking), id, modelInfo {id, provider}, metrics {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cost}, ts (epoch ms)",
+   "read_write_doc": "R",
+   "class_doc": "Content, Audit, Usage, Cost",
+   "grain_doc": "Event",
+   "build": "buildable",
+   "build_doc": "Driverable",
+   "sensitivity": "content",
+   "secret_class": "may_return_secret",
+   "supplies": [
+    {
+     "class": "Content",
+     "grain": "event",
+     "unit": "text",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Audit",
+     "grain": "event",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_session",
+     "unit": "usd_micros",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cline.bot",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://registry.npmjs.org/@cline/core/-/core-0.2.0.tgz",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/a6507a62a147db4a35e27f4294589742ccac5060/apps/vscode/src/sdk/sdk-cloud-session-coordinator.ts",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://github.com/cline/cline/blob/main/docs/usage/cloud-agents.mdx",
+     "checked_on": "2026-11-01"
+    },
+    {
+     "url": "https://registry.npmjs.org/@cline/shared/-/shared-0.2.0.tgz",
+     "checked_on": "2026-11-01"
+    }
+   ],
+   "notes": "Observed in vendor client, undocumented (lane CA-V6, operator ruling C6 Q2 2026-11-01): api.cline.bot's session API has no published reference. Read from npm @cline/core 0.2.0 (dist/cloud/api.d.ts, dist/cloud/index.js), npm @cline/shared 0.2.0 (dist/llms/messages.d.ts) and github.com/cline/cline main at a6507a62a147db4a35e27f4294589742ccac5060; it can change or break without notice, so the driver carries a schema-drift test. Pure driver internal/vendorapi/cline SessionHistory: timed messages land as metadata-only content items (text never decoded) and tool_use blocks as tool_call rows naming the tool (input and output never decoded, may_return_secret); the per-message metrics are summed into one session usage row only when some message reports a figure. Consumed by the node connector cline-cloud.",
+   "derivation": {
+    "reach_rule": "http",
+    "build_rule": "lane CA-V6: pure driver internal/vendorapi/cline SessionHistory (node consumed, no driver-table entry)",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: @cline/core 0.2.0 CloudSessionApi.history sends Authorization: Bearer <account token>"
+   },
+   "status": "synthetic, awaiting live validation"
   }
  ]
 }

@@ -7,7 +7,24 @@ import assert from "node:assert/strict";
 import {
   FOLD_MIN_GROUP,
   STACK_KEYS,
+  barTier,
+  brushDomain,
   buildTimeScale,
+  centreAt,
+  chartKeyAction,
+  clampDomain,
+  clipSpan,
+  defaultWindowSpan,
+  fmtSpan,
+  fmtZoom,
+  initialDomain,
+  isWholeSession,
+  minSpanFor,
+  panBy,
+  resizeEdge,
+  wheelIntent,
+  zoomAround,
+  zoomLevel,
   buildUnits,
   captureGaps,
   chainOf,
@@ -28,7 +45,9 @@ import {
   stepInList,
   turnMarkers,
   zoomWindow,
+  type ChartKeyAction,
   type StackUnit,
+  type WheelLike,
 } from "../../../shared/lib/processLayout.ts";
 import type { ProcessNodeLike } from "../../../shared/lib/types.ts";
 
@@ -279,7 +298,13 @@ test("overviewBuckets, defaultWindow and zoomWindow", () => {
   assert.equal(ob.counts.reduce((a, b) => a + b, 0), idx.items.length);
   assert.equal(ob.failures.reduce((a, b) => a + b, 0), 3);
   const w = defaultWindow(idx, null, 120_000);
-  assert.deepEqual(w, [idx.maxEnd - 120_000, idx.maxEnd]);
+  const lastStart = Math.max(...idx.items.map((it) => it.start));
+  const end = Math.min(idx.maxEnd, Math.max(idx.minStart + 120_000, lastStart + 12_000));
+  assert.deepEqual(w, [end - 120_000, end]);
+  assert.ok(w[0] <= lastStart && lastStart <= w[1], "the most recent start is in the window");
+  // The running "dev" server and the agent stretch the session to NOW; the
+  // window must not open on that tail where nothing new started.
+  assert.ok(w[1] < idx.maxEnd, "the window does not open on the quiet running tail");
   const ws = defaultWindow(idx, "w2", 120_000);
   assert.ok(ws[0] <= T0 + 200_000 && ws[1] >= T0 + 248_000);
   const z = zoomWindow(idx, "w2")!;
@@ -335,5 +360,220 @@ test("a command repeated one after another never folds; a fan-out does", () => {
   ];
   for (const [spans, want] of cases) {
     assert.equal(peakConcurrency(spans.map(([start, end]) => ({ start, end }))), want);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Zoom and pan: the visible domain helpers.
+// ---------------------------------------------------------------------------
+
+const B: [number, number] = [0, 100_000]; // a 100 s session
+
+test("clampDomain keeps the window inside the session and at least the minimum span", () => {
+  const cases: Array<[string, [number, number], number, [number, number]]> = [
+    ["inside stays", [10_000, 20_000], 250, [10_000, 20_000]],
+    ["before the start shifts right", [-5_000, 5_000], 250, [0, 10_000]],
+    ["after the end shifts left", [95_000, 105_000], 250, [90_000, 100_000]],
+    ["wider than the session is the session", [-1, 200_000], 250, [0, 100_000]],
+    ["narrower than the minimum grows around its centre", [50_000, 50_100], 1_000, [49_550, 50_550]],
+    ["a too-narrow window at the edge grows inward", [0, 10], 1_000, [0, 1_000]],
+    ["ends in either order", [20_000, 10_000], 250, [10_000, 20_000]],
+  ];
+  for (const [name, d, min, want] of cases) assert.deepEqual(clampDomain(d, B, min), want, name);
+});
+
+test("zoomAround keeps the anchor in place and respects the limits", () => {
+  const cases: Array<[string, [number, number], number, number, [number, number]]> = [
+    ["zoom in 2x around the centre", [0, 100_000], 50_000, 2, [25_000, 75_000]],
+    ["zoom in 2x around the left edge", [0, 100_000], 0, 2, [0, 50_000]],
+    ["zoom in 4x around 80%", [0, 100_000], 80_000, 4, [60_000, 85_000]],
+    ["zoom out past the session fits it", [40_000, 60_000], 50_000, 0.01, [0, 100_000]],
+    ["zoom out near an edge shifts inside", [0, 20_000], 5_000, 0.5, [0, 40_000]],
+    ["never narrower than the minimum", [49_000, 51_000], 50_000, 1_000, [49_875, 50_125]],
+    ["a bad factor is no change", [10_000, 30_000], 20_000, Number.NaN, [10_000, 30_000]],
+  ];
+  for (const [name, d, anchor, f, want] of cases) assert.deepEqual(zoomAround(d, anchor, f, B, 250), want, name);
+  // The anchor's fraction is unchanged by an unclamped zoom.
+  const z = zoomAround([20_000, 60_000], 30_000, 3, B, 250);
+  assert.ok(Math.abs((30_000 - z[0]) / (z[1] - z[0]) - 0.25) < 1e-9);
+});
+
+test("panBy, centreAt and brushDomain", () => {
+  const pans: Array<[string, [number, number], number, [number, number]]> = [
+    ["later", [10_000, 20_000], 5_000, [15_000, 25_000]],
+    ["earlier", [10_000, 20_000], -5_000, [5_000, 15_000]],
+    ["stops at the start", [10_000, 20_000], -50_000, [0, 10_000]],
+    ["stops at the end", [80_000, 90_000], 50_000, [90_000, 100_000]],
+    ["the whole session cannot move", [0, 100_000], 10_000, [0, 100_000]],
+  ];
+  for (const [name, d, delta, want] of pans) assert.deepEqual(panBy(d, delta, B), want, name);
+  assert.deepEqual(centreAt([0, 10_000], 50_000, B), [45_000, 55_000]);
+  assert.deepEqual(centreAt([0, 10_000], 99_000, B), [90_000, 100_000]);
+  const brushes: Array<[number, number, [number, number]]> = [
+    [10_000, 30_000, [10_000, 30_000]],
+    [30_000, 10_000, [10_000, 30_000]],
+    [-5_000, 5_000, [0, 5_000]],
+    [40_000, 40_010, [39_880, 40_130]], // grown to the 250 ms minimum
+  ];
+  for (const [a, b, want] of brushes) assert.deepEqual(brushDomain(a, b, B, 250), want, `${a}..${b}`);
+});
+
+test("resizeEdge moves one handle and stops at the minimum and the session", () => {
+  const cases: Array<[string, "start" | "end", number, [number, number]]> = [
+    ["start earlier", "start", 5_000, [5_000, 30_000]],
+    ["start past the end stops short", "start", 40_000, [29_000, 30_000]],
+    ["start before the session", "start", -10_000, [0, 30_000]],
+    ["end later", "end", 60_000, [10_000, 60_000]],
+    ["end before the start stops short", "end", 0, [10_000, 11_000]],
+    ["end after the session", "end", 500_000, [10_000, 100_000]],
+  ];
+  for (const [name, edge, t, want] of cases) {
+    assert.deepEqual(resizeEdge([10_000, 30_000], edge, t, B, 1_000), want, name);
+  }
+});
+
+test("minSpanFor, zoomLevel, isWholeSession, fmtZoom and fmtSpan", () => {
+  assert.equal(minSpanFor([0, 100_000]), 250);
+  assert.equal(minSpanFor([0, 4_140_000]), 414);
+  assert.equal(minSpanFor([0, 100]), 100);
+  assert.equal(zoomLevel([0, 100_000], B), 1);
+  assert.equal(zoomLevel([0, 25_000], B), 4);
+  assert.equal(isWholeSession([0, 100_000], B), true);
+  assert.equal(isWholeSession([0, 99_000], B), false);
+  const zooms: Array<[number, string]> = [
+    [1, "1×"],
+    [1.04, "1×"],
+    [6.24, "6.2×"],
+    [9.96, "10×"],
+    [42.4, "42×"],
+  ];
+  for (const [z, want] of zooms) assert.equal(fmtZoom(z), want, String(z));
+  const spans: Array<[number, string]> = [
+    [850, "850ms"],
+    [4_200, "4.2s"],
+    [42_000, "42s"],
+    [348_000, "5m48s"],
+    [300_000, "5m"],
+    [660_000, "11m"],
+    [4_140_000, "1h09m"],
+  ];
+  for (const [ms, want] of spans) assert.equal(fmtSpan(ms), want, String(ms));
+});
+
+test("wheelIntent: Ctrl zooms, Shift and sideways pan, a plain scroll is the page's", () => {
+  const w = (over: Partial<WheelLike>): WheelLike => ({
+    deltaX: 0,
+    deltaY: 0,
+    deltaMode: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    ...over,
+  });
+  const cases: Array<[string, WheelLike, "zoomIn" | "zoomOut" | number | null]> = [
+    ["plain vertical scroll", w({ deltaY: 100 }), null],
+    ["plain vertical with a little sideways", w({ deltaY: 100, deltaX: 10 }), null],
+    ["nothing at all", w({}), null],
+    ["ctrl wheel up zooms in", w({ deltaY: -100, ctrlKey: true }), "zoomIn"],
+    ["ctrl wheel down zooms out", w({ deltaY: 100, ctrlKey: true }), "zoomOut"],
+    ["cmd wheel zooms", w({ deltaY: -100, metaKey: true }), "zoomIn"],
+    ["pinch (ctrl, small delta) zooms", w({ deltaY: -3, ctrlKey: true }), "zoomIn"],
+    ["shift wheel pans by the vertical delta", w({ deltaY: 40, shiftKey: true }), 40],
+    ["shift wheel on a sideways mouse", w({ deltaX: -30, shiftKey: true }), -30],
+    ["sideways wheel pans", w({ deltaX: 25, deltaY: 3 }), 25],
+    ["line mode is scaled to pixels", w({ deltaX: 2, deltaMode: 1 }), 32],
+  ];
+  for (const [name, e, want] of cases) {
+    const got = wheelIntent(e);
+    if (want === null) assert.equal(got, null, name);
+    else if (typeof want === "number") assert.deepEqual(got, { kind: "pan", px: want }, name);
+    else {
+      assert.equal(got?.kind, "zoom", name);
+      const f = (got as { factor: number }).factor;
+      assert.ok(want === "zoomIn" ? f > 1 : f < 1, `${name}: factor ${f}`);
+    }
+  }
+  // One mouse notch is a moderate step, and a huge delta is capped.
+  const notch = (wheelIntent(w({ deltaY: -100, ctrlKey: true })) as { factor: number }).factor;
+  assert.ok(notch > 1.3 && notch < 1.7);
+  const huge = (wheelIntent(w({ deltaY: -5_000, ctrlKey: true })) as { factor: number }).factor;
+  assert.ok(huge < 2.5);
+});
+
+test("chartKeyAction maps zoom keys and Shift+arrows, leaves the rest", () => {
+  const cases: Array<[string, Parameters<typeof chartKeyAction>[1], ChartKeyAction | null]> = [
+    ["+", {}, "zoomIn"],
+    ["=", {}, "zoomIn"],
+    ["+", { shiftKey: true }, "zoomIn"], // + is Shift and = on most layouts
+    ["-", {}, "zoomOut"],
+    ["0", {}, "fit"],
+    ["ArrowLeft", { shiftKey: true }, "panLeft"],
+    ["ArrowRight", { shiftKey: true }, "panRight"],
+    ["ArrowLeft", {}, null], // a plain arrow moves the selection
+    ["ArrowUp", { shiftKey: true }, null],
+    ["=", { ctrlKey: true }, null], // the browser keeps its own page zoom
+    ["0", { metaKey: true }, null],
+    ["a", {}, null],
+  ];
+  for (const [key, mods, want] of cases) {
+    assert.equal(chartKeyAction(key, mods), want, `${key} ${JSON.stringify(mods)}`);
+  }
+});
+
+test("initialDomain: a window for a large session, the whole span otherwise", () => {
+  const small = indexProcesses(sample(), NOW);
+  assert.deepEqual(initialDomain(small, null, 1200), [small.minStart, small.maxEnd]);
+  const kids = Array.from({ length: 160 }, (_, i) => P(`c${i}`, i * 25, 2));
+  const big = indexProcesses([P("root", 0, 4_000, {}, kids)], T0 + 4_000_000);
+  const d = initialDomain(big, null, 1600);
+  // A twelfth of the session (at least five minutes), the most recent stretch.
+  assert.equal(d[1], big.maxEnd);
+  assert.ok(Math.abs(d[1] - d[0] - (big.maxEnd - big.minStart) / 12) < 1);
+  // Narrower on a phone.
+  const p = initialDomain(big, null, 375);
+  assert.ok(p[1] - p[0] < d[1] - d[0]);
+  const cases: Array<[number, number, number]> = [
+    [4_140_000, 1600, 345_000],
+    [4_140_000, 500, 172_500],
+    [4_140_000, 100, 103_500],
+    [60_000, 1600, 60_000],
+  ];
+  for (const [span, px, want] of cases) assert.equal(defaultWindowSpan(span, px), want, `${span}@${px}`);
+});
+
+test("barTier and clipSpan", () => {
+  const tiers: Array<[number, string]> = [
+    [1, "tick"],
+    [3.9, "tick"],
+    [4, "bare"],
+    [20, "bare"],
+    [35.9, "bare"],
+    [36, "label"],
+    [400, "label"],
+  ];
+  for (const [px, want] of tiers) assert.equal(barTier(px), want, String(px));
+  type Clip = { a: number; b: number; cutStart: boolean; cutEnd: boolean };
+  const clips: Array<[number, number, [number, number], Clip]> = [
+    [10, 20, [0, 100], { a: 10, b: 20, cutStart: false, cutEnd: false }],
+    [-50, 20, [0, 100], { a: 0, b: 20, cutStart: true, cutEnd: false }],
+    [50, 200, [0, 100], { a: 50, b: 100, cutStart: false, cutEnd: true }],
+    [-5, 500, [0, 100], { a: 0, b: 100, cutStart: true, cutEnd: true }],
+  ];
+  for (const [s, e, d, want] of clips) assert.deepEqual(clipSpan(s, e, d), want, `${s}..${e}`);
+});
+
+test("buildTimeScale invert undoes x on both scales", () => {
+  const idx = indexProcesses(sample(), NOW);
+  const dom: [number, number] = [idx.minStart, idx.maxEnd];
+  for (const collapse of [false, true]) {
+    const s = buildTimeScale(idx.items, dom, { collapse, sessionSpanMs: dom[1] - dom[0] });
+    assert.equal(s.invert(0), dom[0]);
+    assert.equal(Math.round(s.invert(1)), dom[1]);
+    for (const t of [T0 + 60_000, T0 + 210_000, T0 + 230_500, T0 + 700_000]) {
+      // Outside squeezed gaps the round trip is exact.
+      if (s.gaps.some((g) => t > g.a && t < g.b)) continue;
+      assert.ok(Math.abs(s.invert(s.x(t)) - t) < 1, `collapse=${collapse} t=${t - T0}`);
+    }
+    assert.equal(s.invert(-1), dom[0]);
   }
 });

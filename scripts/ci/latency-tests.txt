@@ -5,7 +5,9 @@
 # -race, in its "latency regressions (no race)" step.
 #
 # <module-relative package> TAB <top-level test name>
+cmd/observer	TestHookActivityLatencyP95
 internal/guard	TestScanProxyRequest_LatencyRegression
 internal/guard	TestExtractLatestUserPromptText_LatencyRegression
+internal/policy	TestDatabaseFileBudgetLatency
 internal/routing	TestDecideHotPathBudget
 internal/scrub	TestDetectPII_LatencyRegression

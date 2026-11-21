@@ -28,7 +28,7 @@ func newProcessCmd() *cobra.Command {
 			"[observer.process] is enabled: which processes a session spawned, what\n" +
 			"command (action) spawned them, and their runtime outcome.",
 	}
-	cmd.AddCommand(newProcessStatusCmd(), newProcessTreeCmd(), newProcessListCmd(), newProcessFindingsCmd(), newProcessNetworkCmd(), newProcessPruneCmd())
+	cmd.AddCommand(newProcessStatusCmd(), newProcessTreeCmd(), newProcessListCmd(), newProcessFindingsCmd(), newProcessNetworkCmd(), newProcessPruneCmd(), newProcessStatsCmd(), newProcessCompactCmd())
 	return cmd
 }
 

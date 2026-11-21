@@ -262,7 +262,7 @@ func (e *codeEnv) fetchFeedPack(ctx context.Context, feed codeFeedClient, cs con
 	if err != nil {
 		return err
 	}
-	res, err := content.Verify(content.VerifyInput{Envelope: env, Kind: content.RulePack, VendorKeys: codeRulesTrust().VendorKeys, Accepted: st.Accepted, Now: time.Now()})
+	res, err := content.Verify(content.VerifyInput{Envelope: env, Kind: content.RulePack, VendorKeys: codeRulesTrust().VendorKeys, FeedKeys: codeRulesTrust().FeedKeys, Accepted: st.Accepted, Now: time.Now()})
 	if err != nil {
 		_, _ = cs.Install(content.RulePack, env, nil, codeRulesTrust()) // records the refusal; keeps last-known-good
 		return err

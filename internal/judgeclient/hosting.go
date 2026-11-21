@@ -48,6 +48,12 @@ func ResolveConfig(shared, override config.ObservabilityJudgeConfig) config.Obse
 	if override.NumCtx != 0 {
 		out.NumCtx = override.NumCtx
 	}
+	if override.RequestProfile != "" {
+		out.RequestProfile = override.RequestProfile
+	}
+	if override.ReasoningEffort != "" {
+		out.ReasoningEffort = override.ReasoningEffort
+	}
 	if override.UseOrgRelay {
 		out.UseOrgRelay = true
 	}

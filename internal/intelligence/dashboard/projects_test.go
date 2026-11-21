@@ -104,10 +104,10 @@ func seedProjectsFixture(t *testing.T) (s *Server, root string, projectID, p1ID,
 	events := []models.ToolEvent{
 		mkEvent(models.ActionUserPrompt, "add login button", "add login button", "p1", base),
 		mkEvent(models.ActionEditFile, root+"/a.go",
-			`{"file_path":"`+root+`/a.go","old_string":"a := 1","new_string":"a := 2"}`, "e1", base.Add(time.Minute)),
+			editInputJSON(t, root+"/a.go", "a := 1", "a := 2"), "e1", base.Add(time.Minute)),
 		mkEvent(models.ActionUserPrompt, "unrelated ask", "unrelated ask", "p2", base.Add(30*time.Minute)),
 		mkEvent(models.ActionEditFile, root+"/b.go",
-			`{"file_path":"`+root+`/b.go","old_string":"b := 1","new_string":"b := 2"}`, "e2", base.Add(31*time.Minute)),
+			editInputJSON(t, root+"/b.go", "b := 1", "b := 2"), "e2", base.Add(31*time.Minute)),
 	}
 	if _, err := st.Ingest(ctx, events, nil, store.IngestOptions{}); err != nil {
 		t.Fatalf("Ingest: %v", err)
@@ -962,5 +962,42 @@ func TestAPIProjectSurfacesCarryCodeCommentSplit(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("project %d absent from /api/projects", projectID)
+	}
+}
+
+// TestAPIProjectsLeavesOutFoldedRows: a row the worktree-roots backfill
+// folded into its repository's project, with nothing filed under it since,
+// is not listed (the Projects page and the FilterBar picker read this
+// list); an empty row that was never folded still is.
+func TestAPIProjectsLeavesOutFoldedRows(t *testing.T) {
+	s, root := newTestServer(t)
+	ctx := context.Background()
+	const at = "2026-11-07T00:00:00Z"
+	if _, err := s.db().ExecContext(ctx, `INSERT INTO projects (root_path, name, created_at) VALUES ('/r/main/.claude/worktrees/x', ?, ?), ('/r/empty', NULL, ?)`,
+		store.WorktreeRootMovedMark(1), at, at); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/projects", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Rows []struct {
+			RootPath string `json:"root_path"`
+		} `json:"rows"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, r := range got.Rows {
+		listed[r.RootPath] = true
+	}
+	if listed["/r/main/.claude/worktrees/x"] {
+		t.Error("the folded worktree row is listed")
+	}
+	if !listed[root] || !listed["/r/empty"] {
+		t.Errorf("listed = %v, want the seeded project and the never-folded empty row", listed)
 	}
 }

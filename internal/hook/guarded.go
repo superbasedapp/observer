@@ -274,9 +274,14 @@ var claudeToolShape = map[string]struct {
 //     false-positive R-150 whenever the agent works from a subdir.
 //     Outside-project / cross-project / taint-write rules are
 //     therefore inert pre-execution; the watcher evaluates the same
-//     action post-hoc seconds later with the real root. Cwd IS set,
-//     so relative targets still resolve for the home-anchored rules
-//     (sensitive paths, persistence vectors).
+//     action post-hoc seconds later with the real root. The one
+//     exception is the destructive rules' outside-the-project arms
+//     (R-101, D-MU10; R-102 and R-141's chown arm, surface-gap FU-101):
+//     the tool gate's Enrich step stamps Event.RepoRoot with the git
+//     checkout around cwd, never cwd itself
+//     (cmd/observer/hook_projectroot.go), and only those arms read it.
+//     Cwd IS set, so relative targets still resolve for the
+//     home-anchored rules (sensitive paths, persistence vectors).
 //   - Dialect stays posix for Bash/Monitor: Claude Code's Bash tool runs
 //     a POSIX shell on every platform (Git-Bash on Windows); nested
 //     powershell/cmd payloads are detected mid-parse regardless. The

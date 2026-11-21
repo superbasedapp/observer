@@ -17,22 +17,6 @@
       "second_pass_pending": 1
     },
     {
-      "rule": "csharp.sql-string-concat",
-      "labelled": 4,
-      "agreement": {
-        "both_true": 0,
-        "both_false": 0,
-        "only_a": 0,
-        "only_b": 0
-      },
-      "true_positives": 0,
-      "figure": 0,
-      "wilson_lower": 0,
-      "kappa": 0,
-      "kappa_defined": false,
-      "second_pass_pending": 4
-    },
-    {
       "rule": "csharp.weak-cipher",
       "labelled": 1,
       "agreement": {
@@ -317,7 +301,7 @@
     "results": 0,
     "verdict_agreements": 0,
     "reason_agreements": 0,
-    "second_pass_pending": 48
+    "second_pass_pending": 44
   },
   "one_effective_pass": true
 }

@@ -1,11 +1,15 @@
 package osvdb
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/guardposture"
 )
 
 // testKey is a posture key for the tests.
@@ -43,11 +47,11 @@ func TestConsentRecord(t *testing.T) {
 	if !got.Accepted() || !got.AcceptedAt.Equal(at) || got.Surface != "cli" || got.By != "dev" || got != c {
 		t.Fatalf("read back %+v, want %+v", got, c)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, ConsentFile)); err != nil || fi.Mode().Perm()&0o077 != 0 {
+	if fi, err := os.Stat(filepath.Join(dir, ConsentFile)); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("record mode %v %v", fi, err)
 	}
 	for name, body := range map[string]string{
-		"older version":        `{"version":0,"accepted_at":"2026-10-21T09:00:00Z","surface":"cli"}`,
+		"older version":        `{"version":1,"accepted_at":"2026-10-21T09:00:00Z","surface":"cli"}`,
 		"unknown surface":      `{"version":1,"accepted_at":"2026-10-21T09:00:00Z","surface":"agent"}`,
 		"no time":              `{"version":1,"surface":"dashboard"}`,
 		"corrupt":              `{`,
@@ -61,8 +65,8 @@ func TestConsentRecord(t *testing.T) {
 			t.Errorf("%s reads accepted", name)
 		}
 	}
-	if !strings.Contains(ConsentText, Source) || !strings.Contains(ConsentText, "300 MB") {
-		t.Errorf("the accept text does not name the size and source: %s", ConsentText)
+	if !strings.Contains(ConsentText, FeedHost) || !strings.Contains(ConsentText, UpstreamHost) || !strings.Contains(ConsentText, "300 MB") {
+		t.Errorf("the accept text does not name the size and both hosts: %s", ConsentText)
 	}
 }
 
@@ -102,5 +106,31 @@ func TestConsentRecordIsSigned(t *testing.T) {
 		if c.Accepted() || c.Verified {
 			t.Errorf("%s reads accepted: %+v", name, c)
 		}
+	}
+}
+
+// TestConsentV1RecordAsksAgain: a record the version 1 text was accepted
+// under (the bucket only) is correctly signed but no longer covers the
+// text, which names the signed mirror first, so it reads not accepted.
+func TestConsentV1RecordAsksAgain(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "security")
+	key := testKey(11)
+	at := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	c := Consent{Version: 1, AcceptedAt: at, Surface: "cli", By: "dev"}
+	c.MAC = guardposture.RecordMAC(consentMACDomain, c.canonical(), key)
+	b, _ := json.Marshal(c)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ConsentFile), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadConsent(dir, key)
+	if !got.Verified || got.Accepted() {
+		t.Fatalf("a signed version 1 record must verify and still read not accepted: %+v", got)
+	}
+	if ConsentVersion < 2 {
+		t.Fatal("the consent version must be at least 2 once the signed mirror is a source")
 	}
 }

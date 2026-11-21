@@ -9,9 +9,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -53,6 +55,8 @@ func newGuardCmd() *cobra.Command {
 	cmd.AddCommand(newGuardExportCmd())
 	cmd.AddCommand(newGuardReportCmd())
 	cmd.AddCommand(newGuardPromptCmd())
+	cmd.AddCommand(newGuardEventsCmd())
+	cmd.AddCommand(newGuardRecipeCmd())
 	registerGuardEnforceCmds(cmd)
 	return cmd
 }
@@ -91,9 +95,15 @@ func newGuardStatusCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Guard:        %s\n", onOff(cfg.Guard.Enabled))
 			fmt.Fprintf(out, "Mode:         %s\n", cfg.Guard.Mode)
+			// FU-235: the org layer's rules follow the org's action whatever
+			// the local mode, so say so next to the mode (empty with no org
+			// layer).
+			if line := g.OrgOverridePosture().ModeLine(cfg.Guard.Mode); line != "" {
+				fmt.Fprintf(out, "Org policy:   %s\n", line)
+			}
 			fmt.Fprintf(out, "Strict:       %v (fail-%s on guard internal error)\n",
 				cfg.Guard.Strict, map[bool]string{true: "closed", false: "open"}[cfg.Guard.Strict])
-			fmt.Fprintf(out, "Rules:        %d active rows\n", g.RuleCount())
+			fmt.Fprintln(out, guardRulesStatusLine(g.RuleIDCount(), g.RuleCount()))
 			fmt.Fprintf(out, "Taint:        %s (decay %d turns)\n", onOff(cfg.Guard.Taint.Enabled), cfg.Guard.Taint.DecayTurns)
 			fmt.Fprintf(out, "Alerts:       desktop=%s min_severity=%s\n", onOff(cfg.Guard.Alerts.Desktop), cfg.Guard.Alerts.MinSeverity)
 			// D-672: the managed-node floor and the org bundle state are
@@ -110,6 +120,11 @@ func newGuardStatusCmd() *cobra.Command {
 				for _, note := range ps.Notes {
 					fmt.Fprintf(out, "NOTE:         %s\n", note)
 				}
+			}
+			// The applied guard recipe of this machine (docs/guard-recipes.md),
+			// and a [guard] level that disagrees with it.
+			for _, line := range guardRecipeStatusLines(cfg) {
+				fmt.Fprintln(out, line)
 			}
 			for _, issue := range g.LoadIssues() {
 				fmt.Fprintf(out, "LOAD ISSUE:   %s\n", issue)
@@ -170,12 +185,18 @@ func newGuardStatusCmd() *cobra.Command {
 			// one person who could see the reason was not the one hitting it.
 			fmt.Fprintf(out, "Org budget:   %s\n", orgBudgetCLILine(cmd.Context(), cfg, database))
 			fmt.Fprintf(out, "Node control: %s\n", nodeInterventionStatusLine(cmd.Context(), s, cfg.Observer.DBPath))
+			// The organization's coding-agent prompt judge (P-228): whether it
+			// runs here, its scope and judge route, and the last day's
+			// verdicts.
+			for _, line := range planeBGuardStatusLines(loadPlaneBStatusFacts(cmd.Context(), cfg, s, time.Now().UTC())) {
+				fmt.Fprintln(out, line)
+			}
 
 			sum, err := s.SummarizeGuardEvents(cmd.Context(), time.Now().UTC().Add(-24*time.Hour))
 			if err != nil {
 				return fmt.Errorf("summarize: %w", err)
 			}
-			fmt.Fprintf(out, "\nVerdicts (24h): %d total, %d enforced\n", sum.Total, sum.Enforced)
+			fmt.Fprintf(out, "\nVerdicts (24h): %d total, %d enforced%s\n", sum.Total, sum.Enforced, enforcedByOrgSuffix(sum.EnforcedByOrg))
 			for _, line := range []struct {
 				label string
 				m     map[string]int
@@ -184,6 +205,11 @@ func newGuardStatusCmd() *cobra.Command {
 					continue
 				}
 				fmt.Fprintf(out, "  %-12s %s\n", line.label+":", formatCounts(line.m))
+			}
+			if sum.Total > 0 {
+				// CG-18: the verdicts no session view shows are listed by
+				// the CLI, since the Security page may be hidden here.
+				fmt.Fprintln(out, "  list:        `observer guard events` (--session-less for the ones no session shows)")
 			}
 
 			report, err := s.VerifyGuardChain(cmd.Context())
@@ -194,6 +220,9 @@ func newGuardStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "Audit chain:  OK (%d rows verified)\n", report.Checked)
 			} else {
 				fmt.Fprintf(out, "Audit chain:  BROKEN at id %d - %s\n", report.FirstDivergenceID, report.Detail)
+				if hint := store.GuardChainRepairHint(report); hint != "" {
+					fmt.Fprintf(out, "Repair:       %s\n", hint)
+				}
 			}
 			return nil
 		},
@@ -202,33 +231,51 @@ func newGuardStatusCmd() *cobra.Command {
 	return cmd
 }
 
-// newGuardRulesCmd implements `observer guard rules [--effective]
-// [--json]`: the built-in catalog, or this install's effective table
-// (overrides applied, user rules included, disabled rules removed).
+// enforcedByOrgSuffix is the "(N by your organization)" tail of the verdict
+// count line (FU-235); "" when the organization's policy enforced none.
+func enforcedByOrgSuffix(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d by your organization's policy)", n)
+}
+
+// newGuardRulesCmd implements `observer guard rules [--catalog]
+// [--json|--markdown]`: this install's effective listing by default
+// (guard.Guard.RuleListing, the same list GET /api/guard/rules serves and
+// the dashboard's Security > Rules tab shows: overrides applied, disabled
+// rules removed, the user and org layers' rules with their source, the
+// org's project-scoped rules labelled with their project), or the built-in
+// catalog with --catalog. --markdown always renders the built-in catalog
+// (docs/guard-rules.md).
 func newGuardRulesCmd() *cobra.Command {
 	var (
 		configPath string
 		effective  bool
+		catalog    bool
 		jsonOut    bool
 		markdown   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rules",
-		Short: "List the built-in rule catalog (or this install's effective table)",
+		Short: "List this install's effective rules (or the built-in catalog with --catalog)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
+			if markdown {
+				_, err := io.WriteString(out, renderRuleCatalogMarkdown(policy.Catalog()))
+				return err
+			}
+			if catalog && effective {
+				return fmt.Errorf("--catalog and --effective are exclusive")
+			}
 			infos := policy.Catalog()
-			if effective {
+			if !catalog {
 				_, g, err := buildCLIGuard(configPath)
 				if err != nil {
 					return err
 				}
-				infos = g.EffectiveRules()
-			}
-			if markdown {
-				_, err := io.WriteString(out, renderRuleCatalogMarkdown(infos))
-				return err
+				infos = g.RuleListing()
 			}
 			if jsonOut {
 				type row struct {
@@ -238,6 +285,7 @@ func newGuardRulesCmd() *cobra.Command {
 					Observe  string `json:"observe"`
 					Enforce  string `json:"enforce"`
 					Source   string `json:"source"`
+					Project  string `json:"project,omitempty"`
 					Enforced bool   `json:"enforced,omitempty"`
 					Doc      string `json:"doc"`
 				}
@@ -246,32 +294,43 @@ func newGuardRulesCmd() *cobra.Command {
 					rows = append(rows, row{
 						ID: r.ID, Category: string(r.Category), Severity: r.Severity.String(),
 						Observe: r.Observe.String(), Enforce: r.Enforce.String(),
-						Source: r.Source, Enforced: r.Enforced, Doc: r.Doc,
+						Source: r.Source, Project: r.Project, Enforced: r.Enforced, Doc: r.Doc,
 					})
 				}
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
 				return enc.Encode(rows)
 			}
-			fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %s\n",
-				"ID", "CATEGORY", "SEVERITY", "OBSERVE", "ENFORCE", "SOURCE", "DOC")
+			fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %-14s %s\n",
+				"ID", "CATEGORY", "SEVERITY", "OBSERVE", "ENFORCE", "SOURCE", "SCOPE", "DOC")
 			for _, r := range infos {
 				enforce := r.Enforce.String()
 				if r.Enforced {
 					enforce += "!"
 				}
-				fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %s\n",
-					r.ID, r.Category, r.Severity, r.Observe, enforce, r.Source, r.Doc)
+				fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %-14s %s\n",
+					r.ID, r.Category, r.Severity, r.Observe, enforce, r.Source, ruleScopeText(r.Project), r.Doc)
 			}
 			fmt.Fprintln(out, "\n('!' = per-rule enforced even in observe mode)")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
-	cmd.Flags().BoolVar(&effective, "effective", false, "show THIS install's effective table (user layer + overrides applied) instead of the built-in catalog")
+	cmd.Flags().BoolVar(&catalog, "catalog", false, "show the built-in rule catalog instead of THIS install's effective rules")
+	cmd.Flags().BoolVar(&effective, "effective", false, "show THIS install's effective rules (the default; kept for scripts that pass it)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	cmd.Flags().BoolVar(&markdown, "markdown", false, "emit the docs/guard-rules.md catalog markdown (regenerate with `observer guard rules --markdown > docs/guard-rules.md`)")
 	return cmd
+}
+
+// ruleScopeText is the SCOPE column of `observer guard rules`: "all" for a
+// rule in force on every project, "project <id>" for an org rule scoped to
+// one organization project.
+func ruleScopeText(project string) string {
+	if project == "" {
+		return "all"
+	}
+	return "project " + project
 }
 
 // shellDialectNote is the catalog's note on which shell a command is read
@@ -610,6 +669,9 @@ func newGuardVerifyAuditCmd() *cobra.Command {
 			fmt.Fprintf(out, "audit chain BROKEN - first divergence at id %d (%d row(s) walked)\n%s\n",
 				report.FirstDivergenceID, report.Checked, report.Detail)
 			fmt.Fprintln(out, formatGuardBreaks(report.Breaks))
+			if hint := store.GuardChainRepairHint(report); hint != "" {
+				fmt.Fprintln(out, "repair: "+hint)
+			}
 			return errors.New("guard verify-audit: chain divergence")
 		},
 	}
@@ -712,9 +774,12 @@ func newGuardDedupEventsCmd() *cobra.Command {
 // the id. Reports only, unless --apply.
 func newGuardRepairAnchorsCmd() *cobra.Command {
 	var (
-		configPath string
-		apply      bool
-		ceiling    int64
+		configPath    string
+		apply         bool
+		ceiling       int64
+		radius        int64
+		workers       int
+		progressEvery time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "repair-anchors",
@@ -728,7 +793,16 @@ func newGuardRepairAnchorsCmd() *cobra.Command {
 			"stored hash. That is a proof, not a guess: a row edited in any other\n" +
 			"way matches no id and stays reported. No hash is rewritten, so a\n" +
 			"deleted row stays a broken link. With --apply it writes the proven\n" +
-			"ids to action_anchor; without it it only reports.",
+			"ids to action_anchor; without it it only reports.\n\n" +
+			"Each row is searched around hints, in order: the id an identical\n" +
+			"earlier row was proven with (a repeated row), the last anchor in its\n" +
+			"session, and the anchored rows just before and after it; within\n" +
+			"--radius of each (0 searches every id up to --ceiling). A row not\n" +
+			"proven within the radius is reported unproven with the reason, never\n" +
+			"guessed: run again with a wider --radius, or --radius 0, to search\n" +
+			"further. --workers hash one row's range in parallel (the result does\n" +
+			"not depend on it), progress goes to stderr every --progress, and\n" +
+			"Ctrl-C prints the partial report and writes nothing.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
@@ -741,18 +815,29 @@ func newGuardRepairAnchorsCmd() *cobra.Command {
 			}
 			defer database.Close()
 			st := store.New(database)
-			report, err := st.RepairGuardAnchors(cmd.Context(), store.GuardAnchorRepairOptions{
-				Apply: apply, Ceiling: ceiling,
-			})
+			// Ctrl-C / SIGTERM stop the search and print what it found so far.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			opts := store.GuardAnchorRepairOptions{
+				Apply: apply, Ceiling: ceiling, Radius: radius, Workers: workers,
+				ProgressEvery: progressEvery,
+			}
+			if progressEvery > 0 {
+				errOut := cmd.ErrOrStderr()
+				opts.Progress = func(p store.GuardAnchorProgress) {
+					fmt.Fprintln(errOut, formatGuardAnchorProgress(p))
+				}
+			}
+			report, err := st.RepairGuardAnchors(ctx, opts)
+			out := cmd.OutOrStdout()
+			if report.Interrupted {
+				writeGuardAnchorReport(out, report)
+				return fmt.Errorf("guard repair-anchors: interrupted, nothing written: %w", err)
+			}
 			if err != nil {
 				return fmt.Errorf("repair: %w", err)
 			}
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "%d row(s) fail as rewritten with no action id; %d proven (action ids 1-%d, %d hash(es) tried)\n",
-				report.Candidates, report.Proven, report.Ceiling, report.Tries)
-			if report.UnprovenCount > 0 {
-				fmt.Fprintf(out, "%d not proven (left as reported), the first: %v\n", report.UnprovenCount, report.Unproven)
-			}
+			writeGuardAnchorReport(out, report)
 			if !report.Applied {
 				if report.Proven > 0 {
 					fmt.Fprintln(out, "dry run: pass --apply to write the proven ids")
@@ -775,6 +860,12 @@ func newGuardRepairAnchorsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Write the proven action ids (default: report only)")
 	cmd.Flags().Int64Var(&ceiling, "ceiling", 0, "Highest action id to try (default: the highest id the node ever issued)")
+	cmd.Flags().Int64Var(&radius, "radius", guardAnchorDefaultRadius,
+		"Try only action ids within this distance of each row's hint; 0 tries every id up to the ceiling")
+	cmd.Flags().IntVar(&workers, "workers", store.DefaultGuardAnchorWorkers(),
+		"Goroutines hashing one row's range (the result does not depend on it)")
+	cmd.Flags().DurationVar(&progressEvery, "progress", 10*time.Second,
+		"Print progress to stderr at this interval; 0 turns it off")
 	return cmd
 }
 
@@ -846,6 +937,18 @@ func newGuardRelinkGapsCmd() *cobra.Command {
 	return cmd
 }
 
+// guardRulesStatusLine is the status "Rules:" line. It leads with the count
+// of distinct rules - the number the dashboard's Rules tab shows - and names
+// the row count beside it, since one rule can own several rows (demo bug #12:
+// the tab said 81 and this line said "131 active rows", and nothing said they
+// counted different things).
+func guardRulesStatusLine(rules, rows int) string {
+	if rows == rules {
+		return fmt.Sprintf("Rules:        %d active rules", rules)
+	}
+	return fmt.Sprintf("Rules:        %d active rules (%d rule rows: a rule can match several event kinds)", rules, rows)
+}
+
 // expandUserPolicyPath expands a leading ~/ against home (the same
 // convention guard.New applies).
 func expandUserPolicyPath(p, home string) string {
@@ -898,7 +1001,7 @@ func orgBudgetCLILine(ctx context.Context, cfg config.Config, database *sql.DB) 
 	// A3). Appended rather than folded into the composed posture because the
 	// posture answers "is a cap in force" and this answers "in whose dollars";
 	// it prints nothing at all when this process could not measure it.
-	line += budgetPricingCoverageLine(cliBudgetPricingCoverage(ctx, cfg, database))
+	line += budgetPricingCoverageLine(cliBudgetPricingCoverage(ctx, cfg, database, granted))
 	cached, err := store.New(database).LoadOrgBudget(ctx)
 	if err != nil || !cached.Have {
 		// No verified body persisted (or the read itself failed): the line's
@@ -924,8 +1027,17 @@ func rewriteCachedBudgetFetchState(line string, cached store.OrgBudgetCache) str
 	if !cached.FetchedAt.IsZero() {
 		at = cached.FetchedAt.UTC().Format(time.RFC3339)
 	}
-	replacement := fmt.Sprintf("fetch_state=cached (CLI read verified body v%d persisted at %s; daemon fetch state unavailable here)",
-		cached.Version, at)
+	// Demo bug #4: before any budget existed this read "body v0 persisted at
+	// 2026-09-20 ...", which looked like a stale fetch. A signed empty body
+	// is the org saying "no budget applies to you"; say that, and give the
+	// last time the org confirmed it (fetched_at now moves on every 304,
+	// store.TouchOrgBudgetConfirmed).
+	what := fmt.Sprintf("verified body v%d", cached.Version)
+	if cached.Body.Empty() {
+		what = fmt.Sprintf("no org budgets (signed empty body v%d)", cached.Version)
+	}
+	replacement := fmt.Sprintf("fetch_state=cached (%s, last confirmed by the org at %s; the daemon's live fetch state is not visible to this CLI)",
+		what, at)
 	line = strings.Replace(line, fetchMarker, replacement, 1)
 	line = strings.Replace(line, "last_fetch_ok=false", "last_fetch_ok=unknown_to_cli", 1)
 	return strings.Replace(line, "last_fetch_ok=true", "last_fetch_ok=unknown_to_cli", 1)

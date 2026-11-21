@@ -3,6 +3,8 @@ package guard
 import (
 	"fmt"
 	"net/url"
+	"sort"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -105,6 +107,14 @@ type OrgOverridePosture struct {
 	// verified and no last verified layer stands in for it, on a node where
 	// the org's authority reaches every rule (T-844): every rule is locked.
 	Unverifiable bool
+	// Enforced is the sorted set of rule IDs the ORG layer makes block or
+	// defer in the running mode (FU-235): rows the org bundle authored or
+	// overrode (Source "org") whose mode-selected decision is ask or deny
+	// and that no `enforce = false` caps. In observe mode these are the
+	// rules that still stop an action, so the status surfaces can say
+	// "observe locally; N rules enforced by your organization" instead of
+	// a bare "observe". Nil when the org layer is absent or enforces none.
+	Enforced []string
 }
 
 // For answers the per-rule question. Both false means the rule is
@@ -140,13 +150,113 @@ func (g *Guard) OrgOverridePosture() OrgOverridePosture {
 		Overridable:    map[string]bool{},
 		Named:          es.orgNamedRules,
 	}
+	enforced := map[string]bool{}
 	for _, info := range es.base().RuleInfos() {
 		// Multi-row IDs (R-152's write/read split) grant as a unit:
 		// one overridable row makes the public ID overridable.
 		if info.Overridable {
 			out.Overridable[info.ID] = true
 		}
+		if info.Source == policy.SourceOrg && orgRowStops(es.base().RuleStances(info.ID)) {
+			enforced[info.ID] = true
+		}
 	}
+	out.Enforced = sortedRuleIDs(enforced)
+	return out
+}
+
+// orgModeLineMaxIDs bounds the rule ids ModeLine lists before "+N more".
+const orgModeLineMaxIDs = 8
+
+// orgLockTailRows is the lock-reach tail of ModeLine, walked top-down
+// (CLAUDE.md rule 5): what a local approval can still do on this node.
+var orgLockTailRows = []struct {
+	applies func(p OrgOverridePosture) bool
+	tail    func(p OrgOverridePosture) string
+}{
+	{
+		func(p OrgOverridePosture) bool { return p.LocksEveryRule },
+		func(OrgOverridePosture) string {
+			return "your organization locks every rule on this node, so local exceptions do not apply"
+		},
+	},
+	{
+		func(p OrgOverridePosture) bool { return len(p.Named) > 0 },
+		func(p OrgOverridePosture) string {
+			return fmt.Sprintf("local exceptions do not apply to the %s your organization names", ruleCount(len(p.Named)))
+		},
+	},
+}
+
+// ModeLine renders the organization's half of the guard mode for the status
+// surfaces (FU-235): the local mode governs only the rules the org layer
+// does not reach, so a bare "observe" next to an org-enforced deny reads as
+// a contradiction. Examples:
+//
+//	observe locally; 1 rule enforced by your organization (R-101); your organization locks every rule on this node, so local exceptions do not apply
+//	observe locally; your organization's policy enforces no rule here; local exceptions do not apply to the 2 rules your organization names
+//
+// "" when no org layer is in force and its bundle is not unverifiable (an
+// individual, un-enrolled node: the local mode is the whole story).
+func (p OrgOverridePosture) ModeLine(mode string) string {
+	if p.Unverifiable {
+		return "your organization's policy bundle does not verify and no verified copy is held, so local exceptions are refused for every rule until a verified bundle is back"
+	}
+	if !p.OrgApplies {
+		return ""
+	}
+	if strings.TrimSpace(mode) == "" {
+		mode = string(policy.ModeObserve)
+	}
+	parts := []string{mode + " locally"}
+	switch n := len(p.Enforced); {
+	case n == 0:
+		parts = append(parts, "your organization's policy enforces no rule here")
+	case n <= orgModeLineMaxIDs:
+		parts = append(parts, fmt.Sprintf("%s enforced by your organization (%s)", ruleCount(n), strings.Join(p.Enforced, ", ")))
+	default:
+		parts = append(parts, fmt.Sprintf("%s enforced by your organization (%s, +%d more)",
+			ruleCount(n), strings.Join(p.Enforced[:orgModeLineMaxIDs], ", "), n-orgModeLineMaxIDs))
+	}
+	for _, row := range orgLockTailRows {
+		if row.applies(p) {
+			parts = append(parts, row.tail(p))
+			break
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// ruleCount renders "1 rule" / "N rules".
+func ruleCount(n int) string {
+	if n == 1 {
+		return "1 rule"
+	}
+	return fmt.Sprintf("%d rules", n)
+}
+
+// orgRowStops reports whether some row of a rule stops an action in the
+// running mode: its mode-selected decision is ask or deny and no
+// `enforce = false` override caps it (RuleStances already applies the cap).
+func orgRowStops(stances []policy.Verdict) bool {
+	for _, v := range stances {
+		if v.Decision >= policy.DecisionAsk && v.EnforceCappedBy == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// sortedRuleIDs returns the set's members in order (nil for an empty set).
+func sortedRuleIDs(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -194,6 +304,76 @@ func (g *Guard) orgLocksVerdictRule(es *engineSet, ruleID, projectRoot string) b
 	return es.orgLocksRule(ruleID, projectRoot, g.orgLocksEveryRule())
 }
 
+// orgLockCause says WHY the org layer locks ruleID here, for the note a
+// refused local approval leaves on the verdict. Before it, every locked
+// rule read "an org policy locks R", which on a managed node named a policy
+// the organization never wrote: a node-local pack rule (the commit gate,
+// S-791 to S-794) is locked there because the managed tenancy locks every
+// rule, not because the org's bundle names it (2026-11-10 operator report).
+// The order is most specific first; "" when the rule is not locked.
+func (g *Guard) orgLockCause(es *engineSet, ruleID, projectRoot string) orgLockReason {
+	if ruleID == "" {
+		return orgLockNone
+	}
+	if !es.orgApplies() {
+		if g.orgUnverifiable(es) {
+			return orgLockUnverifiable
+		}
+		return orgLockNone
+	}
+	if es.orgNamedRules[ruleID] {
+		return orgLockNamed
+	}
+	if projectRoot != "" {
+		es.pmu.Lock()
+		named := es.projectNamed[projectRoot][ruleID]
+		es.pmu.Unlock()
+		if named {
+			return orgLockProject
+		}
+	}
+	if g.managedTenancy.Load() == nil {
+		// orgLocksEveryRule's conservative answer for an unresolved tenancy.
+		return orgLockUnresolved
+	}
+	if g.orgLocksEveryRule() {
+		return orgLockManaged
+	}
+	return orgLockNone
+}
+
+// orgLockReason is one cause of an org lock.
+type orgLockReason string
+
+const (
+	orgLockNone         orgLockReason = ""
+	orgLockNamed        orgLockReason = "named"
+	orgLockProject      orgLockReason = "project"
+	orgLockManaged      orgLockReason = "managed"
+	orgLockUnverifiable orgLockReason = "unverifiable"
+	orgLockUnresolved   orgLockReason = "unresolved"
+)
+
+// orgLockedNotes is the note per cause. %s is the rule id. Every note
+// starts "[org_locked" (the dashboard's why-not-downgraded reads that
+// prefix) and says where the lift comes from.
+var orgLockedNotes = map[orgLockReason]string{
+	orgLockNamed:        " [org_locked: the organization's guard bundle names %s; the local approval was ignored]",
+	orgLockProject:      " [org_locked: the organization's policy for this project names %s; the local approval was ignored]",
+	orgLockManaged:      " [org_locked: this node is managed by its organization, which locks every rule here, %s included, although its guard bundle does not name it; the local approval was ignored, and only an org grant (request access) or the org marking the rule overridable lifts it]",
+	orgLockUnverifiable: " [org_locked: the organization's guard bundle could not be verified, so every rule is locked, %s included; the local approval was ignored]",
+	orgLockUnresolved:   " [org_locked: this process could not read whether the node is managed, so every rule stays locked, %s included, although the organization's guard bundle does not name it; the local approval was ignored]",
+}
+
+// orgLockedNote renders the note for cause; an unknown or empty cause
+// keeps the generic wording.
+func orgLockedNote(cause orgLockReason, ruleID string) string {
+	if f, ok := orgLockedNotes[cause]; ok {
+		return fmt.Sprintf(f, ruleID)
+	}
+	return legacyOrgLockedNote(ruleID)
+}
+
 // stampOrgOverride stamps the org-override posture onto a freshly
 // built verdict row. Called by every seam that constructs an
 // ActionVerdict, from the SAME snapshot that produced the verdict (the
@@ -212,6 +392,10 @@ func (g *Guard) stampOrgOverrideAt(es *engineSet, av *ActionVerdict, projectRoot
 	av.Overridable = av.Verdict.Overridable
 	av.OrgLocked = orgLockedVerdict(av.Verdict, g.orgLocksVerdictRule(es, av.Verdict.RuleID, projectRoot))
 	av.RequestBase = g.requestBase
+	av.BlockNotice = g.blockNotice
+	if av.Verdict.Decision >= policy.DecisionAsk {
+		av.ApprovalPageHidden = g.approvalPageIsHidden()
+	}
 }
 
 // blockedWhatByKind names the blocked thing for the human-first line,
@@ -253,18 +437,29 @@ const blockedWhatFallback = "this action"
 // Hyphens only, never em-dashes: this string is read by humans in
 // terminals, desktop toasts and provider error bodies.
 func HumanBlockLine(av ActionVerdict, sessionID string) string {
-	if av.Verdict.RuleID == "" || (!av.Overridable && !av.OrgLocked) {
-		return ""
-	}
 	what, ok := blockedWhatByKind[av.Kind]
 	if !ok {
 		what = blockedWhatFallback
+	}
+	if row, ok := blockNotices[av.BlockNotice]; ok {
+		// A sandbox notice (blocknotice.go) leads every blocking verdict
+		// and replaces the override and request wording below.
+		return row.line(av.Verdict, what)
+	}
+	if av.Verdict.RuleID == "" || (!av.Overridable && !av.OrgLocked) {
+		return ""
 	}
 	switch {
 	case av.Overridable && sessionID != "":
 		return fmt.Sprintf(
 			"observer: %s blocked %s. The organization allows an override: the developer (not the agent) runs `observer guard approve %s --session %s`, then the call can be retried.",
 			av.Verdict.RuleID, what, av.Verdict.RuleID, sessionID)
+	case av.Overridable && av.ApprovalPageHidden:
+		// CG-16: the Security page is hidden on this machine, so the only
+		// way left is a node-wide grant (approvalpointer.go).
+		return fmt.Sprintf(
+			"observer: %s blocked %s. The organization allows an override, but this lane reported no session id, so the override cannot be scoped to one session; the developer (not the agent) %s, then the call can be retried.",
+			av.Verdict.RuleID, what, noSessionApprove(av, av.Verdict.RuleID))
 	case av.Overridable:
 		return fmt.Sprintf(
 			"observer: %s blocked %s. The organization allows an override, but this lane reported no session id, so the override cannot be scoped from the command line here; grant it on the Observer dashboard Security page instead.",

@@ -544,6 +544,10 @@ func codeIntelIndexOptions(cfg config.Config, st *store.Store) index.Options {
 		MaxFileBytes:   cfg.CodeIntel.MaxFileBytes,
 		AutoIndexLimit: cfg.CodeIntel.AutoIndexLimit,
 		IgnoreRoots:    cfg.CodeIntel.IgnorePaths,
+		// Complexity is counted only for the Projects page's Quality tab
+		// (docs/projects-page.md "Quality metrics"): it costs a second
+		// tree-sitter query pass per file.
+		CountComplexity: cfg.Projects.QualityMetrics,
 	}
 }
 

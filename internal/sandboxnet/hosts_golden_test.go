@@ -2,6 +2,7 @@ package sandboxnet
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,7 +15,8 @@ import (
 
 // goldenCases are the list-less gateway's refusals before the host
 // allow-list existed (captured at a4acb0d73): a gateway with no Hosts must
-// answer each exactly so.
+// answer each exactly so. Since lane N1 a refusal's body is JSON; its
+// message field is still the captured sentence, byte for byte.
 var goldenCases = []struct {
 	name, method, target string
 	providers            bool
@@ -65,6 +67,16 @@ func goldenAnswer(g *Gateway, method, target string) string {
 	}
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, r)
+	// A refusal is the structured 403 (lane N1): its message is the
+	// sentence the plain-text body carried, pinned unchanged, followed by
+	// the closed rule and the deciding key.
+	if w.Header().Get("Content-Type") == "application/json" {
+		var b RefusalBody
+		if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil || b.Error != RefusalErrorCode {
+			return fmt.Sprintf("%d undecodable refusal %q", w.Code, w.Body.String())
+		}
+		return fmt.Sprintf("%d %s {%s %s}", w.Code, b.Message, b.Rule, b.Key)
+	}
 	return fmt.Sprintf("%d %s", w.Code, strings.TrimSpace(w.Body.String()))
 }
 
@@ -89,15 +101,15 @@ func TestGateway_ListLessGolden(t *testing.T) {
 }
 
 var listLessGolden = []string{
-	"connect loopback literal: 403 sandbox egress gateway: destination refused by rule loopback",
-	"connect private literal: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs)",
-	"connect metadata literal: 403 sandbox egress gateway: destination refused by rule link-local-unicast",
-	"connect private name: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs)",
+	"connect loopback literal: 403 sandbox egress gateway: destination refused by rule loopback {ssrf-floor terminal.sandbox.egress}",
+	"connect private literal: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs) {private-range terminal.sandbox.egress_allow_cidrs}",
+	"connect metadata literal: 403 sandbox egress gateway: destination refused by rule link-local-unicast {ssrf-floor terminal.sandbox.egress}",
+	"connect private name: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs) {private-range terminal.sandbox.egress_allow_cidrs}",
 	"connect unresolvable: 502 sandbox egress gateway: cannot resolve host",
 	"connect bad port: 400 sandbox egress gateway: target \"registry.npmjs.org:0\" has an invalid port",
-	"connect provider host: 403 sandbox egress gateway: destination refused by rule model-provider-host (this run claims full capture, so model API calls must go through the Observer proxy the tool is configured with)",
-	"connect literal under provider block: 403 sandbox egress gateway: destination refused by rule literal-ip (this run claims full capture, so model API calls must go through the Observer proxy the tool is configured with)",
-	"absolute private name: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs)",
+	"connect provider host: 403 sandbox egress gateway: destination refused by rule model-provider-host (this run claims full capture, so model API calls must go through the Observer proxy the tool is configured with) {provider-host terminal.sandbox.provider_direct}",
+	"connect literal under provider block: 403 sandbox egress gateway: destination refused by rule literal-ip (this run claims full capture, so model API calls must go through the Observer proxy the tool is configured with) {literal-ip terminal.sandbox.provider_direct}",
+	"absolute private name: 403 sandbox egress gateway: destination refused by rule private-rfc1918 (to allow a private destination, add its CIDR to [terminal.sandbox].egress_allow_cidrs) {private-range terminal.sandbox.egress_allow_cidrs}",
 	"absolute https: 400 sandbox egress gateway: https requests must use CONNECT",
 	"origin form: 400 sandbox egress gateway: this is a forward proxy; send CONNECT or an absolute-form http request",
 }

@@ -1,0 +1,156 @@
+{
+  "_source": {
+    "target": "bedrock",
+    "instrumentor": "openinference-instrumentation-bedrock 0.1.68",
+    "library": "boto3 / botocore 1.44.6",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "bedrock-runtime converse (system, inferenceConfig, cache read/write usage) and invoke_model with an Anthropic Messages body, the HTTP layer mocked by a botocore before-send handler (fixture credentials, no network).",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "bedrock",
+  "_gaps": [
+    "No request id: the x-amzn-requestid response header is not emitted, and no response id (the invoke_model body's id is only inside output.value).",
+    "provider is llm.provider=aws, not the pinned semconv value aws.bedrock.",
+    "invoke_model: the model is the Anthropic response body's model (claude-sonnet-4-5), not the Bedrock modelId; converse: the modelId.",
+    "request_params is llm.invocation_parameters verbatim (converse: camelCase maxTokens), not the genaiattr parameter names (max_tokens)."
+  ],
+  "spans": [
+    {
+      "name": "bedrock.converse",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"role\": \"user\", \"content\": [{\"text\": \"Capital of France?\"}]}]",
+        "llm.finish_reason": "end_turn",
+        "llm.input_messages.0.message.contents.0.message_content.text": "Be brief.",
+        "llm.input_messages.0.message.contents.0.message_content.type": "text",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.contents.0.message_content.text": "Capital of France?",
+        "llm.input_messages.1.message.contents.0.message_content.type": "text",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"maxTokens\": 64, \"temperature\": 0.2}",
+        "llm.model_name": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "llm.output_messages.0.message.contents.0.message_content.text": "Paris.",
+        "llm.output_messages.0.message.contents.0.message_content.type": "text",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "aws",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 2130,
+        "llm.token_count.prompt_details.cache_read": 2000,
+        "llm.token_count.prompt_details.cache_write": 100,
+        "llm.token_count.total": 2135,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"role\": \"assistant\", \"content\": [{\"text\": \"Paris.\"}]}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "provider": "aws",
+        "input_tokens": 2130,
+        "output_tokens": 5,
+        "total_tokens": 2135,
+        "total_derived": false,
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 100,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": [
+          "end_turn"
+        ],
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "text": "Be brief.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "parts": [
+              {
+                "text": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "parts": [
+              {
+                "text": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "maxTokens": 64,
+          "temperature": 0.2
+        },
+        "response_model": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "request_id": ""
+      }
+    },
+    {
+      "name": "bedrock.invoke_model",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"anthropic_version\": \"bedrock-2023-05-31\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Capital of France?\"}]}",
+        "llm.finish_reason": "end_turn",
+        "llm.input_messages.0.message.content": "Capital of France?",
+        "llm.input_messages.0.message.role": "user",
+        "llm.invocation_parameters": "{\"max_tokens\": 64}",
+        "llm.model_name": "claude-sonnet-4-5",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "aws",
+        "llm.system": "anthropic",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 30,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"id\": \"msg_bedrock_fixture\", \"type\": \"message\", \"role\": \"assistant\", \"model\": \"claude-sonnet-4-5\", \"content\": [{\"type\": \"text\", \"text\": \"Paris.\"}], \"stop_reason\": \"end_turn\", \"usage\": {\"input_tokens\": 30, \"output_tokens\": 5}}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "claude-sonnet-4-5",
+        "provider": "aws",
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "total_tokens": 35,
+        "total_derived": true,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": [
+          "end_turn"
+        ],
+        "input_messages": [
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "max_tokens": 64
+        },
+        "response_model": "claude-sonnet-4-5",
+        "request_id": ""
+      }
+    }
+  ]
+}

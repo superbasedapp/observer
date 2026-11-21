@@ -1,0 +1,410 @@
+{
+  "schema": "observer.secassess.fixture-truth.v1",
+  "notice": "This file is the answer key of a deliberately vulnerable fixture application, for local testing only. It is never copied into an assessment run. See ../README.md.",
+  "fixture": {
+    "name": "notesapp",
+    "language": "python3",
+    "app_dir": "app",
+    "entry": "server.py",
+    "files": [
+      "server.py",
+      "notes.sqlite.seed.sql",
+      "templates/layout.html",
+      "templates/index.html",
+      "static/app.js",
+      "static/style.css",
+      ".env.example"
+    ],
+    "target": {
+      "port": 3000,
+      "console_port": 3001,
+      "start_argv": ["env", "OBSERVER_SECASSESS_FIXTURE=1", "python3", "server.py"]
+    },
+    "accounts": [
+      {"label": "alice", "role": "member", "username": "alice", "password": "fixture-pass-alice"},
+      {"label": "bob", "role": "member", "username": "bob", "password": "fixture-pass-bob"},
+      {"label": "admin", "role": "admin", "username": "admin", "password": "fixture-pass-admin"}
+    ]
+  },
+  "scoring": {
+    "anchor_window_lines": 5,
+    "anchor_rule": "An anchor is a substring that occurs exactly once in `file`, on a code line (not a comment line). The line number is derived at score time from the run's own copy of the file, never stored here.",
+    "match_rule": "A result matches a flaw when its ref is in the same file within anchor_window_lines of any of the flaw's anchors AND (its CWE is in cwe or cwe_family, or its WSTG category is in wstg). Each flaw is matched at most once and a result is used for at most one flaw (one-to-one).",
+    "decoy_rule": "A result whose ref is within anchor_window_lines of a decoy anchor and matches no flaw is a counted false positive; a result near no anchor is unscored and listed, never ignored.",
+    "incidental_rule": "A result that matches an incidental entry by CWE and sits near no anchor is reported as incidental, neither a hit nor a false positive.",
+    "spacing_guarantee": "Every decoy anchor is at least 11 lines from any other flaw or decoy anchor; anchors of two different flaws are at least 6 lines apart. Trap anchors (threatmodel.json) sit inside flaw windows on purpose."
+  },
+  "flaws": [
+    {
+      "id": "F01",
+      "title": "SQL injection in the public note search",
+      "class": "sql_injection",
+      "cwe": ["CWE-89"],
+      "cwe_family": ["CWE-20", "CWE-74", "CWE-943"],
+      "wstg": ["INPV"],
+      "route": "GET /notes?q=",
+      "file": "server.py",
+      "anchors": ["title LIKE '%{q}%'"],
+      "severity_hint": "high",
+      "description": "The q parameter is concatenated into the SELECT. A UNION payload reads other tables (users, sessions). The helper that looks like input validation returns its argument unchanged.",
+      "decoys": ["D01"],
+      "traps": ["TR2"]
+    },
+    {
+      "id": "F02",
+      "title": "Reflected cross-site scripting in the search page heading",
+      "class": "reflected_xss",
+      "cwe": ["CWE-79"],
+      "cwe_family": ["CWE-20", "CWE-74", "CWE-80", "CWE-116"],
+      "wstg": ["INPV"],
+      "route": "GET /search?term=",
+      "file": "server.py",
+      "anchors": ["Results for {term}"],
+      "severity_hint": "medium",
+      "description": "The term parameter is placed in the page heading without escaping; the result list is escaped, the heading is not.",
+      "decoys": ["D02"],
+      "traps": ["TR1"]
+    },
+    {
+      "id": "F03",
+      "title": "Insecure direct object reference on note read",
+      "class": "idor_bola",
+      "cwe": ["CWE-639"],
+      "cwe_family": ["CWE-284", "CWE-285", "CWE-566", "CWE-862", "CWE-863"],
+      "wstg": ["ATHZ"],
+      "route": "GET /api/notes/{id}",
+      "file": "server.py",
+      "anchors": ["SELECT * FROM notes WHERE id = ?"],
+      "severity_hint": "high",
+      "description": "Any signed-in user can read any note by id, including other users' private notes. Delete and pin check the owner; read does not.",
+      "decoys": ["D06"],
+      "traps": ["TR3"]
+    },
+    {
+      "id": "F04",
+      "title": "Admin route trusts a role cookie the client controls",
+      "class": "client_side_authorization",
+      "cwe": ["CWE-602"],
+      "cwe_family": ["CWE-284", "CWE-285", "CWE-807", "CWE-862", "CWE-863"],
+      "wstg": ["ATHZ"],
+      "route": "GET /admin/users",
+      "file": "server.py",
+      "anchors": ["h.cookie(\"role\") != \"admin\""],
+      "severity_hint": "high",
+      "description": "The admin user list is gated on a plain cookie named role, which the client sets. No session is needed.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F05",
+      "title": "Predictable session token and cookie without HttpOnly, Secure or SameSite",
+      "class": "weak_session_management",
+      "cwe": ["CWE-330", "CWE-1004"],
+      "cwe_family": ["CWE-331", "CWE-334", "CWE-340", "CWE-341", "CWE-384", "CWE-614", "CWE-1275"],
+      "wstg": ["SESS"],
+      "route": "POST /api/login",
+      "file": "server.py",
+      "anchors": ["sess-%d", "sid={token}; Path=/"],
+      "severity_hint": "medium",
+      "description": "Session tokens are sequential numbers (sess-1001, sess-1002, ...), so a neighbour's token can be guessed; the cookie carries no HttpOnly, Secure or SameSite attribute.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F06",
+      "title": "Path traversal out of the static directory",
+      "class": "path_traversal",
+      "cwe": ["CWE-22"],
+      "cwe_family": ["CWE-23", "CWE-35", "CWE-36", "CWE-73"],
+      "wstg": ["ATHZ"],
+      "route": "GET /download?file=",
+      "file": "server.py",
+      "anchors": ["path = os.path.join(STATIC_DIR, name)"],
+      "severity_hint": "medium",
+      "description": "The file parameter is joined onto the static directory without normalisation, so ../ reaches the application directory (the source, the example settings file, the seed SQL). The shared reader stops at the application directory; that fence is containment for the fixture, not a mitigation of the flaw.",
+      "decoys": ["D03"],
+      "traps": []
+    },
+    {
+      "id": "F07",
+      "title": "Server-side request forgery to the internal console",
+      "class": "ssrf",
+      "cwe": ["CWE-918"],
+      "cwe_family": ["CWE-441", "CWE-610"],
+      "wstg": ["INPV"],
+      "route": "POST /api/import",
+      "file": "server.py",
+      "anchors": ["with opener.open(url, timeout=3) as resp:", "def fetch_url(url):", "content = fetch_url(url)"],
+      "severity_hint": "medium",
+      "description": "A signed-in user supplies the URL the server fetches. The only accepted target is the sibling loopback listener (the internal console, no authentication), which returns its configuration. The target check is containment for the fixture: it keeps the fetcher from reaching anything else.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F08",
+      "title": "Bearer token accepted without verifying its signature",
+      "class": "token_signature_not_verified",
+      "cwe": ["CWE-347"],
+      "cwe_family": ["CWE-287", "CWE-290", "CWE-345", "CWE-354"],
+      "wstg": ["SESS", "ATHN"],
+      "route": "GET /api/me (Authorization: Bearer)",
+      "file": "server.py",
+      "anchors": ["head, body, sig = token.split(\".\")"],
+      "severity_hint": "high",
+      "description": "The token is split into three parts and the middle part is trusted; the signature part is never compared, so a forged claim set (sub 3) acts as the admin user.",
+      "decoys": ["D04"],
+      "traps": []
+    },
+    {
+      "id": "F09",
+      "title": "Verbose error responses and an open debug route",
+      "class": "information_exposure",
+      "cwe": ["CWE-209", "CWE-489"],
+      "cwe_family": ["CWE-200", "CWE-210", "CWE-211", "CWE-215", "CWE-497"],
+      "wstg": ["ERRH", "CONF"],
+      "route": "any route (500), GET /debug/info",
+      "file": "server.py",
+      "anchors": ["traceback.format_exc()", "def route_debug_info(h):"],
+      "severity_hint": "low",
+      "description": "An unhandled exception returns the full traceback to the client, and /debug/info lists every route and every live session token.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F10",
+      "title": "No lockout or throttling on login",
+      "class": "no_lockout",
+      "cwe": ["CWE-307"],
+      "cwe_family": ["CWE-287", "CWE-770", "CWE-799"],
+      "wstg": ["ATHN"],
+      "route": "POST /api/login",
+      "file": "server.py",
+      "anchors": ["invalid credentials"],
+      "severity_hint": "medium",
+      "description": "Failed logins are neither counted nor delayed; a correct password still works after any number of wrong ones.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F11",
+      "title": "Open redirect through the next parameter",
+      "class": "open_redirect",
+      "cwe": ["CWE-601"],
+      "cwe_family": ["CWE-20", "CWE-610"],
+      "wstg": ["CLNT"],
+      "route": "GET /go?next=",
+      "file": "server.py",
+      "anchors": ["h.redirect(next_url)"],
+      "severity_hint": "low",
+      "description": "The next parameter becomes the Location header unchanged, so any absolute URL is accepted.",
+      "decoys": ["D05"],
+      "traps": []
+    },
+    {
+      "id": "F12",
+      "title": "Mass assignment of the role field on profile update",
+      "class": "mass_assignment",
+      "cwe": ["CWE-915"],
+      "cwe_family": ["CWE-269", "CWE-284", "CWE-285", "CWE-862", "CWE-913"],
+      "wstg": ["APIT", "ATHZ"],
+      "route": "POST /api/profile",
+      "file": "server.py",
+      "anchors": ["role = COALESCE(?, role)", "body.get(\"role\")"],
+      "severity_hint": "high",
+      "description": "The profile update copies role from the request body, so any member can make themselves admin.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F13",
+      "title": "Negative quantity creates credit",
+      "class": "business_logic_negative_quantity",
+      "cwe": ["CWE-840"],
+      "cwe_family": ["CWE-20", "CWE-682", "CWE-1284", "CWE-1285"],
+      "wstg": ["BUSL"],
+      "route": "POST /api/export",
+      "file": "server.py",
+      "anchors": ["cost = pages * PRICE_PER_PAGE"],
+      "severity_hint": "medium",
+      "description": "The page count is never checked for sign, so a negative count makes the cost negative and the balance grows.",
+      "decoys": [],
+      "traps": []
+    },
+    {
+      "id": "F14",
+      "title": "State change by GET plus credentialed CORS reflection",
+      "class": "csrf_and_cors",
+      "cwe": ["CWE-352", "CWE-942"],
+      "cwe_family": ["CWE-284", "CWE-345", "CWE-346", "CWE-1275"],
+      "wstg": ["SESS", "CLNT"],
+      "route": "GET /api/notes/{id}/pin; every response",
+      "file": "server.py",
+      "anchors": [
+        "UPDATE notes SET pinned = ?",
+        "self.send_header(\"Access-Control-Allow-Origin\", origin)",
+        "(\"GET\", r\"/api/notes/(\\d+)/pin\", route_note_pin)"
+      ],
+      "severity_hint": "medium",
+      "description": "Pinning a note is a GET that changes state, and every response reflects any Origin with credentials allowed, so a foreign page can both trigger the change and read the answer.",
+      "decoys": [],
+      "traps": []
+    }
+  ],
+  "decoys": [
+    {
+      "id": "D01",
+      "title": "Parameterised tag lookup",
+      "near_miss_of": "F01",
+      "class": "parameterised_query",
+      "route": "GET /api/tags?name=",
+      "file": "server.py",
+      "anchors": ["AND tag = ?"],
+      "why_safe": "The tag value is bound as a parameter, never concatenated.",
+      "cwe_if_reported": ["CWE-89"]
+    },
+    {
+      "id": "D02",
+      "title": "Escaped note page",
+      "near_miss_of": "F02",
+      "class": "escaped_output",
+      "route": "GET /notes/{id}/view",
+      "file": "server.py",
+      "anchors": ["html.escape(note[\"title\"])"],
+      "why_safe": "Title and body pass html.escape before they are placed in the page.",
+      "cwe_if_reported": ["CWE-79"]
+    },
+    {
+      "id": "D03",
+      "title": "Attachment reader with a real-path check",
+      "near_miss_of": "F06",
+      "class": "path_check",
+      "route": "GET /attachments?name=",
+      "file": "server.py",
+      "anchors": ["path.startswith(ATTACH_DIR + os.sep)"],
+      "why_safe": "The joined path is resolved with realpath and must stay inside the attachments directory.",
+      "cwe_if_reported": ["CWE-22"]
+    },
+    {
+      "id": "D04",
+      "title": "Constant-time API key compare",
+      "near_miss_of": "F08",
+      "class": "constant_time_compare",
+      "route": "GET /api/stats",
+      "file": "server.py",
+      "anchors": ["hmac.compare_digest(provided.encode(), API_KEY.encode())"],
+      "why_safe": "The key is compared with hmac.compare_digest; a wrong key is refused.",
+      "cwe_if_reported": ["CWE-208", "CWE-697", "CWE-798"]
+    },
+    {
+      "id": "D05",
+      "title": "Redirect restricted to an allow-list",
+      "near_miss_of": "F11",
+      "class": "redirect_allow_list",
+      "route": "GET /logout?return=",
+      "file": "server.py",
+      "anchors": ["if target not in ALLOWED_RETURN:"],
+      "why_safe": "Only three local paths are accepted as a return target; anything else becomes /.",
+      "cwe_if_reported": ["CWE-601"]
+    },
+    {
+      "id": "D06",
+      "title": "Ownership check on delete and pin",
+      "near_miss_of": "F03",
+      "class": "ownership_check",
+      "route": "POST /api/notes/{id}/delete",
+      "file": "server.py",
+      "anchors": ["owner_id != uid"],
+      "why_safe": "Delete and pin refuse a note the caller does not own (403).",
+      "cwe_if_reported": ["CWE-639", "CWE-862"]
+    }
+  ],
+  "incidental": [
+    {
+      "id": "I01",
+      "title": "Plain HTTP on loopback (no TLS)",
+      "cwe": ["CWE-319"],
+      "note": "A development server on 127.0.0.1."
+    },
+    {
+      "id": "I02",
+      "title": "No anti-CSRF token on POST routes",
+      "cwe": ["CWE-352"],
+      "note": "POST routes need a JSON content type only. Overlaps the class of F14; a report counts for F14 only when it cites F14's anchors."
+    },
+    {
+      "id": "I03",
+      "title": "Placeholder secrets are constants in the source",
+      "cwe": ["CWE-798"],
+      "note": "SECRET, API_KEY and CONSOLE_TOKEN are FIXTURE_ONLY placeholders, not real credentials."
+    },
+    {
+      "id": "I04",
+      "title": "Weak password policy (8 characters, no other rule)",
+      "cwe": ["CWE-521"],
+      "note": "Registration only checks the length."
+    },
+    {
+      "id": "I05",
+      "title": "Username enumeration through registration and login timing",
+      "cwe": ["CWE-204"],
+      "note": "Registration answers 409 for a taken name; login skips the hash for an unknown user."
+    },
+    {
+      "id": "I06",
+      "title": "No Content-Security-Policy and no Referrer-Policy header",
+      "cwe": ["CWE-693", "CWE-1021"],
+      "note": "X-Frame-Options and nosniff are sent."
+    },
+    {
+      "id": "I07",
+      "title": "No rate limits or quotas anywhere",
+      "cwe": ["CWE-770"],
+      "note": "Overlaps the class of F10; counts for F10 only when it cites F10's anchor."
+    },
+    {
+      "id": "I08",
+      "title": "Sessions never expire",
+      "cwe": ["CWE-613"],
+      "note": "A session lasts until logout or process exit."
+    },
+    {
+      "id": "I09",
+      "title": "A role cookie is set alongside the session cookie",
+      "cwe": ["CWE-565"],
+      "note": "The cookie is the mechanism of F04; a report about it counts for F04."
+    },
+    {
+      "id": "I10",
+      "title": "Seed accounts have known placeholder passwords",
+      "cwe": ["CWE-798", "CWE-1392"],
+      "note": "The three seed accounts (alice, bob, admin) use the passwords listed under fixture.accounts."
+    }
+  ],
+  "containment": [
+    {"id": "K1", "text": "The server refuses to start unless OBSERVER_SECASSESS_FIXTURE=1 is set."},
+    {
+      "id": "K2",
+      "text": "Only an IPv4 loopback address can be bound (--host is validated); the internal console is a second loopback listener on the next port."
+    },
+    {
+      "id": "K3",
+      "text": "The SSRF fetcher accepts only http to 127.0.0.1 or localhost on the console port, and ignores proxy settings."
+    },
+    {
+      "id": "K4",
+      "text": "File reads (F06 and D03) stop at the application directory; nothing outside the tree is readable."
+    },
+    {
+      "id": "K5",
+      "text": "The database is in memory and the application writes no files; SQLite denies ATTACH, DETACH and PRAGMA."
+    },
+    {
+      "id": "K6",
+      "text": "Request bodies are capped at 64 KiB, each connection times out after 10 s, and the process exits by itself after --max-seconds (default 4 h)."
+    },
+    {
+      "id": "K7",
+      "text": "The test that starts the server runs only when OBSERVER_SECASSESS_FIXTURE=1 is set, with a 20 s hard limit per server and a separate temporary copy of the application."
+    }
+  ]
+}

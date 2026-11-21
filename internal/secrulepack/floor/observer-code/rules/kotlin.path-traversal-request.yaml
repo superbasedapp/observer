@@ -1,0 +1,80 @@
+rules:
+  - id: kotlin.path-traversal-request
+    languages: [kotlin]
+    severity: WARNING
+    message: A file path built from web request input is opened or sent, so a caller can reach files outside the intended directory with ../; normalize the path and check it stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      # Spring and JAX-RS handler parameters that carry text.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...): $RT { ... }
+              - pattern-inside: |
+                  fun $FN(..., @$A $P: $T, ...) = $E
+              - pattern-inside: |
+                  fun $FN(..., @$A(...) $P: $T, ...) = $E
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam|HeaderParam)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|List<String>|Set<String>|Collection<String>|Array<String>|CharSequence)\??$
+      # Servlet requests, by call or by Kotlin property.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.$GET(...)
+              - pattern: $REQ.$GET
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|getInputStream|getReader|parameterMap|queryString|cookies|pathInfo|requestURI|inputStream|reader)$
+      # Ktor.
+      - pattern: call.parameters
+      - pattern: call.request.queryParameters
+      - pattern: call.request.headers
+      - pattern: call.request.cookies
+      - pattern: call.request.uri
+      - pattern: call.receiveText()
+      - pattern: call.receiveParameters()
+      - pattern: call.receive<String>()
+    pattern-sanitizers:
+      - pattern: $X.toInt()
+      - pattern: $X?.toInt()
+      - pattern: $X.toLong()
+      - pattern: $X?.toLong()
+      - pattern: $X.toIntOrNull()
+      - pattern: $X?.toIntOrNull()
+      - pattern: $X.toLongOrNull()
+      - pattern: $X?.toLongOrNull()
+      - pattern: Integer.parseInt(...)
+      - pattern: java.lang.Long.parseLong(...)
+      - pattern: UUID.fromString(...)
+      - pattern: FilenameUtils.getName(...)
+      - pattern: $P.fileName
+    pattern-sinks:
+      - pattern-either:
+          - pattern: File(...)
+          - pattern: FileInputStream(...)
+          - pattern: FileOutputStream(...)
+          - pattern: FileReader(...)
+          - pattern: FileWriter(...)
+          - pattern: RandomAccessFile(...)
+          - pattern: Paths.get(...)
+          - pattern: Path.of(...)
+          - pattern: Path(...)
+          - pattern: $BASE.resolve(...)
+          - pattern: $BASE.resolveSibling(...)
+          - pattern: call.respondFile(...)

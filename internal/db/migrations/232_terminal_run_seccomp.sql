@@ -1,0 +1,27 @@
+-- 232_terminal_run_seccomp.sql - what the syscall filter gave one terminal
+-- run (tracker F-002, OpenShell build lane FU4; agent migration block 230 to
+-- 239 reserved by plan 05 section 4).
+--
+--   seccomp   the closed sandboxvocab.SeccompRun value the launch recorded:
+--             observer_default (Observer's profile planned and enforced:
+--             written when the run is created, before the host helper's
+--             read-back; a run whose read-back refuses ends with that
+--             refusal and keeps this value),
+--             engine_default (the container engine's own profile), off (the
+--             row loads Observer's profile, [terminal.sandbox].seccomp was
+--             off), not_applicable (the key was on, no layer of the row
+--             loads a filter) or none (the key was off, no layer filters).
+--             A filter that was applied is named by its id, so one value
+--             says both whether a filter was on and which. '' means not
+--             recorded: every row older than this migration, and an
+--             unsandboxed launch.
+--
+-- Run evidence beside migration 179's columns (W7: the run's own row, a new
+-- closed enum), written once at launch by the terminal recorder. It is not
+-- an input of the execution evidence digest (execevidence.Version 1 is
+-- unchanged), and it does not ride TerminalRunRow: the org sees it as a
+-- dimension of the sandbox posture aggregate (SandboxPostureRow.Seccomp,
+-- server migration 290 and PostgreSQL 0160), composed by
+-- internal/store/sandboxposture.go, never by orgpush.go.
+
+ALTER TABLE terminal_run ADD COLUMN seccomp TEXT NOT NULL DEFAULT '';

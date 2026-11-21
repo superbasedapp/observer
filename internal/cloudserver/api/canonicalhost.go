@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer"
 )
 
 // Canonical-host enforcement (plan §2 R5 / §3 W1 "Origin"). The portal
@@ -51,12 +53,31 @@ func normalizeHost(h string) string {
 	return strings.ToLower(h)
 }
 
-// canonicalHostRules is the ordered rule table this deployment enforces. It is
-// built once per Handler() call from the already-normalized configured hosts.
+// canonicalHostRules is the ordered rule table the CUSTOMER handler
+// (Handler) enforces. It is built once per Handler() call from the
+// already-normalized configured hosts.
 func (s *Server) canonicalHostRules() []hostRule {
 	return []hostRule{
 		{prefix: "/portal", host: s.portalHost},
 		{prefix: "/v1", host: s.apiHost},
+		// Getting started v2: the approve and verify URLs redirect into the
+		// console, so they belong to the portal host (connect.go).
+		{prefix: "/connect", host: s.portalHost},
+		// The platform OIDC issuer (M6.2, design A5) shares the portal's
+		// host: authorize reads the host-only portal session cookie, and the
+		// discovery document lives under the issuer path, so /oauth2 is the
+		// whole issuer surface.
+		{prefix: oidcissuer.IssuerPath, host: s.portalHost},
+	}
+}
+
+// staffHostRules is the rule table the STAFF handler (StaffHandler)
+// enforces: /staff only on the staff host (ruling A3; DefaultStaffHost
+// unless configured), which is also the WebAuthn relying-party id. The
+// customer handler has no staff row because it mounts no staff route.
+func (s *Server) staffHostRules() []hostRule {
+	return []hostRule{
+		{prefix: staffPathPrefix, host: s.staff.host},
 	}
 }
 
@@ -69,7 +90,12 @@ func (r hostRule) matches(path string) bool {
 // configured it returns next unchanged, so the unenforced deployment pays
 // nothing — not even a closure per request.
 func (s *Server) enforceCanonicalHost(next http.Handler) http.Handler {
-	rules := s.canonicalHostRules()
+	return enforceHostRules(s.canonicalHostRules(), next)
+}
+
+// enforceHostRules wraps next with the fence for rules; inactive rows (an
+// empty host) are dropped, and with none left next is returned unchanged.
+func enforceHostRules(rules []hostRule, next http.Handler) http.Handler {
 	active := make([]hostRule, 0, len(rules))
 	for _, r := range rules {
 		if r.host != "" {

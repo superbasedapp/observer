@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "id": "sess_synth0004",
+      "type": "session",
+      "status": "rescheduling",
+      "created_at": "2026-10-28T08:00:00Z",
+      "updated_at": "2026-10-28T08:01:00Z"
+    }
+  ],
+  "has_more": false,
+  "first_id": "sess_synth0004",
+  "last_id": "sess_synth0004",
+  "next_page": null
+}

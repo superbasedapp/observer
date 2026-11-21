@@ -119,7 +119,7 @@ func renderEmpty(t Table, opts RenderOptions) string {
 // left, "one-shot · no daemon" right-aligned to the table's overall width
 // (or to a minimum width when the table itself is narrower).
 func writeTitle(b *strings.Builder, t Table, opts RenderOptions) {
-	left := "SuperBased - observed agent spend, " + t.WindowLabel
+	left := "superbased - observed agent spend, " + t.WindowLabel
 	const right = "one-shot · no daemon"
 
 	width := tableWidth(t)

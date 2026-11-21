@@ -21,9 +21,12 @@ import (
 
 // security_scan_online.go is online matching (security plan section 8.2:
 // "the online query first where allowed, the local database as the
-// fallback"), used today only on `observer security scan --online`, for
-// the ecosystems the local database could not match. It runs in the
-// command's own process (no database is loaded, so no memory peak) through
+// fallback"), used on a manual run only: `observer security scan --online`
+// and the dashboard's Scan now with "Also check online" (decision P-1 of
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md), both through
+// depsRunMatchers, for the ecosystems the local database could not match.
+// The daemon's own schedule never matches online. It runs in the
+// scanning process (no database is loaded, so no memory peak) through
 // SCALIBR's osvdev enricher with the security.scan.osv.db lane's client and
 // a short deadline. It sends ecosystem, public package name and version
 // only: a name the security.deps classifier cannot place as public (a
@@ -43,6 +46,46 @@ import (
 // depsOnlineDeadline bounds one ecosystem's online match (SCALIBR's retry
 // loop alone took about 20 s to give up against a blocked API, JSP-9b).
 const depsOnlineDeadline = 30 * time.Second
+
+// depsRunOnline is the matching side of one manual dependency run of one
+// project.
+type depsRunOnline struct {
+	// matcher is what the linked driver is handed: the SuperBased lookup
+	// first (lane RM-2, when its own gate is open), then the online
+	// matcher when it is attached; nil when neither is.
+	matcher depdriver.OnlineMatcher
+	// direct reports that the online matcher (api.osv.dev, or the org
+	// relay on a managed node) is attached.
+	direct bool
+	// blocked is the online gate's first closed reason for the project
+	// when online matching was asked and refused; "" otherwise.
+	blocked string
+}
+
+// depsRunMatchers builds the matching of one manual dependency run of the
+// project at root, the one owner for `observer security scan` and the
+// dashboard's Scan now (decision P-1 of
+// docs/plans/dashboard-cli-parity-plan-2026-11-06.md): the SuperBased
+// lookup always where its gate is open; with online asked and the online
+// gate (depsOnlineGate) open for root, the online matcher and the git
+// submodule check (e.submodules, nil on a managed node). A closed gate
+// attaches neither and says why in blocked; the caller decides whether that
+// refuses the run (the CLI) or leaves it local and says so (the dashboard).
+func (e *depsScanEnv) depsRunMatchers(root string, online bool) depsRunOnline {
+	var out depsRunOnline
+	var direct depdriver.OnlineMatcher
+	if online {
+		if out.blocked = e.onlineBlockedAt(root); out.blocked == "" {
+			direct = e.onlineMatcher(root)
+			// Git submodules by their pinned commit ids only (spike CPP-0);
+			// nil on a managed node.
+			e.submodules = e.submoduleMatcher()
+		}
+	}
+	out.direct = direct != nil
+	out.matcher = chainMatchers(e.remoteMatcher(root), direct)
+	return out
+}
 
 // onlineMatcher returns the online matcher for a project, or nil when the
 // online gate is closed (online checks on, disclosure shown:

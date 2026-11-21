@@ -40,6 +40,9 @@ const (
 	AxisToolConfig      = "sandbox.allow_tool_config_writes"
 	AxisHomeMode        = "sandbox.home_mode"
 	AxisDefaultOn       = "sandbox.default_on"
+	// AxisSeccomp is [terminal.sandbox].seccomp (tracker F-002, lane FU4):
+	// off is the weaker value.
+	AxisSeccomp = "sandbox.seccomp"
 )
 
 // fixedKeyCustody is the fixed value of the one axis no shipped row varies
@@ -95,6 +98,7 @@ var PostureAxes = []postureop.Axis{
 	{Name: AxisToolConfig, Kind: postureop.AxisEnum, Order: onOff},
 	{Name: AxisHomeMode, Kind: postureop.AxisEnum, Order: []string{"readonly", "tmpfs"}},
 	{Name: AxisDefaultOn, Kind: postureop.AxisEnum, Order: []string{"off", "on"}},
+	{Name: AxisSeccomp, Kind: postureop.AxisEnum, Order: []string{"off", "on"}},
 }
 
 // onOff orders an expanding switch: on is the weaker value.
@@ -151,8 +155,10 @@ type PostureSettings struct {
 	AllowWorktreeSource   bool
 	AllowToolConfigWrites bool
 	DefaultOn             bool
-	HomeMode              string
-	RetentionDays         int64
+	// Seccomp is [terminal.sandbox].seccomp (lane FU4).
+	Seccomp       bool
+	HomeMode      string
+	RetentionDays int64
 	// RootfulEngineAllowed is [terminal.sandbox.oci].allow_rootful: an
 	// engine-driven row may then run on a rootful engine.
 	RootfulEngineAllowed bool
@@ -225,6 +231,7 @@ func EvaluatePosture(s PostureSettings, env PostureEnv) postureop.Posture {
 		AxisToolConfig:      {S: onOffValue(s.AllowToolConfigWrites)},
 		AxisHomeMode:        {S: homeMode(s.HomeMode)},
 		AxisDefaultOn:       {S: onOffValue(s.DefaultOn)},
+		AxisSeccomp:         {S: onOffValue(s.Seccomp)},
 	}
 	if s.Enabled {
 		p[AxisEnabledSet] = postureop.Value{Set: sortedCopy(s.Backends)}

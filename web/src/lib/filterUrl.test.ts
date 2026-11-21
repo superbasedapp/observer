@@ -135,6 +135,26 @@ test("page-owned params are not read as filters", () => {
   assert.deepEqual(parseFilterParams("?project=12&q=hello&tab=x&root=%2Fr"), {});
 });
 
+// The Code security build of 2026-11-06 wrote a Findings project (a root
+// hash) under proj=, and the bar adopted it: the Projects page then showed
+// the raw hash in the Project chip and "No project has activity". A root
+// hash is never a root path, so a link that still carries one is ignored
+// and the write-back drops it from the URL.
+test("proj: a project root hash is not a project filter", () => {
+  const hash = "ad3060312d786b3d154dacb6caf3e90257a6d58e9c89f2c9ce063282a8fac037";
+  const search = `?project=345&proj=${hash}`;
+  assert.deepEqual(parseFilterParams(search), {});
+  assert.deepEqual(parseFilterParams(`?proj=${hash.toUpperCase()}`), {});
+  assert.deepEqual(reconcileFromUrl(f(), search, "pop"), f());
+  assert.deepEqual(reconcileFromUrl(f(), search, "push"), f());
+  assert.equal(applyFilterParams(search, f()), "?project=345");
+  // A root path is still a project filter, and so is a synthetic cloud root.
+  assert.deepEqual(parseFilterParams("?proj=%2Fmnt%2Fd%2Fprogramsx%2Fsuperbased-observer"), {
+    project: "/mnt/d/programsx/superbased-observer",
+  });
+  assert.deepEqual(parseFilterParams("?proj=cloud%3Agithub.com%2Fa%2Fb"), { project: "cloud:github.com/a/b" });
+});
+
 test("reconcile pop: absent fields take the fallback", () => {
   const cur = f({ win: "7d", tool: "codex", query: "x", customRange: RANGE });
   const got = reconcileFromUrl(cur, "?window=14d", "pop");

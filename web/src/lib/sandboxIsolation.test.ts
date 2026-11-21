@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  backendNotes,
+  backendState,
   captureLabel,
+  gatewayModeLabel,
+  unavailableRows,
   defaultIsolationChoice,
   degradedLabel,
   isolationChoiceSummary,
@@ -9,6 +13,7 @@ import {
   isolationSummary,
   launchBackend,
   runPillLabel,
+  seccompRunLabel,
   ISOLATION_AUTO,
   ISOLATION_NONE,
 } from "./sandboxIsolation.ts";
@@ -127,4 +132,127 @@ test("the Automatic chip names the row the daemon would take", () => {
   assert.equal(isolationChoiceSummary(probe, "bwrap"), "process sandbox, network internet, capture full (gateway-guarded)");
   assert.equal(isolationChoiceSummary({ ...probe, available: false }, ISOLATION_AUTO), null);
   assert.equal(isolationChoiceSummary(null, ISOLATION_AUTO), null);
+});
+
+test("backendNotes renders the daemon's sentences in order: prerequisite, hint, disclosures", () => {
+  assert.deepEqual(backendNotes(undefined), []);
+  assert.deepEqual(backendNotes(bwrap), []);
+  assert.deepEqual(
+    backendNotes({ ...bwrap, prerequisite: "P", hint: "H", disclosures: [{ id: "a", text: "D1" }, { id: "b", text: "" }, { id: "c", text: "D2" }] }),
+    ["P", "H", "D1", "D2"],
+  );
+});
+
+test("gatewayModeLabel names the closed modes and passes an unknown one through", () => {
+  assert.equal(gatewayModeLabel(undefined), "");
+  assert.equal(gatewayModeLabel("managed_local"), "Observer's private gateway");
+  assert.equal(gatewayModeLabel("external"), "your own gateway");
+  assert.equal(gatewayModeLabel("org_shared"), "org shared");
+});
+
+test("isolationSummary names a row's gateway", () => {
+  assert.equal(
+    isolationSummary({ ...bwrap, class: "container", gateway_mode: "external", beta: true }, "proxy_only"),
+    "container, network proxy only, gateway: your own gateway, beta",
+  );
+});
+
+test("unavailableRows lists offered rows that cannot run, never planned ones", () => {
+  const probe = {
+    available: true,
+    default_on: false,
+    backends: [
+      bwrap,
+      { ...bwrap, id: "x", label: "X", available: false, reason: "why" },
+      { ...bwrap, id: "y", label: "Y", available: false, verdict: "v" },
+      { ...bwrap, id: "z", label: "Z", available: false, maturity: "planned" },
+      {
+        ...bwrap,
+        id: "w",
+        label: "W",
+        available: false,
+        reason: "docker missing",
+        prerequisite: "P",
+        disclosures: [{ id: "a", text: "D3" }],
+      },
+    ],
+  } as SandboxAvailability;
+  assert.deepEqual(unavailableRows(probe), [
+    { id: "x", label: "X", reason: "why", notes: [] },
+    { id: "y", label: "Y", reason: "v", notes: [] },
+    // An unavailable row carries its served prerequisite and disclosures
+    // beside its reason (audit finding O4-A8).
+    { id: "w", label: "W", reason: "docker missing", notes: ["P", "D3"] },
+  ]);
+  assert.deepEqual(unavailableRows(null), []);
+  // A row that only needs enabling or its module is counted by the picker's
+  // own link lines, not listed here; one that is off AND unsupported names
+  // the real blocker.
+  const off = { ...bwrap, available: false, verdict: "disabled_by_config", reason: "not in the enabled backends list" };
+  assert.deepEqual(
+    unavailableRows({
+      available: true,
+      default_on: false,
+      backends: [
+        { ...off, id: "ll", label: "LL", when_enabled_available: true },
+        { ...off, id: "oci", label: "OCI", when_enabled_verdict: "module_inactive", when_enabled_reason: "module" },
+        { ...off, id: "mxc", label: "MXC", when_enabled_verdict: "unsupported_platform", when_enabled_reason: "not on linux" },
+      ],
+    } as SandboxAvailability),
+    [{ id: "mxc", label: "MXC", reason: "not on linux", notes: [] }],
+  );
+});
+
+test("the run pill names the seccomp state a key-on run got", () => {
+  const base = { class: "process", backend: "bwrap", capture_level: "full", capture_rule: "C2", verification: "live" };
+  assert.equal(runPillLabel({ ...base, seccomp: "observer_default" }), "bwrap (process sandbox), capture full, seccomp filter observer_default");
+  assert.equal(
+    runPillLabel({ ...base, backend: "seatbelt", seccomp: "not_applicable" }),
+    "seatbelt (process sandbox), capture full, seccomp not applicable: not filtered by Observer",
+  );
+  for (const s of ["off", "none", "engine_default", ""]) assert.equal(seccompRunLabel({ ...base, seccomp: s }), null);
+  // The strace switch (lane ptrace) names the ground the launch recorded.
+  assert.match(seccompRunLabel({ ...base, seccomp: "observer_seize_pidns" }) ?? "", /observer_seize_pidns, strace allowed \(the sandbox has its own process list\)/);
+  assert.match(seccompRunLabel({ ...base, seccomp: "observer_seize_yama" }) ?? "", /observer_seize_yama, strace allowed \(Yama limits it/);
+});
+
+test("backendState tells a backend that only needs enabling from one that cannot run here", () => {
+  assert.deepEqual(backendState(bwrap), { state: "available", reason: "" });
+  const off = { ...bwrap, available: false, verdict: "disabled_by_config", reason: "not in the enabled backends list" };
+  assert.equal(backendState({ ...off, when_enabled_available: true }).state, "not_enabled");
+  // Off AND unsupported: the real blocker is named, not "not enabled".
+  assert.deepEqual(backendState({ ...off, when_enabled_verdict: "unsupported_platform", when_enabled_reason: "this backend does not run on windows" }), {
+    state: "unavailable",
+    reason: "this backend does not run on windows",
+  });
+  // An older daemon with no hypothetical keeps its own reason.
+  assert.deepEqual(backendState(off), { state: "unavailable", reason: "not in the enabled backends list" });
+  assert.deepEqual(backendState({ ...bwrap, available: false, verdict: "probe_failed", reason: "no bwrap" }), { state: "unavailable", reason: "no bwrap" });
+});
+
+test("the picker marks a backend that runs here once enabled as not enabled", () => {
+  const off = { ...bwrap, id: "landlock", label: "Landlock", available: false, verdict: "disabled_by_config", reason: "not in the enabled backends list" };
+  const opts = isolationOptions({
+    available: true,
+    default_on: false,
+    backend: "bwrap",
+    backends: [bwrap, { ...off, when_enabled_available: true }, { ...off, id: "mxc", when_enabled_reason: "this backend does not run on linux" }],
+  });
+  const ll = opts.find((o) => o.id === "landlock");
+  assert.equal(ll?.disabled, true);
+  assert.equal(ll?.notEnabled, true);
+  const mxc = opts.find((o) => o.id === "mxc");
+  assert.equal(mxc?.notEnabled, false);
+  assert.equal(mxc?.reason, "this backend does not run on linux");
+  assert.equal(opts.find((o) => o.id === "bwrap")?.notEnabled, false);
+});
+
+test("a backend whose module is not installed needs the module, enabled or not", () => {
+  const reason = "the terminals.sandbox.oci component is not selected on this node; select it in Settings > Components";
+  const off = { ...bwrap, id: "oci-runc", available: false, verdict: "disabled_by_config", when_enabled_verdict: "module_inactive", when_enabled_reason: reason };
+  assert.deepEqual(backendState(off), { state: "needs_module", reason });
+  assert.deepEqual(backendState({ ...bwrap, available: false, verdict: "module_inactive", reason }), { state: "needs_module", reason });
+  const o = isolationOptions({ available: true, default_on: false, backend: "bwrap", backends: [bwrap, off] }).find((x) => x.id === "oci-runc");
+  assert.equal(o?.needsModule, true);
+  assert.equal(o?.notEnabled, false);
 });

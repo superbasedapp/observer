@@ -16,7 +16,7 @@ import { isRemoteView } from "@/lib/remote";
 // the exact missing dependency ([remote].allow_terminal) and the two steps to
 // fix it, matching the honest-disabled-control convention used elsewhere.
 export const REMOTE_TERMINAL_OFF_MSG =
-  "Remote terminal launch is off. On the owner's machine, turn on “Allow terminal” on the Remote page, then restart SuperBased (Settings → Health) so paired devices can launch terminals.";
+  "Remote terminal launch is off. On the owner's machine, turn on “Allow terminal” on the Remote page, then restart superbased (Settings → Health) so paired devices can launch terminals.";
 
 // Actionable copy shown when a paired REMOTE device is refused a session RESUME
 // with "insufficient capability". Resume is an execute-tier action that — unlike

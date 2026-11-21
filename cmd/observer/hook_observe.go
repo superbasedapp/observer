@@ -141,7 +141,7 @@ func openObserveStore(ctx context.Context, configPath string) (*store.Store, con
 	if err != nil {
 		return nil, config.Config{}, nil, fmt.Errorf("db: %w", err)
 	}
-	return store.New(database), cfg, func() { _ = database.Close() }, nil
+	return hookIngestStore(database), cfg, func() { _ = database.Close() }, nil
 }
 
 // recordHookCompaction is the ONE compaction recorder every compact_lifecycle
@@ -172,7 +172,7 @@ func recordHookCompaction(ctx context.Context, rec observeRecord) error {
 		Phase:       rec.Binding.Phase,
 		Tool:        rec.Tool,
 		SessionID:   p.SessionID,
-		ProjectRoot: p.Cwd,
+		ProjectRoot: hookIngestRootOf(p.Cwd),
 		Trigger:     p.Trigger,
 		Timestamp:   rec.Now,
 	})

@@ -48,6 +48,13 @@ type Step struct {
 	Parts []string `json:"parts,omitempty"`
 	// Command is the verb that undoes a StepManual step.
 	Command string `json:"command,omitempty"`
+	// Link is the dashboard page that does a StepManual step's undo: an
+	// in-app path with its query (for example "/settings?section=terminal"),
+	// so the preview can offer the control instead of only the CLI verb.
+	// LinkLabel names that page the way the page labels itself. Both are
+	// data on the teardown row, never derived from a component name.
+	Link      string `json:"link,omitempty"`
+	LinkLabel string `json:"link_label,omitempty"`
 	// What is the honest one-line description shown in the preview.
 	What string `json:"what"`
 }
@@ -140,6 +147,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer init --statusline --uninstall",
+				Link: "/settings?section=tools", LinkLabel: "Settings > Connected tools",
 				What: "Removes the Claude Code statusLine entry.",
 			}}
 		},
@@ -149,6 +157,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer shell-wrap disable",
+				Link: "/settings?section=terminal", LinkLabel: "Settings > Session attach (Command wrapping)",
 				What: "Removes the PATH shims and the marked shell start-up blocks byte-exactly.",
 			}}
 		},
@@ -158,6 +167,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer mcp unwrap",
+				Link: "/security?tab=mcp", LinkLabel: "Security > MCP",
 				What: "Restores the original MCP client entries the relay wrapped.",
 			}}
 		},
@@ -167,6 +177,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer routing apply --tool claude-code --revert",
+				Link: "/routing", LinkLabel: "Routing",
 				What: "Restores the AI tool config backups `observer routing apply` wrote (only if you ran it).",
 			}}
 		},
@@ -185,6 +196,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer security githooks uninstall --project <repository>",
+				Link: "/code-security?tab=baselines", LinkLabel: "Code security > Baselines",
 				What: "Removes Observer's block from the pre-commit and pre-push hooks of each repository you installed it in (byte-exact; a hook you wrote stays). While the component is off the block skips itself.",
 			}}
 		},
@@ -194,7 +206,23 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer security provenance consent --withdraw-all",
+				Link: "/code-security?tab=baselines", LinkLabel: "Code security > Baselines",
 				What: "Withdraws your consent in every repository and removes the prepare-commit-msg trailer block byte-exactly; git notes already written stay. While the component is off the block adds nothing.",
+			}}
+		},
+	},
+	{
+		// Core is never deactivated (components.ReasonCore), so no removal
+		// preview shows this row; it is the table's record of how to undo
+		// the one write core makes outside ~/.observer, the repository files
+		// `observer cloud-session init` commits (docs/cloud-agents.md). The
+		// dashboard has no remove control for them yet, so the row carries
+		// the verb only.
+		name: "core-cloud-session", match: exact("core"),
+		steps: func(id string) []Step {
+			return []Step{{
+				Component: id, Kind: StepManual, Command: "observer cloud-session remove --agent <agent> --repo <repository>",
+				What: "Takes Observer's hook entries and .superbased/cloud-session/setup.sh back out of each repository you ran `observer cloud-session init` in (only if you ran it; a file edited since is kept).",
 			}}
 		},
 	},
@@ -203,6 +231,7 @@ var teardownRules = []teardownRule{
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer service uninstall",
+				Link: "/settings?section=health", LinkLabel: "Settings > Health (Start at login)",
 				What: serviceTeardownWhat(teardownGOOS),
 			}}
 		},
@@ -216,7 +245,7 @@ var teardownRules = []teardownRule{
 var serviceTeardownWords = map[string]string{
 	"linux":   "Stops and removes the systemd unit.",
 	"darwin":  "Unloads and removes the LaunchAgent (~/Library/LaunchAgents/app.superbased.observer.plist).",
-	"windows": "Windows has no `observer service` unit to remove; the start at sign-in is removed with `observer setup autostart off`.",
+	"windows": "Windows has no `observer service` unit to remove; the start at sign-in is removed from Start at login in Settings > Health, or with `observer setup autostart off`.",
 }
 
 // teardownGOOS is the host the teardown text is worded for (a var so a

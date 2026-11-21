@@ -194,6 +194,7 @@ func (a *launchManagerAdapter) Create(spec dashapi.LaunchSpec) (string, error) {
 		FromMessage: spec.FromMessage,
 		Rows:        spec.Rows,
 		Cols:        spec.Cols,
+		Origin:      specOrigin(spec.Initiator, spec.ParentSessionID),
 	})
 	if err != nil {
 		return "", mapLaunchErr(err)
@@ -202,6 +203,16 @@ func (a *launchManagerAdapter) Create(spec dashapi.LaunchSpec) (string, error) {
 }
 
 func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string, error) {
+	res, _, err := a.createFresh(spec)
+	return res.Handle, err
+}
+
+// createFresh is CreateFresh with the whole launch result and whether a
+// launch gate refused (refused=true) rather than the launch failing after
+// the gates passed. The detached CLI launch (`observer launch`, launch_control.go)
+// calls it so its refusals carry an honest code; the dashboard calls it
+// through CreateFresh. One gate walk, one LaunchFresh, two callers.
+func (a *launchManagerAdapter) createFresh(spec dashapi.FreshLaunchSpec) (res termsvc.LaunchResult, refused bool, err error) {
 	// P7 gateway-arc item 4: org_disallow honor path. Checked before termsvc's
 	// own AllowedTools/AllowedProjectRoots authorization, so a tool the org
 	// policy disallows never reaches the launcher at all. a.nf is nil-safe —
@@ -284,11 +295,11 @@ func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string
 		// or database either (audit follow-up F4).
 		run.stateSource = noLaunchState
 	}
-	if err := walkLaunchGates(run, launchGates); err != nil {
-		return "", err
+	if gerr := walkLaunchGates(run, launchGates); gerr != nil {
+		return termsvc.LaunchResult{}, true, gerr
 	}
 	spec.Sandbox = run.sandboxed
-	res, err := a.svc.LaunchFresh(context.Background(), termsvc.FreshRequest{
+	res, err = a.svc.LaunchFresh(context.Background(), termsvc.FreshRequest{
 		Tool:        spec.Tool,
 		Subcommand:  spec.Subcommand,
 		ProjectRoot: crossmount.TranslateForeignPath(spec.ProjectRoot),
@@ -307,11 +318,18 @@ func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string
 		SandboxBackend:  spec.Backend,
 		SignInSeed:      spec.SignInSeed,
 		SignInAsk:       spec.SignInAsk,
+		Origin:          specOrigin(spec.Initiator, spec.ParentSessionID),
+		TaskPrompt:      spec.TaskPrompt,
+		// D32: the opt-in workspace secret mask (server-decided; a backend
+		// that cannot build it refuses the launch).
+		MaskWorkspaceSecrets: spec.MaskWorkspaceSecrets,
+		// SBXD-5: where a hosted row clones a clone-remote URL.
+		WorkspaceCloneWhere: spec.WorkspaceCloneWhere,
 	})
 	if err != nil {
-		return "", mapFreshErr(err)
+		return termsvc.LaunchResult{}, false, mapFreshErr(err)
 	}
-	return res.Handle, nil
+	return res, false, nil
 }
 
 // CreateSSH spawns an OUTBOUND SSH remote-system shell through the terminal
@@ -326,6 +344,8 @@ func (a *launchManagerAdapter) CreateSSH(spec dashapi.SSHLaunchSpec) (string, er
 		Profile: spec.Profile,
 		Rows:    spec.Rows,
 		Cols:    spec.Cols,
+		// Who opened it: the dashboard caller's attribution (fixes-1).
+		Origin: specOrigin(spec.Initiator, spec.ParentSessionID),
 	})
 	if err != nil {
 		return "", mapSSHErr(err)
@@ -455,6 +475,7 @@ func (a *launchManagerAdapter) CreateResume(spec dashapi.ResumeLaunchSpec) (stri
 		ExtraArgs:       spec.ExtraArgs,
 		Rows:            spec.Rows,
 		Cols:            spec.Cols,
+		Origin:          specOrigin(spec.Initiator, spec.ParentSessionID),
 	})
 	if err != nil {
 		return "", "", mapFreshErr(err)
@@ -1020,6 +1041,11 @@ func (a *launchManagerAdapter) Snapshot() []dashapi.LaunchInfo {
 		}
 		// B9 (plan §6): the "sandboxed" pill on the Terminals list/header,
 		// read from the run's in-memory sandboxed flag (no DB column — G19).
+		// Who started the run (lane cli-2): the Terminals list and
+		// `observer terminals ls` show it.
+		if o, ok := a.svc.Origin(s.ID); ok {
+			info.Initiator, info.ParentSessionID = string(o.Initiator), o.ParentSessionID
+		}
 		if sb, ok := a.svc.Sandboxed(s.ID); ok {
 			info.Sandboxed = sb
 		}
@@ -1061,7 +1087,7 @@ func launchIsolationFor(iso termrun.Isolation) *dashapi.LaunchIsolation {
 	}
 	out := &dashapi.LaunchIsolation{
 		Class: iso.Class, EgressTier: iso.EgressTier, CaptureLevel: iso.CaptureLevel,
-		CaptureRule: iso.CaptureRule, Verification: iso.Verification,
+		CaptureRule: iso.CaptureRule, Verification: iso.Verification, Seccomp: iso.Seccomp,
 	}
 	if len(iso.Stack) > 0 {
 		out.Backend = iso.Stack[0]
@@ -1208,4 +1234,10 @@ func mapFreshErr(err error) error {
 	default:
 		return mapLaunchErr(err)
 	}
+}
+
+// specOrigin is the recorded origin of a launch spec's plain fields (lane
+// cli-2): only the closed set is kept (termrun.Origin.Normalized).
+func specOrigin(initiator, parentSession string) termrun.Origin {
+	return termrun.Origin{Initiator: termrun.Initiator(initiator), ParentSessionID: parentSession}.Normalized()
 }

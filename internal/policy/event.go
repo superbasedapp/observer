@@ -289,12 +289,18 @@ type Event struct {
 	// own top level, not its main repository), derived at the
 	// hook boundary for an event whose payload names no project root
 	// (D-MU10): a Claude Code pre-tool event carries only cwd, so R-101's
-	// outside-the-project arm never applied to it. Only R-101's recursive
-	// delete classification reads it, as the root it judges "outside the
-	// project" against when ProjectRoot is empty; every other rule keeps
-	// reading ProjectRoot, so the boundary rules keep their documented
-	// empty-root hook behaviour. Empty when Cwd is in no working tree (the
-	// cwd itself is never used as a root).
+	// outside-the-project arm never applied to it. A foreign cwd (a Windows
+	// `d:\repo` that reached a WSL hook through the wsl.exe bridge) is
+	// looked up at its drvfs mount, `/mnt/d/repo` (surface-gap FU-101).
+	// Only the destructive rules' outside-the-project arms read it, through
+	// deleteProjectRoot, as the root they judge "outside the project"
+	// against when ProjectRoot is empty: R-101's recursive delete
+	// classification (D-MU10), R-102's `.git` / project-root delete and
+	// R-141's `chown -R` arm (FU-101). Every other rule keeps reading
+	// ProjectRoot, so the boundary rules (R-150, R-151, the protected
+	// paths, path_outside_project) keep their documented empty-root hook
+	// behaviour. Empty when Cwd is in no working tree (the cwd itself is
+	// never used as a root).
 	RepoRoot string
 	// SessionID identifies the agent session for reporting and
 	// session-scoped state lookups.

@@ -2,6 +2,7 @@ package configschema
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -203,5 +204,61 @@ func TestDescribeIsSerializable(t *testing.T) {
 	}
 	if strings.Contains(string(body), `"index"`) {
 		t.Error("the reflect index chain must not serialize")
+	}
+}
+
+// TestNumericLeavesAcceptEveryGoWidth pins that ValidateLeaf and TOMLScalar
+// take a value of whatever width the struct field has. ParseValue yields
+// int64/float64, but Get returns the field's own type (int for most int
+// leaves), and `observer config set` validates and renders what Get read
+// back: asserting int64 there refused every plain-int key.
+func TestNumericLeavesAcceptEveryGoWidth(t *testing.T) {
+	type namedInt int
+	lo, hi := 0.0, 23.0
+	intLeaf := Leaf{Path: "x.int", Kind: KindInt, Min: &lo, Max: &hi}
+	floatLeaf := Leaf{Path: "x.float", Kind: KindFloat}
+	cases := []struct {
+		name    string
+		leaf    Leaf
+		v       any
+		wantErr string // "" = valid
+		wantRHS string // "" = TOMLScalar must refuse
+	}{
+		{"int", intLeaf, int(7), "", "7"},
+		{"int8", intLeaf, int8(7), "", "7"},
+		{"int16", intLeaf, int16(7), "", "7"},
+		{"int32", intLeaf, int32(7), "", "7"},
+		{"int64", intLeaf, int64(7), "", "7"},
+		{"uint", intLeaf, uint(7), "", "7"},
+		{"uint8", intLeaf, uint8(7), "", "7"},
+		{"uint16", intLeaf, uint16(7), "", "7"},
+		{"uint32", intLeaf, uint32(7), "", "7"},
+		{"uint64", intLeaf, uint64(7), "", "7"},
+		{"named int", intLeaf, namedInt(7), "", "7"},
+		{"int above max", intLeaf, int(24), "must be <= 23", "24"},
+		{"int32 below min", intLeaf, int32(-1), "must be >= 0", "-1"},
+		{"uint64 overflowing int64", intLeaf, uint64(math.MaxUint64), "wants an integer", ""},
+		{"float is not an int", intLeaf, 7.0, "wants an integer", ""},
+		{"string is not an int", intLeaf, "7", "wants an integer", ""},
+		{"nil is not an int", intLeaf, nil, "wants an integer", ""},
+		{"float64", floatLeaf, 0.25, "", "0.25"},
+		{"float32 renders its own shortest form", floatLeaf, float32(0.1), "", "0.1"},
+		{"whole float32 keeps a fraction", floatLeaf, float32(2), "", "2.0"},
+		{"int is not a float", floatLeaf, int(1), "wants a number", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateLeaf(c.leaf, c.v)
+			if c.wantErr == "" && err != nil {
+				t.Errorf("ValidateLeaf(%#v): unexpected %v", c.v, err)
+			}
+			if c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)) {
+				t.Errorf("ValidateLeaf(%#v) = %v; want containing %q", c.v, err, c.wantErr)
+			}
+			rhs, ok := TOMLScalar(c.leaf, c.v)
+			if ok != (c.wantRHS != "") || rhs != c.wantRHS {
+				t.Errorf("TOMLScalar(%#v) = %q,%v; want %q", c.v, rhs, ok, c.wantRHS)
+			}
+		})
 	}
 }

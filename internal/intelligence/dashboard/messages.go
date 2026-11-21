@@ -36,6 +36,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/notify/feed"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -301,6 +302,13 @@ func messagesError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSONStatus(w, status, map[string]string{"error": code, "message": msg})
 }
 
+// messagesNotEnrolled answers 409 not_enrolled with the deep link to
+// Settings > Account, where this machine connects to an organization (the
+// same body shape as messagesError, plus the link fields).
+func messagesNotEnrolled(w http.ResponseWriter, msg string) {
+	writeNeedsSetting(w, http.StatusConflict, messagesRailNotEnrolled, msg, settingslink.Account)
+}
+
 // preCheckNewThread applies the org's own policy before a new conversation
 // is queued, so the developer hears "not allowed" now rather than a refused
 // row later. The org re-checks on POST; this only shapes the answer.
@@ -323,7 +331,7 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 	}
 	svc := s.opts.Messages
 	if svc == nil {
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "messages go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgMessagesNotEnrolled)
 		return
 	}
 	var body messagesSendBody
@@ -334,7 +342,7 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	mc := s.messagesContext(ctx)
 	if !mc.enrolled {
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "messages go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgMessagesNotEnrolled)
 		return
 	}
 	newThread := strings.TrimSpace(body.ThreadID) == ""
@@ -350,7 +358,7 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, orgclient.ErrNotEnrolled):
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "messages go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgMessagesNotEnrolled)
 		return
 	case errors.Is(err, orgclient.ErrOrgMessagesUnavailable):
 		messagesError(w, http.StatusConflict, messagesRailNotSupported, "your organization's server does not support messages yet")
@@ -476,7 +484,7 @@ func (s *Server) handleMessageAck(w http.ResponseWriter, r *http.Request, rawID 
 	}
 	svc := s.opts.Messages
 	if svc == nil {
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "acknowledgements go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgAcksNotEnrolled)
 		return
 	}
 	m, err := svc.AckOrgMessage(r.Context(), id)
@@ -488,7 +496,7 @@ func (s *Server) handleMessageAck(w http.ResponseWriter, r *http.Request, rawID 
 		messagesError(w, http.StatusConflict, "not_requested", "this message did not ask for an acknowledgement")
 		return
 	case errors.Is(err, orgclient.ErrNotEnrolled):
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "acknowledgements go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgAcksNotEnrolled)
 		return
 	case err != nil:
 		writeErr(w, err)
@@ -537,7 +545,7 @@ func (s *Server) handleMessageOutboxRetry(w http.ResponseWriter, r *http.Request
 	}
 	svc := s.opts.Messages
 	if svc == nil {
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "messages go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgMessagesNotEnrolled)
 		return
 	}
 	item, err := svc.RetryOrgMessage(r.Context(), id)
@@ -546,7 +554,7 @@ func (s *Server) handleMessageOutboxRetry(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	case errors.Is(err, orgclient.ErrNotEnrolled):
-		messagesError(w, http.StatusConflict, messagesRailNotEnrolled, "messages go to an organization; this machine is not enrolled")
+		messagesNotEnrolled(w, msgMessagesNotEnrolled)
 		return
 	case err != nil:
 		writeErr(w, err)

@@ -167,7 +167,7 @@ type agySettings struct {
 // documented switch is settings.json modelProvider "gemini" (with the key
 // in GEMINI_API_KEY). Without it agy uses Google sign-in.
 func agyAPIKeyMode(home string) bool {
-	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"))
+	raw, err := os.ReadFile(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")) //nolint:gosec // G703: false positive; agy's own fixed settings file under this user's home, read only
 	if err != nil {
 		return false
 	}

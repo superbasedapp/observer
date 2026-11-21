@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/aggregatesource"
 	"github.com/marmutapp/superbased-observer/internal/aggregatesvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -490,5 +491,30 @@ func printPreviewSummary(cmd *cobra.Command, cfg config.Config, sub aggregate.Su
 	fmt.Fprintf(out, "                            finer than the month, or any stable machine identifier.\n")
 	if len(sub.Cells) == 0 {
 		fmt.Fprintf(out, "  (no activity recorded for this month)\n")
+	}
+}
+
+// aggregateShareStatusFor is the You page's read of the community
+// aggregate-sharing posture (dashapi.Options.AggregateShareStatus): the
+// switch from config.toml, the current consent receipt and the consent
+// check, in plain values. Read-only; it never submits anything.
+func aggregateShareStatusFor(configPath string, db *sql.DB) func(context.Context) (dashapi.AggregateShareStatus, error) {
+	return func(ctx context.Context) (dashapi.AggregateShareStatus, error) {
+		cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+		if err != nil {
+			return dashapi.AggregateShareStatus{}, fmt.Errorf("aggregateShareStatusFor: load config: %w", err)
+		}
+		var receipt *aggregate.Receipt
+		if db != nil {
+			if receipt, err = store.New(db).LoadConsentReceipt(ctx); err != nil {
+				return dashapi.AggregateShareStatus{}, fmt.Errorf("aggregateShareStatusFor: %w", err)
+			}
+		}
+		live := liveState(cfg)
+		out := dashapi.AggregateShareStatus{Enabled: live.Enabled, Status: string(aggregate.CheckConsent(live, receipt))}
+		if receipt != nil {
+			out.ConsentedAt, out.Actor, out.SchemaVersion = receipt.ConsentedAt, receipt.Actor, receipt.SchemaVersion
+		}
+		return out, nil
 	}
 }

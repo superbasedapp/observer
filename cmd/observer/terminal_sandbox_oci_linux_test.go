@@ -766,10 +766,42 @@ func ociZombiesOf(pid int) int {
 
 func ociChildrenRaw(pid int) string {
 	tasks, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
+	if len(tasks) == 0 {
+		// A kernel built without CONFIG_PROC_CHILDREN (gVisor, some microVM
+		// kernels) has no children file: find the children by their parent.
+		return ociChildrenByPPID(pid)
+	}
 	var out []string
 	for _, p := range tasks {
 		b, _ := os.ReadFile(p)
 		out = append(out, strings.TrimSpace(string(b)))
+	}
+	return strings.Join(out, " ")
+}
+
+// ociChildrenByPPID lists the processes whose parent is pid, read from each
+// /proc/<pid>/stat (the parent is the second field after the command name,
+// which is parenthesised and may itself hold spaces or parentheses).
+func ociChildrenByPPID(pid int) string {
+	entries, _ := os.ReadDir("/proc")
+	var out []string
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		s := string(b)
+		i := strings.LastIndexByte(s, ')')
+		if i < 0 {
+			continue
+		}
+		f := strings.Fields(s[i+1:])
+		if len(f) >= 2 && f[1] == strconv.Itoa(pid) {
+			out = append(out, e.Name())
+		}
 	}
 	return strings.Join(out, " ")
 }

@@ -32,8 +32,11 @@ func codeRulesStore(resolvedConfig string) contentchan.Store {
 }
 
 // codeRulesTrust is the key material a rule pack verifies with: the vendor
-// key compiled into this binary (a variable so tests can stand in a key).
-var codeRulesTrust = func() contentchan.Trust { return contentchan.Trust{VendorKeys: codeVendorKeys()} }
+// key compiled into this binary, and the content-feed key for a
+// feed-signed pack (a variable so tests can stand in a key).
+var codeRulesTrust = func() contentchan.Trust {
+	return contentchan.Trust{VendorKeys: codeVendorKeys(), FeedKeys: codeFeedKeys()}
+}
 
 // codePack is the pack in use and where it came from.
 type codePack struct {

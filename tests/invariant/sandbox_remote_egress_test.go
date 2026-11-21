@@ -8,7 +8,8 @@ import (
 // sandbox_remote_egress_test.go pins the hosted sandbox drivers' egress
 // (sandbox plan v2 section 13 P7, ledger row SBX-BE-8, lane SBX-P7):
 //
-//   - the vendor wire clients (internal/sandboxremote/e2b, /modal, /vercel)
+//   - the vendor wire clients (internal/sandboxremote/e2b, /modal, /vercel,
+//     /daytona)
 //     are the ONLY sandboxremote packages that import a network package;
 //     the shared core and the relay mux are pure;
 //   - only cmd/observer imports a vendor client (its per-vendor driver file
@@ -20,7 +21,16 @@ import (
 
 // sandboxRemoteClients are the vendor wire clients that exist in this
 // build's source tree.
-var sandboxRemoteClients = []string{"internal/sandboxremote/e2b", "internal/sandboxremote/modal", "internal/sandboxremote/vercel"}
+var sandboxRemoteClients = []string{"internal/sandboxremote/e2b", "internal/sandboxremote/modal", "internal/sandboxremote/vercel", "internal/sandboxremote/openshellorg", "internal/sandboxremote/dockersbx", "internal/sandboxremote/instabox", "internal/sandboxremote/daytona"}
+
+// sandboxRemoteClientImporters are the packages allowed to import a vendor
+// client. cmd/observer is the product; tools/testrunner/provider/remote/modal
+// and tools/testrunner/provider/remote/dockersbx are the private-only
+// maintainer test runner's Modal and Docker Sandboxes providers (P0 of
+// docs/plans/test-time-plan-2026-11-11.md): a CLI the developer runs by
+// hand, never linked into the node binary or its daemon paths (the test
+// below still checks those), and stripped from the public tree.
+var sandboxRemoteClientImporters = []string{"cmd/observer", "tools/testrunner/provider/remote/modal", "tools/testrunner/provider/remote/dockersbx"}
 
 // sandboxRemotePure are the hosted packages held to no network import.
 var sandboxRemotePure = []string{"internal/sandboxremote", "internal/sandboxremote/relaymux"}
@@ -74,7 +84,10 @@ func TestSandboxRemoteClientsImportedOnlyByCmd(t *testing.T) {
 				sawImporter = true
 				continue
 			}
-			t.Errorf("%s imports %s: only cmd/observer may", importer, target)
+			if contains(sandboxRemoteClientImporters, importer) {
+				continue
+			}
+			t.Errorf("%s imports %s: only %v may", importer, target, sandboxRemoteClientImporters)
 		}
 	}
 	if !sawImporter {

@@ -1,0 +1,31 @@
+-- 220_terminal_run_initiator.sql - who started a terminal run (lane cli-2,
+-- tracker PT-61, discovery docs/plans/discovery-cli-2026-11-03.md section
+-- 4.1 "Recording").
+--
+-- initiator is a closed set (internal/termrun.Initiator): human_dashboard
+-- (the dashboard's launch routes, a caller not traced to an agent session),
+-- human_cli (`observer launch` or an attach launch from a shell not traced to
+-- an agent session) and agent (the caller process descends from a live agent
+-- session, or carried an agent session's environment marker). '' is "not
+-- recorded": every row from before this migration, and the launch kinds that
+-- do not record one.
+--
+-- parent_session_id is the agent session the launch was traced to ('' when
+-- the launch is not an agent's, or when the agent's session id is not known
+-- yet). It names a session id, never content.
+--
+-- NODE-LOCAL. One writer: internal/store/termrun.go (InsertTerminalRun).
+-- Neither column is selected by the org wire's terminal row
+-- (internal/store/terminaldevorgrows.go) or by orgpush.go; the privacy
+-- sentinel pins both (tests/invariant/privacy_test.go,
+-- TestTerminalRunInitiatorIsNodeLocal). No server pair.
+--
+-- Numbered 214 on the release line; renumbered to 220 when main merged into
+-- the release line (plans decision log P-247), because main had also used
+-- 214. Numbers 213, 214 and 216 are retired on both lines. SQLite has no
+-- ADD COLUMN IF NOT EXISTS, so this is a node late step (lateSteps in
+-- internal/db/db.go probes terminal_run.initiator): a database that ran the
+-- old 214 adopts it, any other runs it.
+
+ALTER TABLE terminal_run ADD COLUMN initiator TEXT NOT NULL DEFAULT '';
+ALTER TABLE terminal_run ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT '';

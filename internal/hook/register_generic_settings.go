@@ -183,7 +183,7 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 		if r.skipEvent(t.tool, event) {
 			continue
 		}
-		cmd := t.wrapper + shellQuoteIfNeeded(binPath) + " hook " + t.tool + " " + event + r.configFlagSuffixForwardSlash()
+		cmd := t.wrapper + genericSettingsHookCommand(binPath, t.tool, event, r.configFlagSuffixForwardSlash())
 		groups := hooks[event]
 		idx := -1
 		for i, g := range groups {
@@ -212,7 +212,7 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 				}
 			}
 		}
-		groups = append(groups, claudeHookGroup{Hooks: []claudeHookCommand{{Type: "command", Command: cmd}}})
+		groups = append(groups, genericObserverGroup(cmd))
 		hooks[event] = groups
 		res.HooksAdded = append(res.HooksAdded, event)
 	}

@@ -1,5 +1,7 @@
 import { CircleDot } from "lucide-react";
 import { HeroStat, Icon, InlineLoading, Pill, Stagger, Tooltip } from "@/components/primitives";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
 import { flattenProcs, networkSummary, utilPct, type SessionNetworkSummary } from "@/lib/cockpit";
@@ -353,7 +355,13 @@ function SystemCard({
         label="Process · network · memory"
         icon={<MetricIcon metric="process" />}
         value="off"
-        sub="OS process capture is disabled - turn it on in Settings › Process to see the process tree, network and memory for this session."
+        sub={
+          <>
+            OS process capture is off on this machine. Turn it on to see the process tree, network and memory for this
+            session.{" "}
+            <NeedsSettingLink link={placeLink("process_capture")} />
+          </>
+        }
       />
     );
   }
@@ -410,6 +418,12 @@ function SystemCard({
       sub={
         <>
           {netLine}
+          {procs.diagnostics?.process_network_enabled === false && (
+            <>
+              {" "}
+              (<NeedsSettingLink link={placeLink("process_capture")}>turn on</NeedsSettingLink>)
+            </>
+          )}
           {" · "}
           {peakRss > 0 ? `peak RSS ${fmtBytes(peakRss)}` : "no memory samples"}
         </>

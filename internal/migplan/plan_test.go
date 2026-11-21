@@ -114,6 +114,26 @@ func TestDecide(t *testing.T) {
 			want:     want{version: 241},
 		},
 		{
+			name:     "ledger database that adopted late step 240 under its horizon runs it when its probe is missing",
+			embedded: []int{239, 240, 241},
+			ledger:   Ledger{Version: 241, HasHorizon: true, Horizon: 241, Steps: map[int]string{239: RecordAdopted, 240: RecordAdopted, 241: RecordAdopted}},
+			late:     map[int]bool{240: false},
+			want:     want{steps: run(240), horizon: 241, version: 241},
+		},
+		{
+			name:     "ledger database that adopted late step 240 re-runs nothing when its probe is present",
+			embedded: []int{239, 240, 241},
+			ledger:   Ledger{Version: 241, HasHorizon: true, Horizon: 241, Steps: map[int]string{239: RecordAdopted, 240: RecordAdopted, 241: RecordAdopted}},
+			late:     map[int]bool{240: true},
+			want:     want{horizon: 241, version: 241},
+		},
+		{
+			name:     "an adopted step that is not a late step stays adopted",
+			embedded: []int{239, 240, 241},
+			ledger:   Ledger{Version: 241, HasHorizon: true, Horizon: 241, Steps: map[int]string{239: RecordAdopted, 240: RecordAdopted, 241: RecordAdopted}},
+			want:     want{horizon: 241, version: 241},
+		},
+		{
 			name:     "listed late step not yet reached on a fresh database runs in order",
 			embedded: []int{1, 2, 3},
 			late:     map[int]bool{2: false},
@@ -222,6 +242,14 @@ func TestDecideRuleNames(t *testing.T) {
 	adopted, err := Decide(Input{Embedded: []int{1}, Ledger: Ledger{Version: 1}})
 	if err != nil || len(adopted.Steps) != 1 || adopted.Steps[0].Rule != "within pre-ledger horizon" {
 		t.Fatalf("pre-ledger adoption = %+v, %v", adopted.Steps, err)
+	}
+	healed, err := Decide(Input{
+		Embedded: []int{1, 2},
+		Ledger:   Ledger{Version: 2, HasHorizon: true, Horizon: 2, Steps: map[int]string{1: RecordAdopted, 2: RecordAdopted}},
+		Late:     map[int]bool{1: false},
+	})
+	if err != nil || len(healed.Steps) != 1 || healed.Steps[0].Rule != "adopted late step missing" {
+		t.Fatalf("adopted late step = %+v, %v", healed.Steps, err)
 	}
 }
 

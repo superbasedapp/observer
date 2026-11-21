@@ -1366,47 +1366,7 @@ func writeJSONIndented(dir string, pinned pinnedTarget, settings map[string]json
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("hook.write: mkdir: %w", err)
 	}
-	keys := make([]string, 0, len(settings))
-	for k := range settings {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	// Manually emit with sorted keys so JSON diffs stay clean.
-	var buf []byte
-	buf = append(buf, '{', '\n')
-	for i, k := range keys {
-		buf = append(buf, ' ', ' ')
-		kk, _ := json.Marshal(k)
-		buf = append(buf, kk...)
-		buf = append(buf, ':', ' ')
-		// Re-indent the value for readability — on the RAW bytes, never
-		// by decoding through `any`. Decoding a value we do not own and
-		// re-marshalling it is lossy in at least three ways that all
-		// silently corrupt a user's file: integers beyond 2^53 are
-		// mangled through float64 (9007199254740993 -> ...992), number
-		// formatting is rewritten (1.0 -> 1, 1e3 -> 1000), and `<`/`>`/`&`
-		// inside strings get \u-escaped. json.Indent is a pure
-		// whitespace transform, so every unrelated top-level key
-		// round-trips byte-identically.
-		//
-		// One deliberate cosmetic consequence: nested object keys keep
-		// their SOURCE order instead of being alphabetized by Go's map
-		// marshalling. Semantics are identical; the blocks we write
-		// ourselves ("hooks", "statusLine", ...) now serialize in
-		// struct-field order.
-		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, settings[k], "  ", "  "); err == nil {
-			buf = append(buf, pretty.Bytes()...)
-		} else {
-			buf = append(buf, settings[k]...)
-		}
-		if i < len(keys)-1 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, '\n')
-	}
-	buf = append(buf, '}', '\n')
+	buf := encodeSettingsJSON(settings)
 
 	// Idempotent byte for byte (T-407): a file that already holds exactly
 	// this document is left alone (no rewrite on every `observer start`),
@@ -1452,6 +1412,55 @@ func writeJSONIndented(dir string, pinned pinnedTarget, settings map[string]json
 		return fmt.Errorf("hook.write: rename: %w", err)
 	}
 	return nil
+}
+
+// encodeSettingsJSON is the settings document writeJSONIndented writes:
+// the top-level keys sorted, each value re-indented on its raw bytes (see
+// the comment inside). Pure; the hosted box seed (boxseed.go) renders its
+// file through it too, so a box gets the same bytes this machine does.
+func encodeSettingsJSON(settings map[string]json.RawMessage) []byte {
+	keys := make([]string, 0, len(settings))
+	for k := range settings {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Manually emit with sorted keys so JSON diffs stay clean.
+	var buf []byte
+	buf = append(buf, '{', '\n')
+	for i, k := range keys {
+		buf = append(buf, ' ', ' ')
+		kk, _ := json.Marshal(k)
+		buf = append(buf, kk...)
+		buf = append(buf, ':', ' ')
+		// Re-indent the value for readability — on the RAW bytes, never
+		// by decoding through `any`. Decoding a value we do not own and
+		// re-marshalling it is lossy in at least three ways that all
+		// silently corrupt a user's file: integers beyond 2^53 are
+		// mangled through float64 (9007199254740993 -> ...992), number
+		// formatting is rewritten (1.0 -> 1, 1e3 -> 1000), and `<`/`>`/`&`
+		// inside strings get \u-escaped. json.Indent is a pure
+		// whitespace transform, so every unrelated top-level key
+		// round-trips byte-identically.
+		//
+		// One deliberate cosmetic consequence: nested object keys keep
+		// their SOURCE order instead of being alphabetized by Go's map
+		// marshalling. Semantics are identical; the blocks we write
+		// ourselves ("hooks", "statusLine", ...) now serialize in
+		// struct-field order.
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, settings[k], "  ", "  "); err == nil {
+			buf = append(buf, pretty.Bytes()...)
+		} else {
+			buf = append(buf, settings[k]...)
+		}
+		if i < len(keys)-1 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '\n')
+	}
+	buf = append(buf, '}', '\n')
+	return buf
 }
 
 // checkTestWritePinned applies crossmount's test-binary write guard to both

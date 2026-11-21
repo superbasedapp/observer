@@ -136,10 +136,10 @@ func TestGuardPromptAllowCmd(t *testing.T) {
 	}
 	defer database.Close()
 	st := store.New(database)
-	if !st.ApprovalActiveFor(context.Background(), "R-190", "s1", "", time.Now().UTC()) {
+	if !mustApprovalActive(t, st, context.Background(), "R-190", "s1", "", time.Now().UTC()) {
 		t.Error("credit_card grant not visible to ApprovalActiveFor under R-190/session s1")
 	}
-	if !st.ApprovalActiveFor(context.Background(), "R-172", "any-session", "", time.Now().UTC()) {
+	if !mustApprovalActive(t, st, context.Background(), "R-172", "any-session", "", time.Now().UTC()) {
 		t.Error("github_pat grant not visible to ApprovalActiveFor under R-172/global")
 	}
 }

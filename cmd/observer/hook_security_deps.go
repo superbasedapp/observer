@@ -126,11 +126,11 @@ func notSetUpChecks(specs []secfeed.InstallSpec, dir, sessionID string) []policy
 // was new. Markers older than a week are pruned when there are many.
 func firstNoteThisSession(dir, sessionID string) bool {
 	nd := filepath.Join(dir, depsNotesDir)
-	if err := os.MkdirAll(nd, 0o700); err != nil {
+	if err := os.MkdirAll(nd, 0o700); err != nil { //nolint:gosec // G703: false positive; the notes dir under the caller's own state dir, a fixed name
 		return false
 	}
 	sum := sha256.Sum256([]byte(sessionID))
-	f, err := os.OpenFile(filepath.Join(nd, hex.EncodeToString(sum[:8])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Join(nd, hex.EncodeToString(sum[:8])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // G703: false positive; a hex digest of the session id under the fixed notes dir
 	if err != nil {
 		return false
 	}
@@ -139,7 +139,7 @@ func firstNoteThisSession(dir, sessionID string) bool {
 		cutoff := time.Now().Add(-7 * 24 * time.Hour)
 		for _, e := range ents {
 			if fi, err := e.Info(); err == nil && fi.ModTime().Before(cutoff) {
-				_ = os.Remove(filepath.Join(nd, e.Name()))
+				_ = os.Remove(filepath.Join(nd, e.Name())) //nolint:gosec // G703: false positive; an entry ReadDir listed in the notes dir itself
 			}
 		}
 	}

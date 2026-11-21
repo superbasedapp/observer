@@ -6,12 +6,16 @@ import { Skeleton } from "@shared/primitives/Skeleton";
 import { usePortalActivity } from "./lib/query";
 import { useRouteRider } from "@shared/lib/routeRider";
 import { DashboardSkeleton } from "./components/LoadState";
-import { getSession, hasCsrf, onCsrfSync } from "./api";
+import { getPersonalPlane, getSecondFactor, getSession, hasCsrf, onCsrfSync } from "./api";
 import { clearConsentState, loadConsent, needsConsentSetup } from "./consent";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { SignIn } from "./pages/SignIn";
 import { ConsentSetup } from "./pages/ConsentSetup";
+import { SecondFactor } from "./pages/SecondFactor";
+import { legacyView } from "./lib/personalModel";
+import { CONNECT_CODE_KEY, routerPath, safeReturnTo } from "./lib/connectModel";
+import { SIGN_UP_ROUTE } from "./lib/signInModel";
 // Signed-in pages load per route: a signed-out visitor (SignIn, eager above)
 // never downloads recharts or the dashboard pages, and each page's chunk is
 // fetched in parallel with its data. The shell shows a page-shaped skeleton
@@ -37,26 +41,82 @@ const Billing = lazy(() =>
 const Privacy = lazy(() =>
   import("./pages/Privacy").then((m) => ({ default: m.Privacy })),
 );
+const Home = lazy(() =>
+  import("./pages/Home").then((m) => ({ default: m.Home })),
+);
+const ConnectApprove = lazy(() =>
+  import("./pages/ConnectApprove").then((m) => ({ default: m.ConnectApprove })),
+);
+const ConnectEntry = lazy(() =>
+  import("./pages/ConnectEntry").then((m) => ({ default: m.ConnectEntry })),
+);
+const CreateTeam = lazy(() =>
+  import("./pages/CreateTeam").then((m) => ({ default: m.CreateTeam })),
+);
+const OrgDetail = lazy(() =>
+  import("./pages/OrgDetail").then((m) => ({ default: m.OrgDetail })),
+);
+const Security = lazy(() =>
+  import("./pages/Security").then((m) => ({ default: m.Security })),
+);
+const Moved = lazy(() =>
+  import("./pages/Moved").then((m) => ({ default: m.Moved })),
+);
 import { PortalFooter } from "./components/PortalFooter";
 
 // RequireAuth guards a page: "signed in" is purely whether the CSRF token is
 // still in memory. By the time routes render, App has already resolved the
 // boot-time getSession() call AND the consent load, so this correctly
-// reflects a live cookie and real server-side consent state — not just what
-// happened to survive a reload in memory. A signed-in account whose server
-// state says the consent screen has never run is sent there first.
+// reflects a live cookie — not just what happened to survive a reload in
+// memory. D-IND-8: the personal-plane consent screen no longer gates the
+// console (an individual is an org of one; its sharing is the machine's own
+// choice); it stays reachable at /consent from the Privacy page.
 //
 // The authenticated app shell (left sidebar + top status bar, matching the
-// local dashboard) lives here: only routes that pass both gates get it. The
+// local dashboard) lives here: only routes that pass the gate get it. The
 // sign-in / consent-setup screens above render full-screen, with no shell.
 function RequireAuth({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
   if (!hasCsrf()) {
-    return <Navigate to="/" replace />;
-  }
-  if (needsConsentSetup()) {
-    return <Navigate to="/consent" replace />;
+    return <Navigate to={signInPath(pathname)} replace />;
   }
   return <Shell>{children}</Shell>;
+}
+
+/** signInPath is sign-in with return_to set back to the router path the
+ * visitor asked for, so the sign-in lands them there (Getting started v2:
+ * an approve link opened while signed out comes back to its machine). */
+function signInPath(pathname: string): string {
+  const back = safeReturnTo("/portal" + pathname);
+  return back ? "/?return_to=" + encodeURIComponent(back) : "/";
+}
+
+// ConnectGate guards the two connect pages (the approve and verify URLs):
+// they render full-screen, without the shell, and a signed-out visitor goes
+// to sign-in and comes back.
+function ConnectGate({ children }: { children: ReactNode }) {
+  const { pathname, search } = useLocation();
+  if (!hasCsrf()) {
+    const code = new URLSearchParams(search).get("code");
+    if (code) {
+      try {
+        sessionStorage.setItem(CONNECT_CODE_KEY, code);
+      } catch {
+        // Storage unavailable: the code is typed again after sign-in.
+      }
+    }
+    return <Navigate to={signInPath(pathname)} replace />;
+  }
+  return <Suspense fallback={<BootSkeleton />}>{children}</Suspense>;
+}
+
+// Legacy wraps an old personal portal page (Overview, Sessions,
+// SessionDetail, Community, Usage). They are out of the navigation; while the
+// personal plane is serving they still render (their data stays reachable
+// until it has moved to the personal org), and once it is retired they render
+// the moved notice instead (lib/personalModel.ts LEGACY_RULES).
+function Legacy({ children }: { children: ReactNode }) {
+  return legacyView(getPersonalPlane()).routes === "moved" ? <Moved /> : <>{children}</>;
 }
 
 // Shell is the authenticated frame. The viewport-bounded .app-shell keeps
@@ -114,28 +174,42 @@ function BootSkeleton() {
   );
 }
 
-// RootRoute picks the landing page for "/": sign-in when signed out, the
-// consent shell for a signed-in account that has never seen it, otherwise
-// the app itself.
+// RootRoute picks the landing page for "/": sign-in when signed out,
+// otherwise the page a sign-in was asked to return to, else Home (Getting
+// started v2: machines, the personal dashboard, then teams).
 function RootRoute() {
+  const { search } = useLocation();
   if (!hasCsrf()) {
     return <SignIn />;
   }
-  if (needsConsentSetup()) {
-    return <Navigate to="/consent" replace />;
+  const back = safeReturnTo(new URLSearchParams(search).get("return_to"));
+  return <Navigate to={back ? routerPath(back) : "/home"} replace />;
+}
+
+// SignUpRoute is "/sign-up", the create-an-account entry the marketing
+// site's "Get started" links to (hosted sign-in fix, lane A): signed out it
+// is the sign-up variant of the sign-in page, which leaves for the
+// provider's sign-up screen by itself; signed in there is nothing to create,
+// so it goes where a sign-in would (the return_to, else Home).
+function SignUpRoute() {
+  const { search } = useLocation();
+  if (!hasCsrf()) {
+    return <SignIn variant="sign-up" />;
   }
-  return <Navigate to="/overview" replace />;
+  const back = safeReturnTo(new URLSearchParams(search).get("return_to"));
+  return <Navigate to={back ? routerPath(back) : "/home"} replace />;
 }
 
 // ConsentRoute guards "/consent" itself: signed out bounces to sign-in, and
-// an account whose choices are already stored skips straight past it
-// (revisiting the choice lives on the Privacy page, not here).
+// an account whose choices are already stored goes back to the console
+// (revisiting the choice lives on the Privacy page, not here). Nothing sends
+// an account here any more; the Privacy page links to it (D-IND-8).
 function ConsentRoute() {
   if (!hasCsrf()) {
     return <Navigate to="/" replace />;
   }
   if (!needsConsentSetup()) {
-    return <Navigate to="/overview" replace />;
+    return <Navigate to="/home" replace />;
   }
   return <ConsentSetup />;
 }
@@ -150,7 +224,7 @@ export function App() {
   // live module state, but React only re-evaluates them when something
   // triggers a re-render, which is what changing this state does.
   const [session, setSession] = useState<
-    "checking" | "signed-out" | "signed-in"
+    "checking" | "signed-out" | "signed-in" | "second-factor"
   >("checking");
 
   useEffect(() => {
@@ -161,6 +235,13 @@ export function App() {
         // same reason the session is: the route decision reads it, so deciding
         // before it is known would flash the wrong page (or, worse, skip the
         // consent screen for an account that has never seen it).
+        // C2: a session whose passkey step is pending can reach nothing but
+        // that step (the server refuses the rest), so the consent load and
+        // every route wait behind it.
+        if (s && getSecondFactor()?.pending) {
+          if (live) setSession("second-factor");
+          return;
+        }
         if (s) {
           await loadConsent();
         }
@@ -196,16 +277,66 @@ export function App() {
   if (session === "checking") {
     return <BootSkeleton />;
   }
+  if (session === "second-factor") {
+    return <SecondFactor />;
+  }
 
   return (
     <Routes>
       <Route path="/" element={<RootRoute />} />
+      <Route path={SIGN_UP_ROUTE} element={<SignUpRoute />} />
       <Route path="/consent" element={<ConsentRoute />} />
+      {/* C2: the team sign-in sends a member here when it needs a passkey. */}
+      <Route path="/second-factor" element={hasCsrf() ? <SecondFactor /> : <Navigate to="/" replace />} />
       <Route
         path="/overview"
         element={
           <RequireAuth>
-            <Overview />
+            <Legacy>
+              <Overview />
+            </Legacy>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/home"
+        element={
+          <RequireAuth>
+            <Home />
+          </RequireAuth>
+        }
+      />
+      {/* Organizations became Home (Getting started v2); old links land there. */}
+      <Route path="/orgs" element={<Navigate to="/home" replace />} />
+      <Route
+        path="/connect"
+        element={
+          <ConnectGate>
+            <ConnectEntry />
+          </ConnectGate>
+        }
+      />
+      <Route
+        path="/connect/:id"
+        element={
+          <ConnectGate>
+            <ConnectApprove />
+          </ConnectGate>
+        }
+      />
+      <Route
+        path="/orgs/new"
+        element={
+          <RequireAuth>
+            <CreateTeam />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/orgs/:id"
+        element={
+          <RequireAuth>
+            <OrgDetail />
           </RequireAuth>
         }
       />
@@ -213,7 +344,9 @@ export function App() {
         path="/sessions"
         element={
           <RequireAuth>
-            <Sessions />
+            <Legacy>
+              <Sessions />
+            </Legacy>
           </RequireAuth>
         }
       />
@@ -221,7 +354,9 @@ export function App() {
         path="/sessions/:id"
         element={
           <RequireAuth>
-            <SessionDetail />
+            <Legacy>
+              <SessionDetail />
+            </Legacy>
           </RequireAuth>
         }
       />
@@ -229,7 +364,9 @@ export function App() {
         path="/community"
         element={
           <RequireAuth>
-            <Community />
+            <Legacy>
+              <Community />
+            </Legacy>
           </RequireAuth>
         }
       />
@@ -237,7 +374,9 @@ export function App() {
         path="/usage"
         element={
           <RequireAuth>
-            <Usage />
+            <Legacy>
+              <Usage />
+            </Legacy>
           </RequireAuth>
         }
       />
@@ -254,6 +393,14 @@ export function App() {
         element={
           <RequireAuth>
             <Privacy />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/security"
+        element={
+          <RequireAuth>
+            <Security />
           </RequireAuth>
         }
       />

@@ -226,6 +226,30 @@ var governancePinnableKeys = []governancePinnableKey{
 	{Key: "terminal.sandbox.workspace_retention_days", Kind: "int", Direction: string(postureop.DirRetention), Max: 3650},
 	{Key: "terminal.sandbox.home_mode", Kind: "string", Enum: []any{"tmpfs", "readonly"}, Direction: governanceDirRestrictiveOnly, Safe: "tmpfs"},
 	{Key: "terminal.sandbox.default_on", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	// lane FU4 (tracker F-002): the seccomp filter, required on, never off.
+	{Key: "terminal.sandbox.seccomp", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	// Decision SBXD-2: the returned-copy age sweep, like its sibling.
+	{Key: "terminal.sandbox.returned_copy_retention_days", Kind: "int", Direction: string(postureop.DirRetention), Max: 3650},
+	// The agent-run security assessments (plan section 13.3): restrictive-only
+	// switches and tier, and a lowering-only window ceiling.
+	{Key: "security.assessments.relax_pentest_local", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.relax_red_team_local", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.scoped_approval", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.max_network_tier", Kind: "string", Enum: []any{"proxy_only", "internet"}, Direction: governanceDirRestrictiveOnly, Safe: "proxy_only"},
+	{Key: "security.assessments.relaxation_max_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	// The depth work's time boxes (a lowering ceiling each) and the time box
+	// action (restrictive toward closing the terminal).
+	{Key: "security.assessments.time_box_threat_model_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_pentest_local_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_red_team_local_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_action", Kind: "string", Enum: []any{"stop_button", "auto_close"}, Direction: governanceDirRestrictiveOnly, Safe: "auto_close"},
+	// The pen test limits (W4): the budget and pace are lowering ceilings, the
+	// .env handling restrictive toward refusing the launch.
+	{Key: "security.assessments.workspace_secret_mode", Kind: "string", Enum: []any{"off", "warn", "mask", "refuse"}, Direction: governanceDirRestrictiveOnly, Safe: "refuse"},
+	{Key: "security.assessments.pentest_request_budget", Kind: "int", Direction: governanceDirLoweringOnly, Min: 10, Max: 10000},
+	{Key: "security.assessments.pentest_pace_rps", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 100},
+	// The request helper (W5b): a pin may only switch it off.
+	{Key: "security.assessments.probe_helper", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_remote_clone", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_worktree_source", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_tool_config_writes", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
@@ -272,6 +296,23 @@ var governancePinnableKeys = []governancePinnableKey{
 	// The opt-in in-box database export (ruling P-141): an org may only
 	// keep it off.
 	{Key: "terminal.sandbox.hosted.db_export", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// The hosted saved diff's start (the diff against the box's baseline).
+	{Key: "terminal.sandbox.hosted.diff_against", Kind: "string", Enum: []any{"baseline", "head"}, Direction: governanceDirFree},
+	// The hosted internet tier's private-range deny (decision SBXD-7): an org
+	// may only keep the ranges denied. The pin also clears every provider
+	// table's own override (governancePinFollowers).
+	{Key: "terminal.sandbox.hosted.allow_private_ranges", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// Guard's hooks in a hosted box (lane HOOKS, SBXD-6): an org may only
+	// force them on.
+	{Key: "terminal.sandbox.hosted.guard_hooks", Kind: "string", Enum: []any{"auto", "on", "off"}, Direction: governanceDirRestrictiveOnly, Safe: "on"},
+	// The clone location (decision SBXD-5): any of the three, an org may
+	// pin it either way (box keeps every clone off this machine, home keeps
+	// every clone off the box's network).
+	{Key: "terminal.sandbox.hosted.clone_where", Kind: "string", Enum: []any{"auto", "box", "home"}, Direction: governanceDirFree},
+	// Uploading a folder that is not a repository (decision SBXD-8): an org
+	// may only keep it off, and may only add ignore patterns.
+	{Key: "terminal.sandbox.hosted.upload_non_git", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.hosted.upload_ignore", Kind: "string_list", Direction: string(postureop.DirAdditiveMask)},
 	// Local re-adoption (lane GATES-SBX, R-034): an org may only shorten
 	// the bound and shrink the checkpoint cap.
 	{Key: "terminal.sandbox.readopt.bound_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 1440},
@@ -375,6 +416,68 @@ var governanceEmptied = map[string]func(cfg *Config){
 // sets, so they report as applied (set by the organization) too.
 var governanceEmptiedForces = map[string][]string{
 	"terminal.sandbox.remote_allowed_hosts": {"terminal.sandbox.allow_remote_clone"},
+}
+
+// governancePinFollowers is the table of settings an applied pin decides
+// beside its own field: when the pin's key is applied, each row sets its
+// follower and the follower reports as applied (set by the organization) too.
+// A row runs only when its pin was applied, so a skipped or excepted pin
+// leaves the follower as the node set it.
+var governancePinFollowers = map[string][]struct {
+	key   string
+	apply func(cfg *Config)
+}{
+	// The prompt guard takes its stance from the organization's guard mode
+	// (operator ruling 2026-11-08: "it should be based on the enterprise's
+	// posture"). Without this row the shipped enforce_independent = true kept
+	// the prompt lane asking or blocking under an org-pinned observe. With
+	// it, observe caps prompt outcomes at warn like every other channel, and
+	// enforce makes the lane act through the mode itself. An org prompt rule
+	// that can stop a prompt raises it back through the guard floor
+	// (guardposture "a stopping org prompt pin keeps prompt enforcement on",
+	// applied after this overlay), so the org's own prompt rule still holds.
+	"guard.mode": {{key: "guard.prompt.enforce_independent", apply: func(cfg *Config) {
+		cfg.Guard.Prompt.EnforceIndependent = false
+	}}},
+	// An org pin of the hosted private-range deny (SBXD-7) holds on every
+	// vendor: a provider table's own allow_private_ranges would otherwise
+	// open the ranges for that vendor under the pin.
+	"terminal.sandbox.hosted.allow_private_ranges": hostedPrivateRangeFollowers(),
+}
+
+// hostedPrivateRangeFollowers clears each deny-capable provider table's
+// allow_private_ranges override, one follower row per table.
+func hostedPrivateRangeFollowers() []struct {
+	key   string
+	apply func(cfg *Config)
+} {
+	out := make([]struct {
+		key   string
+		apply func(cfg *Config)
+	}, 0, len(HostedPrivateRangeDenyProviders))
+	for _, name := range HostedPrivateRangeDenyProviders {
+		out = append(out, struct {
+			key   string
+			apply func(cfg *Config)
+		}{key: "terminal.sandbox.hosted." + name + ".allow_private_ranges", apply: func(cfg *Config) {
+			if t := cfg.Terminal.Sandbox.Hosted.ProviderTable(name); t != nil {
+				t.AllowPrivateRanges = nil
+			}
+		}})
+	}
+	return out
+}
+
+// applyGovernancePinFollowers runs key's follower rows on cfg and returns the
+// follower keys, in table order.
+func applyGovernancePinFollowers(cfg *Config, key string) []string {
+	rows := governancePinFollowers[key]
+	keys := make([]string, 0, len(rows))
+	for _, r := range rows {
+		r.apply(cfg)
+		keys = append(keys, r.key)
+	}
+	return keys
 }
 
 // errGovernanceEmptied is governanceMerge's signal that the merge left
@@ -658,6 +761,7 @@ func applyGovernancePins(cfg *Config, pinned map[string]any, out *GovernanceOutc
 			continue
 		}
 		out.Applied = append(out.Applied, key)
+		out.Applied = append(out.Applied, applyGovernancePinFollowers(cfg, key)...)
 	}
 	sort.Strings(out.Applied)
 }

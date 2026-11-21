@@ -82,18 +82,20 @@ func TestPerformOrgBackfillDryRunThenConfirm(t *testing.T) {
 	}
 }
 
-// TestOrgBackfillCLIOutputUnchanged: the CLI prints what it always printed,
-// plus (D-273 item 2, review M3-12) the cross-enrolment warning on a dry run
-// that would unlock history, naming the current organization.
+// TestOrgBackfillCLIOutputUnchanged: the CLI prints the counts, plus the
+// cross-enrolment note on a dry run that would unlock history (D-273 item 2,
+// review M3-12, amended by D-43): it names the current organization and says
+// that a previous enrolment's sessions stay on this machine.
 func TestOrgBackfillCLIOutputUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	printOrgBackfillReport(&buf, orgBackfillReport{Eligible: 0, WouldUnlock: 3, Total: 3}, "Acme")
-	want := "currently eligible: 0 rows\nwould unlock:       3 more rows (entire local corpus)\n\n" +
+	want := "currently eligible: 0 rows\nwould unlock:       3 more rows (captured under this organization)\n\n" +
 		backfillCrossEnrolmentWarning("Acme") + "\n\nDRY RUN - pass --confirm to rewind the cursor.\n"
 	if buf.String() != want {
 		t.Fatalf("dry run output:\n%q\nwant\n%q", buf.String(), want)
 	}
-	if w := backfillCrossEnrolmentWarning("Acme"); !strings.Contains(w, "previous enrolment") || !strings.Contains(w, "go to Acme") {
+	if w := backfillCrossEnrolmentWarning("Acme"); !strings.Contains(w, "previous enrolment") ||
+		!strings.Contains(w, "go to Acme") || !strings.Contains(w, "stay on this machine") {
 		t.Fatalf("warning = %q", w)
 	}
 	buf.Reset()
@@ -103,7 +105,7 @@ func TestOrgBackfillCLIOutputUnchanged(t *testing.T) {
 	}
 	buf.Reset()
 	printOrgBackfillReport(&buf, orgBackfillReport{Eligible: 0, WouldUnlock: 3, Total: 3, Rewound: true}, "Acme")
-	if !strings.HasSuffix(buf.String(), "cursor reset to 0; next push cycle will ship the full corpus.\n") {
+	if !strings.HasSuffix(buf.String(), "cursor reset to 0; the next push cycles will ship every row captured under this organization.\n") {
 		t.Fatalf("confirm output: %q", buf.String())
 	}
 }

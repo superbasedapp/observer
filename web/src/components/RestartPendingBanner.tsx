@@ -122,9 +122,10 @@ export function RestartPendingBanner() {
   }, [pending, status.data?.started_at]);
 
   function onRestart() {
-    void restart(
-      "Restart the daemon now?\n\nThis applies pending config changes. Reconnecting takes ~1s.",
-    );
+    void restart({
+      title: "Restart the daemon now?",
+      lead: "This applies your pending config changes.",
+    });
   }
 
   if (restarting) {

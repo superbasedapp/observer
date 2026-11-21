@@ -1,0 +1,33 @@
+{
+  "captured_from_real_account": false,
+  "checked_on": "2026-10-31",
+  "field_ledger": {
+    "end_cursor": "VerifiedOfficial",
+    "has_next_page": "VerifiedOfficial",
+    "items": "VerifiedOfficial",
+    "items[]": "VerifiedOfficial",
+    "items[].created_at": "Inferred",
+    "items[].event_id": "Inferred",
+    "items[].message": "Inferred",
+    "items[].source": "Inferred",
+    "items[].user_id": "Inferred",
+    "items[].username": "Inferred"
+  },
+  "fixture_sha256": "b0010eb55d00a9a68ba58950eff7d5afa39ed33d26d07d00f3d91b5c73de6b18",
+  "http": {
+    "method": "GET",
+    "path": "/v3/organizations/{org_id}/sessions/{devin_id}/messages",
+    "query": {
+      "first": "200"
+    },
+    "status": 200
+  },
+  "notes": "Synthesized for lane CA-A4. Envelope as above. Message members event_id, source (devin/user), message, user_id and username are the catalog row's documented fields; created_at (Unix seconds) is Inferred: the reference says the history is chronological but names no timestamp member. Every member is Inferred until a live response is observed.",
+  "scenario": "normal_page",
+  "sdk_or_spec_version_or_commit": "Devin API v3 reference as cited by the reviewed cloud-agent integration reference (2026-10-31, source ids DV03 DV05 DV06 DV10) and the 2026-10-07 enterprise vendor API research; docs.devin.ai was not reachable from the lane session, so the pages were not re-fetched; source_sha256 is the in-repo reference document the fixture was derived from",
+  "source_kind": "synthesized_from_schema",
+  "source_sha256": "712c6048783875e54fd2463c576e6934a1c2734c850d412a441a2c4ddf2a5634",
+  "source_url": "https://docs.devin.ai/api-reference/v3/sessions/get-organizations-session-messages",
+  "status": "synthetic, awaiting live validation",
+  "surface_id": "cognition.devin_v3.session_messages"
+}

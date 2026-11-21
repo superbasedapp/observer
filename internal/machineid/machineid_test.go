@@ -359,3 +359,70 @@ func TestHashIdentityDomainSeparation(t *testing.T) {
 		t.Error("hashIdentity must domain-separate the org salt from the raw id")
 	}
 }
+
+func TestDescribeSourcesAndSalting(t *testing.T) {
+	cases := []struct {
+		name    string
+		os      string
+		files   map[string]string
+		host    string
+		org     string
+		want    Source
+		orgBind bool
+	}{
+		{"linux os id, not enrolled", "linux", map[string]string{"/etc/machine-id": "abc\n"}, "h", "", SourceOS, false},
+		{"linux os id, enrolled", "linux", map[string]string{"/etc/machine-id": "abc\n"}, "h", "org-1", SourceOS, true},
+		{"hostname only", "linux", nil, "box", "org-1", SourceHostname, true},
+		{"nothing", "linux", nil, "", "org-1", SourceNone, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSeams(t, tc.os, fixedFile(tc.files),
+				func() (string, error) { return tc.host, nil },
+				func(string, ...string) ([]byte, error) { return nil, errors.New("no tool") },
+				func() {
+					got, err := Describe(tc.org)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got.Source != tc.want || got.OrgBound != tc.orgBind {
+						t.Fatalf("got %+v", got)
+					}
+					if tc.want == SourceNone {
+						if got.Fingerprint != "" {
+							t.Fatalf("unbindable machine has a fingerprint: %q", got.Fingerprint)
+						}
+						return
+					}
+					if strings.Contains(got.Fingerprint, "abc") || got.Fingerprint == "" {
+						t.Fatalf("bad fingerprint %q", got.Fingerprint)
+					}
+					if tc.org != "" {
+						want, _ := ForOrg(tc.org)
+						if got.Fingerprint != want {
+							t.Fatalf("org fingerprint %q != ForOrg %q", got.Fingerprint, want)
+						}
+					}
+				})
+		})
+	}
+}
+
+func TestDescribeDisplayValueIsNotAnOrgValue(t *testing.T) {
+	withSeams(t, "linux", fixedFile(map[string]string{"/etc/machine-id": "abc"}),
+		func() (string, error) { return "h", nil },
+		func(string, ...string) ([]byte, error) { return nil, errors.New("no tool") },
+		func() {
+			display, _ := Describe("")
+			again, _ := Describe("")
+			if display.Fingerprint != again.Fingerprint {
+				t.Fatal("display fingerprint is not stable")
+			}
+			for _, org := range []string{"org-1", "org-2", displayDomain} {
+				o, _ := ForOrg(org)
+				if o == display.Fingerprint && org != displayDomain {
+					t.Fatalf("display value equals org %s value", org)
+				}
+			}
+		})
+}

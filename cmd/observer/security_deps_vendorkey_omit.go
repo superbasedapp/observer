@@ -8,3 +8,7 @@ import "crypto/ed25519"
 // not in this build, so no content verifies and the install gate reads its
 // index as unknown (fail closed).
 func depsVendorKeys() []ed25519.PublicKey { return nil }
+
+// depsFeedKeys without the org.update component: no content-feed key
+// either, so a feed-signed set verifies nowhere (fail closed).
+func depsFeedKeys() []ed25519.PublicKey { return nil }

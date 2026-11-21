@@ -268,7 +268,7 @@ func TestTaskActionGrantsRefusedByAllCompilers(t *testing.T) {
 					msg = p.Message
 				}
 			}
-			for _, want := range []string{string(a), "A2 front", "mcp.methodName", "v1.6.0", "R8.30.g", "default-den"} {
+			for _, want := range []string{string(a), "A2 front", "mcp.methodName", "v1.7.0", "R8.30.g", "default-den"} {
 				if !strings.Contains(msg, want) {
 					t.Fatalf("message lacks %q: %s", want, msg)
 				}

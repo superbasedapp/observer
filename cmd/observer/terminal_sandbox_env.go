@@ -12,7 +12,7 @@ import (
 )
 
 // terminal_sandbox_env.go is every backend's one way to build a box's
-// environment (WINFIX2 audit finding 1, tracker R-167, ledger
+// environment (WINFIX2 audit finding 1, ledger
 // SBX-WIN-ENV-1): the launching environment through the allow-list of
 // internal/sandboxenv, never the parent's minus a deny-list. A driver's
 // env function (mxcBoxEnv, ociContainerEnv, vmRunEnv, landlockEnv,

@@ -131,7 +131,7 @@ export function Sessions() {
       <PageHeader
         title="Sessions"
         icon={routeIcon("/sessions")}
-        sub="Sessions your devices synced for cloud enrichment, newest first. The title shown is the latest one you saved, or the AI suggestion if you have not edited it. Open a session to see the AI original, its edit history, and to correct the title, description or tags."
+        sub="Sessions your machines synced for cloud enrichment, newest first. The title shown is the latest one you saved, or the AI suggestion if you have not edited it. Open a session to see the AI original, its edit history, and to correct the title, description or tags."
         className="mb-6"
       />
 
@@ -146,7 +146,7 @@ export function Sessions() {
           className="mb-4"
           illustration="enrich"
           title="No enriched sessions yet"
-          body="Enrichment runs on the bounded excerpts you grant; once a device runs and syncs an enrichment job, its sessions appear here."
+          body="Enrichment runs on the bounded excerpts you grant; once a machine runs and syncs an enrichment job, its sessions appear here."
         />
       )}
 

@@ -25,6 +25,7 @@ import {
 } from "@/lib/plans";
 import { balanceGroups, headlineView, otherSpend } from "@/lib/plansView";
 import { ProviderMark } from "./ProviderMark";
+import { UsageByDay } from "./UsageByDay";
 
 // PlanCardView: one plan or balance. It leads with what is LEFT (the server's
 // headline, worded by lib/plansView.ts), then the windows as meters, the
@@ -192,6 +193,8 @@ export function PlanCardView({
           ))}
         </div>
       )}
+
+      {account?.daily_usage && <UsageByDay accountId={account.id} />}
 
       {stopped && account && (
         <Callout

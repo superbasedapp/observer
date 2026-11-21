@@ -30,11 +30,17 @@
 # Modes:
 #   list <index> <count>     space-separated import paths for one shard (stdout,
 #                            nothing else - scripts/ci/go-test-run.sh reads it
-#                            and splits it into its -race and plain halves)
+#                            and splits it into its -race and plain halves).
+#                            A package on scripts/ci/go-test-splits.tsv is
+#                            listed as <import>#<i>/<k> units instead, each
+#                            1/k of its weight (scheduled like packages; the
+#                            run script turns a unit into a -run or -skip of
+#                            that package's tests).
 #   plan <max> <target>      how many shards (1..max) the filtered universe
 #                            needs to stay near <target> package-seconds each
-#   check <count>            run the whole assignment, assert union == universe,
-#                            no duplicates, no empty shard; print a per-shard
+#   check <count>            run the whole assignment, assert union == universe
+#                            (with every split package's k units), no
+#                            duplicates, no empty shard; print a per-shard
 #                            summary. This is the honesty gate: a sharder bug
 #                            that silently drops a package turns into a red job
 #                            rather than into a test that stopped running.
@@ -52,6 +58,7 @@ export LC_ALL=C
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 weights_file="${script_dir}/go-test-weights.tsv"
+splits_file="${script_dir}/go-test-splits.tsv"
 
 # Weight given to a package that is not in the table (a brand-new package, or
 # one that was added after the table was last regenerated). Small on purpose:
@@ -106,14 +113,15 @@ universe() {
   fi
 }
 
-# assign emits "<shard>\t<weight>\t<importpath>" for every package in the
-# universe, for a <count>-way split.
-assign() {
-  local count="$1"
+# units emits "<weight>\t<unit>" for every package in the universe: the
+# import path, or for a package on the split table its k units
+# <import>#<i>/<k>, each carrying ceil(weight / k).
+units() {
   local module
   module="$(module_path)"
 
   universe | awk -v weights="${weights_file}" \
+                 -v splits="${splits_file}" \
                  -v module="${module}" \
                  -v defw="${default_weight}" '
     BEGIN {
@@ -129,6 +137,13 @@ assign() {
         if (key != "" && val > 0) w[key] = val
       }
       close(weights)
+      while ((getline line < splits) > 0) {
+        if (line ~ /^[ \t]*#/) continue
+        if (line ~ /^[ \t]*$/) continue
+        split(line, f, "\t")
+        if (f[1] != "" && f[2] + 0 >= 2) parts[f[1]] = int(f[2] + 0)
+      }
+      close(splits)
     }
     {
       path = $0
@@ -136,9 +151,23 @@ assign() {
       if (substr(path, 1, plen) == prefix) rel = substr(path, plen + 1)
       else if (path == module) rel = "."
       weight = (rel in w) ? w[rel] : defw
-      printf "%d\t%s\n", weight, path
+      if (rel in parts) {
+        k = parts[rel]
+        uw = int((weight + k - 1) / k)
+        for (i = 0; i < k; i++) printf "%d\t%s#%d/%d\n", uw, path, i, k
+      } else {
+        printf "%d\t%s\n", weight, path
+      }
     }
-  ' | sort -t "$(printf '\t')" -k1,1nr -k2,2 | awk -v count="${count}" '
+  '
+}
+
+# assign emits "<shard>\t<weight>\t<unit>" for every unit (units above), for
+# a <count>-way split.
+assign() {
+  local count="$1"
+
+  units | sort -t "$(printf '\t')" -k1,1nr -k2,2 | awk -v count="${count}" '
     BEGIN { FS = "\t"; for (i = 0; i < count; i++) total[i] = 0 }
     {
       best = 0
@@ -172,7 +201,9 @@ cmd_check() {
   # shellcheck disable=SC2064
   trap "rm -rf '${tmp}'" RETURN
 
-  universe | sort > "${tmp}/universe"
+  # The universe in units: a split package must appear as all k of its
+  # units, so a lost part shows up as a '-' line like a lost package.
+  units | cut -f2 | sort > "${tmp}/universe"
   assign "${count}" > "${tmp}/assigned"
   cut -f3 "${tmp}/assigned" | sort > "${tmp}/covered"
 
@@ -194,6 +225,34 @@ cmd_check() {
     echo "::error::go-test-shards: shard union != test-package universe (${n_universe} packages in universe, ${n_covered} covered)."
     echo "::error::A '-' line is a package NO shard would run; a '+' line is a package no longer in the universe."
     head -40 "${tmp}/diff" >&2
+    rc=1
+  fi
+
+  # (d) every split package is covered by all k of its parts, counted from
+  # the plain universe and the split table independently of units():
+  # <import>#0/k .. #k-1/k, each exactly once.
+  local module bad_split
+  module="$(module_path)"
+  bad_split="$(universe | awk -v splits="${splits_file}" -v module="${module}" -v covered="${tmp}/covered" '
+    BEGIN {
+      FS = "\t"; prefix = module "/"; plen = length(prefix)
+      while ((getline line < splits) > 0) {
+        if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
+        split(line, f, "\t"); if (f[1] != "" && f[2] + 0 >= 2) parts[f[1]] = int(f[2] + 0)
+      }
+      while ((getline line < covered) > 0) seen[line]++
+    }
+    {
+      rel = (substr($0, 1, plen) == prefix) ? substr($0, plen + 1) : "."
+      if (!(rel in parts)) { if (seen[$0] != 1) print $0 " covered " (seen[$0] + 0) " times"; next }
+      for (i = 0; i < parts[rel]; i++) {
+        u = $0 "#" i "/" parts[rel]
+        if (seen[u] != 1) print u " covered " (seen[u] + 0) " times"
+      }
+    }')"
+  if [[ -n "${bad_split}" ]]; then
+    echo "::error::go-test-shards: a package or split part is not covered exactly once:"
+    echo "${bad_split}" | head -20 >&2
     rc=1
   fi
 

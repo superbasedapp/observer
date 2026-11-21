@@ -1,0 +1,231 @@
+{
+  "_source": {
+    "target": "openai-agents",
+    "instrumentor": "openinference-instrumentation-openai-agents 2.8.5",
+    "library": "openai-agents 0.25.0, openai 3.55.1",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "Runner.run_sync on an Agent with one function tool and OpenAIChatCompletionsModel over an httpx MockTransport: a tool-call turn, the tool, a final turn.",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "openai-agents",
+  "_gaps": [
+    "generation spans: no response id, no finish reasons and no response model (model is the requested gpt-4o-mini).",
+    "request_params is {base_url: ...}: llm.invocation_parameters carries the client base URL, not request parameters.",
+    "The root 'Agent workflow' span has no agent name; the agent span ('assistant') does."
+  ],
+  "spans": [
+    {
+      "name": "Agent workflow",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "AGENT"
+      },
+      "want": {
+        "span_kind": "AGENT",
+        "agent_name": ""
+      }
+    },
+    {
+      "name": "Agent workflow",
+      "parent": "Agent workflow",
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {}
+    },
+    {
+      "name": "assistant",
+      "parent": "Agent workflow",
+      "attrs": {
+        "agent.name": "assistant",
+        "graph.node.id": "assistant",
+        "openinference.span.kind": "AGENT"
+      },
+      "want": {
+        "span_kind": "AGENT",
+        "agent_name": "assistant"
+      }
+    },
+    {
+      "name": "turn",
+      "parent": "assistant",
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {}
+    },
+    {
+      "name": "generation",
+      "parent": "turn",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"content\": \"Be brief.\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"How many letters in the capital of France?\"}]",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "How many letters in the capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"base_url\": \"http://mock.invalid/v1/\"}",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"word\": \"Paris\"}",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_fixture",
+        "llm.system": "openai",
+        "llm.token_count.completion": 10,
+        "llm.token_count.prompt": 50,
+        "llm.token_count.prompt_details.cache_read": 32,
+        "llm.token_count.total": 60,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "[{\"content\": null, \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": [{\"id\": \"call_fixture\", \"function\": {\"arguments\": \"{\\\"word\\\": \\\"Paris\\\"}\", \"name\": \"word_length\"}, \"type\": \"function\"}]}]"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 50,
+        "output_tokens": 10,
+        "total_tokens": 60,
+        "total_derived": false,
+        "cache_read_tokens": 32,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": null,
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in the capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "arguments": "{\"word\": \"Paris\"}",
+                "id": "call_fixture",
+                "name": "word_length"
+              }
+            ]
+          }
+        ],
+        "request_params": {
+          "base_url": "http://mock.invalid/v1/"
+        }
+      }
+    },
+    {
+      "name": "word_length",
+      "parent": "turn",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"word\": \"Paris\"}",
+        "openinference.span.kind": "TOOL",
+        "output.value": 5,
+        "tool.description": "Length of a word.",
+        "tool.name": "word_length",
+        "tool.parameters": "{\"properties\": {\"word\": {\"title\": \"Word\", \"type\": \"string\"}}, \"required\": [\"word\"], \"title\": \"word_length_args\", \"type\": \"object\", \"additionalProperties\": false}"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "tool_name": "word_length",
+        "tool_arguments": {
+          "word": "Paris"
+        },
+        "tool_result": "5"
+      }
+    },
+    {
+      "name": "turn",
+      "parent": "assistant",
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {}
+    },
+    {
+      "name": "generation",
+      "parent": "turn",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "[{\"content\": \"Be brief.\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"How many letters in the capital of France?\"}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"call_fixture\", \"type\": \"function\", \"function\": {\"name\": \"word_length\", \"arguments\": \"{\\\"word\\\": \\\"Paris\\\"}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"call_fixture\", \"content\": \"5\"}]",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "How many letters in the capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.input_messages.2.message.role": "assistant",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"word\": \"Paris\"}",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_fixture",
+        "llm.input_messages.3.message.content": "5",
+        "llm.input_messages.3.message.role": "tool",
+        "llm.input_messages.3.message.tool_call_id": "call_fixture",
+        "llm.invocation_parameters": "{\"base_url\": \"http://mock.invalid/v1/\"}",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.output_messages.0.message.content": "Paris has 5 letters.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.system": "openai",
+        "llm.token_count.completion": 10,
+        "llm.token_count.prompt": 50,
+        "llm.token_count.prompt_details.cache_read": 32,
+        "llm.token_count.total": 60,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "[{\"content\": \"Paris has 5 letters.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": null}]"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 50,
+        "output_tokens": 10,
+        "total_tokens": 60,
+        "total_derived": false,
+        "cache_read_tokens": 32,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": null,
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "How many letters in the capital of France?",
+            "role": "user"
+          },
+          {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "arguments": "{\"word\": \"Paris\"}",
+                "id": "call_fixture",
+                "name": "word_length"
+              }
+            ]
+          },
+          {
+            "content": "5",
+            "role": "tool",
+            "tool_call_id": "call_fixture"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris has 5 letters.",
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "base_url": "http://mock.invalid/v1/"
+        }
+      }
+    }
+  ]
+}

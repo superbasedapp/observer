@@ -1,0 +1,2 @@
+# Raw pty captures (lane FU13, F-058): ESC and lone CR bytes are the fixture; never normalize.
+claude-custom-api-key-prompt*.txt -text

@@ -1,0 +1,65 @@
+# org-postgres-suite.tsv - the ONE copy of the org PostgreSQL suite's package
+# list and live-PG rule. Read by scripts/ci/org-postgres-suite.sh (CI) and by
+# tools/testrunner (its @pg units); neither keeps a list of its own.
+#
+# Columns are tab separated; '#' lines and blank lines are ignored.
+#
+#   derive  <regexp>  <roots, space separated>
+#       Every directory under a root holding a _test.go file with a line
+#       matching <regexp> is in the suite. The row may repeat: the suite is
+#       the union of the rows, and each row must derive at least one
+#       package (a row deriving none has drifted, and both readers fail).
+#       The regexp is read by grep as a basic regexp and by Go's regexp
+#       package; keep it to the syntax both read the same way (no
+#       alternation: GNU grep's \| is not Go's, so a second pattern is a
+#       second row).
+#
+#       The rows: the two-writer / concurrency suites (plan acceptance
+#       criterion 9), then every package whose tests open a PostgreSQL
+#       fixture. Since dbtest.New opens PostgreSQL by default (D-24) and
+#       fails without OBSERVER_CONTROL_STORE_DSN, such a package can only
+#       run with a database, so it is in the suite: dbtest.New,
+#       dbtest.NewPostgres and dbtest.NewPostgresDSN (New[(P]),
+#       dbtest.ForEachEngine, and controltest's postgres dialect
+#       (controltest.Dialects, controltest.Postgres). The SQLite-only
+#       fixtures (dbtest.NewSQLite, NewAt, NewAtFresh, Open with a file
+#       path, controltest.Open(t, controltest.SQLite)) match no row, so
+#       their packages stay plain units (cmd/observer and tests/invariant
+#       among them).
+#   package <pattern>
+#       A fixed package or ./dir/... pattern (the migration lineages and
+#       dbtest, the advisory-lock leader, the live control-store dialect
+#       suite, the ingest apply/receipt path, the org CLI's live-PG tests,
+#       and the packages whose ForEachEngine "postgres" subtests declare no
+#       TwoWriters test, D-712 and T-861).
+#   live    <extended regexp>
+#       A test (or subtest) whose name matches is a live-PG test: in this
+#       suite it must run, so a skip of one is a failure, and a suite in
+#       which none ran fails too. "/postgres" is the ForEachEngine and
+#       controltest.Dialects subtest, LivePG the TestLivePG* tests,
+#       TwoWriters the concurrency suites.
+derive	func Test.*TwoWriters	internal/orgserver internal/aigateway
+derive	dbtest\.New[(P]	internal cmd tests
+derive	dbtest\.ForEachEngine	internal cmd tests
+derive	controltest\.Dialects	internal cmd tests
+derive	controltest\.Postgres	internal cmd tests
+package	./internal/orgserver/db/...
+package	./internal/orgserver/leader/...
+package	./internal/orgserver/controlstore/...
+package	./internal/orgserver/ingest/...
+package	./internal/orgserver/accesskindstore/...
+package	./internal/orgserver/fleetfindings/...
+package	./internal/orgserver/scim/...
+package	./internal/orgserver/dashboard/...
+package	./cmd/observer-org
+# The cloud server's live suites (cloudtestpg / SBCI_TEST_PG_DSN; L-139). The
+# ops gate's bootstrap exports their DSN with SBCI_TEST_PG_REQUIRED=1, so they
+# run live there and fail rather than skip if the DSN is lost. GitHub runs
+# them live in org-postgres.yml's cloud-pg and cloud-pg-api jobs; in this
+# file's own live-pg job they have no SBCI DSN and skip quickly.
+package	./internal/cloudserver/db/...
+package	./internal/cloudserver/store/...
+package	./internal/cloudserver/jobs/...
+package	./internal/cloudserver/api/...
+package	./cmd/observer-cloud/...
+live	LivePG|/postgres|TwoWriters

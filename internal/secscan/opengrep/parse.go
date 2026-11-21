@@ -25,6 +25,14 @@ type Scanned struct {
 	Partial []string
 	// Canary reports the canary file was among the scanned paths.
 	Canary bool
+	// TaintHold are files of Files whose taint-rule findings this run does
+	// not close: the intrafile taint pass ran but did not answer them in
+	// full (TaintHold). Set only on a full scan.
+	TaintHold []string
+	// TaintHoldRules are the rule ids a held file may still close findings
+	// of (HeldCloseRules: every rule but the taint rules); empty with a
+	// hold, a held file closes nothing.
+	TaintHoldRules []string
 }
 
 // jsonCopy is the part of Opengrep's JSON output the driver reads.

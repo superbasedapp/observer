@@ -1,6 +1,7 @@
 package componentstate
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -353,4 +354,43 @@ func TestPackageIsPure(t *testing.T) {
 		Forbidden: []string{"database/sql", "net/http", "github.com/fsnotify/fsnotify", "os/exec"},
 		Reason:    "internal/componentstate must stay pure",
 	})
+}
+
+// TestNotActiveCarriesSettingsLink pins the deep link every
+// component_not_installed body carries (one row per state): Settings >
+// Components with the component focused, and the CLI command only when the
+// component can be turned on here.
+func TestNotActiveCarriesSettingsLink(t *testing.T) {
+	s := Resolve(config.ComponentsConfig{Remove: []string{"codeintel", "remote"}}, without(fullCompiled(), "obs"))
+	cases := []struct {
+		id, href, command string
+	}{
+		{"codeintel", "/settings/components?component=codeintel", "observer components add codeintel --yes"},
+		// The New Terminal popover's operator report: the remote dashboard's
+		// refusal must open its own row, never end in raw text.
+		{"remote", "/settings/components?component=remote", "observer components add remote --yes"},
+		// Absent: not in this build, so there is nothing to add here; the
+		// row still opens (it lists the builds that carry it).
+		{"obs", "/settings/components?component=obs", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			b := s.NotActive(tc.id)
+			if b.Settings != tc.href || b.SettingsLabel != "Settings > Components" || b.Command != tc.command {
+				t.Fatalf("NotActive(%q) link = %+v", tc.id, b.Fields)
+			}
+			raw, err := json.Marshal(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{`"error":"component_not_installed"`, `"message":`, `"settings":`, `"settings_label":`} {
+				if !strings.Contains(string(raw), key) {
+					t.Fatalf("body %s lacks %s", raw, key)
+				}
+			}
+		})
+	}
+	if line := s.RefusalLine("remote"); !strings.Contains(line, "`observer components add remote --yes`") {
+		t.Fatalf("refusal line does not name the command that applies: %s", line)
+	}
 }

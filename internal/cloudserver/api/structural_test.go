@@ -642,7 +642,7 @@ func TestStructuralTenantIsolation(t *testing.T) {
 		if _, err := tx.Exec(ctx, `SET LOCAL ROLE sbci_app`); err != nil {
 			t.Fatalf("set role: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, alice.accountID); err != nil {
+		if err := h.store.SetAccountContext(ctx, tx, alice.accountID); err != nil {
 			t.Fatalf("set tenant: %v", err)
 		}
 		var n int

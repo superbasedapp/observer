@@ -3,10 +3,18 @@
 // tree: the node (agent) runner (internal/db), the edge WAL runner
 // (internal/edge/wal), the cold archive runner (internal/archivestore), and
 // both org-server runners (internal/orgserver/db for SQLite,
-// internal/orgserver/db/pgmigrations for PostgreSQL). Each runner reads its
+// internal/orgserver/db/pgmigrations for PostgreSQL) and the hosted cloud
+// service's runner (internal/cloudserver/db, whose per-step ledger is its own
+// sbci_migrations table rather than schema_meta). Each runner reads its
 // version store and probes, calls Decide, and executes the returned plan in
 // its own transaction. The SQLite runners share that read and write through
-// internal/migplan/sqliteledger. No SQL, HTTP or filesystem access lives
+// internal/migplan/sqliteledger. A runner that commits per step (the org
+// PostgreSQL runner, plan 07 row M3a.0) executes Plan.Commits instead: a
+// ledger commit, then one transaction per step it runs, so an interrupted
+// run resumes at the next unapplied step; a step declared non-transactional
+// runs outside any transaction, and the pure decisions of that step class
+// (statement shape, resume after a crash, lock_timeout retry) live in
+// internal/migplan/nontx (plan 07 row M3a.1). No SQL, HTTP or filesystem access lives
 // here, and it sits outside internal/orgserver so the node can import it.
 //
 // Why a per-step ledger. The runners used to record only the highest applied

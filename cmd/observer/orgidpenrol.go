@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -66,6 +67,23 @@ func (f *idpEnrolFlow) timeNow() time.Time {
 	return time.Now()
 }
 
+// idpUnavailableMessage is the one wording for "this server does not offer
+// sign-in enrolment". The way forward is a pairing code made on the
+// organization's own install page; an administrator's enrolment code stays the
+// alternative. multiline puts the follow-up on indented lines (the terminal);
+// the dashboard gets one paragraph.
+func idpUnavailableMessage(orgURL string, multiline bool) string {
+	base := strings.TrimRight(orgURL, "/")
+	head := "this organization does not offer sign-in enrolment (it may be switched off, or the server may be older than the feature)."
+	pair := "Make a pairing code on its install page, " + base + "/me/install, then run `observer connect " + base +
+		"` with the code in the SBO_PAIR_CODE environment variable (or pass --pair-file)."
+	alt := "Or ask an administrator for an enrolment code and run `observer enroll " + base + " <code>`."
+	if multiline {
+		return head + "\n  " + pair + "\n  " + alt
+	}
+	return head + " " + pair + " " + alt
+}
+
 // Run returns the one-time enrolment code an approval produced. Every failure
 // is ONE plain sentence a developer can act on: this is the first thing a new
 // machine does, and a stack of jargon here is a support ticket.
@@ -73,8 +91,7 @@ func (f *idpEnrolFlow) Run(ctx context.Context, orgURL string) (string, error) {
 	start, err := f.client.StartIdPEnrol(ctx, orgURL)
 	if err != nil {
 		if errors.Is(err, orgclient.ErrIdPEnrolUnavailable) {
-			return "", errors.New("this organization does not offer sign-in enrolment (it may be switched off, or the server may be older than the feature).\n" +
-				"  Ask an administrator for an enrolment code and run `observer enroll <org-url> <code>` instead")
+			return "", errors.New(idpUnavailableMessage(orgURL, true))
 		}
 		return "", err
 	}

@@ -633,6 +633,33 @@
   "schema_drift",
   "timeout"
  ],
+ "cline.cloud.session_history": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "cline.cloud.session_status": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "cline.cloud.sessions": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
  "cognition.devin_v3.acu_limits_org": [
   "auth_wrong_plane",
   "auth_wrong_scheme",
@@ -703,6 +730,19 @@
   "schema_drift",
   "timeout"
  ],
+ "cognition.devin_v3.org_sessions": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
  "cognition.devin_v3.organizations": [
   "auth_wrong_plane",
   "auth_wrong_scheme",
@@ -742,7 +782,33 @@
   "schema_drift",
   "timeout"
  ],
+ "cognition.devin_v3.session_messages": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
  "cursor.admin.audit_logs": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "cursor.admin.cloud_agent_owners": [
   "auth_wrong_plane",
   "auth_wrong_scheme",
   "first_page",
@@ -982,6 +1048,9 @@
   "auth_wrong_plane",
   "auth_wrong_scheme",
   "first_page",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
   "rate_limit_http_date",
   "rate_limit_seconds",
   "schema_drift",
@@ -2302,6 +2371,30 @@
   "schema_drift",
   "timeout"
  ],
+ "openhands.cloud.app_conversations_search": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "openhands.cloud.events_search": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
  "openrouter.mgmt.activity": [
   "auth_wrong_plane",
   "auth_wrong_scheme",
@@ -2388,6 +2481,50 @@
   "schema_drift",
   "timeout"
  ],
+ "qoder.ca.environment_retrieve": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "qoder.ca.session_events": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "qoder.ca.session_retrieve": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "qoder.ca.sessions": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
  "qoder.oapi.aicode_daily_trend": [
   "auth_wrong_plane",
   "auth_wrong_scheme",
@@ -2425,6 +2562,46 @@
   "auth_wrong_plane",
   "auth_wrong_scheme",
   "first_page",
+  "loop_cursor",
+  "page_cap",
+  "pagination",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "warp.agent_api.run_conversation": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "warp.agent_api.run_detail": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "warp.agent_api.run_harness_usage": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "rate_limit_http_date",
+  "rate_limit_seconds",
+  "schema_drift",
+  "timeout"
+ ],
+ "warp.agent_api.runs_list": [
+  "auth_wrong_plane",
+  "auth_wrong_scheme",
+  "first_page",
+  "flag_type_drift",
   "loop_cursor",
   "page_cap",
   "pagination",

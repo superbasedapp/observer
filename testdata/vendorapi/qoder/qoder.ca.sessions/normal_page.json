@@ -1,0 +1,148 @@
+{
+  "data": [
+    {
+      "id": "sess_synth0001",
+      "type": "session",
+      "status": "idle",
+      "title": "Synthetic task title",
+      "created_at": "2026-10-30T09:00:00Z",
+      "updated_at": "2026-10-30T09:42:10Z",
+      "archived_at": null,
+      "environment_id": "env_synth01",
+      "environment_variables": {
+        "SYNTH_VAR": "synthetic-env-placeholder"
+      },
+      "metadata": {
+        "ticket": "SYNTH-1"
+      },
+      "agent": {
+        "id": "agent_synth01",
+        "type": "agent",
+        "version": 1,
+        "model": {
+          "id": "ultimate",
+          "effort": "high"
+        },
+        "system": "Synthetic system prompt placeholder."
+      },
+      "resources": [
+        {
+          "id": "res_synth01",
+          "type": "github_repository",
+          "url": "https://github.com/acme/widget",
+          "mount_path": "/repos/widget",
+          "checkout": {
+            "type": "branch",
+            "name": "main"
+          }
+        }
+      ],
+      "stats": {
+        "active_seconds": 512.5,
+        "duration_seconds": 2530
+      },
+      "usage": {
+        "input_tokens": 41200,
+        "output_tokens": 6100,
+        "cache_read_input_tokens": 220400,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 18000,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "model_credits": 7.66,
+        "sandbox_runtime_credits": 0.34,
+        "total_credits": 8
+      }
+    },
+    {
+      "id": "sess_synth0002",
+      "type": "session",
+      "status": "running",
+      "created_at": "2026-10-30T10:15:00Z",
+      "updated_at": "2026-10-30T10:20:00Z",
+      "environment_id": "env_synth02",
+      "agent": {
+        "id": "agent_synth01",
+        "model": "auto"
+      },
+      "resources": [
+        {
+          "id": "res_synth02",
+          "type": "git_repository",
+          "url": "https://user@git.example.test/team/repo.git",
+          "checkout": {
+            "type": "branch",
+            "name": "dev"
+          }
+        }
+      ],
+      "usage": null
+    },
+    {
+      "id": "sess_synth0003",
+      "type": "session",
+      "status": "terminated",
+      "title": null,
+      "created_at": "2026-10-29T08:00:00Z",
+      "updated_at": "2026-10-29T08:30:00Z",
+      "archived_at": "2026-10-29T09:00:00Z",
+      "deployment_id": null,
+      "environment_id": "env_synth01",
+      "environment_variables": {},
+      "metadata": {},
+      "agent": {
+        "id": "agent_synth02",
+        "type": "agent",
+        "version": 1,
+        "name": "Synthetic agent name placeholder",
+        "description": "Synthetic agent description placeholder",
+        "system": "Synthetic system prompt placeholder.",
+        "model": {
+          "id": "qfmodel",
+          "context_window": 200000,
+          "effective_context_window": 180000,
+          "effort": "medium"
+        },
+        "tools": [
+          {
+            "type": "agent_toolset_20260401",
+            "enabled_tools": [
+              "Read",
+              "Write",
+              "Bash"
+            ]
+          }
+        ],
+        "mcp_servers": [],
+        "skills": [],
+        "multiagent": null
+      },
+      "outcome_evaluations": [],
+      "resources": [
+        {
+          "id": "sesr_0123456789abcdef01234567",
+          "type": "github_repository",
+          "url": "https://github.com/synth-owner/synth-repo",
+          "mount_path": "/data/workspace/synth-repo",
+          "checkout": null,
+          "created_at": "2026-10-29T08:00:00Z",
+          "updated_at": "2026-10-29T08:00:00Z"
+        }
+      ],
+      "stats": {
+        "active_seconds": 41,
+        "duration_seconds": 1800
+      },
+      "usage": {
+        "model_credits": 0.18,
+        "sandbox_runtime_credits": 0.02,
+        "total_credits": 0.2
+      },
+      "vault_ids": []
+    }
+  ],
+  "has_more": true,
+  "first_id": "sess_synth0001",
+  "last_id": "sess_synth0003",
+  "next_page": "page_synth0002"
+}

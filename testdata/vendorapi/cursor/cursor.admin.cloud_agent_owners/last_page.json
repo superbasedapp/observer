@@ -1,0 +1,30 @@
+{
+  "totalUsageEventsCount": 5,
+  "pagination": {
+    "numPages": 2,
+    "currentPage": 2,
+    "pageSize": 4,
+    "hasNextPage": false,
+    "hasPreviousPage": true
+  },
+  "usageEvents": [
+    {
+      "timestamp": "1762002000000",
+      "userEmail": "second.dev@company.com",
+      "cloudAgentId": "bc-00000000-0000-4000-8000-000000000003",
+      "conversationId": "3b9d7c2e-1f4a-4b8c-a6d5-e9f0a2b4c6d8",
+      "model": "claude-4.5-sonnet",
+      "kind": "Usage-based",
+      "maxMode": false,
+      "requestsCosts": 1,
+      "isTokenBasedCall": true,
+      "isChargeable": true,
+      "isHeadless": true,
+      "chargedCents": 3
+    }
+  ],
+  "period": {
+    "startDate": 1761955200000,
+    "endDate": 1762041599999
+  }
+}

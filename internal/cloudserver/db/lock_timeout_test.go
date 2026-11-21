@@ -2,7 +2,7 @@ package db
 
 // lock_timeout_test.go covers the migration-transaction session timeouts
 // added for the post-directives-followups tracker §6.2 residual: Migrate runs
-// its whole pending batch in ONE transaction, and without a bound a GRANT or
+// each pending step in its own transaction, and without a bound a GRANT or
 // ALTER on a hot table can queue indefinitely behind an unrelated
 // long-running (or lock-holding) session, blocking every other session
 // behind it in turn.
@@ -141,8 +141,10 @@ func TestMigrateLockTimeoutSurfacesTypedErrorAndDoesNotAdvanceVersion(t *testing
 	if err != nil {
 		t.Fatalf("Version after locked attempt: %v", err)
 	}
-	if after != before {
-		t.Fatalf("Version after failed Migrate = %d, want unchanged %d — the migration batch should have rolled back entirely", after, before)
+	// Each step commits on its own (E1.2): steps below the blocked one stay
+	// applied, the blocked step itself is not recorded.
+	if after != lockErr.Version-1 {
+		t.Fatalf("Version after failed Migrate = %d, want %d (every step below the blocked step %d committed, the blocked step rolled back)", after, lockErr.Version-1, lockErr.Version)
 	}
 
 	// 5) Release the lock and prove Migrate recovers cleanly on the next

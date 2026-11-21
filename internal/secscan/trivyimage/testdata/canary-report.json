@@ -1,0 +1,6 @@
+{"SchemaVersion":2,"Trivy":{"Version":"0.75.0"},"ArtifactName":"/run/canary","ArtifactType":"filesystem","Metadata":{"OS":{"Family":"debian","Name":"12.2"}},
+"Results":[{"Target":"/run/canary (debian 12.2)","Class":"os-pkgs","Type":"debian",
+"Packages":[{"ID":"libc6@2.36-9+deb12u2","Name":"libc6","Identifier":{"UID":"6e8a9a05b789d66e"},"Version":"2.36-9+deb12u2","SrcName":"glibc","SrcVersion":"2.36"}],
+"Vulnerabilities":[
+{"VulnerabilityID":"CVE-2023-4911","VendorIDs":["DSA-5514-1"],"PkgID":"libc6@2.36-9+deb12u2","PkgName":"libc6","PkgIdentifier":{"UID":"6e8a9a05b789d66e"},"InstalledVersion":"2.36-9+deb12u2","FixedVersion":"2.36-9+deb12u3","Status":"fixed","Severity":"HIGH","Title":"engine prose never read"},
+{"VulnerabilityID":"CVE-2026-5435","PkgID":"libc6@2.36-9+deb12u2","PkgName":"libc6","PkgIdentifier":{"UID":"6e8a9a05b789d66e"},"InstalledVersion":"2.36-9+deb12u2","Status":"affected","Severity":"MEDIUM"}]}]}

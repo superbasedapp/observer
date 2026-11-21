@@ -1,0 +1,82 @@
+rules:
+  - id: php.xss-request-input
+    languages: [php]
+    severity: ERROR
+    message: Web request input is written to the page as it is, so a caller can run script in the page; encode it with htmlspecialchars (or the framework's escaping, e(), esc_html) before output.
+    metadata:
+      category: code_vuln
+      cwe: CWE-79
+    mode: taint
+    pattern-sources:
+      - pattern: $_GET
+      - pattern: $_POST
+      - pattern: $_REQUEST
+      - pattern: $_COOKIE
+      - pattern: $_FILES
+      - patterns:
+          - pattern: $_SERVER[$KEY]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: ^["'](HTTP_\w+|QUERY_STRING|REQUEST_URI|PHP_SELF|PATH_INFO|ORIG_PATH_INFO|REDIRECT_URL)["']$
+      - pattern: file_get_contents("php://input")
+      - pattern: file_get_contents('php://input')
+      # Laravel and Symfony request objects.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $REQ->$GET(...)
+                  - metavariable-regex:
+                      metavariable: $REQ
+                      regex: ^\$(this->)?(request|req|httpRequest)$
+              - pattern: request()->$GET(...)
+              - pattern: Request::$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(input|get|query|post|all|only|except|cookie|header|json|string|str|route|getContent|getQueryString|getRequestUri|getPathInfo)$
+      - patterns:
+          - pattern: $REQ->$BAG->$GET(...)
+          - metavariable-regex:
+              metavariable: $BAG
+              regex: ^(query|request|cookies|headers|files|attributes)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^\$(this->)?(request|req|httpRequest)$
+      - pattern: request($KEY, ...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: (bool) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      - pattern: htmlspecialchars(...)
+      - pattern: htmlentities(...)
+      - pattern: strip_tags(...)
+      - pattern: e(...)
+      - pattern: esc_html(...)
+      - pattern: esc_attr(...)
+      - pattern: esc_url(...)
+      - pattern: esc_js(...)
+      - pattern: esc_textarea(...)
+      - pattern: wp_kses(...)
+      - pattern: wp_kses_post(...)
+      - pattern: sanitize_text_field(...)
+      - pattern: urlencode(...)
+      - pattern: rawurlencode(...)
+      - pattern: json_encode(...)
+      - pattern: $PURIFIER->purify(...)
+      - pattern: Html::encode(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: echo ..., $X, ...;
+              - pattern: print $X;
+              - pattern: print($X);
+              - pattern: printf($X, ...)
+              - pattern: printf($FMT, ..., $X, ...)
+              - pattern: vprintf($X, ...)
+              - pattern: exit($X);
+              - pattern: die($X);
+              - pattern: response($X, ...)
+              - pattern: new Response($X, ...)
+              - pattern: $RESP->setContent($X)
+          - focus-metavariable: $X

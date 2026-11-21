@@ -44,6 +44,15 @@ export function registerConfigSavePreview(fn: PreviewPrompt): () => void {
   };
 }
 
+/**
+ * shellConfigSavePreview returns the shell's installed preview dialog, or
+ * null when none is mounted. For a caller whose own `prompt` checks the dry
+ * run first and then hands the review to the shell's dialog.
+ */
+export function shellConfigSavePreview(): PreviewPrompt | null {
+  return prompt;
+}
+
 async function putSection(section: string, params: Record<string, string>, body: string): Promise<unknown> {
   return fetchJSON<unknown>(`/api/config/section/${encodeURIComponent(section)}`, params, {
     method: "PUT",

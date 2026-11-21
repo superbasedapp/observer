@@ -64,7 +64,8 @@ func TestEgressSecurityOnlineNotLinkedByDaemonPaths(t *testing.T) {
 // securityOnlineImporters are the only module packages that may import the
 // client directly: cmd/observer (its security deps wiring) and, in the org
 // server binary, the org.security.relay wiring (internal/orgserver's
-// secrelay_wire.go, the relay mode's upstream) and cmd/observer-org
+// secrelay_wire.go, the relay mode's upstream, and secrelay_sync_wire.go,
+// the opt-in scheduled mirror sync) and cmd/observer-org
 // (`observer-org security mirror sync`), declared as the server egress lane
 // org.security.relay (server_egress_lanes_test.go; lane SEC-E4).
 var securityOnlineImporters = map[string]bool{

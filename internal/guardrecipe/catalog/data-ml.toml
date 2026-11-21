@@ -1,0 +1,38 @@
+# Pack "data-ml": datasets, buckets and model hubs.
+#
+# Deleting a bucket, a bucket prefix or a hub repository asks, and so does
+# copying a local file or directory up to a bucket or hub (the size is
+# unknown when the command is judged, so every upload asks).
+
+name = "data-ml"
+kind = "pack"
+title = "Data & ML"
+summary = "Bucket, dataset and model-hub deletes and uploads to buckets or hubs ask."
+version = 1
+
+[[override]]
+rule = "R-171"
+enforce = true
+note = "file uploads ask in every mode"
+
+[[rule]]
+id = "RC-DATA-01"
+doc = "bucket, dataset or model-hub delete (data and ML pack)"
+advice = "Confirm the exact target with the developer; bucket deletes are rarely recoverable."
+category = "destructive"
+severity = "high"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(aws\s+s3\s+(rb|rm)\b|aws\s+s3api\s+delete-(bucket|objects)|gsutil\s+(-m\s+)?(rm|rb)\b|gcloud\s+storage\s+(rm|buckets\s+delete)|az\s+storage\s+(container|blob)\s+delete|huggingface-cli\s+(repo\s+)?delete|hf\s+repo\s+delete|dvc\s+(gc|destroy)|mc\s+(rm|rb)\b|rclone\s+(purge|delete))'
+
+[[rule]]
+id = "RC-DATA-02"
+doc = "upload to a bucket or model hub (data and ML pack)"
+advice = "Confirm with the developer what is uploaded and where."
+category = "exfil"
+severity = "warn"
+decision = "ask"
+enforce = true
+[rule.match]
+command_regex = '(^|\s)(aws\s+s3\s+(cp|sync|mv)\s+\S*[^\s:]\s+s3://|gsutil\s+(-m\s+)?(cp|rsync|mv)\s+.*gs://|gcloud\s+storage\s+(cp|rsync)\s+.*gs://|az\s+storage\s+blob\s+upload|huggingface-cli\s+upload|hf\s+upload|rclone\s+(copy|sync|move)\s)'

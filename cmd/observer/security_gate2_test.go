@@ -175,8 +175,8 @@ func TestSecurityCIAndObservationFindingsClose(t *testing.T) {
 	ctx := context.Background()
 	hash := secposture.ProjectRootHash(n.root)
 	const wf = ".github/workflows/ci.yml"
-	bad := "on: pull_request_target\npermissions: write-all\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
-	good := "on: push\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
+	bad := "on: pull_request_target\npermissions: write-all\njobs:\n  b:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+	good := "on: push\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo ok\n"
 	n.write(t, wf, bad)
 	rep := secciwf.Check([]byte(bad))
 	if !rep.Complete() || len(rep.Findings) == 0 {

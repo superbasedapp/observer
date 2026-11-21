@@ -206,19 +206,33 @@ func Findings(in FindingInput) ([]secfinding.Finding, bool) {
 		rule := g.Primary
 		id := secfinding.DependencyIdentity(p.Ecosystem, p.Name, p.Version, rule)
 		evidence := secfinding.Clip(p.Ecosystem+" "+p.Name+"@"+p.Version, secfinding.MaxEvidence)
+		eco, _ := ecosystemRowOf(p.Ecosystem)
+		fix := eco.FixHint
+		if IsOSPackage(p) {
+			fix = osFixHint
+		}
+		if fix == "" {
+			fix = lockfileFixHint
+		}
+		conf := row.Confidence
+		for _, n := range packageNotes {
+			if n.When(p) && n.Confidence != "" {
+				conf = n.Confidence
+			}
+		}
 		f := secfinding.Finding{
 			LocalKey:         secfinding.LocalKey(in.RootHash, rule, id),
-			Location:         secfinding.Location{RelPath: strings.ReplaceAll(p.Path, `\`, "/")},
+			Location:         secfinding.Location{RelPath: strings.ReplaceAll(p.Path, `\`, "/"), StartLine: p.Line, EndLine: p.Line},
 			Rule:             secfinding.Rule{ID: rule, Pack: "osv"},
 			Category:         row.Category,
 			Severity:         g.Severity,
-			Confidence:       row.Confidence,
+			Confidence:       conf,
 			Scope:            in.Scope,
 			Project:          secfinding.Project{RootHash: in.RootHash},
 			EvidenceRedacted: evidence,
 			EvidenceHash:     secfinding.EvidenceHash(evidence),
-			Message:          message(p.Ecosystem, g.IDs),
-			FixHint:          "Upgrade the dependency to a version the advisory lists as fixed, then regenerate the lockfile.",
+			Message:          message(p, g.IDs),
+			FixHint:          fix,
 			Engine: secfinding.Engine{
 				Driver: in.DriverID, DriverVersion: in.Engine.Version, EngineDigest: in.Engine.Digest,
 				DatabaseEpoch: in.Epochs[p.Ecosystem],
@@ -233,11 +247,47 @@ func Findings(in FindingInput) ([]secfinding.Finding, bool) {
 	return out, truncated
 }
 
+// packageNote is one row of the finding-note table: a fixed sentence the
+// message carries, and the confidence it lowers the finding to ("" keeps
+// the adapter row's), for a package the row matches. Walked in order; each
+// matching row adds its sentence.
+type packageNote struct {
+	When       func(Package) bool
+	Note       string
+	Confidence secfinding.Confidence
+}
+
+var packageNotes = []packageNote{
+	// A moving tag (`@v4`) was matched as its lowest member; the tag's
+	// owner moves it to each release, so what runs may be another one.
+	{When: func(p Package) bool { return p.MovingTag }, Note: "Moving tag: the version that runs may differ.", Confidence: policy.FindingConfidenceMedium},
+	// A SHA pin's version came from its trailing comment, which nothing
+	// checks against the commit.
+	{When: func(p Package) bool { return p.VersionFromComment }, Note: "Version from the pin's comment, not checked against the commit."},
+	// A Go binary's embedded standard library is matched by the Go release
+	// its build info names (item 4 Go stdlib, ruling 2026-11-05): whether
+	// the binary reaches the affected code is not checked.
+	{When: IsBinaryStdlib, Note: "Standard library of a Go binary, matched by its Go version: potentially affected, whether the binary uses the affected code is not checked."},
+}
+
 // message is the finding's template text: the ecosystem and the advisory
-// ids (charset-checked), never engine prose.
-func message(eco string, ids []string) string {
-	if _, known := canaries[eco]; !known {
-		eco = "package"
+// ids (charset-checked), and the note table's fixed sentences, never
+// engine prose.
+func message(p Package, ids []string) string {
+	noun := p.Ecosystem + " dependency"
+	_, osKnown := osCanaries[p.Ecosystem]
+	row, known := ecosystemRowOf(p.Ecosystem)
+	switch {
+	case IsOSPackage(p) && osKnown:
+		// An image's OS package: the release label ("Debian:12") is the
+		// canary table's own string; an unexpected one is not shown.
+		noun = p.Ecosystem + " OS package"
+	case IsOSPackage(p):
+		noun = "OS package"
+	case !known:
+		noun = "package dependency"
+	case row.Noun != "":
+		noun = row.Noun
 	}
 	shown := ids
 	more := ""
@@ -245,18 +295,51 @@ func message(eco string, ids []string) string {
 		more = fmt.Sprintf(" and %d more", len(shown)-6)
 		shown = shown[:6]
 	}
-	return secfinding.Clip(fmt.Sprintf("Known vulnerability in a %s dependency (%s%s).", eco, strings.Join(shown, ", "), more), secfinding.MaxMessage)
+	msg := fmt.Sprintf("Known vulnerability in a %s (%s%s).", noun, strings.Join(shown, ", "), more)
+	for _, n := range packageNotes {
+		if n.When(p) {
+			msg += " " + n.Note
+		}
+	}
+	return secfinding.Clip(msg, secfinding.MaxMessage)
 }
 
 // EcosystemOfFinding returns the ecosystem a dependency finding was built
-// for (the first word of its redacted evidence, written by Findings), or
-// "" for a finding Findings did not build.
+// for (the leading ecosystem name of its redacted evidence, written by
+// Findings as "<ecosystem> <name>@<version>"; an ecosystem name may hold a
+// space, "GitHub Actions", so the longest table name that prefixes it
+// wins, else the first word), or "" for a finding Findings did not build.
 func EcosystemOfFinding(f secfinding.Finding) string {
+	if f.Category != policy.FindingVulnerableDependency {
+		return ""
+	}
+	best := ""
+	for eco := range ecosystems {
+		if strings.HasPrefix(f.EvidenceRedacted, eco+" ") && len(eco) > len(best) {
+			best = eco
+		}
+	}
+	// An image's OS release label may hold a space too ("Red Hat:...",
+	// "Rocky Linux:9").
+	if osEco := osEcosystemOf(f.EvidenceRedacted); len(osEco) > len(best) {
+		best = osEco
+	}
+	if best != "" {
+		return best
+	}
 	eco, _, ok := strings.Cut(f.EvidenceRedacted, " ")
-	if !ok || f.Category != policy.FindingVulnerableDependency {
+	if !ok {
 		return ""
 	}
 	return eco
+}
+
+// NativeRuleOf returns the native rule id a dependency finding also is,
+// from its ecosystem's row ("S-779" for a GitHub Actions action with a
+// known advisory), or "" for none. It is derived from the finding, never
+// stored: the finding's rule id stays the advisory's.
+func NativeRuleOf(f secfinding.Finding) string {
+	return ecosystems[EcosystemOfFinding(f)].NativeRule
 }
 
 // StaleFindings returns the ids of the open findings a new run no longer

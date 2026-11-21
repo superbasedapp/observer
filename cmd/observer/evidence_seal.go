@@ -126,7 +126,7 @@ var evidenceSealInstalled sync.Map // *sql.DB -> bool
 // evidenceSealOpenStore opens the seal key's keystore (tests replace it).
 var evidenceSealOpenStore = func(cfg config.Config, logger *slog.Logger) keystore.Store {
 	opened := keystore.OpenReport(evidenceSealKeystoreService, evidenceSealKeyDir(cfg), logger)
-	if opened.Reason != "" {
+	if opened.Reason != "" && opened.Reason != keystore.ReasonKeychainNotChosen {
 		logger.Warn("isolation.seal: the OS keychain is not in use for the seal key", "fallback", opened.Reason)
 	}
 	return opened.Store

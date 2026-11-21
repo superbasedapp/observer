@@ -15,6 +15,14 @@ var notChildren = map[string]string{
 	"security.githooks":   "the org never installs git hooks, on managed nodes too (PR11)",
 	"security.feedback":   "feedback to the agent (lane SEC-H) is the managed pull's feedback key, not a floor section",
 	"security.provenance": "the signed AI change record (lane SEC-F2A) is opt-in only (Q9, securityOptIn) and writes into a repository only on a person's per-repository consent (Q8, Q12), so no floor may require it",
+	"security.dast":       "the passive dev-server check (M3L-5) is opt-in only and runs only when the developer starts `observer security dast <url>` after their own one-time accept (never an agent, R-165), so no floor may require it",
+	// The OS-CI-VULN arc's image and reach rows (2026-11-06). Making any of
+	// them requirable is a change to the signed managed-pull vocabulary
+	// (orgcontract.SecurityManagedComponents), which older nodes validate as
+	// a closed list, so it is a deliberate later lane, not a merge fix.
+	"security.scan.os":          "image OS package scanning is manual only (`observer security scan image`) and needs the developer's own OS database accept (R-165); not in the managed pull vocabulary yet, so no floor may require it",
+	"security.scan.image.trivy": "Trivy's image driver needs the developer's own Trivy database accept (R-165), and a managed node's org mirror does not serve that database yet, so no floor may require it",
+	"security.reach.go":         "Go symbol reachability ranks and labels findings only (it never closes or hides one), and its source mode runs per project on the developer's own opt-in, so a floor requiring it would enforce nothing",
 }
 
 // TestChildrenArePinnedToTheCatalog (SEC-E merge audit item 10): every node

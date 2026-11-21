@@ -1,0 +1,84 @@
+{
+  "_source": {
+    "target": "mcp",
+    "instrumentor": "openinference-instrumentation-mcp 2.1.6",
+    "library": "mcp 2.3.0",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "An in-process mcp 2.x Client calling an MCPServer tool inside an SDK span 'client.call'; the tool handler opens sb.tool_span('server.add'). mcp 2.x emits its own SERVER spans (tools/call, tools/list, server/discover); the OpenInference instrumentor carries the trace context so they and the handler's span join the client's trace.",
+    "recorded": "2026-11-19, offline (mocked transport, no network), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "mcp",
+  "_gaps": [
+    "mcp 2.x SERVER spans carry no openinference.span.kind; they are tool calls by gen_ai.operation.name=execute_tool."
+  ],
+  "spans": [
+    {
+      "name": "server/discover",
+      "parent": null,
+      "attrs": {
+        "jsonrpc.request.id": "1",
+        "mcp.method.name": "server/discover",
+        "mcp.protocol.version": "2026-07-28"
+      },
+      "want": {}
+    },
+    {
+      "name": "client.call",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {
+        "span_kind": "CHAIN"
+      }
+    },
+    {
+      "name": "tools/call add",
+      "parent": "client.call",
+      "attrs": {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": "add",
+        "jsonrpc.request.id": "2",
+        "mcp.method.name": "tools/call",
+        "mcp.protocol.version": "2026-07-28"
+      },
+      "want": {
+        "operation": "execute_tool",
+        "tool_name": "add",
+        "span_kind": ""
+      }
+    },
+    {
+      "name": "server.add",
+      "parent": "tools/call add",
+      "attrs": {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.call.arguments": "{\"a\": 2, \"b\": 3}",
+        "gen_ai.tool.call.result": "5",
+        "gen_ai.tool.name": "server.add",
+        "openinference.span.kind": "TOOL",
+        "tool.name": "server.add"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "operation": "execute_tool",
+        "tool_name": "server.add",
+        "tool_arguments": {
+          "a": 2,
+          "b": 3
+        },
+        "tool_result": "5"
+      }
+    },
+    {
+      "name": "tools/list",
+      "parent": "client.call",
+      "attrs": {
+        "jsonrpc.request.id": "3",
+        "mcp.method.name": "tools/list",
+        "mcp.protocol.version": "2026-07-28"
+      },
+      "want": {}
+    }
+  ]
+}

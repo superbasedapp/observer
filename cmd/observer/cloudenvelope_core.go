@@ -23,6 +23,28 @@ type cloudEnvelopeResult struct {
 	// surface can summarize it without re-parsing the bytes. It is node-local
 	// and is never a second serialization: Bytes above stays the one truth.
 	Envelope *cloudcontract.Envelope
+	// Budget is set when the envelope was fitted to the account's evidence
+	// budget (the personal plane's preview and consent build, ruling R-AI1);
+	// nil on a receipt rebuild or an org-plane build. Bytes above are already
+	// the fitted bytes: the budget never adds a second serialization.
+	Budget *cloudBudgetNote
+}
+
+// cloudBudgetNote is the content-free account of one evidence-budget fit.
+type cloudBudgetNote struct {
+	// BudgetTokens is the evidence budget fitted to (0 = no budget).
+	BudgetTokens int
+	// BudgetKnown is false when no sync has read the account's budget yet and
+	// BudgetTokens is cloudcontract.DefaultEvidenceTokenBudget.
+	BudgetKnown bool
+	// EstimatedTokens is cloudcontract.EstimateEvidenceTokens of the bytes.
+	EstimatedTokens int
+	// UnfittedTokens is the estimate of the build before any step-down.
+	UnfittedTokens int
+	// SteppedDown reports that the bytes are a smaller build than the
+	// developer's own settings produce; Rung names the ladder step.
+	SteppedDown bool
+	Rung        string
 }
 
 // orgIntelBuilt is one built org-plane envelope.

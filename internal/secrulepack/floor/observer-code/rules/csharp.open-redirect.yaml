@@ -1,0 +1,68 @@
+rules:
+  - id: csharp.open-redirect
+    languages: [csharp]
+    severity: WARNING
+    message: A redirect target is taken from web request input, so a link can send users to any site; use LocalRedirect, or check it with Url.IsLocalUrl first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-601
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String|Uri|Uri\?)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: Url.Action(...)
+      - pattern: Url.RouteUrl(...)
+      - pattern: Url.Page(...)
+      - pattern: Uri.EscapeDataString(...)
+      - pattern: WebUtility.UrlEncode(...)
+      - pattern: HttpUtility.UrlEncode(...)
+      - patterns:
+          - pattern: '"$LIT" + $X'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^(https?://[^/?#]+[/?#]|/[^/\\]|~/)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Redirect($U)
+              - pattern: RedirectPermanent($U)
+              - pattern: RedirectPreserveMethod($U)
+              - pattern: RedirectPermanentPreserveMethod($U)
+              - pattern: new RedirectResult($U, ...)
+              - pattern: Results.Redirect($U, ...)
+              - pattern: TypedResults.Redirect($U, ...)
+              - patterns:
+                  - pattern: $RESP.Redirect($U, ...)
+                  - metavariable-regex:
+                      metavariable: $RESP
+                      regex: ^(Response|HttpContext\.Response|HttpContext\.Current\.Response|context\.Response|ctx\.Response)$
+          - pattern-not-inside: |
+              if (Url.IsLocalUrl(...)) { ... }
+          - pattern-not-inside: |
+              if (Url.IsLocalUrl(...)) $STMT;
+          - pattern-not-inside: 'Url.IsLocalUrl(...) ? $A : $B'
+          - focus-metavariable: $U

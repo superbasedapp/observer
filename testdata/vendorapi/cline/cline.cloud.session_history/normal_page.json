@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-30T09:12:26.000000+00:00",
+  "sessionId": "ses-synth0001",
+  "messages": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic prompt placeholder"
+        }
+      ],
+      "id": "msg-synth-0001",
+      "role": "user",
+      "ts": 1793351521000
+    },
+    {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Synthetic reasoning placeholder"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic reply placeholder"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_synth_0001",
+          "name": "editor",
+          "input": {}
+        }
+      ],
+      "id": "msg-synth-0002",
+      "metrics": {
+        "inputTokens": 10200,
+        "outputTokens": 340,
+        "cacheReadTokens": 9000,
+        "cacheWriteTokens": 800,
+        "cost": 0.0123
+      },
+      "modelInfo": {
+        "id": "anthropic/claude-sonnet-4.5",
+        "provider": "cline"
+      },
+      "role": "assistant",
+      "ts": 1793351530000
+    },
+    {
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_synth_0001",
+          "name": "editor",
+          "content": "synthetic file body placeholder",
+          "is_error": false
+        }
+      ],
+      "id": "msg-synth-0003",
+      "role": "user",
+      "ts": 1793351531000
+    },
+    {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Synthetic reasoning placeholder"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic final answer placeholder"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_synth_0002",
+          "name": "run_commands",
+          "input": {}
+        }
+      ],
+      "id": "msg-synth-0004",
+      "metrics": {
+        "inputTokens": 10500,
+        "outputTokens": 120,
+        "cacheReadTokens": 10200,
+        "cost": 0.0051
+      },
+      "modelInfo": {
+        "id": "anthropic/claude-sonnet-4.5",
+        "provider": "cline"
+      },
+      "role": "assistant",
+      "ts": 1793351545000
+    },
+    {
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_synth_0002",
+          "name": "run_commands",
+          "content": "synthetic command output placeholder",
+          "is_error": false
+        }
+      ],
+      "id": "msg-synth-0005",
+      "role": "user",
+      "ts": 1793351546000
+    }
+  ]
+}

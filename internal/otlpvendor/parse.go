@@ -10,20 +10,19 @@ import (
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+
+	"github.com/marmutapp/superbased-observer/internal/otelident"
+	"github.com/marmutapp/superbased-observer/internal/ownagent"
 )
 
-// Echo guard: Observer stamps sbo.emitted_by=observer on the telemetry it
-// exports itself (internal/exporter/otel); such a resource is never read
-// back in.
-const (
-	attrEmittedBy = "sbo.emitted_by"
-	emittedBySelf = "observer"
-	attrService   = "service.name"
-)
+// attrService is the resource attribute a mapping row claims by.
+const attrService = "service.name"
 
-// IsEcho reports whether a resource's attributes mark it Observer-emitted.
+// IsEcho reports whether a resource's attributes mark it Observer-emitted
+// (the echo marker, owned by internal/otelident): such a resource is never
+// read back in.
 func IsEcho(res []*commonpb.KeyValue) bool {
-	return attrMap(res)[attrEmittedBy].GetStringValue() == emittedBySelf
+	return attrMap(res)[otelident.EchoAttr].GetStringValue() == otelident.EchoValue
 }
 
 // claim returns the vendor whose ServiceNames contains svc, else the first
@@ -50,29 +49,6 @@ func claim(svc string) (*Vendor, bool) {
 	return nil, false
 }
 
-// candidatesFor returns the vendors whose rules read a resource: the
-// claiming vendor alone, or (unclaimed) every ClaimByEventName vendor.
-func candidatesFor(res attrs) []*Vendor {
-	if v, ok := claim(res[attrService].GetStringValue()); ok {
-		return []*Vendor{v}
-	}
-	var out []*Vendor
-	for i := range vendors {
-		if vendors[i].ClaimByEventName {
-			out = append(out, &vendors[i])
-		}
-	}
-	return out
-}
-
-// ClaimsService reports whether a mapping row claims resources with this
-// service.name. The daemon uses it to keep a coding tool's spans away from
-// the Plane A trace handler.
-func ClaimsService(svc string) bool {
-	_, ok := claim(svc)
-	return ok
-}
-
 // ParseLogs maps an OTLP logs export.
 func ParseLogs(req *collogspb.ExportLogsServiceRequest) Result {
 	var out Result
@@ -85,27 +61,34 @@ func ParseLogs(req *collogspb.ExportLogsServiceRequest) Result {
 			continue
 		}
 		res := attrMap(rl.GetResource().GetAttributes())
-		cands := candidatesFor(res)
+		var records [][]*commonpb.KeyValue
+		for _, sl := range rl.GetScopeLogs() {
+			for _, rec := range sl.GetLogRecords() {
+				records = append(records, rec.GetAttributes())
+			}
+		}
+		rc := claimResource(rl.GetResource().GetAttributes(), records)
 		matched := false
 		for _, sl := range rl.GetScopeLogs() {
 			for ord, rec := range sl.GetLogRecords() {
 				names := logNames(rec)
 				ts := logTime(rec)
 				v := view{rec: attrMap(rec.GetAttributes()), res: res}
-				for _, vd := range cands {
+				for _, vd := range rc.cands {
 					for ri := range vd.Rules {
 						r := &vd.Rules[ri]
 						if r.Signal != SignalLogs || !nameMatch(r, names) || !condsHold(v, r.Where) {
 							continue
 						}
 						matched = true
-						body := rec.GetBody().GetStringValue()
-						apply(&out, vd, r, v, ts, rec.GetTimeUnixNano(), recordKey(ts, nil, ord), body)
+						body := contentBody(rec.GetBody().GetStringValue(), names, r.Names)
+						apply(&out, vd, r, v, recordCtx{agent: rc.Agent, trace: hex.EncodeToString(rec.GetTraceId())},
+							ts, rec.GetTimeUnixNano(), recordKey(ts, nil, ord), body)
 					}
 				}
 			}
 		}
-		noteUnclaimed(&out, seen, res, matched)
+		noteUnclaimed(&out, seen, res, matched || rc.Plane != ownagent.OTLPUnclaimed)
 	}
 	out.GenTimings = timedOnly(out.GenTimings)
 	return out
@@ -123,13 +106,14 @@ func ParseSpans(req *coltracepb.ExportTraceServiceRequest) Result {
 			continue
 		}
 		res := attrMap(rs.GetResource().GetAttributes())
-		cands := candidatesFor(res)
+		rc := claimResource(rs.GetResource().GetAttributes(), spanRecords(rs))
 		matched := false
 		for _, ss := range rs.GetScopeSpans() {
 			for _, sp := range ss.GetSpans() {
 				v := view{rec: attrMap(sp.GetAttributes()), res: res}
 				ts := spanTime(sp)
-				for _, vd := range cands {
+				rcx := recordCtx{agent: rc.Agent, trace: hex.EncodeToString(sp.GetTraceId())}
+				for _, vd := range rc.cands {
 					for ri := range vd.Rules {
 						r := &vd.Rules[ri]
 						if r.Signal != SignalSpans || !nameMatch(r, []string{sp.GetName()}) || !condsHold(v, r.Where) {
@@ -140,9 +124,13 @@ func ParseSpans(req *coltracepb.ExportTraceServiceRequest) Result {
 						if r.F.FromSpanEvents {
 							rv = v.withEvents(spanEventAttrs(sp))
 						}
-						before, beforeTiming := len(out.Tools), len(out.GenTimings)
-						apply(&out, vd, r, rv, ts, sp.GetStartTimeUnixNano(), recordKey(ts, sp.GetSpanId(), 0), "")
-						if r.Kind == KindTurn || r.Kind == KindTool {
+						beforeTurns, before, beforeTiming := len(out.Turns), len(out.Tools), len(out.GenTimings)
+						apply(&out, vd, r, rv, rcx, ts, sp.GetStartTimeUnixNano(), recordKey(ts, sp.GetSpanId(), 0), "")
+						// Only a record apply actually appended takes the
+						// span's duration: a skipped one (no request id
+						// under RequireRequest, no own-agent session) must
+						// never stamp the previous record.
+						if (r.Kind == KindTurn && len(out.Turns) > beforeTurns) || (r.Kind == KindTool && len(out.Tools) > before) {
 							setSpanDuration(&out, r.Kind, sp)
 						}
 						if r.Kind == KindTool && r.F.SuccessFromStatus && len(out.Tools) > before {
@@ -155,7 +143,7 @@ func ParseSpans(req *coltracepb.ExportTraceServiceRequest) Result {
 				}
 			}
 		}
-		noteUnclaimed(&out, seen, res, matched)
+		noteUnclaimed(&out, seen, res, matched || rc.Plane != ownagent.OTLPUnclaimed)
 	}
 	out.GenTimings = timedOnly(out.GenTimings)
 	return out
@@ -192,6 +180,28 @@ func logNames(rec interface {
 	return names
 }
 
+// contentBody is a log record's body as a content fallback: the body, or ""
+// when the body is only the record's event name. Claude Code (and Kimchi,
+// which reuses its event names) set every event's body to the event name
+// ("claude_code.tool_result"), so without this every tool_result,
+// tool_decision and flag-less user_prompt became a content row holding its
+// own event name (the OTel-direct spike's finding; docs/security.md
+// OTELDIRECT-5). A body that differs from every name is kept as before.
+func contentBody(body string, names, ruleNames []string) string {
+	b := strings.TrimSpace(body)
+	if b == "" {
+		return ""
+	}
+	for _, list := range [][]string{names, ruleNames} {
+		for _, n := range list {
+			if n != "" && b == n {
+				return ""
+			}
+		}
+	}
+	return body
+}
+
 // nameMatch reports whether any candidate name satisfies the rule.
 func nameMatch(r *Rule, names []string) bool {
 	for _, n := range names {
@@ -210,6 +220,12 @@ func nameMatch(r *Rule, names []string) bool {
 // condsHold reports whether every condition holds on the record.
 func condsHold(v view, conds []Cond) bool {
 	for _, c := range conds {
+		if len(c.AnyOf) > 0 {
+			if !anyPresent(v.rec, c.AnyOf) {
+				return false
+			}
+			continue
+		}
 		val, ok := v.rec[c.Key]
 		present := ok && val != nil && val.GetValue() != nil
 		if c.Absent {
@@ -228,10 +244,54 @@ func condsHold(v view, conds []Cond) bool {
 	return true
 }
 
+// anyPresent reports whether any of keys is set on the record.
+func anyPresent(rec attrs, keys []string) bool {
+	for _, k := range keys {
+		if val, ok := rec[k]; ok && val != nil && val.GetValue() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// recordCtx is what a record inherits from its resource's claim and its own
+// envelope: the own-agent name (empty unless the own-agent row claimed the
+// resource) and the record's trace id (hex, empty when it has none).
+type recordCtx struct {
+	agent string
+	trace string
+}
+
+// sessionOf resolves a record's session id. For the own-agent row it is the
+// agent's capture session id (ownagent.SpanSessionID: the span's session,
+// else its trace), so the record lands on the same session the proxy path
+// uses; ok is false when the own-agent record has neither, and the record
+// is then not mapped (a session-less own-agent row would land nowhere the
+// dashboard can show). Every other row reads the session as sent.
+func sessionOf(vd *Vendor, f *Fields, v view, rc recordCtx) (string, bool) {
+	raw := v.str(f.Session)
+	if !vd.ClaimByAgent {
+		return raw, true
+	}
+	return ownagent.SpanSessionID(rc.agent, raw, rc.trace)
+}
+
 // apply maps one matched record by the rule's kind.
-func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64, key, body string) {
+func apply(out *Result, vd *Vendor, r *Rule, v view, rc recordCtx, ts time.Time, tsNano uint64, key, body string) {
 	f := &r.F
-	session := v.str(f.Session)
+	session, ok := sessionOf(vd, f, v, rc)
+	if !ok {
+		return
+	}
+	// Only the own-agent row's records carry the agent name: an event-name
+	// row reading the same resource's logs (Claude Code) maps its own tool.
+	if !vd.ClaimByAgent {
+		rc.agent = ""
+	}
+	// The execution marker is noted under the RESOLVED session id, so an
+	// own-agent record's cloud-execution stamp lands on the same session the
+	// proxy path and the turn rows use.
+	noteExecution(out, vd, v, session, v.str(f.Model), ts)
 	switch r.Kind {
 	case KindTurn:
 		request := v.str(f.Request)
@@ -246,10 +306,11 @@ func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64
 		}
 		t := Turn{
 			Tool: vd.Tool, SourceTag: vd.SourceTag, Provider: firstNonEmpty(v.str(f.Provider), vd.Provider),
-			SessionID: session, RequestID: request, RequestSynthetic: synthetic,
+			SessionID: session, Agent: rc.agent, RequestID: request, RequestSynthetic: synthetic,
 			Model: v.str(f.Model), Timestamp: ts,
 			CacheReadTokens:    v.int64Of(f.CacheRead),
 			CacheWriteTokens:   v.int64Of(f.CacheWrite),
+			CacheWrite1hTokens: v.int64Of(f.CacheWrite1h),
 			ReasoningTokens:    v.int64Of(f.Reasoning),
 			DurationMS:         v.int64Of(f.Duration),
 			TimeToFirstTokenMS: v.int64Of(f.TTFT),
@@ -266,7 +327,7 @@ func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64
 		out.Turns = append(out.Turns, t)
 	case KindTool:
 		tc := ToolCall{
-			Tool: vd.Tool, SessionID: session, Name: v.str(f.ToolName),
+			Tool: vd.Tool, SessionID: session, Agent: rc.agent, Name: v.str(f.ToolName),
 			CallID: v.str(f.CallID), DurationMS: v.int64Of(f.Duration), Timestamp: ts,
 		}
 		if tc.CallID == "" {
@@ -299,10 +360,40 @@ func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64
 			return
 		}
 		out.Contents = append(out.Contents, Content{
-			Tool: vd.Tool, SourceTag: vd.SourceTag, SessionID: session,
+			Tool: vd.Tool, SourceTag: vd.SourceTag, SessionID: session, Agent: rc.agent,
 			RequestID: v.str(f.Request), ToolUseID: v.str(f.ToolUseID),
 			Kind: f.ContentKind, Content: content, TimeUnixNano: tsNano,
 		})
+	}
+}
+
+// noteExecution walks the vendor's cloud-execution marker table for one
+// matched record and records the first hit for its session, once per
+// (tool, session) per export. A record without a session, or a vendor with
+// no markers, records nothing.
+func noteExecution(out *Result, vd *Vendor, v view, session, model string, ts time.Time) {
+	if session == "" || len(vd.Execution) == 0 {
+		return
+	}
+	for i := range out.Executions {
+		if out.Executions[i].Tool == vd.Tool && out.Executions[i].SessionID == session {
+			return
+		}
+	}
+	for _, m := range vd.Execution {
+		val := v.str(m.Keys)
+		if val == "" {
+			continue
+		}
+		ex := Execution{
+			Tool: vd.Tool, SessionID: session, Location: m.Location,
+			CreatesSession: m.CreatesSession, Model: model, Timestamp: ts,
+		}
+		if m.ValueIsVendorRef {
+			ex.VendorRef = val
+		}
+		out.Executions = append(out.Executions, ex)
+		return
 	}
 }
 

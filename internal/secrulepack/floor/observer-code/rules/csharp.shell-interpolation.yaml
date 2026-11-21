@@ -2,18 +2,53 @@ rules:
   - id: csharp.shell-interpolation
     languages: [csharp]
     severity: ERROR
-    message: A shell command line is built with values pasted in; start the program directly with an ArgumentList instead.
+    message: Web request input reaches a shell command line; start the program directly with an ArgumentList instead.
     metadata:
       category: code_vuln
       cwe: CWE-78
-    patterns:
-      - pattern-either:
-          - pattern: Process.Start("$SH", $ARGS)
-          - pattern: 'new ProcessStartInfo { ..., FileName = "$SH", ..., Arguments = $ARGS, ... }'
-          - pattern: new ProcessStartInfo("$SH", $ARGS)
-      - metavariable-regex:
-          metavariable: $SH
-          regex: (?i)^(cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe|sh|bash|/bin/sh|/bin/bash)$
-      - metavariable-regex:
-          metavariable: $ARGS
-          regex: (?is)^(\$@?"\s*(/c|/k|-c|-command)\b.*\{.*|"\s*(/c|/k|-c|-command)\b[^"]*"\s*\+.*|string\.Format\(\s*"\s*(/c|/k|-c|-command)\b.*)$
+    # Pack 1.4.0: taint from web request input (the G4 rewrite the other
+    # languages' shell rules had); a shell run over the program's own values
+    # is no longer reported.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: int.Parse(...)
+      - pattern: long.Parse(...)
+      - pattern: Guid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Process.Start("$SH", $ARGS)
+              - pattern: 'new ProcessStartInfo { ..., FileName = "$SH", ..., Arguments = $ARGS, ... }'
+              - pattern: 'new ProcessStartInfo("$SH") { ..., Arguments = $ARGS, ... }'
+              - pattern: new ProcessStartInfo("$SH", $ARGS)
+          - metavariable-regex:
+              metavariable: $SH
+              regex: (?i)^(cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe|sh|bash|/bin/sh|/bin/bash)$
+          - focus-metavariable: $ARGS

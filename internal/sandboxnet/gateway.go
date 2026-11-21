@@ -62,17 +62,58 @@ type Gateway struct {
 	// passes, as before the list existed (agent runs keep nil; only the
 	// first-start install step's gateway sets one).
 	Hosts *HostRules
+	// Report, when set, receives every refusal (refusal.go): the host
+	// helper hands it to the daemon for the refusal audit. It is called on
+	// the request's goroutine, so it must not block (queue and return).
+	// Nil reports nothing; the 403 body is the same either way.
+	Report func(Refusal)
+	// Closed, when set, is asked at the start of every CONNECT and
+	// absolute-form request (tracker F-012, audit findings N4-A4 and
+	// FU5-A5): a non-empty reason refuses the run's new requests, each
+	// answered 503 with that reason before any policy check, resolution or
+	// dial, and the idle upstream connections are dropped. A tunnel opened
+	// before keeps running. It is not a refusal (nothing was
+	// judged), so it is never reported; the caller counts what it closed.
+	// The host helper sets it when the org requires the refusal audit and
+	// its link to the daemon is lost. Nil never closes.
+	Closed func() string
 
-	once  sync.Once
-	proxy *httputil.ReverseProxy
+	once      sync.Once
+	proxy     *httputil.ReverseProxy
+	transport *http.Transport
 }
 
-// gatewayError carries the HTTP status and the short plain-text reason the
-// gateway reports for a failed egress attempt.
+// refuseClosed answers a request 503 when Closed names a reason, before
+// anything else is done for it (CONNECT and absolute-form alike, so a
+// request that would reuse a pooled upstream connection is refused too),
+// and drops the absolute-form transport's idle upstream connections. A
+// CONNECT tunnel opened before stays open: only new requests are refused
+// (audit finding FU5-A5).
+func (g *Gateway) refuseClosed(w http.ResponseWriter, target string) bool {
+	if g.Closed == nil {
+		return false
+	}
+	reason := g.Closed()
+	if reason == "" {
+		return false
+	}
+	g.logger().Warn("sandboxnet: egress closed", "target", target, "reason", reason)
+	// The once orders this read after the transport is built.
+	g.once.Do(g.initProxy)
+	g.transport.CloseIdleConnections()
+	http.Error(w, "sandbox egress gateway: "+reason, http.StatusServiceUnavailable)
+	return true
+}
+
+// gatewayError carries the HTTP status and the short reason the gateway
+// reports for a failed egress attempt. A refusal (refusal set) is answered
+// with the structured 403 body whose message is reason; anything else with
+// reason as plain text.
 type gatewayError struct {
-	status int
-	reason string
-	err    error
+	status  int
+	reason  string
+	err     error
+	refusal *Refusal
 }
 
 func (e *gatewayError) Error() string {
@@ -125,6 +166,9 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if target == "" && r.URL != nil {
 		target = r.URL.Host
 	}
+	if g.refuseClosed(w, target) {
+		return
+	}
 	upstream, err := g.dialChecked(r.Context(), "tcp", target, formConnect)
 	if err != nil {
 		g.writeError(w, err)
@@ -169,6 +213,9 @@ func (g *Gateway) serveForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.once.Do(g.initProxy)
+	if g.refuseClosed(w, r.URL.Host) {
+		return
+	}
 	g.proxy.ServeHTTP(w, r)
 }
 
@@ -187,6 +234,7 @@ func (g *Gateway) initProxy() {
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+	g.transport = tr
 	g.proxy = &httputil.ReverseProxy{
 		// The inbound URL is already absolute; keep it and the Host.
 		// ReverseProxy strips hop-by-hop headers (Connection and the headers
@@ -216,11 +264,11 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 	}
 	if rule := g.Hosts.Check(host); rule != "" {
 		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
-		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + " (this run may reach only " + strings.Join(g.Hosts.Entries(), ", ") + ")"}
+		return nil, g.refused(stageHosts, rule, host, port, "sandbox egress gateway: destination refused by rule "+rule+" (this run may reach only "+strings.Join(g.Hosts.Entries(), ", ")+")")
 	}
 	if g.Hosts != nil && !listedPortAllowed(form, port) {
 		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", RulePortNotAllowed)
-		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + RulePortNotAllowed + " (this run may use only port 443 through CONNECT, or port 80 for a plain http request)"}
+		return nil, g.refused(stagePort, RulePortNotAllowed, host, port, "sandbox egress gateway: destination refused by rule "+RulePortNotAllowed+" (this run may use only port 443 through CONNECT, or port 80 for a plain http request)")
 	}
 	if g.Hosts != nil {
 		// The name resolved is the name the list checked.
@@ -228,12 +276,12 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 	}
 	if rule := g.Providers.checkTarget(host); rule != "" {
 		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
-		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
+		return nil, g.refused(stageProvider, rule, host, port, "sandbox egress gateway: destination refused by rule "+rule+providerHint)
 	}
 	local, err := g.localAddrs()
 	if err != nil {
 		g.logger().Warn("sandboxnet: egress refused, cannot list local addresses", "host", host, "err", err)
-		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + ruleLocalAddrsUnavailable}
+		return nil, g.refused(stageLocal, ruleLocalAddrsUnavailable, host, port, "sandbox egress gateway: destination refused by rule "+ruleLocalAddrsUnavailable)
 	}
 	var ips []net.IP
 	if ip := parseLiteral(host); ip != nil {
@@ -249,13 +297,16 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 		}
 		if rule := g.Providers.checkResolved(ips, g.resolve); rule != "" {
 			g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
-			return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
+			return nil, g.refused(stageProvider, rule, host, port, "sandbox egress gateway: destination refused by rule "+rule+providerHint)
 		}
 	}
 
 	var chosen net.IP
 	var rules []string
 	allowListable := false
+	// The rule the refusal is recorded under: the first allow-listable one
+	// when any is (the one an operator can act on), else the first.
+	recorded := ""
 	policy := Policy{Allow: g.Allow}
 	for _, ip := range ips {
 		err := policy.Check(ip, local)
@@ -265,6 +316,9 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 		}
 		var re *RefusedError
 		if errors.As(err, &re) {
+			if recorded == "" || (re.AllowListable && !allowListable) {
+				recorded = re.Rule
+			}
 			allowListable = allowListable || re.AllowListable
 			if !containsString(rules, re.Rule) {
 				rules = append(rules, re.Rule)
@@ -274,7 +328,7 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 	if chosen != nil && parseLiteral(host) != nil {
 		if rule := g.Providers.checkLiteral(chosen, g.Allow); rule != "" {
 			g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
-			return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
+			return nil, g.refused(stageProvider, rule, host, port, "sandbox egress gateway: destination refused by rule "+rule+providerHint)
 		}
 	}
 	if chosen == nil {
@@ -283,7 +337,7 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 		if allowListable {
 			reason += " (to allow a private destination, add its CIDR to " + AllowCIDRsConfigKey + ")"
 		}
-		return nil, &gatewayError{status: http.StatusForbidden, reason: reason}
+		return nil, g.refused(stagePolicy, recorded, host, port, reason)
 	}
 
 	if !strings.HasPrefix(network, "tcp") {
@@ -298,10 +352,37 @@ func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, for
 	return conn, nil
 }
 
-// writeError renders err as a short plain-text response.
+// refused reports a refusal of host:port by the gateway rule constant rule
+// (found at stage) and returns its 403 error, whose message is reason.
+func (g *Gateway) refused(stage refusalStage, rule, host, port, reason string) *gatewayError {
+	r := g.report(stage, rule, host, port)
+	return &gatewayError{status: http.StatusForbidden, reason: reason, refusal: &r}
+}
+
+// report builds the Refusal of host:port by rule and hands it to Report.
+func (g *Gateway) report(stage refusalStage, rule, host, port string) Refusal {
+	closed, key := mapAt(stage, rule)
+	if key == KeyEgressAllowHosts && g.Hosts != nil {
+		// A host list that is not the owner's names its own key.
+		key = g.Hosts.Key()
+	}
+	n, _ := strconv.Atoi(port)
+	r := Refusal{Host: host, Port: n, Rule: closed, Key: key, At: time.Now().UTC()}
+	if g.Report != nil {
+		g.Report(r)
+	}
+	return r
+}
+
+// writeError renders err: a refusal as the structured 403 body
+// (refusal.go), anything else as a short plain-text response.
 func (g *Gateway) writeError(w http.ResponseWriter, err error) {
 	var ge *gatewayError
 	if errors.As(err, &ge) {
+		if ge.refusal != nil {
+			WriteRefusal(w, *ge.refusal, ge.reason)
+			return
+		}
 		http.Error(w, ge.reason, ge.status)
 		return
 	}

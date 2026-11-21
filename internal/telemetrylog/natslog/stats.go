@@ -24,8 +24,10 @@ func ReadStreamStats(ctx context.Context, stream jetstream.Stream) (telemetrylog
 
 // readStreamStats is ReadStreamStats plus the stream's Replicas count (for
 // Probe). The stream state is read BEFORE the consumer states, so a record
-// published in between is never counted as consumed (telemetrylog.AckedFloor
-// relies on that order).
+// published in between is never counted as consumed (telemetrylog.TrimFloor
+// relies on that order), and read AGAIN after them (CeilingSequence), so a
+// consumer whose position is beyond even that second read is known to be
+// ahead of the stream (F01) rather than racing a fresh publish.
 func readStreamStats(ctx context.Context, stream jetstream.Stream) (telemetrylog.StreamStats, int, error) {
 	info, err := stream.Info(ctx)
 	if err != nil {
@@ -53,6 +55,7 @@ func readStreamStats(ctx context.Context, stream jetstream.Stream) (telemetrylog
 			AckPending:  uint64(ci.NumAckPending),
 			Redelivered: uint64(ci.NumRedelivered),
 			AckFloor:    ci.AckFloor.Stream,
+			Delivered:   ci.Delivered.Stream,
 		}
 		if cs.Pending+cs.AckPending > 0 {
 			// Best effort: a failed read leaves the timestamp zero ("unknown"),
@@ -61,7 +64,26 @@ func readStreamStats(ctx context.Context, stream jetstream.Stream) (telemetrylog
 		}
 		stats.Consumers = append(stats.Consumers, cs)
 	}
+	// The ceiling re-read is retried once. When both attempts fail the ceiling
+	// is UNKNOWN (R-A05): the first read alone would report a consumer that
+	// acked a record published between the two reads as ahead of the stream,
+	// a false fault. Readers skip the ahead check and the trim holds.
+	stats.CeilingSequence, stats.CeilingUnknown = rereadCeiling(ctx, stream.Info)
 	return stats, info.Config.Replicas, nil
+}
+
+// rereadCeiling reads the stream's last sequence again after the consumer
+// states, retrying once; unknown is true when both attempts fail.
+func rereadCeiling(ctx context.Context, info func(context.Context, ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error)) (ceiling uint64, unknown bool) {
+	for attempt := 0; attempt < 2; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
+		if after, err := info(ctx); err == nil {
+			return after.State.LastSeq, false
+		}
+	}
+	return 0, true
 }
 
 // oldestPendingAt returns the publish time of the first record above the

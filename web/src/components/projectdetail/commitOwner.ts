@@ -8,9 +8,13 @@ import type { ProjectCommitOwnerReason, ProjectCommitShareBasis } from "@/lib/ty
 // names them. The four "none" reasons never name a session: a commit no AI
 // edit reached is human (or un-captured) work, never a guessed owner.
 
-export const OWNER_REASON: Readonly<
-  Record<ProjectCommitOwnerReason, { label: string; tip: string; none: boolean }>
-> = {
+// OwnerReasonMeta names one reason. cloud marks a cloud-agent credit: the
+// owner is a cloud session whose vendor-reported PR or branch produced the
+// commit, and no line of it was measured, so the UI says so instead of
+// showing zero lines.
+export type OwnerReasonMeta = { label: string; tip: string; none: boolean; cloud?: boolean };
+
+export const OWNER_REASON: Readonly<Record<ProjectCommitOwnerReason, OwnerReasonMeta>> = {
   merge: {
     label: "merge",
     tip: "Merge commits never carry attribution, so no session owns one.",
@@ -56,19 +60,39 @@ export const OWNER_REASON: Readonly<
     tip: "Tied on every measure; the lowest session id is chosen so the answer is deterministic.",
     none: false,
   },
+  cloud_pr_commit: {
+    label: "cloud agent (in its PR)",
+    tip: "A cloud agent session produced this commit: it is in the commit list of the pull request the agent's vendor reported for that session. File-level credit; the agent's lines were not measured.",
+    none: false,
+    cloud: true,
+  },
+  cloud_pr_landing: {
+    label: "cloud agent (its PR landed)",
+    tip: "This commit is how the pull request a cloud agent session opened landed (its squash or rebase commit, from the code host). File-level credit; the agent's lines were not measured.",
+    none: false,
+    cloud: true,
+  },
+  cloud_pr_subject: {
+    label: "cloud agent (PR in subject)",
+    tip: "This commit's squash subject names the pull request a cloud agent session opened on this repository, committed after that session started. Read from local git only. File-level credit; the agent's lines were not measured.",
+    none: false,
+    cloud: true,
+  },
 };
 
 export const SHARE_BASIS_TIP: Readonly<Record<ProjectCommitShareBasis, string>> = {
   code_lines: "Shares are each session's AI code lines carried into this commit, over all contributors' code lines.",
   files:
     "No AI code lines reached this commit (only docs/config files), so shares are by files carried instead.",
+  cloud_claim:
+    "A cloud agent session's pull request or branch produced this commit. No line of it was measured, so every claiming session shares it equally.",
 };
 
 // ownerReasonMeta tolerates a reason string a newer server may add: it
 // renders the raw value rather than crashing or inventing a label.
-export function ownerReasonMeta(reason: string): { label: string; tip: string; none: boolean } {
+export function ownerReasonMeta(reason: string): OwnerReasonMeta {
   return (
-    (OWNER_REASON as Record<string, { label: string; tip: string; none: boolean }>)[reason] ?? {
+    (OWNER_REASON as Record<string, OwnerReasonMeta>)[reason] ?? {
       label: reason,
       tip: reason,
       none: false,

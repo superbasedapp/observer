@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import type { ReactNode, SelectHTMLAttributes } from "react";
-import { FieldShell, fieldClasses, type FieldChromeProps } from "./Input";
+import { FieldShell, fieldClasses, hasFieldNote, useFieldIds, type FieldChromeProps } from "./Input";
 import { callerSetsWidth } from "../lib/fieldWidth";
 
 export type SelectOption = {
@@ -30,10 +30,14 @@ export function Select({
   children,
   ...rest
 }: SelectProps) {
+  const { controlId, noteId } = useFieldIds(rest.id);
+  const described = hasFieldNote(help, error) ? noteId : undefined;
   return (
-    <FieldShell label={label} help={help} error={error}>
+    <FieldShell label={label} help={help} error={error} controlId={controlId} noteId={noteId}>
       <select
         {...rest}
+        id={controlId}
+        aria-describedby={rest["aria-describedby"] ?? described}
         className={clsx(
           fieldClasses({ mono, invalid: Boolean(error), ownWidth: callerSetsWidth(className) }),
           className,

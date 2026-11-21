@@ -319,6 +319,7 @@ var sandboxOverallRules = []struct {
 				parts = append(parts, b.ID+" ("+b.Verdict+"): "+b.Reason)
 			}
 			out.Reason = "no sandbox backend is available on " + string(in.host) + ": " + strings.Join(parts, "; ")
+			out.ReasonListsRows = true
 			return out
 		},
 	},
@@ -365,12 +366,18 @@ func sandboxBackendList(cfg config.TerminalSandboxConfig, av sandbox.Availabilit
 // probes (lane SBX-P3A); a driver row's version is its own probe's.
 func sandboxBackendListWith(cfg config.TerminalSandboxConfig, av sandbox.Availability, sources []string, tier vocab.Tier, drivers map[string]sandboxselect.Probe) []dashapi.SandboxBackendAvail {
 	host := sandboxHostKind()
+	// The enabled list the editor shows, the master switch aside: a row the
+	// list names stays checked while sandboxing is switched off.
+	listCfg := cfg
+	listCfg.Enabled = true
+	listed := sandboxEnabledBackends(listCfg)
 	var out []dashapi.SandboxBackendAvail
 	for _, id := range sandboxbackend.IDs() {
 		row, _ := sandboxbackend.Get(id)
 		e := dashapi.SandboxBackendAvail{
 			ID: row.ID, Label: row.Label, Class: string(row.Iso.Class), Location: string(row.Iso.Location),
 			Maturity: string(row.Maturity), Phase: row.Phase, Component: sandboxComponent,
+			MasksWorkspaceSecrets: row.CanMaskWorkspaceSecrets(),
 		}
 		for _, t := range row.Net.Egress {
 			e.Egress = append(e.Egress, string(t))
@@ -380,8 +387,25 @@ func sandboxBackendListWith(cfg config.TerminalSandboxConfig, av sandbox.Availab
 		}
 		if p, ok := drivers[id]; ok {
 			e.Hint = p.Hint
+			e.GatewayMode, e.Prerequisite = string(p.GatewayMode), p.Prerequisite
+			e.VersionPins = append([]string(nil), p.VersionPins...)
 		}
-		res := sandboxselect.Select(sandboxSelectInputWith(cfg, av, sources, id, tier, drivers))
+		e.Disclosures = sandboxDisclosuresFor(row, vocab.GatewayMode(e.GatewayMode))
+		hostedFillProbeRow(&e, row, cfg, tier)
+		e.Enabled = slices.Contains(listed, id)
+		in := sandboxSelectInputWith(cfg, av, sources, id, tier, drivers)
+		res := sandboxselect.Select(in)
+		if res.Chosen == nil && len(res.Drops) > 0 && res.Drops[0].Verdict == sandboxselect.VerdictDisabledByConfig {
+			// Dropped only for not being enabled: run selection again with
+			// the row enabled, so the editor can say whether enabling it
+			// would make it run here (and if not, why not).
+			in.Enabled = append(slices.Clone(in.Enabled), id)
+			if again := sandboxselect.Select(in); again.Chosen != nil {
+				e.WhenEnabledAvailable = true
+			} else if len(again.Drops) > 0 {
+				e.WhenEnabledVerdict, e.WhenEnabledReason = again.Drops[0].Verdict, again.Drops[0].Reason
+			}
+		}
 		if res.Chosen != nil {
 			e.Available, e.Beta = true, res.Chosen.Beta
 			e.Version = av.BackendVersion
@@ -390,7 +414,7 @@ func sandboxBackendListWith(cfg config.TerminalSandboxConfig, av sandbox.Availab
 			}
 		} else if len(res.Drops) > 0 {
 			d := res.Drops[0]
-			e.Verdict, e.Rule, e.Reason = d.Verdict, d.Rule, d.Reason
+			e.Verdict, e.Rule, e.Reason = d.Verdict, d.Rule, sandboxDropReason(d)
 			e.Beta = vocab.Verification(e.Verification).IsBeta()
 		}
 		if row.Offered() {
@@ -437,32 +461,45 @@ func sandboxRunCaptureFor(row sandboxbackend.Capability, proxyRouted bool, tier 
 }
 
 // proxyUpstreamHosts lists the host names of the proxy's configured
-// upstreams ([proxy.upstreams] and [proxy.agent_upstreams]), sorted and
+// upstreams ([proxy.upstreams], [proxy.agent_upstreams] and the
+// [proxy.org_route] bootstrap's primary and fallbacks), sorted and
 // deduplicated; loopback and unparsable entries are skipped. They join the
-// gateway's model-provider block, so the set has one owner per source.
+// gateway's model-provider block, so the set has one owner per source. The
+// sources the config does not hold (recorded route lanes, the live lane
+// table) join through sandboxProviderHosts (sandbox_provider_hosts.go).
 func proxyUpstreamHosts(p config.ProxyConfig) []string {
+	var urls []string
+	for _, v := range p.Upstreams {
+		urls = append(urls, v)
+	}
+	for _, v := range p.AgentUpstreams {
+		urls = append(urls, v)
+	}
+	urls = append(urls, p.OrgRoute.Primary)
+	urls = append(urls, p.OrgRoute.Fallbacks...)
+	return providerHostsOfURLs(urls)
+}
+
+// providerHostsOfURLs lists the host names of upstream base URLs, sorted and
+// deduplicated; empty, loopback, literal-IP and unparsable entries are
+// skipped (a literal IP is refused by the block's literal-IP rule anyway).
+func providerHostsOfURLs(urls []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(raw string) {
+	for _, raw := range urls {
 		u, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil {
-			return
+			continue
 		}
 		h := strings.ToLower(u.Hostname())
 		if h == "" || h == "localhost" || seen[h] {
-			return
+			continue
 		}
 		if ip := net.ParseIP(h); ip != nil {
-			return // a literal IP is refused by the block's literal-IP rule anyway
+			continue
 		}
 		seen[h] = true
 		out = append(out, h)
-	}
-	for _, v := range p.Upstreams {
-		add(v)
-	}
-	for _, v := range p.AgentUpstreams {
-		add(v)
 	}
 	sort.Strings(out)
 	return out

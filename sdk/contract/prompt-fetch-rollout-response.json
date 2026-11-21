@@ -1,0 +1,126 @@
+{
+  "_comment": "Recorded from internal/orgserver/sdkapi GET /v1/sdk/prompts/support-reply (contract section 9.3, lane C8): production points at version 3 with version 4 rolled out to 20%; staging points at version 4. One leg per side: user_hash of \"Ünïcode user\" buckets 1 (candidate), of \"alice@example.com\" buckets 74 (base), and an unkeyed fetch (base). Each ETag is the SHA-256 of that leg's exact body. Pinned by internal/orgserver/sdkapi TestPromptFetchRolloutFixture; the machine route serves the same bodies.",
+  "legs": [
+    {
+      "name": "candidate",
+      "query": "label=production\u0026user_hash=c4bc0026adf622e14ee3739a7d91414742575559b577d3dafdfa22ee2f781685",
+      "status": 200,
+      "headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json",
+        "Etag": "\"a19509f6b5de0e5aaf21b90add2e5ff90ba0b8e2379c5acf04b30ec31cca73b3\""
+      },
+      "body": {
+        "api_version": "v1",
+        "name": "support-reply",
+        "version": 4,
+        "type": "text",
+        "prompt": "Hi {{customer}}! About {{topic}}: here is what we found.",
+        "config": {
+          "model": "gpt-5.1-mini",
+          "temperature": 0.3
+        },
+        "labels": [
+          "staging"
+        ],
+        "resolved_by": "label:production",
+        "variables": [
+          "customer",
+          "topic"
+        ],
+        "digest": "sha256:d11007545ced0f5eb03e7cc6921adb1a15818034b882b4ecaf2d8e42d6c3b185",
+        "commit_message": "warmer",
+        "created_at": "2026-11-19T11:00:00Z",
+        "rollout": {
+          "base_version": 3,
+          "candidate_version": 4,
+          "percent": 20,
+          "cohort": "candidate",
+          "key": "user",
+          "salt": "prompt|support-reply|production|4"
+        }
+      }
+    },
+    {
+      "name": "base",
+      "query": "label=production\u0026user_hash=ff8d9819fc0e12bf0d24892e45987e249a28dce836a85cad60e28eaaa8c6d976",
+      "status": 200,
+      "headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json",
+        "Etag": "\"a2144d0382a15cf323b2891e2b9383c76a190ea43c337ca4848c539ab4e6e4e5\""
+      },
+      "body": {
+        "api_version": "v1",
+        "name": "support-reply",
+        "version": 3,
+        "type": "text",
+        "prompt": "Hello {{customer}}, thanks for writing about {{topic}}.",
+        "config": {
+          "model": "gpt-5.1-mini",
+          "temperature": 0.2
+        },
+        "labels": [
+          "production"
+        ],
+        "resolved_by": "label:production",
+        "variables": [
+          "customer",
+          "topic"
+        ],
+        "digest": "sha256:8223611afcd169818ba1574fa13c2d7a51f8afe94770600b86c44e51c5411481",
+        "commit_message": "tone fix",
+        "created_at": "2026-11-19T10:00:00Z",
+        "rollout": {
+          "base_version": 3,
+          "candidate_version": 4,
+          "percent": 20,
+          "cohort": "base",
+          "key": "user",
+          "salt": "prompt|support-reply|production|4"
+        }
+      }
+    },
+    {
+      "name": "unkeyed",
+      "query": "label=production",
+      "status": 200,
+      "headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json",
+        "Etag": "\"134f44db4dabf9d858f5625a2b3403027b17f985d7637d2983f2739f09a0b358\""
+      },
+      "body": {
+        "api_version": "v1",
+        "name": "support-reply",
+        "version": 3,
+        "type": "text",
+        "prompt": "Hello {{customer}}, thanks for writing about {{topic}}.",
+        "config": {
+          "model": "gpt-5.1-mini",
+          "temperature": 0.2
+        },
+        "labels": [
+          "production"
+        ],
+        "resolved_by": "label:production",
+        "variables": [
+          "customer",
+          "topic"
+        ],
+        "digest": "sha256:8223611afcd169818ba1574fa13c2d7a51f8afe94770600b86c44e51c5411481",
+        "commit_message": "tone fix",
+        "created_at": "2026-11-19T10:00:00Z",
+        "rollout": {
+          "base_version": 3,
+          "candidate_version": 4,
+          "percent": 20,
+          "cohort": "unkeyed",
+          "key": "",
+          "salt": "prompt|support-reply|production|4"
+        }
+      }
+    }
+  ],
+  "path": "/v1/sdk/prompts/support-reply"
+}

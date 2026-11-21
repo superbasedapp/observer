@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 )
 
 // writeDB writes one ecosystem's database zip in the layout osvlocal reads
@@ -73,12 +75,12 @@ func TestExtractorsTableIsClosedAndOSIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != len(extractorTable) || len(rows) != 20 {
-		t.Fatalf("got %d rows, want the 20-row table", len(rows))
+	if len(rows) != len(extractorTable) || len(rows) != 36 {
+		t.Fatalf("got %d rows, want the 36-row table (31 of SCALIBR's lockfile and manifest extractors, the facade's GitHub Actions extractor and SCALIBR's 4 artifact extractors)", len(rows))
 	}
 	seen := map[string]bool{}
 	for _, r := range rows {
-		if r.Name == "" || r.Ecosystem == "" || (r.Kind != "lockfile" && r.Kind != "manifest") {
+		if r.Name == "" || r.Ecosystem == "" || (r.Kind != "lockfile" && r.Kind != "manifest" && r.Kind != depscan.ArtifactKind) {
 			t.Errorf("malformed row %+v", r)
 		}
 		if seen[r.Name] {
@@ -88,8 +90,10 @@ func TestExtractorsTableIsClosedAndOSIndependent(t *testing.T) {
 		if r.RequiresOS != "any" {
 			t.Errorf("%s declares OS %q; the Platforms row assumes every extractor is OS-independent", r.Name, r.RequiresOS)
 		}
-		if _, ok := purlTypes[r.Ecosystem]; !ok {
-			t.Errorf("%s feeds %q, which has no canary PURL type", r.Name, r.Ecosystem)
+		_, osvlocal := purlTypes[r.Ecosystem]
+		_, own := ownMatchers[r.Ecosystem]
+		if osvlocal == own {
+			t.Errorf("%s feeds %q, which must have exactly one matcher (a canary PURL type for osvlocal, or an own matcher)", r.Name, r.Ecosystem)
 		}
 	}
 }

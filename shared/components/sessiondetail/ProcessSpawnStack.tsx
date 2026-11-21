@@ -13,7 +13,7 @@ import {
   type ProcessStackItem,
 } from "../../lib/processLayout";
 import { Pill } from "../../primitives";
-import { processStateLabel, processStateTone } from "./ProcessFlame";
+import { processStateLabel, processStateTone, spawnLinkOf } from "./ProcessFlame";
 
 // ProcessSpawnStack - the list half of the "Call stack" view: for the picked
 // process, the chain of processes that started it, read like a stack trace
@@ -25,7 +25,7 @@ import { processStateLabel, processStateTone } from "./ProcessFlame";
 // Pure presentation. Selection is the caller's; message navigation and the
 // session timeline link are injected.
 
-const MAX_CHILD_CHIPS = 8;
+const MAX_CHILD_CHIPS = 16;
 
 export type ProcessSpawnStackProps = {
   index: ProcessStackIndex;
@@ -57,16 +57,13 @@ export function ProcessSpawnStack({
   }, [copied]);
 
   if (!chain.length) {
+    // Nothing picked: one slim line, so the chart keeps the space.
     return (
-      <aside className="rounded-3 border border-line-2 bg-bg-2" aria-label="Spawn stack">
-        <Header title="Spawn stack" />
-        <div className="px-4 py-7 text-center">
-          <div className="text-[13px] font-medium text-fg-1">Pick a process</div>
-          <p className="mt-1 text-[11.5px] text-fg-3">
-            Click any bar to see the chain of processes that started it, from the session down. Arrow keys move
-            between processes.
-          </p>
-        </div>
+      <aside
+        className="rounded-3 border border-dashed border-line-2 px-3 py-1.5 text-[11px] text-fg-4"
+        aria-label="Spawn stack"
+      >
+        Click a bar to see which processes started it.
       </aside>
     );
   }
@@ -75,6 +72,9 @@ export function ProcessSpawnStack({
   const kids = index.children.get(picked.key) ?? [];
   const top = chain[chain.length - 1];
   const orphan = parentNotCaptured(index, top);
+  // The message that started the picked process (inherited from the frame
+  // whose tool call started it): the same link the Tree and Table rows carry.
+  const messageId = spawnLinkOf(index, picked.key)?.node.message_id;
 
   const onKeyDown = (e: KeyboardEvent<HTMLOListElement>) => {
     const move = STACK_KEYS[e.key];
@@ -96,6 +96,21 @@ export function ProcessSpawnStack({
   return (
     <aside className="min-w-0 rounded-3 border border-line-2 bg-bg-2" aria-label="Spawn stack">
       <Header title={`Spawn stack · ${fmtInt(chain.length)} deep`}>
+        {messageId &&
+          (onOpenMessage ? (
+            <button
+              type="button"
+              onClick={() => onOpenMessage(messageId)}
+              className="text-accent hover:underline"
+              title={`Open the message that started this process (${messageId})`}
+            >
+              Open message
+            </button>
+          ) : (
+            <span className="font-mono text-fg-3" title="The message that started this process">
+              {messageId}
+            </span>
+          ))}
         <button type="button" onClick={copy} className="hover:text-fg-1" title="Copy the stack as text">
           {copied ? "Copied" : "Copy"}
         </button>
@@ -111,75 +126,86 @@ export function ProcessSpawnStack({
         )}
       </Header>
 
-      <ol className="py-1.5 outline-none" tabIndex={0} onKeyDown={onKeyDown} aria-label="Processes from the picked one up to the session">
-        {chain.map((it, i) => (
-          <Frame
-            key={it.key}
-            item={it}
-            index={index}
-            current={i === 0}
-            showSpawn={startsOwnCommand(it, chain[i + 1])}
-            onSelect={onSelect}
-            onOpenMessage={onOpenMessage}
-          />
-        ))}
-        {orphan && (
-          <li className="relative py-1.5 pl-[34px] pr-3">
-            <Rail />
-            <span aria-hidden className="absolute left-[12px] top-[10px] h-[11px] w-[11px] rounded-full border-2 border-dashed border-line-3 bg-bg-2" />
-            <div className="flex flex-wrap items-baseline gap-1.5">
-              <span className="text-[12px] font-medium italic text-fg-2">Parent not captured</span>
-              <span className="font-mono text-[10.5px] text-fg-4">pid {top.node.ppid}</span>
-            </div>
-            <div className="text-[10.5px] text-fg-3">
-              This process was started by one the capture never saw, so the chain stops here.
-            </div>
-          </li>
-        )}
-        <li className="relative py-1.5 pl-[34px] pr-3">
-          <Rail last />
-          <span aria-hidden className="absolute left-[12px] top-[10px] h-[11px] w-[11px] rounded-[3px] border-2 border-line-3 bg-bg-2" />
-          <div className="text-[12px] font-medium text-fg-1">{sessionLabel}</div>
-          {onOpenTimeline && (
-            <button type="button" onClick={onOpenTimeline} className="text-[10.5px] text-accent hover:underline">
-              Open the session timeline in Messages
-            </button>
+      {/* Wide: the chain on the left, read top-down as a stack trace; what the
+          picked process started on the right. Narrow: one column. */}
+      <div className="grid lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <ol
+          className="py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-ring"
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          aria-label="Processes from the picked one up to the session"
+        >
+          {chain.map((it, i) => (
+            <Frame
+              key={it.key}
+              item={it}
+              index={index}
+              current={i === 0}
+              showSpawn={startsOwnCommand(it, chain[i + 1])}
+              onSelect={onSelect}
+              onOpenMessage={onOpenMessage}
+            />
+          ))}
+          {orphan && (
+            <li className="relative py-1.5 pl-[34px] pr-3">
+              <Rail />
+              <span aria-hidden className="absolute left-[12px] top-[10px] h-[11px] w-[11px] rounded-full border-2 border-dashed border-line-3 bg-bg-2" />
+              <div className="flex flex-wrap items-baseline gap-1.5">
+                <span className="text-[12px] font-medium italic text-fg-2">Parent not captured</span>
+                <span className="font-mono text-[10.5px] text-fg-4">pid {top.node.ppid}</span>
+              </div>
+              <div className="text-[10.5px] text-fg-3">
+                This process was started by one the capture never saw, so the chain stops here.
+              </div>
+            </li>
           )}
-        </li>
-      </ol>
-
-      <div className="border-t border-line-1 px-3 py-2 text-[11px]">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-          Started {fmtInt(kids.length)} process{kids.length === 1 ? "" : "es"}
-        </div>
-        {kids.length ? (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {kids.slice(0, MAX_CHILD_CHIPS).map((k) => (
-              <button
-                key={k.key}
-                type="button"
-                onClick={() => onSelect(k.key)}
-                className={clsx(
-                  "rounded-1 border border-line-2 bg-bg-3 px-1.5 font-mono text-[10.5px] hover:border-accent-ring hover:text-accent",
-                  k.failed ? "text-danger" : "text-fg-2",
-                )}
-              >
-                {k.node.exe}
-                {k.derived ? "" : ` ${k.node.pid}`}
+          <li className="relative py-1.5 pl-[34px] pr-3">
+            <Rail last />
+            <span aria-hidden className="absolute left-[12px] top-[10px] h-[11px] w-[11px] rounded-[3px] border-2 border-line-3 bg-bg-2" />
+            <div className="text-[12px] font-medium text-fg-1">{sessionLabel}</div>
+            {onOpenTimeline && (
+              <button type="button" onClick={onOpenTimeline} className="text-[10.5px] text-accent hover:underline">
+                Open the session timeline in Messages
               </button>
-            ))}
-            {kids.length > MAX_CHILD_CHIPS && (
-              <span className="self-center text-fg-4">+{fmtInt(kids.length - MAX_CHILD_CHIPS)}</span>
+            )}
+          </li>
+        </ol>
+
+        <div className="flex flex-col border-t border-line-1 lg:border-l lg:border-t-0">
+          <div className="px-3 py-2 text-[11px]">
+            <div className="text-[11px] font-medium text-fg-2">
+              Started {fmtInt(kids.length)} process{kids.length === 1 ? "" : "es"}
+            </div>
+            {kids.length ? (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {kids.slice(0, MAX_CHILD_CHIPS).map((k) => (
+                  <button
+                    key={k.key}
+                    type="button"
+                    onClick={() => onSelect(k.key)}
+                    className={clsx(
+                      "rounded-1 border border-line-2 bg-bg-3 px-1.5 font-mono text-[10.5px] hover:border-accent-ring hover:text-accent",
+                      k.failed ? "text-danger" : "text-fg-2",
+                    )}
+                  >
+                    {k.node.exe}
+                    {k.derived ? "" : ` ${k.node.pid}`}
+                  </button>
+                ))}
+                {kids.length > MAX_CHILD_CHIPS && (
+                  <span className="self-center text-fg-4">+{fmtInt(kids.length - MAX_CHILD_CHIPS)}</span>
+                )}
+              </div>
+            ) : (
+              <div className="mt-0.5 text-fg-4">None. This process did not start any others.</div>
             )}
           </div>
-        ) : (
-          <div className="mt-0.5 text-fg-4">None. This process did not start any others.</div>
-        )}
+          <p className="mt-auto px-3 pb-2.5 text-[10.5px] text-fg-4">
+            This shows which process started which, as the operating system recorded it. It is not a code-level call
+            stack.
+          </p>
+        </div>
       </div>
-      <p className="px-3 pb-2.5 text-[10.5px] text-fg-4">
-        This shows which process started which, as the operating system recorded it. It is not a code-level call
-        stack.
-      </p>
     </aside>
   );
 }
@@ -261,26 +287,26 @@ function Frame({
           <span className="font-mono text-[10.5px] text-fg-4">pid {n.pid}</span>
         )}
         <span className={clsx("text-[10.5px]", processStateTone(item))}>{processStateLabel(item)}</span>
+        <span className="flex basis-full flex-wrap gap-x-2 text-[10.5px] text-fg-3 sm:ml-auto sm:basis-auto sm:justify-end">
+          <span className="tabular-nums">
+            {fmtOffset(item.start - index.minStart)} · {fmtClock(n.started_at)}
+          </span>
+          <span>
+            {item.endKind === "running"
+              ? `${fmtDuration(item.end - item.start)} so far`
+              : item.endKind === "unseen"
+                ? `at least ${fmtDuration(item.end - item.start)}`
+                : fmtDuration(item.end - item.start)}
+          </span>
+          {n.cpu_ms ? <span>{fmtDuration(n.cpu_ms)} cpu</span> : null}
+          {mem ? <span>{fmtBytes(mem)}</span> : null}
+        </span>
       </div>
       {n.argv_preview && (
         <div className="truncate font-mono text-[10.5px] text-fg-3" title={n.argv_preview}>
           {n.argv_preview}
         </div>
       )}
-      <div className="flex flex-wrap gap-x-2 text-[10.5px] text-fg-3">
-        <span className="tabular-nums">
-          {fmtOffset(item.start - index.minStart)} · {fmtClock(n.started_at)}
-        </span>
-        <span>
-          {item.endKind === "running"
-            ? `${fmtDuration(item.end - item.start)} so far`
-            : item.endKind === "unseen"
-              ? `at least ${fmtDuration(item.end - item.start)}`
-              : fmtDuration(item.end - item.start)}
-        </span>
-        {n.cpu_ms ? <span>{fmtDuration(n.cpu_ms)} cpu</span> : null}
-        {mem ? <span>{fmtBytes(mem)}</span> : null}
-      </div>
       {showSpawn && (
         <div
           className="mt-1 flex flex-wrap items-center gap-x-2 rounded-1 border border-line-1 bg-bg-3 px-1.5 py-[2px] text-[10.5px]"

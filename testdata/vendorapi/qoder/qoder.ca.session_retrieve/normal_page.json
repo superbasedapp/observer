@@ -1,0 +1,42 @@
+{
+  "id": "sess_synth0001",
+  "type": "session",
+  "status": "idle",
+  "title": "Synthetic task title",
+  "created_at": "2026-10-30T09:00:00Z",
+  "updated_at": "2026-10-30T09:42:10Z",
+  "archived_at": null,
+  "environment_id": "env_synth01",
+  "environment_variables": {
+    "SYNTH_VAR": "synthetic-env-placeholder"
+  },
+  "metadata": {
+    "ticket": "SYNTH-1"
+  },
+  "agent": {
+    "id": "agent_synth01",
+    "type": "agent",
+    "version": 1,
+    "model": {
+      "id": "ultimate",
+      "effort": "high"
+    },
+    "system": "Synthetic system prompt placeholder."
+  },
+  "stats": {
+    "active_seconds": 512.5,
+    "duration_seconds": 2530
+  },
+  "usage": {
+    "input_tokens": 41200,
+    "output_tokens": 6100,
+    "cache_read_input_tokens": 220400,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 18000,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "model_credits": 7.66,
+    "sandbox_runtime_credits": 0.34,
+    "total_credits": 8
+  }
+}

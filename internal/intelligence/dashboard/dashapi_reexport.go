@@ -23,6 +23,12 @@ const CapabilityView = dashapi.CapabilityView
 // CloudAccountSeams re-exports dashapi.CloudAccountSeams.
 type CloudAccountSeams = dashapi.CloudAccountSeams
 
+// SDKSeams is dashapi.SDKSeams (Plane A W2-7).
+type SDKSeams = dashapi.SDKSeams
+
+// OTLPReceiverState re-exports dashapi.OTLPReceiverState.
+type OTLPReceiverState = dashapi.OTLPReceiverState
+
 // CloudCommandRunner re-exports dashapi.CloudCommandRunner.
 type CloudCommandRunner = dashapi.CloudCommandRunner
 
@@ -223,6 +229,15 @@ type FamilyRow = dashapi.FamilyRow
 
 // FreshLaunchSpec re-exports dashapi.FreshLaunchSpec.
 type FreshLaunchSpec = dashapi.FreshLaunchSpec
+
+// FreshLaunchResult re-exports dashapi.FreshLaunchResult.
+type FreshLaunchResult = dashapi.FreshLaunchResult
+
+// FreshLaunchDetailer re-exports dashapi.FreshLaunchDetailer.
+type FreshLaunchDetailer = dashapi.FreshLaunchDetailer
+
+// SecretMaskOutcome re-exports dashapi.SecretMaskOutcome.
+type SecretMaskOutcome = dashapi.SecretMaskOutcome
 
 // GUILaunchResult re-exports dashapi.GUILaunchResult.
 type GUILaunchResult = dashapi.GUILaunchResult
@@ -455,6 +470,9 @@ var SpawnAuditKind = dashapi.SpawnAuditKind
 // StandingTerminalVerifier re-exports dashapi.StandingTerminalVerifier.
 type StandingTerminalVerifier = dashapi.StandingTerminalVerifier
 
+// SwitchOptions re-exports dashapi.SwitchOptions.
+type SwitchOptions = dashapi.SwitchOptions
+
 // TerminalControlAuthorizer re-exports dashapi.TerminalControlAuthorizer.
 type TerminalControlAuthorizer = dashapi.TerminalControlAuthorizer
 
@@ -463,6 +481,9 @@ type TerminalRoot = dashapi.TerminalRoot
 
 // TerminalSessionLink re-exports dashapi.TerminalSessionLink.
 type TerminalSessionLink = dashapi.TerminalSessionLink
+
+// RuleRelaxationFact re-exports dashapi.RuleRelaxationFact.
+type RuleRelaxationFact = dashapi.RuleRelaxationFact
 
 // TerminalStatusProvider re-exports dashapi.TerminalStatusProvider.
 type TerminalStatusProvider = dashapi.TerminalStatusProvider
@@ -505,6 +526,12 @@ const VerdictDisabledByConfig = dashapi.VerdictDisabledByConfig
 
 // VerdictNotInBuild re-exports dashapi.VerdictNotInBuild.
 const VerdictNotInBuild = dashapi.VerdictNotInBuild
+
+// VerdictProbeTimedOut re-exports dashapi.VerdictProbeTimedOut.
+const VerdictProbeTimedOut = dashapi.VerdictProbeTimedOut
+
+// VerdictProbeFailed re-exports dashapi.VerdictProbeFailed.
+const VerdictProbeFailed = dashapi.VerdictProbeFailed
 
 // VerdictRuntimeInitFailed re-exports dashapi.VerdictRuntimeInitFailed.
 const VerdictRuntimeInitFailed = dashapi.VerdictRuntimeInitFailed

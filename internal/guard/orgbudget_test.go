@@ -489,9 +489,9 @@ func TestProtectedBudgetRowsIgnoreLocalPolicyAndApprovals(t *testing.T) {
 		cfg.Rules.Disable = []string{"B-625"}
 		g := newTestGuard(t, cfg, nil)
 		approvalCalls := 0
-		g.SetApprovalLookup(func(string, string, string) bool {
+		g.SetApprovalLookup(func(string, string, string) (bool, error) {
 			approvalCalls++
-			return true
+			return true, nil
 		})
 		if err := g.ApplyOrgBudget(cfg.Budget, nil, true, policy.BudgetProtection{}, ""); err != nil {
 			t.Fatalf("ApplyOrgBudget: %v", err)
@@ -537,9 +537,9 @@ func TestProtectedBudgetRowsIgnoreLocalPolicyAndApprovals(t *testing.T) {
 			g.budgetMu.Unlock()
 			g.SetBudgetLookup(func(string) (BudgetSnapshot, bool) { return tc.snap, true })
 			approvalCalls := 0
-			g.SetApprovalLookup(func(string, string, string) bool {
+			g.SetApprovalLookup(func(string, string, string) (bool, error) {
 				approvalCalls++
-				return true
+				return true, nil
 			})
 			var res ProxyRequestResult
 			g.scanBudget(g.set.Load(), &res, "s-"+tc.name, "api.anthropic.com", time.Now().UTC())
@@ -564,9 +564,9 @@ func TestLocalHardBudgetApprovalStillDowngrades(t *testing.T) {
 		return BudgetSnapshot{DailyTokens: 101}, true
 	})
 	approvalCalls := 0
-	g.SetApprovalLookup(func(ruleID, _, _ string) bool {
+	g.SetApprovalLookup(func(ruleID, _, _ string) (bool, error) {
 		approvalCalls++
-		return ruleID == "B-622"
+		return ruleID == "B-622", nil
 	})
 
 	var res ProxyRequestResult

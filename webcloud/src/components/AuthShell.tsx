@@ -4,12 +4,17 @@ import type { LucideIcon } from "lucide-react";
 import { ChevronRight, Eye, LayoutDashboard, Lock, MonitorSmartphone, ShieldCheck } from "lucide-react";
 import { AuthShell as SharedAuthShell, type AuthWidth } from "@shared/components/auth/AuthShell";
 import { Icon } from "@shared/primitives/Icon";
+import { ThemeToggle } from "./ThemeToggle";
 
-// The portal's pre-app screens (SignIn, ConsentSetup) on the ONE shared
-// sign-in recipe (shared/components/auth/AuthShell.tsx: backdrop, lockup,
-// raised card; the same one the org dashboard uses). What stays here is
-// portal CONTENT under the card: the "device -> preview -> portal" strip and
-// the trust row. Purely presentational: no fetch, no state, no routing.
+// The portal's pre-app screens (SignIn and its sign-up variant, the connect
+// code entry and approval pages, ConsentSetup) on the ONE shared sign-in
+// recipe (shared/components/auth/AuthShell.tsx: backdrop, lockup, raised
+// card; the same one the org dashboard uses). What stays here is portal
+// CONTENT: the "device -> preview -> portal" strip and the trust row under
+// the card, and the shared theme toggle in the corner (these screens have no
+// top bar, so the toggle the signed-in TopBar carries lives here). Purely
+// presentational: no fetch, no routing; the toggle reads the shared theme
+// state.
 
 /** A step of the upload flow the strip explains. */
 export type AuthStep = "device" | "preview" | "portal";
@@ -19,9 +24,9 @@ export type AuthStep = "device" | "preview" | "portal";
 // sessions stay on the device, the `observer cloud` preview is the exact
 // bytes an upload would send, and results come back to this portal.
 const AUTH_STEPS: readonly { id: AuthStep; icon: LucideIcon; label: string; line: string }[] = [
-  { id: "device", icon: MonitorSmartphone, label: "Your device", line: "Sessions stay local" },
-  { id: "preview", icon: Eye, label: "Preview", line: "See exactly what is sent" },
-  { id: "portal", icon: LayoutDashboard, label: "Portal", line: "Results come back here" },
+  { id: "device", icon: MonitorSmartphone, label: "Your machine", line: "Observer runs there" },
+  { id: "preview", icon: Eye, label: "Approve", line: "You choose what is sent" },
+  { id: "portal", icon: LayoutDashboard, label: "Dashboard", line: "One place for every machine" },
 ];
 
 // TRUST_ROW: the portal's one privacy promise ("Nothing leaves your machine
@@ -29,7 +34,7 @@ const AUTH_STEPS: readonly { id: AuthStep; icon: LucideIcon; label: string; line
 // claim here that the promise itself does not already make.
 const TRUST_ROW: readonly { icon: LucideIcon; label: string }[] = [
   { icon: ShieldCheck, label: "Stays on your machine" },
-  { icon: Eye, label: "You preview it" },
+  { icon: Eye, label: "You see what is sent" },
   { icon: Lock, label: "You approve it" },
 ];
 
@@ -37,7 +42,7 @@ const TRUST_ROW: readonly { icon: LucideIcon; label: string }[] = [
  *  the step this screen is (aria-current="step"). */
 export function StepStrip({ current }: { current?: AuthStep }) {
   return (
-    <ol aria-label="How Cloud Intelligence works" className="auth-steps">
+    <ol aria-label="How superbased works" className="auth-steps">
       {AUTH_STEPS.map((s, i) => {
         const on = s.id === current;
         return (
@@ -80,7 +85,7 @@ export function TrustRow() {
         ))}
       </ul>
       <p className="text-[11.5px] leading-relaxed text-fg-3">
-        Nothing leaves your machine until you preview it and approve it.{" "}
+        Nothing leaves your machine until you approve it.{" "}
         <a
           className="text-fg-2 underline decoration-line-3 underline-offset-2 transition-colors hover:text-fg-0"
           href="https://superbased.app/privacy"
@@ -114,6 +119,7 @@ export function AuthShell({
       title={title}
       intro={intro}
       width={width}
+      corner={<ThemeToggle />}
       below={
         <>
           <StepStrip current={step} />

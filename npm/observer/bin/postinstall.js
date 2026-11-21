@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // @superbased/observer postinstall: PRINT-ONLY (T-753).
 //
+// On every OS it prints one next-step line (Getting started v2): run
+// `observer start`, which opens the dashboard, where signing in is the
+// recommended next step. It never starts anything itself.
+//
 // `npm install -g` over an older version swaps the platform package's
 // directory underneath a running Observer daemon: the old process keeps
 // running the deleted binary until it is restarted (the rc.3 roll found
@@ -137,11 +141,22 @@ function emit(text) {
   process.stderr.write(text);
 }
 
+// NEXT_STEP is the one line every fresh install prints, on every OS.
+const NEXT_STEP = 'Installed. Next: observer start (opens your dashboard, where you sign in)\n';
+
+// main prints the stale-daemon note when an updated install left a running
+// daemon on the previous binary (Linux only: it reads /proc), and otherwise
+// the next-step line.
 function main() {
-  if (process.platform !== 'linux') return;
-  const root = process.env.OBSERVER_POSTINSTALL_PROC_ROOT || '/proc';
-  const pids = staleDaemons(root, installedBinary());
-  if (pids.length > 0) emit(note(pids, root));
+  if (process.platform === 'linux') {
+    const root = process.env.OBSERVER_POSTINSTALL_PROC_ROOT || '/proc';
+    const pids = staleDaemons(root, installedBinary());
+    if (pids.length > 0) {
+      emit(note(pids, root));
+      return;
+    }
+  }
+  emit(NEXT_STEP);
 }
 
 if (require.main === module) {
@@ -153,4 +168,4 @@ if (require.main === module) {
   process.exit(0);
 }
 
-module.exports = { staleDaemons, note, retiredDir, installedBinary, underServiceUnit };
+module.exports = { staleDaemons, note, retiredDir, installedBinary, underServiceUnit, NEXT_STEP };

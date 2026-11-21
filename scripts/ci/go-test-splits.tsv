@@ -1,0 +1,56 @@
+# go-test-splits.tsv - test packages too slow for one CI shard, split by test
+# name into <parts> units that the shards schedule like packages.
+#
+# Columns: <module-relative package path> TAB <parts, at least 2>.
+# Lines starting with '#' and blank lines are ignored.
+#
+# Why (lane CICD, 2026-11-01): one package cannot be split across shards by
+# LPT, so the slowest package bounds the whole go test matrix. In the two
+# latest full runs cmd/observer took 4978 s, cmd/observer-org 3895 s and
+# tests/e2e/orgserver 2751 s under -race on a 2-vCPU runner, and the shard
+# holding cmd/observer ran 96 minutes against 29 for the fastest one.
+#
+# How: scripts/ci/go-test-shards.sh lists such a package as <import>#<i>/<k>
+# units, each weighing 1/k of the package's weight, and
+# scripts/ci/go-test-run.sh runs a unit as `go test <flag> <package>` where
+# the flag comes from `go run ./scripts/ci/cipkgs split <dir> <i> <k>`: parts
+# 0..k-2 run their groups of test names (-run), the last part runs whatever
+# the earlier parts do not (-skip), so the k parts cover the package exactly
+# once by construction (cipkgs TestSplitPartsCoverEveryTestOnce). Each part
+# builds the same test binary (shared through the build cache) and runs
+# TestMain once.
+#
+# Pick parts so a unit weighs well under one shard's target (go-test-shards.sh
+# plan, 5100 package-seconds): weight / parts <= about 2000.
+#
+# cmd/observer has 20 parts (2026-11-11), far more than the 2000
+# package-second rule needs, for tools/testrunner: on Modal its three parts
+# took 26 to 53 minutes each and the longest set the whole run's wall time
+# while the other workers sat idle. Twenty parts of about 3,600 tests run in
+# a few minutes each. Every part builds the same -race test binary, but a
+# worker builds it once and its later parts reuse the build cache, so the
+# extra builds are bounded by the worker count, not the part count.
+cmd/observer	20
+#
+# cmd/observer-org has 8 parts (2026-11-11), for the same reason: on Modal
+# its two parts took 9 and 29 minutes, the next longest unit once
+# cmd/observer was split.
+cmd/observer-org	8
+#
+# internal/orgserver has 6 parts (2026-11-12): once cmd/observer and
+# cmd/observer-org were split it was the longest testrunner unit (about 23
+# minutes of CI weight under -race, about twice that on Modal).
+# tests/e2e/orgserver has 8 parts (2026-11-12): its two parts took 15 and 17
+# minutes on Modal, nearly all of it in the tests themselves (30 to 77 s each)
+# and about a minute in the build. Most of its tests share one three-letter
+# prefix, which cipkgs now refines (groupCounts).
+internal/orgserver	6
+tests/e2e/orgserver	8
+#
+# internal/store, internal/db and internal/intelligence/dashboard have 3
+# parts each (2026-11-12): on the Docker gate of 2026-11-12 they were the
+# three longest Go units (14 to 21 minutes on an 8-CPU box beside five other
+# -race builds; 630 to 703 s of CI weight).
+internal/store	3
+internal/db	3
+internal/intelligence/dashboard	3

@@ -1,6 +1,7 @@
 package sandboxbackend
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,6 +17,10 @@ func TestRowKeysMatchIDsAndVocabulary(t *testing.T) {
 		BackendCodespaces: true, BackendCoder: true, BackendE2B: true, BackendK8sAgentSandbox: true, BackendAgentCore: true,
 		BackendModal: true, BackendVercelSandbox: true,
 		BackendMXCAppContainer: true, BackendWSLC: true, BackendHCS: true,
+		BackendOpenShell: true, BackendOpenShellOrg: true,
+		BackendDockerSandboxes: true,
+		BackendInstaBox:        true,
+		BackendDaytona:         true,
 	}
 	for key, c := range registry {
 		if key != c.ID {
@@ -56,7 +61,7 @@ func TestPlannedRowsAreNeverOffered(t *testing.T) {
 	for _, c := range Offered() {
 		ids = append(ids, c.ID)
 	}
-	want := []string{BackendAppleContainer, BackendBwrap, BackendCloudHypervisor, BackendE2B, BackendHCS, BackendModal, BackendMXCAppContainer, BackendMXCProcess, BackendOCIRunc, BackendOCIRunsc, BackendProcessLite, BackendSeatbelt, BackendVercelSandbox, BackendWSLC}
+	want := []string{BackendAppleContainer, BackendBwrap, BackendCloudHypervisor, BackendDaytona, BackendDockerSandboxes, BackendE2B, BackendHCS, BackendInstaBox, BackendModal, BackendMXCAppContainer, BackendMXCProcess, BackendOCIRunc, BackendOCIRunsc, BackendOpenShell, BackendOpenShellOrg, BackendProcessLite, BackendSeatbelt, BackendVercelSandbox, BackendWSLC}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Errorf("offered rows = %v, want %v", ids, want)
 	}
@@ -165,6 +170,25 @@ func TestSharedTenancyIsNeverAVMLayer(t *testing.T) {
 	}
 }
 
+// TestHostRefusalsNameHostsTheRowDoesNotRunOn: a declared refusal reason
+// is for a host outside the row's Hosts, and is never empty (an empty one
+// would read as "no reason" and hide the generic text's host name).
+func TestHostRefusalsNameHostsTheRowDoesNotRunOn(t *testing.T) {
+	for _, c := range registry {
+		for h, reason := range c.Iso.HostRefusals {
+			if c.RunsOn(h) {
+				t.Errorf("%s: a refusal reason for %s, a host it runs on", c.ID, h)
+			}
+			if strings.TrimSpace(reason) == "" || c.HostRefusal(h) != reason {
+				t.Errorf("%s: refusal reason for %s is %q", c.ID, h, reason)
+			}
+		}
+	}
+	if r := (Capability{}).HostRefusal(HostWSL2); r != "" {
+		t.Errorf("a row with no refusals answered %q", r)
+	}
+}
+
 func TestHostMutationIsDisclosed(t *testing.T) {
 	for _, c := range registry {
 		if !c.Iso.HostMutation {
@@ -231,12 +255,19 @@ func TestMacOSRowsAreDocVerified(t *testing.T) {
 // offer the host tier, never list provider_injected custody, and carry a
 // lifetime cap (S13).
 func TestHostedRowsAreBetaRemoteAndRelayed(t *testing.T) {
-	for _, id := range []string{BackendE2B, BackendModal, BackendVercelSandbox} {
+	// The class source each row grounds: docker-sandboxes' cloud isolation
+	// is documented nowhere, so it is claimed (dockerHostedRow).
+	classSource := map[string]vocab.ClassSource{BackendDockerSandboxes: vocab.SourceClaimed}
+	for _, id := range []string{BackendE2B, BackendModal, BackendVercelSandbox, BackendDockerSandboxes, BackendInstaBox, BackendDaytona} {
 		c, ok := Get(id)
 		if !ok || !c.Offered() || c.Maturity != MaturityPreview {
 			t.Fatalf("%s: not an offered preview row", id)
 		}
-		if c.Iso.Location != vocab.LocationRemote || !c.Iso.CrossesKernel || c.Iso.ClassSource != vocab.SourceDocumented {
+		want := vocab.SourceDocumented
+		if s, ok := classSource[id]; ok {
+			want = s
+		}
+		if c.Iso.Location != vocab.LocationRemote || !c.Iso.CrossesKernel || c.Iso.ClassSource != want {
 			t.Errorf("%s: isolation %+v", id, c.Iso)
 		}
 		for _, h := range c.Iso.Hosts {
@@ -262,7 +293,7 @@ func TestHostedRowsAreBetaRemoteAndRelayed(t *testing.T) {
 		for _, d := range c.Discloses {
 			disc[d] = true
 		}
-		if !disc[DiscloseDataLeaves] || !disc[DiscloseAccountLogin] || !disc[DisclosePaidTier] {
+		if !disc[DiscloseDataLeaves] || !disc[DiscloseAccountLogin] || !disc[DisclosePaidTier] || !disc[DiscloseNoHookGating] {
 			t.Errorf("%s: disclosures %v", id, c.Discloses)
 		}
 		if c.Term.Resize == ResizeGuest && c.Term.PTYOwner != PTYGuestHelper {
@@ -311,5 +342,220 @@ func TestCloudHypervisorRowIsABetaMeasuredVM(t *testing.T) {
 	}
 	if c.GuestUnprivUserns || c.PassesKVM {
 		t.Errorf("the row claims nested userns %v or /dev/kvm passthrough %v", c.GuestUnprivUserns, c.PassesKVM)
+	}
+}
+
+// TestSeccompFieldIsGrounded (lane N2): a row's seccomp field is in the
+// closed vocabulary or not grounded, a grounded value carries a source
+// that counts, the lightweight rows Observer filters say so, and the OCI
+// rows name the engine's default filter they read back.
+func TestSeccompFieldIsGrounded(t *testing.T) {
+	t.Parallel()
+	for id, row := range registry {
+		if row.Iso.Seccomp == "" {
+			if row.Iso.SeccompSource != "" {
+				t.Errorf("%s: a seccomp source without a seccomp value", id)
+			}
+			continue
+		}
+		if !row.Iso.Seccomp.Valid() {
+			t.Errorf("%s: seccomp %q is not in the vocabulary", id, row.Iso.Seccomp)
+		}
+		if !row.Iso.SeccompSource.CountsForFloor() {
+			t.Errorf("%s: seccomp source %q", id, row.Iso.SeccompSource)
+		}
+	}
+	for id, want := range map[string]vocab.Seccomp{
+		BackendBwrap:       vocab.SeccompObserverProfile,
+		BackendProcessLite: vocab.SeccompObserverProfile,
+		BackendOCIRunc:     vocab.SeccompEngineDefault,
+		BackendOCIRunsc:    vocab.SeccompEngineDefault,
+	} {
+		row, _ := Get(id)
+		if row.Iso.Seccomp != want {
+			t.Errorf("%s: seccomp %q, want %q", id, row.Iso.Seccomp, want)
+		}
+		if row.FiltersWithObserverProfile() != (want == vocab.SeccompObserverProfile) {
+			t.Errorf("%s: FiltersWithObserverProfile disagrees with the field", id)
+		}
+	}
+}
+
+// TestRefusalAuditIsGroundedPerRow (lane N4): one row per backend id says
+// on which of its egress tiers a launch is covered by the daemon's refusal
+// audit (lane N1), and why. A new backend fails here until it states its
+// tiers. An audited row is local, enforced by Observer's own gateway, names
+// its grounding, and audits only tiers it offers; the host tier (the shared
+// host network, no gateway) is never audited (audit finding N4-A1).
+func TestRefusalAuditIsGroundedPerRow(t *testing.T) {
+	t.Parallel()
+	private := []vocab.Tier{vocab.TierInternet, vocab.TierProxyOnly, vocab.TierNone}
+	// auditingEnforcers are the enforcers whose refusals reach the daemon's
+	// audit: Observer's own gateway (lane N1) and OpenShell's proxy through
+	// its OCSF export (lane O3). A provider or a NetworkPolicy never does.
+	auditingEnforcers := []EgressEnforcer{EnforcerObserverGateway, EnforcerOpenShellProxy}
+	cases := []struct {
+		id   string
+		want []vocab.Tier
+		why  string
+	}{
+		{BackendBwrap, private, "hostEgressGateway reports on the relay link on internet; proxy_only and none have no way out; host has no gateway"},
+		{BackendProcessLite, nil, "no egress enforcer: the host tier only, so nothing is ever refused or recorded"},
+		{BackendOCIRunc, private, "hostEgressGateway in the oci host helper and the re-adopt helper"},
+		{BackendOCIRunsc, private, "the same oci driver and host helper as oci-runc"},
+		{BackendCloudHypervisor, private, "the microVM host helper runs startHostServices; the gateway rides the vsock mux"},
+		{BackendSeatbelt, private, "the macOS helper's gateway reports"},
+		{BackendAppleContainer, private, "the macOS helper's gateway reports"},
+		{BackendMXCProcess, private, "mxcGatewayFor reports over the named pipe"},
+		{BackendMXCAppContainer, nil, "runs are refused by name in this release"},
+		{BackendWSLC, nil, "provider-enforced, and runs are refused by name"},
+		{BackendHCS, nil, "runs are refused by name in this release"},
+		{BackendOpenShell, private, "OpenShell's proxy denies; the loopback OCSF receiver maps each denial into the audit, and an internet launch without the export is refused (lane O3)"},
+		{BackendE2B, nil, "the provider enforces egress; Observer's gateway never sees it"},
+		{BackendOpenShellOrg, nil, "denials happen on the org's machine and are not carried to the node in v1 (g1-design.md section 6.4)"},
+		{BackendModal, nil, "the provider enforces egress"},
+		{BackendVercelSandbox, nil, "the provider enforces egress"},
+		{BackendDockerSandboxes, nil, "the provider enforces egress"},
+		{BackendInstaBox, nil, "the provider's own open egress; internet tier only"},
+		{BackendDaytona, nil, "the provider enforces egress"},
+		{BackendCodespaces, nil, "planned"},
+		{BackendCoder, nil, "planned"},
+		{BackendK8sAgentSandbox, nil, "planned"},
+		{BackendAgentCore, nil, "planned"},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		seen[tc.id] = true
+		c, ok := Get(tc.id)
+		if !ok {
+			t.Errorf("%s: no row", tc.id)
+			continue
+		}
+		if !slices.Equal(c.Net.RefusalAuditTiers, tc.want) {
+			t.Errorf("%s: RefusalAuditTiers %v, want %v (%s)", tc.id, c.Net.RefusalAuditTiers, tc.want, tc.why)
+		}
+		// One case per offered tier: the method agrees with the list, and
+		// host is never audited.
+		for _, tier := range c.Net.Egress {
+			if got, want := c.Net.AuditsRefusalsOn(tier), slices.Contains(tc.want, tier); got != want {
+				t.Errorf("%s/%s: AuditsRefusalsOn %v, want %v", tc.id, tier, got, want)
+			}
+			if tier == vocab.TierHost && c.Net.AuditsRefusalsOn(tier) {
+				t.Errorf("%s: the host tier is audited, but it starts no gateway", tc.id)
+			}
+		}
+		for _, tier := range c.Net.RefusalAuditTiers {
+			if !c.OffersTier(tier) {
+				t.Errorf("%s: audits tier %s it does not offer", tc.id, tier)
+			}
+		}
+		if !c.Net.AuditsRefusals() {
+			if c.Net.RefusalAuditSource != "" {
+				t.Errorf("%s: a refusal audit source on a row that does not audit", tc.id)
+			}
+			continue
+		}
+		if c.Net.RefusalAuditSource == "" || !strings.Contains(c.Net.RefusalAuditSource, "Test") {
+			t.Errorf("%s: RefusalAuditTiers without a file and a test in its source", tc.id)
+		}
+		if !slices.Contains(auditingEnforcers, c.Net.Enforcer) || c.Iso.Location != vocab.LocationLocal || !c.Offered() {
+			t.Errorf("%s: RefusalAuditTiers on a row that is not an offered local row whose enforcer reports refusals (%v)", tc.id, auditingEnforcers)
+		}
+	}
+	for _, id := range IDs() {
+		if !seen[id] {
+			t.Errorf("%s: no refusal audit case", id)
+		}
+	}
+}
+
+// TestOpenShellRow (lane O1A, OpenShell plan doc 04 R2.5): the openshell row
+// is an offered preview container row, explicit-only, Linux only, beta with
+// the O0 receipt as its grounding, the CLI as its interface, enforced by
+// OpenShell's own proxy (never Observer's gateway beside it, W4) on the
+// private tiers only, hooked through the relay, and disclosing the CLI
+// telemetry, the gateway-wide bind-mount opt-in (D3) and the shared tmpfs
+// home (F-017 A4).
+func TestOpenShellRow(t *testing.T) {
+	t.Parallel()
+	c, ok := Get(BackendOpenShell)
+	if !ok || !c.Offered() || c.Maturity != MaturityPreview || !c.ExplicitOnly {
+		t.Fatalf("row %+v", c)
+	}
+	if !slices.Equal(c.Iso.Hosts, []HostKind{HostLinux}) || c.RunsOn(HostWSL2) {
+		t.Errorf("hosts %v: Linux only (WSL2 fails closed)", c.Iso.Hosts)
+	}
+	// Live check O5-L2 (2026-11-01): the selector's platform rule refuses
+	// WSL2 before the probe's P1 runs, so the row carries P1's reason.
+	if r := c.HostRefusal(HostWSL2); r != OpenShellWSL2Refusal || !strings.Contains(r, "WSL2") || !strings.Contains(r, "ENOSYS") {
+		t.Errorf("WSL2 refusal reason %q: want one naming WSL2 and ENOSYS", r)
+	}
+	if r := c.HostRefusal(HostMacOS); r != "" {
+		t.Errorf("macOS refusal reason %q: want the selector's generic text", r)
+	}
+	v, ok := c.VerificationOn(HostLinux)
+	if !ok || v.Kind != vocab.VerifiedDoc || !strings.Contains(v.Source, "linux-2026-10-31-f04566") || v.RegisterRef == "" {
+		t.Errorf("linux grounding %+v", v)
+	}
+	if c.Iso.Class != vocab.ClassContainer || c.Iso.ClassSource != vocab.SourceDocumented || c.ReadBack != ReadBackNone || c.Iso.CrossesKernel || c.Iso.Location != vocab.LocationLocal {
+		t.Errorf("isolation %+v read-back %s", c.Iso, c.ReadBack)
+	}
+	if c.Control.Interface != InterfaceCLI || c.Control.Stability != StabilityVendorPreview || c.Control.Pins.RequiredMin != "0.1.6" || !c.Control.Pins.RequireAuthenticatedVersion {
+		t.Errorf("control %+v", c.Control)
+	}
+	// Lane O3: the internet tier is offered (the host list compiled onto
+	// OpenShell's network rules); the host tier never is.
+	if c.Net.Enforcer != EnforcerOpenShellProxy || c.OffersTier(vocab.TierHost) || !c.OffersTier(vocab.TierInternet) || c.Net.ProviderHostBlock {
+		t.Errorf("network %+v", c.Net)
+	}
+	if c.Capture != (Capture{Ceiling: vocab.CaptureFull, HookPath: HookRelay}) {
+		t.Errorf("capture %+v", c.Capture)
+	}
+	for _, want := range []Disclosure{DiscloseCLITelemetry, DiscloseGatewayBindMounts, DiscloseSharedHomeTmpfs} {
+		if !slices.Contains(c.Discloses, want) {
+			t.Errorf("missing disclosure %s in %v", want, c.Discloses)
+		}
+	}
+	if c.Term.Reattach != ReattachNone || c.Term.Resize != ResizeBackendAPI {
+		t.Errorf("terminal %+v", c.Term)
+	}
+}
+
+// TestSetupColumn: every offered row carries a setup list or the reason it
+// has none, never both and never neither; a planned row carries neither;
+// no row lists an id twice. Whether each id names a real prerequisite is
+// internal/sandboxsetup's coverage test (this package imports only
+// internal/sandboxvocab).
+func TestSetupColumn(t *testing.T) {
+	for _, id := range IDs() {
+		c, _ := Get(id)
+		hasList, hasReason := len(c.Setup) > 0, c.SetupUnavailable != ""
+		switch {
+		case !c.Offered() && (hasList || hasReason):
+			t.Errorf("%s: a planned row carries no setup column", id)
+		case c.Offered() && hasList == hasReason:
+			t.Errorf("%s: an offered row carries exactly one of Setup and SetupUnavailable (list %v, reason %q)", id, c.Setup, c.SetupUnavailable)
+		}
+		seen := map[string]bool{}
+		for _, p := range c.Setup {
+			if p == "" || seen[p] {
+				t.Errorf("%s: setup id %q empty or listed twice", id, p)
+			}
+			seen[p] = true
+		}
+	}
+}
+
+// TestSetupBetaRows pins exactly which rows label their setup beta
+// (operator ruling P-256): the HCS row only, with its sentence.
+func TestSetupBetaRows(t *testing.T) {
+	want := map[string]string{
+		BackendHCS: "Setup on Windows 11 Pro is beta: it has not been checked on a live host yet.",
+	}
+	for _, id := range IDs() {
+		c, _ := Get(id)
+		if c.SetupBeta != want[id] {
+			t.Errorf("%s: SetupBeta = %q, want %q", id, c.SetupBeta, want[id])
+		}
 	}
 }

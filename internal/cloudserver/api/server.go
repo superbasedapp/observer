@@ -7,15 +7,21 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudmetrics"
 	clouddb "github.com/marmutapp/superbased-observer/internal/cloudserver/db"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/oidcissuer/oidchttp"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/staffauth"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -165,6 +171,14 @@ type Options struct {
 	// environment, client token, prices, trial length) GET /portal/api/billing
 	// exposes. Zero value ⇒ Available() is false, the honest dark posture.
 	PaddleCheckout PaddleCheckout
+	// PaddlePortal mints Paddle customer portal sessions (wave 17,
+	// paddle_portal.go): a *paddleapi.Client built from SBCI_PADDLE_API_KEY_FILE
+	// for SBCI_PADDLE_ENV's API. nil ⇒ the portal-session routes answer 501.
+	PaddlePortal PaddlePortalAPI
+	// PaddlePastDueGrace is the dunning window the console's org plan view
+	// applies (W16-D5, SBCI_PADDLE_PAST_DUE_GRACE_DAYS; 0: the default 14
+	// days), the same value the worker's plan source gets.
+	PaddlePastDueGrace time.Duration
 
 	// --- Canonical hosts (plan §2 R5) ---
 	//
@@ -197,6 +211,92 @@ type Options struct {
 	// fails closed by disabling the redirect rather than serving a broken
 	// one, and logs the rejection.
 	RootRedirectURL *string
+
+	// OIDCIssuer is the platform OIDC issuer (managed-SaaS M6.2). Nil (the
+	// default) leaves the /oauth2 routes unmounted. Its identifier must be
+	// the portal origin plus oidcissuer.IssuerPath (see oidcroutes.go).
+	OIDCIssuer *oidcissuer.Issuer
+	// TenantDomain is the parent domain tenant dashboards live under
+	// (`<slug>.<TenantDomain>`, "superbased.app" in production). It is the
+	// only input to the GET /portal/api/me/orgs CORS decision; EMPTY means no
+	// cross-origin caller is ever allowed (fail closed). See meorgs.go.
+	TenantDomain string
+	// TeamCreateAllowlist turns on the team create allow-list (W17,
+	// portal_teamallowlist.go; SBCI_TEAM_CREATE_ALLOWLIST): a TEAM org may
+	// then be created only by an allow-listed account or verified email
+	// domain. A personal org is never checked. On by default on the
+	// production kit until GO-3 (deploy/saas-ovh/cloud-app).
+	TeamCreateAllowlist bool
+	// PortalWebAuthn verifies the portal's passkey second factor (C2,
+	// portalmfa.go): the staff console's verifier, reused with the portal's
+	// own relying party (the portal host). Nil means staffauth.Unavailable:
+	// the passkey routes answer 501 not_available, and no account can enrol.
+	PortalWebAuthn staffauth.Verifier
+	// PortalSecurityNotifier tells the account holder when a recovery code is
+	// used and when recovery-code entry locks (FR-24). Nil: audit rows only.
+	// The mail-backed implementation is wired by the cloud binary (it owns the
+	// SMTP egress lane); implementations must not block.
+	PortalSecurityNotifier PortalSecurityNotifier
+
+	// --- Staff console (managed-SaaS M6.8; staff.go) ---
+	//
+	// These configure StaffHandler only, which the separate staff process
+	// serves (`observer-cloud staff serve`); Handler mounts no staff route.
+	//
+	// StaffWebAuthn verifies staff passkey ceremonies; the staff process
+	// wires staffauth/passkey. Nil means staffauth.Unavailable: the
+	// /staff/auth/webauthn/* routes answer 501 not_available and no staff
+	// session can be minted.
+	StaffWebAuthn staffauth.Verifier
+	// StaffHost is the canonical host of /staff; empty means the host of
+	// StaffBaseURL.
+	StaffHost string
+	// StaffBaseURL is the staff console's exact origin, the one a WebAuthn
+	// clientDataJSON must carry; its host name is the relying-party id (never
+	// a parent domain, ruling A3) and its scheme selects the cookie shape.
+	// Empty means DefaultStaffBaseURL (https://staff.superbased.app).
+	StaffBaseURL string
+	// StaffSessionTTL / StaffSessionIdleTTL are the staff session's absolute
+	// and idle lives; zero means store.DefaultStaffSessionTTL (8h) and
+	// store.DefaultStaffSessionIdleTTL (30m).
+	StaffSessionTTL     time.Duration
+	StaffSessionIdleTTL time.Duration
+	// StaffSupportIssuer is the platform OIDC issuer's identifier (the
+	// portal origin plus /oauth2) the staff console writes support codes
+	// for (M7a.2, staffsupport.go); empty leaves GET /staff/oauth2/authorize
+	// answering not_available. StaffSupportStore overrides the store seam
+	// (tests); nil means the Store's StaffOIDC seam.
+	StaffSupportIssuer string
+	StaffSupportStore  oidcissuer.SupportCodeStore
+	// StaffSPA serves the staff console's SPA (webcloud.StaffHandler) under
+	// /staff/ on the staff handler. Nil mounts no UI (the API still works).
+	StaffSPA http.Handler
+
+	// PersonalPlane is the personal-plane retirement switch
+	// (SBCI_PERSONAL_PLANE, D-IND-7; retired.go): PersonalPlaneServing (the
+	// default, also for "") or PersonalPlaneRetired. cmd/observer-cloud
+	// refuses to start on any other value (ParsePersonalPlane); New logs one
+	// and keeps serving.
+	PersonalPlane string
+
+	// EnsurePersonalOnSignIn creates the account's personal dashboard (its
+	// personal org) in the background after every browser sign-in, idempotent
+	// (Getting started v2; personal_signin.go). cmd/observer-cloud turns it on
+	// unless SBCI_PERSONAL_ON_SIGNIN is "off"; the zero value leaves sign-in
+	// as it was, so a test that counts orgs is unaffected.
+	EnsurePersonalOnSignIn bool
+
+	// AttachGrantKey signs the one-step attach grant an approved connect
+	// request with a target carries (connect_grant.go, internal/attachgrant;
+	// docs/security.md ONB-8). cmd/observer-cloud loads it from
+	// SBCI_ATTACH_GRANT_KEY_FILE (a hex Ed25519 seed); nil hands out no grant,
+	// and the machine falls back to the dashboard's own sign-in.
+	AttachGrantKey ed25519.PrivateKey
+
+	// Metrics is the serve process's counter registry (cloudmetrics; the
+	// separate SBCI_METRICS_LISTEN listener serves it). nil counts nothing.
+	// audit() and the Paddle webhook wrapper are its only feeds (metrics.go).
+	Metrics *cloudmetrics.Registry
 }
 
 // Production AuthKit endpoints (the same pair internal/cloudclient uses for the
@@ -238,6 +338,8 @@ type Server struct {
 	workOSCheck          workOSCheckState
 	paddleWebhookSecrets []string
 	paddleCheckout       PaddleCheckout
+	paddlePortal         PaddlePortalAPI
+	paddlePastDueGrace   time.Duration
 
 	portalSessionTTL     time.Duration
 	portalSessionIdleTTL time.Duration
@@ -249,6 +351,39 @@ type Server struct {
 	// rootRedirectURL is the validated "/" redirect target; "" ⇒ the route is
 	// not registered and "/" stays 404 (see rootredirect.go).
 	rootRedirectURL string
+
+	// oidc serves the platform OIDC issuer; nil ⇒ /oauth2 is not mounted.
+	oidc *oidchttp.Handler
+
+	// tenantDomain is the normalized Options.TenantDomain; "" means me/orgs
+	// CORS is off.
+	tenantDomain string
+	// teamCreateAllowlist is Options.TeamCreateAllowlist.
+	teamCreateAllowlist bool
+	// ensurePersonalOnSignIn is Options.EnsurePersonalOnSignIn.
+	ensurePersonalOnSignIn bool
+	// attachGrantKey is Options.AttachGrantKey (nil: no grant).
+	attachGrantKey ed25519.PrivateKey
+	// background tracks the goroutines a request starts and does not wait
+	// for (personal_signin.go); WaitBackground waits for them.
+	background sync.WaitGroup
+	// portalMFA is the portal second factor's configuration (portalmfa.go).
+	portalMFA portalMFAConfig
+	// orgLister is the membership read behind GET /portal/api/me/orgs; New
+	// wires the store, an in-package test injects a fake.
+	orgLister myOrgLister
+
+	// staff is the staff console's configuration (staff.go).
+	staff staffConfig
+
+	// personalPlane is PersonalPlaneServing or PersonalPlaneRetired
+	// (retired.go).
+	personalPlane string
+
+	// metrics is Options.Metrics (nil: count nothing); auditLimit is the
+	// per-source audit-row limit (auditlimit.go; zero value ready).
+	metrics    *cloudmetrics.Registry
+	auditLimit auditLimiter
 }
 
 // New builds a Server, applying defaults.
@@ -273,12 +408,16 @@ func New(o Options) *Server {
 		workOSWebhookSecret:  strings.TrimSpace(o.WorkOSWebhookSecret),
 		paddleWebhookSecrets: composePaddleWebhookSecrets(o.PaddleWebhookSecret, o.PaddleWebhookSecrets),
 		paddleCheckout:       o.PaddleCheckout,
+		paddlePortal:         o.PaddlePortal,
+		paddlePastDueGrace:   o.PaddlePastDueGrace,
 
 		portalSessionTTL:     o.PortalSessionTTL,
 		portalSessionIdleTTL: o.PortalSessionIdleTTL,
 
 		portalHost: normalizeHost(o.PortalHost),
 		apiHost:    normalizeHost(o.APIHost),
+
+		metrics: o.Metrics,
 	}
 	// The portal origin defaults to the API origin: one host serves both, which
 	// is the staging shape and keeps this landing behaviour-preserving there.
@@ -358,6 +497,28 @@ func New(o Options) *Server {
 	}
 	s.rootRedirectURL = rootRedirect
 
+	s.initOIDC(o.OIDCIssuer)
+	s.initPortalMFA(o)
+
+	s.tenantDomain = normalizeHost(o.TenantDomain)
+	s.teamCreateAllowlist = o.TeamCreateAllowlist
+	s.ensurePersonalOnSignIn = o.EnsurePersonalOnSignIn
+	if len(o.AttachGrantKey) == ed25519.PrivateKeySize {
+		s.attachGrantKey = o.AttachGrantKey
+	}
+	if o.Store != nil {
+		s.orgLister = o.Store
+	}
+
+	s.initStaff(o)
+
+	plane, err := ParsePersonalPlane(o.PersonalPlane)
+	if err != nil {
+		s.log.Error("cloudserver/api: invalid personal plane mode, serving the personal plane", "err", err)
+		plane = PersonalPlaneServing
+	}
+	s.personalPlane = plane
+
 	return s
 }
 
@@ -412,6 +573,13 @@ func (s *Server) Handler() http.Handler {
 	// it revokes is the verified one the middleware resolved — never a token id
 	// named in a request body.
 	mux.Handle("POST /v1/logout", s.authenticate(http.HandlerFunc(s.handleLogout)))
+	// The node's org discovery (M8.7, D-IND-1): GET /v1/orgs and the lazy
+	// personal org ensure (device_orgs.go).
+	s.mountDeviceOrgs(mux)
+	// Getting started v2: the connect flow (connect.go, portal_connect.go):
+	// create and poll a connect request, the approve and verify pages, and
+	// the console's approval routes.
+	s.mountConnect(mux)
 
 	// --- Portal (app.superbased.app) — the signed-in-free BROWSER surface.
 	// Cookie-auth + double-submit CSRF (portalAuth), NOT the device PoP path.
@@ -451,10 +619,33 @@ func (s *Server) Handler() http.Handler {
 	// W5 portal Community surface: own placement + the metric/cohort definitions.
 	mux.Handle("GET /portal/api/community", s.portalAuth(http.HandlerFunc(s.handlePortalCommunity)))
 	mux.Handle("GET /portal/api/community/metrics", s.portalAuth(http.HandlerFunc(s.handlePortalCommunityMetrics)))
+	// M6.6: the console org chooser, the ONLY CORS-enabled route. OPTIONS is
+	// answered before auth because a preflight carries no cookie (meorgs.go).
+	mux.Handle("GET /portal/api/me/orgs", s.portalAuth(http.HandlerFunc(s.handlePortalMyOrgs)))
+	// C2: the passkey second factor (portalmfa.go).
+	mux.Handle("GET /portal/api/mfa", s.portalAuth(http.HandlerFunc(s.handlePortalMFA)))
+	mux.Handle("POST /portal/api/mfa/passkeys/register/begin", s.portalAuth(http.HandlerFunc(s.handlePortalPasskeyRegisterBegin)))
+	mux.Handle("POST /portal/api/mfa/passkeys/register/finish", s.portalAuth(http.HandlerFunc(s.handlePortalPasskeyRegisterFinish)))
+	mux.Handle("DELETE /portal/api/mfa/passkeys/{id}", s.portalAuth(http.HandlerFunc(s.handlePortalPasskeyRemove)))
+	mux.Handle("POST /portal/api/mfa/recovery-codes", s.portalAuth(http.HandlerFunc(s.handlePortalRecoveryCodes)))
+	mux.Handle("POST /portal/api/mfa/assert/begin", s.portalAuth(http.HandlerFunc(s.handlePortalAssertBegin)))
+	mux.Handle("POST /portal/api/mfa/assert/finish", s.portalAuth(http.HandlerFunc(s.handlePortalAssertFinish)))
+	mux.Handle("POST /portal/api/mfa/recover", s.portalAuth(http.HandlerFunc(s.handlePortalRecover)))
+	mux.Handle("POST /portal/api/mfa/devices/approve", s.portalAuth(http.HandlerFunc(s.handlePortalDeviceApprove)))
+	mux.Handle("GET /portal/api/orgs/{id}/signin-policy", s.portalAuth(http.HandlerFunc(s.handlePortalOrgSigninPolicy)))
+	mux.Handle("PUT /portal/api/orgs/{id}/signin-policy", s.portalAuth(http.HandlerFunc(s.handlePortalSetOrgSigninPolicy)))
+	mux.Handle("OPTIONS /portal/api/me/orgs", s.rateLimitIP(http.HandlerFunc(s.handleMyOrgsPreflight)))
+	// The console's org routes (M6.5, wave 14 lane front-door): create a
+	// team, org detail and rename, billing per org (portal_orgs*.go).
+	s.mountPortalOrgs(mux)
+	s.mountPortalDeletion(mux) // M6.9 / M7a.1: org deletion and the account precheck
 	// W9 portal Billing surface: current subscription + plan.
 	mux.Handle("GET /portal/api/billing", s.portalAuth(http.HandlerFunc(s.handlePortalBilling)))
 	// G2-07/F2 server-initiated checkout: mint a server-set custom_data + nonce.
 	mux.Handle("POST /portal/api/billing/checkout", s.portalAuth(http.HandlerFunc(s.handlePortalCheckout)))
+	// Wave 17: the Paddle customer portal (invoices, payment method), minted
+	// per request for the payer (paddle_portal.go).
+	mux.Handle("POST /portal/api/billing/portal-session", s.portalAuth(http.HandlerFunc(s.handlePortalBillingPortalSession)))
 	mux.Handle("GET /portal/api/grants", s.portalAuth(http.HandlerFunc(s.handlePortalGrants)))
 	// The browser consent screen's own state (F9). Distinct from
 	// /portal/api/consents, which reports the NODE-authoritative consent
@@ -490,7 +681,9 @@ func (s *Server) Handler() http.Handler {
 	// sign-in flood must never be able to make us drop lifecycle revocations.
 	mux.Handle("POST /portal/webhooks/workos", s.rateLimitWebhook(http.HandlerFunc(s.handleWorkOSWebhook)))
 	// W9 Paddle billing webhook (signature-verified; fail-closed when unconfigured).
-	mux.Handle("POST /portal/webhooks/paddle", s.rateLimitWebhook(http.HandlerFunc(s.handlePaddleWebhook)))
+	// observePaddleWebhook (metrics.go) counts each delivery and sets the
+	// audit source the invalid-signature row limit keys on (auditlimit.go).
+	mux.Handle("POST /portal/webhooks/paddle", s.observePaddleWebhook(s.rateLimitWebhook(http.HandlerFunc(s.handlePaddleWebhook))))
 
 	// The webcloud SPA is the catch-all under /portal/. Go 1.22 ServeMux gives
 	// the specific /portal/api/* + /portal/auth/* patterns above precedence, so
@@ -506,12 +699,23 @@ func (s *Server) Handler() http.Handler {
 	// and registers nothing when neither applies.
 	s.mountRootRedirect(mux)
 
+	// The platform OIDC issuer under /oauth2 (M6.2; oidcroutes.go). Mounted
+	// only when an issuer is configured.
+	s.mountOIDC(mux)
+
+	// No staff route: the staff console (M6.8; staff.go) is served by its own
+	// process on its own host through StaffHandler (operator ruling A3), so a
+	// customer request can never reach a staff handler, and the customer
+	// serve login holds no staff role.
+
 	// R5: the canonical-host fence wraps the WHOLE mux, so every route — present
 	// and future — is covered by one decision point rather than per-handler
 	// checks that a new route could forget. It is a no-op when neither host is
 	// configured. securityHeaders (gap 3.3) wraps OUTSIDE that so the fence's
-	// own 421 also carries the browser-defensive headers.
-	return s.securityHeaders(s.enforceTrustedEdge(s.enforceCanonicalHost(mux)))
+	// own 421 also carries the browser-defensive headers. The personal-plane
+	// retirement switch (retired.go) sits inside the fence, around the mux:
+	// a no-op while serving.
+	return s.securityHeaders(s.enforceTrustedEdge(s.enforceCanonicalHost(s.retirePersonalPlane(mux))))
 }
 
 // --- JSON helpers ---

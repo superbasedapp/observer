@@ -8,3 +8,6 @@ import "log/slog"
 // host helper's placeholder ledger (sandbox_placeholder_ledger_unix.go) is
 // written only by the Linux and macOS host helpers.
 func sweepStaleSandboxPlaceholders(string, *slog.Logger) {}
+
+// clearRunPlaceholderLedger has no ledger to clear off Linux and macOS.
+func clearRunPlaceholderLedger(string, string) bool { return false }

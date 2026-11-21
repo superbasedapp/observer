@@ -99,7 +99,10 @@ var wantEnforcementChannel = map[string]EnforcementChannel{
 	"dirac":           EnforceHookBlock,
 	"kimchi":          EnforceHookBlock,
 	"stakpak":         EnforceRecordedAcceptance,
-	"vtcode":          EnforceHookBlock,
+	// custom-agent (P-228): the developer's own code; no hook, launcher or
+	// observer-driven route, so no lever over its tool calls.
+	"custom-agent": EnforceRecordedAcceptance,
+	"vtcode":       EnforceHookBlock,
 }
 
 // TestEnforcementChannelClassifiedForEveryAdapter pins the honesty rule for

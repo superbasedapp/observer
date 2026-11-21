@@ -1,0 +1,50 @@
+rules:
+  - id: ruby.path-traversal-request
+    languages: [ruby]
+    severity: WARNING
+    message: A file path built from web request input is opened or sent, so a caller can reach files outside the intended directory with ../; take the base name (File.basename) or check the expanded path stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|path_parameters|query_string|headers|cookies|GET|POST)$
+    pattern-sanitizers:
+      - pattern: File.basename(...)
+      - pattern: $X.to_i
+      - pattern: Integer(...)
+      - pattern: $F.sanitized
+      - pattern: ActiveStorage::Filename.new(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: File.$OP($P, ...)
+                  - metavariable-regex:
+                      metavariable: $OP
+                      regex: ^(open|new|read|readlines|binread|write|binwrite|foreach|delete|unlink|rename|truncate|chmod|lines)$
+              - patterns:
+                  - pattern: IO.$OP($P, ...)
+                  - metavariable-regex:
+                      metavariable: $OP
+                      regex: ^(read|readlines|binread|write|binwrite|foreach|copy_stream)$
+              - patterns:
+                  - pattern: FileUtils.$OP($P, ...)
+                  - metavariable-regex:
+                      metavariable: $OP
+                      regex: ^(rm|rm_f|rm_r|rm_rf|remove|remove_file|remove_dir|cp|cp_r|copy|copy_file|mv|move|touch|mkdir|mkdir_p|ln|ln_s)$
+              - pattern: Dir.glob($P, ...)
+              - pattern: Dir.entries($P, ...)
+              - pattern: Dir.children($P, ...)
+              - pattern: Pathname.new($P).$M(...)
+              - pattern: open($P, ...)
+              - pattern: Kernel.open($P, ...)
+              - pattern: send_file($P, ...)
+              - pattern: 'render(..., file: $P, ...)'
+          - focus-metavariable: $P

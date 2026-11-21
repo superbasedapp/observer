@@ -1,0 +1,70 @@
+rules:
+  - id: ruby.shell-interpolation
+    languages: [ruby]
+    severity: ERROR
+    message: Web request input reaches a shell command line; run the program with a separate argument list (system("prog", arg), Open3.capture2("prog", arg)) instead of one command string.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    mode: taint
+    pattern-sources:
+      - pattern: params
+      - pattern: cookies
+      - patterns:
+          - pattern: request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(params|query_parameters|request_parameters|path_parameters|query_string|raw_post|body|headers|cookies|GET|POST|referer|referrer)$
+    pattern-sanitizers:
+      - pattern: Shellwords.escape(...)
+      - pattern: Shellwords.shellescape(...)
+      - pattern: $X.shellescape
+      - pattern: $X.to_i
+      - pattern: Integer(...)
+    pattern-sinks:
+      # One command string, which the shell parses (a single argument, or an
+      # environment hash then one string). A program and its arguments given
+      # separately, or as an array, never reach a shell.
+      - patterns:
+          - pattern-either:
+              - pattern: system($X)
+              - pattern: exec($X)
+              - pattern: spawn($X)
+              - pattern: system({...}, $X)
+              - pattern: Kernel.system($X)
+              - pattern: Kernel.exec($X)
+              - pattern: Kernel.spawn($X)
+              - pattern: Process.spawn($X)
+              - pattern: Process.spawn({...}, $X)
+              - pattern: Process.exec($X)
+              - pattern: IO.popen($X)
+              - pattern: IO.popen($X, $MODE)
+              - patterns:
+                  - pattern-either:
+                      - pattern: Open3.$OPEN($X)
+                      - pattern: 'Open3.$OPEN($X, $KW: $V, ...)'
+                  - metavariable-regex:
+                      metavariable: $OPEN
+                      regex: ^(capture2|capture2e|capture3|popen2|popen2e|popen3|pipeline|pipeline_r|pipeline_w|pipeline_rw)$
+          - metavariable-pattern:
+              metavariable: $X
+              patterns:
+                - pattern-not: '[...]'
+          - focus-metavariable: $X
+      # Backticks and %x() always go through the shell.
+      - pattern: '`...`'
+      # A shell named with -c: the input is the script.
+      - patterns:
+          - pattern-either:
+              - pattern: system("$SH", "$C", ..., $X, ...)
+              - pattern: exec("$SH", "$C", ..., $X, ...)
+              - pattern: spawn("$SH", "$C", ..., $X, ...)
+              - pattern: Process.spawn("$SH", "$C", ..., $X, ...)
+              - pattern: Open3.$OPEN("$SH", "$C", ..., $X, ...)
+          - metavariable-regex:
+              metavariable: $SH
+              regex: ^(sh|bash|zsh|/bin/sh|/bin/bash|cmd|cmd\.exe|powershell|pwsh)$
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(-c|/c|/C|-Command)$
+          - focus-metavariable: $X

@@ -45,6 +45,10 @@ export {
 // host that wants them on their own). Model: lib/processLayout.ts.
 export { ProcessFlame, type ProcessFlameProps } from "./ProcessFlame";
 export { ProcessSpawnStack, type ProcessSpawnStackProps } from "./ProcessSpawnStack";
+// The process capture summary blocks (capture line, services, rolled-up
+// groups) the node System tab and the org System panel share. Model:
+// lib/processCaptureSummary.ts.
+export { CaptureLine, RolledUpBlock, ServicesBlock } from "./ProcessCaptureBlocks";
 
 export {
   TasksTab,

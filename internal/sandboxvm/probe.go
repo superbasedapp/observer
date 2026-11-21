@@ -169,7 +169,7 @@ var probeRows = []probeRow{
 		set := env.ImageSet()
 		r.ImageSet = set
 		if !set.Present {
-			return refuse(VerdictImageMissing, "no guest image set is installed: import a signed set with `observer sandbox content import <dir>` (sandbox.rootfs and sandbox.guest_binary)")
+			return refuse(VerdictImageMissing, "no guest image set is installed: import a signed set with Import image set in the microVM panel of Terminals > Settings > Sandbox isolation (same as `observer sandbox content import <dir>`; sandbox.rootfs and sandbox.guest_binary)")
 		}
 		if !set.Verdict.OK() {
 			reason := set.Verdict.Reason

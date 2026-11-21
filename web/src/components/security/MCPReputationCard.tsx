@@ -5,7 +5,9 @@ import { keepSelected } from "@/lib/pickerOptions";
 import { useMCPPackageOptions } from "@/lib/usePickerSources";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
-import { apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
 import {
   optInLine,
   validPackageName,
@@ -16,16 +18,16 @@ import {
 // MCPReputationCard is `observer guard mcp reputation <package>` on the
 // Security page's MCP tab (T-496): npm-registry metadata for an MCP server
 // package before you trust it. The server runs the same lookup the CLI runs
-// (notify.LookupNPMReputation): off until [guard.cloud] and
-// [guard.cloud.reputation] are both enabled, one outbound request per
-// lookup, nothing automatic.
+// (notify.LookupNPMReputation): off until Reputation lookups are turned on in
+// the Network features card above it (GuardCloudCard, B-G5), one outbound
+// request per lookup, nothing automatic.
 export function MCPReputationCard() {
   const status = useApi<MCPReputationStatus>("/api/guard/mcp/reputation");
   const [pkg, setPkg] = useState("");
   // D-571: the packages the configured MCP servers run are offered first.
   const packages = useMCPPackageOptions();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<ErrorNote | null>(null);
   const [res, setRes] = useState<MCPReputationResult | null>(null);
 
   const st = status.data;
@@ -35,7 +37,7 @@ export function MCPReputationCard() {
     e.preventDefault();
     if (!validPackageName(pkg)) return;
     setBusy(true);
-    setError("");
+    setError(null);
     setRes(null);
     try {
       setRes(
@@ -46,7 +48,7 @@ export function MCPReputationCard() {
         }),
       );
     } catch (err) {
-      setError(apiReason(err));
+      setError(errorNote(err));
     } finally {
       setBusy(false);
     }
@@ -92,7 +94,7 @@ export function MCPReputationCard() {
           Look up
         </Button>
       </form>
-      {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
+      <ApiErrorNotice note={error} className="mt-2" plainClassName="mt-2 text-[11.5px] text-danger" />
       {res && (
         <div className="mt-3 space-y-1.5 rounded-2 border border-line-2 bg-bg-3 p-3 text-[11.5px]" aria-live="polite">
           {res.young && res.warning && (

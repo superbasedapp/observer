@@ -13,7 +13,9 @@
 // answers clean (and reports the dirty counter value it covered, so the
 // next commit is clean without a wait), blocking with the findings, or
 // unknown (over budget, git unavailable, output over its cap, a detector
-// that did not finish). Unknown is never clean.
+// that did not finish). Unknown is never clean, and it says why: the result
+// carries its reason, budget, elapsed time and the files it read, which
+// reach the commit gate's verdict as policy.QuickScanDetail.
 //
 // Today the native detector set is the secret rows (internal/secdetect);
 // the trust, install-index, CI-workflow and test-tampering detectors join

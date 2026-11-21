@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelay"
@@ -174,6 +175,10 @@ const (
 // MaxLogLine bounds one opLog line.
 const MaxLogLine = 512
 
+// PTYEndPrefix starts the guest PTY helper's end record, the log line (and
+// stderr line) that says how the agent on the box PTY ended (D7).
+const PTYEndPrefix = "pty end: "
+
 // stream is one open data stream.
 type stream struct {
 	id    uint32
@@ -211,6 +216,18 @@ type session struct {
 	err    error
 	once   sync.Once
 	closer io.Closer
+	// lastRecv is when the last frame from the peer arrived (unix nanos;
+	// the session's start before the first), for the end diagnostics.
+	lastRecv atomic.Int64
+}
+
+// sinceLastFrame is how long ago the peer's last frame arrived.
+func (s *session) sinceLastFrame() time.Duration {
+	t := s.lastRecv.Load()
+	if t == 0 {
+		return 0
+	}
+	return s.opts.Now().Sub(time.Unix(0, t)).Round(time.Second)
 }
 
 func (s *session) fail(err error) {
@@ -254,12 +271,20 @@ func (s *session) sendControl(m control) error {
 // readLoop routes every frame until the channel fails.
 func (s *session) readLoop() {
 	defer s.r.Release()
+	if s.lastRecv.Load() == 0 {
+		s.lastRecv.Store(s.opts.Now().UnixNano())
+	}
 	for {
 		h, p, err := s.r.Next()
 		if err != nil {
+			if errors.Is(err, ErrTimeout) {
+				// Which side went quiet, and for how long (D7).
+				err = fmt.Errorf("%w; the last frame from the peer came %s ago", err, s.sinceLastFrame())
+			}
 			s.fail(err)
 			return
 		}
+		s.lastRecv.Store(s.opts.Now().UnixNano())
 		if err := s.route(h, p); err != nil {
 			s.fail(err)
 			return
@@ -760,6 +785,11 @@ func (h *Host) Err() error {
 // Close ends the session.
 func (h *Host) Close() { h.s.fail(ErrClosed) }
 
+// SinceLastFrame is how long ago the guest's last frame arrived (a
+// heartbeat comes every HeartbeatEvery while the guest lives): the end
+// diagnostics say with it which side went quiet first.
+func (h *Host) SinceLastFrame() time.Duration { return h.s.sinceLastFrame() }
+
 // ---- the box side ------------------------------------------------------------
 
 // Hello is what the home side told the guest at the start.
@@ -998,3 +1028,6 @@ func (g *Guest) Err() error {
 
 // Close ends the session.
 func (g *Guest) Close() { g.s.fail(ErrClosed) }
+
+// SinceLastFrame is how long ago the home side's last frame arrived.
+func (g *Guest) SinceLastFrame() time.Duration { return g.s.sinceLastFrame() }

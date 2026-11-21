@@ -1,4 +1,4 @@
-/* SuperBased shared component styles.
+/* superbased shared component styles.
  *
  * Global rules that a SHARED component relies on and that Tailwind cannot
  * express (scrollbar pseudo-elements). One owner, imported by each app's

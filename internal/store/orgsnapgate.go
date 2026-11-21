@@ -124,20 +124,25 @@ const (
 	snapFamSessionVerbosity   snapFamily = "session_verbosity"
 	snapFamSessionProcess     snapFamily = "session_process"
 	snapFamSessionNetwork     snapFamily = "session_network"
-	snapFamProcessSummary     snapFamily = "process_summary"
-	snapFamProjectPatterns    snapFamily = "project_patterns"
-	snapFamBenchmark          snapFamily = "benchmark"
-	snapFamCompressionStats   snapFamily = "compression_stats"
-	snapFamCodeintelDev       snapFamily = "codeintel_dev"
-	snapFamCodeintelSummary   snapFamily = "codeintel_summary"
-	snapFamTerminalRuns       snapFamily = "terminal_runs"
-	snapFamTerminalCommands   snapFamily = "terminal_commands"
-	snapFamRemoteAuditRows    snapFamily = "remote_audit_rows"
-	snapFamTerminalSummary    snapFamily = "terminal_summary"
-	snapFamRemoteAuditSummary snapFamily = "remote_audit_summary"
-	snapFamGuardPins          snapFamily = "guard_pins"
-	snapFamGuardApprovals     snapFamily = "guard_approvals"
-	snapFamLimitGauge         snapFamily = "limit_gauge"
+	// The process capture budget's org wire (layer O1,
+	// processrolluporgrows.go): ONE gated recompute feeding TWO slices (the
+	// rollup rows and the per-session stats rows), the benchmark arrangement,
+	// probed over the two capture tables.
+	snapFamSessionProcessCapture snapFamily = "session_process_capture"
+	snapFamProcessSummary        snapFamily = "process_summary"
+	snapFamProjectPatterns       snapFamily = "project_patterns"
+	snapFamBenchmark             snapFamily = "benchmark"
+	snapFamCompressionStats      snapFamily = "compression_stats"
+	snapFamCodeintelDev          snapFamily = "codeintel_dev"
+	snapFamCodeintelSummary      snapFamily = "codeintel_summary"
+	snapFamTerminalRuns          snapFamily = "terminal_runs"
+	snapFamTerminalCommands      snapFamily = "terminal_commands"
+	snapFamRemoteAuditRows       snapFamily = "remote_audit_rows"
+	snapFamTerminalSummary       snapFamily = "terminal_summary"
+	snapFamRemoteAuditSummary    snapFamily = "remote_audit_summary"
+	snapFamGuardPins             snapFamily = "guard_pins"
+	snapFamGuardApprovals        snapFamily = "guard_approvals"
+	snapFamLimitGauge            snapFamily = "limit_gauge"
 	// The two Lines-of-Code wire families (docs/plans/
 	// lines-of-code-tracking-plan-2026-09-07.md §3.4). They share one probe
 	// because they read one source family, exactly like the three
@@ -172,6 +177,9 @@ const (
 	// sandboxposture.go): a recompute over terminal_run, so it shares the
 	// terminal activity probe with the other terminal wires.
 	snapFamSandboxPosture snapFamily = "sandbox_posture"
+	// The sandbox egress refusal counts (audit CG-15, sandboxegress_org.go),
+	// a managed-node-only recompute over the node-local refusal audit.
+	snapFamSandboxEgressCounts snapFamily = "sandbox_egress_counts"
 	// The security pillar wire (security plan 7.4, secorgrows.go): the
 	// finding rows and the posture row probe the sec_* tables (the posture
 	// also the commit-gate verdicts and the UTC day); the change records
@@ -211,6 +219,7 @@ var snapProbes = map[snapFamily]func(*Store, context.Context) (string, error){
 	snapFamSessionProcess:        (*Store).probeProcessRuns,
 	snapFamProcessSummary:        (*Store).probeProcessRuns,
 	snapFamSessionNetwork:        (*Store).probeNetworkEvents,
+	snapFamSessionProcessCapture: (*Store).probeProcessCapture,
 	snapFamProjectPatterns:       (*Store).probeProjectPatterns,
 	snapFamBenchmark:             (*Store).probeBenchmarks,
 	snapFamCompressionStats:      (*Store).probeCompressionEvents,
@@ -235,6 +244,7 @@ var snapProbes = map[snapFamily]func(*Store, context.Context) (string, error){
 	snapFamMCPInventory:          (*Store).probeMCPInventory,
 	snapFamDelivery:              (*Store).probeDelivery,
 	snapFamSandboxPosture:        (*Store).probeTerminalActivity,
+	snapFamSandboxEgressCounts:   (*Store).probeSandboxEgressCounts,
 	snapFamSecurityFindings:      (*Store).probeSecFindings,
 	snapFamSecurityPosture:       (*Store).probeSecPosture,
 	snapFamSecurityChangeRecords: (*Store).probeSecChangeRecords,
@@ -613,6 +623,10 @@ func (g *snapGate) oversizedCounts() map[string]int64 {
 // at every row (complete), and what it met.
 type snapOversizeObservation struct {
 	ticked, complete bool
+	// cut marks an envelope section or cursor row that was shortened (or a
+	// cursor row skipped) to fit the envelope, as opposed to a snapshot row
+	// that cannot ship at all (orgpushsections.go).
+	cut bool
 	snapTickOversize
 }
 

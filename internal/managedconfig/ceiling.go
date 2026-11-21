@@ -74,10 +74,31 @@ type RegistryValues struct {
 	Components     []string
 	HaveVersion    bool
 	CatalogVersion uint64
+	// HaveOrgURL and OrgURL are the OrgURL value (REG_SZ), the attach
+	// policy's organization server (attach.go).
+	HaveOrgURL bool
+	OrgURL     string
+	// HaveAttachMethod and AttachMethod are the AttachMethod value (REG_SZ).
+	HaveAttachMethod bool
+	AttachMethod     string
+	// HaveLocked and Locked are the Locked value (REG_DWORD, 0 or 1).
+	HaveLocked bool
+	Locked     uint64
 	// Unknown lists value names the key carries that this loader does not
 	// know; any is a malformed source.
 	Unknown []string
 }
+
+// haveAttach reports whether any attach value is present.
+func (v *RegistryValues) haveAttach() bool {
+	return v.HaveOrgURL || v.HaveAttachMethod || v.HaveLocked
+}
+
+// ErrNoCeiling is returned by the parsers when a source carries attach keys
+// (attach.go) but no ceiling at all: the source is valid and no ceiling
+// applies, so Decide reports StatusNone. A source with NEITHER is still
+// malformed (a required ceiling key is missing).
+var ErrNoCeiling = errors.New("managedconfig: the source carries attach keys and no ceiling")
 
 // Result is the loader's answer. Every caller (daemon, hook, launchers,
 // doctor, updater) reads the same fields.
@@ -148,10 +169,14 @@ func Decide(p Probe, lastKnown *Ceiling) Result {
 			res.FailedCheck = p.FailedCheck
 		} else {
 			c, notes, err := parseProbe(p)
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrNoCeiling):
+				// An attach-only source: valid, and no ceiling applies.
+				oc = outcomeAbsent
+			case err != nil:
 				oc = outcomeInvalid
 				res.FailedCheck, res.Err = "parse", err.Error()
-			} else {
+			default:
 				parsed, res.Notes = c, notes
 			}
 		}
@@ -186,22 +211,96 @@ func sameCeiling(a, b Ceiling) bool {
 		strings.Join(a.IDs, "\n") == strings.Join(b.IDs, "\n")
 }
 
-// tomlFile is the managed.toml schema:
+// tomlFile is the managed.toml schema (the [attach] table is attach.go's):
 //
 //	[ceiling]
 //	catalog_version = 1
 //	components = ["adapter.claude-code", "codeintel"]
+//
+//	[attach]
+//	org_url = "https://observer.acme.example"
+//	method = "idp"
+//	locked = true
 type tomlFile struct {
 	Ceiling struct {
 		CatalogVersion int      `toml:"catalog_version"`
 		Components     []string `toml:"components"`
 	} `toml:"ceiling"`
+	Attach struct {
+		OrgURL string `toml:"org_url"`
+		Method string `toml:"method"`
+		Locked bool   `toml:"locked"`
+	} `toml:"attach"`
 }
 
 // plistJSON is the managed-preferences plist after plutil -convert json.
 type plistJSON struct {
 	Components     *[]string `json:"Components"`
 	CatalogVersion *int      `json:"CatalogVersion"`
+	OrgURL         *string   `json:"OrgURL"`
+	AttachMethod   *string   `json:"AttachMethod"`
+	Locked         *bool     `json:"Locked"`
+}
+
+// haveAttach reports whether any attach key is present.
+func (p plistJSON) haveAttach() bool {
+	return p.OrgURL != nil || p.AttachMethod != nil || p.Locked != nil
+}
+
+// decodeTOML decodes a managed.toml document strictly: the size cap, the
+// syntax and unknown keys. The ceiling and the attach policy both read it.
+func decodeTOML(data []byte) (tomlFile, toml.MetaData, error) {
+	var f tomlFile
+	if len(data) > MaxBytes {
+		return f, toml.MetaData{}, fmt.Errorf("managedconfig: %d bytes exceeds the %d-byte cap", len(data), MaxBytes)
+	}
+	md, err := toml.Decode(string(data), &f)
+	if err != nil {
+		return f, md, fmt.Errorf("managedconfig: %w", err)
+	}
+	if und := md.Undecoded(); len(und) > 0 {
+		keys := make([]string, 0, len(und))
+		for _, k := range und {
+			keys = append(keys, k.String())
+		}
+		sort.Strings(keys)
+		return f, md, fmt.Errorf("managedconfig: unknown keys %s", strings.Join(keys, ", "))
+	}
+	return f, md, nil
+}
+
+// tomlHaveAttach reports whether any [attach] key is present (an empty
+// [attach] table is not an attach policy).
+func tomlHaveAttach(md toml.MetaData) bool {
+	return md.IsDefined("attach", "org_url") || md.IsDefined("attach", "method") || md.IsDefined("attach", "locked")
+}
+
+// decodePlistJSON decodes a converted managed-preferences plist strictly:
+// unknown keys and trailing data are errors.
+func decodePlistJSON(data []byte) (plistJSON, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var p plistJSON
+	if err := dec.Decode(&p); err != nil {
+		return p, fmt.Errorf("managedconfig: managed preferences: %w", err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return p, errors.New("managedconfig: managed preferences: trailing data")
+	}
+	return p, nil
+}
+
+// registryUnknown reports the registry values this loader does not know.
+func registryUnknown(v *RegistryValues) error {
+	if v == nil {
+		return errors.New("managedconfig: no registry values")
+	}
+	if len(v.Unknown) > 0 {
+		u := append([]string{}, v.Unknown...)
+		sort.Strings(u)
+		return fmt.Errorf("managedconfig: unknown registry values %s", strings.Join(u, ", "))
+	}
+	return nil
 }
 
 func parseProbe(p Probe) (Ceiling, []string, error) {
@@ -218,22 +317,15 @@ func parseProbe(p Probe) (Ceiling, []string, error) {
 
 // ParseTOML parses and validates a managed.toml document strictly: unknown
 // keys, a missing components list or a missing catalog version are errors.
+// A document with an [attach] table and no [ceiling] table at all returns
+// ErrNoCeiling.
 func ParseTOML(data []byte) (Ceiling, []string, error) {
-	if len(data) > MaxBytes {
-		return Ceiling{}, nil, fmt.Errorf("managedconfig: %d bytes exceeds the %d-byte cap", len(data), MaxBytes)
-	}
-	var f tomlFile
-	md, err := toml.Decode(string(data), &f)
+	f, md, err := decodeTOML(data)
 	if err != nil {
-		return Ceiling{}, nil, fmt.Errorf("managedconfig: %w", err)
+		return Ceiling{}, nil, err
 	}
-	if und := md.Undecoded(); len(und) > 0 {
-		keys := make([]string, 0, len(und))
-		for _, k := range und {
-			keys = append(keys, k.String())
-		}
-		sort.Strings(keys)
-		return Ceiling{}, nil, fmt.Errorf("managedconfig: unknown keys %s", strings.Join(keys, ", "))
+	if !md.IsDefined("ceiling") && tomlHaveAttach(md) {
+		return Ceiling{}, nil, ErrNoCeiling
 	}
 	if !md.IsDefined("ceiling", "components") {
 		return Ceiling{}, nil, errors.New("managedconfig: [ceiling] components is required (an empty list means core only)")
@@ -245,14 +337,12 @@ func ParseTOML(data []byte) (Ceiling, []string, error) {
 }
 
 func parsePlistJSON(data []byte) (Ceiling, []string, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var p plistJSON
-	if err := dec.Decode(&p); err != nil {
-		return Ceiling{}, nil, fmt.Errorf("managedconfig: managed preferences: %w", err)
+	p, err := decodePlistJSON(data)
+	if err != nil {
+		return Ceiling{}, nil, err
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return Ceiling{}, nil, errors.New("managedconfig: managed preferences: trailing data")
+	if p.Components == nil && p.CatalogVersion == nil && p.haveAttach() {
+		return Ceiling{}, nil, ErrNoCeiling
 	}
 	if p.Components == nil {
 		return Ceiling{}, nil, errors.New("managedconfig: managed preferences: Components is required (an empty array means core only)")
@@ -264,13 +354,11 @@ func parsePlistJSON(data []byte) (Ceiling, []string, error) {
 }
 
 func parseRegistry(v *RegistryValues) (Ceiling, []string, error) {
-	if v == nil {
-		return Ceiling{}, nil, errors.New("managedconfig: no registry values")
+	if err := registryUnknown(v); err != nil {
+		return Ceiling{}, nil, err
 	}
-	if len(v.Unknown) > 0 {
-		u := append([]string{}, v.Unknown...)
-		sort.Strings(u)
-		return Ceiling{}, nil, fmt.Errorf("managedconfig: unknown registry values %s", strings.Join(u, ", "))
+	if !v.HaveComponents && !v.HaveVersion && v.haveAttach() {
+		return Ceiling{}, nil, ErrNoCeiling
 	}
 	if !v.HaveComponents {
 		return Ceiling{}, nil, errors.New("managedconfig: registry value Components (REG_MULTI_SZ) is required")

@@ -7,7 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { Star } from "lucide-react";
+import { Star, Tag } from "lucide-react";
 import {
   postSessionTags,
   fetchTagRollup,
@@ -360,6 +360,7 @@ export function TagEditor({
   label,
   className,
   onError,
+  quiet = false,
 }: {
   sessionId: string;
   tags: string[];
@@ -370,6 +371,10 @@ export function TagEditor({
   label?: string;
   className?: string;
   onError?: (message: string) => void;
+  // quiet draws the trigger as a borderless tag glyph (accessible name
+  // "Edit tags") for a dense table row; the caller decides when it shows.
+  // The popover is the same.
+  quiet?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -623,16 +628,25 @@ export function TagEditor({
           if (blocked) return;
           setOpen((o) => !o);
         }}
+        aria-label={quiet ? "Edit tags" : undefined}
         className={clsx(
-          "inline-flex items-center gap-1 rounded-2 border px-1.5 py-0.5 text-[10.5px] transition-colors",
-          open
-            ? "border-accent bg-accent-soft text-accent"
-            : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3 hover:text-fg-1",
-          blocked && "cursor-not-allowed opacity-50 hover:bg-bg-2 hover:text-fg-3",
+          quiet
+            ? [
+                "inline-grid place-items-center rounded-1 p-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+                open ? "text-accent" : "text-fg-4 hover:text-fg-1",
+                blocked && "cursor-not-allowed opacity-50 hover:text-fg-4",
+              ]
+            : [
+                "inline-flex items-center gap-1 rounded-2 border px-1.5 py-0.5 text-[10.5px] transition-colors",
+                open
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3 hover:text-fg-1",
+                blocked && "cursor-not-allowed opacity-50 hover:bg-bg-2 hover:text-fg-3",
+              ],
           className,
         )}
       >
-        {label ?? "+ tag"}
+        {quiet ? <Icon icon={Tag} size={12} /> : (label ?? "+ tag")}
       </button>
       </Tooltip>
 

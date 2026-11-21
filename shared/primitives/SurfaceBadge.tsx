@@ -1,4 +1,5 @@
 import { Pill } from "./Pill";
+import { GlyphBadge } from "./GlyphBadge";
 import { vocabIcon } from "../lib/vocabIcons";
 
 // SurfaceBadge renders the capture-surface attribution a session carries
@@ -21,7 +22,7 @@ import { vocabIcon } from "../lib/vocabIcons";
 // independent: SetSessionSurface fills each one separately).
 
 /** The closed capture-surface vocabulary. */
-export type SurfaceKind = "cli" | "ide" | "desktop" | "sdk" | "web";
+export type SurfaceKind = "cli" | "ide" | "desktop" | "sdk" | "web" | "mobile";
 
 type SurfaceMeta = {
   label: string;
@@ -54,11 +55,15 @@ const SURFACE_META: Record<SurfaceKind, SurfaceMeta> = {
     label: "web",
     gloss: "Captured from a browser / web-app surface.",
   },
+  mobile: {
+    label: "mobile",
+    gloss: "Driven from a phone or tablet app (the Claude mobile app starting a cloud session).",
+  },
 };
 
 /** isSurfaceKind narrows an arbitrary string to the closed vocabulary. */
 export function isSurfaceKind(v: string | null | undefined): v is SurfaceKind {
-  return v === "cli" || v === "ide" || v === "desktop" || v === "sdk" || v === "web";
+  return v === "cli" || v === "ide" || v === "desktop" || v === "sdk" || v === "web" || v === "mobile";
 }
 
 export type SurfaceBadgeProps = {
@@ -74,9 +79,15 @@ export type SurfaceBadgeProps = {
    * "cli · cla..." (T-803). Without a host the kind word still shows.
    */
   compact?: boolean;
+  /**
+   * glyph draws the kind's glyph alone (no pill, no words); the tooltip and
+   * the accessible name carry the kind and host. For a dense table cell that
+   * shows the client beside another badge.
+   */
+  glyph?: boolean;
 };
 
-export function SurfaceBadge({ surface, host, className, compact }: SurfaceBadgeProps) {
+export function SurfaceBadge({ surface, host, className, compact, glyph }: SurfaceBadgeProps) {
   const kind = isSurfaceKind(surface) ? surface : null;
   const hostToken = (host ?? "").trim();
   // Nothing grounded => render nothing. Never a fabricated "cli".
@@ -90,6 +101,18 @@ export function SurfaceBadge({ surface, host, className, compact }: SurfaceBadge
   ]
     .filter(Boolean)
     .join(" ");
+
+  if (glyph) {
+    // Name first (what a table header would have said), then the gloss.
+    const name = [meta ? meta.label : "", hostToken].filter(Boolean).join(" · ");
+    return (
+      <GlyphBadge
+        className={className}
+        icon={vocabIcon("captureSurface", kind)}
+        label={`Client: ${name}. ${meta ? meta.gloss : "Host reported, kind unknown."}`}
+      />
+    );
+  }
 
   return (
     <Pill className={className} title={title} icon={kind ? vocabIcon("captureSurface", kind) : undefined}>

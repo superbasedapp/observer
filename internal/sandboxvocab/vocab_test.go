@@ -114,3 +114,17 @@ func TestProviderDirectVocabulary(t *testing.T) {
 		}
 	}
 }
+
+func TestSeccompVocabulary(t *testing.T) {
+	t.Parallel()
+	for _, s := range []Seccomp{SeccompNone, SeccompEngineDefault, SeccompObserverProfile} {
+		if !s.Valid() {
+			t.Errorf("%q is not valid", s)
+		}
+	}
+	for _, s := range []Seccomp{"", "baseline", "Observer_profile"} {
+		if s.Valid() {
+			t.Errorf("%q is valid", s)
+		}
+	}
+}

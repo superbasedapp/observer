@@ -2,10 +2,12 @@ package keystore
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	keyring "github.com/zalando/go-keyring"
@@ -45,6 +47,9 @@ var keychainProbeErr = KeychainProbe
 // KeychainProbe is KeychainUsable with the error: a full set/get/delete
 // cycle of a throwaway record under service.
 func KeychainProbe(service, probe string) error {
+	if !KeychainChosen(service) {
+		return ErrKeychainNotChosen
+	}
 	if err := keyring.Set(Namespace(service), probe, "1"); err != nil {
 		return err
 	}
@@ -59,23 +64,129 @@ func KeychainProbe(service, probe string) error {
 	return nil
 }
 
-// probeWithin runs the probe, giving up after d (the probe goroutine is left
-// to finish on its own; nothing waits on it).
+// ErrProbeInFlight is the probe's error when an earlier probe of the same
+// service already timed out for its caller and is still blocked in the
+// keychain. It wraps ErrProbeTimeout, so FallbackReason names it
+// ReasonProbeTimeout: the keychain has still not answered.
+var ErrProbeInFlight = fmt.Errorf("%w (an earlier probe of this service is still waiting for it)", ErrProbeTimeout)
+
+// probeAbandonAfter is how long a probe that timed out may hold a service's
+// guard. Past it the next probe starts afresh and the stuck goroutine no
+// longer guards (it still ends on its own), so a keychain call that never
+// returns holds the guard for at most this long, never until the process
+// restarts (audit finding OC-A4). A variable for tests.
+var probeAbandonAfter = 30 * time.Minute
+
+// probeNow is the guard's clock (a variable for tests).
+var probeNow = time.Now
+
+// probeFlight is one running keychain probe of a service: callers that
+// arrive while it runs share its outcome.
+type probeFlight struct {
+	done    chan struct{}
+	err     error
+	started time.Time
+	// gaveUp: a caller's timeout passed before the probe answered, so the
+	// keychain is not answering (set under probeFlights).
+	gaveUp bool
+}
+
+// probeFlights holds the probe in flight per service and, per service, the
+// count of probes that answered nil after a caller had given up on them
+// (late successes; audit finding OC-A4). One probe per service runs at a
+// time: a caller arriving while it runs waits for its outcome within its
+// own timeout (single-flight), so a concurrent caller of a healthy
+// keychain gets the keychain, not a timeout. Once a caller has given up on
+// a probe, later callers neither wait nor start another until it returns
+// or probeAbandonAfter passes, so a caller that retries can neither pile
+// up blocked goroutines nor raise a new unlock prompt on every try (audit
+// finding O2-W1).
+var probeFlights = struct {
+	sync.Mutex
+	m    map[string]*probeFlight
+	late map[string]uint64
+}{m: map[string]*probeFlight{}, late: map[string]uint64{}}
+
+// stuckLocked reports whether f is a probe a caller gave up on that still
+// guards its service. probeFlights is held.
+func (f *probeFlight) stuckLocked() bool {
+	return f != nil && f.gaveUp && probeNow().Sub(f.started) < probeAbandonAfter
+}
+
+// ProbeInFlight reports whether a probe of service timed out for its
+// caller and is still waiting for the keychain (and has not been
+// abandoned): no new probe of it starts meanwhile.
+func ProbeInFlight(service string) bool {
+	probeFlights.Lock()
+	defer probeFlights.Unlock()
+	return probeFlights.m[service].stuckLocked()
+}
+
+// LateProbeSuccesses counts the probes of service that answered nil after
+// a caller had given up on them: a caller that cached a timeout reason
+// compares it with the count it saw then, and probes again at once when
+// it grew (the keychain was unlocked meanwhile; audit finding OC-A4).
+func LateProbeSuccesses(service string) uint64 {
+	probeFlights.Lock()
+	defer probeFlights.Unlock()
+	return probeFlights.late[service]
+}
+
+// probeWithin runs the probe of service, waiting at most d for it: it
+// joins a probe of the service already running, starts one otherwise, and
+// returns ErrProbeInFlight at once when the running one was already given
+// up on (a probe left blocked is never waited on again).
 func probeWithin(service string, d time.Duration) error {
-	done := make(chan error, 1)
-	// The probe is read here, not in the goroutine: a probe left running past
-	// the timeout must not read the package seam after the caller has moved
-	// on (a test restores it; go test -race found the read in the goroutine).
-	probe := keychainProbeErr
-	go func() { done <- probe(service, probeRecord) }()
+	probeFlights.Lock()
+	f := probeFlights.m[service]
+	switch {
+	case f.stuckLocked():
+		probeFlights.Unlock()
+		return ErrProbeInFlight
+	case f == nil || f.gaveUp:
+		// None running, or one abandoned past probeAbandonAfter: start a
+		// new one. The probe is read here, not in the goroutine: a probe
+		// left running past the timeout must not read the package seam
+		// after the caller has moved on (a test restores it; go test -race
+		// found the read in the goroutine).
+		f = &probeFlight{done: make(chan struct{}), started: probeNow()}
+		probeFlights.m[service] = f
+		probe := keychainProbeErr
+		go func() {
+			err := probe(service, probeRecord)
+			probeFlights.Lock()
+			f.err = err
+			if f.gaveUp && err == nil {
+				probeFlights.late[service]++
+			}
+			if probeFlights.m[service] == f {
+				delete(probeFlights.m, service)
+			}
+			// Closed under the lock, so a caller whose timer fires sees
+			// either the outcome or a probe it may give up on, never both.
+			close(f.done)
+			probeFlights.Unlock()
+		}()
+	}
+	probeFlights.Unlock()
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
-	case err := <-done:
-		return err
+	case <-f.done:
+		return f.err
 	case <-t.C:
-		return ErrProbeTimeout
 	}
+	probeFlights.Lock()
+	select {
+	case <-f.done:
+		// It answered as the timer fired.
+		probeFlights.Unlock()
+		return f.err
+	default:
+	}
+	f.gaveUp = true
+	probeFlights.Unlock()
+	return ErrProbeTimeout
 }
 
 // IsInteractionNotAllowed reports the macOS locked-keychain error: the
@@ -98,6 +209,8 @@ func FallbackReason(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, ErrKeychainNotChosen):
+		return ReasonKeychainNotChosen
 	case errors.Is(err, ErrProbeTimeout):
 		return ReasonProbeTimeout
 	case IsInteractionNotAllowed(err):
@@ -115,6 +228,8 @@ func FallbackDetail(reason string) string {
 		return "the macOS login keychain is locked in this non-interactive session (errSecInteractionNotAllowed)"
 	case ReasonProbeTimeout:
 		return "the OS keychain did not answer in time"
+	case ReasonKeychainNotChosen:
+		return "this machine keeps credentials in the 0600 file store (set " + EnvOSKeychain + "=1 to use the OS keyring)"
 	}
 	return "the OS keychain is not reachable"
 }
@@ -147,6 +262,10 @@ func OpenReport(service, fallbackDir string, logger *slog.Logger) Opened {
 			"fallback has no verified protection; failing closed", "service", service, "reason", reason)
 		return Opened{Store: FailClosed(), Reason: reason}
 	}
+	if reason == ReasonKeychainNotChosen || !keychainChosen(service) {
+		// The file store is this machine's choice, not a fallback: no WARN.
+		return Opened{Store: NewFileStore(service, fallbackDir), Reason: ReasonKeychainNotChosen}
+	}
 	if _, serr := os.Stat(sentinel); serr != nil {
 		logger.Warn("credentials: OS keychain unavailable, falling back to hardened 0600 file store",
 			"service", service, "dir", fallbackDir, "reason", reason,
@@ -161,3 +280,7 @@ func OpenReport(service, fallbackDir string, logger *slog.Logger) Opened {
 // probe: for reading or deleting a secret a caller knows is in the
 // keychain. A locked or absent keychain answers its own error.
 func NewKeychainStore(service string) Store { return &keychainStore{service: service} }
+
+// ProbeAbandonAfter is how long a probe that timed out may hold its
+// service's guard before the next probe starts afresh.
+func ProbeAbandonAfter() time.Duration { return probeAbandonAfter }

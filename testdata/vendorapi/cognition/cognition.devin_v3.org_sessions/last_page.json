@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "session_id": "devin-synth0003",
+      "url": "https://app.devin.ai/sessions/devin-synth0003",
+      "status": "finished",
+      "title": "Add a CHANGELOG entry",
+      "tags": [],
+      "org_id": "org_synth01",
+      "user_id": "user_synth0002",
+      "service_user_id": null,
+      "origin": "cli",
+      "created_at": 1793289600,
+      "updated_at": 1793290320,
+      "acus_consumed": 0.5,
+      "pull_requests": [],
+      "parent_session_id": null,
+      "child_session_ids": []
+    }
+  ],
+  "has_next_page": false,
+  "end_cursor": null
+}

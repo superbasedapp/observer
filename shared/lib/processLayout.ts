@@ -470,6 +470,8 @@ export function packLanes(units: readonly StackUnit[], minGap = 0): LaneLayout {
 export type TimeScale = {
   /** position of a time as a fraction 0..1 of the plot width */
   x: (t: number) => number;
+  /** the inverse of x: the real time at a fraction 0..1 of the plot width */
+  invert: (f: number) => number;
   /** squeezed stretches (real times) */
   gaps: { a: number; b: number }[];
   /** real time at which each active stretch begins (axis tick candidates) */
@@ -500,7 +502,13 @@ export function buildTimeScale(
   const span = Math.max(1, d1 - d0);
   const clamp = (t: number) => Math.min(d1, Math.max(d0, t));
   if (!opts.collapse) {
-    return { x: (t) => (clamp(t) - d0) / span, gaps: [], runStarts: [], collapsed: false };
+    return {
+      x: (t) => (clamp(t) - d0) / span,
+      invert: (f) => d0 + Math.min(1, Math.max(0, f)) * span,
+      gaps: [],
+      runStarts: [],
+      collapsed: false,
+    };
   }
   const sessionSpan = Math.max(1, opts.sessionSpanMs ?? span);
   const quiet = opts.quietMs ?? quietThresholdMs(sessionSpan);
@@ -554,7 +562,21 @@ export function buildTimeScale(
     const f = s.b > s.a ? (t - s.a) / (s.b - s.a) : 0;
     return (s.d0 + f * s.dl) / total;
   };
-  return { x, gaps, runStarts, collapsed: true };
+  const invert = (fIn: number) => {
+    const p = Math.min(1, Math.max(0, fIn)) * total;
+    let lo = 0;
+    let hi = segs.length - 1;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (segs[m].d0 + segs[m].dl < p) lo = m + 1;
+      else hi = m;
+    }
+    const s = segs[lo];
+    if (!s) return d0;
+    const f = s.dl > 0 ? (p - s.d0) / s.dl : 0;
+    return Math.min(d1, Math.max(d0, s.a + f * (s.b - s.a)));
+  };
+  return { x, invert, gaps, runStarts, collapsed: true };
 }
 
 /** NICE_STEPS_MS: axis tick steps for a linear scale, smallest first. */
@@ -645,7 +667,13 @@ export function defaultWindow(
     const a = Math.min(Math.max(lo, center - w / 2), hi - w);
     return [a, a + w];
   }
-  return [hi - w, hi];
+  // No selection: end just after the most recent process START, not at the
+  // session's end, which a process still running (an MCP or dev server, the
+  // agent itself) drags out to now over a stretch where nothing new ran.
+  let last = lo;
+  for (const it of index.items) if (it.start > last) last = it.start;
+  const end = Math.min(hi, Math.max(lo + w, last + w * 0.1));
+  return [end - w, end];
 }
 
 /**
@@ -661,6 +689,282 @@ export function zoomWindow(index: ProcessStackIndex, selectedKey: string | null)
   const pad = (b - a) * 0.08 + 250;
   return [Math.max(index.minStart, a - pad), Math.min(index.maxEnd, b + pad)];
 }
+
+// ---------------------------------------------------------------------------
+// The visible domain: zoom and pan. The chart's time window is state the
+// reader stretches and moves; these helpers keep it inside the session and
+// never narrower than a minimum span. A domain is [start, end] in epoch ms.
+// ---------------------------------------------------------------------------
+
+export type TimeDomain = readonly [number, number];
+
+/** MIN_DOMAIN_MS: the narrowest window the chart zooms to, in milliseconds. */
+export const MIN_DOMAIN_MS = 250;
+
+/** sessionBounds: the session's span as a domain, at least one second wide. */
+export function sessionBounds(index: ProcessStackIndex): [number, number] {
+  return [index.minStart, Math.max(index.maxEnd, index.minStart + 1000)];
+}
+
+/**
+ * minSpanFor: the narrowest window for a session: MIN_DOMAIN_MS, or a ten
+ * thousandth of the session when that is wider, never wider than the session.
+ */
+export function minSpanFor(bounds: TimeDomain): number {
+  const total = Math.max(1, bounds[1] - bounds[0]);
+  return Math.min(total, Math.max(MIN_DOMAIN_MS, total / 10_000));
+}
+
+/**
+ * clampDomain keeps a domain inside bounds: no wider than bounds, no narrower
+ * than minSpanMs (grown around its centre), shifted back inside when it pokes
+ * out of either end. The two ends may come in either order.
+ */
+export function clampDomain(domain: TimeDomain, bounds: TimeDomain, minSpanMs: number): [number, number] {
+  const [b0, b1] = bounds;
+  const total = Math.max(0, b1 - b0);
+  let a = Math.min(domain[0], domain[1]);
+  const b = Math.max(domain[0], domain[1]);
+  let span = b - a;
+  if (span >= total) return [b0, b1];
+  const min = Math.min(total, Math.max(0, minSpanMs));
+  if (span < min) {
+    a = (a + b) / 2 - min / 2;
+    span = min;
+  }
+  a = Math.min(Math.max(a, b0), b1 - span);
+  return [a, a + span];
+}
+
+/**
+ * zoomAround scales a domain by `factor` (above 1 zooms in, below 1 out) while
+ * the time under `anchorMs` stays at the same place on the axis, then clamps.
+ */
+export function zoomAround(
+  domain: TimeDomain,
+  anchorMs: number,
+  factor: number,
+  bounds: TimeDomain,
+  minSpanMs: number,
+): [number, number] {
+  const span = Math.max(1e-9, domain[1] - domain[0]);
+  const f = Math.min(1, Math.max(0, (anchorMs - domain[0]) / span));
+  const anchor = domain[0] + f * span;
+  const total = Math.max(0, bounds[1] - bounds[0]);
+  const safe = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  const next = Math.min(total, Math.max(Math.min(total, minSpanMs), span / safe));
+  const a = anchor - f * next;
+  return clampDomain([a, a + next], bounds, minSpanMs);
+}
+
+/** panBy moves a domain by deltaMs (positive = later) without changing its width. */
+export function panBy(domain: TimeDomain, deltaMs: number, bounds: TimeDomain): [number, number] {
+  const span = domain[1] - domain[0];
+  if (span >= bounds[1] - bounds[0]) return [bounds[0], bounds[1]];
+  const a = Math.min(Math.max(domain[0] + deltaMs, bounds[0]), bounds[1] - span);
+  return [a, a + span];
+}
+
+/** centreAt moves a domain so `t` sits in its middle, keeping its width. */
+export function centreAt(domain: TimeDomain, t: number, bounds: TimeDomain): [number, number] {
+  return panBy(domain, t - (domain[0] + domain[1]) / 2, bounds);
+}
+
+/**
+ * brushDomain: the domain between two brushed times, in either order, cut to
+ * the session, then grown to the minimum span when the brush was tiny.
+ */
+export function brushDomain(t1: number, t2: number, bounds: TimeDomain, minSpanMs: number): [number, number] {
+  const a = Math.max(bounds[0], Math.min(t1, t2));
+  const b = Math.min(bounds[1], Math.max(t1, t2));
+  return clampDomain([a, Math.max(a, b)], bounds, minSpanMs);
+}
+
+/**
+ * resizeEdge moves one edge of a domain to `t` (the overview strip's handles)
+ * while the other edge stays put; the moved edge stops minSpanMs short of the
+ * fixed one and at the session's ends.
+ */
+export function resizeEdge(
+  domain: TimeDomain,
+  edge: "start" | "end",
+  t: number,
+  bounds: TimeDomain,
+  minSpanMs: number,
+): [number, number] {
+  const min = Math.min(bounds[1] - bounds[0], minSpanMs);
+  if (edge === "start") {
+    const a = Math.max(bounds[0], Math.min(t, domain[1] - min));
+    return [a, domain[1]];
+  }
+  const b = Math.min(bounds[1], Math.max(t, domain[0] + min));
+  return [domain[0], b];
+}
+
+/** zoomLevel: how many times narrower the domain is than the session (at least 1). */
+export function zoomLevel(domain: TimeDomain, bounds: TimeDomain): number {
+  return Math.max(1, (bounds[1] - bounds[0]) / Math.max(1e-9, domain[1] - domain[0]));
+}
+
+/** isWholeSession: the domain covers the session (within a millisecond). */
+export function isWholeSession(domain: TimeDomain, bounds: TimeDomain): boolean {
+  return domain[0] <= bounds[0] + 1 && domain[1] >= bounds[1] - 1;
+}
+
+/** fmtZoom renders a zoom level: "1×", "6.2×", "42×". */
+export function fmtZoom(level: number): string {
+  if (!Number.isFinite(level) || level < 1.05) return "1×";
+  if (level < 9.95) return `${level.toFixed(1)}×`;
+  return `${Math.round(level)}×`;
+}
+
+/** fmtSpan renders a window width compactly: "850ms", "4.2s", "42s", "5m48s", "11m", "1h09m". */
+export function fmtSpan(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 9950) return `${(ms / 1000).toFixed(1)}s`;
+  const total = Math.round(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m < 10 && sec) return `${m}m${String(sec).padStart(2, "0")}s`;
+  return `${m}m`;
+}
+
+/** The wheel fields the chart reads (a WheelEvent satisfies it). */
+export type WheelLike = {
+  deltaX: number;
+  deltaY: number;
+  deltaMode: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+};
+
+/** What a wheel event does to the chart; null means "leave it to the page". */
+export type WheelIntent = { kind: "zoom"; factor: number } | { kind: "pan"; px: number } | null;
+
+/** Pixels per line and per page, for line- and page-mode wheels. */
+const WHEEL_LINE_PX = 16;
+const WHEEL_PAGE_PX = 400;
+/** WHEEL_ZOOM_RATE: zoom per wheel pixel (100px, one mouse notch, is about 1.5×). */
+const WHEEL_ZOOM_RATE = 0.004;
+
+/**
+ * wheelIntent decides what a wheel event does, first matching rule wins:
+ * Ctrl or Cmd (and a trackpad pinch, which browsers report as a Ctrl wheel)
+ * zooms around the cursor; Shift pans by the vertical delta; a mostly
+ * horizontal wheel pans by its horizontal delta; anything else is a plain
+ * vertical scroll the page keeps (the caller must not preventDefault it).
+ */
+export function wheelIntent(e: WheelLike): WheelIntent {
+  const unit = e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1;
+  const dx = e.deltaX * unit;
+  const dy = e.deltaY * unit;
+  if (e.ctrlKey || e.metaKey) {
+    if (!dy) return null;
+    const d = Math.max(-200, Math.min(200, dy));
+    return { kind: "zoom", factor: Math.exp(-d * WHEEL_ZOOM_RATE) };
+  }
+  if (e.shiftKey) {
+    const d = dy || dx;
+    return d ? { kind: "pan", px: d } : null;
+  }
+  if (dx && Math.abs(dx) > Math.abs(dy)) return { kind: "pan", px: dx };
+  return null;
+}
+
+/** A keyboard command on the chart's time axis. */
+export type ChartKeyAction = "zoomIn" | "zoomOut" | "fit" | "panLeft" | "panRight";
+
+const CHART_KEYS: Readonly<Record<string, ChartKeyAction>> = {
+  "+": "zoomIn",
+  "=": "zoomIn",
+  "-": "zoomOut",
+  _: "zoomOut",
+  "0": "fit",
+};
+
+/**
+ * chartKeyAction maps a key on the focused plot to a zoom or pan command.
+ * Shift+arrows pan (plain arrows stay selection moves, STACK_KEYS); a key
+ * held with Ctrl, Cmd or Alt is left to the browser (its own page zoom).
+ */
+export function chartKeyAction(
+  key: string,
+  mods: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {},
+): ChartKeyAction | null {
+  if (mods.ctrlKey || mods.metaKey || mods.altKey) return null;
+  if (key === "ArrowLeft" || key === "ArrowRight") {
+    if (!mods.shiftKey) return null;
+    return key === "ArrowLeft" ? "panLeft" : "panRight";
+  }
+  return CHART_KEYS[key] ?? null;
+}
+
+/**
+ * defaultWindowSpan: how much of a large session the chart opens on: a
+ * twelfth of it, at least five minutes, narrower on a narrow chart (down to
+ * 30% at 300px and under) so a phone is not handed a desktop's worth of bars.
+ */
+export function defaultWindowSpan(sessionSpanMs: number, plotWidthPx: number): number {
+  const span = Math.max(1, sessionSpanMs);
+  return Math.min(span, Math.max(span / 12, 5 * 60_000) * Math.min(1, Math.max(0.3, plotWidthPx / 1000)));
+}
+
+/**
+ * initialDomain: the window the chart opens on before the reader zooms or
+ * pans. A session over FOLD_TOTAL_THRESHOLD processes opens on a window
+ * (defaultWindow: around the selection's top-level command, else the most
+ * recent stretch); a smaller one opens on the whole session.
+ */
+export function initialDomain(
+  index: ProcessStackIndex,
+  selectedKey: string | null,
+  plotWidthPx: number,
+): [number, number] {
+  const bounds = sessionBounds(index);
+  if (index.items.length <= FOLD_TOTAL_THRESHOLD) return bounds;
+  const w = defaultWindowSpan(bounds[1] - bounds[0], plotWidthPx);
+  const d = defaultWindow({ ...index, maxEnd: bounds[1] }, selectedKey, w);
+  return clampDomain(d, bounds, minSpanFor(bounds));
+}
+
+/** How a bar draws at its on-screen width. */
+export type BarTier = "tick" | "bare" | "label";
+
+/** MIN_BAR_PX: narrower bars draw as a 2px tick. MIN_LABEL_PX: narrower bars carry no text. */
+export const MIN_BAR_PX = 4;
+export const MIN_LABEL_PX = 36;
+
+/** barTier: a tick below MIN_BAR_PX, a bar without text below MIN_LABEL_PX, else a labelled bar. */
+export function barTier(px: number): BarTier {
+  if (px < MIN_BAR_PX) return "tick";
+  if (px < MIN_LABEL_PX) return "bare";
+  return "label";
+}
+
+/**
+ * clipSpan: the part of [start, end] inside the domain, and whether either end
+ * was cut. A bar that started before the window is drawn from the left edge
+ * so its label stays visible; its true start stays in the hover card.
+ */
+export function clipSpan(
+  start: number,
+  end: number,
+  domain: TimeDomain,
+): { a: number; b: number; cutStart: boolean; cutEnd: boolean } {
+  const a = Math.max(start, domain[0]);
+  const b = Math.max(a, Math.min(end, domain[1]));
+  return { a, b, cutStart: start < domain[0], cutEnd: end > domain[1] };
+}
+
+/** ZOOM_STEP: the factor one zoom button press or key applies. */
+export const ZOOM_STEP = 2;
+/** PAN_STEP: the fraction of the window one Shift+arrow press moves it. */
+export const PAN_STEP = 0.25;
 
 // ---------------------------------------------------------------------------
 // Capture honesty: what the partial-capture note reports.

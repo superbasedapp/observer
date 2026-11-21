@@ -83,7 +83,8 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	now := time.Now().UTC()
+	// The server clock (s.now) picks the default month, so tests can pin it.
+	now := s.now().UTC()
 	monthStr := r.URL.Query().Get("month")
 	if monthStr == "" {
 		monthStr = now.Format("2006-01")
@@ -343,6 +344,6 @@ func (s *Server) reportCompressionSaved(ctx context.Context, startArg, endArg, p
 		args = append(args, margs...)
 	}
 	var saved int64
-	err := s.db().QueryRowContext(ctx, q, args...).Scan(&saved)
+	err := s.db().QueryRowContext(ctx, q, args...).Scan(&saved) //nolint:gosec // G701: the query text is code constants plus constant-column fragments (modelfilter, timebucket); every request value is a bound ? arg
 	return saved, err
 }
