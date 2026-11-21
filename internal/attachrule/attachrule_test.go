@@ -13,8 +13,8 @@ var (
 
 func TestTableRowIDs(t *testing.T) {
 	t.Parallel()
-	if len(table) != 10 {
-		t.Fatalf("table has %d rows, want 10", len(table))
+	if len(table) != 11 {
+		t.Fatalf("table has %d rows, want 11", len(table))
 	}
 	seen := map[int]int{}
 	for i, r := range table {
@@ -23,7 +23,7 @@ func TestTableRowIDs(t *testing.T) {
 			t.Errorf("row at index %d has ID %d", i, r.ID)
 		}
 	}
-	for id := 1; id <= 10; id++ {
+	for id := 1; id <= 11; id++ {
 		if seen[id] != 1 {
 			t.Errorf("row ID %d appears %d times", id, seen[id])
 		}
@@ -194,7 +194,34 @@ func TestDecideRows(t *testing.T) {
 			},
 		},
 		{
-			"row 10 zero intent", 10,
+			"row 10 re-consent on an individual enrolment", 10,
+			Input{Current: personal, Intent: IntentReconsent},
+			func(t *testing.T, d Decision) {
+				if d.Outcome != OutcomeAllow || d.Target.OrgID != "p1" || d.DestinationUnchanged {
+					t.Errorf("got %+v", d)
+				}
+			},
+		},
+		{
+			"row 10 re-consent on a managed enrolment", 10,
+			Input{Current: acme, Intent: IntentReconsent},
+			func(t *testing.T, d Decision) {
+				if d.Refusal == nil || d.Refusal.Reason != RefusalAlreadyAttached {
+					t.Errorf("got %+v", d)
+				}
+			},
+		},
+		{
+			"row 10 re-consent with nothing attached", 10,
+			Input{Intent: IntentReconsent},
+			func(t *testing.T, d Decision) {
+				if d.Refusal == nil || d.Refusal.Reason != RefusalUnsupported {
+					t.Errorf("got %+v", d)
+				}
+			},
+		},
+		{
+			"row 11 zero intent", 11,
 			Input{Current: acme},
 			func(t *testing.T, d Decision) {
 				if d.Outcome != OutcomeRefuse || d.Refusal.Reason != RefusalUnsupported {
@@ -203,7 +230,7 @@ func TestDecideRows(t *testing.T) {
 			},
 		},
 		{
-			"row 10 already attached", 10,
+			"row 11 already attached", 11,
 			Input{Current: acme, Intent: IntentAttach, Requested: acmeReq},
 			func(t *testing.T, d Decision) {
 				if d.Refusal == nil || d.Refusal.Reason != RefusalAlreadyAttached {
@@ -212,7 +239,7 @@ func TestDecideRows(t *testing.T) {
 			},
 		},
 		{
-			"row 10 managed attach with nothing requested", 10,
+			"row 11 managed attach with nothing requested", 11,
 			Input{Current: acme, Intent: IntentAttach},
 			func(t *testing.T, d Decision) {
 				if d.Outcome != OutcomeRefuse {

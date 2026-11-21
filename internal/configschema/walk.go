@@ -90,6 +90,10 @@ type Leaf struct {
 	Max *float64 `json:"max,omitempty"`
 	// Doc is the field's Go doc comment. Generator-only.
 	Doc string `json:"doc,omitempty"`
+	// Help is the user-facing help Settings shows under the key (U-14): the
+	// doc without its Go identifier and design-record pointers, or a
+	// hand-written override (web/cfgschema/help.go). Generator-only.
+	Help string `json:"help,omitempty"`
 
 	// index is the reflect FieldByIndex chain from config.Config to the
 	// leaf, used by the value accessors. Not serialized.
@@ -104,6 +108,8 @@ type Table struct {
 	Owner     string `json:"owner"`
 	Block     string `json:"block"`
 	Doc       string `json:"doc,omitempty"`
+	// Help is the section's user-facing help (Leaf.Help).
+	Help string `json:"help,omitempty"`
 }
 
 var (

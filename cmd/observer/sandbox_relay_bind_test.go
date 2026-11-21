@@ -279,7 +279,10 @@ func TestRelayRefusesAnotherRepositoryEndToEnd(t *testing.T) {
 	ws, other := twoRepos(t)
 	setTestHome(t, t.TempDir())
 	h := startRelayHarness(t, bin, ws, "")
-	args := []string{"claude-code", "UserPromptSubmit"}
+	// The event name observer registers for Claude Code (register_claude.go),
+	// so the run's own event is captured by the prompt handler itself rather
+	// than only touching the database through the posture fallback.
+	args := []string{"claude-code", "user-prompt-submit"}
 	payload := func(cwd, sid string) []byte {
 		return []byte(`{"session_id":"` + sid + `","hook_event_name":"UserPromptSubmit","cwd":"` + cwd + `","prompt":"hello"}`)
 	}

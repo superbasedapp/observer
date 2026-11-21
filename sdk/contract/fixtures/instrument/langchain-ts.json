@@ -1,0 +1,139 @@
+{
+  "_source": {
+    "target": "langchain",
+    "instrumentor": "@arizeai/openinference-instrumentation-langchain 4.2.1",
+    "library": "@langchain/core 1.4.2, @langchain/langgraph 1.7.5",
+    "grounding": "A two-node LangGraph StateGraph: node 'count' calls a tool, node 'answer' calls a BaseChatModel that reports usage. LangGraph runs are LangChain runs, so one instrumentation covers both. 'metadata' (per-run checkpoint ids) is not recorded and UUIDs are written as <id>.",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "langchain",
+  "spans": [
+    {
+      "name": "__start__",
+      "parent": "LangGraph",
+      "attrs": {
+        "input.mime_type": "text/plain",
+        "input.value": "superbased",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "text/plain",
+        "output.value": "superbased"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "input_value": "superbased",
+        "output_value": "superbased"
+      }
+    },
+    {
+      "name": "word_length",
+      "parent": "count",
+      "attrs": {
+        "input.mime_type": "text/plain",
+        "input.value": "superbased",
+        "openinference.span.kind": "TOOL",
+        "output.mime_type": "application/json",
+        "output.value": "10",
+        "tool.name": "word_length"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "tool_name": "word_length",
+        "tool_arguments": "superbased",
+        "tool_result": "10"
+      }
+    },
+    {
+      "name": "count",
+      "parent": "LangGraph",
+      "attrs": {
+        "input.mime_type": "text/plain",
+        "input.value": "superbased",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"n\":10}"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "output_value": {
+          "n": 10
+        }
+      }
+    },
+    {
+      "name": "UsageChatModel",
+      "parent": "answer",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"messages\":[[{\"lc\":1,\"type\":\"constructor\",\"id\":[\"langchain_core\",\"messages\",\"HumanMessage\"],\"kwargs\":{\"content\":\"superbased has 10 letters?\",\"additional_kwargs\":{},\"response_metadata\":{}}}]]}",
+        "llm.input_messages.0.message.content": "superbased has 10 letters?",
+        "llm.input_messages.0.message.role": "user",
+        "llm.invocation_parameters": "{}",
+        "llm.output_messages.0.message.content": "superbased has 10 letters",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "usagechatmodel",
+        "llm.token_count.completion": 6,
+        "llm.token_count.prompt": 12,
+        "llm.token_count.total": 18,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"generations\":[[{\"text\":\"superbased has 10 letters\",\"message\":{\"lc\":1,\"type\":\"constructor\",\"id\":[\"langchain_core\",\"messages\",\"AIMessage\"],\"kwargs\":{\"content\":\"superbased has 10 letters\",\"id\":\"msg-fixture\",\"usage_metadata\":{\"input_tokens\":12,\"output_tokens\":6,\"total_tokens\":18},\"tool_calls\":[],\"invalid_tool_calls\":[],\"additional_kwargs\":{},\"response_metadata\":{\"tokenUsage\":{\"promptTokens\":12,\"completionTokens\":6,\"totalTokens\":18}}}}}]],\"llmOutput\":{\"tokenUsage\":{\"promptTokens\":12,\"completionTokens\":6,\"totalTokens\":18}}}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "provider": "usagechatmodel",
+        "input_tokens": 12,
+        "output_tokens": 6,
+        "total_tokens": 18,
+        "total_derived": false,
+        "input_messages": [
+          {
+            "content": "superbased has 10 letters?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "superbased has 10 letters",
+            "role": "assistant"
+          }
+        ]
+      }
+    },
+    {
+      "name": "answer",
+      "parent": "LangGraph",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"q\":\"superbased\",\"n\":10}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "text/plain",
+        "output.value": "superbased has 10 letters"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "output_value": "superbased has 10 letters"
+      }
+    },
+    {
+      "name": "LangGraph",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "text/plain",
+        "input.value": "superbased",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"q\":\"superbased\",\"n\":10,\"a\":\"superbased has 10 letters\"}"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "input_value": "superbased",
+        "output_value": {
+          "a": "superbased has 10 letters",
+          "n": 10,
+          "q": "superbased"
+        }
+      }
+    }
+  ]
+}

@@ -64,6 +64,9 @@ func TestSecretLeavesAreExactlyTheT2Set(t *testing.T) {
 		"browser.listener.token":     true,
 		"routing.key_pool":           true,
 		"email.password":             true,
+		// Plane A W3-5 (lane B9): a Slack incoming webhook is a bearer URL.
+		"observability.alerts.slack_webhook_url":     true,
+		"observability.alerts.pagerduty_routing_key": true,
 	}
 	got := map[string]bool{}
 	for _, l := range Leaves() {

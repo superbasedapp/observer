@@ -666,6 +666,8 @@ var rules = []rule{
 	{prefix: "observability.admission.prefilter", prominence: ProminenceAdvanced},
 	{prefix: "observability.alerts.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.alerts.webhook_url", exact: true, tier: TierSensitive},
+	{prefix: "observability.alerts.slack_webhook_url", exact: true, tier: TierSecret, secret: true},
+	{prefix: "observability.alerts.pagerduty_routing_key", exact: true, tier: TierSecret, secret: true},
 	{prefix: "observability.alerts.email", exact: true, tier: TierSensitive},
 	{prefix: "observability.alerts.email_to", exact: true, tier: TierSensitive},
 	// Egress routing (§4.2).
@@ -673,6 +675,15 @@ var rules = []rule{
 	{prefix: "observability.egress.rules", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.egress.targets", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerFileOnly},
 	{prefix: "observability.proxy_turn_traces", exact: true, prominence: ProminenceAdvanced},
+	// Node-local Plane A content capture (F07, D8): a capture/content key,
+	// so sensitive (D19: an agent's MCP write needs the user's approval).
+	{prefix: "observability.store_content", exact: true, tier: TierSensitive, prominence: ProminencePrimary},
+	// [observability.sdk] (D18): where the SDKs send an app's data. Both keys
+	// decide whether spans leave this machine, so both are sensitive (confirm
+	// on the dashboard, --yes on the CLI, an approval for an MCP agent). The
+	// discovery route reads the file on every request, so a save is live.
+	{prefix: "observability.sdk", tier: TierSensitive, restart: RestartLive, prominence: ProminencePrimary},
+	{prefix: "observability.sdk.destination", exact: true, enum: []string{"", "local", "online", "both"}},
 
 	// ----------------------------------------------------------------- selfobs
 	{prefix: "selfobs", tier: TierSensitive, restart: RestartRequired, section: "observability", prominence: ProminenceAdvanced},

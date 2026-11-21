@@ -16,17 +16,17 @@
 //     read as the locked destination. A lock is matched on Kind and OrgID.
 //   - Row 3 with no current destination: allowed with nothing to drain.
 //   - Rows 4 and 6 with the SAME destination requested (same Kind and OrgID):
-//     not a switch, so they do not match and row 10 refuses ("already
+//     not a switch, so they do not match and row 11 refuses ("already
 //     attached").
 //   - Row 6 says "current destination is individual". A machine with no
 //     destination and an explicit requested destination is also routed to
 //     row 6 (allowed, nothing to drain, nothing left behind); otherwise
-//     "connect <server>" on a fresh machine would fall to row 10. Rows 7-9
+//     "connect <server>" on a fresh machine would fall to row 11. Rows 7-9
 //     are the discovery rows: they need an attach intent, no current
 //     destination and NO requested destination.
 //   - Row 4 requires the request to be a team org or private server. Row 5
 //     is the personal org. A managed node asked to attach with no requested
-//     destination falls to row 10.
+//     destination falls to row 11.
 //   - Row 5 after M10: allowed only when MultiEnabled and
 //     PolicyAllowsSecondDestination are both true; it adds a second
 //     destination, so there is no drain and no old org to confirm.
@@ -36,6 +36,12 @@
 //   - Rows 7 and 8 also set ChooserMayBeIncomplete (the control plane lists
 //     only orgs where it has seen this sign-in); row 9 sets it too and is the
 //     only row that sets OfferEnterAddress, as the plan states.
-//   - A zero Intent is invalid input and reaches row 10, as does an attach
+//   - Row 10 (2026-11-19, budget enforce consistency) is a re-consent: an
+//     INDIVIDUAL enrolment re-attaches to the destination it already has, so
+//     its owner can accept the grant that destination now offers (a
+//     personal organization is managed by its owner). It is not a switch: no
+//     drain, nothing left behind. A managed enrolment already holds the
+//     managed grant and is refused as already attached.
+//   - A zero Intent is invalid input and reaches row 11, as does an attach
 //     whose shape matches no earlier row.
 package attachrule

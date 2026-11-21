@@ -84,6 +84,20 @@ export const EXPORT_ROUTES: readonly ExportRow[] = [
     path: "/egress",
     none: "Nothing to export here: egress decisions stream on the page and the policy is exported from its own editor.",
   },
+  // Your apps (Plane A lane B5): each page's own read, with its page params.
+  {
+    path: "/apps/traces",
+    endpoint: "/api/obs/traces",
+    base: { limit: 500 },
+    pageParams: ["days", "status", "end_user", "service", "session_id", "q"],
+  },
+  { path: "/apps/sessions", endpoint: "/api/obs/sessions", base: { limit: 500 }, pageParams: ["days"] },
+  { path: "/apps/analytics", endpoint: "/api/obs/analytics", pageParams: ["days"] },
+  { path: "/apps/end-users", endpoint: "/api/obs/end-users", base: { limit: 1000 }, pageParams: ["days"] },
+  { path: "/apps/evals", endpoint: "/api/obs/eval/runs", base: { limit: 200 } },
+  { path: "/apps/scores", endpoint: "/api/obs/scores", base: { limit: 500 }, pageParams: ["name", "source"] },
+  { path: "/apps/prompts", endpoint: "/api/obs/sdk/prompts", base: { limit: 500 } },
+  { path: "/apps/alerts", endpoint: "/api/obs/alerts/firings", base: { limit: 500 } },
   {
     path: "/search",
     endpoint: "/api/search",

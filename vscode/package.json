@@ -2,7 +2,7 @@
   "name": "superbased-observer",
   "displayName": "SuperBased",
   "description": "Local-first AI coding observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. Works with no account; sign in to see all your machines online and join your team.",
-  "version": "1.41.0",
+  "version": "1.42.0",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
@@ -86,6 +86,10 @@
       {
         "command": "observer.openComponents",
         "title": "SuperBased: Choose Components"
+      },
+      {
+        "command": "observer.appsOn",
+        "title": "SuperBased: Turn on AI Apps"
       },
       {
         "command": "observer.openMessages",
@@ -263,6 +267,17 @@
             },
             "completionEvents": [
               "onCommand:observer.openDashboard"
+            ]
+          },
+          {
+            "id": "apps",
+            "title": "Trace the AI apps you build",
+            "description": "AI Apps keeps traces, cost and evals for the LLM apps and agents you build, sent by the superbased SDKs to this machine. Turning it on needs no restart.\n[Turn on AI Apps](command:observer.appsOn)",
+            "media": {
+              "markdown": "walkthroughs/04b-apps.md"
+            },
+            "completionEvents": [
+              "onCommand:observer.appsOn"
             ]
           },
           {

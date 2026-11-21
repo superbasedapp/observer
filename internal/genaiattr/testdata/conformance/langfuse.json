@@ -1,0 +1,235 @@
+{
+  "_source": {
+    "dialect": "langfuse",
+    "grounding": "Attribute names and value shapes from the Langfuse SDK sources, read from the published packages (no network call to Langfuse, no keys): Python langfuse 5.2.0 / 4.18.0 / 3.15.0 (PyPI) langfuse/_client/attributes.py LangfuseOtelSpanAttributes + create_generation_attributes (input/output/usage/cost/model parameters JSON-serialized with json.dumps, metadata flattened to langfuse.trace.metadata.<key> with every value JSON-encoded in 5.x), _client/constants.py (observation types), _client/propagation.py (user.id, session.id, langfuse.trace.tags, langfuse.environment, langfuse.release), openai.py::_parse_usage (the provider usage object passed through; embeddings -> {input}), _parse_cost (OpenRouter -> {total}), langchain/CallbackHandler.py::_parse_usage_model (input/output/total, input_<detail>/output_<detail> subtracted from input/output, priority keys not subtracted); JS @langfuse/core + @langfuse/tracing 6.1.1 (npm): the same enum plus langfuse.trace.input/output and the compat keys langfuse.user.id / langfuse.session.id. Values are synthetic.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "generation_openai_integration_python5",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.model.name": "gpt-4o-mini-2024-07-18",
+        "langfuse.observation.input": "[{\"role\": \"system\", \"content\": \"Be brief.\"}, {\"role\": \"user\", \"content\": \"Capital of France?\"}]",
+        "langfuse.observation.output": "{\"role\": \"assistant\", \"content\": \"Paris.\"}",
+        "langfuse.observation.model.parameters": "{\"temperature\": 0.2, \"max_tokens\": 64}",
+        "langfuse.observation.usage_details": "{\"prompt_tokens\": 1200, \"completion_tokens\": 40, \"total_tokens\": 1240, \"prompt_tokens_details\": {\"cached_tokens\": 1024, \"audio_tokens\": 0}, \"completion_tokens_details\": {\"reasoning_tokens\": 16}}",
+        "langfuse.observation.completion_start_time": "\"2026-11-19T10:00:00.250000+00:00\"",
+        "langfuse.observation.prompt.name": "capital-qa",
+        "langfuse.observation.prompt.version": 3,
+        "langfuse.environment": "production",
+        "langfuse.release": "v1.2.3",
+        "user.id": "end-user-42",
+        "session.id": "sess-7",
+        "langfuse.trace.tags": ["beta", "geo"],
+        "langfuse.trace.metadata.plan": "\"pro\"",
+        "langfuse.trace.metadata.seats": "12"
+      },
+      "want": {
+        "model": "gpt-4o-mini-2024-07-18",
+        "observation_type": "generation",
+        "observation_kind": "llm",
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "total_derived": false,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "reasoning_tokens": 16,
+        "prompt_value": "[{\"role\": \"system\", \"content\": \"Be brief.\"}, {\"role\": \"user\", \"content\": \"Capital of France?\"}]",
+        "response_value": "{\"role\": \"assistant\", \"content\": \"Paris.\"}",
+        "request_params": {"max_tokens": 64, "temperature": 0.2},
+        "cost_total": null,
+        "prompt_name": "capital-qa",
+        "prompt_version": "3",
+        "environment": "production",
+        "release": "v1.2.3",
+        "user": "end-user-42",
+        "session": "sess-7",
+        "tags": ["beta", "geo"],
+        "metadata": {"plan": "pro", "seats": "12"}
+      }
+    },
+    {
+      "name": "generation_openai_responses_usage",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.model.name": "gpt-5-mini",
+        "langfuse.observation.usage_details": "{\"input_tokens\": 1200, \"output_tokens\": 40, \"total_tokens\": 1240, \"input_tokens_details\": {\"cached_tokens\": 1024}, \"output_tokens_details\": {\"reasoning_tokens\": 16}}"
+      },
+      "want": {
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "cache_read_tokens": 1024,
+        "reasoning_tokens": 16
+      }
+    },
+    {
+      "name": "generation_langchain_anthropic_disjoint",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.model.name": "claude-sonnet-4-5",
+        "langfuse.observation.usage_details": "{\"input\": 30, \"output\": 5, \"total\": 2135, \"input_cache_read\": 2000, \"input_cache_creation\": 100}"
+      },
+      "want": {
+        "model": "claude-sonnet-4-5",
+        "input_tokens": 2130,
+        "output_tokens": 5,
+        "total_tokens": 2135,
+        "total_derived": false,
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 100
+      }
+    },
+    {
+      "name": "generation_langchain_openai_reasoning_and_priority",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.usage_details": "{\"input\": 176, \"output\": 24, \"total\": 1240, \"input_cache_read\": 1024, \"input_priority\": 1200, \"output_reasoning\": 16}"
+      },
+      "want": {
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "cache_read_tokens": 1024,
+        "reasoning_tokens": 16
+      }
+    },
+    {
+      "name": "generation_anthropic_raw_usage_no_total",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.usage_details": "{\"input_tokens\": 30, \"output_tokens\": 5, \"cache_read_input_tokens\": 2000, \"cache_creation_input_tokens\": 100}"
+      },
+      "want": {
+        "input_tokens": 2130,
+        "output_tokens": 5,
+        "total_tokens": 2135,
+        "total_derived": true,
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 100
+      }
+    },
+    {
+      "name": "generation_manual_usage_and_cost_breakdown",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.model.name": "my-finetune",
+        "langfuse.observation.usage_details": "{\"input\": 100, \"output\": 50}",
+        "langfuse.observation.cost_details": "{\"input\": 0.0001, \"output\": 0.0002}"
+      },
+      "want": {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "total_tokens": 150,
+        "total_derived": true,
+        "cost_input": 0.0001,
+        "cost_output": 0.0002,
+        "cost_total": 0.00030000000000000003
+      }
+    },
+    {
+      "name": "generation_openrouter_reported_total_cost",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.cost_details": "{\"total\": 0.0042}"
+      },
+      "want": {
+        "cost_total": 0.0042,
+        "cost_input": null
+      }
+    },
+    {
+      "name": "embedding_openai_integration",
+      "attrs": {
+        "langfuse.observation.type": "embedding",
+        "langfuse.observation.model.name": "text-embedding-3-small",
+        "langfuse.observation.input": "\"hello world\"",
+        "langfuse.observation.usage_details": "{\"input\": 5}"
+      },
+      "want": {
+        "observation_kind": "embedding",
+        "model": "text-embedding-3-small",
+        "input_tokens": 5,
+        "output_tokens": null,
+        "total_tokens": 5,
+        "total_derived": true,
+        "input_value": "\"hello world\""
+      }
+    },
+    {
+      "name": "tool_observation_js6",
+      "attrs": {
+        "langfuse.observation.type": "tool",
+        "langfuse.observation.input": "{\"a\":2,\"b\":3}",
+        "langfuse.observation.output": "5",
+        "langfuse.user.id": "end-user-42",
+        "langfuse.session.id": "sess-7"
+      },
+      "want": {
+        "observation_kind": "tool",
+        "tool_arguments": {"a": 2, "b": 3},
+        "tool_result": "5",
+        "user": "end-user-42",
+        "session": "sess-7"
+      }
+    },
+    {
+      "name": "span_with_trace_io_js6",
+      "attrs": {
+        "langfuse.observation.type": "span",
+        "langfuse.trace.name": "qa-pipeline",
+        "langfuse.trace.input": "{\"question\":\"Capital of France?\"}",
+        "langfuse.trace.output": "\"Paris.\""
+      },
+      "want": {
+        "observation_type": "span",
+        "observation_kind": "",
+        "input_value": {"question": "Capital of France?"},
+        "output_value": "\"Paris.\""
+      }
+    },
+    {
+      "name": "agent_error_status_message",
+      "attrs": {
+        "langfuse.observation.type": "agent",
+        "langfuse.observation.level": "ERROR",
+        "langfuse.observation.status_message": "rate limited",
+        "langfuse.observation.input": "{\"task\":\"plan\"}"
+      },
+      "want": {
+        "observation_kind": "agent",
+        "status_message": "rate limited",
+        "input_value": {"task": "plan"}
+      }
+    },
+    {
+      "name": "flat_genai_usage_wins_over_usage_details",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "gen_ai.usage.input_tokens": 10,
+        "gen_ai.usage.output_tokens": 2,
+        "langfuse.observation.usage_details": "{\"input\": 99, \"output\": 99}"
+      },
+      "want": {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "total_tokens": 12
+      }
+    },
+    {
+      "name": "malformed_usage_details_is_null",
+      "attrs": {
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.usage_details": "not json",
+        "langfuse.observation.cost_details": "[1, 2]"
+      },
+      "want": {
+        "input_tokens": null,
+        "total_tokens": null,
+        "cost_total": null
+      }
+    }
+  ]
+}

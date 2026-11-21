@@ -1,5 +1,13 @@
 import {
   Activity,
+  BellRing,
+  ChartColumn,
+  FileText,
+  FlaskConical,
+  MessageSquareText,
+  Spline,
+  Star,
+  Users,
   ChartLine,
   DatabaseZap,
   DollarSign,
@@ -32,6 +40,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { costLabel, dollarsShown } from "../../../shared/lib/format.ts";
+import { PRODUCT_NAMES } from "../../../shared/lib/productNames.ts";
 
 // NavItem.icon is the lucide glyph itself, so the nav table below is the ONE
 // place a page's icon is decided. The Sidebar and the command palette both
@@ -78,7 +87,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "projects", label: "Projects", path: "/projects", icon: FolderKanban },
       { id: "security", label: "Security", path: "/security", icon: Shield },
       { id: "code-security", label: "Code security", path: "/code-security", icon: ShieldCheck },
-      { id: "egress", label: "Egress", path: "/egress", icon: Route },
       { id: "search", label: "Search", path: "/search", icon: Search },
     ],
   },
@@ -105,12 +113,31 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "patterns", label: "Patterns", path: "/patterns", icon: Sparkles },
     ],
   },
+  // Your apps (Plane A lane B5, plan W2-5, D17): the LLM apps the user
+  // builds, observed on this machine. Shown only when app observability is
+  // on (APPS_NAV_IDS, Sidebar); Egress and Policies joined it from Monitor
+  // and Configure, since both read only /api/obs.
+  {
+    id: "apps",
+    label: PRODUCT_NAMES.planea_local,
+    items: [
+      { id: "app-traces", label: "Traces", path: "/apps/traces", icon: Spline },
+      { id: "app-sessions", label: "Sessions", path: "/apps/sessions", icon: MessageSquareText },
+      { id: "app-analytics", label: "Analytics", path: "/apps/analytics", icon: ChartColumn },
+      { id: "app-end-users", label: "End users", path: "/apps/end-users", icon: Users },
+      { id: "app-evals", label: "Evals", path: "/apps/evals", icon: FlaskConical },
+      { id: "app-scores", label: "Scores", path: "/apps/scores", icon: Star },
+      { id: "app-prompts", label: "Prompts", path: "/apps/prompts", icon: FileText },
+      { id: "app-alerts", label: "Alerts", path: "/apps/alerts", icon: BellRing },
+      { id: "policies", label: "Policies", path: "/policies", icon: ScrollText },
+      { id: "egress", label: "Egress", path: "/egress", icon: Route },
+    ],
+  },
   {
     id: "configure",
     label: "Configure",
     items: [
       { id: "you", label: "You", path: "/you", icon: UserRound },
-      { id: "policies", label: "Policies", path: "/policies", icon: ScrollText },
       { id: "agent-config", label: "AI tool settings", path: "/agent-config", icon: FileCog },
       { id: "privacy", label: "Privacy", path: "/privacy", icon: Lock },
       { id: "terminals", label: "Terminals", path: "/terminals", icon: SquareTerminal },
@@ -124,6 +151,11 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
+/** APPS_NAV_IDS: the Your apps group's items, which leave the nav until app
+ *  observability answers on this machine (Sidebar; the first-run card on
+ *  the Overview offers to turn it on). */
+export const APPS_NAV_IDS: readonly string[] = NAV_GROUPS.find((g) => g.id === "apps")?.items.map((i) => i.id) ?? [];
+
 const NAV_BY_ID = new Map(NAV_ITEMS.map((i) => [i.id, i]));
 
 /**
@@ -134,4 +166,17 @@ const NAV_BY_ID = new Map(NAV_ITEMS.map((i) => [i.id, i]));
  */
 export function navIcon(id: string): LucideIcon | undefined {
   return NAV_BY_ID.get(id)?.icon;
+}
+
+/**
+ * navGroupsForTrack puts the AI Apps group first when the daemon's
+ * getting-started track is "apps" or "both" (first-run plan revision 2,
+ * section 2.4 and decision 4): order only, nothing hidden or collapsed.
+ * Any other track (or none) keeps the order as given.
+ */
+export function navGroupsForTrack<G extends { id: string }>(groups: readonly G[], track: string | null | undefined): G[] {
+  if (track !== "apps" && track !== "both") return [...groups];
+  const at = groups.findIndex((g) => g.id === "apps");
+  if (at <= 0) return [...groups];
+  return [groups[at], ...groups.slice(0, at), ...groups.slice(at + 1)];
 }

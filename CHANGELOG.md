@@ -4,6 +4,123 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-21
+
+Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.41.0. It builds out AI Apps: Observer
+now keeps traces, cost, evals and prompts for the LLM apps and agents you build, on your own
+machine or on your organization's server, sent by the superbased SDKs or any OpenTelemetry SDK.
+AI Apps is off until you turn it on, and it can be turned on in a running daemon. Like 1.37.x to
+1.41.0 it needs macOS 13 Ventura or later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Highlights
+
+- **AI Apps: observe the apps and agents you build.** Your app sends OpenTelemetry spans to this
+  machine's receiver (`127.0.0.1:4318`) or to your organization's AI Apps ingest gateway. The local
+  dashboard shows them under Your AI apps, the org dashboard under AI apps, apart from your
+  coding-agent data (`docs/deployment-models.md`).
+- **One switch to turn it on.** `observer apps on|off|status`, Settings > AI Apps, the VS Code
+  command "Turn on AI Apps", `install.sh --apps`, `install.ps1 -Apps` and `SBO_CONNECT_APPS=1` for
+  the connect scripts all use it. The Overview's Get started then waits for your app's first trace
+  and shows its cost; Settings > General > Focus picks whether coding agents or AI apps come first.
+- **SDKs for Python, TypeScript, Go and Java.** They release on their own `sdk-v*` tags and are not
+  on PyPI, npm or Maven Central yet: install them from a checkout (`docs/sdk/README.md`). This
+  release has what they talk to:
+  - on the machine, loopback discovery and `observer sdk sign-in`, which gets your own SDK key from
+    your organization;
+  - on the org server, the `/v1/sdk/*` API for `admit()`, scores, prompts, datasets, experiments
+    and trace cost, with scoped keys;
+  - both receivers read Langfuse attributes too, so a Langfuse-instrumented app can send unchanged.
+- **Cost you can trace back.** Every AI Apps cost cell says where its number came from: gateway
+  exact, proxy exact, computed from the price book, or reported by the app. A span nothing could
+  price reads Unpriced, never $0. The org Cost page shows, per service, the coding-agent spend that
+  built it beside what it costs to run.
+- **Evals and prompts.** Scores and end-user feedback, SDK experiments with a CI gate, online eval
+  rules over a sample of new traces, and review queues with several reviewers and adjudication (a
+  new `write:reviews` permission lets members review). A prompt registry adds versions, labels,
+  diff, staged rollout, rollback and an optional approval before production.
+- **Explorer and alerts.** The trace explorer filters by tag, metadata, service, environment,
+  release and end user, searches full text, saves views, follows new traces live and shows each
+  trace's admission decision. Alerts can be scoped to a model, end user, tag or service and sent to
+  Slack or PagerDuty.
+- **Budgets for an app's end users and services.** The org Budgets page sets dollar or token caps
+  per end user, per service or both, with one default cap for every end user. The AI gateway and
+  the org's `admit()` enforce them.
+- **A compact Sessions table.** Monitor > Sessions fits its window: a Columns picker (remembered per
+  browser), one Tokens column in place of four by default, and Favorite and Session pinned when the
+  table scrolls sideways.
+
+### Changed
+
+- **Denied topics in an admission policy match whole words.** `hack` no longer fires on "hacking";
+  plurals still match, and `hack*` matches the start of a word. Add `*` to any topic that relied on
+  the old substring match.
+- **The AI Apps ingest gateway keeps trace content by default.** With no capture policy stored,
+  traces keep their content (scrubbed for secrets); logs and metrics stay metadata only. To keep
+  traces metadata only, store that policy on the Telemetry Ingest page.
+- **Upgrading an org server on PostgreSQL:** stop every older org server binary, run
+  `observer-org migrate`, then start the new one; a score's key widens in two steps
+  (`docs/planea/evals-and-scores.md`). The new AI gateway audit column is added without a long lock.
+- **A span's cost is the price book's cost whenever its model is priced.** An app's reported cost
+  is used only for a model the price book does not list.
+- **On the machine, app span content follows its own key,** `[observability].store_content` (on,
+  kept on the machine). The organization share switches still decide what is pushed.
+- **The developer edition includes AI Apps,** off until you turn it on. Settings > Observability is
+  now Settings > AI Apps, and Policies and Egress move into the Your AI apps group.
+- **An AI agent changes settings through proposals.** `observer config get|list` and the MCP tools
+  `get_settings` and `set_setting` (experimental) are new. A security-sensitive key set by an agent
+  waits for your approval in Settings or with `observer config proposals`.
+- **Applying an admission policy on the Policies page also saves it,** so a restart keeps it.
+- **A personal dashboard's Enforce budgets apply on its machine,** as a team's do, without full
+  content. An already connected machine changes only after you accept again
+  (`observer connect --reconsent`).
+- **Budget problems link to their fix,** on the local dashboard ("Budgets not updated") and on the
+  org Budgets page.
+- **The AI gateway** accepts upstream kind `openai` and answers a refusal in the caller's own error
+  shape, with its request id.
+- **New commands:** `observer obs traces|prompts|alerts|views`; on the org server
+  `observer-org prompts`, `review-queues`, `datasets`, `budgets`, `obs alerts`, `runtime-settings`,
+  `gateway-usage`, `ai-gateway upstreams` and `log reset-consumer`.
+
+### Fixed
+
+- **An app's model calls no longer count as coding-agent spend.** SDK and OTLP spans used to add
+  coding-agent rows that were pushed to the organization. A migration moves the old rows to a local
+  table, and the organization removes its copies.
+- **App traces sent to the wrong address are refused, not dropped,** on the org server and on a
+  build without AI Apps. `observer doctor` reports a receiver port clash.
+- **The machine's OTLP receiver refuses requests from a web page,** and app span content is
+  scrubbed for secrets before it is stored.
+- **The org server never trims durable-log records a consumer has not applied.** `/readyz` reports
+  the fault, and `observer-org log reset-consumer` resets the consumer.
+- **The AI gateway answers `502 upstream_unavailable`** when it cannot reach the upstream (it
+  answered an empty 200).
+- **`observer config set` accepts every integer key.** Many were refused with "wants an integer".
+- **Agent Access on PostgreSQL 18** reports a blocked delete as a constraint error, not a raw
+  database error.
+- **Smaller fixes:**
+  - a pooled org server no longer answers 500 to a budget pull or push when one optional read fails;
+  - the dashboard reports the proxy port the daemon binds, `--port` included;
+  - the macOS 13 notice shows only on macOS;
+  - the restart overlay keeps trying until the new daemon answers;
+  - Settings help reads in plain words;
+  - the org dashboard's first-visit tour never opens over a shared link;
+  - the Tokenomics explorer serves its own fonts, so its build no longer downloads Google Fonts.
+
+### Known issues
+
+- AI Apps is not offered on superbased's hosted service yet. The AI gateway runs only on a
+  self-hosted org server, off by default.
+- On Windows, `observer sdk sign-in` keeps no key file: set `SUPERBASED_API_KEY` in the app.
+- After AI Apps is turned on in a running daemon, admission, egress routing, alerts and
+  organization share tiers wait for the next daemon start; the dashboard lists them.
+- An SDK experiment's items do not link to the traces its task produced.
+- An org server is tested on PostgreSQL 16, which every shipped deployment uses. On PostgreSQL
+  18 its database migration can stop with "out of shared memory" at the default
+  `max_locks_per_transaction`: stay on PostgreSQL 16 for now.
+
 ## [1.41.0] - 2026-11-19
 
 Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

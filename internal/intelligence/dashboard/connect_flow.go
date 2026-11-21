@@ -324,16 +324,25 @@ func normalizeTeamSlug(s string) (string, bool) {
 }
 
 // connectArgs is the child's argv after the binary.
-func connectArgs(configPath, team string) []string {
+// flags are extra connect flags (connectReconsentFlag), placed before the
+// team argument.
+func connectArgs(configPath, team string, flags ...string) []string {
 	args := []string{"connect", "--json", "--no-browser"}
 	if configPath != "" {
 		args = append(args, "--config", configPath)
 	}
+	args = append(args, flags...)
 	if team != "" {
 		args = append(args, team)
 	}
 	return args
 }
+
+// connectReconsentFlag is the child's flag for a re-consent run: re-attach
+// this machine to the destination it already has so its owner can accept
+// the grant that destination now offers (`observer connect --reconsent`,
+// attachrule row 10; budget enforce consistency 2026-11-19).
+const connectReconsentFlag = "--reconsent"
 
 // --- refusals -------------------------------------------------------------
 
@@ -342,6 +351,8 @@ type connectFacts struct {
 	enrolled bool
 	orgName  string
 	locked   bool
+	// reconsent is a re-consent run: it needs a connection, never refuses one.
+	reconsent bool
 }
 
 // connectRefusal is one reason the flow does not start.
@@ -370,7 +381,7 @@ var connectRefusals = []connectRefusal{
 	},
 	{
 		name: "already_connected",
-		when: func(f connectFacts) bool { return f.enrolled },
+		when: func(f connectFacts) bool { return f.enrolled && !f.reconsent },
 		code: "already_connected",
 		message: func(f connectFacts) string {
 			name := strings.TrimSpace(f.orgName)
@@ -378,6 +389,14 @@ var connectRefusals = []connectRefusal{
 				name = "a dashboard"
 			}
 			return "This machine is already connected to " + name + ". Disconnect it in Settings > Account first."
+		},
+	},
+	{
+		name: "reconsent_not_connected",
+		when: func(f connectFacts) bool { return f.reconsent && !f.enrolled },
+		code: "not_connected",
+		message: func(connectFacts) string {
+			return "This machine is not connected, so there is nothing to review again. Connect it in Settings > Account."
 		},
 	},
 }
@@ -450,7 +469,7 @@ func (f *connectFlow) snapshot() ConnectProgress {
 
 // start spawns the child unless one runs; started is false when the
 // current run was returned instead.
-func (f *connectFlow) start(configPath, team string) (p ConnectProgress, started bool) {
+func (f *connectFlow) start(configPath, team string, flags ...string) (p ConnectProgress, started bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.run != nil && f.run.running {
@@ -475,7 +494,7 @@ func (f *connectFlow) start(configPath, team string) (p ConnectProgress, started
 	if execFn == nil {
 		execFn = realExecConnect
 	}
-	args := connectArgs(configPath, team)
+	args := connectArgs(configPath, team, flags...)
 	go func() {
 		code, err := execFn(ctx, args, func(line []byte) { f.onLine(run, line) }, connectTailWriter{f: f, run: run})
 		f.finish(run, code, err)
@@ -667,6 +686,9 @@ func (s *Server) handleConnectStart(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Team string `json:"team"`
+		// Reconsent re-attaches this machine to its current destination
+		// (connectReconsentFlag); it takes no team.
+		Reconsent bool `json:"reconsent"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
@@ -680,10 +702,22 @@ func (s *Server) handleConnectStart(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if req.Reconsent && team != "" {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{
+			"error":   "bad_team",
+			"message": "Reviewing your connection again keeps its dashboard; it takes no team name.",
+		})
+		return
+	}
+	var flags []string
+	if req.Reconsent {
+		flags = append(flags, connectReconsentFlag)
+	}
 	// A run already in flight is returned as it is (one child at a time),
 	// even when it has just connected this machine.
 	if cur := s.connectFlow.snapshot(); !cur.Running {
 		facts := s.connectFactsOf(r.Context())
+		facts.reconsent = req.Reconsent
 		if ref := decideConnectRefusal(facts); ref != nil {
 			writeJSONStatus(w, http.StatusConflict, map[string]string{
 				"error":   ref.code,
@@ -692,9 +726,12 @@ func (s *Server) handleConnectStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, started := s.connectFlow.start(s.opts.ConfigPath, team)
+	p, started := s.connectFlow.start(s.opts.ConfigPath, team, flags...)
 	if started {
 		detail := "target=personal_or_choice"
+		if req.Reconsent {
+			detail = "reconsent=current_destination"
+		}
 		if team != "" {
 			detail = "team=" + team
 		}

@@ -249,6 +249,11 @@ function OrganizationCard() {
           {windows.map((w) => (
             <Row key={w.label} label={<span className="pl-3">{w.label}</span>}>
               <span className={w.tone === "danger" ? "text-danger" : w.tone === "warn" ? "text-warn" : ""}>{w.value}</span>
+              {w.link && (
+                <GatedLink to={w.link.href} className="ml-2 text-accent hover:underline">
+                  {w.link.label}
+                </GatedLink>
+              )}
             </Row>
           ))}
         </>

@@ -69,6 +69,7 @@ func planDefs() []planDef {
 				CapMembersMax: 1, CapMachineIdentitiesMax: 10, CapRetentionDays: 30, CapStorageGB: 1,
 				CapPushMBPerDay: 20, CapHoldsMax: 5, CapEnrichmentMonthly: 30,
 				CapRequestsRPS: 10, CapRequestsBurst: 50,
+				CapPlaneAEventsMonthly: 0, CapPlaneAGBMonthly: 0,
 			}, nil, nil)},
 		{body: template(KindPersonal, "personal_pro", 1, "Personal Pro",
 			map[CapName]int64{
@@ -85,6 +86,7 @@ func planDefs() []planDef {
 				CapStorageGB: 0, CapStorageGBPerSeat: 0, CapPushMBPerDay: 0, CapHoldsMax: 0, CapHoldsPerSeat: 0,
 				CapEnrichmentMonthly: 0, CapEnrichmentMonthlyPerSeat: 0, CapAuditLogDays: 30,
 				CapRequestsRPS: 50, CapRequestsBurst: 200,
+				CapPlaneAEventsMonthly: 0, CapPlaneAGBMonthly: 0,
 			}, nil, nil)},
 		{body: template(KindTeam, "team", 1, "Team",
 			map[CapName]int64{
@@ -97,6 +99,21 @@ func planDefs() []planDef {
 				CapMembersMax: Unlimited, CapSeatsMin: 10, CapMachineIdentitiesMax: 50, CapRetentionDays: 180,
 				CapStorageGBPerSeat: 6, CapPushMBPerDay: 1000, CapHoldsPerSeat: 50,
 				CapEnrichmentMonthlyPerSeat: 300, CapAuditLogDays: 365,
+			}, businessCapabilities(), nil)},
+		// Business v2 (Plane A packaging, D14 and D20): v1 as released plus
+		// the Plane A gateway's monthly allowance (10M events and 50 GB) and
+		// a request rate above the team floor's 50 rps / 200 burst, which
+		// Business v1 inherits because it sets none. v1 stays as released:
+		// the issuer treats a stored document as current while its (name,
+		// version) matches, so an edit of v1 would never reach an org that
+		// holds one. A Business price moves to v2 by its price mapping.
+		{body: template(KindTeam, "business", 2, "Business",
+			map[CapName]int64{
+				CapMembersMax: Unlimited, CapSeatsMin: 10, CapMachineIdentitiesMax: 50, CapRetentionDays: 180,
+				CapStorageGBPerSeat: 6, CapPushMBPerDay: 1000, CapHoldsPerSeat: 50,
+				CapEnrichmentMonthlyPerSeat: 300, CapAuditLogDays: 365,
+				CapRequestsRPS: 200, CapRequestsBurst: 800,
+				CapPlaneAEventsMonthly: 10_000_000, CapPlaneAGBMonthly: 50,
 			}, businessCapabilities(), nil)},
 
 		// ---- dedicated (plan 06 5.2 model B): a contract document; the

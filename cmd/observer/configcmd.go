@@ -25,6 +25,9 @@ func newConfigCmd() *cobra.Command {
 		Short: "Read and edit observer configuration from the command line",
 	}
 	cmd.AddCommand(newConfigSetCmd())
+	cmd.AddCommand(newConfigGetCmd())
+	cmd.AddCommand(newConfigListCmd())
+	cmd.AddCommand(newConfigProposalsCmd())
 	cmd.AddCommand(newConfigMigrateCmd())
 	cmd.AddCommand(newConfigAdoptDefaultsCmd())
 	return cmd

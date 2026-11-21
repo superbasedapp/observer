@@ -97,6 +97,8 @@ func newServeCmd() *cobra.Command {
 				GetSessionMessage: messageReader(cfg, database),
 				// Tool results follow the developer cost display (T-204).
 				CostDisplay: newCostDisplayResolver(store.New(database)).Mode,
+				// get_settings / set_setting (Plane A W2-8, D19).
+				Settings: newMCPSettingsBackend(configPath, database),
 			}
 			if cfg.Compression.Conversation.Stash.Enabled {
 				st, err := stash.New(stash.Options{

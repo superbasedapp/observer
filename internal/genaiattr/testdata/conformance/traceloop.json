@@ -1,0 +1,64 @@
+{
+  "_source": {
+    "dialect": "traceloop",
+    "grounding": "Source-grounded synthesis of Traceloop/OpenLLMetry keys from packages/opentelemetry-semantic-conventions-ai/opentelemetry/semconv_ai/__init__.py (the commit recorded in internal/obs/ingest/testdata/traceloop_semconv_fixture.json): llm.request.type, llm.usage.total_tokens, gen_ai.usage.cache_read_input_tokens / cache_creation_input_tokens, llm.is_streaming, llm.top_k, llm.frequency_penalty, llm.chat.stop_sequences, indexed gen_ai.prompt/gen_ai.completion with tool_calls and finish_reason, traceloop.span.kind / entity.name / entity.input / entity.output. Not a live capture.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "llm_chat",
+      "attrs": {
+        "llm.request.type": "chat",
+        "gen_ai.system": "anthropic",
+        "gen_ai.request.model": "claude-3-5-sonnet",
+        "gen_ai.response.model": "claude-3-5-sonnet-20241022",
+        "gen_ai.usage.prompt_tokens": 1200,
+        "gen_ai.usage.completion_tokens": 80,
+        "llm.usage.total_tokens": 1280,
+        "gen_ai.usage.cache_read_input_tokens": 1000,
+        "gen_ai.usage.cache_creation_input_tokens": 150,
+        "llm.is_streaming": true,
+        "llm.top_k": 5,
+        "llm.chat.stop_sequences": "[\"\\n\\nHuman:\"]",
+        "gen_ai.request.max_tokens": 256,
+        "gen_ai.prompt.0.role": "user",
+        "gen_ai.prompt.0.content": "Find flights",
+        "gen_ai.completion.0.role": "assistant",
+        "gen_ai.completion.0.finish_reason": "tool_use",
+        "gen_ai.completion.0.tool_calls.0.id": "toolu_1",
+        "gen_ai.completion.0.tool_calls.0.name": "search_flights",
+        "gen_ai.completion.0.tool_calls.0.arguments": "{\"to\": \"SFO\"}"
+      },
+      "want": {
+        "request_type": "chat",
+        "provider": "anthropic",
+        "model": "claude-3-5-sonnet-20241022",
+        "input_tokens": 1200,
+        "output_tokens": 80,
+        "total_tokens": 1280,
+        "total_derived": false,
+        "cache_read_tokens": 1000,
+        "cache_write_tokens": 150,
+        "finish_reasons": ["tool_use"],
+        "request_params": {"max_tokens": 256, "stream": true, "top_k": 5, "stop_sequences": "[\"\\n\\nHuman:\"]"},
+        "input_messages": [{"role": "user", "content": "Find flights"}],
+        "output_messages": [{"role": "assistant", "tool_calls": [{"id": "toolu_1", "name": "search_flights", "arguments": "{\"to\": \"SFO\"}"}]}]
+      }
+    },
+    {
+      "name": "workflow_entity_io",
+      "attrs": {"traceloop.span.kind": "workflow", "traceloop.entity.name": "support_workflow", "traceloop.entity.input": "{\"ticket\": 7}", "traceloop.entity.output": "{\"status\": \"closed\"}"},
+      "want": {"entity_name": "support_workflow", "input_value": {"ticket": 7}, "output_value": {"status": "closed"}}
+    },
+    {
+      "name": "tool_entity_io",
+      "attrs": {"traceloop.span.kind": "tool", "traceloop.entity.name": "lookup", "traceloop.entity.input": "{\"id\": 1}", "traceloop.entity.output": "{\"ok\": true}"},
+      "want": {"tool_arguments": {"id": 1}, "tool_result": {"ok": true}}
+    },
+    {
+      "name": "total_derived_without_llm_usage_total",
+      "attrs": {"gen_ai.usage.prompt_tokens": 120, "gen_ai.usage.completion_tokens": 45},
+      "want": {"total_tokens": 165, "total_derived": true}
+    }
+  ]
+}

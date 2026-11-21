@@ -184,3 +184,12 @@ test("resyncLine covers dry run, nothing to do and a confirmed run (T-642)", () 
   assert.match(resyncLine({ ...base, queued: 1, manifests: 1, confirmed: true }), /^Queued 1 changed row and 1 session to reconcile/);
   for (const r of [base, { ...base, confirmed: true }]) assert.ok(!/[\u2013\u2014]/.test(resyncLine(r)));
 });
+
+test("reconsentPrompt shows only a known advisory on a connected machine", async () => {
+  const { reconsentPrompt, RECONSENT_PROMPTS } = await import("./enrolment.ts");
+  assert.equal(reconsentPrompt({ enrolled: true, reconsent: "owner_managed" }), RECONSENT_PROMPTS.owner_managed);
+  assert.match(RECONSENT_PROMPTS.owner_managed!.body, /Nothing changes until you do/);
+  assert.equal(reconsentPrompt({ enrolled: false, reconsent: "owner_managed" }), null);
+  assert.equal(reconsentPrompt({ enrolled: true, reconsent: "something_new" }), null);
+  assert.equal(reconsentPrompt({ enrolled: true }), null);
+});

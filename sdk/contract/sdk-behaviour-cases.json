@@ -1,0 +1,269 @@
+{
+  "_doc": "Behaviours both superbased SDKs must share (review R-B19; contract: docs/plans/plane-a-sdk-buildout/contracts/sdk-api-surface.md section 13). Python runs these in sdk/python/tests/test_behaviour_cases.py; TypeScript in sdk/typescript/test/behaviour.test.mjs. Each section states its input and the expected result in the SDK-neutral wire spelling (snake_case).",
+  "compile_values": {
+    "_doc": "A non-string placeholder value renders as JSON.stringify renders it: compact, numbers in the ECMAScript form (an integral float has no fraction, small and large numbers switch to exponent form at 1e-7 and 1e21), non-ASCII kept, keys in insertion order. Each case compiles the text prompt \"[{{v}}]\" with v = value.",
+    "prompt": "[{{v}}]",
+    "cases": [
+      {"value": 1.0, "want": "[1]"},
+      {"value": 1, "want": "[1]"},
+      {"value": 1.5, "want": "[1.5]"},
+      {"value": -0.5, "want": "[-0.5]"},
+      {"value": 100.0, "want": "[100]"},
+      {"value": 1e16, "want": "[10000000000000000]"},
+      {"value": 1e21, "want": "[1e+21]"},
+      {"value": 1e-6, "want": "[0.000001]"},
+      {"value": 1e-7, "want": "[1e-7]"},
+      {"value": 0.30000000000000004, "want": "[0.30000000000000004]"},
+      {"value": null, "want": "[null]"},
+      {"value": true, "want": "[true]"},
+      {"value": false, "want": "[false]"},
+      {"value": "é {{x}}", "want": "[é {{x}}]"},
+      {"value": [1, 2.5, "a"], "want": "[[1,2.5,\"a\"]]"},
+      {"value": {"b": 1.0, "a": [true, null], "é": "x"}, "want": "[{\"b\":1,\"a\":[true,null],\"é\":\"x\"}]"}
+    ]
+  },
+  "score_target": {
+    "_doc": "score() / feedback() called inside a span with no trace_id and no span_id scores the current TRACE (span_id absent from the wire object). Pass span_id = the current span id to score the span.",
+    "cases": [
+      {"in_span": true, "args": {}, "want": {"trace_id": "current", "span_id": ""}},
+      {"in_span": true, "args": {"span_id": "current"}, "want": {"trace_id": "current", "span_id": "current"}},
+      {"in_span": false, "args": {}, "want": {"error": "invalid_trace_id"}}
+    ]
+  },
+  "score_ok": {
+    "_doc": "ScoreResult.ok is true only when EVERY destination the call went to accepted the score; no destination at all (a degraded online) is not ok. Each case lists the per-destination outcomes.",
+    "cases": [
+      {"destinations": {"local": true}, "want": true},
+      {"destinations": {"online": true, "local": true}, "want": true},
+      {"destinations": {"online": true, "local": false}, "want": false},
+      {"destinations": {"online": false, "local": true}, "want": false},
+      {"destinations": {}, "want": false}
+    ]
+  },
+  "destination": {
+    "_doc": "The chosen destination and its source. machine: the discovery answer (null: no machine answered). gateway and credential come from org_url / api_key (argument or env). 'inferred': no destination asked for, no machine, a gateway AND a credential configured.",
+    "cases": [
+      {"args": {}, "machine": null, "want": {"destination": "local", "source": "default"}},
+      {"args": {"org_url": "https://gw.example.com", "api_key": "ik_1.s"}, "machine": null, "want": {"destination": "online", "source": "inferred"}},
+      {"args": {"org_url": "https://gw.example.com"}, "machine": null, "want": {"destination": "local", "source": "default"}},
+      {"args": {"api_key": "ik_1.s"}, "machine": null, "want": {"destination": "local", "source": "default"}},
+      {"args": {"org_url": "https://gw.example.com", "api_key": "ik_1.s"}, "machine": {"destination": "local"}, "want": {"destination": "local", "source": "machine"}},
+      {"args": {"destination": "both"}, "machine": null, "want": {"destination": "both", "source": "argument"}},
+      {"env": {"SUPERBASED_DESTINATION": "online"}, "machine": {"destination": "local"}, "want": {"destination": "online", "source": "env"}},
+      {"env": {"SUPERBASED_MACHINE_URL": "http://127.0.0.1:1"}, "machine": null, "want": {"destination": "local", "source": "default", "node_url": "http://127.0.0.1:8081"}}
+    ]
+  },
+  "control_targets": {
+    "_doc": "Which control APIs a score, prompt, dataset, experiment or trace-cost call uses (online first). A degraded online (no gateway or no credential) uses NONE and reports the degraded reason; a degraded both uses the machine only.",
+    "cases": [
+      {"destination": "local", "online_ready": false, "want": ["local"]},
+      {"destination": "online", "online_ready": true, "want": ["online"]},
+      {"destination": "online", "online_ready": false, "want": []},
+      {"destination": "both", "online_ready": true, "want": ["online", "local"]},
+      {"destination": "both", "online_ready": false, "want": ["local"]}
+    ]
+  },
+  "admit_identity": {
+    "_doc": "admit() sends tenant, user and session: the argument, else the request scope (propagate_attributes / propagateAttributes), else init()'s process-wide value, else empty (review R-C08). scope and init use the option names (session_id; TypeScript sessionId); args uses admit()'s (session).",
+    "cases": [
+      {"args": {}, "scope": {}, "init": {}, "want": {"tenant": "", "user": "", "session": ""}},
+      {"args": {}, "scope": {"tenant": "t1", "user": "alice", "session_id": "s1"}, "init": {}, "want": {"tenant": "t1", "user": "alice", "session": "s1"}},
+      {"args": {"user": "bob"}, "scope": {"user": "alice", "session_id": "s1"}, "init": {}, "want": {"tenant": "", "user": "bob", "session": "s1"}},
+      {"args": {}, "scope": {}, "init": {"tenant": "t0", "user": "svc", "session_id": "s0"}, "want": {"tenant": "t0", "user": "svc", "session": "s0"}},
+      {"args": {}, "scope": {"user": "alice"}, "init": {"tenant": "t0", "user": "svc"}, "want": {"tenant": "t0", "user": "alice", "session": ""}},
+      {"args": {"session": "s9", "tenant": "t9"}, "scope": {"session_id": "s1", "tenant": "t1"}, "init": {"session_id": "s0"}, "want": {"tenant": "t9", "user": "", "session": "s9"}}
+    ]
+  },
+  "admit_credential": {
+    "_doc": "Whether admit() sends Authorization (review R-C09, R-C33). via: endpoint (the argument), env_endpoint (SUPERBASED_ADMISSION_ENDPOINT), org_url (the argument), env_org_url (SUPERBASED_ORG_URL), machine (none of these, no init). host: loopback (127.0.0.1) or remote (an https host). key: argument (api_key), env (SUPERBASED_API_KEY) or init (init() was given api_key, destination local, no env key: review E-76, Python used to drop it for an explicit org_url). The configured key rides only to an org URL or a remote endpoint; only an explicit api_key goes to a loopback endpoint. Tests capture the request at the transport; nothing is dialled.",
+    "cases": [
+      {"via": "endpoint", "host": "loopback", "key": "env", "want_key": false},
+      {"via": "endpoint", "host": "loopback", "key": "argument", "want_key": true},
+      {"via": "endpoint", "host": "remote", "key": "env", "want_key": true},
+      {"via": "env_endpoint", "host": "loopback", "key": "env", "want_key": false},
+      {"via": "env_endpoint", "host": "remote", "key": "env", "want_key": true},
+      {"via": "org_url", "host": "remote", "key": "env", "want_key": true},
+      {"via": "env_org_url", "host": "remote", "key": "env", "want_key": true},
+      {"via": "machine", "host": "loopback", "key": "env", "want_key": false},
+      {"via": "org_url", "host": "remote", "key": "init", "want_key": true},
+      {"via": "endpoint", "host": "remote", "key": "init", "want_key": true},
+      {"via": "endpoint", "host": "loopback", "key": "init", "want_key": false}
+    ]
+  },
+  "admit_redirect": {
+    "_doc": "admit() never follows a redirect (the key must not ride to another host): a 3xx answer is one request and a degraded client-http-error verdict carrying the status (review R-C09).",
+    "cases": [
+      {"status": 301, "want": {"requests": 1, "degraded": "client-http-error", "http_status": 301}},
+      {"status": 302, "want": {"requests": 1, "degraded": "client-http-error", "http_status": 302}},
+      {"status": 303, "want": {"requests": 1, "degraded": "client-http-error", "http_status": 303}},
+      {"status": 307, "want": {"requests": 1, "degraded": "client-http-error", "http_status": 307}},
+      {"status": 308, "want": {"requests": 1, "degraded": "client-http-error", "http_status": 308}}
+    ]
+  },
+  "local_export_credential": {
+    "_doc": "Whether the local exporter carries the SDK key under destination local (review R-B26, R-C09). endpoint_from: argument (init endpoint), superbased_env (SUPERBASED_OTLP_ENDPOINT), otel_env (OTEL_EXPORTER_OTLP_ENDPOINT), none (the machine). Only a remote endpoint the app named for superbased carries it.",
+    "cases": [
+      {"endpoint_from": "argument", "endpoint": "https://collector.example", "want_key": true},
+      {"endpoint_from": "argument", "endpoint": "http://127.0.0.1:4318", "want_key": false},
+      {"endpoint_from": "superbased_env", "endpoint": "https://collector.example", "want_key": true},
+      {"endpoint_from": "otel_env", "endpoint": "https://other-vendor.example", "want_key": false},
+      {"endpoint_from": "none", "endpoint": "", "want_key": false}
+    ]
+  },
+  "experiment_pass_rate": {
+    "_doc": "A run's scored count, pass rate and fail_under gate (contract experiments.md 4.2; review R-C31). sides: each side's GET experiment body, first side first (none: nothing recorded). items: each item's task error, returned scores and evaluators that threw (TypeScript keeps a threw evaluator as a score entry with an error; Python as evaluator_errors). An item with neither a score nor a task error is unscored: neither passed nor failed. pass_rate null means NaN (no rate). These cases apply fail_under with strict off (the rate rule alone: a run that scored nothing is not failed); experiment_strict_gate covers the strict default (review E-12).",
+    "cases": [
+      {"sides": [{"total": 0, "passed": 0, "pass_rate": null}], "items": [{"scores": []}, {"scores": []}], "fail_under": 0.9, "want": {"scored": 0, "pass_rate": null, "gate_failed": false}},
+      {"sides": [{"total": 0, "passed": 0, "pass_rate": 0}], "items": [{"scores": []}, {"scores": []}], "fail_under": 0.9, "want": {"scored": 0, "pass_rate": null, "gate_failed": false}},
+      {"sides": [{"total": 2, "passed": 1, "pass_rate": 0.5}], "items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": 0}]}], "fail_under": 0.9, "want": {"scored": 2, "pass_rate": 0.5, "gate_failed": true}},
+      {"sides": [], "items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": []}], "fail_under": 0.9, "want": {"scored": 1, "pass_rate": 1.0, "gate_failed": false}},
+      {"sides": [], "items": [{"error": "task failed", "scores": []}, {"scores": []}], "fail_under": 0.5, "want": {"scored": 1, "pass_rate": 0.0, "gate_failed": true}},
+      {"sides": [], "items": [{"scores": [], "evaluator_errors": 1}, {"scores": []}], "fail_under": 0.5, "want": {"scored": 0, "pass_rate": null, "gate_failed": false}},
+      {"sides": [{"total": 0, "passed": 0, "pass_rate": 0}], "items": [{"scores": [{"name": "exact", "value": 0}]}], "fail_under": 0.5, "want": {"scored": 1, "pass_rate": 0.0, "gate_failed": true}},
+      {"sides": [{"pass_rate": 0.4}], "items": [{"scores": [{"name": "exact", "value": true}]}], "fail_under": 0.9, "want": {"scored": 1, "pass_rate": 0.4, "gate_failed": true}},
+      {"sides": [{"total": 3, "passed": 3, "pass_rate": 1.0}], "items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}], "fail_under": null, "want": {"scored": 3, "pass_rate": 1.0, "gate_failed": false}}
+    ]
+  },
+  "literal_item_ids": {
+    "_doc": "The default id of an inline (literal) experiment item (review E-75): 'item-' + the first 16 hex of SHA-256 over the canonical JSON of [input, expected, metadata] (object keys sorted at every level, compact, ECMAScript number form, a missing value null); the same content again gets -2, -3, ...; an explicit id is kept. items: what run_experiment / runExperiment is given; want: the ids it uploads.",
+    "cases": [
+      {"items": [{"input": "hello"}], "want": ["item-b91bd1d6899e9872"]},
+      {"items": [{"input": {"q": "2+2", "a": [1.0, true, null]}, "expected": "4"}], "want": ["item-fefeeb06d8c06bb1"]},
+      {"items": [{"input": {"b": 1, "a": 2}}, {"input": {"a": 2, "b": 1.0}}], "want": ["item-f294a8de130b7828", "item-f294a8de130b7828-2"]},
+      {"items": [{"input": "x", "metadata": {"k": "é"}}, {"input": "x"}], "want": ["item-fade907c7b27333b", "item-90e5912824a22347"]},
+      {"items": [{"input": 1e+21, "expected": 0.5}, {"input": "kept", "id": "mine"}], "want": ["item-10501b4616d1fff8", "mine"]},
+      {"items": [{"input": "same"}, {"input": "same"}, {"input": "same"}], "want": ["item-8f9e16eb4ef4b782", "item-8f9e16eb4ef4b782-2", "item-8f9e16eb4ef4b782-3"]}
+    ]
+  },
+  "sampling_env": {
+    "_doc": "Sampling from the environment (review E-38): SUPERBASED_SAMPLE_RATE, then OTEL_TRACES_SAMPLER (+ _ARG for the ratio samplers). A value that is not a number in 0..1 is IGNORED (the next source, else rate 1) and named in a warning, never raised; an explicit sample_rate / sampleRate outside 0..1 is an error. ignored: the variables the warning names.",
+    "cases": [
+      {"env": {"OTEL_TRACES_SAMPLER": "traceidratio", "OTEL_TRACES_SAMPLER_ARG": "5"}, "want": {"rate": 1.0, "parent_based": false, "ignored": ["OTEL_TRACES_SAMPLER_ARG"]}},
+      {"env": {"SUPERBASED_SAMPLE_RATE": "abc", "OTEL_TRACES_SAMPLER": "parentbased_traceidratio", "OTEL_TRACES_SAMPLER_ARG": "0.25"}, "want": {"rate": 0.25, "parent_based": true, "ignored": ["SUPERBASED_SAMPLE_RATE"]}},
+      {"env": {"SUPERBASED_SAMPLE_RATE": "1.5"}, "want": {"rate": 1.0, "parent_based": true, "ignored": ["SUPERBASED_SAMPLE_RATE"]}},
+      {"env": {"SUPERBASED_SAMPLE_RATE": "0.5"}, "want": {"rate": 0.5, "parent_based": true, "ignored": []}},
+      {"env": {"OTEL_TRACES_SAMPLER": "always_off", "OTEL_TRACES_SAMPLER_ARG": "zzz"}, "want": {"rate": 0.0, "parent_based": false, "ignored": []}},
+      {"env": {}, "explicit": 2, "want": {"error": true}}
+    ]
+  },
+  "pending_per_destination": {
+    "_doc": "Pending spans count each destination a span went to (review E-31): one span under both is pending until BOTH exported it, so the exit-time flush is not skipped. held: the destinations whose OTLP receiver still holds the export when pending is read (the others have answered).",
+    "cases": [
+      {"destination": "both", "held": ["online"], "want_pending": 1},
+      {"destination": "both", "held": ["local", "online"], "want_pending": 2},
+      {"destination": "both", "held": [], "want_pending": 0},
+      {"destination": "local", "held": ["local"], "want_pending": 1}
+    ]
+  },
+  "admit_degraded": {
+    "_doc": "admit() fails open (fail_closed: denies) when it gets no decision, but never silently (review E-39): each degraded verdict is counted in diagnostics (admission_degraded; TypeScript admissionDegraded) and one warning per cause per minute names the cause and the fix ('Fix:'). Each case calls admit() twice against a receiver answering status (transport: nothing listens). warnings: the warning lines the two calls wrote; counted: the counter after them. path (default /check) is the receiver path; a 404 from a machine's admission path (/api/obs/admission/check) names the machine's fix, any other 404 the organization's (live finding A-09).",
+    "cases": [
+      {"status": 404, "want": {"allowed": true, "degraded": "admission-unavailable", "warnings": 1, "counted": 2, "fix": "AI Apps gateway"}},
+      {"status": 404, "path": "/api/obs/admission/check", "want": {"allowed": true, "degraded": "admission-unavailable", "warnings": 1, "counted": 2, "fix": "this machine has no admission check"}},
+      {"status": 403, "want": {"allowed": true, "degraded": "admission-unavailable", "warnings": 1, "counted": 2}},
+      {"status": 401, "want": {"allowed": true, "degraded": "client-http-error", "warnings": 1, "counted": 2, "fix": "key was refused"}},
+      {"status": 429, "want": {"allowed": true, "degraded": "client-http-error", "warnings": 1, "counted": 2}},
+      {"status": 503, "want": {"allowed": true, "degraded": "client-http-error", "warnings": 1, "counted": 2}},
+      {"status": 307, "want": {"allowed": true, "degraded": "client-http-error", "warnings": 1, "counted": 2, "fix": "redirect"}},
+      {"status": "transport", "want": {"allowed": true, "degraded": "client-transport", "warnings": 1, "counted": 2}},
+      {"status": 404, "fail_closed": true, "want": {"allowed": false, "degraded": "admission-unavailable", "warnings": 1, "counted": 2}},
+      {"status": 200, "want": {"allowed": true, "degraded": "", "warnings": 0, "counted": 0}}
+    ]
+  },
+  "control_before_discovery": {
+    "_doc": "A control call made straight after init(), before the machine answered discovery, goes where the answer says (review E-33): TypeScript's init() returns while it asks, so its control calls wait for the answer; Python asks inside init(). discovery: the machine's destination (online names a gateway; init has an SDK key); the machine answers after delay_ms. want: the side the score went to.",
+    "cases": [
+      {"discovery": "online", "delay_ms": 300, "want": "online"},
+      {"discovery": "local", "delay_ms": 300, "want": "local"}
+    ]
+  },
+  "experiment_snapshot_version": {
+    "_doc": "run_experiment(snapshot_version=) / runExperiment({snapshotVersion}) pins the run to that snapshot: the run create carries it (review E-49: TypeScript ignored the contract name). null: not given (0, freeze a new one).",
+    "cases": [
+      {"snapshot_version": 4, "want": 4},
+      {"snapshot_version": null, "want": 0}
+    ]
+  },
+  "experiment_create_id": {
+    "_doc": "run_experiment / runExperiment sends one idempotency id per call on the run create (review E-79; contract experiments.md 4.1): the body's id is 1-128 characters of [A-Za-z0-9_.:-]; a create answered with no answer (status 0), 429 or a 5xx is sent once more with the same body and id; any other answer is not retried; a second call sends a new id. first_status: the first create's answer (the retry, if any, answers 201); want_creates: the creates the stub sees.",
+    "cases": [
+      {"first_status": 201, "want_creates": 1},
+      {"first_status": 503, "want_creates": 2},
+      {"first_status": 429, "want_creates": 2},
+      {"first_status": 400, "want_creates": 1}
+    ]
+  },
+  "llm_span_prompt": {
+    "_doc": "llm_span(prompt=<Prompt>) / withLlmSpan(name, {prompt: <Prompt>}): a registry prompt stamps sbo.prompt.* on the span and is not request content (no input.value, no gen_ai.input.messages; review E-49). The prompt is parsed from the body of the named contract fixture.",
+    "cases": [
+      {"fixture": "prompt-fetch-response.json", "want": {"name": "support-reply", "version": 3, "content": false}}
+    ]
+  },
+  "local_receiver_discovery": {
+    "_doc": "Under destination local or both, when the app named no endpoint for the local destination, the SDK asks the machine (discovery on) and exports to the OTLP receiver the machine advertises (local.otlp_traces_url), so a machine on non-default ports gets the spans (live finding L-01: a set destination skipped discovery and exported to the built-in 127.0.0.1:4318). A named endpoint wins and the machine is not asked for it: argument (init endpoint), superbased_env (SUPERBASED_OTLP_ENDPOINT) and, under local only, otel_env (OTEL_EXPORTER_OTLP_ENDPOINT, + /v1/traces); under both an OTEL_* endpoint is not the local destination's, so the machine is asked. discover false: the built-in receiver. Every case configures a gateway and a key, so the online side never needs the machine. want.local: machine (machine_receiver), named (the endpoint given), default (http://127.0.0.1:4318/v1/traces) or null (no local exporter); want.asked: whether the machine's discovery route was called.",
+    "machine_receiver": "http://127.0.0.1:14318/v1/traces",
+    "cases": [
+      {"destination": "local", "endpoint_from": "none", "discover": true, "want": {"local": "machine", "asked": true}},
+      {"destination": "both", "endpoint_from": "none", "discover": true, "want": {"local": "machine", "asked": true}},
+      {"destination": "local", "endpoint_from": "argument", "endpoint": "http://127.0.0.1:24318/v1/traces", "discover": true, "want": {"local": "named", "asked": false}},
+      {"destination": "local", "endpoint_from": "superbased_env", "endpoint": "http://127.0.0.1:24318/v1/traces", "discover": true, "want": {"local": "named", "asked": false}},
+      {"destination": "local", "endpoint_from": "otel_env", "endpoint": "http://127.0.0.1:24318", "discover": true, "want": {"local": "named", "asked": false}},
+      {"destination": "both", "endpoint_from": "otel_env", "endpoint": "http://127.0.0.1:24318", "discover": true, "want": {"local": "machine", "asked": true}},
+      {"destination": "both", "endpoint_from": "superbased_env", "endpoint": "http://127.0.0.1:24318/v1/traces", "discover": true, "want": {"local": "named", "asked": false}},
+      {"destination": "local", "endpoint_from": "none", "discover": false, "want": {"local": "default", "asked": false}},
+      {"destination": "online", "endpoint_from": "none", "discover": true, "want": {"local": null, "asked": false}}
+    ]
+  },
+  "vendor_self_tracing": {
+    "_doc": "A model client library that traces itself (the Anthropic SDKs, switch ANTHROPIC_OPEN_TELEMETRY) would record every call a second time under a framework instrumentation or a manual LLM span. init() sets the switch to its off value when the app has not set it, and drops finished spans whose instrumentation scope starts with the library's scope prefix (a client built before init()). An app that set the switch to anything but the off value keeps them. status is diagnostics().vendor_tracing[library] (TypeScript diagnostics().vendorTracing); env_after is the switch after init(); exported says, per tracer scope, whether a span from it reaches the exporter.",
+    "cases": [
+      {"env": {}, "want": {"status": {"anthropic": "off"}, "env_after": {"ANTHROPIC_OPEN_TELEMETRY": "false"}, "exported": {"com.anthropic.sdk.python": false, "com.anthropic.sdk.typescript": false, "openinference.instrumentation.anthropic": true, "app": true}}},
+      {"env": {"ANTHROPIC_OPEN_TELEMETRY": "FALSE"}, "want": {"status": {"anthropic": "off"}, "env_after": {"ANTHROPIC_OPEN_TELEMETRY": "FALSE"}, "exported": {"com.anthropic.sdk.python": false, "com.anthropic.sdk.typescript": false, "app": true}}},
+      {"env": {"ANTHROPIC_OPEN_TELEMETRY": "true"}, "want": {"status": {"anthropic": "kept"}, "env_after": {"ANTHROPIC_OPEN_TELEMETRY": "true"}, "exported": {"com.anthropic.sdk.python": true, "com.anthropic.sdk.typescript": true, "app": true}}}
+    ]
+  },
+  "set_usage_net_input": {
+    "_doc": "set_usage / setUsage takes the GROSS input count (cache reads and writes included). An input count below cache_read + cache_write cannot be gross: it is an Anthropic-style NET count, so the SDK records input + cache_read + cache_write and counts it once in diagnostics().usage_net_input_corrected (TypeScript usageNetInputCorrected), warning once per process. A gross count is recorded as given. want.input_tokens is the recorded gen_ai.usage.input_tokens; corrected is the counter's increase.",
+    "cases": [
+      {"usage": {"input_tokens": 11, "output_tokens": 50, "cache_write_tokens": 7516}, "want": {"input_tokens": 7527, "corrected": 1}},
+      {"usage": {"input_tokens": 27, "output_tokens": 57, "cache_read_tokens": 8298}, "want": {"input_tokens": 8325, "corrected": 1}},
+      {"usage": {"input_tokens": 3, "output_tokens": 5, "cache_read_tokens": 2, "cache_write_tokens": 4}, "want": {"input_tokens": 9, "corrected": 1}},
+      {"usage": {"input_tokens": 8325, "output_tokens": 57, "cache_read_tokens": 8298}, "want": {"input_tokens": 8325, "corrected": 0}},
+      {"usage": {"input_tokens": 100, "output_tokens": 5}, "want": {"input_tokens": 100, "corrected": 0}},
+      {"usage": {"output_tokens": 5, "cache_read_tokens": 40}, "want": {"input_tokens": null, "corrected": 0}}
+    ]
+  },
+  "admit_org_off": {
+    "_doc": "An org verdict with mode off means the organization has no admission policy, so it made no decision (live finding L-05, ruling D29). Under destination both (the org chosen by init()), the SDK then asks this machine and returns its verdict; the key never goes to the machine. Under online, or for an org the caller named (org_url), the verdict is degraded admission-off (fail open, or denied with fail_closed), counted and warned like every degraded verdict. An org verdict with any other mode stands. Each case: init(destination, node_url=<machine>, org_url=<gateway>, api_key, discover off), then one admit(); via init: no admit() argument; via org_url: admit(org_url=<gateway>). machine: the machine's answer, or transport (nothing listens). want.asked_machine: the machine's admission route was called; want.counted: admission_degraded after the call.",
+    "cases": [
+      {"destination": "both", "via": "init", "org": {"allowed": true, "decision": "allow", "mode": "off", "verdict_id": "adm_org"}, "machine": {"allowed": false, "decision": "deny", "mode": "enforce", "reason": "denied topic", "verdict_id": "adm_machine"}, "want": {"allowed": false, "decision": "deny", "degraded": "", "asked_machine": true, "counted": 0}},
+      {"destination": "both", "via": "init", "org": {"allowed": true, "decision": "allow", "mode": "enforce", "verdict_id": "adm_org"}, "machine": {"allowed": false, "decision": "deny", "mode": "enforce", "verdict_id": "adm_machine"}, "want": {"allowed": true, "decision": "allow", "degraded": "", "asked_machine": false, "counted": 0}},
+      {"destination": "both", "via": "init", "org": {"allowed": true, "decision": "allow", "mode": "off", "verdict_id": "adm_org"}, "machine": "transport", "want": {"allowed": true, "decision": "allow", "degraded": "client-transport", "asked_machine": false, "counted": 1}},
+      {"destination": "online", "via": "init", "org": {"allowed": true, "decision": "allow", "mode": "off", "verdict_id": "adm_org"}, "machine": {"allowed": false, "decision": "deny", "mode": "enforce", "verdict_id": "adm_machine"}, "want": {"allowed": true, "decision": "allow", "degraded": "admission-off", "asked_machine": false, "counted": 1}},
+      {"destination": "online", "via": "init", "fail_closed": true, "org": {"allowed": true, "decision": "allow", "mode": "off", "verdict_id": "adm_org"}, "machine": {"allowed": false, "decision": "deny", "mode": "enforce", "verdict_id": "adm_machine"}, "want": {"allowed": false, "decision": "deny", "degraded": "admission-off", "asked_machine": false, "counted": 1}},
+      {"destination": "both", "via": "org_url", "org": {"allowed": true, "decision": "allow", "mode": "off", "verdict_id": "adm_org"}, "machine": {"allowed": false, "decision": "deny", "mode": "enforce", "verdict_id": "adm_machine"}, "want": {"allowed": true, "decision": "allow", "degraded": "admission-off", "asked_machine": false, "counted": 1}}
+    ]
+  },
+  "experiment_strict_gate": {
+    "_doc": "With fail_under set, the gate is strict by default (review E-12, ruling D29): a run that scored nothing, a destination skipped for want of a scope, or a result a destination did not accept fails it before the rate is compared; strict false (Python strict=False, TypeScript strict: false) gates on the rate alone. items as in experiment_pass_rate; skipped_sides: the destinations skipped; failed_posts: results not accepted; strict absent means the default (true); fail_under null means no gate. want.reasons: how many strict reasons the SDK reports (Python gate_problems, TypeScript experimentGate().reasons), 0 when the rate decided.",
+    "cases": [
+      {"items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}], "skipped_sides": ["online"], "failed_posts": 0, "fail_under": 0.9, "want": {"gate_failed": true, "reasons": 1}},
+      {"items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}], "skipped_sides": ["online"], "failed_posts": 0, "strict": false, "fail_under": 0.9, "want": {"gate_failed": false, "reasons": 1}},
+      {"items": [{"scores": []}, {"scores": [], "evaluator_errors": 1}], "skipped_sides": [], "failed_posts": 0, "fail_under": 0.9, "want": {"gate_failed": true, "reasons": 1}},
+      {"items": [{"scores": []}, {"scores": [], "evaluator_errors": 1}], "skipped_sides": [], "failed_posts": 0, "strict": false, "fail_under": 0.9, "want": {"gate_failed": false, "reasons": 1}},
+      {"items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}], "skipped_sides": [], "failed_posts": 1, "fail_under": 0.9, "want": {"gate_failed": true, "reasons": 1}},
+      {"items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": true}]}], "skipped_sides": [], "failed_posts": 0, "fail_under": 0.9, "want": {"gate_failed": false, "reasons": 0}},
+      {"items": [{"scores": [{"name": "exact", "value": true}]}, {"scores": [{"name": "exact", "value": 0}]}], "skipped_sides": [], "failed_posts": 0, "fail_under": 0.9, "want": {"gate_failed": true, "reasons": 0}},
+      {"items": [{"scores": []}], "skipped_sides": ["online"], "failed_posts": 2, "fail_under": 0.9, "want": {"gate_failed": true, "reasons": 3}},
+      {"items": [{"scores": [{"name": "exact", "value": true}]}], "skipped_sides": ["online"], "failed_posts": 0, "fail_under": null, "want": {"gate_failed": false, "reasons": 1}}
+    ]
+  },
+  "get_dataset_missing": {
+    "_doc": "get_dataset / getDataset raise (reject) ExperimentError when no destination has the dataset or none is usable, and return it otherwise (review R-C34, ruling D29: TypeScript used to resolve with an empty item list and errors). Each case runs destination local against a machine whose dataset list holds datasets (no_destination: destination online with no gateway or key, so no destination is usable).",
+    "cases": [
+      {"datasets": ["golden"], "name": "golden", "want": {"found": true}},
+      {"datasets": ["golden"], "name": "nope", "want": {"found": false}},
+      {"datasets": "no_destination", "name": "golden", "want": {"found": false}}
+    ]
+  }
+}

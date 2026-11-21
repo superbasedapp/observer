@@ -299,3 +299,76 @@ func TestStatsReportAckFloorAndOldestPending(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimAppliedRefusesWhenDurableAheadOfStream reproduces F01 on a real
+// broker: after SBO_TELEMETRY was recreated, the durables applyworker and
+// sorwriter sat at delivered/ack floor 15491 with the stream's last sequence at
+// 106, reported nothing pending, and the old floor rule (nothing pending =>
+// floor is last_seq) purged every new record unapplied. A durable whose start
+// position is beyond the stream is the same broker state. The trim must remove
+// nothing and name the durables, and the probe must report the fault.
+func TestTrimAppliedRefusesWhenDurableAheadOfStream(t *testing.T) {
+	l := newTestLog(t, Options{})
+	ctx := context.Background()
+	stream, _, _ := l.identity()
+	for _, name := range []string{"applyworker", "sorwriter"} {
+		if _, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+			Durable:       name,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+			OptStartSeq:   15492,
+		}); err != nil {
+			t.Fatalf("create ahead durable %s: %v", name, err)
+		}
+	}
+	seqs := publishN(t, l, "lost", 6)
+
+	st, err := l.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	for _, c := range st.Consumers {
+		if c.Pending != 0 {
+			t.Fatalf("precondition: durable %s reports %d pending; the F01 state reports none", c.Name, c.Pending)
+		}
+		if c.Delivered < 15491 && c.AckFloor < 15491 {
+			t.Fatalf("precondition: durable %s at delivered %d / ack %d, want >= 15491", c.Name, c.Delivered, c.AckFloor)
+		}
+	}
+
+	res, err := l.TrimApplied(ctx, []string{"applyworker", "sorwriter"})
+	if err != nil {
+		t.Fatalf("TrimApplied: %v", err)
+	}
+	if res.Removed != 0 || res.Floor != 0 || len(res.Ahead) != 2 || res.Ahead[0].Name != "applyworker" || res.Ahead[1].Name != "sorwriter" {
+		t.Fatalf("TrimApplied = %+v, want nothing removed and both durables named ahead", res)
+	}
+	if res.Ahead[0].Ceiling != seqs[len(seqs)-1] {
+		t.Errorf("ahead ceiling = %d, want the stream's last sequence %d", res.Ahead[0].Ceiling, seqs[len(seqs)-1])
+	}
+	if st, _ := l.Stats(ctx); st.Messages != uint64(len(seqs)) {
+		t.Fatalf("trim on an ahead durable removed records: %d left, want %d", st.Messages, len(seqs))
+	}
+	rep := l.Probe(ctx)
+	if !rep.Healthy || !strings.Contains(rep.Fault, "ahead of the stream") || !strings.Contains(rep.Fault, "applyworker") {
+		t.Fatalf("Probe = healthy %v fault %q, want reachable with the ahead fault", rep.Healthy, rep.Fault)
+	}
+
+	// Recovery (docs/teams-operations.md): delete the durables; the trim then
+	// holds on the missing required names; recreated durables see every record.
+	for _, name := range []string{"applyworker", "sorwriter"} {
+		if err := stream.DeleteConsumer(ctx, name); err != nil {
+			t.Fatalf("DeleteConsumer %s: %v", name, err)
+		}
+	}
+	if rep := l.Probe(ctx); rep.Fault != "" {
+		t.Fatalf("after reset: fault %q, want none", rep.Fault)
+	}
+	apply, err := l.Subscribe(ctx, telemetrylog.ConsumerSpec{Name: "applyworker"})
+	if err != nil {
+		t.Fatalf("Subscribe after reset: %v", err)
+	}
+	if got := consumeAndAck(t, apply, len(seqs)); len(got) != len(seqs) || got[0] != seqs[0] {
+		t.Fatalf("reset durable received %v, want all %d retained records from seq %d", got, len(seqs), seqs[0])
+	}
+}

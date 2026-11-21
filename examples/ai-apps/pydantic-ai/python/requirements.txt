@@ -1,0 +1,6 @@
+# Exact versions this example ran green with (2026-11-20, Python 3.12).
+# Install the superbased SDK from a checkout first (it is not on PyPI yet):
+#   pip install "<repo>/sdk/python[pydantic-ai]"
+openai==3.57.0
+openinference-instrumentation-pydantic-ai==0.1.38
+pydantic-ai-slim[openai]==2.71.0

@@ -1,0 +1,322 @@
+{
+  "_source": {
+    "target": "llama-index",
+    "instrumentor": "openinference-instrumentation-llama-index 4.7.8",
+    "library": "llama-index-core 0.14.26, llama-index-llms-openai 0.9.0",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "VectorStoreIndex.from_documents over one document (MockEmbedding) and as_query_engine(llm=OpenAI).query(), the OpenAI LLM over an httpx MockTransport.",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "llama-index",
+  "_gaps": [
+    "Embedding spans name the model embedding.model_name (here 'unknown' from MockEmbedding, so the fixture states no model): base genaiattr does not read it; lane C7 maps it this batch.",
+    "Retriever spans carry their documents as retrieval.documents.<i>.document.{content,id,score}; genaiattr does not read them (its output value is output.value, a repr list). The SDK masks and drops them as extra content.",
+    "llm.prompt_template.* and llm.prompts carry prompt content genaiattr does not map; masked as extra content.",
+    "OpenAI.predict and OpenAI.chat are both LLM spans (only chat has tokens). With instrument('openai') also on, the openai call adds a third LLM span with the same tokens: rollups that sum LLM spans would double count (see the lane notes)."
+  ],
+  "spans": [
+    {
+      "name": "SentenceSplitter.__call__",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"nodes\": [\"<Document(id_=doc-1)>\"], \"kwargs\": {\"embed_model\": \"<MockEmbedding object>\"}}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "[\"<TextNode(id_=<id>)>\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "SentenceSplitter._parse_nodes",
+      "parent": "SentenceSplitter.__call__",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"nodes\": [\"<Document(id_=doc-1)>\"], \"show_progress\": false, \"kwargs\": {\"embed_model\": \"<MockEmbedding object>\"}}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "[\"<TextNode(id_=<id>)>\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "SentenceSplitter.split_text_metadata_aware",
+      "parent": "SentenceSplitter._parse_nodes",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"text\": \"Paris is the capital of France.\", \"metadata_str\": \"\"}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "[\"Paris is the capital of France.\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "MockEmbedding.get_text_embedding_batch",
+      "parent": null,
+      "attrs": {
+        "embedding.embeddings.0.embedding.text": "Paris is the capital of France.",
+        "embedding.embeddings.0.embedding.vector": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ],
+        "embedding.model_name": "unknown",
+        "input.mime_type": "application/json",
+        "input.value": "{\"texts\": [\"Paris is the capital of France.\"], \"show_progress\": false}",
+        "openinference.span.kind": "EMBEDDING"
+      },
+      "want": {
+        "span_kind": "EMBEDDING"
+      }
+    },
+    {
+      "name": "MockEmbedding._get_text_embedding",
+      "parent": "MockEmbedding.get_text_embedding_batch",
+      "attrs": {
+        "embedding.model_name": "unknown",
+        "input.mime_type": "application/json",
+        "input.value": "{\"text\": \"Paris is the capital of France.\"}",
+        "openinference.span.kind": "EMBEDDING"
+      },
+      "want": {}
+    },
+    {
+      "name": "RetrieverQueryEngine.query",
+      "parent": null,
+      "attrs": {
+        "input.value": "Capital of France?",
+        "openinference.span.kind": "CHAIN",
+        "output.value": "Paris."
+      },
+      "want": {}
+    },
+    {
+      "name": "RetrieverQueryEngine._query",
+      "parent": "RetrieverQueryEngine.query",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"query_bundle\": {\"query_str\": \"Capital of France?\", \"image_path\": null, \"custom_embedding_strs\": null, \"embedding\": null}}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"response\": \"Paris.\", \"source_nodes\": [\"<NodeWithScore(node=TextNode(id_=<id>), score=1.0)>\"], \"metadata\": {\"<id>\": {}}}"
+      },
+      "want": {}
+    },
+    {
+      "name": "VectorIndexRetriever.retrieve",
+      "parent": "RetrieverQueryEngine._query",
+      "attrs": {
+        "input.value": "Capital of France?",
+        "openinference.span.kind": "RETRIEVER",
+        "output.mime_type": "application/json",
+        "output.value": "[\"<NodeWithScore(node=TextNode(id_=<id>), score=1.0)>\"]",
+        "retrieval.documents.0.document.content": "Paris is the capital of France.",
+        "retrieval.documents.0.document.id": "<id>",
+        "retrieval.documents.0.document.score": 1.0
+      },
+      "want": {
+        "span_kind": "RETRIEVER",
+        "input_value": "Capital of France?",
+        "output_value": [
+          "<NodeWithScore(node=TextNode(id_=<id>), score=1.0)>"
+        ]
+      }
+    },
+    {
+      "name": "VectorIndexRetriever._retrieve",
+      "parent": "VectorIndexRetriever.retrieve",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"query_bundle\": {\"query_str\": \"Capital of France?\", \"image_path\": null, \"custom_embedding_strs\": null, \"embedding\": null}}",
+        "openinference.span.kind": "RETRIEVER",
+        "output.mime_type": "application/json",
+        "output.value": "[\"<NodeWithScore(node=TextNode(id_=<id>), score=1.0)>\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "MockEmbedding.get_query_embedding",
+      "parent": "VectorIndexRetriever._retrieve",
+      "attrs": {
+        "embedding.embeddings.0.embedding.text": "Capital of France?",
+        "embedding.embeddings.0.embedding.vector": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ],
+        "embedding.model_name": "unknown",
+        "input.mime_type": "application/json",
+        "input.value": "{\"query\": \"Capital of France?\"}",
+        "openinference.span.kind": "EMBEDDING"
+      },
+      "want": {}
+    },
+    {
+      "name": "MockEmbedding._get_query_embedding",
+      "parent": "MockEmbedding.get_query_embedding",
+      "attrs": {
+        "embedding.model_name": "unknown",
+        "input.mime_type": "application/json",
+        "input.value": "{\"query\": \"Capital of France?\"}",
+        "openinference.span.kind": "EMBEDDING"
+      },
+      "want": {}
+    },
+    {
+      "name": "CompactAndRefine.synthesize",
+      "parent": "RetrieverQueryEngine._query",
+      "attrs": {
+        "input.value": "Capital of France?",
+        "openinference.span.kind": "CHAIN",
+        "output.value": "Paris."
+      },
+      "want": {}
+    },
+    {
+      "name": "CompactAndRefine.get_response",
+      "parent": "CompactAndRefine.synthesize",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"query_str\": \"Capital of France?\", \"text_chunks\": [\"Paris is the capital of France.\"]}",
+        "openinference.span.kind": "CHAIN",
+        "output.value": "Paris."
+      },
+      "want": {}
+    },
+    {
+      "name": "TokenTextSplitter.split_text",
+      "parent": "CompactAndRefine.get_response",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"text\": \"Paris is the capital of France.\"}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "[\"Paris is the capital of France.\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "CompactAndRefine.get_response",
+      "parent": "CompactAndRefine.get_response",
+      "attrs": {
+        "input.value": "Capital of France?",
+        "openinference.span.kind": "CHAIN",
+        "output.value": "Paris."
+      },
+      "want": {}
+    },
+    {
+      "name": "TokenTextSplitter.split_text",
+      "parent": "CompactAndRefine.get_response",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"text\": \"Paris is the capital of France.\"}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "[\"Paris is the capital of France.\"]"
+      },
+      "want": {}
+    },
+    {
+      "name": "DefaultRefineProgram.__call__",
+      "parent": "CompactAndRefine.get_response",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"kwds\": {\"context_str\": \"Paris is the capital of France.\"}}",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"query_satisfied\":true,\"answer\":\"Paris.\"}"
+      },
+      "want": {}
+    },
+    {
+      "name": "OpenAI.predict",
+      "parent": "DefaultRefineProgram.__call__",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"prompt\": \"SelectorPromptTemplate(metadata={'prompt_type': <PromptType.QUESTION_ANSWER: 'text_qa'>}, template_vars=['context_str', 'query_str'], kwargs={'query_str': 'Capital of France?'}, output_parser=None, template_var_mappings={}, function_mappings={}, default_template=PromptTemplate(metadata={'prompt_type': <PromptType.QUESTION_ANSWER: 'text_qa'>}, template_vars=['context_str', 'query_str'], kwargs={'query_str': 'Capital of France?'}, output_parser=None, template_var_mappings=None, function_mappings=None, template='Context information is below.\\\\n---------------------\\\\n{context_str}\\\\n---------------------\\\\nGiven the context information and not prior knowledge, answer the query.\\\\nQuery: {query_str}\\\\nAnswer: '), conditionals=[(<function is_chat_model at 0x<addr>>, ChatPromptTemplate(metadata={'prompt_type': <PromptType.CUSTOM: 'custom'>}, template_vars=['context_str', 'query_str'], kwargs={'query_str': 'Capital of France?'}, output_parser=None, template_var_mappings=None, function_mappings=None, message_templates=[ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text=\\\"You are an expert Q&A system that is trusted around the world.\\\\nAlways answer the query using the provided context information, and not prior knowledge.\\\\nSome rules to follow:\\\\n1. Never directly reference the given context in your answer.\\\\n2. Avoid statements like 'Based on the context, ...' or 'The context information ...' or anything along those lines.\\\")]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='Context information is below.\\\\n---------------------\\\\n{context_str}\\\\n---------------------\\\\nGiven the context information and not prior knowledge, answer the query.\\\\nQuery: {query_str}\\\\nAnswer: ')])]))])\", \"prompt_args\": {\"context_str\": \"Paris is the capital of France.\"}}",
+        "llm.invocation_parameters": "{\"context_window\":128000,\"num_output\":-1,\"is_chat_model\":true,\"is_function_calling_model\":true,\"model_name\":\"gpt-4o-mini\",\"system_role\":\"system\"}",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.prompt_template.template": "Context information is below.\n---------------------\n{context_str}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {query_str}\nAnswer: ",
+        "llm.prompt_template.variables": "{\"context_str\": \"Paris is the capital of France.\", \"query_str\": \"Capital of France?\"}",
+        "llm.provider": "openai",
+        "llm.system": "openai",
+        "openinference.span.kind": "LLM",
+        "output.value": "Paris."
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini",
+        "input_tokens": null
+      }
+    },
+    {
+      "name": "OpenAI.chat",
+      "parent": "OpenAI.predict",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"messages\": [\"ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text=\\\"You are an expert Q&A system that is trusted around the world.\\\\nAlways answer the query using the provided context information, and not prior knowledge.\\\\nSome rules to follow:\\\\n1. Never directly reference the given context in your answer.\\\\n2. Avoid statements like 'Based on the context, ...' or 'The context information ...' or anything along those lines.\\\")])\", \"ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='Context information is below.\\\\n---------------------\\\\nParis is the capital of France.\\\\n---------------------\\\\nGiven the context information and not prior knowledge, answer the query.\\\\nQuery: Capital of France?\\\\nAnswer: ')])\"]}",
+        "llm.finish_reason": "stop",
+        "llm.input_messages.0.message.content": "You are an expert Q&A system that is trusted around the world.\nAlways answer the query using the provided context information, and not prior knowledge.\nSome rules to follow:\n1. Never directly reference the given context in your answer.\n2. Avoid statements like 'Based on the context, ...' or 'The context information ...' or anything along those lines.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Context information is below.\n---------------------\nParis is the capital of France.\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: Capital of France?\nAnswer: ",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"context_window\":128000,\"num_output\":-1,\"is_chat_model\":true,\"is_function_calling_model\":true,\"model_name\":\"gpt-4o-mini\",\"system_role\":\"system\"}",
+        "llm.model_name": "gpt-4o-mini",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "openai",
+        "llm.system": "openai",
+        "llm.token_count.completion": 3,
+        "llm.token_count.prompt": 120,
+        "llm.token_count.prompt_details.cache_read": 64,
+        "llm.token_count.total": 123,
+        "openinference.span.kind": "LLM",
+        "output.value": "assistant: Paris."
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 120,
+        "output_tokens": 3,
+        "total_tokens": 123,
+        "total_derived": false,
+        "cache_read_tokens": 64,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "content": "You are an expert Q&A system that is trusted around the world.\nAlways answer the query using the provided context information, and not prior knowledge.\nSome rules to follow:\n1. Never directly reference the given context in your answer.\n2. Avoid statements like 'Based on the context, ...' or 'The context information ...' or anything along those lines.",
+            "role": "system"
+          },
+          {
+            "content": "Context information is below.\n---------------------\nParis is the capital of France.\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: Capital of France?\nAnswer: ",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "context_window": 128000,
+          "is_chat_model": true,
+          "is_function_calling_model": true,
+          "model_name": "gpt-4o-mini",
+          "num_output": -1,
+          "system_role": "system"
+        }
+      }
+    }
+  ]
+}

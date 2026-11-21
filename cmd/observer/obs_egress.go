@@ -28,8 +28,8 @@ func newObsEgressCmd() *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "egress",
-		Short: "Plane-A egress routing: status, recent decisions, and config lint",
-		Long: "Show the Plane-A policy egress-routing config ([observability.egress]) -\n" +
+		Short: "AI Apps egress routing: status, recent decisions, and config lint",
+		Long: "Show the AI Apps policy egress-routing config ([observability.egress]) -\n" +
 			"mode (off/advise/enforce), typed upstream targets, and rules - plus the\n" +
 			"most-recent recorded egress decisions with the realized outcome the proxy\n" +
 			"reported back, and a tamper-evident hash-chain verification of the\n" +
@@ -37,8 +37,8 @@ func newObsEgressCmd() *cobra.Command {
 			"Egress composes the admission verdict with a routing action: route a\n" +
 			"flagged request to an on-prem model, swap a budget-pressured end-user to a\n" +
 			"cheaper model, or deny. advise evaluates + records but never applies;\n" +
-			"enforce applies on the proxy path. This is Plane-A (hosted-app end-user\n" +
-			"traffic) - distinct from `observer guard` (Plane-B, the developer's own\n" +
+			"enforce applies on the proxy path. This governs your AI apps' end-user\n" +
+			"traffic - distinct from `observer guard` (the developer's own\n" +
 			"coding-agent tool calls). The audit log is NODE-LOCAL, never pushed.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)

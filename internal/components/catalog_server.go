@@ -132,15 +132,15 @@ func serverRows() []Component {
 		},
 		{
 			ID: "org.planea.gateway", Class: ClassServer, Binary: BinaryOrg,
-			Title:  "Plane A OTLP gateway",
-			About:  "OTLP gRPC and HTTP ingest for hosted AI apps, with classification and the span convention.",
+			Title:  "AI Apps OTLP gateway",
+			About:  "OTLP gRPC and HTTP ingest for the AI apps and agents an organization builds, with classification and the span convention.",
 			Levels: l1Done,
 			Routes: []string{"/api/org/gateway"},
 			Packages: []string{
 				"internal/orgserver/gateway", "internal/orgserver/gateway/convention",
 				"internal/orgserver/consumers/otlpapplier",
 			},
-			DirectModules: []string{"google.golang.org/grpc", "google.golang.org/protobuf", "go.opentelemetry.io/proto/otlp"},
+			DirectModules: []string{"google.golang.org/grpc", "google.golang.org/protobuf", "go.opentelemetry.io/proto/otlp", "google.golang.org/genproto/googleapis/rpc"},
 			Surface:       Surface{Listeners: []Listener{{Proto: "tcp", Addr: ":4317", Auth: "machine identity credential", Trigger: TriggerOptIn}}},
 			Stability:     StabilityPreview,
 			Images:        img(ImageIn, ImageOut),
@@ -162,7 +162,7 @@ func serverRows() []Component {
 			Packages: []string{
 				"internal/aigateway", "internal/aigateway/providerext", "internal/aigateway/gwhttp", "internal/aigateway/gwstore",
 				"internal/orgserver/gwadmin", "internal/orgserver/gwmembers", "internal/orgserver/gwreconcile",
-				"internal/orgserver/planebadmit",
+				"internal/orgserver/planebadmit", "internal/orgserver/gwcostjoin/gwaudit",
 			},
 			DirectModules: []string{"github.com/google/uuid"},
 			Surface:       Surface{Egress: []Egress{{Host: "<model provider APIs>", Purpose: "Forwards gateway requests", Gate: "config", Trigger: TriggerOptIn}}},
@@ -542,8 +542,8 @@ func serverRows() []Component {
 		// still runs (the routes that queue one are refused).
 		{
 			ID: "org.obs.evals", Class: ClassServer, Binary: BinaryOrg,
-			Title:         "Plane A datasets and evals",
-			About:         "The hosted-app datasets, LLM tagging, analysis and experiment jobs, eval runs and eval schedules.",
+			Title:         "AI Apps datasets and evals",
+			About:         "The AI apps' datasets, LLM tagging, analysis and experiment jobs, eval runs and eval schedules.",
 			Levels:        l2Done,
 			Routes:        []string{"/api/org/obs/datasets", "/api/org/obs/llm-jobs", "/api/org/obs/eval-runs", "/api/org/obs/eval-schedules"},
 			Packages:      []string{"internal/orgserver/dataset", "internal/orgserver/llmjob", "internal/orgserver/orgeval"},
@@ -554,8 +554,8 @@ func serverRows() []Component {
 		},
 		{
 			ID: "edge", Class: ClassServer, Binary: BinaryEdge,
-			Title:     "Plane A edge",
-			About:     "The observer-edge collector image for hosted AI app telemetry.",
+			Title:     "AI Apps edge",
+			About:     "The observer-edge collector image for AI app telemetry.",
 			Levels:    lv(noLevels(), []Level{L1}, "P6"),
 			Stability: StabilityPreview,
 			Images:    img(ImageSeparate, ImageOut),

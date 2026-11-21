@@ -1,32 +1,133 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "superbased-observer-sdk"
+name = "superbased-sdk"
 version = "0.1.0"
-description = "Thin SDK to send custom app / agent traces to SuperBased Observer via OTLP."
+description = "superbased SDK: traces, scores, prompts and experiments for LLM apps and agents, over OpenTelemetry."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
-authors = [{ name = "SuperBased", email = "contact@superbased.app" }]
-keywords = ["observability", "opentelemetry", "llm", "agents", "tracing"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "superbased", email = "contact@superbased.app" }]
+keywords = ["observability", "opentelemetry", "llm", "agents", "tracing", "genai", "evals", "prompts"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Monitoring",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+# Runtime: OpenTelemetry only. Every control call (destination discovery,
+# scores, prompts, experiments, admit) uses the standard library.
 dependencies = [
   "opentelemetry-api>=1.20",
   "opentelemetry-sdk>=1.20",
   "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
-# Optional framework auto-instrumentation via the Arize OpenInference
-# instrumentors — install the extra, then call the instrumentor after init().
+# instrument([...]) targets: one extra per framework, each the upstream
+# OpenInference instrumentor (plan D10). The instrumentors need Python 3.10+
+# in their current releases; on 3.9 pip resolves an older one, which is not
+# fixture-tested. The framework itself is the app's own dependency.
 [project.optional-dependencies]
-langchain = ["openinference-instrumentation-langchain"]
-llama-index = ["openinference-instrumentation-llama-index"]
-crewai = ["openinference-instrumentation-crewai"]
-openai = ["openinference-instrumentation-openai"]
+openai = ["openinference-instrumentation-openai>=0.1.30"]
+anthropic = ["openinference-instrumentation-anthropic>=0.1.10"]
+langchain = ["openinference-instrumentation-langchain>=0.1.30"]
+langgraph = ["openinference-instrumentation-langchain>=0.1.30"]
+mcp = ["openinference-instrumentation-mcp>=1.0"]
+# Wave 5 (W5-1). gemini covers google-genai (the Gemini API and Vertex AI).
+gemini = ["openinference-instrumentation-google-genai>=1.6"]
+bedrock = ["openinference-instrumentation-bedrock>=0.1.68"]
+llama-index = ["openinference-instrumentation-llama-index>=4.7"]
+# The CrewAI instrumentor supports Python < 3.14 only.
+crewai = ["openinference-instrumentation-crewai>=1.1; python_version < '3.14'"]
+# The SDK uses this package's attribute mapping, not an instrumentor (there is
+# none): pydantic-ai's own spans are turned on with the SDK's provider.
+pydantic-ai = ["openinference-instrumentation-pydantic-ai>=0.1.38,<0.2"]
+openai-agents = ["openinference-instrumentation-openai-agents>=2.8"]
+all = [
+  "openinference-instrumentation-openai>=0.1.30",
+  "openinference-instrumentation-anthropic>=0.1.10",
+  "openinference-instrumentation-langchain>=0.1.30",
+  "openinference-instrumentation-mcp>=1.0",
+  "openinference-instrumentation-google-genai>=1.6",
+  "openinference-instrumentation-bedrock>=0.1.68",
+  "openinference-instrumentation-llama-index>=4.7",
+  "openinference-instrumentation-crewai>=1.1; python_version < '3.14'",
+  "openinference-instrumentation-pydantic-ai>=0.1.38,<0.2",
+  "openinference-instrumentation-openai-agents>=2.8",
+]
+# Unit tests (no framework needed; the instrument tests skip without one).
+test = ["pytest>=7"]
+# The offline instrument conformance tests (Python 3.10+): the frameworks the
+# scenarios drive, plus the instrumentors. CrewAI pins openai < 3, which the
+# other scenarios' openai-agents cannot share, so it has its own set
+# (test-instrument-crewai) and its own environment.
+test-instrument = [
+  "pytest>=7",
+  "openinference-instrumentation-openai>=0.1.30",
+  "openinference-instrumentation-anthropic>=0.1.10",
+  "openinference-instrumentation-langchain>=0.1.30",
+  "openinference-instrumentation-mcp>=1.0",
+  "openinference-instrumentation-google-genai>=1.6",
+  "openinference-instrumentation-bedrock>=0.1.68",
+  "openinference-instrumentation-llama-index>=4.7",
+  "openinference-instrumentation-pydantic-ai>=0.1.38,<0.2",
+  "openinference-instrumentation-openai-agents>=2.8",
+  "openai>=1.40",
+  "anthropic>=0.40",
+  "langchain-core>=0.3",
+  "langgraph>=0.2",
+  "mcp>=2.0; python_version >= '3.10'",
+  "httpx>=0.27",
+  "google-genai>=1.0",
+  "boto3>=1.28.57",
+  "llama-index-core>=0.14.19",
+  "llama-index-llms-openai>=0.4",
+  "pydantic-ai-slim>=2.24",
+  "openai-agents>=0.11",
+]
+test-instrument-crewai = [
+  "pytest>=7",
+  "openinference-instrumentation-crewai>=1.1; python_version < '3.14'",
+  "crewai>=1.10.1; python_version < '3.14'",
+]
+dev = ["pytest>=7", "mypy>=1.10"]
 
 [project.urls]
 Homepage = "https://superbased.app"
+Source = "https://github.com/superbasedapp/observer/tree/main/sdk/python"
+Documentation = "https://superbased.app/docs/sdk/python"
 
 [tool.hatch.build.targets.wheel]
-packages = ["superbased"]
+packages = ["superbased_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["superbased_sdk", "README.md", "LICENSE", "NOTICE", "tests", "examples"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"  # mypy's floor; 3.9 runs on the gate matrix
+files = ["superbased_sdk"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+  "openinference.*", "openai.*", "anthropic.*", "langchain_core.*", "mcp.*",
+  "google.*", "boto3.*", "botocore.*", "llama_index.*", "crewai.*", "pydantic_ai.*", "agents.*",
+]
+ignore_missing_imports = true

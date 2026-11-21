@@ -42,9 +42,14 @@ if [ ! -f "$BODY_PATH" ]; then
     exit 1
 fi
 
-for channel in npm pypi; do
+# One row per published README: <template name>:<package directory>.
+# npm-superbased is the unscoped short-name package (npm/superbased), whose
+# README is the npm one with its own title, install lines and short-name note.
+for pair in "npm:npm/observer" "pypi:pypi/observer" "npm-superbased:npm/superbased"; do
+    channel="${pair%%:*}"
+    pkgdir="${pair#*:}"
     template="docs/distribution/$channel-README.template.md"
-    output="$channel/observer/README.md"
+    output="$pkgdir/README.md"
 
     if [ ! -f "$template" ]; then
         echo "build-distribution-readmes: missing $template" >&2

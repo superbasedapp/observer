@@ -18,20 +18,24 @@ import "strings"
 // sections (29 today; "you" joined with the You page; "plans" joined with the Plans & limits page, "requests" with the request-grants design, G6,
 // "agent-config" with adapter config P4/P5, "messages" with admin and
 // developer messaging, T-854, and "code-security" with the security pillar's
-// Code security page).
+// Code security page; the eight "app-*" Your apps pages joined with Plane A
+// lane B5, 2026-11-19; Egress and Policies moved into that group in the SPA
+// but keep their place here, since this list is a set).
 var NavSectionIDs = []string{
 	"overview", "live", "sessions", "actions", "projects", "security", "code-security", "egress", "search",
 	"cost", "plans", "analysis", "tools",
 	"compression", "cache", "suggestions", "routing", "benchmarks", "discovery", "patterns",
+	"app-traces", "app-sessions", "app-analytics", "app-end-users", "app-evals", "app-scores", "app-prompts", "app-alerts",
 	"you", "policies", "agent-config", "privacy", "terminals", "remote", "messages", "requests", "settings",
 }
 
 // SettingsSectionIDs is the closed set of node-dashboard Settings
-// sub-sections (32 today; "tasks" joined with the 2026-09-10 merge of the
-// session task-tracking Settings section from origin/main, and "intel", the
-// org-plane Cloud Intelligence section, with the 2026-10-03 parity arc).
+// sub-sections (33 today; "tasks" joined with the 2026-09-10 merge of the
+// session task-tracking Settings section from origin/main, "intel", the
+// org-plane Cloud Intelligence section, with the 2026-10-03 parity arc, and
+// "general", the focus control, with the Plane A build-out at level 13).
 var SettingsSectionIDs = []string{
-	"pricing", "backfill", "tools", "health", "storage", "enrolment", "intelligence",
+	"general", "pricing", "backfill", "tools", "health", "storage", "enrolment", "intelligence",
 	"observer", "watcher", "freshness", "retention", "hooks", "proxy", "dashboard",
 	"compression", "profiles", "org", "guard", "routing", "otel", "mcp", "advisor",
 	"cachetrack", "observability", "secrets", "antigravity", "process", "browser",

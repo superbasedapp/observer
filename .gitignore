@@ -111,6 +111,8 @@ coverage.html
 # the negation re-include one file.
 **/.claude/*
 !/.claude/settings.json
+# Project skills (invokable by name in any session, e.g. /planea-e2e).
+!/.claude/skills/
 # Negation: keep .claude/ fixture trees under testdata/ tracked.
 # Required by TestSidechain_CrossReferencedFromSubagentFiles in
 # internal/adapter/cowork — the test walks
@@ -281,6 +283,7 @@ model-pricing/scripts/extract-cache/
 /internal/vendorsurface/livecheck/
 /harness-gateway/
 /tests/e2e/orgserver/
+/tests/sdke2e/
 # The org-server load test and the org-only helper packages.
 /cmd/observer-loadtest/
 /internal/loadgen/
@@ -333,6 +336,7 @@ model-pricing/scripts/extract-cache/
 # private-only paths.
 /.github/workflows/ci-private.yml
 /.github/workflows/npm-release.yml
+/.github/workflows/sdk-release.yml
 /.github/workflows/teams-golden-path.yml
 /.github/workflows/obs-eval.yml
 /.github/workflows/website-deploy.yml

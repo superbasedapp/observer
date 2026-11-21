@@ -53,7 +53,7 @@ const (
 	RoutingSettings Place = "routing_settings"
 	// GuardSettings is Settings > Guard ([guard]: rules, native dialects, compile on init).
 	GuardSettings Place = "guard_settings"
-	// ObservabilitySettings is Settings > Observability ([observability], including the judge endpoint).
+	// ObservabilitySettings is Settings > AI Apps ([observability], including the judge endpoint).
 	ObservabilitySettings Place = "observability_settings"
 	// IntelligenceSettings is Settings > Intelligence ([projects], including
 	// alignment_judge, under More settings).
@@ -95,7 +95,7 @@ var places = []row{
 	{ConnectedTools, "/settings?section=tools", "Settings > Connected tools"},
 	{RoutingSettings, "/settings?section=routing", "Settings > Routing"},
 	{GuardSettings, "/settings?section=guard", "Settings > Guard"},
-	{ObservabilitySettings, "/settings?section=observability", "Settings > Observability"},
+	{ObservabilitySettings, "/settings?section=observability", "Settings > AI Apps"},
 	{IntelligenceSettings, "/settings?section=intelligence", "Settings > Intelligence"},
 	{SecurityMode, "/security?tab=overview", "Security > Overview > Mode"},
 }

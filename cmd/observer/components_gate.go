@@ -749,3 +749,12 @@ func gatedVerbNames(root *cobra.Command) []string {
 	sort.Strings(out)
 	return out
 }
+
+// allows reports whether the gate starts the named loop at boot.
+func (g *gatedGroup) allows(name string) bool { return loopAllowed(g.snap, name) }
+
+// goOTLPReceiverLater starts the OTLP receiver loop the boot gate kept
+// stopped, once a run-time change (an AI Apps enable that adds its component)
+// has made it allowed. The loop name stays a literal so the daemon-loop
+// classification test can see it.
+func (g *gatedGroup) goOTLPReceiverLater(fn func() error) { g.ng.Go("otlp-receiver", fn) }

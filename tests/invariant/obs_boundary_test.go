@@ -20,6 +20,20 @@ var allowedObsImporters = map[string]bool{
 	// whose signatures name internal/proxy types, split out so a build
 	// without capture.proxy keeps obs_wire.go. Same wiring point, two files.
 	"../../cmd/observer/obs_wire_proxy.go": true,
+	// Its `observer obs traces` half (Plane A lane B5, W2-5): the CLI file
+	// obs_traces.go imports no obs package; this build-tagged file opens the
+	// store and copies rows into cmd-side types. Same wiring point.
+	"../../cmd/observer/obs_wire_traces.go": true,
+	// Its node alert routes half (Plane A lane B9, W3-5): binds
+	// internal/obs/httpapi's alert routes to the daemon's config file; only
+	// obs_wire.go calls it. Same wiring point.
+	"../../cmd/observer/obs_wire_alerts.go": true,
+	// Its org app budget half (Plane A lane C1, W4-1): converts the budget
+	// rail's verified app caps into internal/obs/admission's policy; only
+	// obs_wire.go calls it. Same wiring point.
+	"../../cmd/observer/obs_wire_appbudget.go": true,
+	// Lane C8 (R-B15): sets openObsPrompts for `observer obs prompts`.
+	"../../cmd/observer/obs_wire_prompts.go": true,
 	// 2026-09-02 (G1-JUDGED-ADM, design §4.6 "sharing the admission engine as
 	// a library"): the two AI-Gateway BINARIES adapt internal/obs/admission.
 	// Evaluate to internal/orgserver/planebadmit's injected Evaluator seam.
@@ -27,6 +41,10 @@ var allowedObsImporters = map[string]bool{
 	// obs, so the node daemon's separability is untouched.
 	"../../cmd/observer-org/planeb_admission_wire.go":       true,
 	"../../cmd/observer-aigateway/planeb_admission_wire.go": true,
+	// Plane A build-out W1c-5 (D15): the SDK control API's org admit()
+	// adapts internal/obs/admission.Evaluate to sdkapi's injected
+	// Evaluator seam. cmd-layer wiring only, like the two files above.
+	"../../cmd/observer-org/sdkapi_admission_wire.go": true,
 }
 
 // TestObsReverseImportBoundary enforces the separability spine (plan §2.3/§11,

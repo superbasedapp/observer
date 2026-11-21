@@ -1,0 +1,110 @@
+{
+  "_source": {
+    "target": "openai",
+    "instrumentor": "@arizeai/openinference-instrumentation-openai 4.5.0",
+    "library": "openai 7.60.0",
+    "grounding": "OpenAI chat completion (system + user messages, cached and reasoning usage) and an embeddings call, against a loopback stub, inside propagateAttributes({ user, sessionId }).",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "openai",
+  "_gaps": [
+    "OpenAI Embeddings: OpenInference names the embedding model embedding.model_name, which genaiattr reads since genaiattr-2 (lane C7). Its inputs (embedding.embeddings.*) are masked as SDK extra content keys."
+  ],
+  "spans": [
+    {
+      "name": "OpenAI Chat Completions",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"system\",\"content\":\"Be brief.\"},{\"role\":\"user\",\"content\":\"Capital of France?\"}],\"temperature\":0.2}",
+        "llm.finish_reason": "stop",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"model\":\"gpt-4o-mini\",\"temperature\":0.2}",
+        "llm.model_name": "gpt-4o-mini-2024-07-18",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.system": "openai",
+        "llm.token_count.completion": 40,
+        "llm.token_count.completion_details.reasoning": 16,
+        "llm.token_count.prompt": 1200,
+        "llm.token_count.prompt_details.cache_read": 1024,
+        "llm.token_count.total": 1240,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion\",\"created\":1763510400,\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Paris.\"}}],\"usage\":{\"prompt_tokens\":1200,\"completion_tokens\":40,\"total_tokens\":1240,\"prompt_tokens_details\":{\"cached_tokens\":1024},\"completion_tokens_details\":{\"reasoning_tokens\":16}}}",
+        "sbo.user": "end-user-1",
+        "server.address": "127.0.0.1",
+        "session.id": "sess-1"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini-2024-07-18",
+        "provider": "openai",
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "total_derived": false,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "reasoning_tokens": 16,
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "model": "gpt-4o-mini",
+          "temperature": 0.2
+        }
+      }
+    },
+    {
+      "name": "OpenAI Embeddings",
+      "parent": null,
+      "attrs": {
+        "embedding.embeddings.0.embedding.text": "hello",
+        "embedding.embeddings.0.embedding.vector": [
+          0.25,
+          0.5
+        ],
+        "embedding.model_name": "text-embedding-3-small",
+        "input.mime_type": "text/plain",
+        "input.value": "hello",
+        "llm.system": "openai",
+        "llm.token_count.prompt": 5,
+        "llm.token_count.total": 5,
+        "openinference.span.kind": "EMBEDDING",
+        "sbo.user": "end-user-1",
+        "server.address": "127.0.0.1",
+        "session.id": "sess-1"
+      },
+      "want": {
+        "span_kind": "EMBEDDING",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "input_tokens": 5,
+        "total_tokens": 5,
+        "total_derived": false,
+        "output_tokens": null
+      }
+    }
+  ]
+}

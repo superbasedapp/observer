@@ -85,6 +85,12 @@ type EnrolmentOverview struct {
 	CredentialStore string `json:"credential_store,omitempty"`
 	// Tenancy is "managed" or "individual" (empty when not enrolled).
 	Tenancy string `json:"tenancy,omitempty"`
+	// Reconsent is the organization's re-consent advisory from the last
+	// push (orgcontract.Reconsent*, e.g. "owner_managed": a personal
+	// organization, managed by its owner, offers this individually-enrolled
+	// machine the managed grant). It is a prompt only: accepting runs the
+	// ordinary re-connect and consent screen. Absent is the normal case.
+	Reconsent string `json:"reconsent,omitempty"`
 	// MachineProofWarning is set on a managed enrolment whose daemon signs
 	// no machine proof (WINNODE item 4: "Machine proof unavailable: no
 	// Windows logon session ..."). Absent is the normal case.

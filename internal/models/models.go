@@ -2068,6 +2068,12 @@ type APITurn struct {
 	// x-claude-code-request-class gateway hint). Node-local metadata - not
 	// on the org wire.
 	RequestClass string
+	// UpstreamLane is the /up/<id> proxy lane the turn arrived on (agent
+	// migration 260): the gateway rail a co-resident hosted app is pointed
+	// at. Empty for the default provider lanes and every non-proxy source.
+	// Only a turn with a lane may be enriched by an app's SDK span (review
+	// E-23, plan principle 5). Node-local metadata - not on the org wire.
+	UpstreamLane string
 }
 
 // Request classes for APITurn.RequestClass (migration 144). A closed,

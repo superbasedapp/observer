@@ -229,6 +229,9 @@ func TestConnectArgs(t *testing.T) {
 			t.Errorf("connectArgs(%q,%q) = %v, want %v", c.config, c.team, got, c.want)
 		}
 	}
+	if got, want := connectArgs("", "", connectReconsentFlag), []string{"connect", "--json", "--no-browser", "--reconsent"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("re-consent args = %v, want %v", got, want)
+	}
 }
 
 // TestDecideConnectRefusal pins connectRefusals, one case per row.
@@ -240,10 +243,12 @@ func TestDecideConnectRefusal(t *testing.T) {
 	}{
 		{"locked wins", connectFacts{locked: true, enrolled: true, orgName: "Acme"}, "locked"},
 		{"already connected", connectFacts{enrolled: true, orgName: "Acme"}, "already_connected"},
+		{"re-consent needs a connection", connectFacts{reconsent: true}, "reconsent_not_connected"},
 		{"free to connect", connectFacts{}, ""},
+		{"re-consent on a connected machine", connectFacts{reconsent: true, enrolled: true, orgName: "Me"}, ""},
 	}
-	if len(connectRefusals) != len(cases)-1 {
-		t.Fatalf("%d refusal rows, %d refusing cases", len(connectRefusals), len(cases)-1)
+	if len(connectRefusals) != len(cases)-2 {
+		t.Fatalf("%d refusal rows, %d refusing cases", len(connectRefusals), len(cases)-2)
 	}
 	for _, c := range cases {
 		got := decideConnectRefusal(c.facts)

@@ -1,27 +1,47 @@
-// Minimal SuperBased Observer TypeScript SDK example.
+// Minimal superbased TypeScript SDK example.
 //
-//   cd sdk/typescript && npm install && npm run build
-//   node --loader ts-node/esm examples/quickstart.ts   # or compile + run
+//   cd sdk/typescript && npm install && npm run example
 //
-// Requires a local Observer with [observability] enabled.
+// Sends one trace to the Observer on this machine (turn on Settings > Your
+// apps in its dashboard), or wherever SUPERBASED_DESTINATION /
+// SUPERBASED_ORG_URL point. List it with `observer obs traces` or
+// GET http://127.0.0.1:8081/api/obs/traces.
 
-import { init, Kind, setUsage, shutdown, withLlmSpan, withSpan } from "../src/index.js";
+import { randomUUID } from "node:crypto";
 
-async function main() {
-  init({ sessionId: "quickstart-1", user: "demo" });
+import {
+  diagnostics,
+  init,
+  propagateAttributes,
+  ready,
+  setToolResult,
+  setUsage,
+  shutdown,
+  withAgentSpan,
+  withLlmSpan,
+  withToolSpan,
+} from "@superbased/sdk";
 
-  await withSpan("agent.run", Kind.AGENT, async () => {
-    await withLlmSpan("chat", { model: "gpt-4o", provider: "openai" }, async (span) => {
-      // ... your real model call ...
-      setUsage(span, { inputTokens: 1200, outputTokens: 64, responseId: "chatcmpl-demo-123" });
-    });
-    await withSpan("web_search", Kind.TOOL, async () => {
-      // ... your tool call ...
-    });
-  });
+async function main(): Promise<void> {
+  init({ serviceName: "quickstart", release: "0.1.0" });
+  console.log(`destination: ${(await ready()) || "local"}`);
 
-  await shutdown();
-  console.log("sent one trace to Observer — check /trajectories");
+  await propagateAttributes({ user: "demo", sessionId: "quickstart-1", tags: ["example"] }, () =>
+    withAgentSpan("agent.run", {}, async () => {
+      await withLlmSpan("chat", { model: "gpt-4o", provider: "openai", prompt: "Say hi" }, async (span) => {
+        // ... your real model call goes here; use its real response id ...
+        setUsage(span, { inputTokens: 1200, outputTokens: 64, cacheReadTokens: 1024, responseId: `chatcmpl-${randomUUID()}`, response: "hi" });
+      });
+      withToolSpan("web_search", { arguments: { q: "superbased" } }, (span) => {
+        // ... your tool call (sync callbacks return synchronously) ...
+        setToolResult(span, ["result"]);
+      });
+    }),
+  );
+
+  await shutdown(); // flush before exit; bounded, never rejects
+  const d = diagnostics();
+  console.log(d.failedExports ? `export failed: ${d.lastError}` : "sent one trace; list it with `observer obs traces`");
 }
 
 void main();

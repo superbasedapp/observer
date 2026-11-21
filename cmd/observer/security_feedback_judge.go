@@ -33,7 +33,7 @@ func securityExplainJudgeFor(cfg config.Config) *securityExplainJudge {
 		keyEnv = "OPENROUTER_API_KEY"
 	}
 	hosting := judgeHostingLabel(baseURL, jc.Model)
-	client := secureJudgeEgress(newChatCompletionsJudge(baseURL, os.Getenv(keyEnv)).WithTuning(jc.MaxTokens, jc.NumCtx), hosting)
+	client := secureJudgeEgress(newConfiguredJudge(baseURL, os.Getenv(keyEnv), jc), hosting)
 	model := jc.Model
 	return &securityExplainJudge{
 		complete: func(ctx context.Context, prompt string) (string, error) { return client.Complete(ctx, model, prompt) },

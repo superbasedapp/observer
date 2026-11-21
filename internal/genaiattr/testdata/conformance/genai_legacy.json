@@ -1,0 +1,45 @@
+{
+  "_source": {
+    "dialect": "genai_legacy",
+    "grounding": "Source-grounded synthesis of GenAI names renamed away before the pin (gen_ai.system -> gen_ai.provider.name; gen_ai.usage.prompt_tokens/completion_tokens -> input_tokens/output_tokens; gen_ai.usage.cache_creation.input_tokens -> cache_write.input_tokens, semconv-genai changelog 440) and the pre-structured content forms (flat gen_ai.prompt, indexed gen_ai.prompt.<i>/gen_ai.completion.<i>). Not a live capture.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "legacy_usage_names",
+      "attrs": {
+        "gen_ai.system": "anthropic",
+        "gen_ai.request.model": "claude-sonnet-4",
+        "gen_ai.usage.prompt_tokens": 500,
+        "gen_ai.usage.completion_tokens": 40,
+        "gen_ai.usage.cache_creation.input_tokens": 300
+      },
+      "want": {"provider": "anthropic", "model": "claude-sonnet-4", "input_tokens": 500, "output_tokens": 40, "cache_write_tokens": 300, "total_tokens": 540, "total_derived": true}
+    },
+    {
+      "name": "indexed_prompt_completion",
+      "attrs": {
+        "gen_ai.prompt.0.role": "system",
+        "gen_ai.prompt.0.content": "You are terse.",
+        "gen_ai.prompt.1.role": "user",
+        "gen_ai.prompt.1.content": "Hi",
+        "gen_ai.completion.0.role": "assistant",
+        "gen_ai.completion.0.content": "Hello."
+      },
+      "want": {
+        "input_messages": [{"role": "system", "content": "You are terse."}, {"role": "user", "content": "Hi"}],
+        "output_messages": [{"role": "assistant", "content": "Hello."}]
+      }
+    },
+    {
+      "name": "flat_prompt_blob",
+      "attrs": {"gen_ai.prompt": "Summarize this.", "gen_ai.completion": "Done."},
+      "want": {"prompt_value": "Summarize this.", "response_value": "Done.", "input_messages": ""}
+    },
+    {
+      "name": "openai_seed",
+      "attrs": {"gen_ai.openai.request.seed": 7, "gen_ai.request.temperature": 1},
+      "want": {"request_params": {"seed": 7, "temperature": 1}}
+    }
+  ]
+}

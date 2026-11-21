@@ -204,11 +204,12 @@ func TestDistros(t *testing.T) {
 	if len(InDistro(DistroMinimal)) >= len(InDistro(DistroDeveloper)) {
 		t.Error("minimal must be smaller than developer")
 	}
-	// D-389: Plane A observability is out of developer.
-	for _, id := range InDistro(DistroDeveloper) {
-		if id == "obs" {
-			t.Error("obs must be out of the developer distro (D-389)")
-		}
+	// D7 (plan of record 2026-11-19, amended; supersedes D-389): Plane A
+	// observability is compiled into developer, off by default, and stays
+	// out of minimal and managed.
+	if c, _ := Get("obs"); c.Distros[DistroDeveloper] != DefaultOff ||
+		c.Distros[DistroMinimal].Compiled() || c.Distros[DistroManaged].Compiled() {
+		t.Errorf("obs distros = %v, want developer off and out of minimal and managed (D7)", c.Distros)
 	}
 	// D-374: the pricing feed stays on by default in developer.
 	if c, _ := Get("egress.pricing-feed"); c.Distros[DistroDeveloper] != DefaultOn {

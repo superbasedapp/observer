@@ -797,7 +797,7 @@ func (s *Store) PushEligibleCounts(ctx context.Context, cur PushCursor) (PushCur
 	}{
 		{`SELECT COUNT(*) FROM sessions WHERE rowid > ?` + sessionPred, cur.Sessions, &c.Sessions},
 		{`SELECT COUNT(*) FROM actions t WHERE t.id > ?` + rowPred, cur.Actions, &c.Actions},
-		{`SELECT COUNT(*) FROM api_turns t WHERE t.id > ?` + rowPred, cur.APITurns, &c.APITurns},
+		{`SELECT COUNT(*) FROM api_turns t WHERE t.id > ? AND ` + apiTurnPlaneBOnly + rowPred, cur.APITurns, &c.APITurns},
 		{`SELECT COUNT(*) FROM token_usage t WHERE t.id > ?` + rowPred, cur.TokenUsage, &c.TokenUsage},
 		{`SELECT COUNT(*) FROM guard_events t WHERE t.id > ?` + rowPred, cur.GuardEvents, &c.GuardEvents},
 	} {
@@ -1723,7 +1723,7 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	// --- api_turns ---
 	if !budgetHit {
-		q := apiTurnPushSelect + ` WHERE t.id > ?`
+		q := apiTurnPushSelect + ` WHERE t.id > ? AND ` + apiTurnPlaneBOnly //nolint:gosec // G202: two package constants; values bind as args
 		if scopeFilter != "" {
 			q += ` AND t.project_id IN (` + scopeFilter + `)` //nolint:gosec // G202: the fragment is formatted int64 project ids or a fixed table name; values bind as args
 		}
@@ -2656,6 +2656,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 		table, head, idExpr, scopeExpr string
 		ceil                           int64
 		add                            addFn
+		extra                          string // an additional AND predicate, or ""
 	}{
 		{"sessions", sessionPushSelect, "s.rowid", "p.id", cur.Sessions, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanSessionPushRow(rows, share, orgID, userEmail, rev)
@@ -2669,7 +2670,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.Sessions = append(batch.Sessions, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 		{"token_usage", tokenUsagePushSelect("0"), "tu.id", "s.project_id", cur.TokenUsage, func(rows *sql.Rows) (int64, bool, error) {
 			id, _, r, err := s.scanTokenUsagePushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
@@ -2682,7 +2683,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.TokenUsage = append(batch.TokenUsage, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 		{"api_turns", apiTurnPushSelect, "t.id", "t.project_id", cur.APITurns, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanAPITurnPushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
@@ -2695,7 +2696,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.APITurns = append(batch.APITurns, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, apiTurnPlaneBOnly},
 		{"actions", actionPushSelect, "a.id", "a.project_id", cur.Actions, func(rows *sql.Rows) (int64, bool, error) {
 			id, r, err := scanActionPushRow(rows, share, orgID, userEmail, rev)
 			if err != nil {
@@ -2716,7 +2717,7 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			batch.Actions = append(batch.Actions, r)
 			budget.est += sz
 			return id, true, nil
-		}},
+		}, ""},
 	}
 	for _, l := range lanes {
 		floor, tracked := tr.floor[l.table]
@@ -2724,6 +2725,9 @@ func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *en
 			continue
 		}
 		q := l.head + pushChangesFilter(l.table, l.idExpr) //nolint:gosec // G202: the fragment is formatted int64 project ids or a fixed table name; values bind as args
+		if l.extra != "" {
+			q += ` AND ` + l.extra
+		}
 		if scopeFilter != "" {
 			q += ` AND ` + l.scopeExpr + ` IN (` + scopeFilter + `)`
 		}
@@ -2790,6 +2794,18 @@ const actionPushSelect = `SELECT a.id, a.session_id,
 		             COALESCE(json_extract(a.metadata,'$.stop_reason'),''),
 		             COALESCE(a.message_id,'')
 		        FROM actions a`
+
+// apiTurnPlaneBOnly is the Plane A source discriminator on the api_turns push
+// (D6, F10): a row a Plane A (hosted-app observability) source wrote is a
+// hosted app's spend, not the developer's coding spend, so it never ships on
+// the Plane B wire in any share mode. Plane A data reaches the org only
+// through its own opt-in obs tiers (ObsOrgProviders). Since the merge-only
+// rule no writer creates such a row and agent migration 256 relocated the
+// legacy ones to api_turns_planea_legacy, so this is defence in depth. The
+// cursor lane, the re-send lane, the eligible count and the change-queue
+// garbage sweep (orgpushresend.go) all apply it, so a queued change to such a
+// row is swept rather than wedging the re-send head.
+var apiTurnPlaneBOnly = `NOT ` + PlaneATurnSourceSQL("t")
 
 const apiTurnPushSelect = `SELECT t.id, COALESCE(t.session_id,''),
 		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
@@ -3134,11 +3150,10 @@ func (s *Store) composeObsSpans(ctx context.Context, batch *PushBatch, budget *e
 		return fmt.Errorf("store.SelectUnpushedSince: obs spans: %w", err)
 	}
 	for i := range sb.Traces {
-		sb.Traces[i].OrgID, sb.Traces[i].UserEmail = orgID, userEmail
-		// project_root raw value rides only under shipsRawContent().
-		if !share.shipsRawContent() {
-			sb.Traces[i].ProjectRoot = ""
-		}
+		// Attribution + the T2 gate in one owner (orgcontract): project_root,
+		// end user, tenant, tags and metadata ride raw only under
+		// shipsRawContent(), and so do the end-user / tenant hashes (D23).
+		sb.Traces[i].PrepareForWire(orgID, userEmail, share.shipsRawContent())
 	}
 	for i := range sb.Spans {
 		sb.Spans[i].OrgID, sb.Spans[i].UserEmail = orgID, userEmail

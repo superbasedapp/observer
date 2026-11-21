@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The superbased Java SDK (sdk/java). Built with Maven (decision recorded in
+  docs/plans/plane-a-sdk-buildout/lanes/SDK-java.md): Maven is what Maven
+  Central publishing expects natively and needs no wrapper download.
+
+  Runtime dependencies: the official OpenTelemetry SDK and OTLP/HTTP exporter
+  (sent with the JDK HttpClient, so OkHttp is excluded) and Gson for parsing
+  JSON. Everything else is the JDK.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>app.superbased</groupId>
+  <artifactId>superbased-sdk</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <name>superbased SDK for Java</name>
+  <description>Send traces, scores, prompts and experiments from the LLM apps and agents you build to superbased, over OpenTelemetry.</description>
+  <url>https://superbased.app</url>
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <name>superbased</name>
+      <organizationUrl>https://superbased.app</organizationUrl>
+    </developer>
+  </developers>
+  <scm>
+    <url>https://github.com/superbasedapp/observer</url>
+    <connection>scm:git:https://github.com/superbasedapp/observer.git</connection>
+  </scm>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <otel.version>1.56.0</otel.version>
+    <gson.version>2.13.1</gson.version>
+    <junit.version>5.13.4</junit.version>
+    <!-- sdk/contract, read by the behaviour tests (the CI copy sets it). -->
+    <superbased.contract.dir>${project.basedir}/../contract</superbased.contract.dir>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-bom</artifactId>
+        <version>${otel.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>io.opentelemetry</groupId>
+          <artifactId>opentelemetry-exporter-sender-okhttp</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-sender-jdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>${gson.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.14.0</version>
+        <configuration>
+          <compilerArgs>
+            <arg>-Xlint:all,-serial,-options,-try</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.3</version>
+        <configuration>
+          <systemPropertyVariables>
+            <superbased.contract.dir>${superbased.contract.dir}</superbased.contract.dir>
+          </systemPropertyVariables>
+          <!-- The SDK is process-wide state: one JVM, tests one at a time. -->
+          <forkCount>1</forkCount>
+          <reuseForks>true</reuseForks>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>app.superbased.sdk</Automatic-Module-Name>
+              <Implementation-Version>${project.version}</Implementation-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals><goal>jar-no-fork</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -35,7 +35,7 @@ import (
 //     code, enroll signs in through the organization's device code (--idp).
 //
 // Before either runs, internal/attachrule's precedence table decides the
-// request (rows 1-10: a lock, identity only, a switch that needs the old
+// request (rows 1-11: a lock, identity only, a switch that needs the old
 // organization named, a refusal). Afterwards the command prints the one
 // sentence internal/frontdoor builds, the same one `observer status` and the
 // dashboard's Connect card show.
@@ -148,6 +148,10 @@ type connectFlags struct {
 	// instead of opening a browser.
 	jsonOut   bool
 	noBrowser bool
+	// reconsent re-attaches the machine to the destination it already has
+	// (attachrule row 10), so its owner can accept the grant that
+	// destination now offers.
+	reconsent bool
 }
 
 func newConnectCmdWith(deps connectDeps) *cobra.Command {
@@ -208,6 +212,7 @@ configuration connects only where that configuration says.`,
 	fl.StringVar(&f.devToken, "dev-token", "", "dev token for sign-in in local testing (never stored)")
 	fl.BoolVar(&f.jsonOut, "json", false, "print one JSON object per line instead of text (for the dashboard and editor extensions)")
 	fl.BoolVar(&f.noBrowser, "no-browser", false, "print the code-entry page and a short code instead of opening a browser")
+	fl.BoolVar(&f.reconsent, "reconsent", false, "connect this machine again to the dashboard it already uses, to review and accept what that dashboard now offers (for example a personal dashboard whose budgets can now block on this machine)")
 	return cmd
 }
 
@@ -238,6 +243,9 @@ func runConnect(cmd *cobra.Command, deps connectDeps, f connectFlags, args []str
 	if f.statusOnly {
 		fmt.Fprintln(out, status().Sentence)
 		return nil
+	}
+	if f.reconsent {
+		return runConnectReconsent(cmd, deps, f, pol, enr, server, team)
 	}
 	if f.identityOnly && (server != "" || team != "") {
 		return errors.New("observer connect: --identity-only signs in only; it takes no server or team")
@@ -569,4 +577,34 @@ func connectStatusSeam(database *sql.DB) func(ctx context.Context, id frontdoor.
 		}
 		return connectStatus(enr, managedconfig.LoadAttach(), id)
 	}
+}
+
+// runConnectReconsent is `observer connect --reconsent` (budget enforce
+// consistency, 2026-11-19): a personal organization is managed by its
+// owner, and a machine that enrolled with it as an individual before that
+// can only have an Enforce budget block after the owner accepts the managed
+// grant. Nothing is raised silently: this re-attaches the machine to the
+// destination it already has, through the same approval and consent the
+// first connect used. attachrule row 10 decides it (a locked or managed
+// machine is refused); the connect request flow runs when this build can make
+// one, else the destination's own sign-in.
+func runConnectReconsent(cmd *cobra.Command, deps connectDeps, f connectFlags, pol managedconfig.AttachResult, enr *store.Enrolment, server, team string) error {
+	if server != "" || team != "" || f.identityOnly {
+		return errors.New("observer connect: --reconsent keeps this machine's current dashboard; it takes no server, team or --identity-only")
+	}
+	if enr == nil {
+		return errors.New("observer connect: this machine is not connected, so there is nothing to review again; run `observer connect`")
+	}
+	d := attachrule.Decide(attachrule.Input{Current: currentDestination(enr), Lock: pol.Lock(), Intent: attachrule.IntentReconsent})
+	if d.Outcome != attachrule.OutcomeAllow {
+		if d.Refusal != nil && d.Refusal.Reason == attachrule.RefusalAlreadyAttached {
+			return errors.New("observer connect: this machine is already organization-managed; there is nothing new to accept")
+		}
+		return connectRefusal(pol, d, enr.OrgServerURL)
+	}
+	if connectRequestAvailable(deps) {
+		return runConnectRequest(cmd, deps, f, pol, enr, "")
+	}
+	none := pairing.Taken{}
+	return deps.runEnroll(cmd, connectEnrollArgs(f, enr.OrgServerURL, none), connectEnrollStdin(none))
 }

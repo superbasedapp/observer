@@ -12,6 +12,8 @@
 // `message` is the ready-to-show sentence, passed through noticeMessage so a
 // developer whose org chose token usage never sees its dollar figures.
 
+import { PLACES } from "./settingsPlaces.ts";
+
 export type BudgetLevel = "ok" | "warning" | "exceeded";
 
 /** One org-authored window's current reading. */
@@ -78,7 +80,90 @@ export type BudgetStatus = {
   written_at?: string;
   windows?: BudgetStatusWindow[] | null;
   active?: BudgetNotice[] | null;
+  /** The machine's last organization budget pull (budgetwarnfile Fetch);
+   *  absent from an older daemon. */
+  fetch?: BudgetFetch | null;
 };
+
+/** One organization budget pull, as the daemon last saw it. */
+export type BudgetFetch = {
+  /** The closed orgcontract.BudgetFetch* value. */
+  state: string;
+  last_ok_at?: string;
+  failing_since?: string;
+};
+
+// ---- a failed budget pull (budget enforce consistency, 2026-11-19) -------
+// Before this, a machine that could not get its organization budget showed
+// nothing anywhere on the machine: the only trace was a daemon log line. The
+// notice says what went wrong in words, since when, and offers "Try now"
+// (POST /api/enrolment/push-now runs the rail cycle) and Settings > Account.
+
+/** FETCH_FAILURES: the failed pull states, in words. A state not here
+ *  (ok, disabled, not_enrolled, no_budget) is an answer, not a failure.
+ *
+ *  onlyWithCaps (U-33, UI review 2026-11-21): channel_off is the org server
+ *  answering 409 because it has no policy signing key, so it cannot sign
+ *  ANY budget document, the explicit "no budget for you" included. On a
+ *  fresh organization with no budget that is every pull, and the strip used
+ *  to warn "Budgets not updated" on a machine nothing governs. Without a
+ *  signing key no organization budget can ever reach this machine, and
+ *  there is nothing the developer can do (Try now cannot help), so it is a
+ *  failure here only while an organization cap is in force on this machine
+ *  (status windows), i.e. a budget it already holds stopped refreshing. */
+const FETCH_FAILURES: Record<string, { words: string; onlyWithCaps?: boolean }> = {
+  unreachable: { words: "the request failed (a timeout, a server error, or no connection)" },
+  auth_failed: { words: "the organization refused this machine's sign-in; connect it again in Settings > Account" },
+  channel_off: {
+    words: "the organization's server cannot sign budgets yet (no policy signing key)",
+    onlyWithCaps: true,
+  },
+  unverified: { words: "the budget it sent did not verify (check this machine's clock)" },
+};
+
+/** The Try now request and the place the notice links to. */
+export const BUDGET_FETCH_TRY_NOW_PATH = "/api/enrolment/push-now";
+export const BUDGET_FETCH_ACCOUNT = { href: "/settings?section=enrolment", label: "Settings > Account" } as const;
+
+export type BudgetFetchNotice = { text: string };
+
+function agoWords(iso: string | undefined, now: Date): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t) || t <= 0) return "";
+  const mins = Math.max(0, Math.round((now.getTime() - t) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 48 * 60) return `${Math.round(mins / 60)} h ago`;
+  return `${Math.round(mins / 1440)} days ago`;
+}
+
+/** budgetFetchNotice is the failed-pull notice, or null when the last pull
+ *  worked or answered. */
+export function budgetFetchNotice(s: BudgetStatus | null | undefined, now = new Date()): BudgetFetchNotice | null {
+  const f = s?.fetch;
+  if (!f) return null;
+  const failure = FETCH_FAILURES[f.state];
+  if (!failure) return null;
+  if (failure.onlyWithCaps && !(s?.windows ?? []).length) return null;
+  const words = failure.words;
+  const since = agoWords(f.failing_since, now);
+  const ok = agoWords(f.last_ok_at, now);
+  const when = since ? ` since ${since}` : "";
+  const last = ok ? ` It last got them ${ok}.` : " It has not got them since this dashboard started.";
+  return { text: `This machine could not get your organization's budgets${when}: ${words}.${last}` };
+}
+
+/** The Guard mode place (settingsPlaces PLACES.security_mode); rendered
+ *  through GatedLink, since the page can be hidden on a managed machine. */
+export const GUARD_MODE_LINK = { href: PLACES.security_mode.href, label: "Open Guard mode" } as const;
+
+/** guardModeLink is the link a notice carries when the cap only warns here
+ *  because of this machine's guard (observe mode, or the guard off), else
+ *  null: the fix is one click away (budget enforce consistency, 2026-11-19). */
+export function guardModeLink(n: EffectFields): typeof GUARD_MODE_LINK | null {
+  return n.effect === "warn_observe" || n.effect === "warn_guard_off" ? GUARD_MODE_LINK : null;
+}
 
 export type BudgetWarningTone = "warn" | "danger";
 

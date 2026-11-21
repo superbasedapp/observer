@@ -1,0 +1,21 @@
+{
+  "name": "superbased-example-langgraph-anthropic",
+  "private": true,
+  "type": "module",
+  "description": "LangGraph.js ReAct chatbot on Claude (TypeScript)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node chatbot.ts",
+    "verify": "./verify.sh"
+  },
+  "dependencies": {
+    "@arizeai/openinference-instrumentation-langchain": "4.2.2",
+    "@langchain/anthropic": "1.6.5",
+    "@langchain/core": "1.4.2",
+    "@langchain/langgraph": "1.7.5",
+    "@superbased/sdk": "file:../../../../sdk/typescript",
+    "zod": "4.6.7"
+  }
+}

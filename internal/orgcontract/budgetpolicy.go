@@ -286,6 +286,16 @@ type BudgetPolicyBody struct {
 	// "undated", which is the compatibility direction, and the deploy-order
 	// constraint in docs/budgets.md covers it.
 	IssuedAt string `json:"issued_at,omitempty"`
+
+	// ---- Plane A app budgets (W4-1). APPEND-ONLY + omitempty, served only
+	// to a fetch that advertised BudgetAppCapability (budgetappcaps.go).
+
+	// AppCaps are the org's soft and hard caps on its Plane A app's end users
+	// and services, sorted by the server.
+	AppCaps []BudgetAppCap `json:"app_caps,omitempty"`
+	// AppOrgID is the org id the end-user keys in AppCaps are bound to, set
+	// only when AppCaps is non-empty.
+	AppOrgID string `json:"app_org_id,omitempty"`
 }
 
 // BudgetPolicyDefaultMaxAge is the freshness window a node applies to

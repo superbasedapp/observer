@@ -1,0 +1,164 @@
+{
+  "_source": {
+    "target": "gemini",
+    "instrumentor": "openinference-instrumentation-google-genai 1.6.5",
+    "library": "google-genai 3.6.1",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "models.generate_content (system instruction, temperature, max_output_tokens; cached and thinking usage) once against the Gemini API (api_key) and once against Vertex AI (vertexai=True, a static OAuth token), each under an SDK span, over an httpx MockTransport.",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "gemini",
+  "_gaps": [
+    "GenerateContent: no response id (the response's responseId is not emitted) and no gen_ai.request.model (the requested model appears nowhere; model is the response's modelVersion).",
+    "provider is llm.provider=google for both the Gemini API and Vertex AI; the pinned semconv values gcp.gemini / gcp.vertex_ai are not emitted, so the two backends cannot be told apart.",
+    "output_tokens is candidates + thoughts (OpenInference counts reasoning inside completion), which matches genaiattr's bucket rule (output includes reasoning)."
+  ],
+  "spans": [
+    {
+      "name": "gemini-api",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {
+        "span_kind": "CHAIN"
+      }
+    },
+    {
+      "name": "GenerateContent",
+      "parent": "gemini-api",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"contents\": [{\"parts\": [{\"text\": \"Capital of France?\"}], \"role\": \"user\"}], \"system_instruction\": {\"parts\": [{\"text\": \"Be brief.\"}], \"role\": \"user\"}, \"generation_config\": {\"temperature\": 0.2, \"max_output_tokens\": 64}}",
+        "llm.finish_reason": "STOP",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"temperature\": 0.2, \"max_output_tokens\": 64}",
+        "llm.model_name": "gemini-2.5-flash-001",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "model",
+        "llm.provider": "google",
+        "llm.token_count.completion": 56,
+        "llm.token_count.completion_details.reasoning": 16,
+        "llm.token_count.prompt": 1200,
+        "llm.token_count.prompt_details.cache_read": 1024,
+        "llm.token_count.total": 1256,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"sdk_http_response\":{\"headers\":{\"content-length\":\"324\",\"content-type\":\"application/json\"}},\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Paris.\"}],\"role\":\"model\"},\"finish_reason\":\"STOP\",\"index\":0}],\"model_version\":\"gemini-2.5-flash-001\",\"response_id\":\"resp-gemini-fixture\",\"usage_metadata\":{\"cached_content_token_count\":1024,\"candidates_token_count\":40,\"prompt_token_count\":1200,\"thoughts_token_count\":16,\"total_token_count\":1256},\"automatic_function_calling_history\":[]}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gemini-2.5-flash-001",
+        "provider": "google",
+        "input_tokens": 1200,
+        "output_tokens": 56,
+        "total_tokens": 1256,
+        "total_derived": false,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "reasoning_tokens": 16,
+        "response_id": "",
+        "finish_reasons": [
+          "STOP"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "model"
+          }
+        ],
+        "request_params": {
+          "max_output_tokens": 64,
+          "temperature": 0.2
+        },
+        "response_model": "gemini-2.5-flash-001",
+        "request_model": ""
+      }
+    },
+    {
+      "name": "vertex-ai",
+      "parent": null,
+      "attrs": {
+        "openinference.span.kind": "CHAIN"
+      },
+      "want": {}
+    },
+    {
+      "name": "GenerateContent",
+      "parent": "vertex-ai",
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"contents\": [{\"parts\": [{\"text\": \"Capital of France?\"}], \"role\": \"user\"}], \"system_instruction\": {\"parts\": [{\"text\": \"Be brief.\"}], \"role\": \"user\"}, \"generation_config\": {\"temperature\": 0.2, \"max_output_tokens\": 64}}",
+        "llm.finish_reason": "STOP",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"temperature\": 0.2, \"max_output_tokens\": 64}",
+        "llm.model_name": "gemini-2.5-flash-001",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "model",
+        "llm.provider": "google",
+        "llm.token_count.completion": 56,
+        "llm.token_count.completion_details.reasoning": 16,
+        "llm.token_count.prompt": 1200,
+        "llm.token_count.prompt_details.cache_read": 1024,
+        "llm.token_count.total": 1256,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"sdk_http_response\":{\"headers\":{\"content-length\":\"324\",\"content-type\":\"application/json\"}},\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Paris.\"}],\"role\":\"model\"},\"finish_reason\":\"STOP\",\"index\":0}],\"model_version\":\"gemini-2.5-flash-001\",\"response_id\":\"resp-gemini-fixture\",\"usage_metadata\":{\"cached_content_token_count\":1024,\"candidates_token_count\":40,\"prompt_token_count\":1200,\"thoughts_token_count\":16,\"total_token_count\":1256},\"automatic_function_calling_history\":[]}"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gemini-2.5-flash-001",
+        "provider": "google",
+        "input_tokens": 1200,
+        "output_tokens": 56,
+        "total_tokens": 1256,
+        "total_derived": false,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "reasoning_tokens": 16,
+        "response_id": "",
+        "finish_reasons": [
+          "STOP"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "model"
+          }
+        ],
+        "request_params": {
+          "max_output_tokens": 64,
+          "temperature": 0.2
+        },
+        "response_model": "gemini-2.5-flash-001",
+        "request_model": ""
+      }
+    }
+  ]
+}

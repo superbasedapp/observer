@@ -1692,7 +1692,7 @@ func nodeRows() []Component {
 			ConfigKeys: []string{"ingest"},
 			Stability:  StabilityPreview,
 			Distros:    dist(out, off, off, off),
-			Note:       "Ruling D-436: the generic OTLP receiver (internal/ingest/otlp) is core, because it also serves Plane A traces and the observer-edge; this component is the vendor mapping table (internal/otlpvendor), the logs handler and the exporter-config edit (internal/telemetrywire). Compiled out by -tags sbo_omit_ingest_otlp (P2, MP-L1C): the cmd/observer wiring pair (otlp_ingest.go, otlp_proxyroute.go, init_otlp.go, otlp_route_marker.go vs their _omit.go files), the clientwire writer (telemetry_wire.go vs telemetry_omit.go) and the dashboard setup route; [ingest.otel] is then reported at start, never obeyed, and `observer init --otlp-export` refuses. Such a build cannot remove exporter entries an earlier full build wrote: remove ingest.otlp in a build that has it first.",
+			Note:       "Ruling D-436: the generic OTLP receiver (internal/ingest/otlp) is core, because it also serves AI Apps traces and the observer-edge; this component is the vendor mapping table (internal/otlpvendor), the logs handler and the exporter-config edit (internal/telemetrywire). Compiled out by -tags sbo_omit_ingest_otlp (P2, MP-L1C): the cmd/observer wiring pair (otlp_ingest.go, otlp_proxyroute.go, init_otlp.go, otlp_route_marker.go vs their _omit.go files), the clientwire writer (telemetry_wire.go vs telemetry_omit.go) and the dashboard setup route; [ingest.otel] is then reported at start, never obeyed, and `observer init --otlp-export` refuses. Such a build cannot remove exporter entries an earlier full build wrote: remove ingest.otlp in a build that has it first.",
 		},
 		{
 			ID: "export.otel", Class: ClassFeature, Binary: BinaryNode,
@@ -1712,8 +1712,8 @@ func nodeRows() []Component {
 		},
 		{
 			ID: "obs", Class: ClassFeature, Binary: BinaryNode,
-			Title:  "Plane A observability",
-			About:  "General observability of a hosted LLM app: span ingest, input admission, evals, alerts and self-observability. The admin plane, never shown on the node dashboard.",
+			Title:  "AI Apps observability",
+			About:  "Observability of the AI apps and agents you build (SDK and OTLP spans): span ingest, input admission, evals, alerts and self-observability.",
 			Levels: lv([]Level{L1, L3}, l1l2l3, "P2"),
 			Packages: []string{
 				"internal/obs", "internal/obs/admission", "internal/obs/egress", "internal/obs/eval", "internal/obs/span",
@@ -1734,8 +1734,8 @@ func nodeRows() []Component {
 			Verbs:      []string{"obs", "eval"},
 			ConfigKeys: []string{"observability"},
 			Stability:  StabilityPreview,
-			Distros:    dist(out, out, out, off),
-			Note:       "Out of developer per D-389. Compiled out by -tags sbo_omit_obs (no_obs is a one-release alias) and by sbo_omit_judge_client, which obs requires; the binary then reports obs omitted. The self-observability model (internal/selfobs run, keys, shape, conformance, emit) is core and the [selfobs] key belongs to export.otel (D-436); with those packages no longer counted as obs, a -tags sbo_omit_obs build carries none of obs's packages, so obs claims L1 (MP-L1C).",
+			Distros:    dist(out, off, out, off),
+			Note:       "In developer since D7 (plan of record 2026-11-19, amended; supersedes D-389): compiled in, off until [observability].enabled is set from the dashboard or config, so an individual who is not signed in can run AI Apps on their own node. Stays out of minimal (a deliberately small build) and managed (which uses the org gateway); a build without it warns at start and in doctor (observability.build) when [observability] is enabled. Compiled out by -tags sbo_omit_obs (no_obs is a one-release alias) and by sbo_omit_judge_client, which obs requires; the binary then reports obs omitted. The self-observability model (internal/selfobs run, keys, shape, conformance, emit) is core and the [selfobs] key belongs to export.otel (D-436); with those packages no longer counted as obs, a -tags sbo_omit_obs build carries none of obs's packages, so obs claims L1 (MP-L1C).",
 		},
 		{
 			ID: "processobs", Class: ClassFeature, Binary: BinaryNode,

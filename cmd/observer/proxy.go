@@ -212,10 +212,7 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	}
 	s := store.New(database)
 
-	port := cfg.Proxy.Port
-	if portOverride > 0 {
-		port = portOverride
-	}
+	port := effectiveProxyPort(cfg.Proxy.Port, portOverride)
 	if port <= 0 || port > 65535 {
 		// D-516: the port only matters when the proxy listens. With
 		// capture.proxy inactive (or compiled out) nothing binds it, so a bad

@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/alertspec"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	otlpingest "github.com/marmutapp/superbased-observer/internal/ingest/otlp"
+	"github.com/marmutapp/superbased-observer/internal/planechoice"
 	"github.com/marmutapp/superbased-observer/internal/selfobs/emit"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -95,7 +98,7 @@ func wireAdmission(_ context.Context, cfg config.Config, _ *sql.DB, _ orgJudgeRe
 
 // errObsCompiledOut is returned by the eval CLI wrappers in the no_obs build:
 // the whole observability subsystem (incl. the eval plane) is compiled out.
-var errObsCompiledOut = errors.New("this binary was built without observability (Plane A obs compiled out) - the eval plane is unavailable")
+var errObsCompiledOut = errors.New("this binary was built without observability (AI Apps compiled out) - the eval plane is unavailable")
 
 // Plain eval shapes the (non-build-tagged) eval command references. Mirror the
 // !no_obs definitions so the command file compiles in both builds.
@@ -134,9 +137,37 @@ func obsEvalRun(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.Logger, _
 // newObsTraceHandler is the no-op stub for the no_obs build: the generalized
 // observability subsystem (internal/obs) is compiled out of the binary
 // entirely (decision D2). Nothing here imports internal/obs, and /v1/traces is
-// never served.
-func newObsTraceHandler(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.Logger) otlpingest.TraceHandler {
+// never served for Plane A.
+//
+// No silent loss (W0-4, F06): a config that turns [observability] on in a
+// build without it gets one WARN naming the edition, and `observer doctor`
+// shows the same as the observability.build row (obsBuildDoctorCheck).
+func newObsTraceHandler(_ context.Context, cfg config.Config, _ *sql.DB, logger *slog.Logger) otlpingest.TraceHandler {
+	if cfg.Observability.Enabled && logger != nil {
+		logger.Warn(obsNotCompiledMessage(), "edition", obsEditionLabel(), "remedy", obsNotCompiledRemedy)
+	}
 	return nil
+}
+
+// obsBuildDoctorCheck is the no_obs half of the observability.build doctor
+// row: WARN when [observability] is enabled in a build that cannot run it.
+func obsBuildDoctorCheck(cfg config.Config) diag.Check {
+	if !cfg.Observability.Enabled {
+		return diag.Check{
+			Name:    obsBuildCheckName,
+			Status:  diag.StatusOK,
+			Message: "AI Apps observability is not in this " + obsEditionLabel() + " build and [observability] is off",
+		}
+	}
+	return diag.Check{
+		Name:    obsBuildCheckName,
+		Status:  diag.StatusWarn,
+		Message: obsNotCompiledMessage(),
+		Details: []string{
+			"no AI Apps trace receiver, no obs_* tables: SDK and OTLP app spans sent to this machine are not stored",
+			obsNotCompiledRemedy,
+		},
+	}
 }
 
 // obsDashboardRoutes is the no_obs stub: no obs trajectory endpoints exist. The
@@ -144,6 +175,28 @@ func newObsTraceHandler(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.L
 // and ignored.
 func obsDashboardRoutes(_ context.Context, _ config.Config, _ string, _ *sql.DB, _ *obsAdmissionHandle, _ *slog.Logger) []dashapi.ExtraRoute {
 	return nil
+}
+
+// obsHotDashboardRoutes is the no_obs stub of the hot-enable route set: no
+// obs route exists.
+func obsHotDashboardRoutes(_ context.Context, _ config.Config, _ string, _ *sql.DB, _ *obsAdmissionHandle, _ bool, _ *slog.Logger) []dashapi.ExtraRoute {
+	return nil
+}
+
+// obsRoutePatterns is the no_obs stub: no obs route exists, so the hot-enable
+// gate registers nothing (obs_wire_apps.go).
+func obsRoutePatterns() []string { return nil }
+
+// obsRouteCapability / obsRouteSection are the no_obs stubs of the route
+// classifiers the hot-enable gate reads; with no patterns they are never
+// consulted.
+func obsRouteCapability(string) dashapi.Capability { return dashapi.CapabilityView }
+
+func obsRouteSection(string) dashapi.Section { return dashapi.SectionNone }
+
+// newObsLatestTraceReader is the no_obs stub: there is no obs store.
+func newObsLatestTraceReader(context.Context, *sql.DB) (func(context.Context) (*planechoice.LatestTrace, error), error) {
+	return nil, errors.New(obsNotCompiledMessage())
 }
 
 // obsOrgProviders is the no_obs stub: the org-tier observability provider seam
@@ -302,6 +355,7 @@ type obsFiredAlert struct {
 	WindowMinutes int
 	Delivered     bool
 	FiredAt       time.Time
+	Dimensions    alertspec.Dimensions
 }
 
 type obsAlertRuleStatus struct {
@@ -332,6 +386,15 @@ func obsAlertsRuntimeEnabled(_ config.Config) bool { return false }
 func obsEvaluateAlertsOnce(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.Logger) ([]obsFiredAlert, error) {
 	return nil, nil
 }
+
+// obsAlertTransitions is a no-op in a build without obs (lane C9).
+func obsAlertTransitions(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.Logger, _ time.Time) ([]obsClearedAlert, map[string]string, error) {
+	return nil, nil, nil
+}
+
+// obsSettleAlertResolves is a no-op in a build without obs (R-C20): nothing
+// is owed there.
+func obsSettleAlertResolves(_ context.Context, _ *sql.DB, _ []obsResolveAttempt, _ *slog.Logger) {}
 
 func obsRecordAlert(_ context.Context, _ *sql.DB, _ obsFiredAlert, _ bool) error {
 	return errObsCompiledOut
@@ -404,4 +467,14 @@ func obsEgressStatusCLI(_ context.Context, _ config.Config, _ *sql.DB, _ *slog.L
 
 func obsEgressLintCLI(_ config.Config) (issues []string, fatal bool) {
 	return nil, false
+}
+
+// obsNotCompiledRemedy says what to do about an [observability] section in a
+// build that cannot honour it.
+const obsNotCompiledRemedy = "install the developer or full edition (scripts/install.sh --edition developer), or set [observability].enabled = false"
+
+// obsNotCompiledMessage is the one sentence a no-obs build logs and shows in
+// doctor when [observability] is enabled.
+func obsNotCompiledMessage() string {
+	return fmt.Sprintf("observability: [observability].enabled = true, but this %s build does not include AI Apps observability; nothing is served or stored for it", obsEditionLabel())
 }

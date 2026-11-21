@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useApi } from "@/lib/useApi";
 import {
   announcementApplies,
+  announcementForPlatform,
   parseAnnouncement,
   useReleaseAnnouncement,
   type ReleaseAnnouncement,
 } from "@/lib/version";
 import type { StatusSnapshot } from "@/lib/types";
+import { useHostOS } from "@/lib/keyPlatform";
 import { Icon, Tooltip } from "@/components/primitives";
 import { X } from "lucide-react";
 
@@ -131,8 +133,12 @@ export function AnnouncementBanner() {
   });
   const [, bump] = useState(0);
 
-  const merged = mergeAnnouncements(api.data?.announcements, fromUpdateCheck).filter((a) =>
-    announcementApplies(a, status.data),
+  // A platform-scoped announcement shows only on that OS (U-01). The daemon
+  // filters its own list; this covers the update-check rail, whose copy of
+  // an id the daemon dropped would otherwise slip in.
+  const hostOS = useHostOS();
+  const merged = mergeAnnouncements(api.data?.announcements, fromUpdateCheck).filter(
+    (a) => announcementApplies(a, status.data) && announcementForPlatform(a, hostOS),
   );
   const acked = acks();
   const showing = merged.find((a) => !acked[a.id]);

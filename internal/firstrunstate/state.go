@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
+	"github.com/marmutapp/superbased-observer/internal/planechoice"
 )
 
 // Filename is the state file's name beside the node database.
@@ -57,6 +58,31 @@ type State struct {
 	// first milestone): armed once, fired once. Additive; a state written
 	// before it existed reads as never armed.
 	Receipt *Receipt `json:"receipt,omitempty"`
+	// Focus is what the owner chose the machine is for (Settings > General
+	// "What you use superbased for", the first-run switch): coding, apps or
+	// both, "" while never chosen (first-run plan 2.5 and 6, review P-17).
+	// Additive; validated on read against planechoice's closed table.
+	Focus planechoice.Choice `json:"focus,omitempty"`
+	// Intent is the FIRST arrival intent seen on this machine (a for= link,
+	// the connect hand-off, `observer apps on`, the installer's --apps),
+	// kept so an upgrade or a second visit gives the same answer (plan 2.2,
+	// review P-06). Later intents never replace it.
+	Intent *Intent `json:"intent,omitempty"`
+}
+
+// Intent is one recorded arrival intent.
+type Intent struct {
+	Choice planechoice.Choice       `json:"choice"`
+	Source planechoice.IntentSource `json:"source"`
+	At     time.Time                `json:"at"`
+}
+
+// IntentChoice returns the recorded intent's choice, "" when none.
+func (s State) IntentChoice() planechoice.Choice {
+	if s.Intent == nil {
+		return planechoice.ChoiceNone
+	}
+	return s.Intent.Choice
 }
 
 // Receipt is the once-per-install "Your first captured prompt" milestone.
@@ -244,6 +270,50 @@ func (s *Store) Snooze(key string, now time.Time) (State, error) {
 	return st, nil
 }
 
+// SetFocus stores the owner's choice; ChoiceNone clears it (back to the
+// inferred track). A value outside the closed table is refused.
+func (s *Store) SetFocus(c planechoice.Choice) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.read()
+	if c != planechoice.ChoiceNone {
+		if _, ok := planechoice.ParseChoice(string(c)); !ok {
+			return st, fmt.Errorf("firstrunstate.SetFocus: %q is not a choice", c)
+		}
+	}
+	if s.path == "" || st.Focus == c {
+		return st, nil
+	}
+	st.Focus = c
+	if err := s.write(st); err != nil {
+		return st, fmt.Errorf("firstrunstate.SetFocus: %w", err)
+	}
+	return st, nil
+}
+
+// RecordIntent stores the arrival intent the first time one is seen; a
+// later intent leaves the first in place (recorded reports which). Values
+// outside the closed tables are refused.
+func (s *Store) RecordIntent(c planechoice.Choice, src planechoice.IntentSource, now time.Time) (st State, recorded bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st = s.read()
+	if _, ok := planechoice.ParseChoice(string(c)); !ok {
+		return st, false, fmt.Errorf("firstrunstate.RecordIntent: %q is not a choice", c)
+	}
+	if _, ok := planechoice.ParseIntentSource(string(src)); !ok {
+		return st, false, fmt.Errorf("firstrunstate.RecordIntent: %q is not an intent source", src)
+	}
+	if s.path == "" || st.Intent != nil {
+		return st, false, nil
+	}
+	st.Intent = &Intent{Choice: c, Source: src, At: now.UTC()}
+	if err := s.write(st); err != nil {
+		return st, false, fmt.Errorf("firstrunstate.RecordIntent: %w", err)
+	}
+	return st, true, nil
+}
+
 func (s *Store) read() State {
 	out := State{Schema: Schema}
 	if s.path == "" {
@@ -266,6 +336,20 @@ func (s *Store) read() State {
 	case InstallUnknown, InstallFresh, InstallExisting:
 	default:
 		st.Install = InstallUnknown
+	}
+	// A hand-edited or future value outside the closed tables reads as
+	// nothing recorded, never as a choice.
+	if st.Focus != planechoice.ChoiceNone {
+		if _, ok := planechoice.ParseChoice(string(st.Focus)); !ok {
+			st.Focus = planechoice.ChoiceNone
+		}
+	}
+	if st.Intent != nil {
+		_, okC := planechoice.ParseChoice(string(st.Intent.Choice))
+		_, okS := planechoice.ParseIntentSource(string(st.Intent.Source))
+		if !okC || !okS {
+			st.Intent = nil
+		}
 	}
 	return st
 }

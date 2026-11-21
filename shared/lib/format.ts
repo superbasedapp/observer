@@ -337,6 +337,34 @@ export function fmtUSD(n: number | null | undefined, precise = false): string {
   return fmtCostAs(costDisplayMode, n, undefined, precise);
 }
 
+/** usdFine renders a dollar amount with adaptive precision, for spend that
+ *  is routinely sub-cent (an AI app's per-trace cost): whole dollars at
+ *  scale, two decimals from $1, four decimals below $1, "$0.00" for a true
+ *  zero, and "<$0.0001" for a real amount too small for four decimals. So a
+ *  real $0.0000202 never reads as "$0.00" or "$0.0000". The ONE owner of
+ *  this rule: web2's `usd()` delegates here, so both dashboards agree. */
+export function usdFine(n: number): string {
+  if (!Number.isFinite(n)) return "-";
+  const sign = n < 0 ? "-" : "";
+  const a = Math.abs(n);
+  if (a >= 1000) return `${sign}$${localeNumber(a, "en-US", { maximumFractionDigits: 0 })}`;
+  if (a >= 1) return `${sign}$${a.toFixed(2)}`;
+  if (a === 0) return "$0.00";
+  if (a < 0.00005) return `${sign}<$0.0001`;
+  return `${sign}$${a.toFixed(4)}`;
+}
+
+/** fmtCostFine is fmtCost with usdFine's adaptive precision: the token count
+ *  in tokens mode, else the sub-cent-aware dollar figure. The node's AI Apps
+ *  pages render every cost through it (the Plane A money slot default). */
+export function fmtCostFine(usd: number | null | undefined, tokens?: number | null): string {
+  if (costDisplayMode === "tokens") {
+    return tokens != null && Number.isFinite(tokens) ? fmtTok(tokens) : COST_HIDDEN;
+  }
+  if (usd == null || !Number.isFinite(usd)) return COST_HIDDEN;
+  return usdFine(usd);
+}
+
 // ---------------------------------------------------------------------------
 // The cost AFFORDANCES around a figure (labels, $ toggles, dollar-only
 // columns / tiles / charts) follow the same mode as the figures above. A

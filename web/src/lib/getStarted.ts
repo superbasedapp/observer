@@ -16,7 +16,7 @@
 // is kept on the daemon (POST /api/firstrun/seen {"snooze": "get_started"},
 // GET /api/firstrun "snoozed"), so another browser agrees.
 
-import type { FirstRunTool } from "./firstRun.ts";
+import type { FirstRunPlane, FirstRunTool, PlaneChoice, PlaneTrack } from "./firstRun.ts";
 import { connectedChipLabel, dashboardRolesLine, onlineKindOf } from "./connectHandoff.ts";
 import { onlineRole } from "../../../shared/lib/twoDashboards.ts";
 
@@ -89,7 +89,14 @@ export type ConnectLine = { text: string; tone: ConnectTone; showCode: boolean }
 const CONNECT_LINES: Record<ConnectState, (p: ConnectProgress) => ConnectLine> = {
   idle: () => ({ text: "", tone: "neutral", showCode: false }),
   starting: () => ({ text: "Starting...", tone: "accent", showCode: false }),
-  waiting_approval: () => ({ text: "Waiting for approval in your browser...", tone: "accent", showCode: true }),
+  waiting_approval: (p) => {
+    const host = connectServiceHost(p);
+    return {
+      text: host ? `Waiting for approval in your browser, on ${host}...` : "Waiting for approval in your browser...",
+      tone: "accent",
+      showCode: true,
+    };
+  },
   approved: () => ({ text: "Approved. Connecting this machine...", tone: "accent", showCode: false }),
   attaching: () => ({ text: "Approved. Connecting this machine...", tone: "accent", showCode: false }),
   connected: (p) => ({ text: `Connected to ${connectedName(p)}.`, tone: "success", showCode: false }),
@@ -112,6 +119,22 @@ export function connectLine(p: ConnectProgress | null | undefined): ConnectLine 
   return (CONNECT_LINES[p.state] ?? CONNECT_LINES.idle)(p);
 }
 
+/**
+ * connectServiceHost names the service a connect flow signs in to: the host
+ * of its approval page (cloud.superbased.app on a shipped build, or the
+ * staging / self-hosted address an override chose). "" before the address
+ * is known. U-23: the sign-in says which service it is for.
+ */
+export function connectServiceHost(p: Pick<ConnectProgress, "approve_url" | "verify_url"> | null | undefined): string {
+  const url = safeOpenURL(p?.approve_url) ?? safeOpenURL(p?.verify_url);
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 /** connectedName is the target's display name, never its address. */
 export function connectedName(p: Pick<ConnectProgress, "display_name" | "target" | "kind">): string {
   const name = p.display_name || p.target?.display_name;
@@ -122,6 +145,13 @@ export function connectedName(p: Pick<ConnectProgress, "display_name" | "target"
 /** The start POST: JSON plus the owner-local confirm header. */
 export function connectStartInit(team: string, confirmHeaders: Record<string, string>): RequestInit {
   return { method: "POST", headers: confirmHeaders, body: JSON.stringify({ team: team.trim() }) };
+}
+
+/** The re-consent start POST: connect this machine again to the dashboard
+ *  it already uses, to review and accept what it now offers (`observer
+ *  connect --reconsent`; budget enforce consistency, 2026-11-19). */
+export function connectReconsentInit(confirmHeaders: Record<string, string>): RequestInit {
+  return { method: "POST", headers: confirmHeaders, body: JSON.stringify({ team: "", reconsent: true }) };
 }
 
 /** The cancel POST. */
@@ -418,7 +448,16 @@ export type TopBarAccountView =
   | { kind: "hidden" }
   | { kind: "sign_in"; label: string; tooltip: string }
   | { kind: "connect"; label: string; tooltip: string }
-  | { kind: "connecting"; label: string; tooltip: string }
+  | {
+      kind: "connecting";
+      label: string;
+      tooltip: string;
+      /** The service the sign-in is for (its host), or "" (U-23). */
+      service: string;
+      /** This page started the flow, so it can stop it (POST
+       *  /api/connect/cancel). The installer's terminal owns its own flow. */
+      cancelable: boolean;
+    }
   | {
       kind: "connected";
       label: string;
@@ -480,13 +519,19 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
   {
     name: "connecting",
     when: (i) => connectActive(i.progress),
-    view: (i) => ({
-      kind: "connecting",
-      label: "Waiting for approval",
-      tooltip: i.progress?.user_code
-        ? `Approve this machine in your browser. Code ${i.progress.user_code}.`
-        : "Approve this machine in your browser.",
-    }),
+    view: (i) => {
+      const service = connectServiceHost(i.progress);
+      const where = service ? ` on ${service}` : "";
+      const code = i.progress?.user_code ? ` Code ${i.progress.user_code}.` : "";
+      return {
+        kind: "connecting",
+        label: "Waiting for approval",
+        tooltip: `Approve this machine in your browser${where}.${code} Cancel stops the sign-in; nothing is connected.`,
+        service,
+        // A remote view watches; only the owner's own browser can stop it.
+        cancelable: i.available,
+      };
+    },
   },
   {
     name: "terminal_connecting",
@@ -494,7 +539,10 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
     view: () => ({
       kind: "connecting",
       label: "Waiting for approval",
-      tooltip: "Approve this machine in the browser tab that just opened, or enter the code shown in your terminal.",
+      tooltip:
+        "Approve this machine in the browser tab that just opened, or enter the code shown in your terminal. To stop, press Ctrl+C in that terminal.",
+      service: "",
+      cancelable: false,
     }),
   },
   { name: "cannot_start_here", when: (i) => !i.available || !!i.account?.locked || !i.account?.identityKnown, view: () => ({ kind: "hidden" }) },
@@ -504,7 +552,8 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
     view: () => ({
       kind: "connect",
       label: "Connect",
-      tooltip: "You are signed in. Connect this machine to see it in your online dashboard.",
+      tooltip:
+        "You are signed in to your superbased account. Connect this machine to see it in your online dashboard. Your browser opens the superbased sign-in page to approve it; you can cancel while it waits.",
     }),
   },
   {
@@ -513,7 +562,8 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
     view: () => ({
       kind: "sign_in",
       label: "Sign in",
-      tooltip: "Sign in and connect this machine: one online dashboard for all your machines and your team. Free, and optional.",
+      tooltip:
+        "Sign in to your superbased account online and connect this machine: one online dashboard for all your machines and your team. Your browser opens the superbased sign-in page; you can cancel while it waits. Free, and optional.",
     }),
   },
 ];
@@ -523,4 +573,82 @@ export function topBarAccountView(i: TopBarInput): TopBarAccountView {
     if (r.when(i)) return r.view(i);
   }
   return { kind: "hidden" };
+}
+
+// ---- the one getting-started surface (first-run plan revision 2, 3.6, 7.1) --
+//
+// The daemon decides the track (GET /api/firstrun "plane", the pure rule in
+// internal/planechoice); nothing here re-derives it. These helpers only turn
+// the decided block into what the surface lays out.
+
+/** One column of the surface. */
+export type SurfaceColumn = "coding" | "apps";
+
+export type SurfaceLayout = {
+  track: PlaneTrack;
+  /** Coding first, as the plan's "Both" puts it (left on a wide screen). */
+  columns: SurfaceColumn[];
+  /** Row 4: the one-line "Here for AI apps you build instead?" switch. */
+  showSwitch: boolean;
+  /** Row 3: the quiet "Building an AI app too?" line. */
+  offerApps: boolean;
+  /** Why the switch is disabled (AI Apps is not available here), or "". */
+  switchDisabled: string;
+  /** The AI apps track's way back (U-02): AI coding agents, or Both. */
+  switchBack: boolean;
+};
+
+const COLUMNS: Record<PlaneTrack, SurfaceColumn[]> = {
+  coding: ["coding"],
+  apps: ["apps"],
+  both: ["coding", "apps"],
+};
+
+/** surfaceLayout reads the daemon's plane block. A daemon older than the
+ *  plane block (or a failed read) shows the coding track, which is what the
+ *  first screen showed before. */
+export function surfaceLayout(plane: FirstRunPlane | null | undefined): SurfaceLayout {
+  if (!plane) return { track: "coding", columns: ["coding"], showSwitch: false, offerApps: false, switchDisabled: "", switchBack: false };
+  const track: PlaneTrack = COLUMNS[plane.track] ? plane.track : "coding";
+  const available = plane.apps_available?.available !== false;
+  return {
+    track,
+    columns: COLUMNS[track],
+    showSwitch: plane.ask && track === "coding",
+    offerApps: plane.offer_apps && available && track === "coding" && !plane.ask,
+    switchDisabled: available ? "" : plane.apps_available?.text || "AI Apps is not available on this machine.",
+    switchBack: track === "apps",
+  };
+}
+
+/** The three options of "What you use superbased for", in order. The labels
+ *  are productNames.json's first_run_* entries (decision 3). */
+export const FOCUS_CHOICES: readonly Exclude<PlaneChoice, "">[] = ["coding", "apps", "both"];
+
+/** focusSelected is the control's value: the stored choice when there is
+ *  one, else the track the daemon inferred (so the control never shows a
+ *  choice nobody made as blank). */
+export function focusSelected(plane: FirstRunPlane | null | undefined): Exclude<PlaneChoice, ""> {
+  if (!plane) return "coding";
+  if (plane.focus === "coding" || plane.focus === "apps" || plane.focus === "both") return plane.focus;
+  return plane.track;
+}
+
+// ---- Hide and "Show the getting-started steps again" -----------------------
+
+/** Settings' "Show the getting-started steps again" stamps this browser key
+ *  with the time; a Hide (the daemon-kept snooze) older than it no longer
+ *  folds the surface. Per-viewer convenience only. */
+export const SURFACE_SHOWN_AGAIN_KEY = "sb_get_started_shown_again";
+
+export type SurfaceFold = "open" | "folded";
+
+/** surfaceFold: Hide folds the surface to a one-line strip until Settings
+ *  shows it again (or the strip's own Show). */
+export function surfaceFold(snoozedAt: string | null | undefined, shownAgainAt: string | null | undefined): SurfaceFold {
+  const hid = snoozedAt ? Date.parse(snoozedAt) : NaN;
+  if (!Number.isFinite(hid)) return "open";
+  const shown = shownAgainAt ? Date.parse(shownAgainAt) : NaN;
+  if (Number.isFinite(shown) && shown >= hid) return "open";
+  return "folded";
 }

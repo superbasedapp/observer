@@ -190,3 +190,23 @@ func TestEnforceAdmissionDisclosesThePromptJudge(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildDisclosureOwnerManaged: the owner paragraph appears only when the
+// organization asking is the developer's own AND the enrolment is managed
+// (the only tenancy under which its authority takes effect).
+func TestBuildDisclosureOwnerManaged(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		owner, managed bool
+		want           bool
+	}{
+		{"personal org, managed", true, true, true},
+		{"personal org, individual (an old enrolment)", true, false, false},
+		{"team org, managed", false, true, false},
+	} {
+		d := BuildDisclosure(GrantFacts{OrgID: "o", ServerURL: "https://o.example", OwnerManaged: tc.owner, Managed: tc.managed})
+		if got := d.Owner == DisclosureOwnerManaged; got != tc.want {
+			t.Errorf("%s: owner paragraph %q, want shown %v", tc.name, d.Owner, tc.want)
+		}
+	}
+}

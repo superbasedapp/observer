@@ -69,6 +69,8 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 		"the resolved display before it is injected."},
 	"cmd/observer/admission.go": {reason: "Plane A admission caps (observer obs admission): an admin-hosted app's " +
 		"authored dollar caps, not a developer's coding spend."},
+	"cmd/observer/obs_traces.go": {reason: "Plane A app traces (observer obs traces): the recorded model spend of " +
+		"an app the developer hosts, not the developer's own coding spend, as admission.go's caps."},
 	"cmd/observer/cloud.go": {reason: "the Cloud Intelligence preview prints the exact bytes and metrics that " +
 		"would leave the machine (two-digest truth); re-denominating them would make the preview lie."},
 	"cmd/observer/cloudconsent.go": {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},

@@ -917,9 +917,12 @@ func applySectionUpdate(cfg *config.Config, name string, body []byte, configPath
 		// cmd/observer/admission_persist.go — never this seam, CLAUDE.md #4),
 		// Egress, and Alerts.
 		var sec struct {
-			Enabled   *bool                            `json:"Enabled"`
-			Judge     *config.ObservabilityJudgeConfig `json:"Judge"`
-			Admission *struct {
+			Enabled *bool `json:"Enabled"`
+			// StoreContent is the node-local Plane A content key
+			// ([observability].store_content, F07/D8).
+			StoreContent *bool                            `json:"StoreContent"`
+			Judge        *config.ObservabilityJudgeConfig `json:"Judge"`
+			Admission    *struct {
 				Budget *config.AdmissionBudgetConfig    `json:"Budget"`
 				Judge  *config.ObservabilityJudgeConfig `json:"Judge"`
 			} `json:"Admission"`
@@ -929,6 +932,9 @@ func applySectionUpdate(cfg *config.Config, name string, body []byte, configPath
 		}
 		if sec.Enabled != nil {
 			cfg.Observability.Enabled = *sec.Enabled
+		}
+		if sec.StoreContent != nil {
+			cfg.Observability.StoreContent = *sec.StoreContent
 		}
 		if sec.Judge != nil {
 			if sec.Judge.TimeoutMS < 0 || sec.Judge.MaxTokens < 0 || sec.Judge.NumCtx < 0 {

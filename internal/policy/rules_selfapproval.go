@@ -196,9 +196,31 @@ var selfApprovalVerbs = []selfApprovalVerb{
 		when: func(args, _ []string) bool { return !hasFlag(args, "--enforce") },
 	},
 	{
-		path: []string{"config", "set"}, grant: true, desc: "changes a [guard], [security], [terminal.launch] or [observer.hooks] setting",
+		path: []string{"config", "set"}, grant: true, desc: "changes a [guard], [security], [terminal.launch] or [observer.hooks] setting, or a D19 sharing, capture, egress, admission, budget or SDK destination setting, or another setting that needs your confirm (ask through MCP set_setting, which files a proposal for the person)",
 		when: func(_, words []string) bool { return len(words) > 2 && selfLoweringConfigKey(words[2]) },
 	},
+	// Plane A W2-8 (ruling D19): a settings change an agent asked for through
+	// MCP set_setting waits for the person; approving or rejecting it is
+	// theirs. `config proposals` alone (the list) stays allowed.
+	{path: []string{"config", "proposals", "approve"}, grant: true, desc: "approves and applies a settings change an AI agent asked for"},
+	{path: []string{"config", "proposals", "reject"}, grant: true, desc: "rejects a settings change an AI agent asked for"},
+	// Plane A W2-7 (ruling D18): minting the person's own SDK key on their
+	// organization (which lets apps send data off the machine) and revoking
+	// it are the person's. `sdk status` only prints.
+	{path: []string{"sdk", "sign-in"}, grant: true, desc: "mints your SDK key on your organization, which lets apps send data off this machine"},
+	{path: []string{"sdk", "sign-out"}, grant: true, desc: "revokes your SDK key on your organization"},
+	// Review finding R-C02 (ruling D19): the machine's alert channels are
+	// where alert data (rule, metric, value, dimensions, an end user among
+	// them) is sent off this machine, and the admission setup wizard writes
+	// the admission policy and its judge (where an app's prompts are sent
+	// to be judged). Each is the owner's, like the HTTP routes below; the
+	// test sends stay allowed. cmd/observer's
+	// TestEveryObsWriterIsR165OrExcepted walks every obs route and verb.
+	{path: []string{"obs", "alerts", "slack", "set"}, grant: true, desc: "stores the Slack alert webhook, where alert data is sent off this machine"},
+	{path: []string{"obs", "alerts", "slack", "clear"}, grant: true, desc: "removes the Slack alert webhook, so alerts stop reaching the person"},
+	{path: []string{"obs", "alerts", "pagerduty", "set"}, grant: true, desc: "stores the PagerDuty routing key, where alert data is sent off this machine"},
+	{path: []string{"obs", "alerts", "pagerduty", "clear"}, grant: true, desc: "removes the PagerDuty routing key, so alerts stop reaching the person"},
+	{path: []string{"obs", "admission", "setup"}, grant: true, desc: "writes the admission policy and its judge (where an app's prompts are sent to be judged), a setting you change yourself"},
 	// The repository trust accept flow (security pillar plan section 5.1
 	// item 5): accepting a repository's commands is the developer's call.
 	{path: []string{"security", "trust", "accept"}, grant: true, desc: "accepts a repository's commands for the repository trust check"},
@@ -656,6 +678,9 @@ var selfLoweringSections = []string{"guard", "security", "terminal.launch", "obs
 // selfLoweringConfigKey reports whether a config key is in one of the
 // selfLoweringSections (the section itself or a dotted key under it).
 func selfLoweringConfigKey(key string) bool {
+	if settingsApprovalConfigKey(key) {
+		return true
+	}
 	for _, sec := range selfLoweringSections {
 		if strings.EqualFold(key, sec) || hasFoldPrefix(key, sec+".") {
 			return true
@@ -787,7 +812,12 @@ var guardGrantRoutes = []guardGrantRoute{
 	// The HTTP forms of `observer config set guard.*` and `security.*`.
 	{path: "/api/config/section/guard", dotted: true, desc: "the [guard] settings section"},
 	{path: "/api/config/section/security", dotted: true, desc: "the [security] settings section"},
-	{path: "/api/config/keys", body: guardConfigKeyBody, desc: "a [guard], [security], [terminal.launch] or [observer.hooks] setting"},
+	{path: "/api/config/keys", body: guardConfigKeyBody, desc: "a [guard], [security], [terminal.launch] or [observer.hooks] setting, or a D19 or confirm-tier settings key (ask through MCP set_setting instead)"},
+	// Plane A W2-8 (ruling D19): the dashboard form of `observer config
+	// proposals approve|reject`. A GET of the list is a read.
+	{path: "/api/config/proposals", prefix: true, desc: "the settings proposals an AI agent filed, waiting for the person's approval"},
+	// Plane A W2-7: the dashboard form of `observer sdk sign-in|sign-out`.
+	{path: "/api/sdk/credential", desc: "the SDK key sign-in and sign-out route"},
 	// Lane SEC-GATE5 milestone 3: the settings backup restore swaps the
 	// previous config.toml back in, which can bring back a lower [guard] or
 	// [security] setting (security.feedback.after_write = false among
@@ -947,6 +977,63 @@ var guardGrantRoutes = []guardGrantRoute{
 	// privacy rule's class match nothing. All are the owner's to change.
 	{path: "/api/launch/tool-paths", desc: "the launch binary path editor"},
 	{path: "/api/config/section/routing", body: routingEgressSectionBody, desc: "the [routing] settings section's privacy rules, path classes or local upstreams"},
+	// Plane A review findings R-B01/R-B07 (ruling D19): the section and
+	// policy routes that write a D19 family or a sensitive leaf. Each is
+	// the HTTP form of `observer config set` of keys an agent may only
+	// propose (MCP set_setting); settingsSectionRoutes lists them and the
+	// dashboard's TestEverySectionWriterOfAnApprovalKeyIsR165 walks every
+	// section writer against this table.
+	sectionRoute("observability", nil, "the [observability] settings section (content capture, judges, admission)"),
+	sectionRoute("org", nil, "the [org_client] sharing, scope and policy settings section"),
+	// Found by the drift test (R-B01's "every section writer"): sections that
+	// replace their whole struct (so any body resets a confirm-tier leaf) are
+	// guarded whole; the process section is narrowed to its capture and ETW
+	// listener members. "hooks" is the section id the Settings page writes
+	// [observer.hooks] through (the observer.hooks row above names a path no
+	// section serves).
+	sectionRoute("hooks", nil, "the [observer.hooks] settings section (the gate hooks' registration and timeout)"),
+	sectionRoute("proxy", nil, "the [proxy] settings section (upstreams, org route, client auth)"),
+	sectionRoute("dashboard", nil, "the [dashboard] settings section (its listen address)"),
+	sectionRoute("otel", nil, "the OTel exporter settings section (where telemetry and prompt content are sent)"),
+	sectionRoute("secrets", nil, "the secrets scrubbing settings section"),
+	sectionRoute("intelligence", nil, "the [intelligence] settings section (the summary model's key variable)"),
+	sectionRoute("messages", nil, "the [messages] settings section (read receipts sent to the organization)"),
+	sectionRoute("browser", nil, "the [browser] settings section (the stored capture ceiling)"),
+	sectionRoute("process", sectionMembersBody("CaptureBodies", "ListenAddr", "AllowNonLoopback", "TokenPath"), "the process capture section's network body capture or ETW listener"),
+	// E-24 (ruling D29): observer.db_path joined the D19 family; the
+	// [observer] section writes it as the DBPath member.
+	sectionRoute("observer", sectionMembersBody("DBPath"), "the [observer] settings section's database path"),
+	// The dedicated editors of confirm-tier keys (R-B01's route sweep): the
+	// SSH profiles editor ([terminal.ssh] enabled and profiles), the update
+	// auto-apply switch and the pricing table (what budgets are measured in).
+	{path: "/api/terminal/ssh/profiles", desc: "the SSH terminal profiles editor"},
+	{path: "/api/update/auto-apply", desc: "the update auto-apply switch"},
+	{path: "/api/config/pricing", desc: "the model pricing table, which budgets and cost limits are measured in"},
+	{path: "/api/obs/admission/policy", desc: "the admission policy editor (what an app's requests are checked against, and whether they are blocked)"},
+	{path: "/api/obs/egress/policy", desc: "the egress policy editor (where an app's model requests are routed)"},
+	{path: "/api/obs/alerts/slack", desc: "the Slack alert webhook, where alert data is sent off this machine"},
+	{path: "/api/obs/alerts/pagerduty", desc: "the PagerDuty routing key, where alert data is sent off this machine"},
+}
+
+// sectionMembersBody matches a section save whose body carries any of the
+// named members (at any depth, in any case, as encoding/json reads them), or
+// a body the matcher cannot read.
+func sectionMembersBody(members ...string) func(cmd *Command) bool {
+	anyValue := func(*jsonNode) bool { return true }
+	return func(cmd *Command) bool {
+		for _, m := range members {
+			if bodyMemberLowers(cmd, m, anyValue) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// sectionRoute is a /api/config/section/<name> row (and its dotted
+// /api/config/section/<name>.<sub> form). A nil body matches every write.
+func sectionRoute(name string, body func(cmd *Command) bool, desc string) guardGrantRoute {
+	return guardGrantRoute{path: "/api/config/section/" + name, dotted: true, body: body, desc: desc}
 }
 
 // routingEgressSectionBody: a [routing] section save whose body carries the
@@ -964,11 +1051,11 @@ func routingEgressSectionBody(cmd *Command) bool {
 	return false
 }
 
-// guardConfigKey finds a [guard] or [security] key path named as a key in
-// a config keys request body ({"patches":[{"key":"security.x",...}]},
-// selfLoweringSections): the "key" field's value, not any text that
-// mentions the word (lane sec-gate3 milestone 2b).
-var guardConfigKey = regexp.MustCompile(`(?i)\bkey\\?["']?\s*[:=]\s*\\?["']?\s*(?:guard|security|terminal\.launch|observer\.hooks)(?:\.|\\?["'\s,}&]|$)`)
+// guardConfigKey finds a self-lowering key path (selfLoweringSections, a D19
+// family or a sensitive leaf) named as a key in a config keys request body
+// ({"patches":[{"key":"security.x",...}]}): the "key" field's value, not any
+// text that mentions the word (lane sec-gate3 milestone 2b; R-B07).
+var guardConfigKey = regexp.MustCompile(selfLoweringKeyText())
 
 // securityComponentList finds a security component id, or one of the
 // exact ids in also, in a JSON list field of a components request body:

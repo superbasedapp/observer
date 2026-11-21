@@ -1,0 +1,86 @@
+{
+  "_source": {
+    "target": "gemini",
+    "instrumentor": "@traceloop/instrumentation-google-generativeai 0.27.0",
+    "library": "@google/genai 3.6.1",
+    "grounding": "Google Gen AI SDK generateContent (system instruction + user text, cached and thinking usage) against a loopback stub via httpOptions.baseUrl, inside propagateAttributes({ user }). OpenLLMetry's instrumentation writes GenAI semconv keys (gen_ai.*), not traceloop.* or llm.*.",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "gemini",
+  "_gaps": [
+    "Gemini's candidatesTokenCount excludes thinking tokens, and the instrumentation copies it to gen_ai.usage.output_tokens as is, so output_tokens is NET of reasoning here while genaiattr's contract is output including reasoning (24 + 16 = 40); total_tokens (1240) is Gemini's own total, which counts them.",
+    "gen_ai.provider.name is gcp.gen_ai (the semconv value for the Gemini API)."
+  ],
+  "spans": [
+    {
+      "name": "generate_content gemini-2.5-flash",
+      "parent": null,
+      "attrs": {
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]}]",
+        "gen_ai.operation.name": "generate_content",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"finish_reason\":\"stop\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}]}]",
+        "gen_ai.provider.name": "gcp.gen_ai",
+        "gen_ai.request.max_tokens": 64,
+        "gen_ai.request.model": "gemini-2.5-flash",
+        "gen_ai.request.temperature": 0.2,
+        "gen_ai.response.finish_reasons": [
+          "stop"
+        ],
+        "gen_ai.response.id": "resp-fixture",
+        "gen_ai.response.model": "gemini-2.5-flash-001",
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "gen_ai.usage.cache_read.input_tokens": 1024,
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 24,
+        "gen_ai.usage.reasoning_tokens": 16,
+        "gen_ai.usage.total_tokens": 1240,
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "content": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "input_tokens": 1200,
+        "model": "gemini-2.5-flash-001",
+        "operation": "generate_content",
+        "output_messages": [
+          {
+            "finish_reason": "stop",
+            "parts": [
+              {
+                "content": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "output_tokens": 24,
+        "provider": "gcp.gen_ai",
+        "reasoning_tokens": 16,
+        "request_model": "gemini-2.5-flash",
+        "request_params": {
+          "max_tokens": 64,
+          "temperature": 0.2
+        },
+        "response_id": "resp-fixture",
+        "total_derived": false,
+        "total_tokens": 1240
+      }
+    }
+  ]
+}

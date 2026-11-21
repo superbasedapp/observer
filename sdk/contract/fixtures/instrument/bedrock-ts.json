@@ -1,0 +1,220 @@
+{
+  "_source": {
+    "target": "bedrock",
+    "instrumentor": "@arizeai/openinference-instrumentation-bedrock 0.5.10",
+    "library": "@aws-sdk/client-bedrock-runtime 3.1172.0",
+    "grounding": "Bedrock Runtime ConverseCommand and InvokeModelCommand (an Anthropic messages body) for one Claude model id, against a loopback stub (endpoint override, HTTP/1.1 handler, fixed fake credentials). Bedrock's own usage is NET of the cache (inputTokens 30, cache read 2000, cache write 100).",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "bedrock",
+  "_gaps": [
+    "bedrock.converse: the instrumentation does not record Converse's cacheReadInputTokens / cacheWriteInputTokens, and llm.token_count.prompt is Bedrock's NET inputTokens (30), so input_tokens is net (genaiattr's contract is gross: 2130) and the cache fields are empty; total_tokens is Bedrock's 2135.",
+    "bedrock.invoke_model: the cache read/write are recorded, but llm.token_count.prompt is the Anthropic body's NET input_tokens (30), not gross, and no total is written (derived 35, should be 2135).",
+    "Neither span carries a response id or the full model id (llm.model_name drops the anthropic. prefix and the -v1:0 version suffix)."
+  ],
+  "spans": [
+    {
+      "name": "bedrock.converse",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"modelId\":\"anthropic.claude-sonnet-5-5-v1:0\",\"system\":[{\"text\":\"Be brief.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Capital of France?\"}]}],\"inferenceConfig\":{\"maxTokens\":64,\"temperature\":0.2}}",
+        "llm.finish_reason": "end_turn",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"maxTokens\":64,\"temperature\":0.2}",
+        "llm.model_name": "claude-sonnet-5-5",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "aws",
+        "llm.stop_reason": "end_turn",
+        "llm.system": "anthropic",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 30,
+        "llm.token_count.total": 2135,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"Paris.\"}]}},\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":30,\"outputTokens\":5,\"totalTokens\":2135,\"cacheReadInputTokens\":2000,\"cacheWriteInputTokens\":100},\"metrics\":{\"latencyMs\":12},\"$metadata\":{\"httpStatusCode\":200,\"attempts\":1,\"totalRetryDelay\":0}}"
+      },
+      "want": {
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "finish_reasons": [
+          "end_turn"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "input_tokens": 30,
+        "input_value": {
+          "inferenceConfig": {
+            "maxTokens": 64,
+            "temperature": 0.2
+          },
+          "messages": [
+            {
+              "content": [
+                {
+                  "text": "Capital of France?"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "modelId": "anthropic.claude-sonnet-5-5-v1:0",
+          "system": [
+            {
+              "text": "Be brief."
+            }
+          ]
+        },
+        "model": "claude-sonnet-5-5",
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "assistant"
+          }
+        ],
+        "output_tokens": 5,
+        "output_value": {
+          "$metadata": {
+            "attempts": 1,
+            "httpStatusCode": 200,
+            "totalRetryDelay": 0
+          },
+          "metrics": {
+            "latencyMs": 12
+          },
+          "output": {
+            "message": {
+              "content": [
+                {
+                  "text": "Paris."
+                }
+              ],
+              "role": "assistant"
+            }
+          },
+          "stopReason": "end_turn",
+          "usage": {
+            "cacheReadInputTokens": 2000,
+            "cacheWriteInputTokens": 100,
+            "inputTokens": 30,
+            "outputTokens": 5,
+            "totalTokens": 2135
+          }
+        },
+        "provider": "aws",
+        "request_params": {
+          "maxTokens": 64,
+          "temperature": 0.2
+        },
+        "response_id": "",
+        "span_kind": "LLM",
+        "total_derived": false,
+        "total_tokens": 2135
+      }
+    },
+    {
+      "name": "bedrock.invoke_model",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"system\":\"Be brief.\",\"messages\":[{\"role\":\"user\",\"content\":\"Capital of France?\"}]}",
+        "llm.finish_reason": "end_turn",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64}",
+        "llm.model_name": "claude-sonnet-5-5",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "aws",
+        "llm.system": "anthropic",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 30,
+        "llm.token_count.prompt_details.cache_read": 2000,
+        "llm.token_count.prompt_details.cache_write": 100,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Paris.\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":30,\"output_tokens\":5,\"cache_read_input_tokens\":2000,\"cache_creation_input_tokens\":100}}"
+      },
+      "want": {
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 100,
+        "finish_reasons": [
+          "end_turn"
+        ],
+        "input_messages": [
+          {
+            "content": "Be brief.",
+            "role": "system"
+          },
+          {
+            "content": "Capital of France?",
+            "role": "user"
+          }
+        ],
+        "input_tokens": 30,
+        "input_value": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 64,
+          "messages": [
+            {
+              "content": "Capital of France?",
+              "role": "user"
+            }
+          ],
+          "system": "Be brief."
+        },
+        "model": "claude-sonnet-5-5",
+        "output_messages": [
+          {
+            "content": "Paris.",
+            "role": "assistant"
+          }
+        ],
+        "output_tokens": 5,
+        "output_value": {
+          "content": [
+            {
+              "text": "Paris.",
+              "type": "text"
+            }
+          ],
+          "id": "msg_fixture",
+          "model": "claude-sonnet-5-5",
+          "role": "assistant",
+          "stop_reason": "end_turn",
+          "type": "message",
+          "usage": {
+            "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 2000,
+            "input_tokens": 30,
+            "output_tokens": 5
+          }
+        },
+        "provider": "aws",
+        "request_params": {
+          "anthropic_version": "bedrock-2023-05-31",
+          "max_tokens": 64
+        },
+        "response_id": "",
+        "span_kind": "LLM",
+        "total_derived": true,
+        "total_tokens": 35
+      }
+    }
+  ]
+}

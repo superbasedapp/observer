@@ -85,7 +85,17 @@ type Announcement struct {
 	// it (WINNODE2 16b, a "v1.32.0 fixes ..." banner on a v1.36.0 node).
 	// Additive on every rail: an older reader ignores the field.
 	FixedIn string `json:"fixed_in,omitempty"`
+	// Platforms, optional, scopes the announcement to the operating systems
+	// it is about, as runtime.GOOS values (darwin, linux, windows): a node on
+	// any other OS does not show it (U-01, a "needs macOS 13" banner on a
+	// Linux first run). Empty means every platform. Additive on every rail:
+	// an older reader ignores the field and shows it everywhere, as before.
+	Platforms []string `json:"platforms,omitempty"`
 }
+
+// knownPlatforms is the closed set Platforms may name (runtime.GOOS values
+// Observer ships for).
+var knownPlatforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
 
 // releaseAnnouncements is rail R1: the announcements compiled into this
 // binary. It is EMPTY on purpose and is empty in most releases.
@@ -106,7 +116,10 @@ type Announcement struct {
 // Rules that are not negotiable: ExpiresAt is required and should be
 // weeks-to-months out, never open-ended; ID must be new (a reused id is
 // pre-dismissed for every operator who acked the old one); SeverityCritical
-// is for security advisories only. Run the package tests after
+// is for security advisories only. An announcement about one operating
+// system names it in Platforms (runtime.GOOS values), on rail R2 too
+// ("platforms" in npm/observer/package.json), so other machines never see
+// it (U-01). Run the package tests after
 // editing — TestReleaseAnnouncementsAreValid validates every literal
 // here, so a malformed announcement fails the build, not the dashboard.
 //
@@ -146,6 +159,9 @@ var releaseAnnouncements = []Announcement{
 		Source:    SourceRelease,
 	},
 	{
+		// macOS only (U-01). It keeps its id so a Mac that dismissed it is
+		// not shown it again; the code security half is repeated for the
+		// other platforms under its own id below.
 		ID:        "v1.37.0-macos13-codesec",
 		Severity:  SeverityNotice,
 		Title:     "v1.37.0 needs macOS 13 or later, and code security is now on",
@@ -153,6 +169,17 @@ var releaseAnnouncements = []Announcement{
 		URL:       "https://github.com/superbasedapp/observer/releases/tag/v1.37.0",
 		ExpiresAt: "2026-12-30T00:00:00Z",
 		Source:    SourceRelease,
+		Platforms: []string{"darwin"},
+	},
+	{
+		ID:        "v1.37.0-codesec",
+		Severity:  SeverityNotice,
+		Title:     "Code security is now on",
+		Body:      "Code security is now on by default in the developer and full editions, so an agent commit or push can ask you first. See it on the Security page.",
+		URL:       "https://github.com/superbasedapp/observer/releases/tag/v1.37.0",
+		ExpiresAt: "2026-12-30T00:00:00Z",
+		Source:    SourceRelease,
+		Platforms: []string{"linux", "windows"},
 	},
 }
 
@@ -223,6 +250,11 @@ func Validate(a Announcement) error {
 	if a.FixedIn != "" {
 		if _, ok := parseRelease(a.FixedIn); !ok {
 			return fmt.Errorf("%w: fixed_in %q is not a release version (1.2.3)", ErrInvalid, a.FixedIn)
+		}
+	}
+	for _, p := range a.Platforms {
+		if !knownPlatforms[p] {
+			return fmt.Errorf("%w: platform %q is not darwin, linux or windows", ErrInvalid, p)
 		}
 	}
 	if strings.TrimSpace(a.ExpiresAt) == "" {
@@ -432,6 +464,33 @@ func ForVersion(list []Announcement, running string) []Announcement {
 		out = append(out, a)
 	}
 	return out
+}
+
+// ForPlatform drops the announcements scoped to other operating systems
+// than goos (runtime.GOOS of the node that shows them; U-01). An
+// announcement with no Platforms applies everywhere.
+func ForPlatform(list []Announcement, goos string) []Announcement {
+	out := list[:0:0]
+	for _, a := range list {
+		if AppliesTo(a, goos) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// AppliesTo reports whether a is for goos: it names no platform, or names
+// goos.
+func AppliesTo(a Announcement, goos string) bool {
+	if len(a.Platforms) == 0 {
+		return true
+	}
+	for _, p := range a.Platforms {
+		if p == goos {
+			return true
+		}
+	}
+	return false
 }
 
 // parseRelease reads "1.2.3" (a leading "v" and any "-pre" or "+build"

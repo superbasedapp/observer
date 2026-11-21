@@ -198,3 +198,17 @@ func selectionTOMLIfInactive(t *testing.T, ids ...string) string {
 // inert answer there; everywhere else (the full and developer builds) the
 // module is active with no block, as such a test assumes.
 func securityInertByDefault() bool { return !defaultActive("security") }
+
+// requireInBuild skips unless every component is in this build and not
+// blocked: active, or available and off (the developer edition's obs). A
+// test that turns the component on itself needs no more (POLISH-F2 F2-1).
+func requireInBuild(t *testing.T, ids ...string) {
+	t.Helper()
+	snap := defaultSnapshot()
+	for _, id := range ids {
+		d, ok := snap.Decision(id)
+		if !ok || d.State == components.StateAbsent || d.State == components.StateBlocked {
+			t.Skipf("needs component %s in this build (distro %q)", id, components.BuildDistro())
+		}
+	}
+}

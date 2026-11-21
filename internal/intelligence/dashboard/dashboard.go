@@ -74,6 +74,9 @@ type Server struct {
 	// (internal/firstrunstate, T-922), created once per server.
 	firstRunOnce sync.Once
 	firstRun     *firstrunstate.Store
+	// apps holds the daemon's AI Apps seams (apps_enable.go, first-run plan
+	// 3.8), set once by SetApps after New; nil in a process without them.
+	apps atomic.Pointer[appsSeams]
 	// connectFlow owns the one `observer connect --json --no-browser`
 	// subprocess the Get started panel and the top bar start
 	// (connect_flow.go). The zero value is ready.
@@ -807,6 +810,14 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// The first-run "at a glance" card (firstrun_glance.go): 30-day spend,
 	// top model, busiest project, re-reads. Local, like /api/firstrun.
 	reg("/api/firstrun/glance", L, secNone, s.handleFirstRunGlance)
+	// AI Apps hot-enable (apps_enable.go, first-run plan 3.5 and 3.8): the
+	// one enable seam the dashboard button, `observer apps on|off|status`
+	// and the VS Code action share. Local: enable and disable write the
+	// config, and the status names this machine's receiver addresses. Never
+	// hidden as a route (the first-run surface depends on it).
+	reg("/api/apps/status", L, secNone, s.handleAppsStatus)
+	reg("/api/apps/enable", L, secNone, s.handleAppsEnable)
+	reg("/api/apps/disable", L, secNone, s.handleAppsDisable)
 	// Admin and developer messaging (T-854, messages.go): the Messages
 	// page's own section, which sits on the unhideable floor (D-695), so an
 	// org message is never hidden from the developer it was sent to. Local:
@@ -1262,6 +1273,20 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// a config mutation. governanceGuard has a body-aware arm for /keys.
 	reg("/api/config/schema", L, secSettings, s.handleConfigSchema)
 	reg("/api/config/keys", L, secSettings, s.handleConfigKeys)
+	// Plane A lane B6 (sdk_settings.go): the SDK discovery read, SDK key
+	// sign-in/out, and the settings proposals an agent filed (D19).
+	// Local (review E-89): the discovery body names the org, the key id,
+	// the gateway URL and the key file's path. The SDKs read it on loopback,
+	// which a Local route keeps; a remote dashboard viewer does not get it.
+	// No section: an org hiding a Settings section must not break the SDKs'
+	// discovery.
+	reg("/api/sdk/destination", L, secNone, s.handleSDKDestination)
+	// The local OTLP receiver's bind state for the AI Apps pages (E-72):
+	// addresses and a bind error only, so a View read.
+	reg("/api/sdk/receiver", V, secNone, s.handleOTLPReceiver)
+	reg("/api/sdk/credential", L, secSettings.WithSettings("observability"), s.handleSDKCredential)
+	reg("/api/config/proposals", L, secSettings, s.handleConfigProposals)
+	reg("/api/config/proposals/", L, secSettings, s.handleConfigProposals)
 	reg("/api/config/backup", L, secSettings, s.handleConfigBackup)
 	reg("/api/config/reload", L, secSettings, s.handleConfigReload)
 	reg("/api/config/profiles", L, secSettings.WithSettings("profiles"), s.handleConfigProfiles)

@@ -54,7 +54,13 @@ export type ReleaseAnnouncement = {
   // fixed_in, optional: the release from which the announcement no longer
   // applies (announce.FixedIn; WINNODE2 16b).
   fixed_in?: string;
+  // platforms, optional: the operating systems (runtime.GOOS values) the
+  // announcement is about (announce.Platforms; U-01). Absent = every one.
+  platforms?: string[];
 };
+
+// ANNOUNCE_PLATFORMS mirrors announce's closed platform set.
+const ANNOUNCE_PLATFORMS = new Set(["darwin", "linux", "windows"]);
 
 // ANNOUNCE_MAX_BODY mirrors announce.MaxBodyChars.
 const ANNOUNCE_MAX_BODY = 280;
@@ -97,6 +103,15 @@ export function parseAnnouncement(
   }
   const source = str(a.source) === "org" ? "org" : "release";
   const fixedIn = str(a.fixed_in).trim();
+  // An unknown platform makes the whole announcement invalid, as in
+  // announce.Validate: a scope we cannot read must not widen to everyone.
+  let platforms: string[] | undefined;
+  if (a.platforms !== undefined) {
+    if (!Array.isArray(a.platforms) || !a.platforms.every((p) => typeof p === "string" && ANNOUNCE_PLATFORMS.has(p))) {
+      return null;
+    }
+    if (a.platforms.length > 0) platforms = a.platforms as string[];
+  }
   return {
     id,
     severity,
@@ -106,7 +121,18 @@ export function parseAnnouncement(
     expires_at: expires,
     source,
     ...(fixedIn ? { fixed_in: fixedIn } : {}),
+    ...(platforms ? { platforms } : {}),
   };
+}
+
+// announcementForPlatform reports whether an announcement is about the
+// machine's operating system (the daemon's runtime.GOOS, useHostOS; U-01,
+// announce.AppliesTo). An unscoped one is about every machine; a scoped one
+// waits (false) until the machine's OS is known, so a Linux machine never
+// flashes a macOS-only notice.
+export function announcementForPlatform(a: Pick<ReleaseAnnouncement, "platforms">, hostOS: string | null | undefined): boolean {
+  if (!a.platforms || a.platforms.length === 0) return true;
+  return !!hostOS && a.platforms.includes(hostOS);
 }
 
 // announcementApplies reports whether an announcement is still news for a

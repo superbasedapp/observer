@@ -318,7 +318,7 @@ func TestConnectSwitchFromIndividual(t *testing.T) {
 	}
 }
 
-// TestConnectSameDestination is row 10: already connected.
+// TestConnectSameDestination is row 11: already connected.
 func TestConnectSameDestination(t *testing.T) {
 	h := newConnectHarness()
 	h.enr = enrolledIn("https://acme.example", "Acme", false)
@@ -365,5 +365,37 @@ func TestReadPairFileRefusesAWorldReadableFile(t *testing.T) {
 	}
 	if b, err := readPairFile(p); err != nil || string(b) != testPairCode(t) {
 		t.Fatalf("a private pair file: %v", err)
+	}
+}
+
+// TestConnectReconsent is attachrule row 10 through `observer connect
+// --reconsent` (budget enforce consistency, 2026-11-19): an individually
+// enrolled machine re-attaches to the dashboard it already uses (here
+// through the dashboard's own sign-in, the build having no connect request);
+// a managed machine and a machine that is not connected are refused, and
+// the flag takes no server.
+func TestConnectReconsent(t *testing.T) {
+	h := newConnectHarness()
+	h.enr = enrolledIn("https://me.example", "Me", false)
+	if _, err := h.exec(t, "--reconsent"); err != nil || !h.run.enrolled {
+		t.Fatalf("re-consent on an individual enrolment: %v enrolled %v", err, h.run.enrolled)
+	}
+	if got := strings.Join(h.run.enrollArgs, " "); !strings.Contains(got, "https://me.example") {
+		t.Fatalf("re-consent enrolled with %q, want the current dashboard", got)
+	}
+
+	managed := newConnectHarness()
+	managed.enr = enrolledIn("https://acme.example", "Acme", true)
+	if _, err := managed.exec(t, "--reconsent"); err == nil || !strings.Contains(err.Error(), "already organization-managed") || managed.run.enrolled {
+		t.Fatalf("re-consent on a managed enrolment: %v", err)
+	}
+
+	none := newConnectHarness()
+	if _, err := none.exec(t, "--reconsent"); err == nil || !strings.Contains(err.Error(), "not connected") || none.run.enrolled {
+		t.Fatalf("re-consent with nothing connected: %v", err)
+	}
+
+	if _, err := h.exec(t, "--reconsent", "https://other.example"); err == nil || !strings.Contains(err.Error(), "takes no server") {
+		t.Fatalf("re-consent with a server: %v", err)
 	}
 }

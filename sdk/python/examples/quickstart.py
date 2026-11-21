@@ -1,4 +1,4 @@
-"""Minimal SuperBased Observer SDK example.
+"""Minimal SuperBased SDK example.
 
 Run a local Observer with [observability] enabled, then:
 
@@ -6,30 +6,33 @@ Run a local Observer with [observability] enabled, then:
     python sdk/python/examples/quickstart.py
 
 It emits one trace (an agent span containing an LLM span and a tool span) to
-the OTLP receiver at http://127.0.0.1:4318/v1/traces. Open the dashboard's
-Trajectories page to see it.
+the OTLP receiver at http://127.0.0.1:4318/v1/traces (override with
+SUPERBASED_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT). List it with
+`observer obs traces` or GET http://127.0.0.1:8081/api/obs/traces.
 """
 
-import superbased
+import uuid
+
+import superbased_sdk as sb
 
 
 def main() -> None:
-    superbased.init(session_id="quickstart-1", user="demo")
+    sb.init(session_id="quickstart-1", user="demo", service_name="quickstart")
 
-    with superbased.span("agent.run", kind=superbased.AGENT):
-        with superbased.llm_span("chat", model="gpt-4o", provider="openai") as s:
-            # ... your real model call goes here ...
-            superbased.set_usage(
-                s,
-                input_tokens=1200,
-                output_tokens=64,
-                response_id="chatcmpl-demo-123",
-            )
-        with superbased.span("web_search", kind=superbased.TOOL):
+    with sb.span("agent.run", kind=sb.AGENT):
+        with sb.llm_span("chat", model="gpt-4o", provider="openai", prompt="Say hi") as s:
+            # ... your real model call goes here; use its real response id ...
+            response_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+            sb.set_usage(s, input_tokens=1200, output_tokens=64, response_id=response_id, response="hi")
+        with sb.span("web_search", kind=sb.TOOL):
             pass  # ... your tool call ...
 
-    superbased.shutdown()  # flush before exit
-    print("sent one trace to Observer — check /trajectories")
+    sb.shutdown()  # flush before exit; bounded, never raises
+    d = sb.diagnostics()
+    if d["failed_exports"]:
+        print(f"export failed: {d['last_error']}")
+    else:
+        print("sent one trace; list it with `observer obs traces`")
 
 
 if __name__ == "__main__":

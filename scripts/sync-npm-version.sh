@@ -127,6 +127,31 @@ EOF
   echo "stamped $pkg → $VERSION"
 done
 
+# The unscoped short-name package `superbased` (npm/superbased) is a thin
+# wrapper that depends on @superbased/observer. Its version keeps the
+# observer release's minor, patch and pre-release, with the major raised
+# by 2 (observer 1.42.0 -> superbased 3.42.0), because superbased 1.x and
+# 2.x were an earlier, unrelated product and npm never reuses a version.
+# Its dependency pins the exact observer version, so `npm install -g
+# superbased@3.42.0` always installs observer 1.42.0.
+SHORT_PKG="$NPM_DIR/superbased/package.json"
+if [ -f "$SHORT_PKG" ]; then
+  SHORT_VERSION="$(node - "$SHORT_PKG" "$VERSION" <<'EOF'
+const fs = require('fs');
+const [, , filePath, version] = process.argv;
+const dot = version.indexOf('.');
+const short = `${Number(version.slice(0, dot)) + 2}${version.slice(dot)}`;
+const pkg = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+pkg.version = short;
+pkg.dependencies = pkg.dependencies || {};
+pkg.dependencies['@superbased/observer'] = version;
+fs.writeFileSync(filePath, JSON.stringify(pkg, null, 2) + '\n');
+process.stdout.write(short);
+EOF
+)"
+  echo "stamped superbased → $SHORT_VERSION (depends on @superbased/observer@$VERSION)"
+fi
+
 # Also stamp the VS Code extension manifest. The extension's bundled
 # observer binary is downloaded from a URL keyed off the extension
 # version (plan §15 risk-7 invariant — see

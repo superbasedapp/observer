@@ -113,7 +113,7 @@ func runEnrolSequence(ctx context.Context, b orgBundle, configPath, orgURL, toke
 		drain:         drain,
 		dropRequested: dropUnsent,
 	}
-	seq.posture = enrolShareDefaultFor(seq.managed)
+	seq.posture = enrolShareDefaultOf(seq.managed, offerOwnerManaged(offer, enr))
 	// Arc 4 P6a: a managed enrolment binds this machine (plan section 9).
 	// The fingerprint is computed and sent ONLY for a managed node; an
 	// individual node never emits a machine identity. Best effort: never
@@ -132,7 +132,7 @@ func runEnrolSequence(ctx context.Context, b orgBundle, configPath, orgURL, toke
 	// rewritten (only its enabled / org_server_url lines, below).
 	seq.cfgPath, seq.cfgPathErr = resolveConfigPath(configPath)
 	if seq.cfgPathErr == nil {
-		seq.blockAdded, seq.blockErr = ensureOrgClientBlock(seq.cfgPath, enr.OrgServerURL, seq.managed)
+		seq.blockAdded, seq.blockErr = ensureOrgClientBlockShare(seq.cfgPath, enr.OrgServerURL, seq.posture)
 		// T-728: an EXISTING block (a node that left, or re-enrols) gets its
 		// push switch back on and the address of the server just joined, as
 		// one-line edits (orgClientCfgRows); its share and scope settings
@@ -325,4 +325,15 @@ func enrolWireBinaryFor(out io.Writer, dbPath string) string {
 		fmt.Fprintln(out, "  "+note)
 	}
 	return bin
+}
+
+// offerOwnerManaged reports whether the enrolment just made is with the
+// developer's own organization (orgcontract.EnrollResponse.OwnerManaged),
+// from the grant offer when there is one, else from the enrolment row the
+// enrol response filled in memory.
+func offerOwnerManaged(offer *orgclient.GrantOffer, enr *store.Enrolment) bool {
+	if offer != nil && offer.OwnerManaged {
+		return true
+	}
+	return enr != nil && enr.OwnerManaged
 }

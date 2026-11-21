@@ -425,3 +425,36 @@ func TestAnnouncements_OrgRequiresCurrentEnrolment(t *testing.T) {
 		})
 	}
 }
+
+// TestAnnouncements_PlatformScoped pins U-01: an announcement scoped to
+// another operating system never reaches this machine's banner, and the
+// platforms key rides the wire for the frontend's own rail.
+func TestAnnouncements_PlatformScoped(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	mk := func(id string, platforms ...string) announce.Announcement {
+		return announce.Announcement{
+			ID: id, Severity: announce.SeverityNotice, Title: "t " + id, Body: "b " + id,
+			ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), Source: announce.SourceRelease,
+			Platforms: platforms,
+		}
+	}
+	stubAnnouncements(t, now, []announce.Announcement{mk("mac-only", "darwin"), mk("linux-only", "linux"), mk("everywhere")})
+	prev := announcementGOOS
+	announcementGOOS = func() string { return "linux" }
+	t.Cleanup(func() { announcementGOOS = prev })
+
+	code, body, got := getAnnouncements(t, newAnnouncementServer(t))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	var ids []string
+	for _, a := range got.Announcements {
+		ids = append(ids, a.ID)
+	}
+	if strings.Join(ids, ",") != "everywhere,linux-only" && strings.Join(ids, ",") != "linux-only,everywhere" {
+		t.Fatalf("ids = %v, want linux-only and everywhere: %s", ids, body)
+	}
+	if !strings.Contains(body, `"platforms":["linux"]`) {
+		t.Errorf("platforms key missing from the wire: %s", body)
+	}
+}

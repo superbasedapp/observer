@@ -572,8 +572,10 @@ func (l *Log) loadStats(ctx context.Context) (telemetrylog.StreamStats, int, err
 }
 
 // TrimApplied implements telemetrylog.Trimmer: it purges every record below
-// the floor all durable consumers have acked (telemetrylog.AckedFloor), and
-// nothing when a required durable is missing. Purging never resets stream
+// the floor all durable consumers have acked (telemetrylog.TrimFloor), and
+// nothing when a required durable is missing or any durable is AHEAD of the
+// stream (F01: a recreated stream under live consumers; the result names them
+// in TrimResult.Ahead and the caller treats it as a fault). Purging never resets stream
 // sequences, the creation stamp or the ordering metadata, so the stream's
 // ordering generation and every OrderPosition already handed out stay valid.
 //
@@ -593,9 +595,10 @@ func (l *Log) TrimApplied(ctx context.Context, required []string) (telemetrylog.
 	if err != nil {
 		return telemetrylog.TrimResult{}, fmt.Errorf("natslog.TrimApplied: %w", mapTransportErr(err))
 	}
-	floor, limiting, held := telemetrylog.AckedFloor(before.LastSequence, telemetrylog.FloorsOf(before), required)
-	res := telemetrylog.TrimResult{Floor: floor, HeldBy: held, LimitingConsumer: limiting}
-	if len(held) > 0 || floor == 0 || floor < before.FirstSequence || before.Messages == 0 {
+	v := telemetrylog.TrimFloor(before, telemetrylog.FloorsOf(before), required)
+	floor := v.Floor
+	res := telemetrylog.TrimResult{Floor: floor, HeldBy: v.Held, Ahead: v.Ahead, LimitingConsumer: v.Limiting, CeilingUnknown: v.CeilingUnknown}
+	if len(v.Held) > 0 || len(v.Ahead) > 0 || v.CeilingUnknown || floor == 0 || floor < before.FirstSequence || before.Messages == 0 {
 		return res, nil
 	}
 	if err := stream.Purge(trimCtx, jetstream.WithPurgeSequence(floor+1)); err != nil {
@@ -639,6 +642,9 @@ func (l *Log) Probe(ctx context.Context) telemetrylog.Report {
 	rep.Healthy = true
 	rep.Replicas = replicas
 	rep.Stats = stats
+	// F01: a durable ahead of the stream is reachable but broken; /readyz
+	// fails on Fault.
+	rep.Fault = telemetrylog.DescribeAhead(telemetrylog.AheadOf(stats))
 	if note := l.provisionNote(); note != "" {
 		rep.Detail = note
 	}

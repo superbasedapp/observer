@@ -1,0 +1,21 @@
+{
+  "name": "superbased-example-langgraph",
+  "private": true,
+  "type": "module",
+  "description": "LangGraph.js ReAct chatbot (TypeScript)",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node chatbot.ts",
+    "verify": "python3 ../../verify.py run.json --llm-spans 4"
+  },
+  "dependencies": {
+    "@arizeai/openinference-instrumentation-langchain": "4.2.2",
+    "@langchain/core": "1.4.2",
+    "@langchain/langgraph": "1.7.5",
+    "@langchain/openai": "1.8.4",
+    "@superbased/sdk": "file:../../../../sdk/typescript",
+    "zod": "4.6.7"
+  }
+}

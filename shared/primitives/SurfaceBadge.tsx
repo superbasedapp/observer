@@ -1,4 +1,5 @@
 import { Pill } from "./Pill";
+import { GlyphBadge } from "./GlyphBadge";
 import { vocabIcon } from "../lib/vocabIcons";
 
 // SurfaceBadge renders the capture-surface attribution a session carries
@@ -78,9 +79,15 @@ export type SurfaceBadgeProps = {
    * "cli · cla..." (T-803). Without a host the kind word still shows.
    */
   compact?: boolean;
+  /**
+   * glyph draws the kind's glyph alone (no pill, no words); the tooltip and
+   * the accessible name carry the kind and host. For a dense table cell that
+   * shows the client beside another badge.
+   */
+  glyph?: boolean;
 };
 
-export function SurfaceBadge({ surface, host, className, compact }: SurfaceBadgeProps) {
+export function SurfaceBadge({ surface, host, className, compact, glyph }: SurfaceBadgeProps) {
   const kind = isSurfaceKind(surface) ? surface : null;
   const hostToken = (host ?? "").trim();
   // Nothing grounded => render nothing. Never a fabricated "cli".
@@ -94,6 +101,18 @@ export function SurfaceBadge({ surface, host, className, compact }: SurfaceBadge
   ]
     .filter(Boolean)
     .join(" ");
+
+  if (glyph) {
+    // Name first (what a table header would have said), then the gloss.
+    const name = [meta ? meta.label : "", hostToken].filter(Boolean).join(" · ");
+    return (
+      <GlyphBadge
+        className={className}
+        icon={vocabIcon("captureSurface", kind)}
+        label={`Client: ${name}. ${meta ? meta.gloss : "Host reported, kind unknown."}`}
+      />
+    );
+  }
 
   return (
     <Pill className={className} title={title} icon={kind ? vocabIcon("captureSurface", kind) : undefined}>

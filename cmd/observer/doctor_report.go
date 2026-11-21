@@ -63,6 +63,12 @@ func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, 
 			// not accepted them, so a stuck push is visible.
 			retentionPushHoldCheck(ctx, cfg, database),
 			otlpIngressPostureCheck(cfg),
+			// W0-4 (F06, F25): is Plane A in this build, and did the
+			// daemon's OTLP receiver actually bind its ports?
+			obsBuildDoctorCheck(cfg),
+			otlpReceiverStatusCheck(cfg),
+			// E-59: the SDK key, and whether it expires within 14 days.
+			sdkKeyDoctorCheck(cfg),
 			// R-188 F5: hook activity records skipped while the hook spool
 			// was past its cap with nothing draining it.
 			hookSpoolCheck(configPath),

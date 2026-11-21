@@ -23,6 +23,12 @@ const CapabilityView = dashapi.CapabilityView
 // CloudAccountSeams re-exports dashapi.CloudAccountSeams.
 type CloudAccountSeams = dashapi.CloudAccountSeams
 
+// SDKSeams is dashapi.SDKSeams (Plane A W2-7).
+type SDKSeams = dashapi.SDKSeams
+
+// OTLPReceiverState re-exports dashapi.OTLPReceiverState.
+type OTLPReceiverState = dashapi.OTLPReceiverState
+
 // CloudCommandRunner re-exports dashapi.CloudCommandRunner.
 type CloudCommandRunner = dashapi.CloudCommandRunner
 

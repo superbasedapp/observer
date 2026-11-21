@@ -41,7 +41,7 @@ import (
 // add each new id to navSince / settingsSince at the new level, whenever
 // NavSectionIDs or SettingsSectionIDs grows. vocablevel_test.go fails when an
 // id is missing from both the first-level baseline and the since tables.
-const CurrentVocabLevel = 12
+const CurrentVocabLevel = 13
 
 // FirstTabVocabLevel is the level at which page TABS ("<page>/<tab>",
 // vocab.go) joined the nav vocabulary (per-tab visibility, T-132). Every tab
@@ -77,6 +77,16 @@ var (
 		// The You page (identity, accounts, consents). On the T8 floor, so no
 		// body names it, but the level stays truthful.
 		"you": 12,
+		// The Your apps pages (Plane A lane B5, plan W2-5, D17): the machine's
+		// view of the LLM apps the developer builds.
+		"app-traces":    13,
+		"app-sessions":  13,
+		"app-analytics": 13,
+		"app-end-users": 13,
+		"app-evals":     13,
+		"app-scores":    13,
+		"app-prompts":   13,
+		"app-alerts":    13,
 	}
 	settingsSince = map[string]int{
 		"cloud": 2, // v1.33.0
@@ -84,6 +94,9 @@ var (
 		// Integration 6: the org Cloud Intelligence settings section
 		// (ci-parity) is unknown to the level-4/5 lane builds.
 		"intel": 6,
+		// The General section (the focus control, first-run plan revision
+		// 2) joined with the Plane A build-out, at the unreleased level 13.
+		"general": 13,
 	}
 	// tabSince names the tabs that joined AFTER FirstTabVocabLevel. A tab
 	// absent from it has been there since FirstTabVocabLevel.

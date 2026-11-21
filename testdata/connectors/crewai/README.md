@@ -10,7 +10,8 @@ REAL CAPTURES, per the connectors spec §7.1 step 1. Raw OTLP/HTTP
   with OTLP export via a capture tee (mechanism A).
 - Emitter: `openinference-instrumentation-crewai 1.1.12` (scope
   `openinference.instrumentation.crewai`), `crewai 1.15.16`, driven by
-  `superbased-observer-sdk` (`superbased.init(service_name, user,
+  the Python SDK under its old name `superbased-observer-sdk` (now `superbased-sdk`,
+  import `superbased_sdk`) (`superbased.init(service_name, user,
   session_id)`).
 - Each capture holds one crew run: `Crew_<uuid>.kickoff` (CHAIN) +
   `Word analyst._execute_core` (AGENT).

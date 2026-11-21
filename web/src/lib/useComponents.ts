@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { useApi, type ApiState } from "./useApi";
+import { apiCache, useApi, type ApiState } from "./useApi";
 import { NAV_COMPONENTS } from "./components.gen";
 import {
   inactiveNavIds,
@@ -23,10 +23,28 @@ import {
  *  edit of config.toml or an `observer components` run in a terminal. */
 const COMPONENT_STATE_REFRESH_MS = 30_000;
 
+/** The component state read, and the AI Apps routes probe (useObsRoutesUp). */
+export const COMPONENT_STATE_PATH = "/api/components/state";
+export const OBS_ROUTES_PROBE_PATH = "/api/obs/enabled";
+
+/** The reads an AI Apps on or off changes at once: the component state (the
+ *  route guard, the fetch skip list, the nav) and the routes probe. */
+export const APPS_CHANGE_REFRESH_PATHS: readonly string[] = [COMPONENT_STATE_PATH, OBS_ROUTES_PROBE_PATH];
+
+/** refreshAfterAppsChange re-reads them now, after POST /api/apps/enable or
+ *  /disable answers (review FR-M10): a hot enable makes the obs component
+ *  active and opens the AI Apps routes while the daemon runs, and without
+ *  this the AI Apps links read "not installed" and the /api/obs reads stay
+ *  skipped until the next 30 s poll. invalidate is the query cache's own
+ *  mutation hook, injectable for tests. */
+export function refreshAfterAppsChange(invalidate: (key: string) => void = (k) => apiCache.invalidate(k)): void {
+  for (const p of APPS_CHANGE_REFRESH_PATHS) invalidate(p);
+}
+
 /** useComponentState reads GET /api/components/state and keeps the fetch
  *  skip list (lib/componentState) in step with it. */
 export function useComponentState(): ApiState<ComponentsStateResponse> {
-  const st = useApi<ComponentsStateResponse>("/api/components/state", undefined, [], {
+  const st = useApi<ComponentsStateResponse>(COMPONENT_STATE_PATH, undefined, [], {
     refreshMs: COMPONENT_STATE_REFRESH_MS,
   });
   const routes = st.data ? st.data.inactive_routes.join("\n") : null;

@@ -445,7 +445,7 @@ func TestConnectTeamTargetIsFullDetail(t *testing.T) {
 			t.Fatalf("a provisioning team was offered: %+v", ch)
 		}
 	}
-	resp := approveConnect(t, pc, c.RequestID, map[string]string{"target_org_id": team.Org.OrgID, "disclosure_version": "connect-disclosure.v1", "disclosure_sha256": strings.Repeat("a", 64)})
+	resp := approveConnect(t, pc, c.RequestID, map[string]string{"target_org_id": team.Org.OrgID, "disclosure_version": "connect-disclosure.v2", "disclosure_sha256": strings.Repeat("a", 64)})
 	if resp.StatusCode != http.StatusConflict || errCode(t, resp) != "target_unavailable" {
 		t.Fatalf("provisioning team: want 409 target_unavailable")
 	}

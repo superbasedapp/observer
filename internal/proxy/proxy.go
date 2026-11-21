@@ -2789,6 +2789,9 @@ func (p *Proxy) inspectResponseGuard(provider, sessionID string, body []byte, is
 // it has a turn.
 func (p *Proxy) insertTurnDetached(r *http.Request, turn models.APITurn, routerToken int64, label string) int64 {
 	p.ensureOwnAgentSession(r, turn)
+	// The gateway rail (review E-23): only a turn on an /up/<id> lane may
+	// later be enriched by an app's SDK span (store.MergeTurnByRequestID).
+	turn.UpstreamLane = obsUpstreamLane(r)
 	insertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	id, err := p.sink.InsertAPITurn(insertCtx, turn)
@@ -2827,6 +2830,9 @@ func (p *Proxy) insertTurnDetached(r *http.Request, turn models.APITurn, routerT
 // anchor the response-inspection guard verdict to the same turn.
 func (p *Proxy) insertTurnAndCacheDetached(r *http.Request, turn models.APITurn, reqShape requestShape, provider string, routerToken int64, label string) int64 {
 	p.ensureOwnAgentSession(r, turn)
+	// The gateway rail (review E-23): only a turn on an /up/<id> lane may
+	// later be enriched by an app's SDK span (store.MergeTurnByRequestID).
+	turn.UpstreamLane = obsUpstreamLane(r)
 	insertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	apiTurnID, err := p.sink.InsertAPITurn(insertCtx, turn)

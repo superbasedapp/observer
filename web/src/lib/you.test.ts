@@ -248,3 +248,11 @@ test("consentRows: community sharing not in this build is never agreed", () => {
   assert.equal(row?.state, "not_given");
   assert.equal(row?.detail, "Not in this build");
 });
+
+test("orgBudgetLine links Guard mode when a hard cap only warns on this machine", async () => {
+  const { orgBudgetLine } = await import("./you.ts");
+  const base = { window: "daily", period: "calendar_day", ratio: 1.2, level: "exceeded", enforcement: "hard" };
+  assert.deepEqual(orgBudgetLine({ ...base, effect: "warn_observe" } as never).link, { href: "/security?tab=overview", label: "Open Guard mode" });
+  assert.equal(orgBudgetLine({ ...base, effect: "blocks" } as never).link, undefined);
+  assert.equal(orgBudgetLine({ ...base, enforcement: "soft", effect: "none" } as never).link, undefined);
+});

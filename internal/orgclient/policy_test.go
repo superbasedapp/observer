@@ -304,9 +304,6 @@ func TestFetchPolicyBundle_ReachedCorruptBodyIsIndeterminateNotUnreachable(t *te
 	}))
 	defer malformedSrv.Close()
 
-	unreachableSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	unreachableSrv.Close() // closed before use: connections to it refuse
-
 	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, http.StatusUnauthorized, map[string]string{"error": "bearer_invalid"})
 	}))
@@ -316,6 +313,12 @@ func TestFetchPolicyBundle_ReachedCorruptBodyIsIndeterminateNotUnreachable(t *te
 		writeTestJSON(w, http.StatusNotFound, map[string]string{"error": "no_policy_bundle"})
 	}))
 	defer noneSrv.Close()
+
+	// The closed server is made LAST, after every live server holds its
+	// port: closed first, its freed port was handed to authSrv on the gate
+	// once, and the "unreachable" case got a 401 (AuthFailed) instead.
+	unreachableSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unreachableSrv.Close() // closed before use: connections to it refuse
 
 	cases := []struct {
 		name    string

@@ -1,13 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import clsx from "clsx";
-import { ChevronLeft, X } from "lucide-react";
-import { NAV_GROUPS } from "@/lib/nav";
+import { ChevronLeft, Telescope, X } from "lucide-react";
+import { APPS_NAV_IDS, NAV_GROUPS, navGroupsForTrack } from "@/lib/nav";
+import { FIRST_RUN_PATH, type FirstRunResponse } from "@/lib/firstRun";
 import { useApi } from "@/lib/useApi";
 import { filterNavGroups, useGovernance, useGovernanceVisibility } from "@/lib/governance";
 import { hiddenNavIds } from "@/lib/visibility";
 import { filterNavByComponents } from "@/lib/componentState";
 import { useInactiveNavIds } from "@/lib/useComponents";
+import { useAppsNavHidden, useObsRoutesUp } from "@/lib/useObsRoutesUp";
+import { APPS_START_NAV_ID, APPS_START_PATH, appsStartNavShown, withAppsStart } from "@/lib/planeaFirstRun";
+import { PRODUCT_NAMES } from "@shared/lib/productNames";
 import { fmtBytes, fmtCompact } from "@/lib/format";
 import { navCounts, NO_NAV_COUNTS, type NavCounts } from "@/lib/navCounts";
 import { BrandMark, Icon, LiveDot, Tooltip } from "@/components/primitives";
@@ -65,8 +69,29 @@ export function Sidebar({
   // Messages shows only on an enrolled node (D-695): until the summary says
   // so, or when it cannot be read, the item stays out of the nav.
   const messages = useMessagesSummary().data;
-  const navHidden = showMessagesNav(messages) ? inactiveNav : [...inactiveNav, "messages"];
-  const navGroups = filterNavByComponents(filterNavGroups(NAV_GROUPS, visibility.gov), navHidden);
+  // Your apps shows only once app observability answers here (Plane A B5).
+  const appsHidden = useAppsNavHidden();
+  const navHidden = [...(showMessagesNav(messages) ? inactiveNav : [...inactiveNav, "messages"]), ...appsHidden];
+  const governed = filterNavGroups(NAV_GROUPS, visibility.gov);
+  const filtered = filterNavByComponents(governed, navHidden);
+  // The persistent AI Apps item (review E-71): while the AI Apps pages are
+  // not in the nav it stands in for their group and opens the first-run
+  // page, after "Not now" too; never where the organization hides them.
+  const orgHidesApps = !governed.some((g) => g.items.some((it) => APPS_NAV_IDS.includes(it.id)));
+  const placed = appsStartNavShown(useObsRoutesUp(), orgHidesApps)
+    ? withAppsStart(NAV_GROUPS, filtered, {
+        id: "apps",
+        label: PRODUCT_NAMES.planea_local,
+        items: [{ id: APPS_START_NAV_ID, label: PRODUCT_NAMES.planea, path: APPS_START_PATH, icon: Telescope }],
+      })
+    : filtered;
+  // The getting-started track (first-run plan revision 2, 2.4): for apps or
+  // both, the AI Apps group moves to the top. Order only; the daemon decides
+  // the track (the brief first-run read, shared with the Overview surface).
+  const track = useApi<FirstRunResponse, string | null>(FIRST_RUN_PATH, { brief: "1" }, [], {
+    select: (d) => d.plane?.track ?? null,
+  }).data;
+  const navGroups = navGroupsForTrack(placed, track);
   const messagesBadge = navBadge(messages);
   // Desktop (lg+) icon-only rail collapse. The pref is persisted in
   // localStorage ("1"/"0", ProcessesSection pattern) and only bites at

@@ -115,6 +115,13 @@ export type DataTableProps<T> = {
   // more" button, which keeps every row reachable by keyboard. Sorting still
   // runs over ALL rows. Omitted, every row renders exactly as before.
   incrementalRows?: number;
+  // Horizontal scroll (default true: the wrapper is an `overflow-x: auto`
+  // scroll container, as every table always had). Pass false when the
+  // caller has already fitted its columns to the available width: the
+  // wrapper then CLIPS instead (`overflow-x: clip` is not a scroll
+  // container), so `stickyHeader` sticks to the page's own scroller rather
+  // than to a wrapper that never scrolls vertically.
+  scrollX?: boolean;
 };
 
 // scrollEdges reports whether a horizontal scroll container is currently
@@ -141,6 +148,7 @@ export function DataTable<T>({
   expandedKey,
   renderExpanded,
   incrementalRows,
+  scrollX = true,
 }: DataTableProps<T>) {
   const [internalSorting, setInternalSorting] = useState<SortingState>(initialSort);
   // Controlled (server-side) when the parent supplies both the state and the
@@ -180,10 +188,14 @@ export function DataTable<T>({
     if (!el) return;
     const measure = () => {
       const max = el.scrollWidth - el.clientWidth;
-      const next: ScrollEdges = {
-        left: el.scrollLeft > 1,
-        right: max > 1 && el.scrollLeft < max - 1,
-      };
+      // A clipping (non-scrolling) wrapper has nothing to page to, so it
+      // never shows the edge affordance.
+      const next: ScrollEdges = scrollX
+        ? {
+            left: el.scrollLeft > 1,
+            right: max > 1 && el.scrollLeft < max - 1,
+          }
+        : { left: false, right: false };
       // Functional compare: a scroll event fires per frame and an
       // unconditional setState would re-render the whole table on each.
       setEdges((cur) =>
@@ -199,7 +211,7 @@ export function DataTable<T>({
       el.removeEventListener("scroll", measure);
       ro.disconnect();
     };
-  }, []);
+  }, [scrollX]);
 
   // scrollByPage nudges the wrapper by ~60% of its visible width, so the
   // edge buttons page through the hidden columns instead of creeping.
@@ -242,6 +254,10 @@ export function DataTable<T>({
 
   const leafColumns = table.getVisibleLeafColumns();
   const hasWidths = leafColumns.some((c) => c.columnDef.meta?.width != null);
+  const pins = pinnedOffsets(leafColumns);
+  // The divider after the last pinned column only matters while the rest of
+  // the table can slide under it.
+  const pinDivider = pins.edge > 0 && (edges.left || edges.right);
 
   return (
     <div className="relative">
@@ -263,12 +279,16 @@ export function DataTable<T>({
           These sit level with the header row, always in view. */}
       {edges.left && (
         <>
+          {/* With pinned columns the fade and the button start where the
+              pinned block ends, so they never cover the pinned cells. */}
           <span
             aria-hidden
             className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-bg-2 to-transparent"
+            style={pins.edge > 0 ? { left: pins.edge } : undefined}
           />
           <ScrollEdgeButton
             side="left"
+            offset={pins.edge}
             onClick={() => scrollByPage(-1)}
           />
         </>
@@ -285,7 +305,10 @@ export function DataTable<T>({
           />
         </>
       )}
-      <div ref={scrollRef} className="table-scroll-x overflow-x-auto">
+      <div
+        ref={scrollRef}
+        className={scrollX ? "table-scroll-x overflow-x-auto" : "overflow-x-clip"}
+      >
       <table
         ref={tableRef}
         className={clsx(
@@ -332,6 +355,7 @@ export function DataTable<T>({
                 const canSort = h.column.getCanSort();
                 const sorted = h.column.getIsSorted();
                 const right = h.column.columnDef.meta?.align === "right";
+                const pinLeft = isGroup ? undefined : pins.left.get(h.column.id);
                 return (
                   <th
                     key={h.id}
@@ -341,8 +365,13 @@ export function DataTable<T>({
                       "group/th whitespace-nowrap bg-bg-2 py-head font-medium",
                       isGroup ? "px-cell text-center text-fg-2" : right ? "px-cell-num text-right" : "px-cell",
                       stickyHeader && "sticky top-0 z-10",
+                      // A pinned header cell is a corner when the header is
+                      // sticky too, so it sits above both other layers.
+                      pinLeft != null && (stickyHeader ? "sticky z-20" : "sticky z-[2]"),
+                      pinLeft != null && pinDivider && pins.last === h.column.id && PIN_DIVIDER,
                       canSort && "cursor-pointer select-none hover:text-fg-1",
                     )}
+                    style={pinLeft != null ? { left: pinLeft } : undefined}
                     onClick={canSort ? h.column.getToggleSortingHandler() : undefined}
                   >
                     <span className="inline-flex max-w-full items-center gap-0.5 align-middle">
@@ -394,6 +423,8 @@ export function DataTable<T>({
                   striped={!!zebra && i % 2 === 1}
                   extraClass={rowClassName?.(r.original)}
                   onRowClick={onRowClick ? handleRowClick : undefined}
+                  pins={pins}
+                  pinDivider={pinDivider}
                 />
                 {renderExpanded && expandedKey === rowKey(r.original) && (
                   <tr className="border-b border-line-1">
@@ -435,7 +466,44 @@ type DataTableRowProps<T> = {
   striped: boolean;
   extraClass: string | undefined;
   onRowClick: ((row: T) => void) | undefined;
+  pins: PinnedOffsets;
+  pinDivider: boolean;
 };
+
+// PinnedOffsets is where each pinned (meta.sticky) column sits: its left
+// offset in px, the total width of the pinned block, and the last pinned
+// column (which carries the divider while the table scrolls under it).
+export type PinnedOffsets = { left: Map<string, number>; edge: number; last: string | null };
+
+const NO_PINS: PinnedOffsets = { left: new Map(), edge: 0, last: null };
+
+/**
+ * pinnedOffsets walks the visible leaf columns and gives every `meta.sticky`
+ * column its left offset: the summed widths of the pinned columns before it.
+ * Only LEADING pinned columns that declare `meta.width` can be placed; the
+ * walk stops at the first column that is not pinned or has no width, since
+ * nothing after it has a known offset.
+ */
+export function pinnedOffsets(columns: { id: string; columnDef: { meta?: { sticky?: boolean; width?: number } } }[]): PinnedOffsets {
+  let edge = 0;
+  let last: string | null = null;
+  const left = new Map<string, number>();
+  for (const c of columns) {
+    const meta = c.columnDef.meta;
+    if (!meta?.sticky || meta.width == null) break;
+    left.set(c.id, edge);
+    edge += meta.width;
+    last = c.id;
+  }
+  return left.size === 0 ? NO_PINS : { left, edge, last };
+}
+
+// A pinned cell must be opaque (the table slides under it). Its fill follows
+// the row: the card surface, the zebra stripe (bg-3 at 50% over bg-2, mixed
+// here so it stays opaque) and the row hover.
+const PIN_BG = "bg-bg-2 group-hover:bg-bg-3";
+const PIN_BG_STRIPED = "bg-[color-mix(in_srgb,var(--bg-3)_50%,var(--bg-2))] group-hover:bg-bg-3";
+const PIN_DIVIDER = "shadow-[inset_-1px_0_0_var(--line-2)]";
 
 // sameRow: a body row re-renders only when its record, its position, the
 // visible columns (a new column-def array, e.g. a cell closure over new
@@ -453,11 +521,14 @@ function sameRow<T>(a: DataTableRowProps<T>, b: DataTableRowProps<T>): boolean {
     a.columns === b.columns &&
     a.striped === b.striped &&
     a.extraClass === b.extraClass &&
-    a.onRowClick === b.onRowClick
+    a.onRowClick === b.onRowClick &&
+    a.pins.edge === b.pins.edge &&
+    a.pins.last === b.pins.last &&
+    a.pinDivider === b.pinDivider
   );
 }
 
-function DataTableRowImpl<T>({ row, striped, extraClass, onRowClick }: DataTableRowProps<T>) {
+function DataTableRowImpl<T>({ row, striped, extraClass, onRowClick, pins, pinDivider }: DataTableRowProps<T>) {
   return (
     <tr
       className={clsx(
@@ -474,11 +545,16 @@ function DataTableRowImpl<T>({ row, striped, extraClass, onRowClick }: DataTable
       )}
       onClick={onRowClick ? () => onRowClick(row.original) : undefined}
     >
-      {row.getVisibleCells().map((c) => (
+      {row.getVisibleCells().map((c) => {
+        const pinLeft = pins.left.get(c.column.id);
+        return (
         <td
           key={c.id}
+          style={pinLeft != null ? { left: pinLeft } : undefined}
           className={clsx(
             "py-row",
+            pinLeft != null && ["sticky z-[1]", striped ? PIN_BG_STRIPED : PIN_BG],
+            pinLeft != null && pinDivider && pins.last === c.column.id && PIN_DIVIDER,
             // Right-aligned numeric cells must never wrap —
             // breaking "$1,234.56" onto two lines ruins the
             // column. Left cells (project paths) may still
@@ -498,7 +574,8 @@ function DataTableRowImpl<T>({ row, striped, extraClass, onRowClick }: DataTable
         >
           {flexRender(c.column.columnDef.cell, c.getContext())}
         </td>
-      ))}
+        );
+      })}
     </tr>
   );
 }
@@ -512,9 +589,12 @@ const DataTableRow = memo(DataTableRowImpl, sameRow) as <T>(
 function ScrollEdgeButton({
   side,
   onClick,
+  offset = 0,
 }: {
   side: "left" | "right";
   onClick: () => void;
+  /** Px to clear on that side (the pinned block, for the left button). */
+  offset?: number;
 }) {
   return (
     <Tooltip content={`More columns to the ${side}. Click to scroll.`}>
@@ -522,6 +602,7 @@ function ScrollEdgeButton({
       type="button"
       onClick={onClick}
       aria-label={`Scroll table ${side}`}
+      style={offset > 0 ? { [side]: offset + 4 } : undefined}
       className={clsx(
         "absolute top-1 z-20 grid h-5 w-5 place-items-center rounded-pill border border-line-2 bg-bg-2 text-caption leading-none text-fg-2 shadow-drawer transition-colors hover:border-accent/60 hover:bg-bg-3 hover:text-fg-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
         side === "left" ? "left-1" : "right-1",
@@ -549,6 +630,11 @@ declare module "@tanstack/react-table" {
     // its own text (TruncatedPath, `truncate`) so the clip reads as an
     // ellipsis rather than a hard cut.
     truncate?: boolean;
+    // Pin the column to the left edge while the table scrolls sideways.
+    // Applies to LEADING columns that also declare `width` (their offsets
+    // are the summed widths before them; see pinnedOffsets). Pinned cells
+    // paint an opaque row background so the scrolled columns slide under.
+    sticky?: boolean;
   }
 }
 

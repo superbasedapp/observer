@@ -27,6 +27,7 @@ function flowOf(progress: ConnectProgress | null, error: string | null = null): 
     busy: false,
     error,
     start: noop,
+    reconsent: noop,
     cancel: noop,
     openApproval: () => undefined,
     reload: () => undefined,

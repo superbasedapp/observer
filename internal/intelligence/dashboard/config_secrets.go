@@ -114,6 +114,29 @@ var secretFields = []secretField{
 		},
 	},
 	{
+		// [observability.alerts].slack_webhook_url — a Slack incoming-webhook
+		// URL is a bearer credential (anyone holding it can post to the
+		// channel). Written only through PUT /api/obs/alerts/slack (Plane A
+		// W3-5, lane B9).
+		Key:    "observability.alerts.slack_webhook_url",
+		Values: func(cfg *config.Config) []string { return nonEmpty(cfg.Observability.Alerts.SlackWebhookURL) },
+		Redact: func(cfg *config.Config) { redactString(&cfg.Observability.Alerts.SlackWebhookURL) },
+		Reconcile: func(next, prev *config.Config) bool {
+			return reconcileSecretString(&next.Observability.Alerts.SlackWebhookURL, prev.Observability.Alerts.SlackWebhookURL)
+		},
+	},
+	{
+		// [observability.alerts].pagerduty_routing_key — a PagerDuty Events
+		// API v2 routing key opens incidents on the service it names. Written
+		// only through PUT /api/obs/alerts/pagerduty (Plane A W5-5, lane C9).
+		Key:    "observability.alerts.pagerduty_routing_key",
+		Values: func(cfg *config.Config) []string { return nonEmpty(cfg.Observability.Alerts.PagerDutyRoutingKey) },
+		Redact: func(cfg *config.Config) { redactString(&cfg.Observability.Alerts.PagerDutyRoutingKey) },
+		Reconcile: func(next, prev *config.Config) bool {
+			return reconcileSecretString(&next.Observability.Alerts.PagerDutyRoutingKey, prev.Observability.Alerts.PagerDutyRoutingKey)
+		},
+	},
+	{
 		Key: "routing.key_pool",
 		Values: func(cfg *config.Config) []string {
 			var out []string

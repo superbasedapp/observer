@@ -58,6 +58,7 @@ public static class P {
     File.AppendAllText(@"$log", string.Join(" ", a) + Environment.NewLine);
     if (a.Length > 0 && a[0] == "--version") Console.WriteLine("observer version $($ver.Substring(1)) ($ed stub)");
     if (a.Length > 0 && a[0] == "connect" && Environment.GetEnvironmentVariable("FAKE_CONNECT_FAIL") == "1") return 1;
+    if (a.Length > 0 && a[0] == "apps" && Environment.GetEnvironmentVariable("FAKE_APPS_FAIL") == "1") { Console.Error.WriteLine("stub: could not listen on 127.0.0.1:4318"); return 1; }
     if (a.Length > 0 && a[0] == "uninstall" && Environment.GetEnvironmentVariable("FAKE_UNINSTALL_FAIL") == "1") return 1;
     return 0;
   }
@@ -281,6 +282,68 @@ public static class P {
   if ($r.rc -ne 0 -and $r.out -match "is not a team name") { Ok "-Connect refuses a bad team name" } else { Bad "-Connect bad team" $r.out }
   $r = Run @("-Prefix", "$T\pc4", "-Connect", "-Uninstall", "-Yes")
   if ($r.rc -ne 0 -and $r.out -match "does not go with -Uninstall") { Ok "-Connect refuses -Uninstall" } else { Bad "-Connect -Uninstall" $r.out }
+
+  # -Apps (first-run plan 3.3, 3.5, 4.4): `observer apps on --yes
+  # --installer` runs after the binary is in place and before Observer is
+  # started; with -Connect the hand-off URL carries intent=apps;
+  # SBO_CONNECT_APPS=1 is the same as -Apps; an edition without AI Apps, a
+  # bad SBO_CONNECT_APPS and -Uninstall are refused; a failing `apps on`
+  # keeps the install.
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa1", "-Apps", "-Yes")
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $calls -contains "apps on --yes --installer" -and $r.out -match "observer apps status" -and -not ($calls -contains "setup launch")) {
+    Ok "-Apps: apps on after install, developer edition, apps status in next steps"
+  } else { Bad "-Apps" ($r.out + ($calls -join "`n")) }
+
+  foreach ($how in @("switch", "env")) {
+    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+    $envs = @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
+    $args2 = @("-FromDir", $rel, "-Prefix", "$T\pa2$how", "-Connect", "acme", "-Yes")
+    if ($how -eq "switch") { $args2 += "-Apps" } else { $envs["SBO_CONNECT_APPS"] = "1" }
+    $r = Run $args2 $envs
+    $calls = @(Get-Content $log)
+    $ai = [array]::IndexOf($calls, "apps on --yes --installer")
+    $li = [array]::IndexOf($calls, "setup launch")
+    if ($r.rc -eq 0 -and $ai -ge 0 -and $li -gt $ai -and $r.out.Contains("opens at http://127.0.0.1:8081/?connecting=1&team=acme&intent=apps)") `
+        -and $r.out.Contains("AI Apps           http://127.0.0.1:8081/apps")) {
+      Ok "-Connect acme with AI Apps ($how): apps on before the daemon starts, intent=apps in the hand-off, AI Apps line"
+    } else { Bad "-Connect acme with AI Apps ($how)" ($r.out + ($calls -join "`n")) }
+    Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa3", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and $r.out.Contains("opens at http://127.0.0.1:8081/?connecting=1&team=acme)") -and -not ($calls -contains "apps on --yes --installer")) {
+    Ok "-Connect without AI Apps carries no intent and runs no apps on"
+  } else { Bad "-Connect without AI Apps" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  foreach ($ed in @("minimal", "managed")) {
+    $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa4$ed", "-Apps", "-Edition", $ed, "-Yes")
+    # Windows PowerShell 5.1 wraps the child's error record at the console
+    # width, sometimes mid-word ("does not inc" / "lude AI Apps"), so the
+    # message is compared with every whitespace character taken out.
+    $flat = $r.out -replace '\s', ''
+    if ($r.rc -ne 0 -and $flat.Contains("doesnotincludeAIApps") -and $flat.Contains("pass-Editiondeveloper") -and -not (Test-Path "$T\pa4$ed\observer.exe")) { Ok "-Apps refuses the $ed edition" } else { Bad "-Apps $ed" $r.out }
+  }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa5", "-Yes") @{ SBO_CONNECT_APPS = "maybe" }
+  if ($r.rc -ne 0 -and $r.out -match "is not 1 or 0" -and -not (Test-Path "$T\pa5\observer.exe")) { Ok "an unknown SBO_CONNECT_APPS is refused" } else { Bad "SBO_CONNECT_APPS=maybe" $r.out }
+  $r = Run @("-Prefix", "$T\pa6", "-Apps", "-Uninstall", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "does not go with -Uninstall") { Ok "-Apps refuses -Uninstall" } else { Bad "-Apps -Uninstall" $r.out }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pa7", "-Apps", "-Yes") @{ FAKE_APPS_FAIL = "1" }
+  if ($r.rc -eq 0 -and (Test-Path "$T\pa7\observer.exe") -and $r.out -match "Turn it on any time: observer apps on" -and $r.out -notmatch "observer apps status") {
+    Ok "-Apps: a failing apps on keeps the install and names the command"
+  } else { Bad "-Apps failing apps on" $r.out }
+
+  # connect.ps1 refuses an unknown SBO_CONNECT_APPS before it fetches anything.
+  $connectScript = Join-Path $PSScriptRoot "connect.ps1"
+  $ErrorActionPreference = "Continue"
+  $cout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "`$env:SBO_CONNECT_APPS='maybe'; `$env:SBO_CONNECT_FROM_DIR='$T\nowhere'; & '$connectScript'" 2>&1 | Out-String
+  $crc = $LASTEXITCODE
+  $ErrorActionPreference = "Stop"
+  if ($crc -ne 0 -and $cout -match "is not 1 or 0") { Ok "connect.ps1 refuses an unknown SBO_CONNECT_APPS" } else { Bad "connect.ps1 SBO_CONNECT_APPS=maybe" $cout }
 
   $r = Run @("-Uninstall", "-Prefix", "$T\p2", "-Yes")
   if ($r.rc -eq 0 -and -not (Test-Path "$T\p2\observer.exe") -and (Get-Content $log) -contains "uninstall --all") { Ok "uninstall runs observer uninstall --all and removes the binaries" } else { Bad "uninstall" $r.out }

@@ -1,21 +1,21 @@
 import { type ReactNode } from "react";
-import { Pill, buttonDisabledLook } from "@/components/primitives";
+import { Input, Pill, Select as SharedSelect, Textarea } from "@/components/primitives";
+import { callerSetsWidth } from "@shared/lib/fieldWidth";
 import { type LintIssue } from "./types";
 
-// Shared form primitives for the Policies module tabs (Guardrails,
-// Routing, Templates). Kept in one place so every tab renders identical
-// inputs/buttons (section cards are the shared ChartShell / Card) (CLAUDE.md rule 1 — one implementation, extended, not
-// re-forked per tab).
+// Form helpers for the Policies module tabs (Guardrails, Routing, Activity).
+// Each is a thin binding over the shared field primitives (Input, Select,
+// Textarea), so every tab renders the one field chrome the design system
+// owns; buttons are the shared Button and section cards the shared Card /
+// ChartShell (CLAUDE.md rule 1: one implementation, extended, not re-forked
+// per tab).
 
-export const inputClass =
-  "rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-small text-fg-1 outline-none focus:border-accent";
-export const btnPrimary = `rounded-2 bg-accent px-3 py-1.5 text-small font-medium text-accent-on transition-opacity hover:opacity-90 ${buttonDisabledLook}`;
-export const btnSecondary =
-  "rounded-2 border border-line-2 bg-bg-3 px-3 py-1.5 text-small font-medium text-fg-1 transition-colors hover:border-line-3 disabled:opacity-50";
-export const btnGhost =
-  "rounded-2 border border-line-2 px-2 py-1 text-[11px] font-medium text-fg-2 transition-colors hover:text-fg-1 disabled:opacity-40";
-export const btnGhostDanger =
-  "rounded-2 border border-line-2 px-2 py-1 text-[11px] font-medium text-fg-3 transition-colors hover:border-danger/40 hover:text-danger";
+// A field in an inline row sizes to its content unless the caller sets a
+// width (shared/lib/fieldWidth.ts: an unprefixed width class wins).
+function withWidth(className: string | undefined, fallback: string): string {
+  const c = className ?? "";
+  return callerSetsWidth(c) ? c : `${fallback} ${c}`.trim();
+}
 
 export function Labeled({
   label,
@@ -35,7 +35,7 @@ export function Labeled({
   const Tag = group ? "div" : "label";
   return (
     <Tag className={(stacked ? "block" : "inline-flex items-center gap-2") + " " + (className ?? "")}>
-      <span className={"text-[10.5px] uppercase tracking-[0.05em] text-fg-3 " + (stacked ? "mb-1 block" : "")}>{label}</span>
+      <span className={"text-[11px] font-medium text-fg-2 " + (stacked ? "mb-1 block" : "")}>{label}</span>
       {children}
     </Tag>
   );
@@ -50,18 +50,22 @@ export function Select({
   onChange,
   options,
   className,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
   className?: string;
+  ariaLabel?: string;
 }) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className={inputClass + " " + (className ?? "")}>
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
+    <SharedSelect
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      options={options}
+      aria-label={ariaLabel}
+      className={withWidth(className, "w-auto")}
+    />
   );
 }
 
@@ -70,19 +74,23 @@ export function TextArea({
   onChange,
   rows,
   placeholder,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   rows?: number;
   placeholder?: string;
+  ariaLabel?: string;
 }) {
   return (
-    <textarea
+    <Textarea
       value={value}
       onChange={(e) => onChange(e.target.value)}
       rows={rows ?? 2}
       placeholder={placeholder}
-      className={inputClass + " w-full font-mono text-[11px] leading-relaxed"}
+      aria-label={ariaLabel}
+      mono
+      className="w-full text-[11px] leading-relaxed"
     />
   );
 }
@@ -92,25 +100,52 @@ export function TextInput({
   onChange,
   placeholder,
   className,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   className?: string;
+  ariaLabel?: string;
 }) {
   return (
-    <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass + " " + (className ?? "")} />
+    <Input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      className={withWidth(className, "w-auto")}
+    />
   );
 }
 
-export function NumberInput({ value, onChange, step }: { value: number; onChange: (n: number) => void; step?: number }) {
+export function NumberInput({
+  value,
+  onChange,
+  step,
+  min,
+  max,
+  className,
+  ariaLabel,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+  className?: string;
+  ariaLabel?: string;
+}) {
   return (
-    <input
+    <Input
       type="number"
       value={Number.isFinite(value) ? value : 0}
       step={step}
+      min={min}
+      max={max}
+      aria-label={ariaLabel}
       onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
-      className={inputClass + " w-full"}
+      className={withWidth(className, "w-full")}
     />
   );
 }
@@ -118,14 +153,14 @@ export function NumberInput({ value, onChange, step }: { value: number; onChange
 export function IssueList({ issues }: { issues: LintIssue[] }) {
   if (issues.length === 0) return null;
   return (
-    <div className="mt-2 space-y-1">
+    <ul className="mt-2 space-y-1">
       {issues.map((i, n) => (
-        <div key={n} className={"flex items-start gap-1.5 text-[11px] " + (i.fatal ? "text-danger" : "text-warn")}>
-          <Pill variant={i.fatal ? "danger" : "warn"}>{i.fatal ? "error" : "warn"}</Pill>
+        <li key={n} className="flex items-start gap-1.5 text-[11.5px] text-fg-2">
+          <Pill variant={i.fatal ? "danger" : "warn"}>{i.fatal ? "error" : "warning"}</Pill>
           <span className="pt-0.5">{i.message}</span>
-        </div>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
 

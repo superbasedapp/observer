@@ -22,11 +22,13 @@ import {
   onlineRole,
   type OnlineDashboardKind,
 } from "../../../shared/lib/twoDashboards.ts";
-import type { Account } from "./getStarted.ts";
+import type { Account, SurfaceLayout } from "./getStarted.ts";
 
 /** The query the installer opens this dashboard with. */
 export const HANDOFF_PARAM = "connecting";
 export const HANDOFF_TEAM_PARAM = "team";
+/** The installer's arrival intent (`--apps` adds &intent=apps). */
+export const HANDOFF_INTENT_PARAM = "intent";
 
 /** How often the page reads the status while it waits. */
 export const HANDOFF_POLL_MS = 3000;
@@ -39,21 +41,31 @@ export const HANDOFF_RETRY_COMMAND = "observer connect";
 /** A team slug as `observer connect <team>` takes it. */
 const TEAM_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
+/** The arrival intents the hand-off carries (a closed value): the AI apps
+ *  track, or none. */
+export type HandoffIntent = "apps" | "";
+
 /** Handoff is what the installer's query asked for. */
 export type Handoff = {
   /** The team chosen on the approval page, "" for the personal dashboard. */
   team: string;
+  /** The installer's arrival intent: "apps" for `--apps`; absent for none. */
+  intent?: HandoffIntent;
 };
 
 /**
  * parseHandoff reads the installer's query: ?connecting=1, with an optional
- * team slug (anything that is not a slug is dropped, never shown).
+ * team slug (anything that is not a slug is dropped, never shown) and an
+ * optional arrival intent (review FR-M18: only "apps" is read, anything
+ * else is none).
  */
 export function parseHandoff(search: string): Handoff | null {
   const q = new URLSearchParams(search);
   if (q.get(HANDOFF_PARAM) !== "1") return null;
   const team = (q.get(HANDOFF_TEAM_PARAM) ?? "").trim().toLowerCase();
-  return { team: TEAM_SLUG.test(team) ? team : "" };
+  const h: Handoff = { team: TEAM_SLUG.test(team) ? team : "" };
+  if ((q.get(HANDOFF_INTENT_PARAM) ?? "").trim().toLowerCase() === "apps") h.intent = "apps";
+  return h;
 }
 
 /**
@@ -65,8 +77,23 @@ export function withoutHandoff(href: string): string {
   const u = new URL(href);
   u.searchParams.delete(HANDOFF_PARAM);
   u.searchParams.delete(HANDOFF_TEAM_PARAM);
+  u.searchParams.delete(HANDOFF_INTENT_PARAM);
   const search = u.searchParams.toString();
   return u.pathname + (search ? `?${search}` : "") + u.hash;
+}
+
+/**
+ * withArrivalIntent opens the AI apps track of the getting-started surface
+ * for a hand-off that asked for it (the installer's `--apps`, review
+ * FR-M18), where the daemon decided the coding track and AI Apps is
+ * available here. It changes the view only, for this visit: it records
+ * nothing and turns nothing on (the track's own consent does that). A
+ * decision already on AI apps or Both, or AI Apps not available, keeps the
+ * daemon's layout.
+ */
+export function withArrivalIntent(layout: SurfaceLayout, h: Handoff | null): SurfaceLayout {
+  if (h?.intent !== "apps" || layout.track !== "coding" || layout.switchDisabled !== "") return layout;
+  return { track: "apps", columns: ["apps"], showSwitch: false, offerApps: false, switchDisabled: "", switchBack: true };
 }
 
 // ---- the phase ---------------------------------------------------------------

@@ -82,18 +82,32 @@ func TestEnrolWritesFullContentByTenancy(t *testing.T) {
 	}
 }
 
-// TestEnrolShareDefaultsTable pins the table itself: exactly one row per
-// tenancy class, managed = true / individual = false, and an unmatched
-// lookup falls back to the individual row (never INTO full content).
+// TestEnrolShareDefaultsTable pins the table itself: one row per tenancy
+// class plus the owner-managed row (a personal organization, managed by its
+// owner since 2026-11-19): managed = true, owner-managed = false (the owner
+// approved a summary-only personal dashboard), individual = false; an
+// unmatched lookup falls back to the individual row (never INTO full
+// content).
 func TestEnrolShareDefaultsTable(t *testing.T) {
-	if len(enrolShareDefaults) != 2 {
-		t.Fatalf("enrolShareDefaults has %d rows, want 2 (one per tenancy class)", len(enrolShareDefaults))
+	if len(enrolShareDefaults) != 3 {
+		t.Fatalf("enrolShareDefaults has %d rows, want 3", len(enrolShareDefaults))
 	}
-	if got := enrolShareDefaultFor(true); got.name != "managed" || !got.fullContent {
-		t.Fatalf("managed row = %+v", got)
+	for _, tc := range []struct {
+		managed, owner bool
+		name           string
+		full           bool
+	}{
+		{true, false, "managed", true},
+		{true, true, "owner-managed", false},
+		{false, false, "individual", false},
+		{false, true, "individual", false}, // no such row: the fallback
+	} {
+		if got := enrolShareDefaultOf(tc.managed, tc.owner); got.name != tc.name || got.fullContent != tc.full {
+			t.Errorf("enrolShareDefaultOf(%v, %v) = %+v, want %s full=%v", tc.managed, tc.owner, got, tc.name, tc.full)
+		}
 	}
-	if got := enrolShareDefaultFor(false); got.name != "individual" || got.fullContent {
-		t.Fatalf("individual row = %+v", got)
+	if got := enrolShareDefaultFor(true); got.name != "managed" {
+		t.Fatalf("enrolShareDefaultFor(true) = %+v", got)
 	}
 	if last := enrolShareDefaults[len(enrolShareDefaults)-1]; last.fullContent {
 		t.Fatal("the fallback (last) row must be the metadata-only one")

@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import type { InputHTMLAttributes, ReactNode } from "react";
+import { useId, type InputHTMLAttributes, type ReactNode } from "react";
 import { callerSetsWidth } from "../lib/fieldWidth";
 
 // Input / Select / Textarea share one chrome so a form never drifts field
@@ -34,16 +34,37 @@ export type FieldChromeProps = {
   className?: string;
 };
 
-/** FieldShell wraps a control with its optional label / help / error. */
+/** useFieldIds names a field control and its note so FieldShell can tie
+ *  them together: the control keeps a caller-given id, else gets a generated
+ *  one; `noteId` is the help / error line the control is described by. */
+export function useFieldIds(id: string | undefined): { controlId: string; noteId: string } {
+  const gen = useId();
+  const controlId = id ?? `field-${gen}`;
+  return { controlId, noteId: `${controlId}-note` };
+}
+
+/** hasFieldNote is true when FieldShell renders a help or error line. */
+export function hasFieldNote(help: ReactNode, error: ReactNode): boolean {
+  return (error !== undefined && error !== null && error !== "") || help !== undefined;
+}
+
+/** FieldShell wraps a control with its optional label / help / error. With
+ *  `controlId` the label is a real <label for> (so the control has an
+ *  accessible name and a label click focuses it) and the note carries
+ *  `noteId` for the control's aria-describedby. */
 export function FieldShell({
   label,
   help,
   error,
+  controlId,
+  noteId,
   children,
 }: {
   label?: ReactNode;
   help?: ReactNode;
   error?: ReactNode;
+  controlId?: string;
+  noteId?: string;
   children: ReactNode;
 }) {
   if (label === undefined && help === undefined && error === undefined) {
@@ -51,17 +72,20 @@ export function FieldShell({
   }
   return (
     <div className="space-y-1">
-      {label !== undefined && (
-        <div className="text-xs font-medium text-fg-2">
-          {label}
-        </div>
-      )}
+      {label !== undefined &&
+        (controlId ? (
+          <label htmlFor={controlId} className="block text-xs font-medium text-fg-2">
+            {label}
+          </label>
+        ) : (
+          <div className="text-xs font-medium text-fg-2">{label}</div>
+        ))}
       {children}
       {error !== undefined && error !== null && error !== "" ? (
-        <div className="text-[11px] leading-snug text-danger">{error}</div>
+        <div id={noteId} className="text-[11px] leading-snug text-danger">{error}</div>
       ) : (
         help !== undefined && (
-          <div className="text-[11px] leading-snug text-fg-3">{help}</div>
+          <div id={noteId} className="text-[11px] leading-snug text-fg-3">{help}</div>
         )
       )}
     </div>
@@ -82,10 +106,14 @@ export function Input({
   className,
   ...rest
 }: InputProps) {
+  const { controlId, noteId } = useFieldIds(rest.id);
+  const described = hasFieldNote(help, error) ? noteId : undefined;
   return (
-    <FieldShell label={label} help={help} error={error}>
+    <FieldShell label={label} help={help} error={error} controlId={controlId} noteId={noteId}>
       <input
         {...rest}
+        id={controlId}
+        aria-describedby={rest["aria-describedby"] ?? described}
         className={clsx(
           fieldClasses({ mono, invalid: Boolean(error), ownWidth: callerSetsWidth(className) }),
           className,

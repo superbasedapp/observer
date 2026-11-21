@@ -70,6 +70,10 @@ type enrolDashboard struct {
 	// and pushes now instead of at the next poll or after a failure pause.
 	// nil in a process with no poll loops.
 	refetch func()
+	// reconsent, when set, reads the daemon's org client's latest re-consent
+	// advisory (orgclient.Client.ReconsentReason). nil in a process with no
+	// push loop.
+	reconsent func() string
 
 	mu     sync.Mutex
 	offers map[string]*pendingGrantOffer
@@ -134,6 +138,7 @@ func (d *enrolDashboard) withIdentityChanged(fn func()) *enrolDashboard {
 func (d *enrolDashboard) withRetire(c *orgclient.Client) *enrolDashboard {
 	if c != nil {
 		d.retired = c.RetireIdentity
+		d.reconsent = c.ReconsentReason
 		d.refetch = func() {
 			c.KickPolicyResourcePoll()
 			c.KickPolicyBundlePoll()
@@ -268,6 +273,9 @@ func (d *enrolDashboard) Overview(ctx context.Context) (dashapi.EnrolmentOvervie
 	}
 	ov.UserEmail, ov.EnrolledAt = st.UserEmail, st.EnrolledAt
 	ov.Tenancy = rep.Tenancy
+	if d.reconsent != nil && ov.Tenancy != orgcontract.TenancyManaged {
+		ov.Reconsent = d.reconsent()
+	}
 	if ov.Tenancy == orgcontract.TenancyManaged {
 		ov.MachineProofWarning = machineProofWarning(ctx, b.store)
 	}

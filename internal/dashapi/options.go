@@ -22,6 +22,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/planlimitssvc"
+	"github.com/marmutapp/superbased-observer/internal/sdkcredsvc"
 	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -356,6 +357,11 @@ type Options struct {
 	// the HTTP response; implementations must be quick and never
 	// panic (mirror the CostEngine.Reload hot-path contract).
 	OnConfigSaved func()
+	// SDK backs the SDK destination discovery route and the SDK key
+	// sign-in/sign-out routes (Plane A W2-7, ruling D18; dashboard
+	// sdk_settings.go). Nil Status reads as "not signed in"; nil SignIn /
+	// SignOut answer 501.
+	SDK SDKSeams
 	// ToolCatalog lists every supported adapter (stable tool name +
 	// canonical watch paths) for the Connected-tools panel (P4.1).
 	// Injected by cmd - the same seam pattern as
@@ -925,4 +931,31 @@ type AggregateShareStatus struct {
 	ConsentedAt   time.Time
 	Actor         string
 	SchemaVersion int
+}
+
+// SDKSeams is the cmd-injected SDK key holder (internal/sdkcredsvc through
+// the orgclient lane), so the dashboard never dials the org itself.
+type SDKSeams struct {
+	// Status describes the stored SDK key (never the key).
+	Status func() sdkcredsvc.Status
+	// SignIn mints the member's SDK key on the org and stores it.
+	SignIn func(ctx context.Context) (sdkcredsvc.Status, error)
+	// SignOut revokes it on the org and removes the local copies; it
+	// returns how many keys the org revoked.
+	SignOut func(ctx context.Context) (int, error)
+	// Receiver reports what the daemon last recorded about its local OTLP
+	// receiver's bind (the record `observer doctor` row otlp.receiver
+	// reads); ok is false when nothing is recorded. Nil: not wired.
+	Receiver func() (OTLPReceiverState, bool)
+}
+
+// OTLPReceiverState is the daemon's record of its OTLP receiver bind: the
+// state ("listening" or "bind_failed"), the addresses and the bind error.
+// Addresses and an error string only: no content, no tokens.
+type OTLPReceiverState struct {
+	State    string `json:"state"`
+	GRPCAddr string `json:"grpc_addr,omitempty"`
+	HTTPAddr string `json:"http_addr,omitempty"`
+	Error    string `json:"error,omitempty"`
+	At       string `json:"at,omitempty"`
 }

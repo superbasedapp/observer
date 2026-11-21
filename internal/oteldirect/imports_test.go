@@ -26,6 +26,7 @@ func TestNoForbiddenImports(t *testing.T) {
 		Except: []string{
 			"github.com/marmutapp/superbased-observer/internal/models",
 			"github.com/marmutapp/superbased-observer/internal/orgcontract",
+			"github.com/marmutapp/superbased-observer/internal/otlpjson",
 			"github.com/marmutapp/superbased-observer/internal/otlpvendor",
 			"github.com/marmutapp/superbased-observer/internal/scrub",
 			"github.com/marmutapp/superbased-observer/internal/tooltax",

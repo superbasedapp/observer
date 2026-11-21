@@ -1,0 +1,79 @@
+{
+  "name": "@superbased/feedback-widget",
+  "version": "0.1.0",
+  "description": "superbased end-user feedback widget: a tiny, framework-agnostic thumbs up/down (and optional comment) web component, with a React wrapper. It posts to your own backend, never to superbased, and holds no SDK key.",
+  "license": "Apache-2.0",
+  "author": "superbased <contact@superbased.app>",
+  "homepage": "https://superbased.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/superbasedapp/observer.git",
+    "directory": "sdk/widget"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./define": {
+      "types": "./dist/define.d.ts",
+      "default": "./dist/define.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": [
+    "./dist/define.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/element.test.mjs test/react.test.mjs test/server.test.mjs",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "feedback",
+    "thumbs",
+    "web-component",
+    "custom-element",
+    "react",
+    "llm",
+    "observability"
+  ],
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "happy-dom": "^21.0.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.0"
+  }
+}

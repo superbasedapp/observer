@@ -29,8 +29,15 @@ type RequestEnrichment struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	CostUSD             float64
-	RoutingReason       string // human-readable: "→ <selected_model> (<codes>)", empty when no decision logged
-	GuardVerdict        string // human-readable: "<decision> <rule> (<category>)", empty when no verdict anchored
+	// CostUnpriced: the cost engine did not price the turn (a local or
+	// unknown model). api_turns stores that as NULL on insert
+	// (nullableFloat64) and as 0 after a merge update, so both read unpriced;
+	// a model the book prices at exactly $0 is indistinguishable and reads
+	// unpriced too, the honest side. CostUSD is then 0 and means nothing; a
+	// reader must show the turn unpriced, never $0 (review finding R-C06).
+	CostUnpriced  bool
+	RoutingReason string // human-readable: "→ <selected_model> (<codes>)", empty when no decision logged
+	GuardVerdict  string // human-readable: "<decision> <rule> (<category>)", empty when no verdict anchored
 }
 
 // EnrichmentByRequestID returns the proxy-observed facts for one request_id, or
@@ -59,13 +66,13 @@ func (s *Store) EnrichmentByRequestID(ctx context.Context, requestID string) (Re
 	err := s.db.QueryRowContext(ctx, `
 SELECT id, provider, model, input_tokens, output_tokens,
        COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
-       COALESCE(cost_usd,0)
+       COALESCE(cost_usd,0), CASE WHEN COALESCE(cost_usd,0) = 0 THEN 1 ELSE 0 END
   FROM api_turns
  WHERE request_id = ?
    AND COALESCE(source,'') NOT IN (?, ?)
  ORDER BY id ASC LIMIT 1`, requestID, SourceObsOTLP, SourceObsSDK).Scan(
 		&apiTurnID, &e.Provider, &e.Model, &e.InputTokens, &e.OutputTokens,
-		&e.CacheReadTokens, &e.CacheCreationTokens, &e.CostUSD,
+		&e.CacheReadTokens, &e.CacheCreationTokens, &e.CostUSD, &e.CostUnpriced,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestEnrichment{}, false, nil

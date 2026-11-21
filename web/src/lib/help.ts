@@ -1070,8 +1070,9 @@ export const HELP_REGISTRY: HelpEntry[] = [
   {
     id: "column.sessions.tokens",
     category: "column",
-    title: "Sessions › Total tokens (deprecated - split into Input/Cache R/Cache W/Output as of v1.4.51)",
-    oneLiner: "Sum of all four billable buckets. Still emitted in the JSON for back-compat; no longer rendered as a column.",
+    title: "Sessions › Tokens",
+    oneLiner: "All the tokens the session used: input, cache reads, cache writes and output added up.",
+    detail: "The thin bar under the number shows the mix of the four kinds; hover the number for each count, the cache-write split between the 5-minute and 1-hour tiers, and reasoning tokens when the model reported them. This column does not sort: sort by one kind from the Sort menu, or turn on its own column (Input, Cache R, Cache W, Output) from Columns.",
     formula: "Input + Output + CacheRead + CacheCreation",
     related: ["column.sessions.input_tokens", "column.sessions.output_tokens", "column.sessions.cache_read_tokens", "column.sessions.cache_creation_tokens"],
   },
@@ -2930,6 +2931,15 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "It is offered only on a machine your organization manages whose enrolment holds the sandboxed terminals authority, and only to the teams the organization allows. The step opens the sign-in in a setup terminal: it prints a page on your organization's dashboard and a short code; open the page, sign in, and type the code. The grant lasts what your organization sets (12 hours by default). Each run then gets a short-lived token; model traffic and hooks travel through this laptop, which must stay online for the run.",
     source: "docs/sandbox-openshell-org.md, section \"Turning it on\"",
     related: ["glossary.terminals_sandbox_setup_hosted"],
+  },
+  {
+    id: "glossary.apps_end_user",
+    category: "glossary",
+    title: "End users of your AI apps",
+    oneLiner: "The person or account behind a request to an app you build, as the app names it with the SDK's user option.",
+    detail:
+      "An end user is personal data. This machine stores it as the app sent it. It leaves this machine when the app's data also goes to your organization: an SDK destination of online or both (Settings > AI Apps), or an AI apps share your organization turned on. Your organization's dashboard then shows the same end users. A trace without an end user is counted on its own.",
+    source: "docs/plans/plane-a-sdk-buildout/contracts/destination.md",
   },
 ];
 // The registry as the dashboard shows it: verbatim normally, the token-usage

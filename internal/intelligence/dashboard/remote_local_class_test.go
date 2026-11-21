@@ -148,6 +148,11 @@ var expectedClassification = map[string]string{
 	"/api/config":                     "V",
 	"/api/config/backup":              "L",
 	"/api/config/keys":                "L", // generic batched dotted-key config write (dashboard-config-management plan §2.2)
+	"/api/config/proposals":           "L", // settings an AI agent asked for, waiting for approval (Plane A W2-8, D19)
+	"/api/config/proposals/":          "L", // resolve one proposal (approved only once in force)
+	"/api/sdk/credential":             "L", // SDK key sign-in / sign-out (Plane A W2-7): mints an org credential
+	"/api/sdk/destination":            "L", // the SDK discovery read (never the key; contract destination.md): org, key id, key file path, so owner-local (E-89); the SDKs read it on loopback
+	"/api/sdk/receiver":               "V", // the local OTLP receiver's bind state for the AI Apps pages (E-72): addresses and a bind error only
 	"/api/config/schema":              "L", // the owner-local settings schema that drives /keys
 	"/api/config/pricing":             "L",
 	"/api/config/pricing/defaults":    "V",
@@ -482,6 +487,9 @@ var expectedClassification = map[string]string{
 	"/api/firstrun":                       "L",
 	"/api/firstrun/seen":                  "L",
 	"/api/firstrun/glance":                "L",
+	"/api/apps/status":                    "L",
+	"/api/apps/enable":                    "L",
+	"/api/apps/disable":                   "L",
 	"/api/tasks":                          "V", // Phase-2 task-tracking project/tool/window rollup — read-side aggregate over already-captured actions/token_usage rows, same posture as /api/cache/status
 	"/api/terminal/":                      "V",
 	"/api/terminal/install":               "L", // spawns the registry-constant install command in a local-only setup PTY — owner-local only
@@ -637,6 +645,8 @@ var mutationRoutes = []string{
 	"/api/backfill/run",
 	"/api/config/backup",
 	"/api/config/keys",
+	"/api/config/proposals/",
+	"/api/sdk/credential",
 	"/api/config/pricing",
 	"/api/config/profiles",
 	"/api/config/profiles/",
@@ -725,6 +735,9 @@ var mutationRoutes = []string{
 	"/api/suggestions/state",
 	"/api/notifications/state",
 	"/api/firstrun/seen",
+	// AI Apps hot-enable (lane F1): both write config.toml.
+	"/api/apps/enable",
+	"/api/apps/disable",
 	// T-854: a reply / Ask my admin, read and acknowledge receipts, retry
 	// and discard all reach the org or change what will.
 	"/api/messages",

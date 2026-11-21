@@ -194,6 +194,7 @@ jobs:
       shard_count: ${{ steps.plan.outputs.shard_count }}
       omit: ${{ steps.plan.outputs.omit }}
       tier: ${{ steps.plan.outputs.tier }}
+      sdk: ${{ steps.plan.outputs.sdk }}
       attested: ${{ steps.attest.outputs.attested }}
     steps:
       - uses: actions/checkout@v5
@@ -266,7 +267,7 @@ jobs:
             # Tag run of a sha a green full dispatch already covers: nothing
             # to repeat. The artifact still uploads so the run shape is fixed.
             : > plan/affected.txt; : > plan/race.txt; : > plan/fresh.txt
-            { echo "run=true"; echo "full=true"; echo "tier=full"; echo "shards=[]"; echo "shard_count=0"; echo "omit=[]"; } >> "$GITHUB_OUTPUT"
+            { echo "run=true"; echo "full=true"; echo "tier=full"; echo "shards=[]"; echo "shard_count=0"; echo "omit=[]"; echo "sdk=false"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           case "$EVENT:$REF" in
@@ -332,6 +333,26 @@ jobs:
             go run ./scripts/ci/cipkgs affected "$base" "$GITHUB_SHA" > plan/affected.txt
             go run ./scripts/ci/cipkgs race > plan/race.txt
           fi
+          # The sdk job (E-91): a push or PR runs the SDK suites only when
+          # it touches sdk/** or their runner scripts/ci/sdk.sh; a full run
+          # always does, a narrowed one when its diff does. No base to
+          # diff against (a new branch, a failed fetch) runs them.
+          sdk=true
+          if [ "$tier" = narrowed ]; then
+            sdk_base="$SINCE"
+          elif [ "$full" = true ]; then
+            sdk_base=""
+          else
+            sdk_base="${PR_BASE:-$PUSH_BEFORE}"
+            [ -n "${sdk_base//0/}" ] || sdk_base=""
+            [ -n "$sdk_base" ] || sdk_base="none"
+          fi
+          if [ -n "$sdk_base" ] && [ "$sdk_base" != none ]; then
+            if changed=$(git diff --name-only "$sdk_base" "$GITHUB_SHA" -- sdk scripts/ci/sdk.sh 2>/dev/null); then
+              [ -n "$changed" ] || sdk=false
+            fi
+          fi
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
           # Packages that never replay a cached test result (item 17): the
           # push tier lets the others replay; a full run replays nothing.
           go run ./scripts/ci/cipkgs fresh > plan/fresh.txt
@@ -1190,3 +1211,53 @@ jobs:
           cd ..
           make verify-webcloud-dist
 
+  # ----------------------------------------------------------------
+  # SDK suites (review E-91): scripts/ci/sdk.sh, the one owner of the SDK
+  # test commands (the ops gate's sdk:* units and sdk-release.yml call it
+  # too), runs sdk/python's pytest and sdk/typescript's typecheck and npm
+  # test, sdk/java's mvn test, and sdk/go's gofmt, vet and go test -race, each
+  # against sdk/contract. The plan job's `sdk` output path-
+  # filters it: a push or PR runs it only when it touches sdk/** or
+  # scripts/ci/sdk.sh; a full (dispatch) run always does. One Python and
+  # one Node version here; sdk-release.yml runs the whole version matrix
+  # before a publish. Same skips as the other jobs: never on a tag push,
+  # and the workflow's paths-ignore and concurrency apply.
+  # ----------------------------------------------------------------
+  sdk:
+    name: sdk ${{ matrix.unit }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.sdk == 'true'
+    runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { unit: python-3.12, python: '3.12', mode: python }
+          - { unit: node-22, node: '22', mode: node }
+          - { unit: java-17, java: '17', mode: java }
+          - { unit: go, mode: go }
+    steps:
+      - uses: actions/checkout@v5
+      - if: matrix.mode == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - if: matrix.mode == 'go'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: sdk/go/go.mod
+          cache-dependency-path: sdk/go/go.sum
+      - if: matrix.mode == 'node'
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - if: matrix.mode == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+          cache-dependency-path: sdk/java/pom.xml
+      - name: scripts/ci/sdk.sh ${{ matrix.mode }}
+        run: bash scripts/ci/sdk.sh "${{ matrix.mode }}"

@@ -1,41 +1,52 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import {
+  Button,
+  Callout,
   Card,
-  HeroStat,
+  ErrorState,
   InlineLoading,
   PageHeader,
-  Pill,
   SegmentedControl,
+  StatCard,
+  StatStrip,
   TabStrip,
+  VocabDefPill,
   type TabDef,
-  Stagger,
 } from "@/components/primitives";
+import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList";
 import { useApi } from "@/lib/useApi";
 import { useUrlTab } from "@/lib/useUrlTab";
-import { usePageTabs } from "@/lib/governance";
+import { useHrefGate, usePageTabs } from "@/lib/governance";
 import { POLICIES_TABS, defaultTab, type PoliciesTab } from "@/lib/nodePageTabs";
 import { ApiError, fetchJSON } from "@/lib/api";
-import { fmtShortId, fmtUSD } from "@/lib/format";
+import { fmtInt, fmtShortId, fmtUSD } from "@/lib/format";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
-import { decisionTone } from "@shared/lib/guardCatalog";
 import { vocabView } from "@shared/lib/vocabEntry";
 import { VocabPill } from "@shared/lib/vocabPill";
+import { ADMISSION_DECISION, judgeHostingLabel } from "@shared/lib/obsVocab";
 import { AUDIT_CHAIN } from "@/lib/vocabTones";
 import { ActivityTab } from "./policies/Activity";
 import { GuardrailsTab } from "./policies/Guardrails";
 import { RoutingTab } from "./policies/Routing";
 import { TemplatesTab } from "./policies/Templates";
 import { TestTab } from "./policies/Test";
+import { POLICY_MODE_LABEL, wordsFor } from "./policies/vocab";
 import {
   type AdmissionMode,
   type AdmissionPolicyGet,
   type EgressMode,
   type EgressPolicyGet,
+  applyAdmissionPolicy,
+  policyErrorText,
+  policyStatusText,
   postPolicy,
 } from "./policies/types";
+import { AdmissionOff, AdmissionOffNote, AdmissionStartsNext, LiveUnsaved } from "./policies/AdmissionOff";
+import { admissionCard } from "./policies/applyRule";
 import { navIcon } from "@/lib/nav";
 import { ObsDisabled } from "@/components/ObsDisabled";
+import { OrgAppBudgetCard, type OrgAppCap } from "@/components/OrgAppBudgetCard";
 import {
   FlaskConical,
   History,
@@ -46,8 +57,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { MetricIcon } from "@/components/MetricIcon";
+import { PLACES } from "@/lib/settingsPlaces";
 
-// Policies page (Plane-A admission + egress policy AUTHORING) — the write
+// Policies page (Plane-A admission + egress policy AUTHORING) - the write
 // counterpart to the read-only Egress page. It lets the app operator author
 // the input-admission guardrails ([observability.admission]) and the egress
 // routing policy ([observability.egress]) from the dashboard instead of
@@ -55,14 +67,16 @@ import { MetricIcon } from "@/components/MetricIcon";
 // apply (an org admin can VIEW admission on web2 but never push policy to a
 // node), so the authoring surface belongs here on the node dashboard.
 //
-// HONESTY NOTE that shapes the UI (handover §1): the dashboard and the proxy
-// each build their OWN admission-service instance. "Apply live" hot-swaps the
-// dashboard's instance — the SDK/harness front-door — immediately. The proxy's
-// pre-forward backstop AND all egress routing run on the SEPARATE proxy
-// instance, which a live apply does NOT reach: those need Save (persist) + a
-// daemon restart. The UI must never imply every edit is instant.
+// HONESTY NOTE that shapes the UI: under `observer start` the dashboard and
+// the proxy share ONE admission service (gap P0-7, cmd/observer obs_wire.go),
+// so applying an admission policy changes the SDK front door and the proxy
+// check at once, and the page always saves it too (UI review U-27: a live-only
+// apply was silently lost on the next restart; /admission/status reports
+// live_unsaved when a save failed). Egress routing, the judge binding and the
+// per-user budget are read at daemon start and still need a restart. The UI
+// must never imply those are instant.
 
-// The page's `?tab=` ids (platform tabs plan §2.2: the tab moved from local
+// The page's `?tab=` ids (platform tabs plan 2.2: the tab moved from local
 // state to the URL, so every tab is a cold deep link and Back walks tabs).
 // The ids and labels live in lib/nodePageTabs.ts (POLICIES_TABS), the table
 // the command palette and the breadcrumb read too.
@@ -79,14 +93,23 @@ const POLICY_TAB_ICONS: Record<PolicyTab, LucideIcon> = {
 };
 
 type AdmissionStatus = {
+  // available: admission checks run on this machine at all
+  // ([observability.admission] enabled). Absent on an older daemon.
+  available?: boolean;
+  // pending_next_start: admission is turned on but starts at the next daemon
+  // start (FR-M01); available is false until then.
+  pending_next_start?: boolean;
   enabled: boolean;
   mode: string;
   judge_hosting: string;
   criteria_count: number;
   policy_hash?: string;
-  // A sparse map — a decision key is absent when its 24h count is zero.
+  // A sparse map: a decision key is absent when its 24h count is zero.
   decisions_24h: Partial<Record<"allow" | "flag" | "ask" | "deny", number>>;
-  chain: { rows: number; ok: boolean };
+  // The live policy applied but did not reach config (U-27).
+  live_unsaved?: boolean;
+  // state: off | intact | broken | unknown (U-11). Absent on an older daemon.
+  chain: { rows: number; ok: boolean; state?: string };
 };
 type AdmissionBudget = {
   enabled: boolean;
@@ -95,6 +118,10 @@ type AdmissionBudget = {
   monthly_usd: number;
   breaches_24h: number;
   top_spenders: { user: string; usd: number }[] | null;
+  // The organization's app budgets in force here (Plane A W4-1).
+  org_applied?: boolean;
+  org_authoritative?: boolean;
+  org_app_caps?: OrgAppCap[];
 };
 type EgressStatus = {
   enabled: boolean;
@@ -117,9 +144,9 @@ export function PoliciesPage() {
   const egress = useApi<EgressStatus>("/api/obs/egress/status");
 
   // The /api/obs/* routes exist only when [observability] is enabled. When
-  // absent the SPA catch-all serves index.html (200) → a JSON parse error
+  // absent the SPA catch-all serves index.html (200) -> a JSON parse error
   // (non-ApiError), or a 404 from a stricter mux. Either means "obs off". A
-  // real 5xx is a genuine handler error and renders as an error note.
+  // real 5xx is a genuine handler error and renders as an error state.
   const obsOff = [admission.error, budget.error, egress.error].some(
     (e) => e != null && (!(e instanceof ApiError) || e.status === 404),
   );
@@ -143,47 +170,46 @@ export function PoliciesPage() {
     { id: "activity", label: POLICIES_TABS.labels.activity, icon: POLICY_TAB_ICONS.activity },
   ];
   const tabs = allTabs.filter((t) => pageTabs.ids.includes(t.id));
+  const reloadAll = () => {
+    admission.reload();
+    budget.reload();
+    egress.reload();
+  };
+  // Admission checks are not running here (U-13): the page offers to turn
+  // them on instead of controls that would only answer "not enabled".
+  const card = admissionCard(admission.data ?? undefined);
+  const admissionOff = card !== "none";
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
         icon={navIcon("policies")}
         title="Policies"
-        sub="Author the Plane-A input-admission guardrails and egress routing policy for a hosted app's end-user traffic - the write counterpart to the read-only Egress and admission views. Node-local: policy is never pushed from an org server."
+        sub="Admission checks and routing rules for your AI apps' end-user traffic. Kept on this machine."
       />
 
       {obsOff ? (
         <ObsDisabled needs={["observability", "admission"]}>
-          Admission and egress policy authoring needs the observability subsystem with admission on.
+          Admission and routing policies need AI Apps with admission checks on.
         </ObsDisabled>
       ) : (
         <>
-          <ApplyModeNote />
+          {card === "starts_next" ? <AdmissionStartsNext /> : card === "off" ? <AdmissionOff /> : <ApplyModeNote />}
+          {!admissionOff && admission.data?.live_unsaved && <LiveUnsaved onSaved={admission.reload} />}
           <TabStrip tabs={tabs} value={tab} onChange={setTab} idPrefix="policies" />
           {tab === "overview" && (
             <OverviewTab
-              admission={admission.data}
+              admission={admission}
               budget={budget.data}
-              egress={egress.data}
-              loading={admission.loading || egress.loading}
-              reload={() => {
-                admission.reload();
-                budget.reload();
-                egress.reload();
-              }}
+              egress={egress}
+              reload={reloadAll}
+              onReviewActivity={pageTabs.ids.includes("activity") ? () => setTab("activity") : undefined}
             />
           )}
-          {tab === "templates" && (
-            <TemplatesTab
-              onApplied={() => {
-                admission.reload();
-                budget.reload();
-                egress.reload();
-              }}
-            />
-          )}
+          {tab === "templates" && <TemplatesTab onApplied={reloadAll} />}
           {tab === "guardrails" && (
             <GuardrailsTab
+              admissionOff={admissionOff}
               onApplied={() => {
                 admission.reload();
                 budget.reload();
@@ -191,7 +217,7 @@ export function PoliciesPage() {
             />
           )}
           {tab === "routing" && <RoutingTab onApplied={() => egress.reload()} />}
-          {tab === "test" && <TestTab />}
+          {tab === "test" && (admissionOff ? <AdmissionOffNote what="test requests against the policy" /> : <TestTab />)}
           {tab === "activity" && <ActivityTab />}
         </>
       )}
@@ -199,69 +225,77 @@ export function PoliciesPage() {
   );
 }
 
-// ApplyModeNote is the standing honesty banner (handover §1): it names the
-// two distinct apply semantics so the operator is never misled into thinking
-// an egress or proxy-backstop edit took effect the instant they clicked Apply.
+// ApplyModeNote is the standing honesty note (handover section 1): it names
+// the two distinct apply semantics so the operator is never misled into
+// thinking an egress or proxy-backstop edit took effect the instant they
+// clicked Apply. Stated once per page (Copy rules: "Where explanation
+// belongs").
 function ApplyModeNote() {
   return (
-    <div className="rounded-3 border border-line-2 bg-bg-2 p-3 text-[11.5px] leading-relaxed text-fg-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <span className="inline-flex items-center gap-1.5">
-          <Pill variant="success">Apply live</Pill>
-          hot-swaps the admission front-door (the SDK path) immediately.
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <Pill variant="warn">Save &amp; restart</Pill>
-          is required for the proxy backstop and all egress routing to change.
-        </span>
-      </div>
-    </div>
+    <Callout title="When a change applies">
+      An admission policy applies at once, on your app's front door and the proxy check, and is saved. Routing, the
+      judge and the per-user budget apply after a daemon restart.
+    </Callout>
   );
 }
 
+type Read<T> = { data?: T | null; error?: Error | null; loading: boolean; reload: () => void };
+
 function OverviewTab({
-  admission,
+  admission: admissionRead,
   budget,
-  egress,
-  loading,
+  egress: egressRead,
   reload,
+  onReviewActivity,
 }: {
-  admission?: AdmissionStatus | null;
+  admission: Read<AdmissionStatus>;
   budget?: AdmissionBudget | null;
-  egress?: EgressStatus | null;
-  loading: boolean;
+  egress: Read<EgressStatus>;
   reload: () => void;
+  onReviewActivity?: () => void;
 }) {
+  const admission = admissionRead.data;
+  const egress = egressRead.data;
+  const loading = admissionRead.loading || egressRead.loading;
   // busy guards the mode toggles against double-submits while a POST is in
   // flight; an empty string means idle.
   const [busy, setBusy] = useState<"" | "admission" | "egress">("");
+  // The per-user budget is edited in Settings > AI Apps (review E-73): the
+  // tile links there when that section is shown on this machine.
+  const budgetEditShown = useHrefGate()(PLACES.observability_settings.href) === "shown";
 
   // setAdmissionMode fetches the CURRENT full policy, swaps only the mode, and
-  // re-POSTs it (persist=1) so no other field is lost. The apply is live on the
-  // dashboard front-door immediately; the proxy backstop picks it up on the
-  // restart the banner then prompts.
+  // applies it live and saved (applyAdmissionPolicy, U-27) so no other field
+  // is lost and a restart keeps it.
   async function setAdmissionMode(mode: AdmissionMode) {
     if (busy) return;
     setBusy("admission");
     try {
       const cur = await fetchJSON<AdmissionPolicyGet>("/api/obs/admission/policy");
-      const { status, data } = await postPolicy("/api/obs/admission/policy", { ...cur.policy, mode }, true);
-      if (status === 422 || !data.applied) {
-        pushToast(data.error || "Mode change rejected", "danger");
+      const { status, data } = await applyAdmissionPolicy({ ...cur.policy, mode });
+      if (status === 409) {
+        pushToast(policyStatusText(409), "danger");
         return;
       }
-      markRestartPending("admission policy");
-      pushToast(`Admission → ${mode}. Live on the front-door now; restart to update the proxy.`, "success");
+      if (status === 422 || !data.applied) {
+        pushToast(data.error || "The mode change was rejected.", "danger");
+        return;
+      }
+      if (!data.persisted) {
+        pushToast(`Admission set to ${wordsFor(POLICY_MODE_LABEL, mode)}, but not saved: a daemon restart drops it.`, "warn");
+      } else {
+        pushToast(`Admission set to ${wordsFor(POLICY_MODE_LABEL, mode)} and saved.`, "success");
+      }
       reload();
     } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "danger");
+      pushToast(policyErrorText(e), "danger");
     } finally {
       setBusy("");
     }
   }
 
   // setEgressMode is Save-oriented: egress only takes real effect on the proxy
-  // path, so a live apply just updates the dashboard's preview — the routing
+  // path, so a live apply just updates the dashboard's preview; the routing
   // change lands on the daemon restart the banner prompts.
   async function setEgressMode(mode: EgressMode) {
     if (busy) return;
@@ -274,10 +308,10 @@ function OverviewTab({
         return;
       }
       markRestartPending("egress policy");
-      pushToast(`Egress → ${mode} saved. Restart the daemon to apply routing.`, "success");
+      pushToast(`Routing set to ${wordsFor(POLICY_MODE_LABEL, mode)} and saved. Restart the daemon to apply it.`, "success");
       reload();
     } catch (e) {
-      pushToast(e instanceof Error ? e.message : String(e), "danger");
+      pushToast(policyErrorText(e), "danger");
     } finally {
       setBusy("");
     }
@@ -289,83 +323,110 @@ function OverviewTab({
   const egDecisions = egress
     ? Object.values(egress.decisions_by_action).reduce((a, n) => a + n, 0)
     : 0;
+  const ruleCount = egress?.rules?.length ?? 0;
+  const judge = admission?.judge_hosting ?? "";
 
   return (
     <div className="space-y-4">
-      <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <HeroStat
+      <StatStrip cols={4} ariaLabel="Policy posture" className="">
+        <StatCard
           label="Admission"
           icon={<MetricIcon metric="admission" />}
           loading={loading}
-          variant={admission?.mode === "enforce" ? "warn" : "accent"}
-          value={admission ? admission.mode : "-"}
+          value={admission ? wordsFor(POLICY_MODE_LABEL, admission.mode) : "-"}
           sub={
             admission?.enabled
-              ? `${admission.criteria_count} criteria · ${admDecisions} decisions/24h`
-              : "disabled"
+              ? `${fmtInt(admission.criteria_count)} criteria, ${fmtInt(admDecisions)} decisions in 24h`
+              : admission
+                ? "Requests are not checked"
+                : undefined
           }
+          linkTo={admission && !admission.enabled ? "/policies?tab=guardrails" : undefined}
         />
-        <HeroStat
+        <StatCard
           label="Egress routing"
           icon={<MetricIcon metric="egressRouting" />}
           loading={loading}
-          variant={egress?.mode === "enforce" ? "warn" : "accent"}
-          value={egress ? egress.mode : "-"}
+          value={egress ? wordsFor(POLICY_MODE_LABEL, egress.mode) : "-"}
           sub={
             egress?.enabled
-              ? `${egress.rules?.length ?? 0} rules · ${egDecisions} decisions/24h`
-              : "disabled"
+              ? `${fmtInt(ruleCount)} ${ruleCount === 1 ? "rule" : "rules"}, ${fmtInt(egDecisions)} decisions`
+              : egress
+                ? "Nothing is rerouted"
+                : undefined
           }
+          linkTo={egress && !egress.enabled ? "/policies?tab=routing" : undefined}
         />
-        <HeroStat
+        <StatCard
           label="Judge"
           icon={<MetricIcon metric="judge" />}
           loading={loading}
-          variant="accent"
-          value={admission ? admission.judge_hosting : "-"}
-          sub={judgeHostingNote(admission?.judge_hosting)}
+          value={admission ? (judge ? judgeHostingLabel(judge) : "None") : "-"}
+          sub={admission ? judgeHostingNote(judge) : undefined}
+          linkTo={admission && (judge === "" || judge === "off") ? "/policies?tab=guardrails" : undefined}
         />
-        <HeroStat
+        <StatCard
           label="Per-user budget"
           icon={<MetricIcon metric="budget" />}
           loading={loading}
-          variant={budget && budget.breaches_24h > 0 ? "warn" : "accent"}
-          value={budget?.enabled ? fmtUSD(budget.five_hour_usd) : "off"}
+          warn={!!budget && budget.breaches_24h > 0}
+          value={budget ? (budget.enabled ? fmtUSD(budget.five_hour_usd) : "Off") : "-"}
           sub={
-            budget?.enabled
-              ? `5h cap · ${budget.breaches_24h} breaches/24h`
-              : "no per-user cap"
+            budget
+              ? budget.enabled
+                ? `per 5 hours, ${fmtInt(budget.breaches_24h)} ${budget.breaches_24h === 1 ? "breach" : "breaches"} in 24h`
+                : `No per-user cap${budgetEditShown ? ", set one" : ""}`
+              : undefined
           }
+          linkTo={budgetEditShown ? PLACES.observability_settings.href : undefined}
         />
-      </Stagger>
+      </StatStrip>
+
+      {budget && (budget.org_app_caps?.length ?? 0) > 0 && (
+        <OrgAppBudgetCard applied={Boolean(budget.org_applied)} authoritative={Boolean(budget.org_authoritative)} caps={budget.org_app_caps ?? []} />
+      )}
+
+      <ShadowNudge admission={admission} egress={egress} onReview={onReviewActivity} />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Admission posture">
           {admission ? (
-            <dl className="space-y-1.5 text-[12px]">
-              <Row
-                k="Mode"
-                v={
-                  <SegmentedControl<AdmissionMode>
-                    size="sm"
-                    options={[
-                      { value: "off", label: "Off" },
-                      { value: "observe", label: "Observe" },
-                      { value: "enforce", label: "Enforce" },
-                    ]}
-                    value={(admission.mode as AdmissionMode) || "off"}
-                    onChange={setAdmissionMode}
-                  />
+            <DefinitionList>
+              <DefinitionRow
+                label="Mode"
+                value={
+                  admission.available === false ? (
+                    <span className="font-normal text-fg-3">Checks are off on this machine</span>
+                  ) : (
+                    <SegmentedControl<AdmissionMode>
+                      size="sm"
+                      options={[
+                        { value: "off", label: "Off" },
+                        { value: "observe", label: "Observe" },
+                        { value: "enforce", label: "Enforce" },
+                      ]}
+                      value={(admission.mode as AdmissionMode) || "off"}
+                      onChange={setAdmissionMode}
+                    />
+                  )
                 }
               />
-              <Row k="Criteria" v={String(admission.criteria_count)} />
-              <Row k="Judge hosting" v={<VocabPill vocab="judgeHosting" value={admission.judge_hosting} tone="info" />} />
-              <Row k="24h decisions" v={<DecisionBreakdown d={admission.decisions_24h} />} />
-              <Row k="Audit chain" v={<ChainPill ok={admission.chain.ok} rows={admission.chain.rows} />} />
+              <DefinitionRow label="Criteria" value={fmtInt(admission.criteria_count)} />
+              <DefinitionRow label="Judge" value={judge ? judgeHostingLabel(judge) : "None"} />
+              <DefinitionRow label="Decisions in 24h" value={<DecisionBreakdown d={admission.decisions_24h} />} />
+              <DefinitionRow
+                label="Audit log"
+                value={<ChainPill ok={admission.chain.ok} rows={admission.chain.rows} state={admission.chain.state} />}
+              />
               {admission.policy_hash && (
-                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={admission.policy_hash}>{fmtShortId(admission.policy_hash, 16)}</span>} />
+                <DefinitionRow
+                  label="Policy version"
+                  value={<span className="font-mono text-[11px] font-normal text-fg-3" title={admission.policy_hash}>{fmtShortId(admission.policy_hash, 16)}</span>}
+                />
               )}
-            </dl>
+            </DefinitionList>
+          ) : admissionRead.error ? (
+            <ErrorState title="Couldn't load the admission status" error={admissionRead.error} onRetry={admissionRead.reload} />
           ) : (
             <InlineLoading label="Loading policy status" />
           )}
@@ -373,10 +434,10 @@ function OverviewTab({
 
         <Card title="Egress posture">
           {egress ? (
-            <dl className="space-y-1.5 text-[12px]">
-              <Row
-                k="Mode"
-                v={
+            <DefinitionList>
+              <DefinitionRow
+                label="Mode"
+                value={
                   <SegmentedControl<EgressMode>
                     size="sm"
                     options={[
@@ -389,83 +450,103 @@ function OverviewTab({
                   />
                 }
               />
-              <Row k="Rules" v={String(egress.rules?.length ?? 0)} />
-              <Row k="Targets" v={String(egress.targets?.length ?? 0)} />
-              <Row k="24h decisions" v={String(egDecisions)} />
-              <Row k="Audit chain" v={<ChainPill ok={egress.chain.ok} rows={egress.chain.rows} />} />
+              <DefinitionRow label="Rules" value={fmtInt(ruleCount)} />
+              <DefinitionRow label="Targets" value={fmtInt(egress.targets?.length ?? 0)} />
+              <DefinitionRow label="Decisions" value={fmtInt(egDecisions)} />
+              <DefinitionRow label="Audit log" value={<ChainPill ok={egress.chain.ok} rows={egress.chain.rows} />} />
               {egress.policy_hash && (
-                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={egress.policy_hash}>{fmtShortId(egress.policy_hash, 16)}</span>} />
+                <DefinitionRow
+                  label="Policy version"
+                  value={<span className="font-mono text-[11px] font-normal text-fg-3" title={egress.policy_hash}>{fmtShortId(egress.policy_hash, 16)}</span>}
+                />
               )}
-            </dl>
+            </DefinitionList>
+          ) : egressRead.error ? (
+            <ErrorState title="Couldn't load the routing status" error={egressRead.error} onRetry={egressRead.reload} />
           ) : (
             <InlineLoading label="Loading policy status" />
           )}
         </Card>
       </div>
-
-      <ShadowNudge admission={admission} egress={egress} />
     </div>
   );
 }
 
-// ShadowNudge encourages observe/advise-first rollout — the reference
-// deployment's guidance. It only appears when something is already in enforce.
-function ShadowNudge({ admission, egress }: { admission?: AdmissionStatus | null; egress?: EgressStatus | null }) {
+// ShadowNudge encourages observe/advise-first rollout, the reference
+// deployment's guidance. It only appears when something is already in
+// enforce, and links to the verdicts to check (every reason links to its fix).
+function ShadowNudge({
+  admission,
+  egress,
+  onReview,
+}: {
+  admission?: AdmissionStatus | null;
+  egress?: EgressStatus | null;
+  onReview?: () => void;
+}) {
   const enforcing = admission?.mode === "enforce" || egress?.mode === "enforce";
   if (!enforcing) return null;
   return (
-    <div className="rounded-3 border border-warn/30 bg-warn-soft p-3 text-[11.5px] leading-relaxed text-warn">
-      A policy is in <b>enforce</b> mode - it actively blocks or reroutes end-user
-      traffic. Confirm the shadow (observe/advise) verdicts looked right before
-      enforcing, and keep an eye on the audit timeline.
-    </div>
+    <Callout
+      tone="warn"
+      title="A policy is enforcing"
+      action={
+        onReview && (
+          <Button size="sm" onClick={onReview}>
+            Review verdicts
+          </Button>
+        )
+      }
+    >
+      It blocks or reroutes end-user traffic. Check that the observe-only verdicts looked right.
+    </Callout>
   );
 }
 
 // ChainPill renders an audit chain's verification state from AUDIT_CHAIN
-// (@/lib/vocabTones) with its row count.
-function ChainPill({ ok, rows }: { ok: boolean; rows: number }) {
-  const v = vocabView("auditChain", AUDIT_CHAIN, ok ? "intact" : "broken");
+// (@/lib/vocabTones) with its row count. A chain that is off (admission not
+// running and nothing recorded, U-11) or could not be checked is plain text,
+// never "broken".
+function ChainPill({ ok, rows, state }: { ok: boolean; rows: number; state?: string }) {
+  if (state === "off") return <span className="font-normal text-fg-3">Off, nothing recorded</span>;
+  if (state === "unknown") return <span className="font-normal text-fg-3">Not checked</span>;
+  const value = (state ?? (ok ? "intact" : "broken")) === "intact" ? "intact" : "broken";
+  const v = vocabView("auditChain", AUDIT_CHAIN, value);
   return (
-    <VocabPill vocab="auditChain" table={AUDIT_CHAIN} value={ok ? "intact" : "broken"}>
-      {v.label} · {rows} rows
+    <VocabPill vocab="auditChain" table={AUDIT_CHAIN} value={value}>
+      {v.label}, {fmtInt(rows)} rows
     </VocabPill>
   );
 }
 
 function DecisionBreakdown({ d }: { d: AdmissionStatus["decisions_24h"] }) {
   const entries = (["allow", "flag", "ask", "deny"] as const).filter((k) => (d[k] ?? 0) > 0);
-  if (entries.length === 0) return <span className="text-fg-3">none</span>;
+  if (entries.length === 0) return <span className="font-normal text-fg-3">None</span>;
   return (
-    <span className="inline-flex flex-wrap gap-1">
+    <span className="inline-flex flex-wrap justify-end gap-1">
       {entries.map((k) => (
-        <VocabPill key={k} vocab="guardDecision" value={k} tone={decisionTone(k)}>
-          {k} {d[k]}
-        </VocabPill>
+        <VocabDefPill key={k} of={ADMISSION_DECISION} value={k}>
+          {vocabLabel(k)} {fmtInt(d[k] ?? 0)}
+        </VocabDefPill>
       ))}
     </span>
   );
 }
 
-// JUDGE_HOSTING_NOTE - where the admission judge runs (the Policies status
-// card's sub-line). Glyphs: VOCAB_ICONS.judgeHosting.
+function vocabLabel(k: keyof typeof ADMISSION_DECISION.entries): string {
+  return ADMISSION_DECISION.entries[k].label ?? k;
+}
+
+// JUDGE_HOSTING_NOTE - where the admission judge runs (the Judge tile's
+// sub-line). Glyphs: VOCAB_ICONS.judgeHosting.
 const JUDGE_HOSTING_NOTE: Readonly<Record<string, string>> = {
-  local: "loopback · no key egress",
-  aggregator: "via aggregator (OpenRouter)",
-  provider: "hosted provider",
-  private: "private endpoint",
+  local: "Runs on this machine, no key leaves it",
+  aggregator: "Through a model aggregator",
+  provider: "Hosted by a model provider",
+  private: "Your private endpoint",
+  org_relay: "Through your organization",
 };
 
 function judgeHostingNote(h?: string): string {
-  return (h && JUDGE_HOSTING_NOTE[h]) || "no judge configured";
+  return (h && JUDGE_HOSTING_NOTE[h]) || "No judge set up yet";
 }
-
-function Row({ k, v }: { k: string; v: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className="text-fg-3">{k}</dt>
-      <dd className="text-right text-fg-1">{v}</dd>
-    </div>
-  );
-}
-

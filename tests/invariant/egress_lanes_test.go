@@ -400,7 +400,7 @@ var egressLanes = []egressLane{
 	// Reaches list by review only (SHR-3 residuals).
 	{
 		ID: "cmd.observer", Pkg: "cmd/observer", Kind: egressRemote,
-		Reaches:  "the composition layer: loopback probes of its own daemon, proxy and dashboard, loopback local model servers (setup wizard), a remote instance's status over a loopback SSH forward, [observability.alerts] webhooks and [remote.notify] notifications; every other egress it composes goes through a lane above",
+		Reaches:  "the composition layer: loopback probes of its own daemon, proxy and dashboard, loopback local model servers (setup wizard), a remote instance's status over a loopback SSH forward, [observability.alerts] webhooks, its Slack incoming webhook (hooks.slack.com / hooks.slack-gov.com only, no redirects) and its PagerDuty Events API v2 key (events.pagerduty.com/v2/enqueue only, no redirects) and [remote.notify] notifications; every other egress it composes goes through a lane above",
 		Triggers: []egressTrigger{trigUserCommand, trigDaemonLoop, trigUserAction},
 		Gate:     "per call: a user command, or the config section that enables the feature (alert webhooks and remote notify are off by default)",
 		Pins:     []string{"remotenotify_boundary_test.go"},
@@ -488,7 +488,7 @@ var egressLanes = []egressLane{
 	{ID: "metrics", Pkg: "internal/metrics", Kind: egressListen, Reaches: "the /metrics handler"},
 	{ID: "obs.httpapi", Pkg: "internal/obs/httpapi", Kind: egressListen, Reaches: "Plane A observability routes on the dashboard"},
 	{ID: "ingest.browser", Pkg: "internal/ingest/browser", Kind: egressListen, Reaches: "the loopback browser-extension ingest listener"},
-	{ID: "ingest.otlp", Pkg: "internal/ingest/otlp", Kind: egressListen, Reaches: "the OTLP gRPC and HTTP receiver"},
+	{ID: "ingest.otlp", Pkg: "internal/ingest/otlp", Kind: egressListen, Reaches: "the OTLP gRPC and HTTP receiver (HTTP /v1/{logs,traces,metrics}, plus /api/public/otel/v1/traces, the Langfuse SDK exporter's traces path, an alias of /v1/traces behind the same guards)"},
 	{ID: "processobs.bridge", Pkg: "internal/processobs/bridge", Kind: egressListen, Reaches: "the cross-OS process-capture listener and pipe transport"},
 	{ID: "remotecfg", Pkg: "internal/remotecfg", Kind: egressListen, Reaches: "a loopback port probe while arming remote access"},
 

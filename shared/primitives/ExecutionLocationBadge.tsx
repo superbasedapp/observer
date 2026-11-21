@@ -1,4 +1,5 @@
 import { Pill } from "./Pill";
+import { GlyphBadge } from "./GlyphBadge";
 import { vocabIcon } from "../lib/vocabIcons";
 import type { Tone } from "../lib/tone";
 
@@ -101,16 +102,31 @@ export type ExecutionLocationBadgeProps = {
    * local spends its width on the exceptions; the detail panel keeps it.
    */
   hideLocal?: boolean;
+  /**
+   * glyph draws the location's glyph alone, in its tone (no pill, no
+   * words); the tooltip and the accessible name carry the words.
+   */
+  glyph?: boolean;
   className?: string;
 };
 
-export function ExecutionLocationBadge({ location, vendorRef, hideLocal, className }: ExecutionLocationBadgeProps) {
+export function ExecutionLocationBadge({ location, vendorRef, hideLocal, glyph, className }: ExecutionLocationBadgeProps) {
   // Nothing grounded means render nothing. Never a fabricated "local".
   if (!isExecutionLocation(location)) return null;
   if (hideLocal && location === "local") return null;
   const meta = EXECUTION_META[location];
   const ref = (vendorRef ?? "").trim();
   const title = ["Where it ran:", meta.gloss, ref ? `Vendor session: ${ref}.` : ""].filter(Boolean).join(" ");
+  if (glyph) {
+    return (
+      <GlyphBadge
+        className={className}
+        icon={vocabIcon("executionLocation", location)}
+        tone={meta.tone}
+        label={`Ran: ${meta.label}. ${title}`}
+      />
+    );
+  }
   return (
     <Pill
       className={className}

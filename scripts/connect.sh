@@ -4,6 +4,7 @@
 #
 #   curl -fsSL https://superbased.app/connect.sh | sh               # personal dashboard
 #   curl -fsSL https://superbased.app/connect.sh | sh -s -- <team>  # a team
+#   curl -fsSL https://superbased.app/connect.sh | sh -s -- --apps  # also AI Apps
 #
 # It downloads the newest release's install.sh, checks it against the
 # release's SHA256SUMS, checks SHA256SUMS against the vendor key below (the
@@ -16,7 +17,10 @@
 #
 # Arguments after the team (or every argument, when the first starts with
 # '-') pass to install.sh, e.g. `sh -s -- acme --edition full`. The team may
-# also come from SBO_CONNECT_TEAM. It takes no token or credential. Uses
+# also come from SBO_CONNECT_TEAM. `--apps` (or SBO_CONNECT_APPS=1) also turns
+# on AI Apps, for the AI apps you build: install.sh runs `observer apps on`
+# and opens the local dashboard on the AI apps track. It needs an install.sh
+# that knows --apps (a release from the first-run plan on). It takes no token or credential. Uses
 # curl, or wget when curl is absent.
 #
 # An Ed25519 verifier (OpenSSL 3, Node 12+ or Python cryptography) checks the
@@ -42,6 +46,14 @@ fi
 if [ -n "$team" ] && ! printf '%s\n' "$team" | grep -Eq '^[a-z0-9][a-z0-9-]{0,62}$'; then
   die "'$team' is not a team name (lowercase letters, digits and hyphens)"
 fi
+
+# SBO_CONNECT_APPS=1 is --apps (the Windows wrapper reads the same name).
+apps=0
+case "${SBO_CONNECT_APPS:-}" in
+  1|true|yes) apps=1 ;;
+  ""|0|false|no) ;;
+  *) die "SBO_CONNECT_APPS='${SBO_CONNECT_APPS}' is not 1 or 0" ;;
+esac
 
 # Tests: SBO_CONNECT_FROM_DIR reads the release files from a directory (and
 # passes --from-dir to install.sh); only then is a test vendor key honoured.
@@ -173,6 +185,7 @@ fi
 in=/dev/null
 if ( : </dev/tty ) 2>/dev/null; then in=/dev/tty; fi
 set -- --connect ${team:+"$team"} "$@"
+if [ "$apps" -eq 1 ]; then set -- "$@" --apps; fi
 if [ -n "$from_dir" ]; then set -- "$@" --from-dir "$from_dir"; fi
 if [ "${SBO_REQUIRE_SIGNATURE:-0}" = 1 ]; then set -- "$@" --require-signature; fi
 rc=0

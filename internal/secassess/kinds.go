@@ -290,7 +290,7 @@ var kinds = []Kind{
 		Summary: "Protection inside the running, deployed application.",
 		Mode:    "Not agent-shaped",
 		Reason:  "Runtime protection runs inside the deployed application and decides on live traffic. A coding agent in a terminal on a development machine is not that, so there is nothing to launch.",
-		Pointer: "Observer has a runtime feature for a hosted LLM application: it observes the application's inputs and outputs for an organization and can refuse unsafe input. That is monitoring and admission control, not application self-protection, and the organization sets it up; it is not launched from here.",
+		Pointer: "Observer's AI Apps observes an app's inputs and outputs and can refuse unsafe input. That is monitoring and admission control, not application self-protection; you set it up from the AI Apps pages, and it is not launched from here.",
 		Sandbox: SandboxNA, Target: TargetNone, SARIFSource: SARIFNone,
 	},
 }

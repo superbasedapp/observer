@@ -1,8 +1,8 @@
 # @superbased/observer
 
-<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/mascot/obs-idle-light-512.png" alt="Obs, the SuperBased mascot: a small robot with a terminal prompt for a face and a cape" width="112" align="right">
+<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/mascot/obs-idle-light-512.png" alt="Obs, the superbased mascot: a small robot with a terminal prompt for a face and a cape" width="112" align="right">
 
-<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/brand/superbased-lockup-light.png" alt="SuperBased" height="32">
+<img src="https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/brand/superbased-lockup-light.png" alt="superbased" height="32">
 
 **Track what every AI coding agent costs. See the limit coming.** See what 50 AI coding tools cost,
 Claude Code, Codex and Cursor included, per session and per model, from the tokens your provider
@@ -12,7 +12,7 @@ actually billed. Free, Apache-2.0, and it runs on your machine.
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/superbasedapp/observer/blob/main/LICENSE)
 [![Website](https://img.shields.io/badge/website-superbased.app-2EC4B6.svg)](https://superbased.app/)
 
-![Session detail in the SuperBased dashboard: total cost, a low, typical and high cost for the next message, the 5-hour and weekly limit, and the cost of switching to a cheaper model](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/session-cost-and-limits.png)
+![Session detail in the superbased dashboard: total cost, a low, typical and high cost for the next message, the 5-hour and weekly limit, and the cost of switching to a cheaper model](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/session-cost-and-limits.png)
 
 ## Try it without installing
 
@@ -38,7 +38,7 @@ only the one for your machine; there is no compile step and no postinstall downl
 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=superbased.superbased-observer)
 with the same version numbers; install from one channel only.
 
-## Why SuperBased
+## Why superbased
 
 **One local binary that tracks Claude Code token usage, Codex cost and Cursor spend side by side,
 and helps you control them.**
@@ -57,7 +57,7 @@ and helps you control them.**
 - **Your agents as terminals.** Launch agent CLIs from the dashboard, join a running session from a
   paired device over your Tailscale tailnet, and hand a session from one tool to another.
 
-![Overview page of the SuperBased dashboard: 30-day spend, sessions, actions and proxy-accurate API turns, cache efficiency, cost over time by billing bucket and actions over time by coding tool](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/overview-dashboard.png)
+![Overview page of the superbased dashboard: 30-day spend, sessions, actions and proxy-accurate API turns, cache efficiency, cost over time by billing bucket and actions over time by coding tool](https://raw.githubusercontent.com/superbasedapp/observer/main/docs/assets/screenshots/overview-dashboard.png)
 
 ## Get started
 
@@ -149,7 +149,7 @@ Click any session to open its detail view. Four of its tabs:
 ## Privacy
 
 No account needed. Today the default install sends us no usage statistics, analytics or crash
-reports, and your sessions leave your computer only when you connect. SuperBased stores paths,
+reports, and your sessions leave your computer only when you connect. superbased stores paths,
 commands and short excerpts, scrubs secrets before writing, and binds the proxy and dashboard to
 `127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the provider you
 already use. See [PRIVACY.md](https://github.com/superbasedapp/observer/blob/main/PRIVACY.md).
@@ -174,7 +174,7 @@ you accept them once. `observer privacy` lists every outbound request this build
 
 - [Documentation](https://superbased.app/docs) and [quickstart](https://superbased.app/docs/getting-started/quickstart)
 - [Supported agents and per-tool setup](https://superbased.app/docs/track/overview)
-- [How SuperBased compares](https://superbased.app/docs/compare/overview)
+- [How superbased compares](https://superbased.app/docs/compare/overview)
 - [Source, issues and changelog](https://github.com/superbasedapp/observer)
 
 ## Troubleshooting

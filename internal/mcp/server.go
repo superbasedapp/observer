@@ -150,6 +150,10 @@ type Options struct {
 	// message from a source session's own files). Same inject-a-closure
 	// seam as BuildHandoff; nil leaves the tool registered but degraded.
 	GetSessionMessage MessageReader
+	// Settings, when non-nil, backs get_settings and set_setting (Plane A
+	// W2-8, ruling D19; tools_settings.go). The tools are always registered
+	// and answer honestly when it is nil.
+	Settings SettingsBackend
 }
 
 // SignalRecorder is the K43 retrieval-signal sink (v1.4.43+ / Tier 3).
@@ -176,6 +180,9 @@ type Server struct {
 
 	mu    sync.RWMutex
 	tools map[string]Tool
+	// clientName is the MCP client's name from initialize (clientInfo.name),
+	// read by set_setting for a proposal's "asked by".
+	clientName string
 }
 
 // New constructs a Server and registers the built-in tools. DB is required.
@@ -222,6 +229,10 @@ func New(opts Options) (*Server, error) {
 	// answers honestly ("nothing scanned yet") on a fresh install, so there
 	// is nothing to gate.
 	s.Register(newGetProjectGuidanceTool(opts.DB))
+	// get_settings / set_setting (W2-8): always registered; the backend
+	// applies the D19 gate.
+	s.Register(&getSettingsTool{b: opts.Settings})
+	s.Register(&setSettingTool{b: opts.Settings, client: s.initializedClient})
 	if opts.Stash != nil && !opts.RetrieveStashedDisabled && shouldRegisterV7_12Tool(opts.Features, "retrieve_stashed") {
 		s.Register(newRetrieveStashedTool(opts.Stash, opts.SignalRecorder, opts.AuditWriter, opts.RetrieveStashedMaxShasPerCall))
 	}
@@ -260,6 +271,14 @@ func shouldRegisterV7_12Tool(features []string, toolName string) bool {
 		}
 	}
 	return false
+}
+
+// initializedClient returns the MCP client name the initialize handshake
+// carried ("" before it).
+func (s *Server) initializedClient() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.clientName
 }
 
 // Register adds a tool by name. A subsequent Register with the same name
@@ -363,6 +382,9 @@ func (s *Server) handleInitialize(params json.RawMessage) (any, *rpcError) {
 			return nil, &rpcError{Code: errInvalidParams, Message: "invalid initialize params: " + err.Error()}
 		}
 	}
+	s.mu.Lock()
+	s.clientName = p.ClientInfo.Name
+	s.mu.Unlock()
 	return initializeResult{
 		ProtocolVersion: protocolVersion,
 		Capabilities: serverCapabilities{

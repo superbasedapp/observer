@@ -85,6 +85,14 @@ const (
 	CapRequestsRPS CapName = "requests.rps"
 	// CapRequestsBurst is the per-org request burst (plan 06 5.3.9).
 	CapRequestsBurst CapName = "requests.burst"
+	// CapPlaneAEventsMonthly is the Plane A gateway's monthly event
+	// allowance: spans, log records and metric points accepted by the OTLP
+	// gateway in one UTC calendar month (plan-of-record D14 and D20: the
+	// price metric is events).
+	CapPlaneAEventsMonthly CapName = "planea.events_monthly"
+	// CapPlaneAGBMonthly is the Plane A gateway's monthly decoded-bytes
+	// allowance in GB (D14 and D20: the safety valve beside the event cap).
+	CapPlaneAGBMonthly CapName = "planea.gb_monthly"
 )
 
 // RetentionClasses are the only retention.days values a pooled document may
@@ -126,6 +134,8 @@ func capRules() []capRule {
 		{name: CapAuditLogDays, unit: "days", kinds: []Kind{KindTeam}},
 		{name: CapRequestsRPS, unit: "requests per second", kinds: pooled},
 		{name: CapRequestsBurst, unit: "requests", kinds: pooled},
+		{name: CapPlaneAEventsMonthly, unit: "events per month", kinds: pooled},
+		{name: CapPlaneAGBMonthly, unit: "GB per month", kinds: pooled},
 	}
 }
 

@@ -3323,8 +3323,8 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 			http_status, error_class, error_message,
 			org_id, user_email, fast, source,
 			route, routing_generation, authority_source,
-			prompt_id, request_class
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			prompt_id, request_class, upstream_lane
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullableString(t.SessionID),
 		nullableInt64(t.ProjectID),
 		timestamp(t.Timestamp),
@@ -3362,6 +3362,7 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 		nullableString(t.AuthoritySource),
 		nullableString(t.PromptID),
 		nullableString(t.RequestClass),
+		nullableString(t.UpstreamLane),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertAPITurn: %w", err)

@@ -3,6 +3,8 @@
 // derivations both render. No React, no fetch: node --test imports it.
 // Operator reference: docs/you-page.md.
 
+import { PLACES } from "./settingsPlaces.ts";
+
 export type MeToolAccount = {
   email?: string;
   name?: string;
@@ -410,14 +412,23 @@ function hardRule(effect: string | undefined): string {
 /** orgBudgetLine reads one org budget window as a share of its cap. It never
  *  prints an amount: the amounts follow the organization's display choice and
  *  the share is true in either. */
-export function orgBudgetLine(w: OrgBudgetWindowLike): { label: string; value: string; tone: "neutral" | "warn" | "danger" } {
+export function orgBudgetLine(w: OrgBudgetWindowLike): {
+  label: string;
+  value: string;
+  tone: "neutral" | "warn" | "danger";
+  /** The Guard mode link when the cap only warns here because of this
+   *  machine's guard (budget enforce consistency, 2026-11-19). */
+  link?: { href: string; label: string };
+} {
   const pct = Number.isFinite(w.ratio) ? `${Math.round(w.ratio * 100)}% of the cap` : "not measured";
   const rule = w.enforcement === "hard" ? hardRule(w.effect) : w.enforcement === "soft" ? "warns at the cap" : "report only";
   const who = w.subject ? ` (${w.subject.replace(":", " ")})` : "";
+  const warnsHere = w.enforcement === "hard" && (w.effect === "warn_observe" || w.effect === "warn_guard_off");
   return {
     label: `${w.window || w.period}${who}`,
     value: `${pct}, ${rule}`,
     tone: w.level === "exceeded" ? "danger" : w.level === "warning" ? "warn" : "neutral",
+    ...(warnsHere ? { link: { href: PLACES.security_mode.href, label: "Open Guard mode" } } : {}),
   };
 }
 

@@ -9,6 +9,7 @@ import {
   Menu,
   RefreshCw,
   UserRound,
+  X,
 } from "lucide-react";
 import { NAV_GROUPS } from "@/lib/nav";
 import { exportTargetFor } from "@/lib/exportTarget";
@@ -146,9 +147,13 @@ export function TopBar({
           </button>
         )}
         {group && (
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="hidden sm:inline">{group.label}</span>
-            <span className="hidden sm:inline">/</span>
+          <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+            {/* The group label waits for xl: below it the status chips
+                leave the breadcrumb a few dozen pixels, and "Your AI apps"
+                wrapped onto three lines beside them (U-32 follow-up, seen at
+                1,195 px). The page name always shows. */}
+            <span className="hidden xl:inline">{group.label}</span>
+            <span className="hidden xl:inline">/</span>
             {tabLabel ? (
               <>
                 <RouterLink to={pathname} className="truncate hover:text-fg-1">
@@ -164,12 +169,17 @@ export function TopBar({
         )}
         <RemoteMachineChip />
       </div>
-      <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[11px] text-fg-3">
+      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-fg-3 sm:gap-2">
         {/* The live ribbon's chip (components/ribbon): "No agent running ·
             Start one" when nothing is live, "N live" when the strip under
             the bar is folded away. Renders nothing when the ribbon is off or
-            the org hid the Live page. */}
-        <RibbonChip />
+            the org hid the Live page. Below sm the idle chip is hidden: the
+            phone's New terminal button beside the bell starts one, and at
+            375 px the chip pushed the bar about 60 px past the screen edge
+            (U-32). The live chip stays: it is the phone's way to /live. */}
+        <span className="contents max-sm:[&>[data-state=idle]]:hidden">
+          <RibbonChip />
+        </span>
         {/* Secondary status + Export — hidden on phones (< md) to keep
             the header uncluttered; the drawer + Refresh stay reachable.
             Between md and xl the column is too narrow for every chip (at
@@ -396,14 +406,17 @@ function AccountControl() {
               to="/settings?section=account"
               data-testid="account-chip"
               className={clsx(
-                "flex h-6 min-w-0 max-w-[96px] items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium sm:max-w-[180px]",
+                "flex h-6 min-w-0 max-w-[96px] items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium sm:max-w-[140px] xl:max-w-[180px]",
                 view.managed
                   ? "border-warn/40 bg-warn-soft text-warn hover:bg-warn/20"
                   : "border-success/30 bg-success-soft text-success hover:bg-success/20",
               )}
             >
               <LiveDot {...withDotClass(liveDotProps(CLOUD_SIGN_IN_DOT, "signed_in"), "h-1.5 w-1.5 shrink-0")} />
-              <span className="truncate">{view.label}</span>
+              {/* Below sm the chip is its dot (the label stays the link's
+                  accessible name): the label is in the tooltip and on the
+                  Account page, and the bar needs the room (U-32). */}
+              <span className="sr-only sm:not-sr-only sm:truncate">{view.label}</span>
             </RouterLink>
           </Tooltip>
           {view.onlineUrl && (
@@ -417,26 +430,46 @@ function AccountControl() {
                 className="flex h-6 shrink-0 items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2 text-[10.5px] font-medium text-fg-2 hover:bg-bg-3 hover:text-fg-0"
               >
                 <Icon icon={ExternalLink} size={11} />
-                <span className="hidden sm:inline">Open online</span>
+                <span className="hidden xl:inline">Open online</span>
               </a>
             </Tooltip>
           )}
         </span>
       );
     case "connecting":
+      // U-23: the waiting chip names the sign-in service and carries a
+      // Cancel (POST /api/connect/cancel with the confirm token) whenever
+      // this page owns the flow; the installer's terminal flow stops there.
       return (
-        <Tooltip content={view.tooltip}>
-          <RouterLink
-            to="/"
-            data-tour="topbar-account"
-            data-testid="account-connecting"
-            aria-label={view.label}
-            className="flex h-7 shrink-0 items-center gap-1.5 rounded-2 border border-info/30 bg-info-soft px-2 text-[11px] font-medium text-info"
-          >
-            <LiveDot {...withDotClass(liveDotProps(CLOUD_SIGN_IN_DOT, "signing_in"), "h-1.5 w-1.5 shrink-0")} />
-            <span className="hidden sm:inline">{view.label}</span>
-          </RouterLink>
-        </Tooltip>
+        <span className="flex min-w-0 shrink-0 items-center gap-1" data-tour="topbar-account">
+          <Tooltip content={flow.error ?? view.tooltip}>
+            <RouterLink
+              to="/"
+              data-testid="account-connecting"
+              aria-label={view.service ? `${view.label} on ${view.service}` : view.label}
+              className="flex h-7 min-w-0 items-center gap-1.5 rounded-2 border border-info/30 bg-info-soft px-2 text-[11px] font-medium text-info"
+            >
+              <LiveDot {...withDotClass(liveDotProps(CLOUD_SIGN_IN_DOT, "signing_in"), "h-1.5 w-1.5 shrink-0")} />
+              <span className="hidden sm:inline">{view.label}</span>
+              {view.service && <span className="hidden truncate font-normal text-fg-3 xl:inline">on {view.service}</span>}
+            </RouterLink>
+          </Tooltip>
+          {view.cancelable && (
+            <Tooltip content="Stop signing in. Nothing is connected.">
+              <button
+                type="button"
+                data-testid="account-connect-cancel"
+                onClick={() => void flow.cancel()}
+                disabled={flow.busy}
+                aria-label="Cancel sign-in"
+                className="sb-press flex h-7 shrink-0 items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] font-medium text-fg-2 hover:bg-bg-3 hover:text-fg-0 disabled:opacity-60"
+              >
+                <Icon icon={X} size="xs" />
+                <span className="hidden sm:inline">Cancel</span>
+              </button>
+            </Tooltip>
+          )}
+        </span>
       );
     default:
       return (

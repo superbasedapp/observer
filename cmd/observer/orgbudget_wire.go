@@ -235,6 +235,11 @@ func (h *orgBudgetHandle) onBudgetFetch(o orgclient.BudgetFetchOutcome) {
 // seed the initial posture through exactly the same path.
 func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 	o = h.bindOutcomeToCurrentIdentity(o)
+	// The local dashboard's failed-pull notice reads this (budgetwarnfile
+	// Fetch, via the warning service's status file).
+	if h.warn != nil {
+		h.warn.SetFetch(o.State, time.Now())
+	}
 	granted := false
 	// The composition's left operand with fail_closed resolved LIVE (P4-04):
 	// the guard's liveness table reads it back through budgetConfig(), so a
@@ -278,6 +283,8 @@ func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 	}
 	// D-502: blocking on an ABSENT body is the org's explicit opt-in only.
 	caps.FailClosed = local.FailClosed
+	// Plane A app caps (W4-1) for the admission check (orgbudget_appcaps.go).
+	publishOrgAppBudget(o, h.local.FromOrg, granted)
 	effective, posture := orgbudget.Compose(thresholdsOf(h.local), o.Body, caps)
 	// WHICH PRICE TABLE the caps are measured in (pricing arc §3.3). It is
 	// stamped HERE, at the boundary, rather than inside Compose: internal/

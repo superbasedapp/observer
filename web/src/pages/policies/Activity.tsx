@@ -1,16 +1,36 @@
 import { useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { GatedLink } from "@/components/GatedLink";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
-import { ChartShell, EmptyState, HostMark, InlineLoading, ModelId, Pill, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  ChartShell,
+  EmptyState,
+  ErrorState,
+  HostMark,
+  InlineLoading,
+  ModelId,
+  Pill,
+  Tooltip,
+  VocabDefPill,
+} from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
-import { fmtClock } from "@/lib/format";
-import { decisionTone, severityTone } from "@shared/lib/guardCatalog";
+import { fmtClock, fmtInt } from "@/lib/format";
+import { severityTone } from "@shared/lib/guardCatalog";
 import { VocabPill } from "@shared/lib/vocabPill";
+import { ADMISSION_DECISION, ADMISSION_DEGRADED } from "@shared/lib/obsVocab";
 import { EGRESS_OUTCOME } from "@/lib/vocabTones";
 import { Select } from "./ui";
+import {
+  EGRESS_ACTION_LABEL,
+  EGRESS_OUTCOME_LABEL,
+  VERDICT_PATH_LABEL,
+  isGenuineDegraded,
+  wordsFor,
+} from "./vocab";
 
-// Activity tab — the read-side audit surfaces that close the author → test →
+// Activity tab - the read-side audit surfaces that close the author → test →
 // observe loop inside the Policies module: the admission VERDICT timeline (every
 // shadow/enforce decision the policy recorded) and a compact view of the recent
 // egress ROUTING decisions. Both are node-local audit logs (never pushed). The
@@ -55,11 +75,11 @@ const WINDOWS = [
   { value: "720", label: "30d" },
 ];
 const DECISION_FILTER = [
-  { value: "", label: "all decisions" },
-  { value: "allow", label: "allow" },
-  { value: "flag", label: "flag" },
-  { value: "ask", label: "ask" },
-  { value: "deny", label: "deny" },
+  { value: "", label: "All decisions" },
+  { value: "allow", label: "Allow" },
+  { value: "flag", label: "Flag" },
+  { value: "ask", label: "Ask" },
+  { value: "deny", label: "Deny" },
 ];
 
 // tsValue turns an audit timestamp into a sortable epoch-ms value.
@@ -85,10 +105,10 @@ const VERDICT_COLUMNS: ColumnDef<Verdict, unknown>[] = [
       const v = row.original;
       return (
         <span className="inline-flex items-center gap-1">
-          <VocabPill vocab="guardDecision" value={v.decision} tone={decisionTone(v.decision)} />
+          <VocabDefPill of={ADMISSION_DECISION} value={v.decision} />
           {v.severity && v.severity !== "info" && <VocabPill vocab="guardSeverity" value={v.severity} tone={severityTone(v.severity)} />}
           {v.mode === "observe" && v.decision !== "allow" && (
-            <Pill variant="neutral" title="observe mode - recorded but not enforced">shadow</Pill>
+            <Pill variant="neutral" title="The policy only observes: recorded, not enforced.">not enforced</Pill>
           )}
         </span>
       );
@@ -107,10 +127,13 @@ const VERDICT_COLUMNS: ColumnDef<Verdict, unknown>[] = [
     enableSorting: false,
     cell: ({ row }) => {
       const v = row.original;
+      // `degraded` is a code: only a genuine fail-open means the judge was
+      // unavailable; any other code names the deterministic layer that decided.
+      if (isGenuineDegraded(v.degraded)) return <VocabDefPill of={ADMISSION_DEGRADED} value={v.degraded} />;
       return v.judge_used ? (
-        <span className="text-fg-3">{v.latency_ms}ms{v.degraded ? " · degraded" : ""}</span>
+        <span className="whitespace-nowrap text-fg-3">{fmtInt(v.latency_ms)} ms</span>
       ) : (
-        <span className="text-fg-3">deterministic</span>
+        <span className="text-fg-3">{v.degraded ? wordsFor(VERDICT_PATH_LABEL, v.degraded) : "deterministic"}</span>
       );
     },
   },
@@ -147,10 +170,9 @@ const EGRESS_COLUMNS: ColumnDef<EgressDecisionRow, unknown>[] = [
     id: "action",
     header: "Action",
     accessorKey: "action",
-    meta: { mono: true },
     cell: ({ row }) => (
-      <span className="text-[11px]">
-        {row.original.action}
+      <span className="text-[12px] text-fg-2">
+        {wordsFor(EGRESS_ACTION_LABEL, row.original.action)}
         <EgressActionDetail d={row.original} />
       </span>
     ),
@@ -161,7 +183,7 @@ const EGRESS_COLUMNS: ColumnDef<EgressDecisionRow, unknown>[] = [
     enableSorting: false,
     cell: ({ row }) =>
       row.original.verdict_decision ? (
-        <VocabPill vocab="guardDecision" value={row.original.verdict_decision} tone={decisionTone(row.original.verdict_decision)} />
+        <VocabDefPill of={ADMISSION_DECISION} value={row.original.verdict_decision} />
       ) : (
         <span className="text-fg-3">-</span>
       ),
@@ -172,9 +194,11 @@ const EGRESS_COLUMNS: ColumnDef<EgressDecisionRow, unknown>[] = [
     enableSorting: false,
     cell: ({ row }) =>
       row.original.realized_outcome ? (
-        <VocabPill vocab="egressOutcome" table={EGRESS_OUTCOME} value={row.original.realized_outcome} />
+        <VocabPill vocab="egressOutcome" table={EGRESS_OUTCOME} value={row.original.realized_outcome}>
+          {wordsFor(EGRESS_OUTCOME_LABEL, row.original.realized_outcome)}
+        </VocabPill>
       ) : (
-        <Tooltip content="advise-mode decisions are recorded but never routed">
+        <Tooltip content="Advise-only decisions are recorded but never routed.">
           <span tabIndex={0} className="cursor-help text-fg-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring">-</span>
         </Tooltip>
       ),
@@ -195,19 +219,21 @@ export function ActivityTab() {
     <div className="space-y-4">
       <ChartShell
         title="Admission verdicts"
-        sub="Every decision the admission policy recorded - the shadow (observe) or enforced verdict, which criterion fired, and whether the judge ran. Node-local audit; never pushed."
+        sub="Every decision the admission policy recorded, which criterion fired and whether the judge ran. Kept on this machine."
       >
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Select value={win} onChange={setWin} options={WINDOWS} />
-          <Select value={decision} onChange={setDecision} options={DECISION_FILTER} />
-          <button type="button" onClick={() => verdicts.reload()} className="rounded-2 border border-line-2 px-2 py-1 text-caption text-fg-2 hover:text-fg-1">
+          <Select value={win} onChange={setWin} options={WINDOWS} ariaLabel="Time window" />
+          <Select value={decision} onChange={setDecision} options={DECISION_FILTER} ariaLabel="Decision" />
+          <Button size="sm" variant="ghost" iconLeft={RefreshCw} onClick={() => verdicts.reload()}>
             Refresh
-          </button>
-          <span className="text-[11px] text-fg-3">{rows.length} in window</span>
+          </Button>
+          <span className="text-[11px] text-fg-3">{fmtInt(rows.length)} in window</span>
         </div>
 
         {verdicts.loading && rows.length === 0 ? (
           <InlineLoading label="Loading verdicts" />
+        ) : verdicts.error && rows.length === 0 ? (
+          <ErrorState title="Couldn't load the verdicts" error={verdicts.error} onRetry={verdicts.reload} />
         ) : rows.length === 0 ? (
           <EmptyState
             variant="inline"
@@ -229,11 +255,13 @@ export function ActivityTab() {
 
       <ChartShell
         title="Recent egress decisions"
-        right={<GatedLink to="/egress" managed={null} className="text-caption font-medium text-accent hover:underline">Full audit on Egress →</GatedLink>}
-        sub="Routing directives the egress policy produced. Advise-mode rows are recorded but never routed; enforce rows carry the proxy's realized outcome."
+        right={<GatedLink to="/egress" managed={null} className="text-caption font-medium text-accent hover:underline">Full log on Egress</GatedLink>}
+        sub="What the routing policy decided. Advise-only rows are never routed; enforced rows show what the proxy did."
       >
         {egress.loading && egRows.length === 0 ? (
           <InlineLoading label="Loading egress decisions" />
+        ) : egress.error && egRows.length === 0 ? (
+          <ErrorState title="Couldn't load the routing decisions" error={egress.error} onRetry={egress.reload} />
         ) : egRows.length === 0 ? (
           <EmptyState
             variant="inline"

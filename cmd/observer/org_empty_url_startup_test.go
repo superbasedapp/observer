@@ -229,7 +229,7 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow, expectSignal bo
 
 	ctx, cancel := context.WithCancel(context.Background())
 	startCmd := newStartCmd()
-	t.Cleanup(func() { setDaemonConfigPath("") })
+	cleanupInProcessDaemon(t)
 	startCmd.SetArgs([]string{"--no-dashboard", "--no-open", "--config", cfgPath})
 	out := &syncBuffer{}
 	startCmd.SetOut(out)

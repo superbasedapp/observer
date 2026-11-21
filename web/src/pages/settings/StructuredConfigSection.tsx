@@ -251,7 +251,7 @@ export function StructuredConfigSection({
     <ChartShell
       title={
         <span className="flex items-baseline gap-2">
-          {prettyTitle(spec.id)}
+          {spec.title ?? prettyTitle(spec.id)}
           {badge}
         </span>
       }

@@ -85,6 +85,16 @@ var pages = []page{
 	{"code-security", "code-security", "CodeSecurity", "CodeSecurityPage", "security"},
 	{"egress", "egress", "Egress", "EgressPage", "obs"},
 	{"policies", "policies", "Policies", "PoliciesPage", "obs"},
+	// Your apps (Plane A lane B5, plan W2-5, D17): read only /api/obs, so
+	// they leave a build without obs with Egress and Policies.
+	{"app-traces", "apps/traces", "AppTraces", "AppTracesPage", "obs"},
+	{"app-sessions", "apps/sessions", "AppSessions", "AppSessionsPage", "obs"},
+	{"app-analytics", "apps/analytics", "AppAnalytics", "AppAnalyticsPage", "obs"},
+	{"app-end-users", "apps/end-users", "AppEndUsers", "AppEndUsersPage", "obs"},
+	{"app-evals", "apps/evals", "AppEvals", "AppEvalsPage", "obs"},
+	{"app-scores", "apps/scores", "AppScores", "AppScoresPage", "obs"},
+	{"app-prompts", "apps/prompts", "AppPrompts", "AppPromptsPage", "obs"},
+	{"app-alerts", "apps/alerts", "AppAlerts", "AppAlertsPage", "obs"},
 	{"agent-config", "agent-config", "AgentConfig", "AgentConfigPage", "integration.agent-config"},
 	{"tools", "tools", "Tools", "ToolsPage", "core"},
 	{"compression", "compression", "Compression", "CompressionPage", "proxy.compression"},

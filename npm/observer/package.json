@@ -1,6 +1,6 @@
 {
   "name": "@superbased/observer",
-  "version": "1.41.0",
+  "version": "1.42.0",
   "description": "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
   "keywords": [
     "ai",
@@ -47,11 +47,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@superbased/observer-linux-x64": "1.41.0",
-    "@superbased/observer-linux-arm64": "1.41.0",
-    "@superbased/observer-darwin-x64": "1.41.0",
-    "@superbased/observer-darwin-arm64": "1.41.0",
-    "@superbased/observer-win32-x64": "1.41.0"
+    "@superbased/observer-linux-x64": "1.42.0",
+    "@superbased/observer-linux-arm64": "1.42.0",
+    "@superbased/observer-darwin-x64": "1.42.0",
+    "@superbased/observer-darwin-arm64": "1.42.0",
+    "@superbased/observer-win32-x64": "1.42.0"
   },
   "scripts": {
     "test": "node bin/observer.js --version",
@@ -65,7 +65,10 @@
       "body": "This release needs macOS 13 Ventura or later. On macOS 12, stay on v1.36.0. Code security is now on by default in the developer and full editions, so an agent commit or push can ask you first. See it on the Security page.",
       "url": "https://github.com/superbasedapp/observer/releases/tag/v1.37.0",
       "expires_at": "2026-12-30T00:00:00Z",
-      "source": "release"
+      "source": "release",
+      "platforms": [
+        "darwin"
+      ]
     }
   }
 }

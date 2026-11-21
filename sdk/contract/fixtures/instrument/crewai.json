@@ -1,0 +1,56 @@
+{
+  "_source": {
+    "target": "crewai",
+    "instrumentor": "openinference-instrumentation-crewai 1.1.28",
+    "library": "crewai 1.15.44 (Python < 3.14; its own venv: crewai pins openai < 3)",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "Crew(agents=[Agent], tasks=[Task]).kickoff() with a BaseLLM subclass returning a fixed final answer, CrewAI telemetry and tracing off.",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "crewai",
+  "_gaps": [
+    "The agent span has no agent name key: the role is only in graph.node.id, which genaiattr reads as the agent name of an AGENT span since genaiattr-3 (lane LF-4). There is one agent span per task (Task._execute_core), no separate task span.",
+    "No LLM span: the CrewAI instrumentor covers crew, task and agent; the model call is captured by the openai (or litellm) instrumentation when that is on.",
+    "crew_inputs, crew_tasks and crew_agents carry content genaiattr does not map; masked as extra content."
+  ],
+  "spans": [
+    {
+      "name": "Crew_<id>.kickoff",
+      "parent": null,
+      "attrs": {
+        "crew_agents": "[{\"key\": \"b0436104097a86de9545775baf5949c1\", \"id\": \"<id>\", \"role\": \"Geographer\", \"goal\": \"Answer capital questions\", \"backstory\": \"Knows capitals.\", \"verbose?\": false, \"max_iter\": 25, \"max_rpm\": null, \"delegation_enabled\": false, \"tools_names\": []}]",
+        "crew_id": "<id>",
+        "crew_inputs": "",
+        "crew_key": "4141b741ef64e2c0fdb195101acf6dbc",
+        "crew_tasks": "[{\"id\": \"<id>\", \"description\": \"Capital of France?\", \"expected_output\": \"A city name.\", \"async_execution?\": false, \"human_input?\": false, \"agent_role\": \"Geographer\", \"agent_key\": \"b0436104097a86de9545775baf5949c1\", \"context\": null, \"tools_names\": []}]",
+        "openinference.span.kind": "CHAIN",
+        "output.mime_type": "application/json",
+        "output.value": "{\"raw\": \"Paris.\", \"pydantic\": null, \"json_dict\": null, \"tasks_output\": [{\"description\": \"Capital of France?\", \"name\": \"Capital of France?\", \"expected_output\": \"A city name.\", \"summary\": \"Capital of France?...\", \"raw\": \"Paris.\", \"pydantic\": null, \"json_dict\": null, \"agent\": \"Geographer\", \"output_format\": \"raw\", \"messages\": [{\"role\": \"system\", \"content\": \"You are Geographer. Knows capitals.\\nYour personal goal is: Answer capital questions\"}, {\"role\": \"user\", \"content\": \"\\nCurrent Task: Capital of France?\\n\\nThis is the expected criteria for your final answer: A city name.\\nyou MUST return the actual complete content as the final answer, not a summary.\\n\\nProvide your complete response:\"}], \"artifact\": null, \"tool_failures\": []}], \"token_usage\": {\"total_tokens\": 0, \"prompt_tokens\": 0, \"cached_prompt_tokens\": 0, \"completion_tokens\": 0, \"reasoning_tokens\": 0, \"cache_creation_tokens\": 0, \"successful_requests\": 0}}"
+      },
+      "want": {
+        "span_kind": "CHAIN",
+        "agent_name": ""
+      }
+    },
+    {
+      "name": "Geographer._execute_core",
+      "parent": "Crew_<id>.kickoff",
+      "attrs": {
+        "crew_id": "<id>",
+        "crew_key": "4141b741ef64e2c0fdb195101acf6dbc",
+        "graph.node.id": "Geographer",
+        "input.mime_type": "application/json",
+        "input.value": "{\"agent\": {\"entity_type\": \"agent\", \"id\": \"<id>\", \"role\": \"Geographer\", \"goal\": \"Answer capital questions\", \"backstory\": \"Knows capitals.\", \"cache\": true, \"verbose\": false, \"max_rpm\": null, \"allow_delegation\": false, \"tools\": [], \"max_iter\": 25, \"tool_failure_policy\": null, \"i18n\": {\"prompt_file\": null}, \"cache_handler\": null, \"tools_results\": [], \"max_tokens\": null, \"knowledge\": null, \"knowledge_sources\": null, \"knowledge_storage\": null, \"security_config\": {\"fingerprint\": {\"metadata\": {}}}, \"checkpoint\": null, \"adapted_agent\": false, \"knowledge_config\": null, \"apps\": null, \"mcps\": null, \"memory\": null, \"skills\": null, \"execution_context\": null, \"checkpoint_kickoff_event_id\": null, \"conversational\": false, \"max_execution_time\": null, \"use_system_prompt\": true, \"system_template\": null, \"prompt_template\": null, \"response_template\": null, \"allow_code_execution\": false, \"respect_context_window\": true, \"use_better_compaction\": true, \"max_retry_limit\": 2, \"multimodal\": false, \"artifacts\": false, \"inject_date\": false, \"date_format\": \"%Y-%m-%d\", \"code_execution_mode\": \"safe\", \"planning_config\": null, \"planning\": false, \"reasoning\": false, \"max_reasoning_attempts\": null, \"embedder\": null, \"agent_knowledge_context\": null, \"crew_knowledge_context\": null, \"knowledge_search_query\": null, \"from_repository\": null, \"guardrail_max_retries\": 3, \"a2a\": null, \"key\": \"b0436104097a86de9545775baf5949c1\"}, \"context\": \"\", \"tools\": []}",
+        "openinference.span.kind": "AGENT",
+        "output.mime_type": "application/json",
+        "output.value": "{\"description\": \"Capital of France?\", \"name\": \"Capital of France?\", \"expected_output\": \"A city name.\", \"summary\": \"Capital of France?...\", \"raw\": \"Paris.\", \"pydantic\": null, \"json_dict\": null, \"agent\": \"Geographer\", \"output_format\": \"raw\", \"messages\": [{\"role\": \"system\", \"content\": \"You are Geographer. Knows capitals.\\nYour personal goal is: Answer capital questions\"}, {\"role\": \"user\", \"content\": \"\\nCurrent Task: Capital of France?\\n\\nThis is the expected criteria for your final answer: A city name.\\nyou MUST return the actual complete content as the final answer, not a summary.\\n\\nProvide your complete response:\"}], \"artifact\": null, \"tool_failures\": []}",
+        "task_id": "<id>",
+        "task_key": "10ad7b8f27c86b695e9ab590f159a2f9"
+      },
+      "want": {
+        "span_kind": "AGENT",
+        "agent_name": "Geographer"
+      }
+    }
+  ]
+}

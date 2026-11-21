@@ -30,7 +30,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	browseringest "github.com/marmutapp/superbased-observer/internal/ingest/browser"
-	otlpingest "github.com/marmutapp/superbased-observer/internal/ingest/otlp"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
 	"github.com/marmutapp/superbased-observer/internal/localipc"
@@ -871,6 +870,11 @@ func newStartCmd() *cobra.Command {
 			// or a different port without conflict.
 			var dashboardServer daemonDashboard
 			var dashboardListen string
+			// AI Apps hot-enable (first-run plan 3.8, obs_wire_apps.go): the
+			// one runtime the gated obs routes, the enable seam and the OTLP
+			// receiver goroutine share. Nil without a dashboard in this
+			// process, which keeps the receiver's old start-time behaviour.
+			var apps *appsRuntime
 			// Session-attach socket Host (design Phase 1): derived directly off
 			// the ONE shared terminal stack (buildTerminalSurfaces) below, so
 			// `observer <tool> --attach` spawns through the same PTY stack the
@@ -967,6 +971,11 @@ func newStartCmd() *cobra.Command {
 				// §4 W3): the §3.6 "J" judge-tier seam is build-tag-split
 				// (projects_wire.go/projects_judge_wire.go).
 				projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
+				apps = newAppsRuntime(appsRuntimeOptions{
+					Ctx: ctx, ConfigPath: configPath, DB: database, Admission: admissionHandle,
+					Share: governanceShareProvider(cfg.OrgClient, ngov), Logger: slog.Default(),
+					BootOn: cfg.Observability.Enabled,
+				})
 				opts := dashapi.Options{
 					ProcessArchive: processArchive,
 					Projects:       cfg.Projects,
@@ -1084,7 +1093,7 @@ func newStartCmd() *cobra.Command {
 					ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
 					// OSH-R-005: may an Arena drive skip the harness's permission checks.
 					ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
-					ProxyPort:             cfg.Proxy.Port,
+					ProxyPort:             effectiveProxyPort(cfg.Proxy.Port, port),
 					// OSH-R-009: the Setup route writers write the client
 					// token form when the node wants client auth.
 					ProxyClientToken: daemonProxyClientToken(cfg),
@@ -1105,6 +1114,8 @@ func newStartCmd() *cobra.Command {
 					// a restart. Nil when compression is off at boot (the
 					// master switch stays restart-gated).
 					OnConfigSaved: profilesReload,
+					// Plane A W2-7: SDK discovery and SDK key sign-in/out.
+					SDK: sdkDashboardSeams(cfg, store.New(database)),
 					// P6.7: demo mode — temp DB seeded from embedded
 					// fixtures; never touches the real observer.db.
 					DemoSeeder: demoSeeder(slog.Default()),
@@ -1119,7 +1130,9 @@ func newStartCmd() *cobra.Command {
 					// admissionHandle (gap P0-7) shares the proxy's ONE live
 					// admission service with the dashboard policy/egress editors,
 					// so an edit hot-swaps the instance the proxy enforces.
-					ExtraRoutes: append(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default()), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
+					// The obs routes ride the hot-enable gate (obs_wire_apps.go):
+					// every pattern is registered now, served once AI Apps is on.
+					ExtraRoutes: append(apps.gatedRoutes(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default())), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
 					// Embedded web-terminal launcher (docs/session-handoff.md
 					// launch section). Nil when [handoff].allow_dashboard_launch
 					// is false → endpoints 503, button hidden.
@@ -1289,6 +1302,9 @@ func newStartCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				// The AI Apps seams (/api/apps/*, the /api/firstrun plane and
+				// apps fields): one runtime behind the dashboard.
+				bindAppsDashboard(dashboardServer, apps)
 				// Standing-takeover provenance hook (opt-in policy
 				// [remote].revoke_standing_on_takeover, default off): the
 				// concrete manager reports a local takeover of a
@@ -2213,73 +2229,21 @@ func newStartCmd() *cobra.Command {
 			// and the tool's transcript. Gated by [ingest.otel] enabled
 			// (default off → no listener, solo-local UX unchanged), loopback-
 			// only unless allow_non_loopback, which then requires the receiver
-			// token. Fail-soft + P1: a bind failure logs and returns nil,
-			// never cancelling siblings.
-			ng.Go("otlp-receiver", func() error {
-				rcfg, rdb, rcleanup, rerr := loadConfigAndDB(gctx, configPath)
-				if rerr != nil {
-					return nil
-				}
-				defer rcleanup()
-				// The shared OTLP receiver serves logs when [ingest.otel]
-				// is on and traces when [observability] is on (the obs
-				// subsystem registers its trace handler here — the single
-				// host->obs seam, build-tagged). Off only when both are off.
-				if !rcfg.Ingest.OTel.Enabled && !rcfg.Observability.Enabled {
-					return nil
-				}
-				rlogger := newLogger(rcfg.Observer.LogLevel)
-				opts := otlpingest.Options{
-					GRPCAddr:         rcfg.Ingest.OTel.GRPCAddr,
-					HTTPAddr:         rcfg.Ingest.OTel.HTTPAddr,
-					AllowNonLoopback: rcfg.Ingest.OTel.AllowNonLoopback,
-					Logger:           rlogger,
-				}
-				// A receiver opened to the network authenticates every
-				// request (SR27-B5, T-475): the shared token is generated
-				// once and kept 0600 beside the DB. Fail closed: no
-				// token, no non-loopback listener.
-				if rcfg.Ingest.OTel.AllowNonLoopback {
-					tok, terr := resolveLocalTokenFile(otlpIngestTokenPath(rcfg))
-					if terr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "otlp receiver disabled: allow_non_loopback needs a receiver token and it could not be resolved: %v\n", terr)
-						return nil
-					}
-					opts.RequireToken, opts.ReceiverToken = true, tok
-					// CLOUDTEL-1 (CA-D18): an active per-environment
-					// cloud-session ship token is accepted too.
-					opts.AcceptToken = otlpShipTokenAcceptor(gctx, rdb, nil)
-					rlogger.Info("otlp receiver: non-loopback bind requires the receiver token header",
-						"header", otlpingest.HeaderEdgeToken, "token_file", otlpIngestTokenPath(rcfg))
-				}
-				// Plane A (internal/obs) gets every trace resource no
-				// coding-tool mapping row claims; Plane B (the vendor
-				// table) gets the claimed ones, plus every logs export.
-				// guardPlaneA keeps a developer's own agent's spans
-				// (sbo.agent) out of Plane A in every configuration
-				// (PT-55, otlp_planeguard.go).
-				planeA := guardPlaneA(newObsTraceHandler(gctx, rcfg, rdb, rlogger), rlogger)
-				opts.TraceHandler = planeA
-				if rcfg.Ingest.OTel.Enabled {
-					// The vendor table and logs handler belong to
-					// ingest.otlp (otlp_ingest.go / otlp_ingest_omit.go).
-					opts.Handler, opts.TraceHandler = wireVendorOTLPIngest(gctx, rcfg, rdb, rlogger, planeA)
-				}
-				if opts.Handler == nil && opts.TraceHandler == nil {
-					return nil // nothing this build can serve
-				}
-				recv, err := otlpingest.New(opts)
-				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "otlp receiver disabled: init failed: %v\n", err)
-					return nil
-				}
-				recv.Start()
-				<-gctx.Done()
-				sctx, scancel := context.WithTimeout(context.WithoutCancel(gctx), 5*time.Second)
-				_ = recv.Shutdown(sctx)
-				scancel()
-				return nil
-			})
+			// token. Fail-soft + P1: a bind failure logs, is recorded and
+			// never cancels a sibling. With a dashboard here it waits for an
+			// AI Apps enable instead of returning (hot-enable, first-run plan
+			// 3.8; obs_wire_receiver.go).
+			recvLoop := func() error {
+				return runOTLPReceiver(gctx, configPath, cmd.ErrOrStderr(), apps)
+			}
+			// With AI Apps off in an edition that has it (the developer
+			// default) the gate keeps the receiver stopped at boot; an AI Apps
+			// enable adds the obs component at run time, so the enable seam
+			// starts the receiver on its first request (POLISH-F2 F2-1).
+			if apps != nil && apps.inBuild && !ng.allows("otlp-receiver") {
+				apps.recv.setSpawn(func() { ng.goOTLPReceiverLater(recvLoop) })
+			}
+			ng.Go("otlp-receiver", recvLoop)
 			// Browser-chatbot loopback ingest listener (opt-in alternate to
 			// the native-messaging bridge). Gated by [browser].enabled AND
 			// [browser.listener].enabled (both default so the LISTENER is

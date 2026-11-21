@@ -1,0 +1,61 @@
+{
+  "_source": {
+    "grounding": "Source-grounded synthesis against the pinned registry open-telemetry/semantic-conventions-genai@76e0c19e7fe11dc693fe258642363a438af4d3aa: the event gen_ai.client.inference.operation.details (model/gen-ai/events.yaml) carries gen_ai.input.messages, gen_ai.output.messages and gen_ai.system_instructions as structured attributes; the legacy per-message events (gen_ai.system.message, gen_ai.user.message, gen_ai.assistant.message, gen_ai.tool.message, gen_ai.choice) carry one message in the body as emitted by the opentelemetry-instrumentation-openai v2 and OpenLLMetry event mode. Not a live capture.",
+    "consulted_date": "2026-11-19"
+  },
+  "cases": [
+    {
+      "name": "inference_details_structured_attributes",
+      "event": "gen_ai.client.inference.operation.details",
+      "attrs": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.input.messages": [{"role": "user", "parts": [{"type": "text", "content": "Weather in Paris?"}]}],
+        "gen_ai.output.messages": [{"role": "assistant", "parts": [{"type": "text", "content": "Sunny."}], "finish_reason": "stop"}],
+        "gen_ai.system_instructions": [{"type": "text", "content": "Be brief."}]
+      },
+      "want": {
+        "bodies": [
+          {"kind": "prompt", "raw": "[{\"parts\":[{\"content\":\"Weather in Paris?\",\"type\":\"text\"}],\"role\":\"user\"}]"},
+          {"kind": "response", "raw": "[{\"finish_reason\":\"stop\",\"parts\":[{\"content\":\"Sunny.\",\"type\":\"text\"}],\"role\":\"assistant\"}]"},
+          {"kind": "system_instructions", "raw": "[{\"content\":\"Be brief.\",\"type\":\"text\"}]"}
+        ]
+      }
+    },
+    {
+      "name": "legacy_system_message_kvlist",
+      "event": "gen_ai.system.message",
+      "body": {"content": "You are terse."},
+      "want": {"messages": [{"kind": "system_instructions", "json": {"content": "You are terse.", "role": "system"}}]}
+    },
+    {
+      "name": "legacy_user_message_bare_string",
+      "event": "gen_ai.user.message",
+      "body": "Weather in Paris?",
+      "want": {"messages": [{"kind": "prompt", "json": {"content": "Weather in Paris?", "role": "user"}}]}
+    },
+    {
+      "name": "legacy_assistant_message_with_tool_calls",
+      "event": "gen_ai.assistant.message",
+      "body": {"tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}]},
+      "want": {"messages": [{"kind": "prompt", "json": {"role": "assistant", "tool_calls": [{"function": {"arguments": "{\"city\":\"Paris\"}", "name": "get_weather"}, "id": "call_1", "type": "function"}]}}]}
+    },
+    {
+      "name": "legacy_tool_message_keeps_its_role",
+      "event": "gen_ai.tool.message",
+      "body": {"content": "18C, sunny", "id": "call_1", "role": "tool"},
+      "want": {"messages": [{"kind": "prompt", "json": {"content": "18C, sunny", "id": "call_1", "role": "tool"}}]}
+    },
+    {
+      "name": "legacy_choice",
+      "event": "gen_ai.choice",
+      "body": {"finish_reason": "stop", "index": 0, "message": {"content": "Sunny."}},
+      "want": {"messages": [{"kind": "response", "json": {"finish_reason": "stop", "index": 0, "message": {"content": "Sunny."}, "role": "assistant"}}]}
+    },
+    {
+      "name": "evaluation_result_carries_no_content",
+      "event": "gen_ai.evaluation.result",
+      "attrs": {"gen_ai.evaluation.name": "relevance", "gen_ai.evaluation.score.value": 0.8},
+      "want": {}
+    }
+  ]
+}

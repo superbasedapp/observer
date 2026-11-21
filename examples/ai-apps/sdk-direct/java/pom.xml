@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The sdk-direct example on the superbased Java SDK. Install the SDK from a
+  checkout first (it is not on Maven Central yet):
+    mvn -q -f <repo>/sdk/java install -DskipTests
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>app.superbased.examples</groupId>
+  <artifactId>sdk-direct-java</artifactId>
+  <version>0.1.0</version>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>app.superbased</groupId>
+      <artifactId>superbased-sdk</artifactId>
+      <version>0.1.0</version>
+    </dependency>
+    <!-- Reads the OpenAI answers (the SDK depends on it too). -->
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>2.13.1</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.5.1</version>
+        <configuration>
+          <mainClass>example.Chatbot</mainClass>
+          <cleanupDaemonThreads>false</cleanupDaemonThreads>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

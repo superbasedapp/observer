@@ -29,6 +29,9 @@ func newObsCmd() *cobra.Command {
 	cmd.AddCommand(newAdmissionCmd())
 	cmd.AddCommand(newObsAlertsCmd())
 	cmd.AddCommand(newObsEgressCmd())
+	cmd.AddCommand(newObsTracesCmd())
+	cmd.AddCommand(newObsPromptsCmd())
+	cmd.AddCommand(newObsViewsCmd())
 	evalAlias := newEvalCmd()
 	evalAlias.Hidden = true
 	cmd.AddCommand(evalAlias)
@@ -272,6 +275,11 @@ func newAdmissionBudgetStatusCmd() *cobra.Command {
 				capLabel(st.FiveHourUSD), capLabel(st.WeeklyUSD), capLabel(st.MonthlyUSD))
 			fmt.Fprintf(out, "proxy header:   %s\n", st.UserHeader)
 			fmt.Fprintf(out, "breaches (24h): %d\n", st.Breaches24h)
+			if snap, aerr := orgAppBudgetForCLI(cmd.Context(), cfg, database); aerr == nil {
+				for _, line := range orgAppCapLines(snap, cfg.Guard.Budget.FromOrg) {
+					fmt.Fprintln(out, line)
+				}
+			}
 			if len(st.TopSpenders) == 0 {
 				fmt.Fprintln(out, "top spenders:   (none - no attributed end-user spend yet)")
 				return nil
@@ -493,8 +501,8 @@ func runBatchAdmissionSetup(out io.Writer, cfg config.Config, path string, ch ad
 		fmt.Fprintf(out, "\ndry run - re-run with --yes to write %s\n", path)
 		return nil
 	}
-	if err := config.WriteToml(path, newCfg); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err := writeAdmissionSetup(path, cfg, newCfg); err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "wrote %s (a .bak backup was kept).\n", path)
 	return nil

@@ -106,6 +106,18 @@ export const UNBADGED_NAV_IDS: Readonly<Record<string, string>> = {
   // own read, /api/obs/egress/status, re-verifies the whole decision hash
   // chain on every call: too costly to poll from the always-mounted nav.
   egress: "no cheap count: the egress status read verifies the whole decision chain",
+  // The rest of Your apps (Plane A lane B5): the same boundary keeps
+  // /api/status off the obs store, and the pages' own reads are window
+  // aggregates, not a count worth polling from the nav.
+  "app-traces": "no cheap count: /api/status never reads the obs store (obs boundary)",
+  "app-sessions": "no cheap count: /api/status never reads the obs store (obs boundary)",
+  "app-analytics": "an aggregate page, not a list",
+  "app-end-users": "no cheap count: /api/status never reads the obs store (obs boundary)",
+  "app-evals": "no cheap count: /api/status never reads the obs store (obs boundary)",
+  "app-scores": "no cheap count: /api/status never reads the obs store (obs boundary)",
+  "app-prompts": "configuration, not records",
+  "app-alerts": "the breaching state is the page's own evaluation, not a status count",
+  policies: "configuration, not records (moved from Configure into Your apps)",
 };
 
 /** navCounts maps each nav item id to its badge from one status snapshot. */

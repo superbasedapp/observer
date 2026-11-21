@@ -55,7 +55,8 @@ type Request struct {
 	// positive. Set it only for a loopback model: a hosted OpenAI-compatible
 	// API rejects unknown fields.
 	NumCtx int
-	// ReasoningEffort ("low", "medium", "high") is sent only when non-empty.
+	// ReasoningEffort ("minimal", "low", "medium", "high"; which values a
+	// model accepts varies) is sent only when non-empty.
 	ReasoningEffort string
 	// SchemaName and Schema request strict structured output through
 	// response_format json_schema. An empty Schema omits response_format.

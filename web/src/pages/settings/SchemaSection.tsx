@@ -430,7 +430,8 @@ export function SchemaSection({
   );
 }
 
-function GroupCard({
+/** GroupCard is one [table] of settings (exported for its component test). */
+export function GroupCard({
   group,
   showExpert,
   shown,
@@ -456,15 +457,21 @@ function GroupCard({
   const advanced = group.leaves.filter((l) => l.prominence === "advanced");
   const expert = showExpert ? group.leaves.filter((l) => l.prominence === "expert") : [];
   const hidden = group.leaves.length - primary.length - advanced.length - expert.length;
-  const doc = group.table?.doc;
+  // U-14: the user-facing help (web/cfgschema/help.go), never the raw Go
+  // doc comment. An older daemon's schema without help shows nothing here.
+  const help = group.table?.help;
   return (
-    <section className="rounded-3 border border-line-2 bg-bg-2 p-4">
+    // U-15: the rows below lay out against this card's own width (a
+    // container query), not the viewport: at a laptop width the page's rail
+    // and aside leave the card narrow, and a viewport breakpoint squeezed
+    // the value column beside a fixed 220 px label column.
+    <section className="rounded-3 border border-line-2 bg-bg-2 p-4 [container-type:inline-size]">
       <header className="mb-3 border-b border-line-1 pb-2">
         <h4 className="font-mono text-[12px] font-semibold text-fg-1">[{group.path}]</h4>
-        {doc && (
-          <Tooltip content={<span className="whitespace-pre-wrap">{doc}</span>} maxWidth={480}>
+        {help && (
+          <Tooltip content={<span className="whitespace-pre-wrap">{help}</span>} maxWidth={480}>
             <p tabIndex={0} className="mt-1 cursor-help text-[11.5px] leading-snug text-fg-3 focus:outline-none">
-              {firstSentence(doc)}
+              {firstSentence(help)}
             </p>
           </Tooltip>
         )}
@@ -533,8 +540,13 @@ function LeafRow({
   const key = leaf.path.slice(leaf.path.lastIndexOf(".") + 1);
   const editable = !leaf.secret && leaf.tier !== "owner_elsewhere" && leaf.kind !== "table";
   return (
-    <div className={clsx("grid grid-cols-1 gap-1.5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start lg:gap-4", dirty && "rounded-2 bg-accent/5")}>
-      <div className="lg:pt-1.5">
+    <div
+      className={clsx(
+        "grid grid-cols-1 gap-1.5 [@container(min-width:640px)]:grid-cols-[200px_minmax(0,1fr)] [@container(min-width:640px)]:items-start [@container(min-width:640px)]:gap-4",
+        dirty && "rounded-2 bg-accent/5",
+      )}
+    >
+      <div className="min-w-0 [@container(min-width:640px)]:pt-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="font-mono text-[11.5px] font-semibold text-fg-1" title={leaf.path}>
             {key}
@@ -558,9 +570,9 @@ function LeafRow({
           )}
           {leaf.deprecated && <Pill variant="warn">deprecated</Pill>}
         </div>
-        {leaf.doc && (
-          <div className="mt-1 text-[11px] leading-snug text-fg-3" title={leaf.doc}>
-            {firstSentence(leaf.doc)}
+        {leaf.help && (
+          <div className="mt-1 text-[11px] leading-snug text-fg-3" title={leaf.help}>
+            {firstSentence(leaf.help)}
           </div>
         )}
         {leaf.deprecated && (
@@ -586,7 +598,7 @@ function LeafRow({
 
 function SecretState({ hasValue }: { hasValue: boolean }) {
   return (
-    <div className="flex items-center gap-2 lg:pt-1">
+    <div className="flex flex-wrap items-center gap-2 [@container(min-width:640px)]:pt-1">
       <Pill variant={hasValue ? "success" : "neutral"}>{hasValue ? "set" : "not set"}</Pill>
       <span className="text-[10.5px] text-fg-4">credential - never shown; edit config.toml to change</span>
     </div>
@@ -616,7 +628,7 @@ function LeafInput({
     case "bool": {
       const on = Boolean(value);
       return (
-        <div className="lg:pt-1">
+        <div className="[@container(min-width:640px)]:pt-1">
           <Toggle on={on} onChange={onChange} disabled={disabled} label={on ? "enabled" : "disabled"} />
         </div>
       );

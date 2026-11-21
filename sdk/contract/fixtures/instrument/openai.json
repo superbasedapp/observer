@@ -1,0 +1,115 @@
+{
+  "_source": {
+    "target": "openai",
+    "instrumentor": "openinference-instrumentation-openai 0.1.75",
+    "library": "openai 3.55.1",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "OpenAI chat completion (system + user messages, cached and reasoning usage) and an embeddings call, over an httpx MockTransport inside propagate_attributes(user, session_id).",
+    "recorded": "2026-11-19, offline (mocked transport, no network), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "openai",
+  "_gaps": [
+    "CreateEmbeddings: OpenInference names the embedding model embedding.model_name, which genaiattr reads since genaiattr-2 (lane C7). Its inputs (embedding.embeddings.*) are SDK extra content keys; ingest reads their texts only when input.value is absent."
+  ],
+  "spans": [
+    {
+      "name": "ChatCompletion",
+      "parent": null,
+      "attrs": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"Be brief.\"}, {\"role\": \"user\", \"content\": \"Capital of France?\"}], \"temperature\": 0.2}",
+        "llm.finish_reason": "stop",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.content": "Capital of France?",
+        "llm.input_messages.1.message.role": "user",
+        "llm.invocation_parameters": "{\"model\": \"gpt-4o-mini\", \"temperature\": 0.2}",
+        "llm.model_name": "gpt-4o-mini-2024-07-18",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.system": "openai",
+        "llm.token_count.completion": 40,
+        "llm.token_count.completion_details.reasoning": 16,
+        "llm.token_count.prompt": 1200,
+        "llm.token_count.prompt_details.cache_read": 1024,
+        "llm.token_count.total": 1240,
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "{\"id\":\"chatcmpl-fixture\",\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Paris.\",\"role\":\"assistant\"}}],\"created\":1763510400,\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":40,\"prompt_tokens\":1200,\"total_tokens\":1240,\"completion_tokens_details\":{\"reasoning_tokens\":16},\"prompt_tokens_details\":{\"cached_tokens\":1024}}}",
+        "sbo.user": "end-user-1",
+        "server.address": "mock.invalid",
+        "server.port": 80,
+        "session.id": "sess-1"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "gpt-4o-mini-2024-07-18",
+        "provider": "openai",
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "total_derived": false,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": null,
+        "reasoning_tokens": 16,
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "role": "system",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "Capital of France?"
+          }
+        ],
+        "output_messages": [
+          {
+            "role": "assistant",
+            "content": "Paris."
+          }
+        ],
+        "request_params": {
+          "model": "gpt-4o-mini",
+          "temperature": 0.2
+        }
+      }
+    },
+    {
+      "name": "CreateEmbeddings",
+      "parent": null,
+      "attrs": {
+        "embedding.embeddings.0.embedding.text": "hello",
+        "embedding.embeddings.0.embedding.vector": [
+          0.25,
+          0.5
+        ],
+        "embedding.invocation_parameters": "{\"model\": \"text-embedding-3-small\", \"encoding_format\": \"float\"}",
+        "embedding.model_name": "text-embedding-3-small",
+        "input.mime_type": "application/json",
+        "input.value": "{\"model\": \"text-embedding-3-small\", \"input\": \"hello\", \"encoding_format\": \"float\"}",
+        "llm.system": "openai",
+        "llm.token_count.prompt": 5,
+        "llm.token_count.total": 5,
+        "openinference.span.kind": "EMBEDDING",
+        "output.mime_type": "application/json",
+        "output.value": "{\"data\":[{\"embedding\":[0.25,0.5],\"index\":0,\"object\":\"embedding\"}],\"model\":\"text-embedding-3-small\",\"object\":\"list\",\"usage\":{\"prompt_tokens\":5,\"total_tokens\":5}}",
+        "sbo.user": "end-user-1",
+        "server.address": "mock.invalid",
+        "server.port": 80,
+        "session.id": "sess-1"
+      },
+      "want": {
+        "span_kind": "EMBEDDING",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "input_tokens": 5,
+        "total_tokens": 5,
+        "total_derived": false,
+        "output_tokens": null
+      }
+    }
+  ]
+}

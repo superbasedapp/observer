@@ -33,7 +33,7 @@ func TestPlaceTable(t *testing.T) {
 		{ConnectedTools, "/settings?section=tools", "Settings > Connected tools"},
 		{RoutingSettings, "/settings?section=routing", "Settings > Routing"},
 		{GuardSettings, "/settings?section=guard", "Settings > Guard"},
-		{ObservabilitySettings, "/settings?section=observability", "Settings > Observability"},
+		{ObservabilitySettings, "/settings?section=observability", "Settings > AI Apps"},
 		{IntelligenceSettings, "/settings?section=intelligence", "Settings > Intelligence"},
 		{SecurityMode, "/security?tab=overview", "Security > Overview > Mode"},
 	}

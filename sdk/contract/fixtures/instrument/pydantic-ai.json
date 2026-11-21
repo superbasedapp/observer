@@ -1,0 +1,284 @@
+{
+  "_source": {
+    "target": "pydantic-ai",
+    "instrumentor": "openinference-instrumentation-pydantic-ai 0.1.38 (OpenInferenceSpanProcessor mapping, applied by the SDK at export)",
+    "library": "pydantic-ai-slim 2.71.0 (instrumentation version 5)",
+    "sdk": "superbased-sdk (sdk/python)",
+    "grounding": "Agent(TestModel) with one plain tool, run_sync: Pydantic AI's own spans (Agent.instrument_all with the SDK's provider) plus the OpenInference attributes the SDK adds.",
+    "recorded": "2026-11-19, offline (mocked transport, no network, no real keys), by sdk/python/tests/test_instrument.py with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "pydantic-ai",
+  "_gaps": [
+    "The agent span's token totals are gen_ai.aggregated_usage.* (a run total, not mapped: good, it would double count the chat spans).",
+    "pydantic_ai.all_messages and final_result carry content genaiattr does not map; masked as extra content.",
+    "provider and model are 'test' (TestModel); a real model gives its provider name."
+  ],
+  "spans": [
+    {
+      "name": "invoke_agent geographer",
+      "parent": null,
+      "attrs": {
+        "agent_name": "geographer",
+        "final_result": "Paris.",
+        "gen_ai.agent.call.id": "<id>",
+        "gen_ai.agent.name": "geographer",
+        "gen_ai.aggregated_usage.input_tokens": 107,
+        "gen_ai.aggregated_usage.output_tokens": 12,
+        "gen_ai.conversation.id": "<id>",
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "input.value": "Capital of France?",
+        "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"pydantic_ai.all_messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"final_result\":{\"type\":\"object\"}}}",
+        "logfire.msg": "geographer run",
+        "model_name": "test",
+        "openinference.span.kind": "AGENT",
+        "output.value": "Paris.",
+        "pydantic_ai.all_messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"pyd_ai_tool_call_id__word_length\",\"name\":\"word_length\",\"arguments\":{\"word\":\"a\"}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"pyd_ai_tool_call_id__word_length\",\"name\":\"word_length\",\"result\":1}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}]}]",
+        "session.id": "<id>"
+      },
+      "want": {
+        "span_kind": "AGENT",
+        "operation": "invoke_agent",
+        "agent_name": "geographer",
+        "input_value": "Capital of France?",
+        "output_value": "Paris.",
+        "input_tokens": null,
+        "output_tokens": null
+      }
+    },
+    {
+      "name": "chat test",
+      "parent": "invoke_agent geographer",
+      "attrs": {
+        "gen_ai.agent.call.id": "<id>",
+        "gen_ai.agent.name": "geographer",
+        "gen_ai.conversation.id": "<id>",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]}]",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"pyd_ai_tool_call_id__word_length\",\"name\":\"word_length\",\"arguments\":{\"word\":\"a\"}}]}]",
+        "gen_ai.provider.name": "test",
+        "gen_ai.request.model": "test",
+        "gen_ai.response.model": "test",
+        "gen_ai.system": "test",
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "gen_ai.tool.definitions": "[{\"type\":\"function\",\"name\":\"word_length\",\"description\":\"Length of a word.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"word\":{\"type\":\"string\"}},\"required\":[\"word\"],\"type\":\"object\"}}]",
+        "gen_ai.usage.input_tokens": 53,
+        "gen_ai.usage.output_tokens": 5,
+        "input.value": "Capital of France?",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.contents.0.message_content.text": "Capital of France?",
+        "llm.input_messages.1.message.contents.0.message_content.type": "text",
+        "llm.input_messages.1.message.role": "user",
+        "llm.model_name": "test",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"word\": \"a\"}",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.id": "pyd_ai_tool_call_id__word_length",
+        "llm.provider": "test",
+        "llm.system": "test",
+        "llm.token_count.completion": 5,
+        "llm.token_count.prompt": 53,
+        "llm.token_count.total": 58,
+        "llm.tools.0.tool.description": "Length of a word.",
+        "llm.tools.0.tool.json_schema": "{\"additionalProperties\": false, \"properties\": {\"word\": {\"type\": \"string\"}}, \"required\": [\"word\"], \"type\": \"object\"}",
+        "llm.tools.0.tool.name": "word_length",
+        "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}",
+        "openinference.span.kind": "LLM",
+        "output.mime_type": "application/json",
+        "output.value": "[{\"id\": \"pyd_ai_tool_call_id__word_length\", \"name\": \"word_length\", \"arguments\": {\"word\": \"a\"}}]",
+        "session.id": "<id>"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "test",
+        "provider": "test",
+        "input_tokens": 53,
+        "output_tokens": 5,
+        "total_tokens": 58,
+        "total_derived": false,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": null,
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "content": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "parts": [
+              {
+                "arguments": {
+                  "word": "a"
+                },
+                "id": "pyd_ai_tool_call_id__word_length",
+                "name": "word_length",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "request_params": "",
+        "operation": "chat",
+        "request_model": "test",
+        "agent_name": "geographer"
+      }
+    },
+    {
+      "name": "execute_tool word_length",
+      "parent": "invoke_agent geographer",
+      "attrs": {
+        "gen_ai.agent.call.id": "<id>",
+        "gen_ai.agent.name": "geographer",
+        "gen_ai.conversation.id": "<id>",
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.call.arguments": "{\"word\":\"a\"}",
+        "gen_ai.tool.call.id": "pyd_ai_tool_call_id__word_length",
+        "gen_ai.tool.call.result": "1",
+        "gen_ai.tool.name": "word_length",
+        "input.mime_type": "application/json",
+        "input.value": "{\"word\":\"a\"}",
+        "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.tool.call.arguments\":{\"type\":\"object\"},\"gen_ai.tool.call.result\":{\"type\":\"object\"},\"gen_ai.tool.name\":{},\"gen_ai.tool.call.id\":{}}}",
+        "logfire.msg": "running tool: word_length",
+        "openinference.span.kind": "TOOL",
+        "output.mime_type": "text/plain",
+        "output.value": "1",
+        "session.id": "<id>",
+        "tool.name": "word_length",
+        "tool.parameters": "{\"word\":\"a\"}",
+        "tool_call.id": "pyd_ai_tool_call_id__word_length"
+      },
+      "want": {
+        "span_kind": "TOOL",
+        "operation": "execute_tool",
+        "tool_name": "word_length",
+        "tool_call_id": "pyd_ai_tool_call_id__word_length",
+        "tool_arguments": {
+          "word": "a"
+        },
+        "tool_result": "1"
+      }
+    },
+    {
+      "name": "chat test",
+      "parent": "invoke_agent geographer",
+      "attrs": {
+        "gen_ai.agent.call.id": "<id>",
+        "gen_ai.agent.name": "geographer",
+        "gen_ai.conversation.id": "<id>",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"pyd_ai_tool_call_id__word_length\",\"name\":\"word_length\",\"arguments\":{\"word\":\"a\"}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"pyd_ai_tool_call_id__word_length\",\"name\":\"word_length\",\"result\":1}]}]",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}]}]",
+        "gen_ai.provider.name": "test",
+        "gen_ai.request.model": "test",
+        "gen_ai.response.model": "test",
+        "gen_ai.system": "test",
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "gen_ai.tool.definitions": "[{\"type\":\"function\",\"name\":\"word_length\",\"description\":\"Length of a word.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"word\":{\"type\":\"string\"}},\"required\":[\"word\"],\"type\":\"object\"}}]",
+        "gen_ai.usage.input_tokens": 54,
+        "gen_ai.usage.output_tokens": 7,
+        "input.value": "Capital of France?",
+        "llm.input_messages.0.message.content": "Be brief.",
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.1.message.contents.0.message_content.text": "Capital of France?",
+        "llm.input_messages.1.message.contents.0.message_content.type": "text",
+        "llm.input_messages.1.message.role": "user",
+        "llm.input_messages.2.message.role": "assistant",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"word\": \"a\"}",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "word_length",
+        "llm.input_messages.2.message.tool_calls.0.tool_call.id": "pyd_ai_tool_call_id__word_length",
+        "llm.input_messages.3.message.contents.0.message_content.text": "1",
+        "llm.input_messages.3.message.role": "tool",
+        "llm.input_messages.3.message.tool_call_id": "pyd_ai_tool_call_id__word_length",
+        "llm.model_name": "test",
+        "llm.output_messages.0.message.content": "Paris.",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.provider": "test",
+        "llm.system": "test",
+        "llm.token_count.completion": 7,
+        "llm.token_count.prompt": 54,
+        "llm.token_count.total": 61,
+        "llm.tools.0.tool.description": "Length of a word.",
+        "llm.tools.0.tool.json_schema": "{\"additionalProperties\": false, \"properties\": {\"word\": {\"type\": \"string\"}}, \"required\": [\"word\"], \"type\": \"object\"}",
+        "llm.tools.0.tool.name": "word_length",
+        "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}",
+        "openinference.span.kind": "LLM",
+        "output.value": "Paris.",
+        "session.id": "<id>"
+      },
+      "want": {
+        "span_kind": "LLM",
+        "model": "test",
+        "provider": "test",
+        "input_tokens": 54,
+        "output_tokens": 7,
+        "total_tokens": 61,
+        "total_derived": false,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null,
+        "reasoning_tokens": null,
+        "response_id": "",
+        "finish_reasons": null,
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "content": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "arguments": {
+                  "word": "a"
+                },
+                "id": "pyd_ai_tool_call_id__word_length",
+                "name": "word_length",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "parts": [
+              {
+                "id": "pyd_ai_tool_call_id__word_length",
+                "name": "word_length",
+                "result": 1,
+                "type": "tool_call_response"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "parts": [
+              {
+                "content": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "request_params": "",
+        "operation": "chat",
+        "request_model": "test"
+      }
+    }
+  ]
+}

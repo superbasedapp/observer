@@ -323,6 +323,13 @@ export const VOCAB_ICONS = {
   // Plane A (hosted-app observability)
   spanKind: { llm: I.Brain, tool: I.Wrench, agent: I.Bot, retriever: I.Search, chain: I.Link2, embedding: I.Layers, other: I.Circle },
   traceStatus: { ok: I.Check, error: I.CircleX },
+  traceSource: { sdk_otlp: I.Package, otlp_trace: I.Radio, proxy_turn: I.Route },
+  scoreSource: {
+    sdk: I.Package, feedback: I.ThumbsUp, otel: I.Radio, eval: I.FlaskConical, user: I.User,
+    review: I.Eye, llm: I.Brain, rule: I.ListChecks,
+  },
+  scoreKind: { boolean: I.ToggleLeft, numeric: I.Hash, categorical: I.Tags },
+  promptType: { text: I.FileText, chat: I.MessagesSquare },
   evalVerdict: {
     pass: I.Check, fail: I.X, neutral: I.Circle, reviewed: I.Eye, regression: I.TrendingDown, online: I.Radio,
     "org-run": I.Building2, scheduled: I.CalendarClock,

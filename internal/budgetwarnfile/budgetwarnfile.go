@@ -107,6 +107,24 @@ type File struct {
 	// State is the daemon's persisted ladder memory (which rung each window
 	// already announced this period), so a restart does not re-announce.
 	State map[string]Notified `json:"state,omitempty"`
+	// Fetch is the last pull of this machine's organization budget (GET
+	// /api/agent/budget), so the local dashboard can say when it fails
+	// (budget enforce consistency, 2026-11-19: a failed pull was visible
+	// nowhere on the machine). nil from an older daemon or a machine with no
+	// organization budget rail.
+	Fetch *Fetch `json:"fetch,omitempty"`
+}
+
+// Fetch is one machine's organization budget pull, as the daemon last saw it.
+type Fetch struct {
+	// State is the closed orgcontract.BudgetFetch* value.
+	State string `json:"state"`
+	// LastOKAt is the last pull that got a verified answer; zero when none
+	// has in this daemon's life.
+	LastOKAt time.Time `json:"last_ok_at,omitempty"`
+	// FailingSince is when the current run of failed pulls began; zero while
+	// the pull works.
+	FailingSince time.Time `json:"failing_since,omitempty"`
 }
 
 // StatusPath returns the status file path beside dbPath ("" when dbPath is

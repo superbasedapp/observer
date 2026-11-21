@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/configschema"
 	"github.com/marmutapp/superbased-observer/internal/db"
 )
 
@@ -196,5 +198,49 @@ func TestConfigSetStillSavesWhenUngoverned(t *testing.T) {
 	_ = database.Close()
 	if out, err := runConfigSetDryRun(t, fresh); err != nil || !strings.Contains(out, `+log_level = "debug"`) {
 		t.Fatalf("not enrolled: err=%v out=%s", err, out)
+	}
+}
+
+// TestPlanConfigSetNumericLeaves pins `observer config set` (and MCP
+// set_setting, which plans through the same function) for numeric keys of
+// every Go width the config uses: the value is read back with
+// configschema.Get in the field's own type, so validation and the surgical
+// TOML scalar must accept int as well as int64. Before the fix every plain
+// int key was refused with "wants an integer".
+func TestPlanConfigSetNumericLeaves(t *testing.T) {
+	cases := []struct {
+		name, key, value string
+		confirmed        bool
+		wantRHS          string
+		wantErr          string
+	}{
+		{name: "int leaf", key: "observability.alerts.eval_interval_minutes", value: "7", wantRHS: "7"},
+		{name: "int64 leaf", key: "guidance.max_file_bytes", value: "65536", wantRHS: "65536"},
+		{name: "float64 leaf", key: "compression.conversation.target_ratio", value: "0.4", wantRHS: "0.4"},
+		{name: "bounded int leaf in range", key: "digest.send_hour", value: "23", confirmed: true, wantRHS: "23"},
+		{name: "bounded int leaf above max", key: "digest.send_hour", value: "24", confirmed: true, wantErr: "must be <= 23"},
+		{name: "bounded float leaf above max", key: "compression.conversation.target_ratio", value: "1.5", wantErr: "must be <= 1"},
+		{name: "int leaf given a fraction", key: "observability.alerts.eval_interval_minutes", value: "7.5", wantErr: "observability.alerts.eval_interval_minutes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := planConfigSet(config.Default(), tc.key, tc.value, nil, tc.confirmed)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !p.patch.Scalar || p.patch.RHS != tc.wantRHS {
+				t.Fatalf("patch = %+v; want a surgical scalar %q", p.patch, tc.wantRHS)
+			}
+			leaf, _ := configschema.Lookup(tc.key)
+			if got := fmt.Sprint(configschema.Get(&p.cfg, leaf)); got != tc.wantRHS {
+				t.Fatalf("planned config holds %s = %s; want %s", tc.key, got, tc.wantRHS)
+			}
+		})
 	}
 }

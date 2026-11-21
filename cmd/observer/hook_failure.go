@@ -596,9 +596,17 @@ func hookFallbackGateEnforcement(cfg config.Config) guard.GateEnforcement {
 	ctx, cancel := context.WithTimeout(context.Background(), hookFallbackDBTimeout)
 	defer cancel()
 	var st *store.Store
-	if database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath}); err == nil {
-		defer database.Close()
-		st = store.New(database)
+	// No database yet means no enrolment pin and no tenancy to read: the
+	// same answer as a store that cannot be opened. Opening one here would
+	// create it and run every migration inside hookFallbackDBTimeout, which
+	// on a slow machine overruns and rolls back, leaving the event's own
+	// capture (which opens the database right after, under the hook's own
+	// deadline) to start over.
+	if fileExists(cfg.Observer.DBPath) {
+		if database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath}); err == nil {
+			defer database.Close()
+			st = store.New(database)
+		}
 	}
 	gd := nodeGuard(ctx, cfg, st)
 	if gd == nil {

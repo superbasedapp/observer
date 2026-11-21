@@ -544,6 +544,10 @@ the machine, enrolling with any other server is refused.`,
 			}
 			fmt.Fprintf(out, "Enrolled in %s (org_id %s) as %s.\n", enr.OrgName, enr.OrgID, enr.UserEmail)
 			fmt.Fprintf(out, "Pushing to %s.\n", enr.OrgServerURL)
+			// U-26: the SDK key is a separate step; say so when AI Apps is on.
+			for _, l := range sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, true)) {
+				fmt.Fprintln(out, l)
+			}
 			if seq.bindTried {
 				printManagedBindOutcome(out, seq.bindRes, seq.bindErr)
 			}
@@ -1005,6 +1009,10 @@ type enrolShareDefault struct {
 	name string
 	// managed is the tenancy the row covers (store.Enrolment.IsManaged).
 	managed bool
+	// ownerManaged is whether the organization is the developer's own (a
+	// personal organization, managed by its owner:
+	// orgcontract.EnrollResponse.OwnerManaged).
+	ownerManaged bool
 	// fullContent is the [org_client.share].full_content value written.
 	fullContent bool
 	// comment is the TOML comment block written above the key, each line
@@ -1031,6 +1039,25 @@ var enrolShareDefaults = []enrolShareDefault{
 		summary: "organization-managed enrolment (teams/enterprise) ships full content; a node-authored value you can read in the file",
 	},
 	{
+		// Budget enforce consistency (2026-11-19): a personal organization
+		// is managed by its owner, so its enrolment is managed tenancy and
+		// its Enforce budgets block like a team's. Its content posture is
+		// NOT a team's: the owner approved "a personal dashboard gets a
+		// summary only" on the Connect page, and that approval is the
+		// consent, so the block stays metadata-only until the owner raises
+		// it in this file.
+		name:         "owner-managed",
+		managed:      true,
+		ownerManaged: true,
+		fullContent:  false,
+		comment: "# full_content = true ships raw command bodies (run_command), assistant prose\n" +
+			"# (task_complete), and raw filesystem paths to your personal dashboard. This\n" +
+			"# machine is connected to your OWN personal dashboard (managed by you), and\n" +
+			"# a personal dashboard gets a summary only, so the default is false. Only you\n" +
+			"# can change it, here. See docs/teams-getting-started.md.\n",
+		summary: "your personal dashboard (managed by you) gets a summary only; set full_content = true here to send full detail",
+	},
+	{
 		name:        "individual",
 		managed:     false,
 		fullContent: false,
@@ -1047,8 +1074,15 @@ var enrolShareDefaults = []enrolShareDefault{
 // walk always matches; the individual row is the fallback so an unexpected
 // caller can never be defaulted INTO full content.
 func enrolShareDefaultFor(managed bool) enrolShareDefault {
+	return enrolShareDefaultOf(managed, false)
+}
+
+// enrolShareDefaultOf is enrolShareDefaultFor with the owner-managed fact
+// (a personal organization): the row that matches both, else the
+// individual (metadata-only) fallback.
+func enrolShareDefaultOf(managed, ownerManaged bool) enrolShareDefault {
 	for _, row := range enrolShareDefaults {
-		if row.managed == managed {
+		if row.managed == managed && row.ownerManaged == ownerManaged {
 			return row
 		}
 	}
@@ -1062,6 +1096,12 @@ func enrolShareDefaultFor(managed bool) enrolShareDefault {
 // modifies an existing block, which is what keeps the already-enrolled case
 // on the signed-grant rail rather than a silent config rewrite.
 func ensureOrgClientBlock(path, orgServerURL string, managed bool) (bool, error) {
+	return ensureOrgClientBlockShare(path, orgServerURL, enrolShareDefaultFor(managed))
+}
+
+// ensureOrgClientBlockShare is ensureOrgClientBlock with the share-default
+// row already resolved (enrolShareDefaultOf).
+func ensureOrgClientBlockShare(path, orgServerURL string, share enrolShareDefault) (bool, error) {
 	body, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
@@ -1073,7 +1113,6 @@ func ensureOrgClientBlock(path, orgServerURL string, managed bool) (bool, error)
 	if u := strings.TrimSpace(orgServerURL); u != "" {
 		urlLine = "org_server_url = " + strconv.Quote(u) + "\n"
 	}
-	share := enrolShareDefaultFor(managed)
 	// The documented default is rendered from the one constant the push loop
 	// falls back to (T-403), so the comment cannot drift from the behaviour.
 	defaultPush := strconv.Itoa(config.DefaultPushIntervalSeconds)
@@ -1489,6 +1528,13 @@ func newOrgStatusCmd() *cobra.Command {
 				return err
 			}
 			printOrgStatus(cmd.OutOrStdout(), rep)
+			// U-26: point at the SDK key when AI Apps is on and none is held.
+			if hint := sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, rep.State.Enrolled)); len(hint) > 0 {
+				for _, l := range hint {
+					fmt.Fprintln(cmd.OutOrStdout(), l)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
 			// WINNODE2 item 1b: what each running daemon itself saw of its
 			// credential, not this command's own view.
 			if rep.State.Enrolled {

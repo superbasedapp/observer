@@ -34,7 +34,7 @@ export const PLACES = {
   connected_tools: { href: "/settings?section=tools", label: "Settings > Connected tools" },
   routing_settings: { href: "/settings?section=routing", label: "Settings > Routing" },
   guard_settings: { href: "/settings?section=guard", label: "Settings > Guard" },
-  observability_settings: { href: "/settings?section=observability", label: "Settings > Observability" },
+  observability_settings: { href: "/settings?section=observability", label: "Settings > AI Apps" },
   intelligence_settings: { href: "/settings?section=intelligence", label: "Settings > Intelligence" },
   security_mode: { href: "/security?tab=overview", label: "Security > Overview > Mode" },
 } as const satisfies Record<string, PlaceRow>;

@@ -229,3 +229,38 @@ func TestBudgetWarnServiceKeepsStateWhenSpendIsUnavailable(t *testing.T) {
 		t.Fatalf("the same rung was announced again after a transient failure: %q", notices)
 	}
 }
+
+// TestBudgetWarnServiceRecordsTheBudgetPull: the status file carries the
+// machine's last organization budget pull (budget enforce consistency,
+// 2026-11-19), so the local dashboard can say when it fails: when it last
+// worked, and when the current run of failures began. An answer that is not
+// a failure (disabled, no budget) clears the run; nil is inert.
+func TestBudgetWarnServiceRecordsTheBudgetPull(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "observer.db")
+	svc := newBudgetWarnService(db, nil, nil, nil)
+	t0 := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+	read := func() *budgetwarnfile.Fetch {
+		t.Helper()
+		svc.evaluate()
+		f, err := budgetwarnfile.Read(budgetwarnfile.StatusPath(db))
+		if err != nil || f == nil {
+			t.Fatalf("read status file: %v", err)
+		}
+		return f.Fetch
+	}
+	svc.SetFetch("ok", t0)
+	if f := read(); f == nil || f.State != "ok" || !f.LastOKAt.Equal(t0) || !f.FailingSince.IsZero() {
+		t.Fatalf("after ok: %+v", f)
+	}
+	svc.SetFetch("unreachable", t0.Add(time.Minute))
+	svc.SetFetch("unreachable", t0.Add(3*time.Minute))
+	if f := read(); f.State != "unreachable" || !f.LastOKAt.Equal(t0) || !f.FailingSince.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("after two failures: %+v", f)
+	}
+	svc.SetFetch("no_budget", t0.Add(4*time.Minute))
+	if f := read(); f.State != "no_budget" || !f.FailingSince.IsZero() {
+		t.Fatalf("after an answer: %+v", f)
+	}
+	var none *budgetWarnService
+	none.SetFetch("unreachable", t0)
+}

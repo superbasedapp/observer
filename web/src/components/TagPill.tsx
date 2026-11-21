@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { Icon, Pill, Tooltip } from "@/components/primitives";
 import { X, type LucideIcon } from "lucide-react";
 import { VOCAB_ICONS } from "@shared/lib/vocabIcons";
@@ -43,6 +44,7 @@ export function TagPill({
   onRemove,
   title,
   className,
+  shrink = false,
 }: {
   tag: string;
   // onClick makes the pill an activatable filter affordance. It stops
@@ -53,18 +55,21 @@ export function TagPill({
   onRemove?: (tag: string) => void;
   title?: string;
   className?: string;
+  // shrink lets the pill narrow below its text width in a tight flex row
+  // (a table cell), ellipsizing the name; the tooltip still names the tag.
+  shrink?: boolean;
 }) {
   const body = (
     <Pill
       variant={tagVariant(tag)}
       icon={OUTCOME_TAG_ICON[tag]}
-      className={className}
+      className={clsx(shrink && "min-w-0 max-w-full", className)}
       // Pill's own `title` renders a themed Tooltip and makes the span
       // focusable — only useful on the inert form; the interactive form
       // owns focus itself.
       title={!onClick && !onRemove ? title : undefined}
     >
-      {tag}
+      {shrink ? <span className="min-w-0 truncate">{tag}</span> : tag}
       {onRemove && (
         <span
           role="button"
@@ -105,7 +110,10 @@ export function TagPill({
           onClick(tag);
         }
       }}
-      className="inline-flex cursor-pointer rounded-pill focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+      className={clsx(
+        "inline-flex cursor-pointer rounded-pill focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+        shrink && "min-w-0",
+      )}
     >
       {body}
     </span>

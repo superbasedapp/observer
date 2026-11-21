@@ -49,9 +49,16 @@ function storage(): Storage | null {
   }
 }
 
-export function WelcomeBand() {
+/**
+ * WelcomeBand. `embedded` is its place inside the one getting-started
+ * surface (first-run plan revision 2, 3.6 and 7.1, GetStartedSurface): the
+ * surface draws the frame and owns Hide, so the band drops its own border
+ * and "Not now" and ignores an earlier "Not now" in this browser.
+ */
+export function WelcomeBand({ embedded = false }: { embedded?: boolean } = {}) {
   const remote = isRemoteView();
-  const [dismissed, setDismissed] = useState(() => readBandDismissed(storage()));
+  const [storedDismissed, setDismissed] = useState(() => readBandDismissed(storage()));
+  const dismissed = embedded ? false : storedDismissed;
 
   // The hand-off decides first: the same status reads the Get started panel
   // takes (shared cache), folded the same way.
@@ -112,7 +119,7 @@ export function WelcomeBand() {
       aria-labelledby="sb-welcome-title"
       data-testid="welcome-band"
       data-door={door}
-      className="sb-fade-up rounded-3 border border-accent/30 bg-bg-1 p-4 sm:p-5"
+      className={embedded ? "sb-fade-up" : "sb-fade-up rounded-3 border border-accent/30 bg-bg-1 p-4 sm:p-5"}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -139,6 +146,7 @@ export function WelcomeBand() {
             </p>
           )}
         </div>
+        {!embedded && (
         <button
           type="button"
           onClick={notNow}
@@ -148,6 +156,7 @@ export function WelcomeBand() {
         >
           <Icon icon={X} size={14} />
         </button>
+        )}
       </div>
 
       {history && (

@@ -79,6 +79,19 @@ const (
 	// It carries the developer's own consent withdrawals, so it sits on the
 	// unhideable floor like Messages and Requests.
 	SectionYou Section = "you"
+
+	// The Your apps pages (Plane A lane B5): the machine's own app
+	// telemetry. Their routes stay SectionNone for now (obsRouteSections in
+	// cmd/observer/obs_wire.go maps none of them yet), so hiding one hides
+	// the page, not its API.
+	SectionAppTraces    Section = "app-traces"
+	SectionAppSessions  Section = "app-sessions"
+	SectionAppAnalytics Section = "app-analytics"
+	SectionAppEndUsers  Section = "app-end-users"
+	SectionAppEvals     Section = "app-evals"
+	SectionAppScores    Section = "app-scores"
+	SectionAppPrompts   Section = "app-prompts"
+	SectionAppAlerts    Section = "app-alerts"
 )
 
 // AllSections is the closed set, for the coverage test and for callers that
@@ -89,6 +102,8 @@ var AllSections = []Section{
 	SectionCompression, SectionCache, SectionSuggestions, SectionRouting,
 	SectionBenchmarks, SectionDiscovery, SectionPatterns, SectionPolicies, SectionAgentConfig,
 	SectionPrivacy, SectionTerminals, SectionRemote, SectionMessages, SectionRequests, SectionSettings, SectionYou,
+	SectionAppTraces, SectionAppSessions, SectionAppAnalytics, SectionAppEndUsers, SectionAppEvals, SectionAppScores,
+	SectionAppPrompts, SectionAppAlerts,
 }
 
 // configSectionPrefix is the one route whose SUB-resource is itself a
@@ -196,6 +211,8 @@ var settingsSharedRoutes = map[string]string{
 	"/api/config":                   "composite read: handleConfig withholds every hidden subsection's values (withholdHiddenSettings)",
 	"/api/config/section/":          "the subsection is the path's <id> (configSectionID)",
 	"/api/config/keys":              "each patched key's subsection is resolved from the schema (governanceConfigKeys)",
+	"/api/config/proposals":         "the settings an AI agent asked for (D19): set_setting refuses a key in a hidden or read-only subsection before filing, and approving one is a PUT /api/config/keys, which governanceConfigKeys checks",
+	"/api/config/proposals/":        "resolving a proposal changes no value; the value is written by PUT /api/config/keys, which governanceConfigKeys checks",
 	"/api/config/backup":            "whole file: the preview is concealed while any subsection is hidden, a restore refused while any is hidden or read-only",
 	"/api/config/schema":            "static descriptor of every key; carries no values",
 	"/api/config/reload":            "re-reads the developer-owned file and changes no value itself; the file is not governed (D-134)",

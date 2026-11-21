@@ -215,6 +215,11 @@ func pushGarbageSQL(table, scopeFilter string) string {
 		join, id, scope = `LEFT JOIN token_usage x ON x.id = pc.row_id LEFT JOIN sessions xs ON xs.id = x.session_id`, `x.id`, `xs.project_id`
 	}
 	cond := id + ` IS NULL OR ` + id + ` <= ?`
+	if table == "api_turns" {
+		// The Plane A discriminator (apiTurnPlaneBOnly): such a row never
+		// ships, so its queued change is garbage, not a wedge.
+		cond += ` OR ` + PlaneATurnSourceSQL("x")
+	}
 	if scopeFilter != "" {
 		cond += ` OR COALESCE(` + scope + `, -1) NOT IN (` + scopeFilter + `)`
 	}

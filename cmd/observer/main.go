@@ -333,6 +333,8 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newProfileCmd(),
 		newExperimentCmd(),
 		newConfigCmd(),
+		newSDKCmd(),
+		newAppsCmd(),
 	}
 }
 

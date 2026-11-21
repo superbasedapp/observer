@@ -35,6 +35,11 @@ type Enrolment struct {
 	// never for CLI text.
 	DisplayName string
 	OnlineURL   string
+	// OwnerManaged is the enrol response's OwnerManaged (the organization is
+	// the developer's own), set IN MEMORY by the enrolment that just ran so
+	// its share-default row can be chosen. It is NOT stored: WriteEnrolment
+	// ignores it and LoadEnrolment leaves it false.
+	OwnerManaged bool
 }
 
 // IsManaged reports whether this enrolment opted into Enterprise-Managed

@@ -9,6 +9,9 @@ import { HIGHLIGHT_CLASS } from "@/lib/scrollHighlight";
 import { useScrollHighlight } from "@/lib/useScrollHighlight";
 import { isInAppLink, teardownLinkText } from "@/lib/setupExtras";
 import { useComponentCatalog, useComponentState } from "@/lib/useComponents";
+import { useApi } from "@/lib/useApi";
+import { APPS_STATUS_PATH, type FirstRunApps } from "@/lib/firstRun";
+import { hotEnabledPending } from "@/lib/planeaFirstRun";
 import {
   ARTIFACT_STATE_LABEL,
   BADGE_LABEL,
@@ -77,6 +80,11 @@ export function ComponentsPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const view = st.data?.view;
+  // AI Apps turned on in the running daemon (POLISH-F1 hot enable): the
+  // component set was recorded at start, so its activation would still read
+  // as waiting for a restart. While AI Apps is on, that row is not pending.
+  const appsOn = useApi<FirstRunApps, boolean>(APPS_STATUS_PATH, undefined, [], { select: (a) => a.on === true }).data ?? false;
+  const restartPending = (st.data?.pending ?? []).filter((p) => !hotEnabledPending(p, appsOn));
   const rows = useMemo(() => {
     const byId = new Map<string, ComponentRowState>((view?.components ?? []).map((r) => [r.id, r]));
     return (cat.data?.components ?? [])
@@ -224,7 +232,7 @@ export function ComponentsPage() {
           >
             {selectionSentence(view)}
           </p>
-          {(st.data?.pending.length ?? 0) > 0 && (
+          {restartPending.length > 0 && (
             <p role="status" className="mt-2 text-small text-fg-2">
               {view.restart_note}
             </p>
@@ -295,7 +303,7 @@ export function ComponentsPage() {
                   c={c}
                   s={s}
                   open={focus === c.id}
-                  badge={badgeFor(s, st.data?.pending)}
+                  badge={badgeFor(s, restartPending)}
                   purgeable={st.data?.purgeable.includes(c.id) ?? false}
                   verdict={st.data?.feasibility?.find((v) => v.id === c.id)}
                   disabled={busy || !st.data?.wired}

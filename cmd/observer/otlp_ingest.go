@@ -52,8 +52,25 @@ func wireVendorOTLPIngest(ctx context.Context, cfg config.Config, database *sql.
 	ing := newOTLPIngest(st, logger, cfg.Ingest.OTel.CapturesContent(), cfg.Ingest.OTel.MaxContentBytes(),
 		enabledAdapterSet(cfg.Observer.Watch.EnabledAdapters)).
 		withProxyRoutes(newProxyRouteResolver(serving, userHomeOrEmpty()).Routed)
+	ing.planeAOff = planeAOffReason(cfg, planeA)
 	go ing.runGenTimingRetry(ctx)
 	return ing.logs, ing.traces(planeA)
+}
+
+// planeAOffReason is why this machine keeps no AI Apps spans, "" when it
+// does (planeA wired). A build without app observability, the setting off,
+// and a subsystem that failed to start are told apart (review E-29).
+func planeAOffReason(cfg config.Config, planeA otlpingest.TraceHandler) string {
+	switch {
+	case planeA != nil:
+		return ""
+	case !appObsCompiledIn():
+		return "this build does not include AI Apps on this machine; send app spans online (observability.sdk.destination = online) or install the developer edition"
+	case !cfg.Observability.Enabled:
+		return "AI Apps is off on this machine ([observability] enabled = false); turn it on in Settings to keep app spans here"
+	default:
+		return "AI Apps could not start on this machine; see the daemon log"
+	}
 }
 
 // otlpIngest is the native-telemetry ingest glue (Plane B): it maps an AI
@@ -61,7 +78,10 @@ func wireVendorOTLPIngest(ctx context.Context, cfg config.Config, database *sql.
 // internal/otlpvendor and writes the result through the existing store
 // seams. It is the single seam between the schema-blind network receiver
 // (internal/ingest/otlp) and the store. A PERMANENT per-row write error is
-// logged and skipped so one poison record never fails the whole export. A
+// logged and skipped so one poison record never stops the rest of the export
+// being written; a trace export then answers it as a failed export (not
+// retryable), so a Plane A partial success joined with it cannot hide it
+// (FR-M17), while a logs export answers success as before. A
 // TRANSIENT one (lock contention, a cancelled or timed-out write) is returned
 // wrapped in otlpingest.ErrRetryLater, which the receiver answers with the
 // OTLP-retryable status, so the exporter resends the batch instead of
@@ -95,6 +115,10 @@ type otlpIngest struct {
 	// warned remembers the one-time warnings (an unmapped service.name, a
 	// refused team-grain vendor) so a chatty exporter does not flood the log.
 	warned sync.Map
+	// planeAOff is why the unclaimed (AI Apps) spans of a trace export are
+	// not kept on this machine (planeAOffReason); "" keeps the old answer
+	// for a receiver that never serves AI Apps (the cloud-session loop).
+	planeAOff string
 }
 
 // newOTLPIngest builds the ingest glue. transcriptCapture nil means every
@@ -160,13 +184,42 @@ func (o *otlpIngest) traces(planeA otlpingest.TraceHandler) otlpingest.TraceHand
 		}
 		var err error
 		if mine != nil {
-			err = o.apply(ctx, otlpvendor.ParseSpans(mine))
+			// A transient write is a resend (retry later); a permanent one
+			// (a poison record: logged, the rest of the export still
+			// written) is this export's error too, so the exporter sees it
+			// and a Plane A partial success joined below cannot hide it
+			// (review FR-M17; traceResponse lets any non-partial error in
+			// a join decide the answer). Not retryable: no resend loop.
+			w := o.write(ctx, otlpvendor.ParseSpans(mine))
+			err = w.retry
+			if err == nil && w.permanent != nil {
+				err = fmt.Errorf("otlp ingest: a coding tool's spans were not all stored: %w", w.permanent)
+			}
 		}
 		if rest != nil && planeA != nil {
 			err = errors.Join(err, planeA(ctx, rest))
 		}
+		if rest != nil && planeA == nil && o.planeAOff != "" && err == nil {
+			// Review E-29: an app's spans with AI Apps off or not built
+			// are answered as an OTLP partial success with the rejected
+			// count, never a silent 200; logged once.
+			n := countSpans(rest)
+			o.warnOnce("planea-off", "otlp ingest: app spans were not kept: "+o.planeAOff, "spans", n)
+			return &otlpingest.PartialTraces{RejectedSpans: n, Message: o.planeAOff}
+		}
 		return err
 	}
+}
+
+// countSpans is the number of spans in a trace export.
+func countSpans(req *coltracepb.ExportTraceServiceRequest) int64 {
+	var n int64
+	for _, rs := range req.GetResourceSpans() {
+		for _, ss := range rs.GetScopeSpans() {
+			n += int64(len(ss.GetSpans()))
+		}
+	}
+	return n
 }
 
 // splitClaimedTraces partitions a trace export by resource through the
@@ -201,23 +254,43 @@ func otlpTransientWrite(err error) bool {
 	return db.IsTransientWriteError(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
+// writeOutcome is one export's write result: the first transient failure
+// (as an ErrRetryLater cause: the export is resent) and the first permanent
+// one (a poison record: logged, the rest of the export still written).
+type writeOutcome struct {
+	retry, permanent error
+}
+
 // noteWrite folds one write error into the export's result: a transient one
-// becomes the first ErrRetryLater cause, a permanent one is only logged.
-func (o *otlpIngest) noteWrite(first *error, err error, msg string, args ...any) {
+// becomes the first ErrRetryLater cause, a permanent one is logged and kept
+// as the first permanent failure.
+func (o *otlpIngest) noteWrite(w *writeOutcome, err error, msg string, args ...any) {
 	if err == nil {
 		return
 	}
 	o.logger.Warn(msg, append(args, "err", err)...)
-	if *first == nil && otlpTransientWrite(err) {
-		*first = fmt.Errorf("%w: %w", otlpingest.ErrRetryLater, err)
+	switch {
+	case otlpTransientWrite(err):
+		if w.retry == nil {
+			w.retry = fmt.Errorf("%w: %w", otlpingest.ErrRetryLater, err)
+		}
+	case w.permanent == nil:
+		w.permanent = err
 	}
 }
 
 // apply writes one mapped export through the store seams, per the
 // admission each vendor gets on this node. It returns a non-nil error
-// (wrapping otlpingest.ErrRetryLater) only when a write failed transiently.
+// (wrapping otlpingest.ErrRetryLater) only when a write failed transiently;
+// a permanent failure is logged and skipped (the logs export's rule).
 func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
-	var retry error
+	return o.write(ctx, res).retry
+}
+
+// write is apply with both failure kinds reported (a trace export answers a
+// permanent one too, FR-M17).
+func (o *otlpIngest) write(ctx context.Context, res otlpvendor.Result) writeOutcome {
+	var out writeOutcome
 	for _, svc := range res.Unclaimed {
 		o.warnOnce("unclaimed:"+svc, "otlp ingest: no mapping for this exporter's service.name; its records were not captured (see `observer adapters`)", "service_name", svc)
 	}
@@ -256,7 +329,7 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 		if a.Refused != "" {
 			continue
 		}
-		o.noteWrite(&retry, o.stampExecution(ctx, v, ex),
+		o.noteWrite(&out, o.stampExecution(ctx, v, ex),
 			"otlp ingest: execution stamp failed", "tool", ex.Tool, "session", ex.SessionID)
 	}
 
@@ -269,9 +342,9 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 		if t.Model != "" && t.SessionID != "" {
 			sessionModel[t.SessionID] = t.Model
 		}
-		o.noteWrite(&retry, o.ensureSession(ctx, v, t.SessionID, t.Agent, t.Model, t.Timestamp),
+		o.noteWrite(&out, o.ensureSession(ctx, v, t.SessionID, t.Agent, t.Model, t.Timestamp),
 			"otlp ingest: session not created", "tool", v.Tool, "session", t.SessionID)
-		o.noteWrite(&retry, o.upsertTurn(ctx, t), "otlp ingest: upsert failed", "tool", t.Tool, "request_id", t.RequestID)
+		o.noteWrite(&out, o.upsertTurn(ctx, t), "otlp ingest: upsert failed", "tool", t.Tool, "request_id", t.RequestID)
 	}
 
 	var events []models.ToolEvent
@@ -280,7 +353,7 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 		if !a.Tools || tc.SessionID == "" {
 			continue
 		}
-		o.noteWrite(&retry, o.ensureSession(ctx, v, tc.SessionID, tc.Agent, sessionModel[tc.SessionID], tc.Timestamp),
+		o.noteWrite(&out, o.ensureSession(ctx, v, tc.SessionID, tc.Agent, sessionModel[tc.SessionID], tc.Timestamp),
 			"otlp ingest: session not created", "tool", v.Tool, "session", tc.SessionID)
 		ev := toolEventFromOTLP(v, tc, sessionModel[tc.SessionID])
 		if tc.Agent != "" {
@@ -296,7 +369,7 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 	}
 	if len(events) > 0 {
 		_, err := o.st.Ingest(ctx, events, nil, store.IngestOptions{})
-		o.noteWrite(&retry, err, "otlp ingest: tool calls not stored", "count", len(events))
+		o.noteWrite(&out, err, "otlp ingest: tool calls not stored", "count", len(events))
 	}
 
 	// Generation timing for the transcript's own token rows (AP-131
@@ -318,9 +391,9 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 				keep = append(keep, c)
 			}
 		}
-		o.noteWrite(&retry, o.ingestContent(ctx, keep), "otlp ingest: content store failed", "count", len(keep))
+		o.noteWrite(&out, o.ingestContent(ctx, keep), "otlp ingest: content store failed", "count", len(keep))
 	}
-	return retry
+	return out
 }
 
 // ensureSession makes sure a session row exists for a capture the vendor's

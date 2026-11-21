@@ -41,6 +41,15 @@
 #                          full edition (the default with --connect). It
 #                          carries no token: the approval happens in your
 #                          browser.
+#   --apps                 also turn on AI Apps (traces, cost and evals for
+#                          the AI apps you build) with `observer apps on`:
+#                          the receiver listens on 127.0.0.1:4318 once
+#                          Observer runs, and with --connect the local
+#                          dashboard opens on the AI apps track. Needs the
+#                          developer or full edition (the default with
+#                          --apps). Data stays on this machine unless it is
+#                          connected to an organization that turned an AI
+#                          Apps share on.
 #   --uninstall           stop the service unit if any, run `observer
 #                          uninstall --all` (hook, MCP and proxy-route
 #                          entries), then delete the binary; ~/.observer
@@ -96,7 +105,7 @@ LAUNCH_AGENT="$HOME/Library/LaunchAgents/app.superbased.observer.plist"
 
 edition="" version="latest" prefix="" from_dir="" base_url=""
 require_sig=0 service_choice="" uninstall=0 purge=0 force=0 dry_run=0 assume_yes=0
-connect=0 connect_team=""
+connect=0 connect_team="" apps=0
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'install.sh: WARNING: %s\n' "$*" >&2; }
@@ -107,7 +116,7 @@ usage() {
   else
     say "usage: sh install.sh [--edition minimal|developer|managed|full] [--version vX.Y.Z] [--prefix DIR]"
     say "       [--from-dir DIR] [--base-url URL] [--require-signature] [--service|--no-service]"
-    say "       [--connect [TEAM]]"
+    say "       [--connect [TEAM]] [--apps]"
     say "       [--uninstall [--purge] [--force]] [--dry-run] [--yes]"
   fi
 }
@@ -137,6 +146,7 @@ while [ $# -gt 0 ]; do
       fi
       ;;
     --connect=*) connect=1; connect_team="${1#*=}"; shift ;;
+    --apps) apps=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     --purge) purge=1; shift ;;
     --force) force=1; shift ;;
@@ -147,6 +157,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$apps" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
+  die "--apps does not go with --uninstall"
+fi
 if [ "$connect" -eq 1 ]; then
   [ "$uninstall" -eq 0 ] || die "--connect does not go with --uninstall"
   if [ -z "$connect_team" ]; then connect_team="${SBO_CONNECT_TEAM:-}"; fi
@@ -188,7 +201,7 @@ yes_no() { # yes_no <prompt> <default y|n>: status 0 for yes
 edition_line() {
   case "$1" in
     minimal) say "capture only: hooks, transcript watcher and the local dashboard; no proxy, terminals or self-update" ;;
-    developer) say "a developer's own machine: proxy, dashboard, terminals, guard and every adapter (recommended)" ;;
+    developer) say "a developer's own machine: proxy, dashboard, terminals, guard, every adapter and app observability (off until you enable it) (recommended)" ;;
     managed) say "a machine enrolled in an organization: org client and self-update on, local extras off" ;;
     full) say "everything compiled in: the build npm, PyPI and the VS Code extension ship" ;;
     *) return 1 ;;
@@ -810,11 +823,12 @@ choose_edition() {
   if [ -n "$edition" ]; then
     valid_edition "$edition" || die "unknown edition '$edition' (minimal, developer, managed or full)"
     connect_edition_ok
+    apps_edition_ok
     return 0
   fi
-  # --connect asks nothing here: an existing developer or full install
-  # keeps its edition, anything else gets developer.
-  if [ "$connect" -eq 1 ]; then
+  # --connect and --apps ask nothing here: an existing developer or full
+  # install keeps its edition, anything else gets developer.
+  if [ "$connect" -eq 1 ] || [ "$apps" -eq 1 ]; then
     if [ -z "$other_edition" ] && [ -f "$prefix/observer" ] && [ ! -L "$prefix/observer" ]; then
       other_edition=$(edition_of "$prefix/observer" archive)
     fi
@@ -858,6 +872,34 @@ connect_edition_ok() {
     developer|full) ;;
     *) die "--connect needs the developer or full edition (the $edition edition has no superbased sign-in); drop --edition or pass --edition developer" ;;
   esac
+}
+
+# apps_edition_ok: AI Apps is compiled into the developer and full editions
+# only (minimal and managed leave it out), so --apps refuses the others
+# with the same reinstall line `observer apps on` gives.
+apps_edition_ok() {
+  [ "$apps" -eq 1 ] || return 0
+  case "$edition" in
+    developer|full) ;;
+    *) die "--apps needs the developer or full edition (the $edition edition does not include AI Apps); drop --edition or pass --edition developer" ;;
+  esac
+}
+
+# apps_on: `observer apps on` for --apps, before Observer is started, so a
+# daemon this installer starts comes up with AI Apps on (a daemon already
+# running turns it on at once, with no restart). --installer records the
+# installer as the arrival intent and opens and starts nothing. A failure (a
+# taken receiver port, an organization pin) is reported, never fatal: the
+# install stays.
+apps_on() {
+  [ "$apps" -eq 1 ] || return 0
+  say ""
+  if "$installed" apps on --yes --installer <"$(tty_in)"; then
+    apps_done=1
+    return 0
+  fi
+  warn "AI Apps is not on; Observer still works on this machine. Turn it on any time: observer apps on"
+  return 1
 }
 
 # tty_in: where a command run by this installer reads its input. Under
@@ -993,8 +1035,13 @@ can_open_browser() {
 show_local_dashboard() {
   sd_url="$LOCAL_DASHBOARD/?connecting=1"
   if [ -n "$connect_team" ]; then sd_url="$sd_url&team=$connect_team"; fi
+  # The connect hand-off carries the arrival intent (a closed value the
+  # daemon validates and stores): --apps is the AI apps track.
+  if [ "$apps" -eq 1 ]; then sd_url="$sd_url&intent=apps"; fi
   sd_up=0
   if test_mode; then
+    # The hermetic tests open nothing; they read the hand-off URL here.
+    say "(test: the local dashboard opens at $sd_url)"
     sd_up=1
   else
     sd_i=0
@@ -1073,6 +1120,10 @@ connect_finish() {
   if [ "$connected" -eq 1 ]; then say "This machine is connected."; else say "This machine is not connected yet: observer connect"; fi
   say "Local dashboard   $LOCAL_DASHBOARD"
   say "  everything Observer records on this computer, in full; it stays here"
+  if [ "$apps_done" -eq 1 ]; then
+    say "AI Apps           $LOCAL_DASHBOARD/apps"
+    say "  traces from the AI apps you build, sent to 127.0.0.1:4318 (observer apps status)"
+  fi
   if [ -n "$connect_team" ] && [ "$connected" -eq 1 ]; then
     say "Team dashboard    https://cloud.superbased.app"
     say "  full detail (prompts, responses, file paths); the team's admins can read it"
@@ -1325,6 +1376,7 @@ do_install() {
   say "  archive   $asset"
   if [ -n "$from_dir" ]; then say "  source    $from_dir"; else say "  source    $asset_base"; fi
   say "  install   $prefix/observer"
+  if [ "$apps" -eq 1 ]; then say "  AI Apps   turned on after installing (observer apps on)"; fi
 
   get_asset SHA256SUMS "$work/SHA256SUMS" || die "could not get SHA256SUMS for $version"
   want=$(awk -v n="$asset" '{ f = $2; sub(/^\*/, "", f); if (f == n) print $1 }' "$work/SHA256SUMS" | head -n 1)
@@ -1411,6 +1463,10 @@ do_install() {
     fi
   fi
 
+  # --apps: AI Apps on before anything starts Observer.
+  apps_done=0
+  apps_on || true
+
   # --connect: make Observer run, show the local dashboard, then connect.
   if [ "$connect" -eq 1 ] && [ -z "$other_daemons" ]; then
     if [ -n "$previous" ]; then connect_finish 1; else connect_finish 0; fi
@@ -1469,6 +1525,9 @@ do_install() {
   fi
   if [ "$edition" != managed ]; then
     say "  observer connect                       # sign in and see this machine online"
+  fi
+  if [ "$apps_done" -eq 1 ]; then
+    say "  observer apps status                   # AI Apps: the receiver and the latest trace"
   fi
   say "  observer init                          # $wires"
   if [ "$service_done" -eq 1 ]; then

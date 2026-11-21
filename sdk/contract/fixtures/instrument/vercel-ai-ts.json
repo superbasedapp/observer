@@ -1,0 +1,136 @@
+{
+  "_source": {
+    "target": "vercel-ai",
+    "instrumentor": "@ai-sdk/otel 1.0.177",
+    "library": "ai 7.0.177",
+    "grounding": "AI SDK v7 generateText over its MockLanguageModelV4 (system + prompt, cached and reasoning usage) inside propagateAttributes({ user }). The AI SDK emits GenAI semconv spans itself (invoke_agent > step > chat); no OpenInference layer is involved.",
+    "sdk": "@superbased/sdk (sdk/typescript)",
+    "recorded": "2026-11-19, offline, by sdk/typescript/test/instrument.test.mjs with SUPERBASED_RECORD_FIXTURES=1"
+  },
+  "target": "vercel-ai",
+  "_gaps": [
+    "The AI SDK reports the cache write as gen_ai.usage.cache_creation.input_tokens (a legacy spelling genaiattr also reads) and reasoning only as ai.usage.outputTokenDetails.reasoningTokens, which genaiattr reads since genaiattr-2 (lane C7).",
+    "The structured gen_ai.input.messages / output.messages use the semconv parts shape ({role, parts: [{type, content}]})."
+  ],
+  "spans": [
+    {
+      "name": "chat gpt-4o-mini",
+      "parent": "step 1",
+      "attrs": {
+        "ai.usage.inputTokenDetails.noCacheTokens": 176,
+        "ai.usage.outputTokenDetails.reasoningTokens": 16,
+        "ai.usage.outputTokenDetails.textTokens": 24,
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]}]",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}],\"finish_reason\":\"stop\"}]",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o-mini",
+        "gen_ai.request.temperature": 0.2,
+        "gen_ai.response.finish_reasons": [
+          "stop"
+        ],
+        "gen_ai.response.id": "resp-fixture",
+        "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "gen_ai.usage.cache_creation.input_tokens": 0,
+        "gen_ai.usage.cache_read.input_tokens": 1024,
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 40,
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "operation": "chat",
+        "model": "gpt-4o-mini-2024-07-18",
+        "request_model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "total_tokens": 1240,
+        "total_derived": true,
+        "cache_read_tokens": 1024,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 16,
+        "response_id": "resp-fixture",
+        "finish_reasons": [
+          "stop"
+        ],
+        "input_messages": [
+          {
+            "parts": [
+              {
+                "content": "Capital of France?",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "output_messages": [
+          {
+            "finish_reason": "stop",
+            "parts": [
+              {
+                "content": "Paris.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "request_params": {
+          "temperature": 0.2
+        }
+      }
+    },
+    {
+      "name": "step 1",
+      "parent": "invoke_agent gpt-4o-mini",
+      "attrs": {
+        "ai.prompt.toolChoice": "{\"type\":\"auto\"}",
+        "ai.usage.inputTokenDetails.noCacheTokens": 176,
+        "ai.usage.outputTokenDetails.reasoningTokens": 16,
+        "ai.usage.outputTokenDetails.textTokens": 24,
+        "gen_ai.operation.name": "agent_step",
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "operation": "agent_step"
+      }
+    },
+    {
+      "name": "invoke_agent gpt-4o-mini",
+      "parent": null,
+      "attrs": {
+        "ai.usage.inputTokenDetails.noCacheTokens": 176,
+        "ai.usage.outputTokenDetails.reasoningTokens": 16,
+        "ai.usage.outputTokenDetails.textTokens": 24,
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Capital of France?\"}]}]",
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Paris.\"}],\"finish_reason\":\"stop\"}]",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o-mini",
+        "gen_ai.request.temperature": 0.2,
+        "gen_ai.response.finish_reasons": [
+          "stop"
+        ],
+        "gen_ai.system_instructions": "[{\"type\":\"text\",\"content\":\"Be brief.\"}]",
+        "gen_ai.usage.cache_creation.input_tokens": 0,
+        "gen_ai.usage.cache_read.input_tokens": 1024,
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 40,
+        "sbo.user": "end-user-1"
+      },
+      "want": {
+        "operation": "invoke_agent",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "cache_read_tokens": 1024,
+        "finish_reasons": [
+          "stop"
+        ]
+      }
+    }
+  ]
+}

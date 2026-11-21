@@ -11,6 +11,7 @@ export { Sparkline } from "./Sparkline";
 export { Pill } from "./Pill";
 export { ToolBadge, ToolDot, ToolGlyphFrame, ToolStack } from "./ToolBadge";
 export { ReliabilityPill } from "./ReliabilityPill";
+export { GlyphBadge } from "./GlyphBadge";
 export {
   SurfaceBadge,
   isSurfaceKind,
@@ -160,3 +161,5 @@ export { SearchChip } from "./SearchChip";
 export { PageLinkTools } from "./PageLinkTools";
 export { TokenBar } from "./TokenBar";
 export { CodeEditor, diagnosticRange, type CodeEditorProps, type CodeLanguage, type CodeDiagnostic } from "./CodeEditor";
+export { PanelCard, InlineEmpty } from "./Panel";
+export { VocabDefPill } from "./VocabDefPill";

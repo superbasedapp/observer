@@ -86,7 +86,7 @@ const rasp: AssessKind = {
   launchable: false,
   sandbox: "na",
   reason: "Runtime protection runs inside the deployed application.",
-  pointer: "Observer's Plane A observes a hosted application.",
+  pointer: "AI Apps observes the inputs and outputs of an app you build.",
 };
 
 function run(over: Partial<AssessRun> = {}): AssessRun {
@@ -365,7 +365,7 @@ test("the plan dialog of a kind with no launch explains why and offers no Choose
   const html = renderToStaticMarkup(planDialog(rasp));
   assert.match(html, /Nothing to launch/);
   assert.match(html, /Runtime protection runs inside the deployed application\./);
-  assert.match(html, /Observer&#x27;s Plane A observes a hosted application\./);
+  assert.match(html, /AI Apps observes the inputs and outputs of an app you build\./);
   assert.doesNotMatch(html, /Choose agent/);
   assert.doesNotMatch(html, /data-testid="assess-project"/);
 });

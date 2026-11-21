@@ -380,7 +380,7 @@ func (c *Client) budgetFetchRequest(ctx context.Context, enr *store.Enrolment, i
 	// banner's request link and the request picker need it) and send the
 	// offline-revert fields. A plain query marker, the ?policy_caps precedent:
 	// a server that predates it ignores it.
-	url := strings.TrimRight(enr.OrgServerURL, "/") + "/api/agent/budget?policy_caps=" + orgcontract.BudgetGrantCapability
+	url := strings.TrimRight(enr.OrgServerURL, "/") + "/api/agent/budget?policy_caps=" + orgcontract.BudgetGrantCapability + "," + orgcontract.BudgetAppCapability
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, empty, orgcontract.BudgetFetchUnreachable,

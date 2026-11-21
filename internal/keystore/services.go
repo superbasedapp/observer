@@ -46,6 +46,10 @@ var services = []ServiceInfo{
 		Records: []string{"exec-evidence-seal-key"},
 	},
 	{Service: "sbo-sandbox-instabox-v1", Purpose: "Hosted sandbox sign-in (InstaBox)", Owner: "/terminals"},
+	{
+		Service: "sbo-sdk-credential-v1", Purpose: "Your SDK key for sending your apps' data to your organization", Owner: "/settings?section=observability",
+		Records: []string{"sdk-credential"},
+	},
 }
 
 // Services returns a copy of the keychain service table, in display order.

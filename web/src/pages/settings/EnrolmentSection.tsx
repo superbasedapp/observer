@@ -63,7 +63,10 @@ import {
   type EnrolLeaveStep,
   type Tone,
   UNSENT_ROWS,
+  reconsentPrompt,
 } from "@/lib/enrolment";
+import { useConnectFlow } from "@/lib/useConnectFlow";
+import { connectLine } from "@/lib/getStarted";
 import { MetricIcon } from "@/components/MetricIcon";
 import {
   eligibleNow,
@@ -692,7 +695,8 @@ function ConsentCard({
           </>
         )}
       </dl>
-      <div className="mb-1 font-medium text-fg-1">If you accept, the team may:</div>
+      {d.owner && <p className="mb-3 text-fg-1">{d.owner}</p>}
+      <div className="mb-1 font-medium text-fg-1">If you accept, {d.owner ? "your personal dashboard" : "the team"} may:</div>
       <ul className="mb-3 list-disc space-y-1.5 pl-5">
         {(d.may ?? []).map((l) => (
           <li key={l.token} className="text-fg-2">
@@ -843,6 +847,8 @@ function EnrolledView({
           {ov.machine_proof_warning}
         </div>
       ) : null}
+
+      <ReconsentPrompt ov={ov} onChanged={onChanged} />
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="primary" iconLeft={Send} onClick={() => void pushNow()} disabled={busy !== null}>
@@ -1676,5 +1682,39 @@ function Mono({ children }: { children: React.ReactNode }) {
         {children}
       </span>
     </Tooltip>
+  );
+}
+
+// ReconsentPrompt is the organization's re-consent advisory (budget enforce
+// consistency, 2026-11-19): a personal dashboard is managed by its owner, and
+// a machine that connected to it before that is offered the managed grant,
+// never given it silently. One click runs `observer connect --reconsent`
+// through the daemon (the same approval and consent screen the first connect
+// used); nothing changes until the owner approves there.
+function ReconsentPrompt({ ov, onChanged }: { ov: EnrolmentOverview; onChanged: () => void }) {
+  const prompt = reconsentPrompt(ov);
+  const flow = useConnectFlow();
+  const line = flow.active || flow.progress?.state === "connected" ? connectLine(flow.progress) : null;
+  useEffect(() => {
+    if (flow.progress?.state === "connected") onChanged();
+  }, [flow.progress?.state, onChanged]);
+  if (!prompt || !flow.available) return null;
+  return (
+    <div className={`${BOX} ${TONE_BOX.info}`} role="status" data-testid="reconsent-prompt">
+      <div className="font-medium text-fg-0">{prompt.title}</div>
+      <p className="mt-1">{prompt.body}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="primary" onClick={() => void flow.reconsent()} disabled={flow.busy || flow.active}>
+          {flow.active ? "Waiting for your approval..." : prompt.action}
+        </Button>
+        {flow.active && (
+          <Button size="sm" variant="secondary" onClick={flow.openApproval}>
+            Open the approval page again
+          </Button>
+        )}
+      </div>
+      {line && <p className="mt-1 text-fg-2">{line.text}</p>}
+      {flow.error && <p className="mt-1 text-danger">{flow.error}</p>}
+    </div>
   );
 }

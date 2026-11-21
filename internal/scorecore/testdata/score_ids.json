@@ -1,0 +1,34 @@
+[
+  {
+    "TraceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "SpanID": "",
+    "Key": "helpfulness",
+    "Source": "sdk",
+    "Author": "id:abc",
+    "ID": "sc_5ba765904e79307375d99828"
+  },
+  {
+    "TraceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "SpanID": "00f067aa0ba902b7",
+    "Key": "thumbs",
+    "Source": "feedback",
+    "Author": "id:fb-1",
+    "ID": "sc_55180d44ef48b1f456dcfe9a"
+  },
+  {
+    "TraceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "SpanID": "00f067aa0ba902b7",
+    "Key": "exact_match",
+    "Source": "eval",
+    "Author": "run:run_1@1",
+    "ID": "sc_e13f7d6fcf334d4442072509"
+  },
+  {
+    "TraceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "SpanID": "",
+    "Key": "topic",
+    "Source": "llm",
+    "Author": "",
+    "ID": "sc_22b8285ef67495e7607f2638"
+  }
+]

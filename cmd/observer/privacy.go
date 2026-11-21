@@ -467,10 +467,10 @@ func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 			Detail: fmt.Sprintf("Exports turn-level spans to an OTLP collector at %s. Off by default.", nonEmpty(cfg.Exporter.OTel.Endpoint, "localhost:4318")),
 		},
 		{
-			Name:   "generalized observability (Plane A)",
+			Name:   "AI Apps (app observability)",
 			Gate:   "[observability].enabled = true",
 			Active: cfg.Observability.Enabled,
-			Detail: "Optional admission LLM-judge calls, node-side alert webhooks, and egress routing for a hosted app the operator is separately observing. Off by default; only relevant to Plane-A deployments, not to a solo coding-agent install.",
+			Detail: "Optional admission LLM-judge calls, node-side alert webhooks, and egress routing for the AI apps you build and observe here. Off by default; not needed for coding agents alone.",
 		},
 		{
 			Name:   "email / digest alerts",

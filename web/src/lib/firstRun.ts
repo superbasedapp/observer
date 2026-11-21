@@ -96,7 +96,121 @@ export type FirstRunResponse = {
   dismissed?: string[];
   /** Notices put away for a while, key to when (Get started panel). */
   snoozed?: Record<string, string>;
+  /** The decided getting-started track (first-run plan revision 2,
+   *  section 2.2). Absent from a daemon older than lane F1. */
+  plane?: FirstRunPlane;
+  /** AI Apps on this machine. Absent from a daemon older than lane F1. */
+  apps?: FirstRunApps;
 };
+
+// ---- the plane and apps blocks (lane POLISH-F1's contract) -----------------
+//
+// The daemon decides the track (internal/planechoice, served on
+// /api/firstrun). The dashboard only reads it: there is no rule table here.
+
+/** A stored choice or an arrival intent; "" when there is none. */
+export type PlaneChoice = "" | "coding" | "apps" | "both";
+/** The getting-started track the daemon chose. */
+export type PlaneTrack = "coding" | "apps" | "both";
+
+/** apps_available with its reason (the disabled option's text). */
+export type AppsAvailability = {
+  available: boolean;
+  reason?: "not_in_build" | "blocked" | "unknown" | string;
+  text?: string;
+};
+
+export type FirstRunPlane = {
+  /** The rule row, 1 to 4. */
+  row: number;
+  rule: string;
+  track: PlaneTrack;
+  /** Row 4: render the coding track with the one-line switch. */
+  ask: boolean;
+  /** Row 3's quiet "Add AI Apps" line (false where AI Apps is unavailable). */
+  offer_apps: boolean;
+  facts: { coding: boolean; coding_by: string; apps: boolean; apps_by: string };
+  /** The stored Settings choice ("" when never chosen). */
+  focus: PlaneChoice;
+  intent: PlaneChoice;
+  intent_source?: string;
+  coding_history: boolean;
+  apps_available: AppsAvailability;
+};
+
+export type AppsReceiverState = "listening" | "bind_failed" | "not_running" | "no_answer" | "unknown";
+
+export type AppsReceiver = {
+  state: AppsReceiverState | string;
+  grpc_addr?: string;
+  http_addr?: string;
+  error?: string;
+  at?: string;
+};
+
+export type AppsLatestTrace = { trace_id: string; name?: string; service?: string; started_at?: string };
+
+export type AppsConsent = {
+  row: string;
+  /** The one consent sentence ("Stays on this machine." or "Also sent to ..."). */
+  sentence: string;
+  shared: boolean;
+  org?: string;
+  tiers?: string[];
+  loopback_only: boolean;
+  receiver_note?: string;
+};
+
+export type FirstRunApps = {
+  in_build: boolean;
+  component: "active" | "available" | "absent" | "blocked" | "unknown";
+  available: AppsAvailability;
+  /** AI Apps serves in this daemon now. */
+  on: boolean;
+  /** The saved config says on. */
+  configured_on: boolean;
+  /** POST /api/apps/enable turns it on without a restart. */
+  hot_enable: boolean;
+  receiver: AppsReceiver;
+  latest_trace: AppsLatestTrace | null;
+  consent: AppsConsent;
+  pending_next_start?: string[];
+};
+
+/** POST /api/apps/enable's answer (planechoice.EnableReport). */
+export type AppsEnableReport = {
+  outcome: string;
+  ok: boolean;
+  rule?: string;
+  message: string;
+  fix?: string;
+  receiver?: AppsReceiver;
+  pending_next_start?: string[];
+};
+
+export const APPS_STATUS_PATH = "/api/apps/status";
+export const APPS_ENABLE_PATH = "/api/apps/enable";
+export const APPS_DISABLE_PATH = "/api/apps/disable";
+
+/** focusRequestInit is the Settings / switch write: {"focus": choice} on
+ *  POST /api/firstrun/seen with the owner-local confirm header. "" clears
+ *  the stored choice (back to the inferred track). */
+export function focusRequestInit(focus: PlaneChoice, confirmToken: string): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Observer-Confirm": confirmToken },
+    body: JSON.stringify({ focus }),
+  };
+}
+
+/** appsRequestInit is the enable / disable POST from the dashboard. */
+export function appsRequestInit(confirmToken: string): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Observer-Confirm": confirmToken },
+    body: JSON.stringify({ source: "dashboard" }),
+  };
+}
 
 export const FIRST_RUN_PATH = "/api/firstrun";
 export const FIRST_RUN_SEEN_PATH = "/api/firstrun/seen";

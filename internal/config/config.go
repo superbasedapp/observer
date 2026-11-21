@@ -21,6 +21,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/alertspec"
 	"github.com/marmutapp/superbased-observer/internal/notifycfg"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/proccapture"
@@ -483,14 +484,6 @@ func (c CloudConfig) ResolvedCloudAutoEnrichQuietMinutes() int {
 	return CloudAutoEnrichQuietDefaultMinutes
 }
 
-// ObservabilityConfig is the [observability] surface — the generalized
-// observability subsystem (internal/obs; plan
-// docs/plans/generalized-observability-custom-app-plan-2026-06-27.md). It is
-// OPT-IN (default false): unlike CacheTrack/Guard/Advisor, the zero value is
-// the intended default, so no partial-merge entry is required — an install
-// with no [observability] section keeps the subsystem off and creates no
-// obs_* tables. The subsystem is additionally compiled out by the no_obs
-// build tag for minimal distributions (decision D2).
 // SelfObsConfig is the [selfobs] surface (P1-10 production retrofit,
 // docs/plans/plane-a-p1-10-production-retrofit-plan.md). LOCAL-ONLY.
 // Default OFF — emission is a credential-bearing OTLP call to the org
@@ -513,6 +506,14 @@ type SelfObsConfig struct {
 	RoutingSampleN int `toml:"routing_sample_n"`
 }
 
+// ObservabilityConfig is the [observability] surface — the generalized
+// observability subsystem (internal/obs; plan
+// docs/plans/generalized-observability-custom-app-plan-2026-06-27.md). It is
+// OPT-IN (default false): unlike CacheTrack/Guard/Advisor, the zero value is
+// the intended default, so no partial-merge entry is required — an install
+// with no [observability] section keeps the subsystem off and creates no
+// obs_* tables. The subsystem is additionally compiled out by the no_obs
+// build tag for minimal distributions (decision D2).
 type ObservabilityConfig struct {
 	// Enabled gates the whole subsystem: the OTLP /v1/traces receiver,
 	// the obs_* schema (applied only when true), ingestion, the
@@ -578,6 +579,32 @@ type ObservabilityConfig struct {
 	// CacheTrack partial-merge rule); it has no effect while Enabled is
 	// false.
 	ProxyTurnTraces bool `toml:"proxy_turn_traces"`
+
+	// StoreContent is the node-local Plane A content key (D8, D17, F07):
+	// when true, captured prompt, response and tool bodies of a hosted app's
+	// spans (and the matching eval-dataset snapshots and admission excerpts)
+	// are kept raw in this node's own obs_* tables, after mandatory secret
+	// scrubbing. When false only their content hashes are kept, and span
+	// events and links keep only their metadata attributes (names, ids,
+	// types, models, usage counters).
+	//
+	// It governs storage ON THIS NODE ONLY: node-local data never leaves the
+	// machine. Whether raw content is pushed to an org is a separate
+	// decision that stays with the existing raw-content predicate
+	// ([org_client.share] full_content / admin_managed or the signed
+	// enterprise grant); this key never widens it. It is also separate from
+	// those Plane B developer-privacy keys, which no longer decide whether a
+	// hosted app's own content is stored locally.
+	//
+	// Default true (Default() seeds it, so an [observability] section that
+	// only sets `enabled` keeps it on). No effect while Enabled is false.
+	StoreContent bool `toml:"store_content"`
+
+	// SDK is [observability.sdk]: where this machine tells the superbased
+	// SDKs to send an app's data by default (D18; the contract is
+	// docs/plans/plane-a-sdk-buildout/contracts/destination.md). Zero value =
+	// the default: local when not signed in, both when signed in.
+	SDK ObservabilitySDKConfig `toml:"sdk"`
 }
 
 // ObservabilityEgressConfig is the [observability.egress] surface (G22, design
@@ -674,6 +701,18 @@ type ObservabilityAlertsConfig struct {
 	EmailTo []string `toml:"email_to"`
 	// EvalIntervalMinutes is how often the evaluator ticks. 0 defaults to 5.
 	EvalIntervalMinutes int `toml:"eval_interval_minutes"`
+	// SlackWebhookURL is a Slack incoming-webhook URL every fired alert is
+	// also posted to (W3-5). A SECRET: never rendered or logged; written only
+	// through PUT /api/obs/alerts/slack or `observer obs alerts slack set`.
+	// Only https://hooks.slack.com/ and hooks.slack-gov.com URLs are
+	// accepted. Empty = no Slack delivery.
+	SlackWebhookURL string `toml:"slack_webhook_url"`
+	// PagerDutyRoutingKey is a PagerDuty Events API v2 routing (integration)
+	// key (W5-5): a fire triggers an incident and the rule's clear resolves
+	// it. A SECRET: never rendered or logged; written only through
+	// PUT /api/obs/alerts/pagerduty or `observer obs alerts pagerduty set`.
+	// Empty = no PagerDuty delivery.
+	PagerDutyRoutingKey string `toml:"pagerduty_routing_key"`
 	// Rules is the locally-authored rule table.
 	Rules []ObservabilityAlertRuleConfig `toml:"rules"`
 }
@@ -696,6 +735,13 @@ type ObservabilityAlertRuleConfig struct {
 	// CooldownMinutes is the minimum gap between fires of this rule (dedup). 0
 	// defaults to WindowMinutes (a full window must elapse before re-firing).
 	CooldownMinutes int `toml:"cooldown_minutes"`
+	// Model, User, Tag and Service narrow the rule to one slice of traffic
+	// (W3-5 dimensions, internal/alertspec): a span model, the app's end
+	// user, one trace tag, the resource service. Empty = any.
+	Model   string `toml:"model"`
+	User    string `toml:"user"`
+	Tag     string `toml:"tag"`
+	Service string `toml:"service"`
 }
 
 // ObservabilityJudgeConfig is one OpenAI-compatible /chat/completions judge
@@ -715,7 +761,11 @@ type ObservabilityJudgeConfig struct {
 	// need no key (the binding treats a loopback base_url as no-egress and
 	// allows an empty/unset key).
 	APIKeyEnv string `toml:"api_key_env"`
-	// TimeoutMS bounds a single judge call. 0 = the binding's default.
+	// TimeoutMS bounds a single judge call. 0 = the default for where the
+	// judge runs: 1500 ms for a loopback judge (the admission budget) and
+	// 8000 ms for a hosted one, whose first call (TLS set-up plus a reasoning
+	// model's thinking) outlasted 1.5 s live; an org-relay judge defaults to
+	// 10000 ms.
 	TimeoutMS int `toml:"timeout_ms"`
 	// MaxTokens caps the judge REPLY length (the reply is only a short JSON
 	// verdict). 0 = the binding's default. A tight cap bounds latency + cost
@@ -726,6 +776,20 @@ type ObservabilityJudgeConfig struct {
 	// fields, so it is never sent remotely). 0 = omit. Its effect depends on
 	// the local host honoring the field on its /v1/chat/completions endpoint.
 	NumCtx int `toml:"num_ctx"`
+	// RequestProfile is how the judge request is shaped: "auto" (or empty,
+	// the default) picks from the model id (bare OpenAI GPT-5 and o-series
+	// ids get "reasoning", everything else "chat"); "chat" sends max_tokens
+	// and temperature 0 (OpenAI-compatible chat models, local servers);
+	// "reasoning" sends max_completion_tokens, no temperature and a
+	// reasoning effort, which OpenAI's reasoning models require (they refuse
+	// max_tokens and temperature 0). Set it for a model id auto cannot
+	// recognise, such as an Azure deployment name.
+	RequestProfile string `toml:"request_profile"`
+	// ReasoningEffort overrides the reasoning effort a "reasoning" request
+	// sends (for example "minimal", "low"). Empty takes the model family's
+	// default (minimal for gpt-5 / -mini / -nano, low for later GPT-5 and the
+	// o-series). Ignored on the chat profile.
+	ReasoningEffort string `toml:"reasoning_effort"`
 	// UseOrgRelay routes the judge call through the org server's
 	// POST /api/agent/judge instead of an OpenAI-compatible endpoint held
 	// locally (C1 judge relay, docs/plans/c1-judge-relay-spec-2026-08-15.md
@@ -6013,6 +6077,9 @@ func Default() Config {
 		// rule) rather than silently landing on a zero-valued false.
 		Observability: ObservabilityConfig{
 			ProxyTurnTraces: true,
+			// Node-local Plane A content storage is on by default
+			// (D8/D17): node-local data never leaves the machine.
+			StoreContent: true,
 		},
 		// Guard (security & control layer, guard spec §16) is
 		// default-ON in OBSERVE mode (D2): local, deterministic,
@@ -6610,6 +6677,11 @@ func validateObservabilityJudges(cfg Config) error {
 		if jc.TimeoutMS < 0 || jc.MaxTokens < 0 || jc.NumCtx < 0 {
 			return errors.New("config: observability judge timeout_ms/max_tokens/num_ctx must be >= 0")
 		}
+		switch strings.ToLower(strings.TrimSpace(jc.RequestProfile)) {
+		case "", "auto", "chat", "reasoning":
+		default:
+			return fmt.Errorf("config: observability judge request_profile %q not in {auto, chat, reasoning}", jc.RequestProfile)
+		}
 		if jc.UseOrgRelay && (jc.BaseURL != "" || jc.APIKeyEnv != "") {
 			return errors.New("config: observability judge use_org_relay=true is ambiguous with base_url/api_key_env set on the same block - the relay ignores both")
 		}
@@ -6622,7 +6694,9 @@ func validateObservabilityJudges(cfg Config) error {
 	if cfg.Observability.Admission.JudgeRetries < 0 {
 		return errors.New("config: observability.admission.judge_retries must be >= 0")
 	}
-	return nil
+	// [observability.sdk] (D18) is validated here so Validate's own ladder
+	// stays the same length.
+	return validateObservabilitySDK(cfg.Observability.SDK)
 }
 
 func Validate(cfg Config) error {
@@ -7870,6 +7944,12 @@ func validateObservabilityAlerts(a ObservabilityAlertsConfig) error {
 	if a.EvalIntervalMinutes < 0 {
 		return errors.New("config: observability.alerts.eval_interval_minutes must be >= 0")
 	}
+	if err := alertspec.ValidSlackWebhookURL(a.SlackWebhookURL); err != nil {
+		return fmt.Errorf("config: observability.alerts.slack_webhook_url: %w", err)
+	}
+	if err := alertspec.ValidPagerDutyRoutingKey(a.PagerDutyRoutingKey); err != nil {
+		return fmt.Errorf("config: observability.alerts.pagerduty_routing_key: %w", err)
+	}
 	for i, r := range a.Rules {
 		switch r.Metric {
 		case "error_rate", "cost_usd", "latency_p95_ms":
@@ -7886,6 +7966,9 @@ func validateObservabilityAlerts(a ObservabilityAlertsConfig) error {
 		}
 		if r.WindowMinutes < 0 || r.CooldownMinutes < 0 {
 			return fmt.Errorf("config: observability.alerts.rules[%d] window_minutes/cooldown_minutes must be >= 0", i)
+		}
+		if err := (alertspec.Dimensions{Model: r.Model, User: r.User, Tag: r.Tag, Service: r.Service}).Validate(); err != nil {
+			return fmt.Errorf("config: observability.alerts.rules[%d]: %w", i, err)
 		}
 	}
 	return nil

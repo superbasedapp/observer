@@ -1,0 +1,20 @@
+{
+  "_comment": "Normative compile cases for the prompt registry (docs/plans/plane-a-sdk-buildout/contracts/prompts.md section 4). Each case has type, prompt (as served), variables (the served variables list), values, and either want (the compiled prompt) or missing (the names the compile error names, sorted). Run by internal/promptreg (TestCompileCases) and by the SDK suites.",
+  "cases": [
+    {"name": "simple", "type": "text", "prompt": "Hello {{name}}!", "variables": ["name"], "values": {"name": "Ada"}, "want": "Hello Ada!"},
+    {"name": "spaces and tabs inside braces", "type": "text", "prompt": "Hi {{ name }} and {{\tother\t}}", "variables": ["name", "other"], "values": {"name": "A", "other": "B"}, "want": "Hi A and B"},
+    {"name": "repeated name", "type": "text", "prompt": "{{x}}-{{x}}", "variables": ["x"], "values": {"x": "1"}, "want": "1-1"},
+    {"name": "sorted variables", "type": "text", "prompt": "{{zeta}} {{alpha}} {{_mid}}", "variables": ["_mid", "alpha", "zeta"], "values": {"zeta": "z", "alpha": "a", "_mid": "m"}, "want": "z a m"},
+    {"name": "extra values ignored", "type": "text", "prompt": "{{a}}", "variables": ["a"], "values": {"a": "1", "b": "2"}, "want": "1"},
+    {"name": "no re-scan of substituted values", "type": "text", "prompt": "{{a}}", "variables": ["a"], "values": {"a": "{{b}}"}, "want": "{{b}}"},
+    {"name": "literal non-identifiers", "type": "text", "prompt": "{{ 1 }} {{}} {{a b}} { {a} } {{", "variables": [], "values": {}, "want": "{{ 1 }} {{}} {{a b}} { {a} } {{"},
+    {"name": "triple braces", "type": "text", "prompt": "{{{x}}}", "variables": ["x"], "values": {"x": "v"}, "want": "{v}"},
+    {"name": "identifier may not start with a digit", "type": "text", "prompt": "{{1a}} {{a1}}", "variables": ["a1"], "values": {"a1": "ok"}, "want": "{{1a}} ok"},
+    {"name": "html and unicode kept", "type": "text", "prompt": "<b>{{who}}</b> → {{who}}", "variables": ["who"], "values": {"who": "Zoë & co"}, "want": "<b>Zoë & co</b> → Zoë & co"},
+    {"name": "empty value", "type": "text", "prompt": "[{{a}}]", "variables": ["a"], "values": {"a": ""}, "want": "[]"},
+    {"name": "missing names sorted", "type": "text", "prompt": "{{b}} {{a}} {{c}}", "variables": ["a", "b", "c"], "values": {"c": "3"}, "missing": ["a", "b"]},
+    {"name": "chat compiles content only", "type": "chat", "prompt": [{"role": "system", "content": "You help {{company}}."}, {"role": "user", "content": "{{question}}"}], "variables": ["company", "question"], "values": {"company": "acme", "question": "why?"}, "want": [{"role": "system", "content": "You help acme."}, {"role": "user", "content": "why?"}]},
+    {"name": "chat missing across messages", "type": "chat", "prompt": [{"role": "system", "content": "{{a}}"}, {"role": "user", "content": "{{b}} {{a}}"}], "variables": ["a", "b"], "values": {}, "missing": ["a", "b"]},
+    {"name": "no placeholders", "type": "text", "prompt": "plain text", "variables": [], "values": {}, "want": "plain text"}
+  ]
+}

@@ -23,7 +23,9 @@ import (
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 
+	"github.com/marmutapp/superbased-observer/internal/genaiattr"
 	"github.com/marmutapp/superbased-observer/internal/ingest/hostguard"
+	"github.com/marmutapp/superbased-observer/internal/otlpjson"
 )
 
 // maxBodyBytes caps an OTLP/HTTP request body to bound memory on a malformed or
@@ -112,7 +114,8 @@ func grpcHandlerError(err error) error {
 // receiver.
 type Handler func(ctx context.Context, req *collogspb.ExportLogsServiceRequest) error
 
-// TraceHandler ingests one decoded OTLP trace export. Optional; injected by
+// TraceHandler ingests one decoded OTLP trace export. A *PartialTraces error
+// is answered as an OTLP partial success (partial.go). Optional; injected by
 // the generalized-observability subsystem (internal/obs) when [observability]
 // is enabled, mirroring Handler's posture. Like Handler it carries NO schema
 // or store dependency — the receiver stays generic. A nil TraceHandler means
@@ -150,13 +153,25 @@ const (
 	// DNS-rebinding / cross-origin attempt rather than a local exporter.
 	// Distinct from ReasonAuth so an operator can tell "a page tried to reach
 	// my receiver" from "a collector presented a bad token".
-	ReasonHost      = "host"
-	ReasonMethod    = "method"
-	ReasonGzip      = "gzip"
-	ReasonMalformed = "malformed"
-	ReasonDecode    = "decode"
-	ReasonSize      = "size"
-	ReasonHandler   = "handler"
+	ReasonHost = "host"
+	// ReasonOrigin is a request refused by the browser guard (F13, the
+	// residual of AUDIT-NODE-OTLP-1): it carried an Origin header or a
+	// Sec-Fetch-Site of cross-site / same-site, so a web page sent it, not a
+	// local exporter. Distinct from ReasonHost (which catches rebinding by
+	// the Host header) so an operator can tell the two apart.
+	ReasonOrigin = "origin"
+	// ReasonContentType is a request refused because its Content-Type is not
+	// an OTLP encoding (application/x-protobuf or application/json). The
+	// CORS "simple" types (text/plain, form posts, none) are exactly what a
+	// page can send without a preflight, so the browser-guarded receiver
+	// never decodes them.
+	ReasonContentType = "content_type"
+	ReasonMethod      = "method"
+	ReasonGzip        = "gzip"
+	ReasonMalformed   = "malformed"
+	ReasonDecode      = "decode"
+	ReasonSize        = "size"
+	ReasonHandler     = "handler"
 )
 
 // Signal label strings for OnOutcome.
@@ -374,7 +389,14 @@ func New(opts Options) (*Receiver, error) {
 			mux.HandleFunc("/v1/logs", r.withIngressGuards(sigLogs, r.handleHTTPLogs))
 		}
 		if opts.TraceHandler != nil {
-			mux.HandleFunc("/v1/traces", r.withIngressGuards(sigTraces, r.handleHTTPTraces))
+			traces := r.withIngressGuards(sigTraces, r.handleHTTPTraces)
+			mux.HandleFunc("/v1/traces", traces)
+			// The Langfuse SDK exporters append this path to
+			// LANGFUSE_BASE_URL (W5-2): the same handler and the same
+			// guards, so a Langfuse-instrumented app points at the machine
+			// unchanged. Langfuse's Basic public:secret header is never a
+			// credential here (docs/sdk/langfuse.md).
+			mux.HandleFunc(genaiattr.LangfuseOTLPTracesPath, traces)
 		}
 		if opts.MetricHandler != nil {
 			mux.HandleFunc("/v1/metrics", r.withIngressGuards(sigMetrics, r.handleHTTPMetrics))
@@ -485,7 +507,8 @@ func (r *Receiver) closeListeners() {
 // rather than one this package can silently fix.
 func (r *Receiver) withIngressGuards(signal string, next http.HandlerFunc) http.HandlerFunc {
 	hostGuard := r.hostGuardEnabled()
-	if !hostGuard && !r.opts.RequireToken {
+	browserGuard := r.browserGuardEnabled()
+	if !hostGuard && !browserGuard && !r.opts.RequireToken {
 		return next
 	}
 	want := []byte(r.opts.ReceiverToken)
@@ -494,6 +517,20 @@ func (r *Receiver) withIngressGuards(signal string, next http.HandlerFunc) http.
 			http.Error(w, "forbidden", http.StatusForbidden)
 			r.report(signal, OutcomeRejected, ReasonHost)
 			return
+		}
+		if browserGuard {
+			if fromBrowser(req) {
+				http.Error(w, "forbidden: browser requests are not accepted", http.StatusForbidden)
+				r.report(signal, OutcomeRejected, ReasonOrigin)
+				return
+			}
+			// A non-POST falls through to the handler's method check, so
+			// the outcome still names the method, not the missing type.
+			if req.Method == http.MethodPost && !otlpContentType(req) {
+				http.Error(w, "unsupported content type: use application/x-protobuf or application/json", http.StatusUnsupportedMediaType)
+				r.report(signal, OutcomeRejected, ReasonContentType)
+				return
+			}
 		}
 		if r.opts.RequireToken {
 			got := []byte(req.Header.Get(HeaderEdgeToken))
@@ -641,13 +678,15 @@ func (r *Receiver) handleHTTPTraces(w http.ResponseWriter, req *http.Request) {
 		r.report(sigTraces, OutcomeRejected, ReasonMalformed)
 		return
 	}
-	if err := r.opts.TraceHandler(req.Context(), &in); err != nil {
-		r.opts.Logger.Warn("ingest/otlp: http trace handler error", "err", err)
-		writeHandlerError(w, err)
+	herr := r.opts.TraceHandler(req.Context(), &in)
+	resp, ok := traceResponse(herr)
+	if !ok {
+		r.opts.Logger.Warn("ingest/otlp: http trace handler error", "err", herr)
+		writeHandlerError(w, herr)
 		r.report(sigTraces, OutcomeRejected, ReasonHandler)
 		return
 	}
-	out, ctype, err := encodeResponse(req, &coltracepb.ExportTraceServiceResponse{})
+	out, ctype, err := encodeResponse(req, resp)
 	if err != nil {
 		http.Error(w, "marshal response", http.StatusInternalServerError)
 		r.report(sigTraces, OutcomeRejected, ReasonHandler)
@@ -744,11 +783,13 @@ type traceService struct {
 }
 
 func (s *traceService) Export(ctx context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
-	if err := s.handler(ctx, req); err != nil {
+	err := s.handler(ctx, req)
+	resp, ok := traceResponse(err)
+	if !ok {
 		s.logger.Warn("ingest/otlp: grpc trace handler error", "err", err)
 		return nil, grpcHandlerError(err)
 	}
-	return &coltracepb.ExportTraceServiceResponse{}, nil
+	return resp, nil
 }
 
 // logsService is the gRPC LogsService implementation; Export defers to the
@@ -835,6 +876,50 @@ func (r *Receiver) hostGuardEnabled() bool {
 	default: // HostGuardAuto — the zero value.
 		return !r.opts.AllowNonLoopback
 	}
+}
+
+// browserGuardEnabled reports whether the browser guard (F13) applies: the
+// Origin / Sec-Fetch-Site refusal and the OTLP content-type allow-list. It is
+// on for every receiver WITHOUT a token gate, because such a receiver's only
+// defence is that nothing remote can reach it, and a web page in a local
+// browser can: a CORS "simple" POST (text/plain, a form, no type) needs no
+// preflight and would otherwise be decoded and ingested, letting the page
+// forge spans, cost, user and tenant (which feed admission budgets). A
+// token-gated receiver (the edge, a non-loopback node) is off: the token
+// travels in a custom header, which a page can only send after a preflight
+// this receiver never answers.
+func (r *Receiver) browserGuardEnabled() bool {
+	return !r.opts.RequireToken
+}
+
+// fromBrowser reports whether a request was sent by a web page. A browser
+// stamps Origin on every cross-origin request and on every POST (a native
+// exporter never sets it), and Sec-Fetch-Site names the initiator's site.
+// Any Origin, including the opaque "null", is refused; Sec-Fetch-Site
+// "none" (a user navigation) and "same-origin" are not by themselves a page
+// of another site.
+func fromBrowser(req *http.Request) bool {
+	if _, ok := req.Header["Origin"]; ok {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get("Sec-Fetch-Site"))) {
+	case "cross-site", "same-site":
+		return true
+	}
+	return false
+}
+
+// otlpContentType reports whether the request's Content-Type is one the OTLP
+// encoding table accepts (internal/otlpjson.Encoding, the org gateway's
+// rule): the two OTLP media types (parameters such as charset allowed), or
+// NO Content-Type at all, which is protobuf, the encoding every OTLP/HTTP
+// exporter defaulted to before JSON existed (review R-A13: a Plane B native
+// exporter that omits the header must not be refused). Any other type is
+// not. A browser cannot use the missing-type case to get in: every POST a
+// page makes carries Origin, which fromBrowser refuses first.
+func otlpContentType(req *http.Request) bool {
+	_, err := otlpjson.Encoding(req.Header.Get("Content-Type"))
+	return err == nil
 }
 
 // readReason classifies a body-read error: a MaxBytesReader overflow is a size

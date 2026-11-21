@@ -80,6 +80,17 @@ func obsAlertLoop(ctx context.Context, configPath string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Re-read the rule table and the Slack setting each tick, so an
+			// edit from the dashboard's alert routes (lane B9) takes effect
+			// without a restart. A file that no longer loads keeps the last
+			// good config. The tick interval and the enabled gate stay as
+			// started (a restart applies those).
+			if fresh, lerr := config.Load(config.LoadOptions{GlobalPath: configPath}); lerr == nil {
+				cfg.Observability.Alerts.Rules = fresh.Observability.Alerts.Rules
+				cfg.Observability.Alerts.SlackWebhookURL = fresh.Observability.Alerts.SlackWebhookURL
+				cfg.Observability.Alerts.WebhookURL = fresh.Observability.Alerts.WebhookURL
+				cfg.Observability.Alerts.PagerDutyRoutingKey = fresh.Observability.Alerts.PagerDutyRoutingKey
+			}
 			obsRunAlertTick(ctx, cfg, db, logger, emailNotifier)
 		}
 	}
@@ -109,6 +120,14 @@ func obsRunAlertTick(ctx context.Context, cfg config.Config, db *sql.DB, logger 
 				logger.Warn("obs-alert webhook failed", "rule", f.RuleName, "err", derr)
 			}
 		}
+		// Slack is an ADDITIONAL, fail-soft channel like email (W3-5): its
+		// outcome is logged, never the URL, and does not change the
+		// recorded webhook delivery status.
+		if hook := cfg.Observability.Alerts.SlackWebhookURL; hook != "" {
+			if serr := postSlack(ctx, hook, slackAlertFor(f)); serr != nil {
+				logger.Warn("obs-alert slack failed", "rule", f.RuleName, "err", serr)
+			}
+		}
 		// Email is an ADDITIONAL, fail-soft channel (Notifier.Send never
 		// errors). It does not affect the recorded delivery status (that tracks
 		// the webhook).
@@ -123,6 +142,22 @@ func obsRunAlertTick(ctx context.Context, cfg config.Config, db *sql.DB, logger 
 			"rule", f.RuleName, "metric", f.Metric, "value", f.Value,
 			"threshold", f.Threshold, "delivered", delivered)
 	}
+	// PagerDuty (W5-5, lane C9) is an ADDITIONAL, fail-soft channel like
+	// Slack: a fire triggers the rule's incident, the rule's clear (or its
+	// removal while firing) resolves it. A resolve not delivered stays owed
+	// and is retried every pass until PagerDuty accepts or permanently
+	// refuses it (R-C20). Outcomes are logged, never the key.
+	// The transitions run first so a fire triggers under its episode's
+	// dedup key (E-43); a transitions failure still triggers, under the
+	// rule's own key.
+	pdKey := cfg.Observability.Alerts.PagerDutyRoutingKey
+	owed, episodes, terr := obsAlertTransitions(ctx, cfg, db, logger, time.Now().UTC())
+	deliverPagerDutyFired(ctx, pdKey, fired, episodes, logger)
+	if terr != nil {
+		logger.Warn("obs-alert transitions failed", "err", terr)
+		return
+	}
+	obsSettleAlertResolves(ctx, db, deliverPagerDutyResolved(ctx, pdKey, owed, logger), logger)
 }
 
 // postAlertWebhook POSTs one fired-alert payload to url with a bounded timeout.
@@ -195,6 +230,7 @@ func newObsAlertsCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "path to config.toml")
 	cmd.Flags().IntVar(&limit, "limit", 20, "max recently-fired alerts to show")
+	cmd.AddCommand(newObsAlertsSlackCmd(), newObsAlertsPagerDutyCmd(), newObsAlertsRulesCmd())
 	return cmd
 }
 

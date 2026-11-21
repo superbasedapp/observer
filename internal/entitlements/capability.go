@@ -63,8 +63,8 @@ func gateRows() []gateRow {
 		{id: "org.sor.s3", gate: GateIncluded, why: infra},
 		{id: "org.sor.azblob", gate: GateIncluded, why: infra},
 		{id: "org.analytics.clickhouse", gate: GateIncluded, why: infra},
-		{id: "org.opamp", gate: GatePlan, why: card + ": Plane A is Business"},
-		{id: "org.planea.gateway", gate: GatePlan, why: card + ": Plane A OTLP is Business"},
+		{id: "org.opamp", gate: GatePlan, why: card + ": AI Apps is Business"},
+		{id: "org.planea.gateway", gate: GatePlan, why: card + ": AI Apps OTLP ingest is Business"},
 		{id: "org.aigateway", gate: GatePlan, why: dflt},
 		{id: "org.agentaccess", gate: GatePlan, why: dflt},
 		{id: "org.openshell", gate: GatePlan, why: dflt},
@@ -96,9 +96,9 @@ func gateRows() []gateRow {
 		{id: "org.agent-config", gate: GateIncluded, why: "a team feature every plan has had as core; staff switch it through availability"},
 		{id: "org.entities", gate: GateIncluded, why: "a team feature every plan has had as core; staff switch it through availability"},
 		// Wave 17 lane pooled-obs: included until the operator decides
-		// whether the Plane A price card (Business) sells it.
-		{id: "org.obs.evals", gate: GateIncluded, why: "a Plane A feature every plan has had as core; staff switch it through availability"},
-		{id: "edge", gate: GatePlan, why: card + ": Plane A is Business"},
+		// whether the AI Apps price card (Business) sells it.
+		{id: "org.obs.evals", gate: GateIncluded, why: "an AI Apps feature every plan has had as core; staff switch it through availability"},
+		{id: "edge", gate: GatePlan, why: card + ": AI Apps is Business"},
 	}
 }
 

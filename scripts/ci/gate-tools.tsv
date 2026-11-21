@@ -12,7 +12,38 @@
 #   the newest 22.x); the runner pins the newest 22.x at the time of writing,
 #   v22.23.5, with the sha256 from nodejs.org/dist/v22.23.5/SHASUMS256.txt.
 #   Move it with CI's major.
+# node20, node22, node24: the SDK matrix (lane B4, plan W2-4 / principle 9:
+#   sdk/typescript on every Node major its engines field admits that is
+#   still tested; scripts/ci/sdk.sh). Official nodejs.org tarballs, the
+#   newest release of each major at the time of writing, sha256 from that
+#   release's SHASUMS256.txt. node22 pins the same tarball as node but is a
+#   row of its own, so moving the web suites to a newer major does not move
+#   the SDK's Node 22 unit.
+# python3.9 .. python3.13: the SDK matrix for sdk/python (requires-python
+#   >=3.9). CPython install_only_stripped builds from python-build-standalone
+#   (the builds uv installs): the tarball unpacks to python/, so bootstrap's
+#   --strip-components=1 leaves bin/python3 on PATH. The newest patch of each
+#   minor at the time of writing; sha256 from uv 0.13.9's
+#   download-metadata.json, which uv verifies these same URLs against. 3.9
+#   is end of life upstream (its last build is 20251031); keep it while
+#   requires-python says >=3.9.
 golangci-lint	2.14.0	amd64	ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-amd64.tar.gz
 golangci-lint	2.14.0	arm64	ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-arm64.tar.gz
 node	22.23.5	amd64	c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz
 node	22.23.5	arm64	8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-arm64.tar.gz
+node20	20.20.2	amd64	19e56f0825510207dd904f087fe52faa0a4eb6b2aab5f0ea7a33830d04888b8b	https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-x64.tar.gz
+node20	20.20.2	arm64	47ef73d543ecf6eb19435f6c03a0ac4809b3bf0dd6b26c7c571efc2a6572a74d	https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-arm64.tar.gz
+node22	22.23.5	amd64	c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz
+node22	22.23.5	arm64	8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-arm64.tar.gz
+node24	24.22.3	amd64	061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2	https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.gz
+node24	24.22.3	arm64	261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8	https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.gz
+python3.9	3.9.25	amd64	fe04e8b27bd69ca2144fc542428f8b9b5287b6a2e45516a4acfe2c2bc3102773	https://github.com/astral-sh/python-build-standalone/releases/download/20251031/cpython-3.9.25%2B20251031-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.9	3.9.25	arm64	2f17406709afd0f07674dd3ce92a4b23c6adf8baac3f402555d192e0f3333bef	https://github.com/astral-sh/python-build-standalone/releases/download/20251031/cpython-3.9.25%2B20251031-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.10	3.10.22	amd64	caa66b308e10f35b8114054df7d927903f971f631cfa3237b84c40d5d5f35549	https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.10.22%2B20261009-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.10	3.10.22	arm64	ecbe978a7ecbeb3a9aed67bb5d161180701513b4fa8101037b2a3f1ac11e96be	https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.10.22%2B20261009-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.11	3.11.18	amd64	3288c54cea3db350052019b3f8b558dd8a3da8afa6fda573f5fd2bcb37635b4a	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.11	3.11.18	arm64	7e71f26a003949b57757e287f4f4b6689da07e7a229f5bbee7919c19ed77155d	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.12	3.12.16	amd64	6a9e62dad033790aef722dbd370e0ce76ce17b73627ba3ae679f537049350b39	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.12	3.12.16	arm64	b6a41defec4975d94b4ff1950236e7383e5c02ba40ea48c9ec33c66087a35aab	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.13	3.13.18	amd64	f2d2199eb25880e07863b391cf7124e7ffa1338b0d65600dfcec117c4223a7fb	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+python3.13	3.13.18	arm64	55c00325f7c1fddf325dfc621aabdfbbac4dc54adda224af88ec411dc12db239	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz

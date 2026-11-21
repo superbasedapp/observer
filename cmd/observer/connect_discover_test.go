@@ -316,7 +316,7 @@ func TestConnectNeverDiscoversWithAnAddress(t *testing.T) {
 	}
 }
 
-// TestConnectDiscoveryRefusals: an attached machine (row 10, and row 5's
+// TestConnectDiscoveryRefusals: an attached machine (row 11, and row 5's
 // managed machine) is never offered the personal org, a pairing code needs
 // its organization's address, and a list failure says how to go on.
 func TestConnectDiscoveryRefusals(t *testing.T) {

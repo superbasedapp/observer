@@ -1,4 +1,4 @@
-// The Policies template catalog — a FRONTEND data file (handover §5): ready-made
+// The Policies template catalog - a FRONTEND data file (handover §5): ready-made
 // guardrail + routing bundles the operator can preview and apply with one click.
 // It lives here (not a backend endpoint) so a bundle can compose multiple
 // criteria/rules across both policies; applying just merges the contribution
@@ -15,6 +15,7 @@ import {
   type EgressTarget,
   emptyEgressWhen,
 } from "./types";
+import { DENIED_TOPICS } from "./samples";
 
 export type TemplateContribution = {
   criteria?: AdmissionCriterion[];
@@ -32,7 +33,7 @@ export type PolicyTemplate = TemplateContribution & {
   blurb: string;
 };
 
-// What a template touches, derived from its contribution — drives the summary
+// What a template touches, derived from its contribution - drives the summary
 // pills and which write paths the apply runs.
 export function templateTouches(t: TemplateContribution): ("guardrail" | "routing" | "budget")[] {
   const out: ("guardrail" | "routing" | "budget")[] = [];
@@ -104,7 +105,7 @@ export const TEMPLATE_CATALOG: PolicyTemplate[] = [
     group: "Safety",
     title: "Denied topics",
     blurb: "Flags requests about competitors and regulated-advice topics (legal / medical / financial).",
-    criteria: [crit({ id: "denied-topics", type: "denied_topics", name: "denied-topics", topics: ["competitors", "legal advice", "medical advice", "financial advice"], decision: "flag", severity: "warn" })],
+    criteria: [crit({ id: "denied-topics", type: "denied_topics", name: "denied-topics", topics: [...DENIED_TOPICS], decision: "flag", severity: "warn" })],
   },
   {
     id: "secrets-pii-guard",
@@ -158,7 +159,7 @@ export const TEMPLATE_CATALOG: PolicyTemplate[] = [
     criteria: [
       crit({ id: "on-scope", type: "valid_use_case", name: "on-scope", definition: "Allow only questions about using the company's internal tools, products, and knowledge base. Anything off-topic should be asked to rephrase.", decision: "ask", severity: "info" }),
       crit({ id: "jailbreak", type: "jailbreak", name: "jailbreak", decision: "deny", severity: "high" }),
-      crit({ id: "denied-topics", type: "denied_topics", name: "denied-topics", topics: ["competitors", "legal advice", "medical advice", "financial advice"], decision: "flag", severity: "warn" }),
+      crit({ id: "denied-topics", type: "denied_topics", name: "denied-topics", topics: [...DENIED_TOPICS], decision: "flag", severity: "warn" }),
     ],
     egressTargets: [ollamaLocal],
     egressRules: [rule({ name: "flagged-to-local", when: { verdict_at_least: "flag" }, action: { route_to_upstream: "ollama-local" }, on_unavailable: "deny", reason_code: "egress_flagged_local" })],

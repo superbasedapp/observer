@@ -4,6 +4,11 @@
 // bundle joins in G13), owns the per-session TaintState tracker, and
 // wraps evaluation in the Q2 fail-open/fail-closed contract.
 //
+// Guard is Plane B (docs/deployment-models.md): it governs the developer's
+// own AI coding agents (their tool calls, prompts and spend). The input
+// admission of the AI apps a developer builds is Plane A and lives in
+// internal/obs/admission; the two are separate subsystems.
+//
 // Boundaries (CLAUDE.md Module rules, guard spec §17):
 //
 //   - internal/policy stays PURE; all I/O (reading policy files,

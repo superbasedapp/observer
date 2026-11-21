@@ -718,6 +718,8 @@ export type ConfigKeyPath =
   "observability.judge.timeout_ms" |
   "observability.judge.max_tokens" |
   "observability.judge.num_ctx" |
+  "observability.judge.request_profile" |
+  "observability.judge.reasoning_effort" |
   "observability.judge.use_org_relay" |
   "observability.admission.enabled" |
   "observability.admission.mode" |
@@ -733,6 +735,8 @@ export type ConfigKeyPath =
   "observability.admission.judge.timeout_ms" |
   "observability.admission.judge.max_tokens" |
   "observability.admission.judge.num_ctx" |
+  "observability.admission.judge.request_profile" |
+  "observability.admission.judge.reasoning_effort" |
   "observability.admission.judge.use_org_relay" |
   "observability.admission.prefilter.allow" |
   "observability.admission.prefilter.deny" |
@@ -752,6 +756,8 @@ export type ConfigKeyPath =
   "observability.alerts.email" |
   "observability.alerts.email_to" |
   "observability.alerts.eval_interval_minutes" |
+  "observability.alerts.slack_webhook_url" |
+  "observability.alerts.pagerduty_routing_key" |
   "observability.alerts.rules" |
   "observability.egress.enabled" |
   "observability.egress.mode" |
@@ -760,6 +766,9 @@ export type ConfigKeyPath =
   "observability.egress.targets" |
   "observability.egress.cohorts" |
   "observability.proxy_turn_traces" |
+  "observability.store_content" |
+  "observability.sdk.destination" |
+  "observability.sdk.gateway_url" |
   "selfobs.enabled" |
   "selfobs.endpoint" |
   "selfobs.key_id" |
@@ -835,6 +844,7 @@ export type ConfigSchemaLeaf = {
   min?: number;
   max?: number;
   doc?: string;
+  help?: string;
 };
 
 export type ConfigSchemaTable = {
@@ -843,6 +853,7 @@ export type ConfigSchemaTable = {
   owner: string;
   block: string;
   doc?: string;
+  help?: string;
 };
 
 export type ConfigSchemaDescriptor = {

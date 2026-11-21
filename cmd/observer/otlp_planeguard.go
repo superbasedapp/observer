@@ -36,7 +36,7 @@ func guardPlaneA(planeA otlpingest.TraceHandler, logger *slog.Logger) otlpingest
 		keep, held := withoutOwnAgentResources(req)
 		if held > 0 && logger != nil {
 			once.Do(func() {
-				logger.Warn("otlp receiver: spans naming an own agent (sbo.agent) are never sent to the hosted-app plane; they land on the node only with [ingest.otel] enabled and the custom-agent adapter on",
+				logger.Warn("otlp receiver: spans naming an own agent (sbo.agent) are never sent to AI Apps; they land on the node only with [ingest.otel] enabled and the custom-agent adapter on",
 					"resources", held)
 			})
 		}

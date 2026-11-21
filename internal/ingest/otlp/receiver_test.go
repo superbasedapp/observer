@@ -434,6 +434,7 @@ func TestReceiver_HTTPOutcomeHook(t *testing.T) {
 		{"gzip", outcomeEvent{sigLogs, OutcomeRejected, ReasonGzip}, func() {
 			zreq, _ := http.NewRequest(http.MethodPost, base, bytes.NewReader([]byte("not-gzip-bytes")))
 			zreq.Header.Set("Content-Encoding", "gzip")
+			zreq.Header.Set("Content-Type", "application/x-protobuf")
 			if zr, err := http.DefaultClient.Do(zreq); err == nil {
 				_ = zr.Body.Close()
 			}
@@ -1078,6 +1079,7 @@ func TestReceiver_HTTPGzipBoundedRead(t *testing.T) {
 			spy := &countingReader{r: bytes.NewReader(compressed)}
 			req := httptest.NewRequest(http.MethodPost, path, spy)
 			req.Header.Set("Content-Encoding", "gzip")
+			req.Header.Set("Content-Type", "application/x-protobuf")
 			// httptest.NewRequest defaults Host to "example.com", which the
 			// NODE-OTLP-1 loopback Host guard now refuses. This test is about
 			// the decompressed cap, so give it a Host the guard admits.
@@ -1223,6 +1225,7 @@ func TestReceiver_HTTPHostGuard(t *testing.T) {
 			spy := &readCountingBody{data: body}
 			req := httptest.NewRequest(http.MethodPost, "/v1/logs", spy)
 			req.Host = tc.host
+			req.Header.Set("Content-Type", "application/x-protobuf")
 			rw := httptest.NewRecorder()
 			r.httpServer.Handler.ServeHTTP(rw, req)
 

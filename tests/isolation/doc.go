@@ -66,7 +66,14 @@
 //     and TestRouteWalkerRefusedInPooled (ISO-2) require every not-yet-on-seam
 //     and refused-in-pooled route to answer the pooled route gate's refusal
 //     (internal/orgserver/pooledgate, wave 12) or not to be mounted at all.
-//     TestWalkerDetectsALeak is the negative control.
+//     TestWalkerDetectsALeak is the negative control. The write-leak digest
+//     window holds the server's clock-driven writers of class T rows (the
+//     quota pass and the availability reconciler,
+//     orgserver.Server.HoldPeriodicWriters) and keeps every column of every
+//     T table: TestRouteWalkerHoldsPeriodicWriters (walker_hold_test.go)
+//     forces a quota pass inside the window and requires it to stay out
+//     while a leaking route's write is still reported (the 2026-11-19 ops
+//     gate flake, org_quota_state in TestRouteWalkerSecurityFamilies).
 //     TestPooledServerBootsOnTheHostLogin proves the server's control and
 //     data stores run on a member of <p>_host, never a login past row-level
 //     security (ISO-1's boot half, wave 12).

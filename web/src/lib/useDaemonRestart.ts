@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { useApi } from "@/lib/useApi";
 import { ApiError, fetchJSON } from "@/lib/api";
 import type { StatusSnapshot } from "@/lib/types";
 import { confirmDialog } from "@shared/primitives/confirmDialogModel";
-import { restartConfirmBody, type RestartConfirm } from "@/lib/restartConfirm";
+import { probeUnsavedLive, restartConfirmBody, type RestartConfirm } from "@/lib/restartConfirm";
+import { isNewProcess, waitForNewProcess } from "@/lib/restartReconnect";
 
 // useDaemonRestart owns the on-demand daemon-restart flow shared by the
 // RestartPendingBanner and the Settings → Health control: POST
 // /api/admin/restart (the daemon runs its graceful shutdown + self re-exec),
-// then poll /api/status until the NEW process answers (started_at advances past
-// the click) and reload into it. The backend returns 501 when RestartFunc is
+// then poll /api/status until the NEW process answers and reload into it. The
+// poll is its own loop (restartReconnect.ts, UI review U-22), not the shared
+// query cache: every attempt has a timeout and every failure is retried on a
+// bounded backoff, so the overlay cannot outlive the old process. The new
+// process is told apart by its started_at differing from the one read just
+// before the restart (or, with no earlier read, being later than the click). The backend returns 501 when RestartFunc is
 // nil (standalone `observer dashboard`, not `observer start`) — surfaced as
 // `error` so callers can render honest copy.
 //
@@ -80,23 +84,35 @@ export function useDaemonRestart() {
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restartAtRef = useRef<number>(0);
+  // The running process's started_at, read just before the restart.
+  const beforeRef = useRef<string | null>(null);
 
-  // Poll status only while a restart is in flight; fast so the overlay clears
-  // promptly once the new process is up.
-  const status = useApi<StatusSnapshot>(
-    restarting ? "/api/status" : null,
-    undefined,
-    [restarting],
-    { refreshMs: 1500 },
-  );
-
+  // While a restart is in flight, wait for the new process and reload into it.
   useEffect(() => {
-    if (!restarting || !status.data?.started_at) return;
-    const startedAt = new Date(status.data.started_at).getTime();
-    if (Number.isFinite(startedAt) && startedAt > restartAtRef.current) {
-      window.location.reload();
+    if (!restarting) return;
+    const ac = new AbortController();
+    void waitForNewProcess((startedAt) => isNewProcess(startedAt, beforeRef.current, restartAtRef.current), {
+      signal: ac.signal,
+      sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+      probe: (signal) => fetchJSON<StatusSnapshot>("/api/status", undefined, { signal, cache: "no-store" }),
+    }).then((ok) => {
+      if (ok) window.location.reload();
+    });
+    return () => ac.abort();
+  }, [restarting]);
+
+  // markStart records what the reconnect wait compares against: the click
+  // time and, when the daemon answers, its current started_at.
+  async function markStart() {
+    restartAtRef.current = Date.now();
+    beforeRef.current = null;
+    try {
+      const st = await fetchJSON<StatusSnapshot>("/api/status", undefined, { cache: "no-store" });
+      beforeRef.current = st.started_at ?? null;
+    } catch {
+      // No status read: fall back to the click time.
     }
-  }, [restarting, status.data?.started_at]);
+  }
 
   // restart optionally asks first (the shared confirmDialog, never a native
   // window.confirm); returns nothing - observe `restarting`/`error`. The
@@ -115,16 +131,19 @@ export function useDaemonRestart() {
         window.dispatchEvent(new CustomEvent(LIVE_RUNS_EVENT, { detail: st.live_sandboxed_runs }));
         return;
       }
+      // What a restart would drop (U-27): an admission policy applied live
+      // that never reached config.
+      const unsaved = await probeUnsavedLive((path) => fetchJSON<unknown>(path));
       const ok = await confirmDialog({
         title: confirm.title,
-        body: restartConfirmBody(confirm.lead, st),
+        body: restartConfirmBody(confirm.lead, st, unsaved),
         confirmLabel: "Restart daemon",
         tone: "danger",
       });
       if (!ok) return;
     }
     setError(null);
-    restartAtRef.current = Date.now();
+    await markStart();
     try {
       await fetchJSON("/api/admin/restart", undefined, { method: "POST" });
       setRestarting(true);
@@ -148,7 +167,7 @@ export function useDaemonRestart() {
   // whether the answer was accepted, with `error` set when not.
   async function answerLiveRuns(answer: LiveRunsAnswer): Promise<boolean> {
     setError(null);
-    if (answer === "end") restartAtRef.current = Date.now();
+    if (answer === "end") await markStart();
     try {
       await postLiveRunsAnswer(answer);
       if (answer === "end") setRestarting(true);

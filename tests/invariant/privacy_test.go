@@ -3391,6 +3391,20 @@ var forbiddenCacheTables = []string{
 	"obs_dataset_items",
 	"obs_eval_runs",
 	"obs_eval_scores",
+	// The machine review queue (obs 0022, Plane A W5-6 machine parity,
+	// lane C10): node-local, never on the push wire.
+	"obs_review_queues",
+	"obs_review_items",
+	// The machine's saved explorer views and alert firing state (obs 0020,
+	// 0021, Plane A W5-4 / W5-5, lane C9), its prompt registry (obs 0019,
+	// lane C8) and its alert event log: node-local, never on the push wire.
+	// Named here, not left to the obs_ prefix (review finding R-C23).
+	"obs_saved_views",
+	"obs_alert_state",
+	"obs_alert_events",
+	"obs_prompt_versions",
+	"obs_prompt_labels",
+	"obs_prompt_label_moves",
 
 	// Benchmarks Harness tables (migration 061,
 	// docs/plans/benchmarks-harness-plan-2026-07-11.md §3.3) are NODE-LOCAL:
@@ -3716,6 +3730,11 @@ var forbiddenCacheTables = []string{
 	// (session_holds, org PostgreSQL 0230). Node-local by table name, no
 	// share key, no server pair.
 	"local_session_holds",
+	// settings_proposals (agent migration 259, Plane A lane B6, D19): the
+	// security-sensitive settings changes an AI agent asked for, waiting for
+	// the user's approval. Node-local by table name, no share key, no server
+	// pair.
+	"settings_proposals",
 	// Delivery, commit to PR to merge (agent migrations 166 to 172, D-689,
 	// docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md 6.1). All
 	// NODE-LOCAL BY TABLE NAME: orgpush.go must never reference them.
@@ -4006,6 +4025,11 @@ var forbiddenCacheTables = []string{
 	// Node-local like the rows it sits beside (decision D6). Single writer
 	// internal/store/sandboxegress.go.
 	"sandbox_egress_refusal_drops",
+	// Legacy Plane A api_turns rows (agent migration 256, plan-of-record
+	// F10 / D6, lane A6): a hosted app's SDK/OTLP spend that older nodes
+	// wrote into api_turns, relocated so it never reads or ships as coding
+	// spend. Node-local; nothing writes it after the migration.
+	"api_turns_planea_legacy",
 }
 
 // forbiddenGatewayTables names the SERVER-SIDE gateway tables that MUST NEVER be
@@ -4192,6 +4216,14 @@ var forbiddenOrgControlPlaneTables = []string{
 	"org_trace_annotation",
 	"org_llm_job",
 	"org_llm_job_item",
+	// Plane A scores, snapshots, online rules and the review queue (server
+	// migrations 330-333, lane B7): org-side only, never on the node wire.
+	"org_dataset_snapshot",
+	"org_dataset_snapshot_item",
+	"org_eval_online_rule",
+	"org_review_queue",
+	"org_review_item",
+	"org_review_assignment",
 	// Guardrailed chat (server migration 053, wave item F): chat transcripts
 	// and proposal state are org control-plane content with no agent
 	// counterpart — the node never sees the assistant conversation.
@@ -4385,6 +4417,22 @@ var forbiddenOrgControlPlaneTables = []string{
 	// PG 0478, Getting started v2 lane 8, ledger ONB-9): server-only control
 	// state; a node presents its grant once at enrolment, never this table.
 	"org_attach_grant_uses",
+	// The Plane A gateway's monthly usage meter (server migration 325 / PG
+	// 0489, W1c-3a) and the pooled gateway's shared request budget (PG 0490,
+	// W1c-3b): server-only; no node sends or receives either.
+	"gateway_usage_monthly",
+	"gateway_throttle_budget",
+	// The prompt registry (server migration 337 / PG 0510, Plane A W3-3
+	// lane B8): the org's own authored prompts, served to SDK credentials on
+	// the gateway listener. A machine keeps its prompts in its own obs store;
+	// no node ever sends or receives these rows.
+	"org_prompt_versions",
+	"org_prompt_labels",
+	"org_prompt_label_moves",
+	// Prompt rollout approval (server migration 344 / PG 0519, Plane A W5-3
+	// lane C8): proposed production changes and the org's registry settings.
+	"org_prompt_proposals",
+	"org_prompt_settings",
 	// Managed-SaaS pooled host state (org PostgreSQL only; plan 07). The
 	// request host map (0240) and the fenced periodic scheduler's lease rows
 	// (0220); the host's per-tenant provisioning record (0261, wave 10 L1,
@@ -4788,6 +4836,13 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		"org_trace_annotation",
 		"org_llm_job",
 		"org_llm_job_item",
+		// Plane A scores and evals (server 330-333, lane B7).
+		"org_dataset_snapshot",
+		"org_dataset_snapshot_item",
+		"org_eval_online_rule",
+		"org_review_queue",
+		"org_review_item",
+		"org_review_assignment",
 		// Guardrailed chat (server migration 053): transcripts stay
 		// org-side; dropping these would stop the guard from noticing a
 		// seam that named them.
@@ -5076,6 +5131,17 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		"org_auth_pending_txns",
 		// The attach grant's single-use record (server migration 316, lane 8).
 		"org_attach_grant_uses",
+		// The Plane A gateway meter and shared budget (server 325, PG 0489,
+		// 0490; lane B1).
+		"gateway_usage_monthly",
+		"gateway_throttle_budget",
+		// The prompt registry (server migration 337, Plane A W3-3 lane B8).
+		"org_prompt_versions",
+		"org_prompt_labels",
+		"org_prompt_label_moves",
+		// Prompt rollout approval (server migration 344, Plane A W5-3 lane C8).
+		"org_prompt_proposals",
+		"org_prompt_settings",
 		// Managed-SaaS pooled host state (org PostgreSQL 0220, 0240, 0261,
 		// 0265, 0295).
 		"tenant_hosts",
@@ -7155,6 +7221,7 @@ func TestObsSummaryWireShapeIsAggregateOnly(t *testing.T) {
 		"CacheReadTokens": true, "CacheWriteTokens": true, "ReasoningTokens": true,
 		"TotalTokens": true, "CostUSD": true, "ErrorTraces": true,
 		"DurationMsSum": true, "DurationMsCount": true,
+		"TracesPrimary": true, "ErrorTracesPrimary": true, // F17 primary-bucket counts
 	}
 	typ := reflect.TypeOf(orgcontract.ObsSummaryRow{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -7184,6 +7251,50 @@ func TestObsTraceWireShapeCarriesNoBody(t *testing.T) {
 	}
 }
 
+// TestObsTraceWireShape pins the T2 trace row's identity contract (plan
+// W1a-2, finding F11): every ObsTraceRow field is classified content-free-
+// always or gated (ships ONLY under shipsRawContent(), stripped by
+// ObsTraceRow.PrepareForWire), never both and never unclassified, so a new
+// identity or PII field cannot silently ride the always-ships path. The end
+// user is PII, and so is its unkeyed org-bound hash (an org can test a guess),
+// so both hashes are gated too (operator ruling D23, review R-A02).
+func TestObsTraceWireShape(t *testing.T) {
+	t.Parallel()
+	contentFree := map[string]bool{
+		"OrgID": true, "UserEmail": true, // agent-stamped attribution (the pushing developer)
+		"TraceID": true, "SessionID": true, "ThreadID": true, "RootSpanID": true, // structure ids
+		"Source": true, "Status": true, "StartedAt": true, "EndedAt": true,
+		"ProjectHash": true, "SpanCount": true, "TotalTokens": true, "CostUSD": true,
+		"Service": true, "Environment": true, "Release": true, // the app's deployment labels
+	}
+	gated := map[string]bool{
+		"ProjectRoot": true, "EndUser": true, "Tenant": true, "Tags": true, "Metadata": true,
+		"EndUserHash": true, "TenantHash": true, // testable pseudonyms of the gated raw values (D23)
+	}
+	typ := reflect.TypeOf(orgcontract.ObsTraceRow{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch {
+		case contentFree[name] && gated[name]:
+			t.Errorf("ObsTraceRow field %q classified as BOTH content-free and gated — pick one", name)
+		case !contentFree[name] && !gated[name]:
+			t.Errorf("ObsTraceRow gained UNCLASSIFIED field %q — classify it content-free-always or gated (and strip it in ObsTraceRow.PrepareForWire)", name)
+		}
+	}
+	// Dynamic half: PrepareForWire must zero every gated field.
+	r := orgcontract.ObsTraceRow{
+		ProjectRoot: "p", EndUser: "u", Tenant: "t", Tags: []string{"x"}, Metadata: map[string]string{"k": "v"},
+		EndUserHash: "eh", TenantHash: "th",
+	}
+	r.PrepareForWire("org", "dev", false)
+	rv := reflect.ValueOf(r)
+	for name := range gated {
+		if !rv.FieldByName(name).IsZero() {
+			t.Errorf("PrepareForWire(raw=false) left gated field %q set", name)
+		}
+	}
+}
+
 // TestObsAdmissionWireShape pins the T6 admission wire contract structurally
 // (Plane-A admission org tier, gap-audit §2.1 / #1a): every ObsAdmissionRow
 // field must be classified as either content-free-always (ships in
@@ -7204,6 +7315,9 @@ func TestObsAdmissionWireShape(t *testing.T) {
 		"MessageHash": true,                                       // content-free request provenance (raw text never stored)
 		"TraceID":     true, "SessionID": true, "RequestID": true, // content-free soft join keys
 		"PrevHash": true, "RowHash": true, // tamper-evidence hash-chain links
+		// R-A06: org SDK verdict records only (server-published, never set by
+		// a node, ignored on a node push): non-secret credential ids.
+		"CredID": true, "WorkspaceID": true, "EnvironmentID": true, "VerdictID": true,
 	}
 	// Gated: PII / prose — ship ONLY under shipsRawContent() (stripped in
 	// composeObsTiers otherwise).
@@ -7281,8 +7395,12 @@ func fakeObsProviders() store.ObsOrgProviders {
 		},
 		Spans: func(_ context.Context, _ orgcontract.ObsCursor, _ int) (orgcontract.ObsSpanBatch, error) {
 			return orgcontract.ObsSpanBatch{
-				Traces: []orgcontract.ObsTraceRow{{TraceID: "t1", StartedAt: "2026-06-29T00:00:00Z", ProjectHash: "ph", ProjectRoot: "/secret/path"}},
-				Spans:  []orgcontract.ObsSpanRow{{TraceID: "t1", SpanID: "s1", Kind: "llm", Name: "chat"}},
+				Traces: []orgcontract.ObsTraceRow{{
+					TraceID: "t1", StartedAt: "2026-06-29T00:00:00Z", ProjectHash: "ph", ProjectRoot: "/secret/path",
+					Service: "svc", EndUser: "SECRET_ENDUSER", Tenant: "SECRET_TENANT",
+					Tags: []string{"SECRET_TAG"}, Metadata: map[string]string{"k": "SECRET_META"},
+				}},
+				Spans: []orgcontract.ObsSpanRow{{TraceID: "t1", SpanID: "s1", Kind: "llm", Name: "chat"}},
 			}, nil
 		},
 		Content: func(_ context.Context, _ orgcontract.ObsCursor, _ int) ([]orgcontract.ObsContentRow, error) {
@@ -7335,6 +7453,17 @@ func TestObsTiersGatedOffByDefault(t *testing.T) {
 	if opt.ObsTraces[0].ProjectHash == "" {
 		t.Error("project_hash was stripped — it must always ride")
 	}
+	// End user (PII), tenant, tags and metadata: raw values AND their hashes
+	// stripped (D23); the service label rides (identity contract, W1a-2).
+	if tr := opt.ObsTraces[0]; tr.EndUser != "" || tr.Tenant != "" || tr.Tags != nil || tr.Metadata != nil {
+		t.Errorf("trace identity leaked without full_content: %+v", tr)
+	}
+	if tr := opt.ObsTraces[0]; tr.EndUserHash != "" || tr.TenantHash != "" {
+		t.Errorf("end_user_hash / tenant_hash shipped metadata-only (D23): %+v", tr)
+	}
+	if tr := opt.ObsTraces[0]; tr.Service != "svc" {
+		t.Errorf("service must always ride: %+v", tr)
+	}
 	if opt.ObsContent[0].Content != "" {
 		t.Errorf("raw content leaked without full_content: %q", opt.ObsContent[0].Content)
 	}
@@ -7347,6 +7476,12 @@ func TestObsTiersGatedOffByDefault(t *testing.T) {
 		store.ShareOptions{FullContent: true, ObsTraces: true, ObsContent: true}, store.ScopeOptions{})
 	if err != nil {
 		t.Fatalf("select full: %v", err)
+	}
+	if tr := full.ObsTraces[0]; tr.EndUser != "SECRET_ENDUSER" || tr.Tenant != "SECRET_TENANT" || len(tr.Tags) != 1 || tr.Metadata["k"] != "SECRET_META" {
+		t.Errorf("full_content did not ship the trace identity: %+v", tr)
+	}
+	if tr := full.ObsTraces[0]; tr.EndUserHash == "" || tr.TenantHash == "" {
+		t.Errorf("full_content did not ship the identity hashes: %+v", tr)
 	}
 	if full.ObsContent[0].Content != "SECRET BODY" || full.ObsTraces[0].ProjectRoot != "/secret/path" {
 		t.Errorf("full_content did not ship raw body/path: content=%q root=%q", full.ObsContent[0].Content, full.ObsTraces[0].ProjectRoot)

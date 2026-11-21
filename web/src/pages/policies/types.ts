@@ -4,6 +4,10 @@
 // and the [observability.judge]/[.admission.budget] config blocks), so the
 // editor round-trips without lossy remapping.
 
+import { ApiError } from "@/lib/api";
+import { ADMISSION_APPLY_PERSISTS, NO_ANSWER_TEXT, policyPostUrl, policyStatusText } from "./applyRule";
+
+export { ADMISSION_OFF_TEXT, policyStatusText } from "./applyRule";
 import { getRemoteCSRF, isRemoteView } from "@/lib/remote";
 
 export type Decision = "allow" | "flag" | "ask" | "deny";
@@ -113,7 +117,7 @@ export const EGRESS_REASON_CODES: string[] = [
   "egress_effort_noop",
 ];
 
-// The action "kind" — exactly one primary is set on the wire; the UI edits a
+// The action "kind" - exactly one primary is set on the wire; the UI edits a
 // single kind + operand and materializes the one-hot EgressAction on submit.
 export type EgressActionKind = "route_to_upstream" | "route_to_model" | "set_effort" | "deny" | "no_route";
 export function egressActionKind(a: EgressAction): EgressActionKind {
@@ -163,7 +167,10 @@ export type Verdict = {
   reason?: string;
   mode: string;
   judge_used: boolean;
-  degraded?: boolean;
+  // A CODE, not a flag (admission pipeline.go Degraded*): a genuine fail-open
+  // ("timeout-failopen", "judge-error", "no-judge") or the deterministic layer
+  // that decided ("prefiltered", "secret-gate", "budget-gate", ...).
+  degraded?: string;
   enforce_decision: Decision;
   latency_ms: number;
 };
@@ -187,7 +194,7 @@ export type BudgetConfig = {
 export type ObservabilityConfig = {
   Enabled: boolean;
   Judge: JudgeConfig;
-  Admission: { Budget: BudgetConfig; Judge: JudgeConfig };
+  Admission: { Enabled?: boolean; Mode?: string; Budget: BudgetConfig; Judge: JudgeConfig };
 };
 export type ConfigResponse = { config: { Observability: ObservabilityConfig } };
 
@@ -206,7 +213,7 @@ export function judgeHosting(baseURL: string): "local" | "aggregator" | "provide
 
 // postPolicy POSTs an admission/egress policy DTO and returns the parsed body
 // on BOTH 200 and 422. The lint-reject path is a 422 whose body carries the
-// `issues` array, so this must NOT throw on 422 — it reads the body itself
+// `issues` array, so this must NOT throw on 422 - it reads the body itself
 // instead of going through fetchJSON (which throws on any non-2xx and
 // truncates the body to 200 chars). It mirrors fetchJSON's remote-CSRF header
 // so a paired remote device can still author policy. A genuine 5xx / unparsable
@@ -216,7 +223,7 @@ export async function postPolicy(
   dto: unknown,
   persist: boolean,
 ): Promise<{ status: number; data: PolicyApplyResponse }> {
-  const url = persist ? `${path}?persist=1` : path;
+  const url = policyPostUrl(path, persist);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -232,9 +239,27 @@ export async function postPolicy(
   try {
     data = JSON.parse(text) as PolicyApplyResponse;
   } catch {
-    throw new Error(`policy POST ${res.status}: ${text.slice(0, 200)}`);
+    // A plain-text answer (404 "admission not enabled") is an API error the
+    // caller words through policyErrorText, never shown raw.
+    throw new ApiError(res.status, path, text);
   }
   return { status: res.status, data };
+}
+
+/** policyErrorText words a thrown policy request error for a toast or a
+ *  callout, by its HTTP status; anything without one is a daemon that did
+ *  not answer. */
+export function policyErrorText(e: unknown): string {
+  if (e instanceof ApiError) return policyStatusText(e.status);
+  return NO_ANSWER_TEXT;
+}
+
+/** applyAdmissionPolicy applies an admission policy live AND saves it to
+ *  config (UI review U-27: a live-only apply was silently lost on the next
+ *  daemon restart). The front door and the proxy share one admission service
+ *  under `observer start`, so no restart is needed for the policy itself. */
+export function applyAdmissionPolicy(dto: AdmissionPolicy): Promise<{ status: number; data: PolicyApplyResponse }> {
+  return postPolicy("/api/obs/admission/policy", dto, ADMISSION_APPLY_PERSISTS);
 }
 
 // Guard / admission decision and severity tones live in ONE place,

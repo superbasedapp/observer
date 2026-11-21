@@ -1,0 +1,26 @@
+{
+  "_comment": "Recorded 2026-11-19 from internal/orgserver/sdkapi POST /v1/sdk/admit (enforce policy, JudgeRetries 1, 4 s test judge timeout). Header names are as Go canonicalises them; clients must match case-insensitively. Pinned against the org and node code by tests/sdkcontract.",
+  "status": 200,
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json",
+    "X-Sbo-Recommended-Timeout-Ms": "10000",
+    "X-Sbo-Request-Id": "id1",
+    "X-Sbo-Sdk-Api-Version": "1"
+  },
+  "body": {
+    "allowed": false,
+    "decision": "deny",
+    "severity": "high",
+    "criterion": "AD-100",
+    "reason": "denied topic",
+    "mode": "enforce",
+    "judge_used": true,
+    "latency_ms": 0,
+    "enforce_decision": "deny",
+    "verdict_id": "adm_id2",
+    "policy_version": "v4",
+    "recommended_client_timeout_ms": 10000,
+    "api_version": "v1"
+  }
+}

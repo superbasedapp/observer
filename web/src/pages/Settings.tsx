@@ -29,7 +29,7 @@ import { HelpInd } from "@/components/HelpInd";
 import { CommandJobButton } from "@/components/CommandJobButton";
 import { Summary } from "@/components/Summary";
 import type { Tone } from "@shared/lib/tone";
-import { BUILTIN_PROFILE_NAMES, COMPRESS_TYPES, SECTION_SPECS, type SectionSpec } from "./settings/sectionSpecs";
+import { AI_APPS_SUMMARY, BUILTIN_PROFILE_NAMES, COMPRESS_TYPES, SECTION_SPECS, type SectionSpec } from "./settings/sectionSpecs";
 import { joinList, keepSelected, splitList } from "@/lib/pickerOptions";
 import { usePricedModels } from "@/lib/usePickerSources";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
@@ -41,6 +41,12 @@ import { AntigravityHelperCard } from "./settings/AntigravityHelperCard";
 import { ETWCapturerCard } from "./settings/ETWCapturerCard";
 import { ProcessCaptureEstimateCard } from "./settings/ProcessCaptureEstimateCard";
 import { ShellWrapCard } from "./settings/ShellWrapCard";
+import { SDK_DESTINATION_FIELDS, SdkDestinationCard } from "./settings/SdkDestinationCard";
+import { FocusSection } from "./settings/FocusSection";
+import { AppsSwitchCard } from "./settings/AppsSwitchCard";
+import { ComponentsSetupCard } from "@/components/ComponentsSetupCard";
+import { PRODUCT_NAMES } from "@shared/lib/productNames";
+import { SettingsProposalsCard } from "./settings/SettingsProposalsCard";
 import { LaunchToolPathsCard } from "./settings/LaunchToolPathsCard";
 import { DefaultWorkspaceCard } from "./settings/DefaultWorkspaceCard";
 import { RoutingShapesCards } from "./settings/RoutingShapesCards";
@@ -90,6 +96,7 @@ import {
   Plug,
   Plus,
   ScanEye,
+  Compass,
   Share2,
   ShieldCheck,
   SlidersHorizontal,
@@ -145,6 +152,7 @@ import { JOB_STATUS } from "@shared/lib/sessionVocab";
 import { navIcon } from "@/lib/nav";
 
 type SectionId =
+  | "general"
   | "pricing"
   | "backfill"
   | "tools"
@@ -182,15 +190,14 @@ type SectionDef = {
   id: SectionId;
   label: string;
   group: "edit" | "config";
-  // Deployment plane (docs/deployment-models.md). Omitted (the default)
-  // = Plane B: this node's OWN coding-agent usage, the developer-facing
-  // subject of every other section. "admin" = Plane A: general
-  // observability of an admin/org-hosted LLM app whose END-USER requests
-  // route through Observer — a fundamentally different subject, surfaced
-  // here only because the receiver + schema are configured node-side.
-  // The nav renders these under a separate "Observability (admin plane)"
-  // subgroup so an operator never mistakes it for a coding-agent feature.
-  plane?: "admin";
+  // Plane (docs/deployment-models.md). Omitted (the default) = this node's
+  // OWN coding-agent usage, the subject of every other section. "apps" = AI
+  // Apps: the AI apps and agents the developer builds, observed through the
+  // SDKs / any OTel SDK sending spans to this machine's receiver (renamed
+  // from "admin", sweep finding "identifiers that now mislead"). The rail
+  // renders these under their own AI Apps group so they are never mistaken
+  // for a coding-agent feature.
+  plane?: "apps";
   // hot = takes effect immediately on save (cost-engine reload).
   // soft = consumed lazily by the next job, no restart needed.
   // restart = daemon must restart to bind the new value.
@@ -223,6 +230,21 @@ function resolveSectionAlias(requested: string | null): string | null {
 }
 
 const SECTIONS: SectionDef[] = [
+  {
+    id: "general",
+    label: "General",
+    group: "edit",
+    status: "hot",
+    icon: Compass,
+    about: {
+      summary:
+        "What you use superbased for: AI coding agents, the AI apps and agents you build, or both. It decides what the Overview's getting-started steps and the navigation show first. Nothing is turned off and no page is hidden.",
+      whenModified:
+        "You came for coding agents and now build an AI app too (or the other way round), or you want the getting-started steps back after Hide.",
+      behavior:
+        "Takes effect at once. The choice is kept on this machine, beside its database, so every browser agrees; it is never sent anywhere.",
+    },
+  },
   {
     id: "pricing",
     label: "Pricing",
@@ -593,18 +615,21 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "observability",
-    label: "Observability",
+    // Renamed "Observability" -> AI Apps (first-run plan revision 2,
+    // section 6, L-8): the name the person turned on is the name they find.
+    label: PRODUCT_NAMES.planea,
     group: "config",
-    plane: "admin",
+    plane: "apps",
     status: "restart",
     icon: ScanEye,
     about: {
-      summary:
-        "Generalized observability (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through superbased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
+      // One owner of the section's summary (sweep finding F-20): the
+      // schema spec's description, read here.
+      summary: AI_APPS_SUMMARY,
       whenModified:
-        "Turning the subsystem on or off. The judge model + online-sampling eval knobs ([observability.eval]) are under More settings in this section.",
+        "Turning AI Apps on or off. The judge model and the online-sampling evals are under More settings in this section.",
       behavior:
-        "Restart required - the OTLP receiver and obs_* schema bind at `observer start`. The receiver is SHARED: it also binds whenever [ingest.otel] is enabled (for logs), so turning this toggle off does not stop the receiver if [ingest.otel] is on. Saves write config.toml + .bak.",
+        "Turn on (the AI Apps on this machine card in this section, the Overview, or observer apps on) takes effect at once, with no restart. Turning off, and saving the fields below, take effect at the next start. The trace receiver is shared with log ingest under OTel export, so it keeps listening while log ingest is on. Saves write the config file and a backup.",
     },
   },
   {
@@ -837,6 +862,15 @@ export function SettingsPage() {
                   this machine.
                 </ReadOnlyBanner>
               )}
+              <SettingsProposalsCard readOnly={readOnly} onSaved={config.reload} />
+              {active === "general" && (
+                <div className="space-y-4">
+                  <FocusSection readOnly={readOnly} />
+                  {/* The components pointer that was on the Overview (plan
+                      section 6): first-run screens are for results. */}
+                  <ComponentsSetupCard />
+                </div>
+              )}
               {active === "pricing" && (
                 <PricingSection
                   config={config.data}
@@ -878,7 +912,8 @@ export function SettingsPage() {
                   readOnly={readOnly}
                 />
               )}
-              {active !== "pricing" &&
+              {active !== "general" &&
+                active !== "pricing" &&
                 active !== "backfill" &&
                 active !== "tools" &&
                 active !== "health" &&
@@ -958,12 +993,13 @@ function AboutSectionRail({ def }: { def: SectionDef }) {
           About this section
         </h2>
         <Pill variant={STATUS_TONE[def.status]}>{STATUS_LABEL[def.status]}</Pill>
-        {def.plane === "admin" && (
+        {def.plane === "apps" && (
           <Pill
             variant="accent"
-            title="Plane A - governs an admin/org-hosted app's end-users, not this node's own coding-agent. See docs/deployment-models.md."
+            case="none"
+            title={`${PRODUCT_NAMES.planea}: the apps and agents you build, not this machine's own coding agents.`}
           >
-            admin plane
+            {PRODUCT_NAMES.planea}
           </Pill>
         )}
       </div>
@@ -1009,10 +1045,10 @@ function SettingsRail({
   gov?: Governance | null;
 }) {
   const list = sections ?? SECTIONS;
-  // Plane-A (admin) sections split out of the flat config list into
-  // their own labeled subgroup so the operator sees at a glance that
-  // they govern an admin-hosted app's end-users, not this node's own
-  // coding-agent (docs/deployment-models.md; audit finding M2).
+  // Plane A (AI Apps, plane "admin") sections split out of the flat config
+  // list into their own labeled subgroup so the operator sees at a glance
+  // that they govern the apps the developer builds, not this node's own
+  // coding agents (docs/deployment-models.md; audit finding M2).
   const groups: { id: string; label: string; items: SectionDef[] }[] = [
     {
       id: "edit",
@@ -1023,13 +1059,13 @@ function SettingsRail({
       id: "config",
       label: "Config",
       items: list.filter(
-        (s) => s.group === "config" && s.plane !== "admin",
+        (s) => s.group === "config" && s.plane !== "apps",
       ),
     },
     {
-      id: "admin-plane",
-      label: "Observability (admin plane)",
-      items: list.filter((s) => s.plane === "admin"),
+      id: "ai-apps",
+      label: PRODUCT_NAMES.planea,
+      items: list.filter((s) => s.plane === "apps"),
     },
   ].filter((g) => g.items.length > 0);
   // Rendered through the shared SectionRail (promoted from this function,
@@ -2417,6 +2453,11 @@ function SectionView({
               </>
             ) : section === "browser" ? (
               <BrowserCaptureCard readOnly={readOnly} />
+            ) : section === "observability" ? (
+              <>
+                <AppsSwitchCard readOnly={readOnly} />
+                <SdkDestinationCard config={config} readOnly={readOnly} onSaved={onReload} />
+              </>
             ) : section === "org" ? (
               <MessageSurfacesCard config={config} readOnly={readOnly} onSaved={onReload} />
             ) : section === "dashboard" ? (
@@ -2441,6 +2482,8 @@ function SectionView({
                     ? withMessageSurfaces(specFieldPaths(spec))
                     : section === "dashboard"
                       ? withFields(specFieldPaths(spec), [LIVE_RIBBON_FIELD])
+                      : section === "observability"
+                      ? withFields(specFieldPaths(spec), SDK_DESTINATION_FIELDS)
                       : showCodeSecurity
                       ? withFields(specFieldPaths(spec), codeSecurityFieldPaths())
                       : specFieldPaths(spec)

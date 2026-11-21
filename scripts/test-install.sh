@@ -26,7 +26,11 @@
 # the macOS 13 floor (a sw_vers fixture via OBSERVER_INSTALL_TEST_SW_VERS),
 # and --connect: the service (or a background start) first, the local dashboard shown before connect, the
 # role lines, the edition and team checks,
-# and scripts/connect.sh verifying install.sh through the signed SHA256SUMS.
+# and scripts/connect.sh verifying install.sh through the signed SHA256SUMS,
+# and --apps (first-run plan 3.3, 3.5): `observer apps on --yes --installer`
+# runs before Observer is started, the connect hand-off carries intent=apps,
+# the edition check, a failing `apps on` that keeps the install, and
+# connect.sh's SBO_CONNECT_APPS.
 #
 # Usage: scripts/test-install.sh
 #        INSTALL_SCRIPT=/path/to/install.sh scripts/test-install.sh
@@ -112,6 +116,7 @@ run() {
   if [[ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SW_VERS=$OBSERVER_INSTALL_TEST_SW_VERS"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_NO_OPEN:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_NO_OPEN=$OBSERVER_INSTALL_TEST_NO_OPEN"); fi
   if [[ -n "${SBO_CONNECT_TEAM:-}" ]]; then extra+=("SBO_CONNECT_TEAM=$SBO_CONNECT_TEAM"); fi
+  if [[ -n "${SBO_CONNECT_APPS:-}" ]]; then extra+=("SBO_CONNECT_APPS=$SBO_CONNECT_APPS"); fi
   # A fixture /proc with no daemon (U4): a test never reads this host's
   # real processes.
   mkdir -p "$T/noproc"
@@ -510,6 +515,59 @@ run "$T/h26c" --prefix "$T/p26c" --connect --uninstall
 if [[ $rc -ne 0 ]] && has "does not go with --uninstall"; then ok "--connect refuses --uninstall"
 else bad "--connect --uninstall (rc=$rc)"; cat "$T/out"; fi
 
+# 28. --apps: `observer apps on --yes --installer` runs after the binary is
+# in place, the default edition is developer, the next steps name `observer
+# apps status`, and nothing is started by `apps on` itself.
+run "$T/h28" --from-dir "$T/rel" --prefix "$T/p28" --apps --no-service
+log="$T/h28/observer-calls.log"
+if [[ $rc -eq 0 ]] && has "developer edition" && has "AI Apps   turned on after installing" && grep -qx 'apps on --yes --installer' "$log" \
+  && has "observer apps status" && ! grep -q '^start' "$log"; then
+  ok "--apps: apps on after install, developer edition, apps status in next steps"
+else bad "--apps (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
+
+# 29. --connect acme --apps: AI Apps is turned on BEFORE the service starts
+# Observer, the connect hand-off URL carries intent=apps, and the closing
+# lines name the AI Apps page.
+OBSERVER_INSTALL_TEST_SYSTEMD=1 OBSERVER_INSTALL_TEST_NO_OPEN=1 run "$T/h29" --from-dir "$T/rel" --prefix "$T/p29" --connect acme --apps
+log="$T/h29/observer-calls.log"
+ao=$(line_of '^apps on --yes --installer$' "$log"); si=$(line_of '^service install --now$' "$log")
+if [[ $rc -eq 0 ]] && [[ -n "$ao" && -n "$si" && "$ao" -lt "$si" ]] \
+  && has "opens at http://127.0.0.1:8081/?connecting=1&team=acme&intent=apps" \
+  && has "AI Apps           http://127.0.0.1:8081/apps"; then
+  ok "--connect --apps: apps on before the service, intent=apps in the hand-off, AI Apps line"
+else bad "--connect --apps (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
+# Without --apps the hand-off carries no intent.
+OBSERVER_INSTALL_TEST_SYSTEMD=1 OBSERVER_INSTALL_TEST_NO_OPEN=1 run "$T/h29b" --from-dir "$T/rel" --prefix "$T/p29b" --connect acme
+if [[ $rc -eq 0 ]] && has "opens at http://127.0.0.1:8081/?connecting=1&team=acme)$" && ! grep -q '^apps ' "$T/h29b/observer-calls.log"; then
+  ok "--connect without --apps carries no intent and runs no apps on"
+else bad "--connect without --apps (rc=$rc)"; cat "$T/out"; fi
+
+# 30. --apps refuses an edition without AI Apps and --uninstall, before
+# anything is installed.
+for ed in minimal managed; do
+  run "$T/h30$ed" --from-dir "$T/rel" --prefix "$T/p30$ed" --apps --edition "$ed"
+  if [[ $rc -ne 0 ]] && has "does not include AI Apps" && has "pass --edition developer" && [[ ! -e "$T/p30$ed" ]]; then ok "--apps refuses the $ed edition"
+  else bad "--apps $ed (rc=$rc)"; cat "$T/out"; fi
+done
+run "$T/h30u" --prefix "$T/p30u" --apps --uninstall
+if [[ $rc -ne 0 ]] && has "does not go with --uninstall"; then ok "--apps refuses --uninstall"
+else bad "--apps --uninstall (rc=$rc)"; cat "$T/out"; fi
+
+# 31. A failing `observer apps on` (a taken port, say) keeps the install
+# and says how to turn it on later.
+rm -rf "$T/ra"; mkdir -p "$T/ra"; cp -R "$T/rel/." "$T/ra/"
+mkdir -p "$T/rastage"; stub developer "$T/rastage"
+awk '/^esac$/ { print "  apps) echo \"stub: could not listen on 127.0.0.1:4318\" >&2; exit 1 ;;" } { print }' "$T/rastage/observer" > "$T/rastage/observer.new" \
+  && mv "$T/rastage/observer.new" "$T/rastage/observer" && chmod +x "$T/rastage/observer"
+tar -C "$T/rastage" -czf "$T/ra/observer-$VER-developer-$OS-$ARCH.tar.gz" observer superbased
+(cd "$T/ra" && for f in observer-*; do case "$f" in *.sig) continue;; esac; printf '%s  %s\n' "$(sha256 "$f")" "$f"; done > SHA256SUMS)
+(cd "$REPO_ROOT" && "${VS[@]}" sign -key "$KEY" -allow-unpinned-key "$T"/ra/observer-*.tar.gz >/dev/null 2>&1)
+run "$T/h31" --from-dir "$T/ra" --prefix "$T/p31" --apps --no-service
+if [[ $rc -eq 0 ]] && [[ -x "$T/p31/observer" ]] && has "could not listen on 127.0.0.1:4318" && has "Turn it on any time: observer apps on" \
+  && ! has "observer apps status"; then
+  ok "--apps: a failing apps on keeps the install and names the command"
+else bad "--apps failing apps on (rc=$rc)"; cat "$T/out"; fi
+
 # 27. scripts/connect.sh: install.sh is checked against the signed
 # SHA256SUMS before it runs; a changed install.sh is refused.
 CONNECT_SCRIPT="${CONNECT_SCRIPT:-${REPO_ROOT}/scripts/connect.sh}"
@@ -520,7 +578,8 @@ if (cd "$REPO_ROOT" && "${VS[@]}" sign -key "$KEY" -allow-unpinned-key "$T/c/SHA
     local home="$1" dir="$2"; shift 2
     mkdir -p "$home" "$T/noproc"
     env -i PATH="$PATH" HOME="$home" TMPDIR="$T" OBSERVER_INSTALL_TEST_VENDOR_KEY="$PUB" OBSERVER_INSTALL_TEST_PROC="$T/noproc" \
-      OBSERVER_INSTALL_TEST_NO_OPEN=1 SBO_CONNECT_FROM_DIR="$dir" sh "$CONNECT_SCRIPT" "$@" >"$T/out" 2>&1 </dev/null
+      OBSERVER_INSTALL_TEST_NO_OPEN=1 SBO_CONNECT_FROM_DIR="$dir" ${SBO_CONNECT_APPS:+SBO_CONNECT_APPS="$SBO_CONNECT_APPS"} \
+      sh "$CONNECT_SCRIPT" "$@" >"$T/out" 2>&1 </dev/null
     rc=$?
   }
   crun "$T/h27a" "$T/c" acme --prefix "$T/p27a"
@@ -535,6 +594,15 @@ if (cd "$REPO_ROOT" && "${VS[@]}" sign -key "$KEY" -allow-unpinned-key "$T/c/SHA
   crun "$T/h27c" "$T/c3" --prefix "$T/p27c"
   if { [[ $rc -ne 0 ]] && has "does not verify against the vendor key"; } || has "no Ed25519 verifier"; then ok "connect.sh refuses a bad SHA256SUMS signature (when a verifier is present)"
   else bad "connect.sh bad signature (rc=$rc)"; cat "$T/out"; fi
+  # 27d. SBO_CONNECT_APPS=1 is --apps: install.sh turns AI Apps on and the
+  # hand-off carries intent=apps; another value is refused before anything.
+  SBO_CONNECT_APPS=1 crun "$T/h27d" "$T/c" --prefix "$T/p27d"
+  if [[ $rc -eq 0 ]] && grep -qx 'apps on --yes --installer' "$T/h27d/observer-calls.log" && has "intent=apps"; then
+    ok "connect.sh: SBO_CONNECT_APPS=1 passes --apps to install.sh"
+  else bad "connect.sh SBO_CONNECT_APPS=1 (rc=$rc)"; cat "$T/out"; fi
+  SBO_CONNECT_APPS=maybe crun "$T/h27e" "$T/c" --prefix "$T/p27e"
+  if [[ $rc -ne 0 ]] && has "is not 1 or 0" && [[ ! -e "$T/p27e" ]]; then ok "connect.sh refuses an unknown SBO_CONNECT_APPS"
+  else bad "connect.sh SBO_CONNECT_APPS=maybe (rc=$rc)"; cat "$T/out"; fi
 else
   bad "could not sign the fixture SHA256SUMS"
 fi

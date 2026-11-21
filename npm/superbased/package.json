@@ -1,0 +1,55 @@
+{
+  "name": "superbased",
+  "version": "3.42.0",
+  "description": "superbased Observer under its short name: local-first AI coding agent observability. Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
+  "keywords": [
+    "ai",
+    "observability",
+    "ai-coding-agent",
+    "llm-observability",
+    "claude-code",
+    "claude-code-usage",
+    "codex",
+    "cursor",
+    "copilot",
+    "gemini-cli",
+    "anthropic",
+    "openai",
+    "mcp",
+    "tokens",
+    "token-usage",
+    "cost",
+    "cost-tracking",
+    "prompt-caching",
+    "spend",
+    "local-first"
+  ],
+  "homepage": "https://superbased.app/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/superbasedapp/observer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/superbasedapp/observer/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Santosh Kathira <contact@superbased.app>",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "superbased": "bin/superbased.js",
+    "observer": "bin/superbased.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@superbased/observer": "1.42.0"
+  },
+  "scripts": {
+    "test": "node bin/superbased.js --version"
+  }
+}

@@ -29,7 +29,7 @@ const (
 // Intent is what the user asked for.
 type Intent int
 
-// Intents. The zero value is invalid and is refused by row 10.
+// Intents. The zero value is invalid and is refused by row 11.
 const (
 	// IntentInvalid is the zero value.
 	IntentInvalid Intent = iota
@@ -39,6 +39,13 @@ const (
 	IntentAttach
 	// IntentDisconnect leaves the current destination.
 	IntentDisconnect
+	// IntentReconsent re-attaches an INDIVIDUAL enrolment to the
+	// destination it already has, so its owner can accept the grant that
+	// destination now offers (budget enforce consistency, 2026-11-19: a
+	// personal organization is managed by its owner, and a machine enrolled
+	// as an individual before that is offered a re-consent, never raised
+	// silently). Row 10.
+	IntentReconsent
 )
 
 // Destination names a place data can go.
@@ -117,10 +124,11 @@ const (
 	// RefusalPolicyNoSecondDestination is row 5 after M10 when the company
 	// policy does not allow a second destination.
 	RefusalPolicyNoSecondDestination
-	// RefusalAlreadyAttached is row 10: the requested destination is the
+	// RefusalAlreadyAttached is row 11 (and row 10 on a managed
+	// enrolment): the requested destination is the
 	// current one.
 	RefusalAlreadyAttached
-	// RefusalUnsupported is row 10: nothing else matched.
+	// RefusalUnsupported is row 11: nothing else matched.
 	RefusalUnsupported
 )
 
@@ -177,7 +185,7 @@ type Row struct {
 }
 
 // Decide walks table top-down and returns the first matching row's decision.
-// Row 10 matches everything, so a decision is always returned.
+// Row 11 matches everything, so a decision is always returned.
 func Decide(in Input) Decision {
 	for _, r := range table {
 		if r.Match(in) {
@@ -186,7 +194,7 @@ func Decide(in Input) Decision {
 			return d
 		}
 	}
-	return refuse(RefusalUnsupported) // unreachable: row 10 matches all
+	return refuse(RefusalUnsupported) // unreachable: row 11 matches all
 }
 
 func refuse(reason RefusalReason) Decision {
@@ -310,7 +318,21 @@ var table = []Row{
 		},
 	},
 	{
-		ID: 10, Situation: "anything else",
+		ID: 10, Situation: "re-consent on the current destination",
+		Match: func(in Input) bool { return in.Intent == IntentReconsent },
+		Decide: func(in Input) Decision {
+			switch {
+			case isIndividual(in.Current):
+				return Decision{Outcome: OutcomeAllow, Target: in.Current}
+			case isManaged(in.Current):
+				// A managed enrolment already holds the managed grant.
+				return refuse(RefusalAlreadyAttached)
+			}
+			return refuse(RefusalUnsupported)
+		},
+	},
+	{
+		ID: 11, Situation: "anything else",
 		Match: func(Input) bool { return true },
 		Decide: func(in Input) Decision {
 			if in.Intent == IntentAttach && hasRequest(in) && same(in.Current, in.Requested) {

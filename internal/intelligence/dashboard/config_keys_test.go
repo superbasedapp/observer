@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -504,5 +505,38 @@ func TestConfigSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	}
 	if docs < len(d.Leaves)/2 {
 		t.Errorf("only %d/%d leaves carry a doc comment - the go/ast harvest is broken", docs, len(d.Leaves))
+	}
+}
+
+// TestConfigKeys_NumericLeavesOfEveryWidth pins PUT /api/config/keys for an
+// int, an int64 and a float64 leaf, plus bounds, in step with `observer
+// config set` (cmd/observer TestPlanConfigSetNumericLeaves): both validate
+// through configschema.ValidateLeaf, which must accept every integer width.
+func TestConfigKeys_NumericLeavesOfEveryWidth(t *testing.T) {
+	s, path := newSecretTestServer(t, keysCorpus)
+	etag, _, _ := configGet(t, s)
+	rr := putKeys(t, s, keysBody(
+		etag,
+		`{"key":"observability.alerts.eval_interval_minutes","value":7}`,
+		`{"key":"guidance.max_file_bytes","value":65536}`,
+		`{"key":"compression.conversation.target_ratio","value":0.4}`,
+	), false)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if m := decodeMap(t, rr); m["write_mode"] != "surgical" {
+		t.Fatalf("numeric scalars must patch surgically: %v", m)
+	}
+	body, _ := os.ReadFile(path)
+	for _, want := range []string{"eval_interval_minutes = 7", "max_file_bytes = 65536", "target_ratio = 0.4"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("file missing %q:\n%s", want, body)
+		}
+	}
+
+	etag, _, _ = configGet(t, s)
+	rr = putKeys(t, s, keysBody(etag, `{"key":"compression.conversation.target_ratio","value":1.5}`), false)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(decodeMap(t, rr)["message"]), "must be <= 1") {
+		t.Fatalf("an out-of-bounds float must be refused per key: %d %s", rr.Code, rr.Body.String())
 	}
 }

@@ -15,10 +15,11 @@ import {
   readNoteDismissed,
   showTwoDashboardsNote,
   twoDashboardsNote,
+  withArrivalIntent,
   withoutHandoff,
   writeNoteDismissed,
 } from "./connectHandoff.ts";
-import type { Account } from "./getStarted.ts";
+import { surfaceLayout, type Account } from "./getStarted.ts";
 import { DASHBOARD_ROLES, LOCAL_DASHBOARD_URL, asSentence } from "../../../shared/lib/twoDashboards.ts";
 
 // connectHandoff.test.ts pins the installer's hand-off to the local
@@ -54,8 +55,39 @@ test("the installer's query: connecting=1 and an optional team slug", () => {
 test("the address loses only the installer's query", () => {
   assert.equal(withoutHandoff("http://127.0.0.1:8081/?connecting=1"), "/");
   assert.equal(withoutHandoff("http://127.0.0.1:8081/?connecting=1&team=acme"), "/");
+  assert.equal(withoutHandoff("http://127.0.0.1:8081/?connecting=1&team=acme&intent=apps"), "/");
   assert.equal(withoutHandoff("http://127.0.0.1:8081/?connecting=1&win=7d#top"), "/?win=7d#top");
   assert.equal(withoutHandoff("http://127.0.0.1:8081/sessions"), "/sessions");
+});
+
+// Review FR-M18: the installer's `--apps` adds &intent=apps to the hand-off
+// (scripts/install.sh show_local_dashboard); the dashboard reads it.
+test("the installer's arrival intent: only apps is read", () => {
+  assert.deepEqual(parseHandoff("?connecting=1&intent=apps"), { team: "", intent: "apps" });
+  assert.deepEqual(parseHandoff("?connecting=1&team=acme&intent=APPS"), { team: "acme", intent: "apps" });
+  for (const s of ["?connecting=1&intent=coding", "?connecting=1&intent=", "?connecting=1&intent=apps2"]) {
+    assert.deepEqual(parseHandoff(s), { team: "" }, s);
+  }
+  // Without the hand-off itself there is no intent to read.
+  assert.equal(parseHandoff("?intent=apps"), null);
+});
+
+test("withArrivalIntent opens the AI apps track for this visit, and only where it can", () => {
+  const coding = surfaceLayout(null);
+  const apps = withArrivalIntent(coding, { team: "", intent: "apps" });
+  assert.equal(apps.track, "apps");
+  assert.deepEqual(apps.columns, ["apps"]);
+  assert.equal(apps.switchBack, true);
+  assert.equal(apps.showSwitch, false);
+  // No intent, or no hand-off: the daemon's layout.
+  assert.equal(withArrivalIntent(coding, { team: "" }), coding);
+  assert.equal(withArrivalIntent(coding, null), coding);
+  // AI Apps not available here: the coding track keeps its disabled switch.
+  const unavailable = { ...coding, switchDisabled: "This edition does not include AI Apps." };
+  assert.equal(withArrivalIntent(unavailable, { team: "", intent: "apps" }), unavailable);
+  // A daemon decision already on AI apps or Both is kept.
+  const both = { ...coding, track: "both" as const, columns: ["coding" as const, "apps" as const] };
+  assert.equal(withArrivalIntent(both, { team: "", intent: "apps" }), both);
 });
 
 test("the hand-off phase: one case per rule, in order", () => {

@@ -226,7 +226,7 @@ var otlpExports = map[string]OTLPExport{
 		Origin: OTLPLocal, Signals: "traces", Mapped: true, Grounding: "doc (OpenTelemetry GenAI semantic conventions)",
 		Enable:    "[ingest.otel] enabled = true on the node, then OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 and OTEL_RESOURCE_ATTRIBUTES=sbo.agent=<name>[,session.id=<run>] in the agent's environment (or the same keys on the SDK's Resource)",
 		Protocols: "grpc, http/protobuf, http/json",
-		Note:      "claimed by sbo.agent, never by service.name, and never when the resource or a span carries a hosted-app identity (any tenant or end-user key Plane A reads: sbo.tenant, tenant.id, tenant, sbo.user, enduser.id, user.id, user), which stays Plane A; only GenAI inference spans that carry gen_ai.usage.* become turns (self-reported, ranked below the proxy's row for the same gen_ai.response.id)",
+		Note:      "claimed by sbo.agent, never by service.name, and never when the resource or a span carries an AI app identity (any tenant or end-user key AI Apps reads: sbo.tenant, tenant.id, tenant, sbo.user, enduser.id, user.id, user), which stays in AI Apps; only GenAI inference spans that carry gen_ai.usage.* become turns (self-reported, ranked below the proxy's row for the same gen_ai.response.id)",
 	},
 
 	// 2026-10-21 capture wave, audited 2026-10-22 against the installed
@@ -267,7 +267,7 @@ var otlpExports = map[string]OTLPExport{
 		Origin: OTLPLocal, Signals: "traces", Grounding: "live (deepagents-code 0.1.87 with langsmith 0.14.11, mock model)",
 		Enable:    "LangSmith's OTel mode: LANGSMITH_TRACING=true with LANGSMITH_TRACING_MODE=otel (or the legacy LANGSMITH_OTEL_ENABLED + LANGSMITH_OTEL_ONLY), and OTEL_EXPORTER_OTLP_ENDPOINT (a base URL) or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT; dcode turns tracing on only when LANGSMITH_API_KEY is set",
 		Protocols: "http/protobuf",
-		Note:      "not mapped: service.name is the generic \"langsmith\" that any LangSmith-traced application sends, so claiming it would take a hosted app's spans from Plane A; ChatOpenAI spans carry GROSS gen_ai.usage tokens with the cache and reasoning split only inside a JSON metadata string, the same usage_metadata the checkpoint store already gives the adapter",
+		Note:      "not mapped: service.name is the generic \"langsmith\" that any LangSmith-traced application sends, so claiming it would take an AI app's spans from AI Apps; ChatOpenAI spans carry GROSS gen_ai.usage tokens with the cache and reasoning split only inside a JSON metadata string, the same usage_metadata the checkpoint store already gives the adapter",
 	},
 	"cortex-code": {
 		Origin: OTLPVendorCloud, Signals: "traces, logs", Grounding: "doc + source (cortex 1.2.18 bundle)",

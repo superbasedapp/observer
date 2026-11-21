@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
 	"github.com/marmutapp/superbased-observer/internal/orgbudget"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
 // The budget-WARNING boundary (2026-10-02 budget-latency arc, operator
@@ -54,7 +55,10 @@ const budgetWarnMinGap = 2 * time.Second
 const budgetWarnIdleTick = 60 * time.Second
 
 type budgetWarnService struct {
-	path   string
+	path string
+	// fetch is the last organization budget pull (SetFetch), copied into
+	// every status file so the local dashboard can show a failing pull.
+	fetch  *budgetwarnfile.Fetch
 	spend  func() (guard.BudgetWindowSpend, bool)
 	notify func(title, body string)
 	// display resolves the node's developer cost display ("usd" or
@@ -339,6 +343,48 @@ func (s *budgetWarnService) displayMode() string {
 }
 
 // Kick requests an evaluation soon (non-blocking; bursts coalesce).
+// budgetFetchFailed is the closed set of pull states that mean the machine
+// did not get its organization budget this cycle (the node's own list,
+// orgclient budgetpolicy.go). disabled, not_enrolled and no_budget are
+// answers, not failures, and ok is the pull working.
+var budgetFetchFailed = map[string]bool{
+	orgcontract.BudgetFetchUnreachable: true,
+	orgcontract.BudgetFetchAuthFailed:  true,
+	orgcontract.BudgetFetchChannelOff:  true,
+	orgcontract.BudgetFetchUnverified:  true,
+}
+
+// SetFetch records this cycle's organization budget pull (budget enforce
+// consistency, 2026-11-19) and re-evaluates, so the status file and the
+// local dashboard's notice follow it within a cycle. It keeps when the pull
+// last worked and when the current run of failures began.
+func (s *budgetWarnService) SetFetch(state string, now time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	next := budgetwarnfile.Fetch{State: state}
+	if s.fetch != nil {
+		next.LastOKAt, next.FailingSince = s.fetch.LastOKAt, s.fetch.FailingSince
+	}
+	switch {
+	case state == orgcontract.BudgetFetchOK:
+		next.LastOKAt, next.FailingSince = now.UTC().Truncate(time.Second), time.Time{}
+	case budgetFetchFailed[state]:
+		if next.FailingSince.IsZero() {
+			next.FailingSince = now.UTC().Truncate(time.Second)
+		}
+	default:
+		next.FailingSince = time.Time{}
+	}
+	changed := s.fetch == nil || *s.fetch != next
+	s.fetch = &next
+	s.mu.Unlock()
+	if changed {
+		s.Kick()
+	}
+}
+
 func (s *budgetWarnService) Kick() {
 	if s == nil {
 		return
@@ -435,12 +481,20 @@ func (s *budgetWarnService) evaluate() {
 	for i := range st.New {
 		st.New[i].Message = budgetwarn.RenderMessage(st.New[i], display)
 	}
+	s.mu.Lock()
+	var fetch *budgetwarnfile.Fetch
+	if s.fetch != nil {
+		f := *s.fetch
+		fetch = &f
+	}
+	s.mu.Unlock()
 	file := budgetwarnfile.File{
 		WrittenAt: now.UTC(),
 		Display:   display,
 		Windows:   fileWindows(st.Windows),
 		Active:    fileNotices(st.Active),
 		State:     fileState(next),
+		Fetch:     fetch,
 	}
 
 	s.mu.Lock()

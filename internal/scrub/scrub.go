@@ -454,6 +454,15 @@ func (s *Scrubber) JSONValue(v any) any {
 	return s.jsonValue(v, "")
 }
 
+// IsSensitiveKey reports whether a JSON or attribute key names a secret
+// (password, token, api key, ...): the rule JSONValue applies to decide that
+// a string value under the key is redacted whatever its content. Exported so
+// a caller that handles some values outside JSONValue (numbers) applies the
+// same rule.
+func IsSensitiveKey(key string) bool {
+	return key != "" && sensitiveKeyRE.MatchString(key)
+}
+
 func (s *Scrubber) jsonValue(v any, parentKey string) any {
 	switch t := v.(type) {
 	case string:

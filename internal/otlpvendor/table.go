@@ -1,6 +1,9 @@
 package otlpvendor
 
-import "github.com/marmutapp/superbased-observer/internal/models"
+import (
+	"github.com/marmutapp/superbased-observer/internal/genaiattr"
+	"github.com/marmutapp/superbased-observer/internal/models"
+)
 
 // The mapping table. One row per AI tool whose OpenTelemetry export Observer
 // maps; docs/plans/otlp-any-adapter-design-2026-10-06.md holds the
@@ -30,25 +33,31 @@ const sourceCCOTel = "cc_otel"
 // proxy's row for the same call always wins.
 const SourceAgentOTel = "agent_otel"
 
-// GenAI semantic-convention keys (open-telemetry/semantic-conventions-genai,
-// Development status). Both the current and the renamed-away spellings are
-// listed so an exporter on either side of a rename maps the same way.
+// GenAI semantic-convention keys. The lists are views of internal/genaiattr,
+// the one owner of the GenAI attribute vocabulary (plan principle 2; it
+// states the pinned semconv version): the gen_ai.* spellings of each field,
+// current names first, renamed-away ones after, so an exporter on either side
+// of a rename maps the same way. The session list stays local: identity keys
+// move to internal/otelident with task W1a-2.
 var (
 	genAISession    = []string{"gen_ai.conversation.id", "session.id"}
-	genAIRequest    = []string{"gen_ai.response.id"}
-	genAIModel      = []string{"gen_ai.response.model", "gen_ai.request.model"}
-	genAIProvider   = []string{"gen_ai.provider.name", "gen_ai.system"}
-	genAIInput      = []string{"gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"}
-	genAIOutput     = []string{"gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"}
-	genAICacheRead  = []string{"gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_read_input_tokens"}
-	genAICacheWrite = []string{"gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.cache_creation_input_tokens"}
-	genAIReasoning  = []string{"gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"}
-	genAIToolName   = []string{"gen_ai.tool.name"}
-	genAIToolCallID = []string{"gen_ai.tool.call.id"}
-	genAIToolArgs   = []string{"gen_ai.tool.call.arguments"}
-	genAIToolResult = []string{"gen_ai.tool.call.result"}
-	genAIError      = []string{"error.type"}
+	genAIRequest    = genaiattr.KeysWhere(genaiattr.FieldResponseID, isGenAI)
+	genAIModel      = genaiattr.KeysWhere(genaiattr.FieldModel, genaiattr.HasPrefix("gen_ai."))
+	genAIProvider   = genaiattr.KeysWhere(genaiattr.FieldProvider, genaiattr.HasPrefix("gen_ai."))
+	genAIInput      = genaiattr.KeysWhere(genaiattr.FieldInputTokens, genaiattr.HasPrefix("gen_ai."))
+	genAIOutput     = genaiattr.KeysWhere(genaiattr.FieldOutputTokens, genaiattr.HasPrefix("gen_ai."))
+	genAICacheRead  = genaiattr.KeysWhere(genaiattr.FieldCacheReadTokens, genaiattr.HasPrefix("gen_ai."))
+	genAICacheWrite = genaiattr.KeysWhere(genaiattr.FieldCacheWriteTokens, genaiattr.HasPrefix("gen_ai."))
+	genAIReasoning  = genaiattr.KeysWhere(genaiattr.FieldReasoningTokens, genaiattr.HasPrefix("gen_ai."))
+	genAIToolName   = genaiattr.KeysWhere(genaiattr.FieldToolName, isGenAI)
+	genAIToolCallID = genaiattr.KeysWhere(genaiattr.FieldToolCallID, isGenAI)
+	genAIToolArgs   = genaiattr.KeysWhere(genaiattr.FieldToolArguments, isGenAI)
+	genAIToolResult = genaiattr.KeysWhere(genaiattr.FieldToolResult, isGenAI)
+	genAIError      = genaiattr.KeysWhere(genaiattr.FieldErrorType, isGenAI)
 )
+
+// isGenAI keeps the pinned GenAI-dialect rows of a field.
+func isGenAI(k genaiattr.Key) bool { return k.Dialect == genaiattr.DialectGenAI }
 
 // genAIChatTurn is the GenAI-semconv inference span ("chat <model>") as a
 // turn rule.

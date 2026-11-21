@@ -1,0 +1,16 @@
+-- 260: api_turns.upstream_lane, the /up/<id> upstream lane a proxied turn
+-- arrived on (Plane A build-out lane D5, review E-23, ruling D29).
+--
+-- The gateway rail is the proxy's /up/<id> lanes: the lanes a co-resident
+-- hosted app is pointed at (docs/observability.md "proxy turn (automatic)").
+-- The default provider lanes carry coding agents (Plane B). Plan principle 5
+-- lets an app's SDK span ENRICH (time to first token, total response time,
+-- stop reason) only a turn of the gateway rail; this column is how the
+-- merge-only seam (store.MergeTurnByRequestID) tells one apart. NULL (every
+-- row written before this step, and every default-lane, transcript, OTLP or
+-- gateway row) is not a gateway-rail turn, so no SDK span can alter it.
+--
+-- The value is the lane's configured id ([proxy.upstreams] key), never
+-- request content. Node-local: orgpush.go selects api_turns columns by name
+-- and does not select this one.
+ALTER TABLE api_turns ADD COLUMN upstream_lane TEXT;

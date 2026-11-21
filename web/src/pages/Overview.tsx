@@ -26,9 +26,7 @@ import {
   TruncatedPath,
 } from "@/components/primitives";
 import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
-import { GetStarted } from "@/components/GetStarted";
-import { WelcomeBand } from "@/components/firstrun/WelcomeBand";
-import { ComponentsSetupCard } from "@/components/ComponentsSetupCard";
+import { GetStartedSurface } from "@/components/firstrun/GetStartedSurface";
 import { MilestonesCard } from "@/components/MilestonesCard";
 import { CommunityCard } from "@/components/CommunityCard";
 import { ToolCoverageCard } from "@/components/ToolCoverage";
@@ -504,24 +502,13 @@ export function OverviewPage() {
         helpId="tab.overview"
         right={<CustomizeOverview layout={layout} onChange={updateLayout} />}
       />
-      {/* The welcome band (local dashboard first-run design, section 8):
-          door B reveals this machine's AI coding history and settles into
-          "at a glance"; door A leads with Start a coding agent. Hidden
-          during the ?connecting=1 hand-off and once "Not now" is pressed. */}
-      <WelcomeBand />
-      {/* Get started (Getting started v2): sign in and connect this
-          machine (recommended, never required), turn capture on for the
-          tools found here, use them. Put away, it returns as a one-line
-          strip a week later; once connected it is a one-line strip with
-          Open online dashboard. Replaced the first-run dialog's auto-open,
-          the zero-session onboarding card and the Connect card. */}
-      <GetStarted sessions={status.data?.sessions ?? null} />
-      {/* Milestones (P5.6/D-4): once-each, max one visible,
-          dismissable; existing installs retire crossed ones silently. */}
-      <MilestonesCard sessions={status.data?.sessions ?? null} />
-      {/* Modular packaging 7.1: until a component selection is recorded,
-          one dismissible pointer to Settings > Components. */}
-      <ComponentsSetupCard />
+      {/* The one getting-started surface (first-run plan revision 2,
+          3.6 and 7.1): the welcome band and Get started composed under one
+          container, with the AI apps track beside or instead of them, as
+          the daemon's /api/firstrun "plane" decides. The components pointer
+          moved to Settings; Milestones show only after the first result. */}
+      <GetStartedSurface sessions={status.data?.sessions ?? null} />
+      {(status.data?.sessions ?? 0) > 0 && <MilestonesCard sessions={status.data?.sessions ?? null} />}
       {/* Sections in the operator's chosen order; each rises in on page
           entry (sb-stagger on the wrapper). */}
       <Stagger className="space-y-6">

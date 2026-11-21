@@ -84,6 +84,17 @@ type EnrollResponse struct {
 	// honours them only when it recorded ConsentMode=managed from this field.
 	Tenancy string `json:"tenancy,omitempty"`
 
+	// OwnerManaged is true when this organization's only admin and its only
+	// developer are the same person (a personal organization, managed by its
+	// owner since the 2026-11-19 ruling: orgkind's OwnerManaged row
+	// capability). It grants NOTHING: the authority is in the signed Grant,
+	// honoured only under managed tenancy as for any team. It changes only
+	// the words on the consent screen, so the owner reads that the
+	// organization asking is their own. omitempty on both sides of the
+	// compat invariant: an older server never sends it (the screen keeps its
+	// team wording) and an older agent ignores it.
+	OwnerManaged bool `json:"owner_managed,omitempty"`
+
 	// ConsentMode / ConsentActor record HOW this enrolment was consented to
 	// when the server itself knows the answer, which today means exactly one
 	// case: an enrolment minted by the ACP-P6c IdP device-code rail
@@ -1117,6 +1128,18 @@ type PushResponse struct {
 	// The node reports adoption back via HeaderGrantReplacementAck on its next
 	// push — the fleet-ACK signal the server's posture-activation gate reads.
 	GrantReplacement *GrantReplacement `json:"grant_replacement,omitempty"`
+
+	// Reconsent is the OPTIONAL advisory that this organization now offers
+	// the calling node an enrolment it does not hold, which the developer
+	// must accept on the machine before anything changes (budget enforce
+	// consistency, 2026-11-19). Today it has one reason,
+	// ReconsentOwnerManaged: a personal organization's machine that
+	// enrolled as an individual before a personal org was managed by its
+	// owner. It carries no authority and the node NEVER acts on it by itself:
+	// it only shows the local dashboard's "Review and accept" prompt, whose
+	// click runs an ordinary re-connect and consent screen. omitempty on both
+	// sides of the compat invariant.
+	Reconsent *ReconsentOffer `json:"reconsent,omitempty"`
 
 	// BreakGlassLeases is the OPTIONAL delivery seam for approved break-glass
 	// credential leases owed to THIS node (Plane B design §4.2 rung 3, operator
@@ -2255,6 +2278,17 @@ type ObsSummaryRow struct {
 	ErrorTraces      int64   `json:"error_traces"`
 	DurationMsSum    int64   `json:"duration_ms_sum"` // sum+count → server derives mean
 	DurationMsCount  int64   `json:"duration_ms_count"`
+
+	// TracesPrimary / ErrorTracesPrimary count each trace in exactly ONE row
+	// of a push: the row of the trace's primary (model, provider) bucket
+	// (finding F17). Traces above counts every trace that TOUCHED this
+	// bucket, so it double-counts a trace that used two models; summing it
+	// over models inflates the total. A server sums the *Primary fields for
+	// totals. nil = a pre-F17 agent (the server then falls back to the
+	// per-group MAX of Traces, a never-inflated lower bound). Old servers
+	// ignore the keys (compat invariant, both directions).
+	TracesPrimary      *int64 `json:"traces_primary,omitempty"`
+	ErrorTracesPrimary *int64 `json:"error_traces_primary,omitempty"`
 }
 
 // ObsTraceRow is the T2 trace skeleton (STRUCTURE, hashes only). ProjectRoot
@@ -2275,6 +2309,24 @@ type ObsTraceRow struct {
 	SpanCount   int64   `json:"span_count"`
 	TotalTokens int64   `json:"total_tokens"`
 	CostUSD     float64 `json:"cost_usd"`
+
+	// Identity contract (W1a-2, finding F11; key lists in internal/otelident).
+	// Service / Environment / Release are the app's deployment labels and
+	// always ship. EndUser (PII) and Tenant (the customer's own tenant), and
+	// since D23 their org-bound hashes too, ship ONLY under
+	// shipsRawContent() (PrepareForWire clears both below it). Tags and Metadata
+	// are free-form customer text and are gated like the raw values. All are
+	// additive and omitempty: an old server ignores them, an old agent sends
+	// none (compat invariant). Apply the gate with PrepareForWire.
+	Service     string            `json:"service,omitempty"`
+	Environment string            `json:"environment,omitempty"`
+	Release     string            `json:"release,omitempty"`
+	EndUser     string            `json:"end_user,omitempty"`      // gated by shipsRawContent()
+	EndUserHash string            `json:"end_user_hash,omitempty"` // gated by shipsRawContent() (D23)
+	Tenant      string            `json:"tenant,omitempty"`        // gated by shipsRawContent()
+	TenantHash  string            `json:"tenant_hash,omitempty"`   // gated by shipsRawContent() (D23)
+	Tags        []string          `json:"tags,omitempty"`          // gated by shipsRawContent()
+	Metadata    map[string]string `json:"metadata,omitempty"`      // gated by shipsRawContent()
 }
 
 // ObsSpanRow is the T2 span skeleton. RequestID is the CONTENT-FREE soft join
@@ -2445,6 +2497,17 @@ type ObsAdmissionRow struct {
 	// (content-free SHA-256 hex). RowHash doubles as the server-side dedup key.
 	PrevHash string `json:"prev_hash,omitempty"`
 	RowHash  string `json:"row_hash"`
+	// CredID / WorkspaceID / EnvironmentID / VerdictID are set ONLY on an org
+	// SDK verdict record (POST /v1/sdk/admit, source org_sdk) that the org
+	// server itself publishes to its durable log (R-A06, ruling D22): the
+	// asking ingest credential, its workspace and environment, and the
+	// verdict id the API returned. Non-secret ids, content-free. A node never
+	// sets them and ingest ignores them on a node push; on an SDK record
+	// ingest computes RowHash / PrevHash itself (a per-credential chain).
+	CredID        string `json:"cred_id,omitempty"`
+	WorkspaceID   string `json:"workspace_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
+	VerdictID     string `json:"verdict_id,omitempty"`
 
 	// --- Content-bearing (PII / prose) — ship ONLY under shipsRawContent() ---
 	// Tenant is the hosted-app tenant identifier.
@@ -3104,3 +3167,16 @@ type OrgAnnouncementDoc struct {
 	// agent on first receipt (enrolment-channel trust).
 	PublicKey string `json:"public_key"`
 }
+
+// ReconsentOffer is PushResponse.Reconsent: an advisory, never authority.
+type ReconsentOffer struct {
+	// Reason is one of the Reconsent* constants; a node that does not know
+	// the reason shows nothing.
+	Reason string `json:"reason"`
+}
+
+// ReconsentOwnerManaged is the reason a personal organization's machine,
+// enrolled as an individual, is offered a re-consent: its organization is
+// managed by its owner, so an Enforce budget there can block only after the
+// machine re-connects and the owner accepts the managed grant.
+const ReconsentOwnerManaged = "owner_managed"

@@ -92,8 +92,57 @@ opsgate	-	deploy/saas-ovh/ops/,deploy/saas-ovh/roll.sh,deploy/saas-ovh/test-roll
 #   golang image); the release preflight runs both. Nor verify-track-build: its
 #   sitemap <lastmod> dates come from `git log`, and the git-index snapshot is one
 #   commit made today, so every page would read as changed (ci-private.yml's
-#   track-build-drift job keeps running it on GitHub). git-index: the scripts start
-#   with git rev-parse --show-toplevel.
-drift	-	docs/openapi/,internal/orgserver/,internal/orgclient/,internal/integration/,internal/guard/,tools/guardcoveragegen/,tools/adapterparitygen/,website/,web/,CHANGELOG.md,Makefile,Makefile.private,scripts/verify-website-build.sh,scripts/w8-claim-inventory.sh	git-index	300	make verify-openapi verify-website-build verify-w8-claims verify-adapter-parity-doc verify-guard-coverage-ts
+#   track-build-drift job keeps running it on GitHub). verify-docs-build masks the
+#   two git-derived page dates for the same reason, so it runs here; docs/sdk/ and
+#   shared/lib/productNames.json are in `when` because gen publishes the first
+#   (nav.toml [roots] sdk) and expands @@name@@ tokens from the second. git-index: the
+#   scripts start with git rev-parse --show-toplevel.
+drift	-	docs/openapi/,internal/orgserver/,internal/orgclient/,internal/integration/,internal/guard/,tools/guardcoveragegen/,tools/adapterparitygen/,website/,web/,CHANGELOG.md,Makefile,Makefile.private,scripts/verify-website-build.sh,scripts/verify-docs-build.sh,scripts/w8-claim-inventory.sh,docs/sdk/,shared/lib/productNames.json	git-index	300	make verify-openapi verify-website-build verify-docs-build verify-w8-claims verify-adapter-parity-doc verify-guard-coverage-ts
 # website-tests: ci-private.yml's website worker tests.
 website-tests	-	website/	node	60	node --test --test-reporter=spec website/tools/test/*.test.mjs
+
+# sdk: the SDK matrix (plan W2-4 and principle 9, lane B4): sdk/python on
+#   every CPython its requires-python admits (3.9 to 3.13) and sdk/typescript
+#   on Node 20, 22 and 24 (Node 18 dropped: past end of life), each on the runtime pinned in gate-tools.tsv;
+#   sdk:pack builds the release artifacts exactly as sdk-release.yml does
+#   (scripts/ci/sdk.sh pack); sdk:e2e is the contract suite against a real
+#   machine and a real org gateway (tests/sdke2e: builds observer and
+#   observer-org, starts both on scratch ports with a private PostgreSQL,
+#   runs both SDKs' example apps to the local, online and both destinations
+#   and checks the spans landed with identity, tokens and cost). sdk.sh
+#   copies the package into the unit's TMPDIR, so the units share the tree
+#   safely. sdk:e2e needs PostgreSQL 16 binaries on the worker (initdb,
+#   pg_ctl; on PATH or under /usr/lib/postgresql/*/bin), or a server named
+#   by OBSERVER_CONTROL_STORE_DSN.
+sdk:python-3.9	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.9	90	bash scripts/ci/sdk.sh python
+sdk:python-3.10	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.10	180	bash scripts/ci/sdk.sh python
+sdk:python-3.11	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.11	180	bash scripts/ci/sdk.sh python
+sdk:python-3.12	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.12	180	bash scripts/ci/sdk.sh python
+sdk:python-3.13	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.13	180	bash scripts/ci/sdk.sh python
+sdk:node-20	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node20	120	bash scripts/ci/sdk.sh node
+sdk:node-22	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node22	120	bash scripts/ci/sdk.sh node
+sdk:node-24	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node24	120	bash scripts/ci/sdk.sh node
+# sdk:widget-*: the end-user feedback widget (@superbased/feedback-widget),
+#   which releases with the SDKs on their version line (review E-11): its
+#   typecheck and tests on every Node major the SDK is tested on.
+sdk:widget-node-20	-	sdk/widget/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node20	90	bash scripts/ci/sdk.sh widget
+sdk:widget-node-22	-	sdk/widget/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node22	90	bash scripts/ci/sdk.sh widget
+sdk:widget-node-24	-	sdk/widget/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node24	90	bash scripts/ci/sdk.sh widget
+# sdk:install-strings: every "not published yet" install string is in one
+#   state, so the release-day flip (scripts/sdk-install-strings.py flip,
+#   review E-66) rewrites them all.
+# sdk:go: sdk/go (Go module github.com/superbasedapp/observer/sdk/go, lane
+#   SDK-go): gofmt, go vet and go test -race against sdk/contract, on the go
+#   toolchain the gate already runs (no new tool).
+sdk:go	-	sdk/go/,sdk/contract/,scripts/ci/sdk.sh	-	120	bash scripts/ci/sdk.sh go
+sdk:install-strings	-	scripts/sdk-install-strings.py,scripts/test_sdk_install_strings.py,shared/lib/sdkCatalog.json,shared/lib/sdkCatalog.ts,docs/sdk/,sdk/python/README.md,sdk/typescript/README.md,sdk/widget/README.md,sdk/go/README.md,sdk/java/README.md,web/src/lib/planeaFirstRun.ts,web2/src/,webcloud/src/,examples/ai-apps/,website/pages-src/	python3.12	30	python3 -m unittest scripts/test_sdk_install_strings.py
+sdk:pack	-	sdk/,scripts/ci/sdk.sh,.github/workflows/sdk-release.yml	python3.12,node22	120	bash scripts/ci/sdk.sh pack "${TMPDIR:-/tmp}/sdk-pack"
+sdk:e2e	-	sdk/,tests/sdke2e/,scripts/ci/sdk.sh,internal/obs/,internal/ingest/otlp/,internal/genaiattr/,internal/otelident/,internal/intelligence/cost/,internal/orgserver/gateway/,internal/orgserver/consumers/otlpapplier/,internal/orgserver/obstracestore/,internal/orgserver/sdkapi/,cmd/observer/obs_wire.go,cmd/observer/start.go,go.mod,go.sum	python3.12,node22	900	go run ./tests/sdke2e
+
+# planea-e2e:unit: the AI Apps live e2e runner's unit tests (review P-36): the
+#   runner's pure parts and its safety checks (no provider contacted in a dry
+#   run, the allow-listed child environment, DSN redaction, the host guard, the
+#   spend cap), no network, no daemon. planea-e2e:dry (the full dry run,
+#   scripts/planea-e2e/run.sh --dry-run --destination all) joins when the gate's
+#   workers have PostgreSQL 16 for the throwaway org.
+planea-e2e:unit	-	scripts/planea-e2e/,examples/ai-apps/	python3.12	30	python3 -m unittest scripts/planea-e2e/test_e2e.py

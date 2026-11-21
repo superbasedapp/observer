@@ -9,6 +9,7 @@ import {
   connectActive,
   connectFinished,
   connectLine,
+  connectServiceHost,
   connectStartInit,
   getStartedMode,
   safeOpenURL,
@@ -154,6 +155,10 @@ test("connect lines say each state in plain words", () => {
   });
   assert.equal(connectLine(p("waiting_approval")).showCode, true);
   assert.match(connectLine(p("waiting_approval")).text, /Waiting for approval in your browser/);
+  assert.match(
+    connectLine(p("waiting_approval", { verify_url: "https://staging.example.test/connect" })).text,
+    /on staging\.example\.test/,
+  );
   assert.equal(connectLine(p("connected", { display_name: "Acme Dev" })).text, "Connected to Acme Dev.");
   assert.equal(connectLine(p("connected", { kind: "personal" })).text, "Connected to your personal dashboard.");
   assert.equal(connectLine(p("error", { message: "Declined." })).tone, "danger");
@@ -335,9 +340,34 @@ test("the top bar's account control: one case per rule, in order", () => {
   assert.match(terminal.kind === "connecting" ? terminal.tooltip : "", /browser tab that just opened/);
   const code = topBarAccountView({ account: account(), available: true, progress: waiting, managed: false });
   assert.match(code.kind === "connecting" ? code.tooltip : "", /KTRW-4821/);
+  // U-23: a flow this page started can be cancelled, and says which service
+  // it signs in to; the installer's terminal flow cannot be stopped here.
+  assert.equal(code.kind === "connecting" && code.cancelable, true);
+  assert.equal(terminal.kind === "connecting" && terminal.cancelable, false);
+  assert.match(terminal.kind === "connecting" ? terminal.tooltip : "", /Ctrl\+C/);
+  const onCloud = topBarAccountView({
+    account: account(),
+    available: true,
+    progress: { ...waiting, approve_url: "https://cloud.superbased.app/connect/r/abc" },
+    managed: false,
+  });
+  assert.equal(onCloud.kind === "connecting" ? onCloud.service : "", "cloud.superbased.app");
+  assert.match(onCloud.kind === "connecting" ? onCloud.tooltip : "", /on cloud\.superbased\.app/);
+  const remote = topBarAccountView({ account: account(), available: false, progress: waiting, managed: false });
+  assert.equal(remote.kind === "connecting" && remote.cancelable, false, "a remote view cannot stop the owner's flow");
+  const signIn = topBarAccountView({ account: account(), available: true, progress: null, managed: false });
+  assert.match(signIn.kind === "sign_in" ? signIn.tooltip : "", /superbased account/);
   assert.equal(
     topBarAccountView({ account: account({ locked: true }), available: true, progress: null, managed: false }).kind,
     "hidden",
     "a locked, unconnected machine offers nothing to start",
   );
+});
+
+test("connectServiceHost: the approval page's host, never a bad address (U-23)", () => {
+  assert.equal(connectServiceHost(null), "");
+  assert.equal(connectServiceHost({ approve_url: "https://cloud.superbased.app/connect/r/1" }), "cloud.superbased.app");
+  assert.equal(connectServiceHost({ verify_url: "http://127.0.0.1:18443/connect" }), "127.0.0.1:18443");
+  assert.equal(connectServiceHost({ approve_url: "javascript:alert(1)" }), "");
+  assert.equal(connectServiceHost({ approve_url: "http://evil.example/connect" }), "");
 });

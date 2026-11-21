@@ -120,6 +120,9 @@ var ErrAgentTooOld = errors.New("orgclient: agent below the org's minimum versio
 // advances the cursor on acceptance. Nothing here runs unless the agent is
 // both configured ([org_client] enabled) and enrolled; see package doc.
 type Client struct {
+	// reconsent is the latest push's re-consent advisory reason
+	// (reconsent.go), a string; "" or unset for none.
+	reconsent atomic.Value
 	// bg owns the node-side break-glass lease state (breakglass.go).
 	bg breakGlassState
 	// pushCeiling is the live org push-interval ceiling (resolved signed
@@ -867,6 +870,8 @@ func (c *Client) EnrollWithOptions(ctx context.Context, orgURL, token string, op
 		// managed authorities carried in the SIGNED grant (ConsentMode set in
 		// evaluateGrantOffer).
 		Tenancy: er.Tenancy,
+		// In memory only (not stored): picks the share-default row.
+		OwnerManaged: er.OwnerManaged,
 	}
 
 	// Plane-A P0-5 (plan §6.9 / R6-B2 / R3-B2 / Codex B1): activate the new
@@ -1180,6 +1185,10 @@ type GrantOffer struct {
 	// from Tenancy exactly as it did before P6c.
 	ConsentMode  string
 	ConsentActor string
+	// OwnerManaged is EnrollResponse.OwnerManaged: the organization asking
+	// is the developer's own (a personal organization, managed by its
+	// owner). It only changes the consent screen's words.
+	OwnerManaged bool
 }
 
 // evaluateGrantOffer runs the accept gates for an offered grant. EVERY
@@ -1247,6 +1256,7 @@ func (c *Client) evaluateGrantOffer(er *orgcontract.EnrollResponse, orgURL, orgK
 		Tenancy:      er.Tenancy,
 		ConsentMode:  consentMode,
 		ConsentActor: consentActor,
+		OwnerManaged: er.OwnerManaged,
 	}
 }
 
@@ -1503,6 +1513,9 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// already-built, independently-tested accept path. Best-effort: a
 		// delivery or accept failure never fails an otherwise-accepted push.
 		c.maybeApplyGrantReplacement(ctx, resp.Body)
+		// The re-consent advisory (reconsent.go): recorded for the local
+		// dashboard's prompt, never acted on.
+		c.noteReconsent(resp.Body)
 		// The server has now heard the ACKs this push carried; then redeem any
 		// newly delivered leases / drop early-revoked ones (best-effort).
 		c.markBreakGlassAcked(bgAcks)

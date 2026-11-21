@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { ResolvedBinary } from '../binary';
 import type { DaemonManager } from '../daemon';
+import { registerAppsOn } from '../apps';
 import { registerDoctor } from './doctor';
 import { registerLaunch } from './launch';
 import { registerLifecycle } from './lifecycle';
@@ -28,6 +29,8 @@ export function registerCommands(
   registerLaunch(ctx, bin);
   registerLifecycle(ctx, daemon);
   registerCopyProxyEnv(ctx, daemon);
+  // AI Apps (lane POLISH-F2): calls the daemon's one enable seam.
+  registerAppsOn(ctx, daemon);
   for (const { id, milestone } of STUBS) {
     ctx.subscriptions.push(
       vscode.commands.registerCommand(id, async () => {

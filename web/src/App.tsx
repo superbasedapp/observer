@@ -33,6 +33,7 @@ import { FilterBar } from "@/components/FilterBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NotFoundPage } from "@/pages/NotFound";
 import { NotInstalled } from "@/components/NotInstalled";
+import { AppsStart } from "@/components/apps/AppsStart";
 import { PAGE_ROUTES } from "@/lib/components.gen";
 import { isComponentActive } from "@/lib/componentState";
 import { useComponentState } from "@/lib/useComponents";
@@ -218,6 +219,8 @@ function AnimatedRoutes() {
             ),
           )}
           <Route path="report" element={<ReportRedirect />} />
+          {/* The persistent AI Apps nav item's page (review E-71). */}
+          <Route path="apps" element={<AppsStart />} />
           {/* D-6: an unknown route gets an honest page instead of a
               silent redirect that reads as a navigation bug. */}
           <Route path="*" element={<NotFoundPage />} />

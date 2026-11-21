@@ -34,10 +34,12 @@ func TestDistroBuildStartsFromItsDistro(t *testing.T) {
 			absentAdds: []string{"capture.proxy", "terminals"},
 		},
 		{
-			distro:     components.DistroDeveloper,
-			active:     []string{"core", "capture.proxy", "terminals", "egress.pricing-feed", "adapter.claude-code"},
-			inactive:   []string{"obs", "codeintel", "proxy.compression"},
-			absentAdds: []string{"obs"},
+			distro:   components.DistroDeveloper,
+			active:   []string{"core", "capture.proxy", "terminals", "egress.pricing-feed", "adapter.claude-code"},
+			inactive: []string{"obs", "codeintel", "proxy.compression"},
+			// D7: obs is compiled into developer (off), so an add
+			// activates it; developer compiles out nothing a test can add.
+			absentAdds: nil,
 		},
 		{
 			distro:     components.DistroManaged,
@@ -98,5 +100,18 @@ func TestUnstampedBuildKeepsLegacyBase(t *testing.T) {
 		if !s.Active(id) {
 			t.Errorf("%s inactive in an unstamped build with no [components] block", id)
 		}
+	}
+}
+
+// TestDeveloperDistroObsAddable pins D7: the developer distro compiles obs
+// in but leaves it off, and a [components] add turns it on.
+func TestDeveloperDistroObsAddable(t *testing.T) {
+	stampDistro(t, components.DistroDeveloper)
+	compiled := components.InDistro(components.DistroDeveloper)
+	if s := Resolve(config.ComponentsConfig{}, compiled); s.Active("obs") {
+		t.Fatal("obs is active by default in the developer distro; D7 says off")
+	}
+	if s := Resolve(config.ComponentsConfig{Add: []string{"obs"}}, compiled); !s.Active("obs") {
+		t.Fatalf("obs added in the developer distro stays inactive (issues %v)", s.Issues)
 	}
 }

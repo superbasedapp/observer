@@ -27,6 +27,7 @@ var oneClientAllow = []struct {
 	{"internal/proxy/provider.go", "path matcher: classifies inbound requests, builds none"},
 	{"internal/proxy/proxy.go", "path matcher: classifies inbound requests, builds none"},
 	{"internal/aigateway/gwhttp/dispatch.go", "route table: names the inbound gateway path, builds no upstream request"},
+	{"internal/aigateway/gwhttp/errdialect.go", "path matcher: picks the caller's error dialect from the inbound path, builds no request"},
 	{"internal/proxy/unknownlane.go", "error text showing an example path to the user"},
 	{"internal/agentconfig/catalog_codebuddy.go", "settings catalog description of a foreign tool's config"},
 	{"internal/intelligence/dashboard/guard_cloud.go", "validation message showing an example URL"},

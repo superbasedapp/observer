@@ -5,6 +5,7 @@
 .DESCRIPTION
   irm https://superbased.app/connect.ps1 | iex                          # personal dashboard
   $env:SBO_CONNECT_TEAM='<team>'; irm https://superbased.app/connect.ps1 | iex   # a team
+  $env:SBO_CONNECT_APPS='1'; irm https://superbased.app/connect.ps1 | iex        # also AI Apps
 
   It downloads the newest release's install.ps1, checks it against the
   release's SHA256SUMS, checks SHA256SUMS against the vendor key below (the
@@ -16,6 +17,11 @@
   Windows (no administrator rights, no Windows service) and runs `observer
   connect`: you approve this machine in your browser (or enter a short code
   on any device), and nothing is sent before you do.
+
+  SBO_CONNECT_APPS=1 also turns on AI Apps, for the AI apps you build:
+  install.ps1 -Apps runs `observer apps on` and opens the local dashboard
+  on the AI apps track. It needs an install.ps1 that knows -Apps (a release
+  from the first-run plan on).
 
   It takes no token or credential. A release with no
   SHA256SUMS.sig is a warning, unless SBO_REQUIRE_SIGNATURE=1, which refuses.
@@ -170,6 +176,13 @@ function Invoke-Connect {
     $keys = @([string]$env:OBSERVER_INSTALL_TEST_VENDOR_KEY)
   }
   $requireSig = ($env:SBO_REQUIRE_SIGNATURE -eq "1")
+  # SBO_CONNECT_APPS=1 is install.ps1 -Apps (connect.sh reads the same name).
+  $appsWanted = $false
+  switch -regex ([string]$env:SBO_CONNECT_APPS) {
+    '^(1|true|yes)$' { $appsWanted = $true }
+    '^(|0|false|no)$' { }
+    default { Fail "SBO_CONNECT_APPS='$($env:SBO_CONNECT_APPS)' is not 1 or 0" }
+  }
 
   $work = Join-Path ([IO.Path]::GetTempPath()) ("observer-connect-" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $work | Out-Null
@@ -234,6 +247,7 @@ function Invoke-Connect {
     if ($team) { $installArgs += @("-ConnectTeam", $team) }
     if ($fromDir) { $installArgs += @("-FromDir", $fromDir) }
     if ($requireSig) { $installArgs += "-RequireSignature" }
+    if ($appsWanted) { $installArgs += "-Apps" }
     & $ps @installArgs
     if ($LASTEXITCODE -ne 0) { Fail "the installer reported a problem (exit $LASTEXITCODE)" }
   } finally {

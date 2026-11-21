@@ -265,12 +265,13 @@ func grantDisclosure(offer *orgclient.GrantOffer, orgName ...string) orgenrol.Di
 		name = orgName[0]
 	}
 	return orgenrol.BuildDisclosure(orgenrol.GrantFacts{
-		OrgName:   name,
-		OrgID:     offer.Grant.OrgID,
-		ServerURL: offer.Grant.OrgServerURL,
-		ExpiresAt: offer.Grant.ExpiresAt,
-		Authority: offer.Grant.Authority,
-		Managed:   offer.Tenancy == orgcontract.TenancyManaged,
+		OrgName:      name,
+		OrgID:        offer.Grant.OrgID,
+		ServerURL:    offer.Grant.OrgServerURL,
+		ExpiresAt:    offer.Grant.ExpiresAt,
+		Authority:    offer.Grant.Authority,
+		Managed:      offer.Tenancy == orgcontract.TenancyManaged,
+		OwnerManaged: offer.OwnerManaged,
 	})
 }
 
@@ -288,6 +289,10 @@ func printGrantOffer(out io.Writer, offer *orgclient.GrantOffer) {
 	fmt.Fprintf(out, "  Server:       %s\n", d.ServerURL)
 	if d.ExpiresAt != "" {
 		fmt.Fprintf(out, "  Expires:      %s (after this, local settings apply again)\n", d.ExpiresAt)
+	}
+	if d.Owner != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, wrapIndented(d.Owner, "", ""))
 	}
 	fmt.Fprintln(out, "\nIf you accept, the organization may:")
 	for _, l := range d.May {

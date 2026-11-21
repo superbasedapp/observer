@@ -25,6 +25,9 @@ export type GrantDisclosure = {
   server_url: string;
   expires_at?: string;
   managed: boolean;
+  /** Plain words when the organization asking is the developer's own
+   *  (a personal organization, managed by its owner); absent otherwise. */
+  owner?: string;
   may: AuthorityLine[] | null;
   config_writes?: string[] | null;
   families?: string[] | null;
@@ -50,6 +53,10 @@ export type EnrolmentOverview = {
   enrolled_at?: string;
   credential_store?: string;
   tenancy?: string;
+  /** The organization's re-consent advisory ("owner_managed": a personal
+   *  dashboard managed by its owner offers this individually-connected
+   *  machine more). Absent is the normal case. */
+  reconsent?: string;
   /** Set when the daemon of a managed enrolment signs no machine proof. */
   machine_proof_warning?: string;
   /** Set when a running daemon cannot read the org credential, so it does not push. */
@@ -432,4 +439,23 @@ export function pendingGrantOf(
     if (p && !decidedOfferIds.has(p.offer_id)) return p;
   }
   return null;
+}
+
+/** RECONSENT_PROMPTS: what each re-consent advisory says, and its one action.
+ *  A reason this page does not know shows nothing (budget enforce
+ *  consistency, 2026-11-19). */
+export const RECONSENT_PROMPTS: Record<string, { title: string; body: string; action: string }> = {
+  owner_managed: {
+    title: "Your personal dashboard can now manage this machine",
+    body:
+      "Budgets you set to Enforce on your personal dashboard can block requests on this machine, and settings you pin there apply here, once you review and accept. " +
+      "Nothing changes until you do. Your dashboard keeps getting a summary only.",
+    action: "Review and accept",
+  },
+};
+
+/** reconsentPrompt is the prompt for an enrolment overview, or null. */
+export function reconsentPrompt(s: Pick<EnrolmentOverview, "enrolled" | "reconsent"> | null | undefined) {
+  if (!s?.enrolled || !s.reconsent) return null;
+  return RECONSENT_PROMPTS[s.reconsent] ?? null;
 }

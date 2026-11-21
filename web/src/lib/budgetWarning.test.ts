@@ -289,3 +289,46 @@ test("newerBudgetStatus keeps whichever status was written last (T-206)", () => 
   assert.equal(newerBudgetStatus(unparsed, older), older);
   assert.equal(newerBudgetStatus(older, unparsed), older);
 });
+
+// A failed budget pull is visible on the machine (budget enforce consistency,
+// 2026-11-19): what went wrong in words, since when, when it last worked.
+test("budgetFetchNotice names a failed pull, and stays quiet on an answer", async () => {
+  const { budgetFetchNotice, guardModeLink, GUARD_MODE_LINK } = await import("./budgetWarning.ts");
+  const now = new Date("2026-11-19T12:00:00Z");
+  const failed = budgetFetchNotice(
+    { available: true, fetch: { state: "unreachable", failing_since: "2026-11-19T11:40:00Z", last_ok_at: "2026-11-19T09:00:00Z" } },
+    now,
+  );
+  assert.ok(failed);
+  assert.match(failed.text, /could not get your organization's budgets since 20 min ago: the request failed/);
+  assert.match(failed.text, /last got them 3 h ago/);
+  assert.doesNotMatch(failed.text, /\b[a-z]+_[a-z_]+\b/);
+  for (const state of ["ok", "disabled", "no_budget", "not_enrolled"]) {
+    assert.equal(budgetFetchNotice({ available: true, fetch: { state } }, now), null, state);
+  }
+  assert.equal(budgetFetchNotice({ available: true }, now), null);
+  assert.equal(budgetFetchNotice(null, now), null);
+  assert.match(budgetFetchNotice({ available: true, fetch: { state: "auth_failed" } }, now)!.text, /has not got them since/);
+  // The warning-only-here notice links to Guard mode.
+  assert.equal(guardModeLink({ enforcement: "hard", effect: "warn_observe" } as never), GUARD_MODE_LINK);
+  assert.equal(guardModeLink({ enforcement: "hard", effect: "warn_guard_off" } as never), GUARD_MODE_LINK);
+  assert.equal(guardModeLink({ enforcement: "hard", effect: "blocks" } as never), null);
+});
+
+// U-33 (UI review 2026-11-21): a fresh organization with no policy signing
+// key answers every budget pull 409 (channel_off), the explicit "no budget"
+// included, because it cannot sign anything. A machine no organization cap
+// governs gets no warning; a machine whose cap stopped refreshing does.
+test("budgetFetchNotice: channel_off warns only while an organization cap is in force (U-33)", async () => {
+  const { budgetFetchNotice } = await import("./budgetWarning.ts");
+  const now = new Date("2026-11-21T12:00:00Z");
+  const fetch = { state: "channel_off", failing_since: "2026-11-21T11:59:00Z" };
+  assert.equal(budgetFetchNotice({ available: true, fetch }, now), null, "fresh org, no budget: no warning");
+  assert.equal(budgetFetchNotice({ available: true, windows: [], fetch }, now), null);
+  const cap = { window: "day", unit: "usd", period: "calendar_day", cap: 10, spent: 1, ratio: 0.1, scope: "member", enforcement: "soft", level: "ok", crossed: 0 };
+  const held = budgetFetchNotice({ available: true, windows: [cap as never], fetch }, now);
+  assert.ok(held, "a cap in force that stopped refreshing still warns");
+  assert.match(held.text, /cannot sign budgets yet/);
+  // Every other failure warns with or without caps.
+  assert.ok(budgetFetchNotice({ available: true, fetch: { state: "unreachable" } }, now));
+});

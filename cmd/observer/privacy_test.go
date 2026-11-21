@@ -289,7 +289,7 @@ func TestBuildPrivacyEgressDefault(t *testing.T) {
 		"observer summarize":                   false,
 		"aggregate-share rail":                 false,
 		"OTel exporter":                        false,
-		"generalized observability (Plane A)":  false,
+		"AI Apps (app observability)":          false,
 		"email / digest alerts":                false,
 		"remote-access notify":                 false,
 		"TLS pre-warm":                         true,
@@ -699,7 +699,7 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 		{
 			name:    "observability enabled",
 			mutate:  func(c *config.Config) { c.Observability.Enabled = true },
-			rowName: "generalized observability (Plane A)",
+			rowName: "AI Apps (app observability)",
 		},
 		{
 			name:    "email enabled",

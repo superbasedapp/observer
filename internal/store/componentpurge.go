@@ -307,6 +307,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "compaction_events", column: "session_id", kind: purgeKeepSession, otherSource: "tool <> ?", reason: "this adapter's compaction events are candidates; another tool's keep the session"},
 	{table: "failure_context", column: "session_id", kind: purgeKeepSession, otherSource: "action_id IN (SELECT id FROM actions WHERE tool <> ?)", reason: "deleted with its action (dependency protocol); one on another tool's action keeps the session"},
 	{table: "api_turns", column: "session_id", kind: purgeKeepSession, reason: "proxy capture is another source: the session it points at is kept"},
+	{table: "api_turns_planea_legacy", column: "session_id", kind: purgeKeepSession, reason: "AI Apps rows agent migration 256 moved out of api_turns: another source, so the session it points at is kept"},
 	{table: "otel_content", column: "session_id", kind: purgeKeepSession, reason: "OTel content capture is another source: the session it points at is kept"},
 	// Derived from the session's capture: they go with the session.
 	{table: "task_transitions", column: "session_id", kind: purgeDeleteWithSession, reason: "derived from the session's todo snapshots"},

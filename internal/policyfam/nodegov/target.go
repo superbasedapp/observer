@@ -260,6 +260,8 @@ var capabilityEra = map[int]struct{ MaxSchema, KeyGen int }{
 	11: {3, 4},
 	// Level 12 (the You page): same as level 11.
 	12: {3, 4},
+	// Level 13 (the Your apps pages, Plane A lane B5): same as level 12.
+	13: {3, 4},
 }
 
 // TargetForCapabilities resolves the Target a node advertises, and false when

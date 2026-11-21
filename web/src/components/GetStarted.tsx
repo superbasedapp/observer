@@ -69,7 +69,22 @@ function writeLocalOnly(on: boolean): void {
   }
 }
 
-export function GetStarted({ sessions }: { sessions: number | null }) {
+/**
+ * GetStarted. `embedded` is its place inside the one getting-started surface
+ * (first-run plan revision 2, 3.6 and 7.1, GetStartedSurface): the surface
+ * owns the frame, the title and Hide (the same daemon-kept snooze), so the
+ * panel renders only its three steps and never folds itself. `narrow` lays
+ * the steps out in one column (the coding column of the Both track).
+ */
+export function GetStarted({
+  sessions,
+  embedded = false,
+  narrow = false,
+}: {
+  sessions: number | null;
+  embedded?: boolean;
+  narrow?: boolean;
+}) {
   const flow = useConnectFlow();
   const { account } = useAccount(flow);
   const handoff = useConnectHandoff(account);
@@ -79,7 +94,7 @@ export function GetStarted({ sessions }: { sessions: number | null }) {
   const brief = useApi<FirstRunResponse>(FIRST_RUN_PATH, { brief: "1" });
   const [snoozedNow, setSnoozedNow] = useState<string | null>(null);
   const [localOnly, setLocalOnly] = useState(readLocalOnly);
-  const snoozedAt = snoozedNow ?? brief.data?.snoozed?.[GET_STARTED_SNOOZE_KEY] ?? null;
+  const snoozedAt = embedded ? null : (snoozedNow ?? brief.data?.snoozed?.[GET_STARTED_SNOOZE_KEY] ?? null);
   const decided = brief.data != null || brief.error != null;
   const mode = getStartedMode({
     account: decided ? account : null,
@@ -130,6 +145,8 @@ export function GetStarted({ sessions }: { sessions: number | null }) {
           localOnly={localOnly}
           onContinueLocal={continueLocal}
           onHide={hide}
+          embedded={embedded}
+          narrow={narrow}
         />
       );
     default:
@@ -216,6 +233,8 @@ function Panel({
   localOnly,
   onContinueLocal,
   onHide,
+  embedded = false,
+  narrow = false,
 }: {
   account: Account;
   flow: ConnectFlow;
@@ -223,7 +242,17 @@ function Panel({
   localOnly: boolean;
   onContinueLocal: (on: boolean) => void;
   onHide: () => void;
+  embedded?: boolean;
+  narrow?: boolean;
 }) {
+  const steps = (
+    <ol className={clsx("grid gap-3", !narrow && "lg:grid-cols-3", !embedded && "mt-3")} data-testid={embedded ? "get-started-steps" : undefined}>
+      <SignInStep account={account} flow={flow} localOnly={localOnly} onContinueLocal={onContinueLocal} />
+      <ToolsStep />
+      <UseStep sessions={sessions} />
+    </ol>
+  );
+  if (embedded) return steps;
   return (
     <section
       aria-labelledby="sb-get-started-title"
@@ -242,11 +271,7 @@ function Panel({
           Hide
         </Button>
       </div>
-      <ol className="mt-3 grid gap-3 lg:grid-cols-3">
-        <SignInStep account={account} flow={flow} localOnly={localOnly} onContinueLocal={onContinueLocal} />
-        <ToolsStep />
-        <UseStep sessions={sessions} />
-      </ol>
+      {steps}
     </section>
   );
 }

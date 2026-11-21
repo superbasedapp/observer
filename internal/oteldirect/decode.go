@@ -3,9 +3,6 @@ package oteldirect
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,8 +11,9 @@ import (
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/marmutapp/superbased-observer/internal/otlpjson"
 )
 
 // DefaultMaxBodyBytes is the per-request body cap, measured INFLATED (after
@@ -26,9 +24,9 @@ const DefaultMaxBodyBytes = 4 << 20
 const (
 	// ContentTypeProtobuf is binary protobuf (http/protobuf), also assumed
 	// for a request with no Content-Type.
-	ContentTypeProtobuf = "application/x-protobuf"
+	ContentTypeProtobuf = otlpjson.ContentTypeProtobuf
 	// ContentTypeJSON is the OTLP JSON encoding (http/json).
-	ContentTypeJSON = "application/json"
+	ContentTypeJSON = otlpjson.ContentTypeJSON
 )
 
 // Decode errors. Each is returned wrapped, so test with errors.Is.
@@ -96,7 +94,8 @@ func inflate(raw []byte, contentEncoding string, maxInflated int64) ([]byte, err
 	return nil, fmt.Errorf("%w: %q", ErrUnsupportedEncoding, contentEncoding)
 }
 
-// decode is the shared body decode of every signal.
+// decode is the shared body decode of every signal. The OTLP JSON decode
+// (hex-id rewrite, protojson options) is internal/otlpjson's, the one owner.
 func decode(raw []byte, contentType, contentEncoding string, maxInflated int64, msg proto.Message) error {
 	isJSON, err := mediaJSON(contentType)
 	if err != nil {
@@ -107,7 +106,7 @@ func decode(raw []byte, contentType, contentEncoding string, maxInflated int64, 
 		return err
 	}
 	if isJSON {
-		if err := unmarshalOTLPJSON(body, msg); err != nil {
+		if err := otlpjson.UnmarshalJSON(body, msg); err != nil {
 			return fmt.Errorf("%w: %w", ErrMalformed, err)
 		}
 		return nil
@@ -178,67 +177,13 @@ func EncodeMetricsResponse(requestContentType string, rejected int64, msg string
 // encodeResponse answers in the request's encoding (the OTLP spec answers a
 // JSON request in JSON). An unrecognised request type answers protobuf.
 func encodeResponse(requestContentType string, msg proto.Message) ([]byte, string, error) {
+	kind := otlpjson.Protobuf
 	if isJSON, err := mediaJSON(requestContentType); err == nil && isJSON {
-		out, err := protojson.Marshal(msg)
-		if err != nil {
-			return nil, "", fmt.Errorf("oteldirect.encodeResponse: %w", err)
-		}
-		return out, ContentTypeJSON, nil
+		kind = otlpjson.JSON
 	}
-	out, err := proto.Marshal(msg)
+	out, ct, err := otlpjson.Encode(kind, msg)
 	if err != nil {
 		return nil, "", fmt.Errorf("oteldirect.encodeResponse: %w", err)
 	}
-	return out, ContentTypeProtobuf, nil
-}
-
-// otlpIDFields are the bytes fields the OTLP JSON encoding writes as HEX
-// strings where the canonical protobuf JSON mapping expects base64; both the
-// lowerCamelCase and the original spellings are accepted by protojson.
-// Mirrors internal/ingest/otlp/jsonbody.go (the node receiver), which this
-// package cannot import because that package is an HTTP handler.
-var otlpIDFields = map[string]bool{
-	"traceId": true, "spanId": true, "parentSpanId": true,
-	"trace_id": true, "span_id": true, "parent_span_id": true,
-}
-
-// unmarshalOTLPJSON decodes an OTLP JSON body: it rewrites the hex trace and
-// span ids to base64, then decodes with protojson, ignoring unknown fields
-// as the OTLP spec requires of a receiver. Same steps as the node's
-// internal/ingest/otlp.UnmarshalJSON.
-func unmarshalOTLPJSON(raw []byte, msg proto.Message) error {
-	var doc any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("otlp json: %w", err)
-	}
-	rewriteHexIDs(doc)
-	fixed, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("otlp json: %w", err)
-	}
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(fixed, msg); err != nil {
-		return fmt.Errorf("otlp json: %w", err)
-	}
-	return nil
-}
-
-// rewriteHexIDs converts every hex id field to base64 in place; a value that
-// is not valid hex is left as is.
-func rewriteHexIDs(v any) {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, val := range x {
-			if s, ok := val.(string); ok && otlpIDFields[k] {
-				if b, err := hex.DecodeString(s); err == nil {
-					x[k] = base64.StdEncoding.EncodeToString(b)
-				}
-				continue
-			}
-			rewriteHexIDs(val)
-		}
-	case []any:
-		for _, e := range x {
-			rewriteHexIDs(e)
-		}
-	}
+	return out, ct, nil
 }

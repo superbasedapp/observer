@@ -65,6 +65,9 @@ func printWelcome(cmd *cobra.Command) error {
 		fmt.Fprint(out, "  observer init      wire hooks / MCP into your AI tools\n")
 	}
 	fmt.Fprint(out, "  observer connect   sign in and see this machine online\n")
+	if line := welcomeAppsLine(appObsCompiledIn()); line != "" {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 	fmt.Fprint(out, "  observer doctor    health checks\n")
 	fmt.Fprint(out, "  observer --help    every command\n")
 	return nil
@@ -79,6 +82,16 @@ func welcomeSignInLine(id frontdoor.Identity, connected bool) string {
 		return ""
 	}
 	return "Not signed in. Run `observer connect` to see this machine online."
+}
+
+// welcomeAppsLine is the bare-`observer` line for AI Apps (first-run plan
+// revision 2, section 3.4): shown only in a build that has AI Apps, so an
+// edition without it never advertises a command that refuses.
+func welcomeAppsLine(inBuild bool) string {
+	if !inBuild {
+		return ""
+	}
+	return "observer apps on   trace the AI apps you build, on this machine"
 }
 
 // welcomeConnected reports whether this machine is connected (enrolled)

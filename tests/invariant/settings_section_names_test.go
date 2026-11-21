@@ -1,6 +1,7 @@
 package invariant
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,6 +31,25 @@ func TestNodeSettingsPointersNameRealSections(t *testing.T) {
 	labels := []string{"Components"}
 	for _, m := range labelRE.FindAllStringSubmatch(string(raw), -1) {
 		labels = append(labels, m[1])
+	}
+	// A section named from the one product-name owner (label:
+	// PRODUCT_NAMES.<key>, e.g. AI Apps) resolves through
+	// shared/lib/productNames.json; an unknown key fails here.
+	namesRaw, err := os.ReadFile(filepath.Join(root, "shared", "lib", "productNames.json"))
+	if err != nil {
+		t.Fatalf("read productNames.json: %v", err)
+	}
+	var productNames map[string]string
+	if err := json.Unmarshal(namesRaw, &productNames); err != nil {
+		t.Fatalf("parse productNames.json: %v", err)
+	}
+	productLabelRE := regexp.MustCompile(`(?m)^    label: PRODUCT_NAMES\.([a-z_]+),`)
+	for _, m := range productLabelRE.FindAllStringSubmatch(string(raw), -1) {
+		name, ok := productNames[m[1]]
+		if !ok {
+			t.Fatalf("Settings.tsx names PRODUCT_NAMES.%s, which productNames.json does not define", m[1])
+		}
+		labels = append(labels, name)
 	}
 	if len(labels) < 20 {
 		t.Fatalf("parsed only %d Settings labels from Settings.tsx; the section table moved", len(labels))

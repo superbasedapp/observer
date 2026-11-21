@@ -10,6 +10,7 @@ import {
   connectActive,
   connectCancelInit,
   connectFinished,
+  connectReconsentInit,
   connectStartInit,
   accountOf,
   safeOpenURL,
@@ -92,6 +93,9 @@ export type ConnectFlow = {
   /** The start or cancel request itself failed (409 refusal, 403, ...). */
   error: string | null;
   start: (team?: string) => Promise<void>;
+  /** Connect this machine again to the dashboard it already uses, to review
+   *  and accept what it now offers (`observer connect --reconsent`). */
+  reconsent: () => Promise<void>;
   cancel: () => Promise<void>;
   /** Opens the approval page again (the fallback link). */
   openApproval: () => void;
@@ -141,6 +145,23 @@ export function useConnectFlow(): ConnectFlow {
     [reload],
   );
 
+  const reconsent = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    openPendingTab();
+    try {
+      const st = await fetchJSON<ConnectProgress>(CONNECT_START_PATH, undefined, connectReconsentInit(await localConfirmHeaders()));
+      settlePendingTab(st);
+      setFast(true);
+      reload();
+    } catch (e) {
+      settlePendingTab({ state: "error", running: false });
+      setError(apiReason(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [reload]);
+
   const cancel = useCallback(async () => {
     setError(null);
     setBusy(true);
@@ -159,7 +180,7 @@ export function useConnectFlow(): ConnectFlow {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   }, [p?.approve_url]);
 
-  return { progress: p, active, available, busy, error, start, cancel, openApproval, reload };
+  return { progress: p, active, available, busy, error, start, reconsent, cancel, openApproval, reload };
 }
 
 /**

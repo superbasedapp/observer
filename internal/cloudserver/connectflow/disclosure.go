@@ -49,7 +49,11 @@ func ShareLevelFor(kind DashboardKind) (ShareLevel, bool) {
 
 // DisclosureVersion names the disclosure texts below. Change it whenever a
 // text changes, so a consent receipt always names the words that were shown.
-const DisclosureVersion = "connect-disclosure.v1"
+//
+// v2 (2026-11-19, budget enforce consistency): a personal organization is
+// managed by its owner, so connecting to it also lets the owner's budgets
+// and pinned settings apply on the machine; the summary text says so.
+const DisclosureVersion = "connect-disclosure.v2"
 
 // teamNameMark is where a team's name goes in a disclosure template.
 const teamNameMark = "{team}"
@@ -65,7 +69,8 @@ var disclosureTexts = []struct {
 		title: "Summary only",
 		template: "Counts, costs, timings, tool and model names, file paths as hashes. " +
 			"Never prompts, responses or file contents. Stored by SuperBased in the EU. " +
-			"Only you see it. Only new activity; earlier sessions stay local.",
+			"Only you see it. Only new activity; earlier sessions stay local. " +
+			"Budgets you set to Enforce and settings you pin there apply on this machine.",
 	},
 	{
 		level:    ShareFull,

@@ -53,6 +53,7 @@ const ALLOWED: Record<string, { why: string; caller?: string }> = {
   "lib/adminMessages.ts": { why: "pure attachment links; attachmentView takes the gate", caller: "pages/Messages.tsx" },
   "lib/codeSecurity.ts": { why: "pure approve address", caller: "pages/codesecurity/FindingDrawer.tsx" },
   "lib/guardRecipes.ts": { why: "pure recipe input address", caller: "pages/security/RecipesCard.tsx" },
+  "lib/planeaFirstRun.ts": { why: "pure AI Apps home address (E-71)", caller: "components/apps/AppsStart.tsx" },
 };
 
 const SKIP_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
