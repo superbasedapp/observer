@@ -303,8 +303,16 @@ func runServiceInstall(opts serviceInstallOptions) error {
 		fmt.Fprintf(opts.stdout, "unit PATH = %s\n", pathEnv)
 	}
 
+	// The systemd version picks the unit's update-handover row (INFRA-01):
+	// ExitType=cgroup only where systemd understands it.
+	sdVersion := probe.systemdVersion()
+	fmt.Fprintln(opts.stdout, service.SupervisionSummary(sdVersion))
+
 	snap := componentSnapshotFor(opts.configPath)
-	unit := service.RenderUnit(service.UnitOptions{ExecPath: exe, Args: args, Scope: opts.scope, Path: pathEnv, Runs: serviceRuns(snap.Active)})
+	unit := service.RenderUnit(service.UnitOptions{
+		ExecPath: exe, Args: args, Scope: opts.scope, Path: pathEnv, Runs: serviceRuns(snap.Active),
+		SystemdVersion: sdVersion,
+	})
 
 	if mkErr := os.MkdirAll(filepath.Dir(unitPath), 0o755); mkErr != nil {
 		return fmt.Errorf("create unit dir: %w", mkErr)
@@ -341,6 +349,7 @@ func runServiceInstall(opts serviceInstallOptions) error {
 	refresh := serviceRefresh{
 		scope: opts.scope, exe: exe, oldExecStart: oldExecStart, newExecStart: service.ExecStartLine(unit),
 		startIfInactive: opts.now && !opts.upgrade, port: serviceProxyPort(opts.configPath, opts.port), w: opts.stdout,
+		handsOver: strings.Contains(unit, "NotifyAccess=main"),
 	}
 	if opts.now || opts.upgrade {
 		// A restart of a running daemon ends its live sandboxed runs: ask
@@ -398,7 +407,8 @@ func serviceRefreshMayRestart(r serviceRefresh, p serviceProbe) bool {
 	if pid <= 0 || lerr != nil {
 		return true
 	}
-	return runningExeDiffers(link, r.exe) || (r.oldExecStart != "" && r.oldExecStart != r.newExecStart)
+	return runningExeDiffers(link, r.exe) || (r.oldExecStart != "" && r.oldExecStart != r.newExecStart) ||
+		(r.handsOver && runningWithoutHandover(p, pid))
 }
 
 // reportInstalledNotStarted is `install` without --now: it starts nothing and

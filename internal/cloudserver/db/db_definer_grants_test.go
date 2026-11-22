@@ -70,7 +70,7 @@ var definerGrants = map[string][]string{
 	"sbci_support_target(uuid,uuid)":                                        {"sbci_api", "sbci_app"},
 	"sbci_team_org_limit()":                                                 {"sbci_api", "sbci_app"},
 	"sbci_team_create_allowed()":                                            {"sbci_api", "sbci_app"},
-	"sbci_sweep_expired_evidence(timestamp with time zone)":                 {"sbci_app"},
+	"sbci_sweep_expired_evidence(timestamp with time zone)":                 {"sbci_app", "sbci_worker"}, // 0151 (CLOUD-01): the worker runs the sweep
 	"sbci_sweep_expired_exports(timestamp with time zone)":                  {"sbci_api", "sbci_app"},
 	"sbci_sweep_expired_pop_replay(timestamp with time zone)":               {"sbci_api", "sbci_app"},
 	"sbci_sweep_results_retention(timestamp with time zone)":                {"sbci_app", "sbci_worker"},

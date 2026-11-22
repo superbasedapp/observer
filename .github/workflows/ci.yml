@@ -7,7 +7,10 @@
 # the pre-merge / pre-tag safety net. scripts/release.sh refuses to tag
 # a commit unless a FULL run of this workflow (a workflow_dispatch) and
 # ci-private completed green for that exact sha
-# (D-602, D-609; docs/release-runbook.md "Green before tag").
+# (D-602, D-609; docs/release-runbook.md "Green before tag"). A gate
+# record stands in for the ci-private run (every job of it is in
+# scripts/ci/gate-coverage.tsv), never for this one: the macOS and Windows
+# installer legs run only here.
 #
 # What runs when (D-602, D-609). The `plan` job decides; every other job
 # needs it:
@@ -40,6 +43,14 @@
 #       are deliberately NOT ignored; website/track-gen is a package of
 #       the root module. A docs-only HEAD therefore has no ci run, and
 #       release.sh tells you to dispatch one before tagging.
+#   gate record (L-139): when the plan job finds an unsigned gate record
+#       for exactly this commit at refs/gate-records/<sha> (built from the
+#       gate shard reports by `scripts/ci/gate-record.sh build`: scope
+#       release, GATE PASS, every expected unit green), every job
+#       scripts/ci/gate-coverage.tsv lists skips here, so such a run is plan
+#       plus the macOS and Windows installer legs. Without one, or with any
+#       doubt about it (`scripts/ci/gate-record.sh check` answers
+#       gated=false), every job runs as above.
 
 name: ci
 
@@ -140,14 +151,16 @@ concurrency:
 
 # Linux runner switch (lane CICD round 2, item C, 2026-11-01). The Linux
 # test jobs (frontend, go, lint, go-test, omit-tags, plugins-build-drift,
-# taxonomy-build-drift) take their runner label from the repository
+# taxonomy-build-drift, sdk) take their runner label from the repository
 # variable SBO_CI_LINUX_RUNNER and fall back to ubuntu-latest when it is
 # unset or empty, so a third-party runner trial is one variable and its
 # rollback is deleting it. None of these jobs reads a secret. plan (it
 # holds actions: read and gates the release), distros (its smoke test
-# needs the hosted kernel's sysctl and user namespaces) and installer (an
-# OS matrix) stay on GitHub-hosted runners, as does every job outside this
-# file (npm-release, signing, images, provenance, ci-private).
+# needs the hosted kernel's sysctl and user namespaces), installer-linux
+# and installer (the macOS and Windows matrix) stay on GitHub-hosted
+# runners, as does every job outside this file (npm-release, signing,
+# images, provenance, ci-private). With a gate record only plan and
+# installer run here at all (header, "gate record").
 permissions:
   contents: read
 
@@ -195,18 +208,23 @@ jobs:
       omit: ${{ steps.plan.outputs.omit }}
       tier: ${{ steps.plan.outputs.tier }}
       sdk: ${{ steps.plan.outputs.sdk }}
-      attested: ${{ steps.attest.outputs.attested }}
+      gated: ${{ steps.record.outputs.gated }}
     steps:
       - uses: actions/checkout@v5
-      # Gate attestation (L-139): when the ops gate (a full Docker Sandbox
-      # run of this exact commit) passed and its signed attestation is
-      # published as refs/gate-attestations/<sha>, the jobs it covers
-      # (scripts/ci/gate-coverage.tsv: go-test, lint, frontend) are skipped
-      # here and every other job still runs. Without an attestation, or with
-      # any doubt about it, the answer is false and nothing is skipped.
-      - id: attest
+      # Gate record (L-139): when an unsigned gate record for exactly this
+      # commit is published at refs/gate-records/<sha> (built from the gate
+      # shard reports by `scripts/ci/gate-record.sh build`: scope release,
+      # GATE PASS, every expected unit green), the jobs it covers
+      # (scripts/ci/gate-coverage.tsv: frontend, go, lint, go-test, distros,
+      # installer-linux, omit-tags, plugins-build-drift,
+      # taxonomy-build-drift, sdk) are skipped here; plan and installer (the
+      # macOS and Windows legs) still run. Without a record, or with any
+      # doubt about it, the answer is gated=false and nothing is skipped.
+      # Not asked on a tag push, so the tag's omit-tag rule below is
+      # unchanged.
+      - id: record
         if: "!startsWith(github.ref, 'refs/tags/')"
-        run: bash scripts/ci/gate-attestation.sh "$GITHUB_SHA"
+        run: bash scripts/ci/gate-record.sh check "$GITHUB_SHA"
       # v* tag push (CICD lane, 2026-11-01): release.sh tags only a sha whose
       # FULL ci run (a workflow_dispatch on main) is green, and that run
       # already ran this same omit-tag matrix on this same tree. Measured
@@ -394,7 +412,7 @@ jobs:
     # Every job except omit-tags skips on tag pushes (header: "What runs
     # when").
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
@@ -467,7 +485,7 @@ jobs:
   go:
     name: go
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: free runner disk (T-806)
@@ -627,7 +645,7 @@ jobs:
   lint:
     name: lint
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
@@ -800,7 +818,7 @@ jobs:
   go-test:
     name: go test (shard ${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0' && needs.plan.outputs.attested != 'true'
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0' && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     strategy:
@@ -890,7 +908,7 @@ jobs:
   distros:
     name: distro ${{ matrix.distro }}
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -955,17 +973,56 @@ jobs:
   # throwaway key (checksum, signature, every edition, uninstall); the
   # Windows twin runs scripts/test-install.ps1 the same way. Hermetic: every
   # case uses --from-dir, no network, no real key.
+  #
+  # Two jobs (L-139): installer-linux is the Linux leg (shellcheck, the
+  # mxc-files.sh checks, install.sh), which the gate's installer:linux unit
+  # runs too, so it skips on a gate record like any covered job;
+  # installer is the macOS and Windows legs, which need GitHub's runners
+  # and always run. installer-linux keeps the old leg's check name.
   # ----------------------------------------------------------------
+  installer-linux:
+    name: installer ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: false # the restore collides with the go.mod toolchain download (D-612)
+
+      - name: shellcheck
+        run: shellcheck scripts/install.sh scripts/test-install.sh
+
+      # The Windows sandbox driver's bundled files (lane SBX-P6, wired here
+      # by lane SBX-P3B): offline checks of scripts/mxc-files.sh (a file
+      # that does not match its pin, a missing file, owed pins and a failed
+      # signature check each refuse to bundle). No network, no Windows.
+      - name: mxc-files.sh
+        shell: bash
+        run: bash scripts/test-mxc-files.sh
+
+      - name: install.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/vendorsign" ./scripts/vendorsign
+          VENDORSIGN_BIN="$RUNNER_TEMP/vendorsign" bash scripts/test-install.sh
+
   installer:
     name: installer ${{ matrix.os }}
     needs: plan
+    # Never skipped on a gate record: no local gate runs macOS or Windows.
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       # testdata/grokbot holds 218-character paths (base32 slice names the
       # adapter reads verbatim); under the private repo's longer checkout
@@ -980,19 +1037,6 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: false # the restore collides with the go.mod toolchain download (D-612)
-
-      - name: shellcheck
-        if: runner.os == 'Linux'
-        run: shellcheck scripts/install.sh scripts/test-install.sh
-
-      # The Windows sandbox driver's bundled files (lane SBX-P6, wired here
-      # by lane SBX-P3B): offline checks of scripts/mxc-files.sh (a file
-      # that does not match its pin, a missing file, owed pins and a failed
-      # signature check each refuse to bundle). No network, no Windows.
-      - name: mxc-files.sh
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash scripts/test-mxc-files.sh
 
       - name: install.sh
         if: runner.os != 'Windows'
@@ -1034,6 +1078,10 @@ jobs:
   #     the single sets the diff can touch, in 2 batches.
   #     A tag push skips the job when a green dispatch run already covers
   #     its sha (plan job, `proven` step).
+  #   gate record (L-139): a push or dispatch skips the job when a gate
+  #     record covers the commit (its --omit-scope all run vets every set
+  #     and runs the editions' tests: the vet and go units). A tag push
+  #     never asks for the record, so the rule above alone decides there.
   # PostgreSQL (D-24): an edition's tests include org packages that open a
   # PostgreSQL fixture (tests/e2e/orgserver under sbo_distro_minimal at
   # this commit), which fail without OBSERVER_CONTROL_STORE_DSN, so each
@@ -1044,8 +1092,9 @@ jobs:
     name: omit tags ${{ matrix.name }}
     needs: plan
     # omit is [] only on a tag run whose sha a green full dispatch already
-    # covers (the plan job's `proven` step).
-    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.omit != '[]'
+    # covers (the plan job's `proven` step). gated is empty on a tag run
+    # (the plan job's record step skips tags), so the last clause holds there.
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.omit != '[]' && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
     strategy:
@@ -1117,7 +1166,7 @@ jobs:
   plugins-build-drift:
     name: plugin manifest drift
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
@@ -1170,7 +1219,7 @@ jobs:
   taxonomy-build-drift:
     name: action taxonomy drift
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
@@ -1221,12 +1270,14 @@ jobs:
   # scripts/ci/sdk.sh; a full (dispatch) run always does. One Python and
   # one Node version here; sdk-release.yml runs the whole version matrix
   # before a publish. Same skips as the other jobs: never on a tag push,
-  # and the workflow's paths-ignore and concurrency apply.
+  # not on a gate record (the sdk:python-3.12, sdk:node-22,
+  # sdk:java-17 and sdk:go units), and the workflow's paths-ignore and
+  # concurrency apply.
   # ----------------------------------------------------------------
   sdk:
     name: sdk ${{ matrix.unit }}
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.sdk == 'true'
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.sdk == 'true' && needs.plan.outputs.gated != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:

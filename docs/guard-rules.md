@@ -17,6 +17,8 @@ appear once per row.
 | R-101 | destructive | critical | flag | ask | recursive delete of the pipeline item ($_) inside a PowerShell script block, whose target the guard cannot check |
 | R-102 | destructive | high | flag | ask | recursive delete inside the project targeting the VCS directory or the project root itself |
 | R-102 | destructive | high | flag | ask | recursive delete after a directory change in the same command that the guard cannot resolve, or that is outside the project only if an earlier directory change fails |
+| R-102 | destructive | high | flag | ask | recursive delete of a root, the home directory or a path outside the project, a disk or device operation, or an interpreter one-liner deleting such a tree, behind a command prefix the guard does not know |
+| R-102 | destructive | high | flag | ask | recursive delete whose target is the output of a command substitution, which the guard cannot read |
 | R-103 | destructive | high | flag | ask | mass-deletion chain (find -delete / xargs rm) |
 | R-104 | destructive | high | flag | ask | git command that discards uncommitted work (reset --hard / checkout -- / clean -f) |
 | R-110 | destructive | critical | flag | deny | force push to a protected branch |

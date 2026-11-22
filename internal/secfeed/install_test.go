@@ -241,6 +241,28 @@ func TestParseInstallsBypasses(t *testing.T) {
 		{"go run main.go", ""},
 		{"uvx --with evil black", "pypi:evil pypi:black"},
 		{"uvx --from evil black", "pypi:evil"},
+		// NF-2: the parser keeps a word that was nothing but a command
+		// substitution as an empty word. It is never a package (no spec, so
+		// no index lookup, no near-miss ask and no unpinned flag), it holds
+		// its place among the positionals, and before the subcommand it does
+		// not hide the install.
+		{"pip install $(cat reqs)", ""},
+		{"pip install `cat reqs` --no-deps", ""},
+		{`pip install "$(cat reqs)"`, ""},
+		{"npm install $(cat pkgs)", ""},
+		{"go get $(cat mods)", ""},
+		{"cargo install $(cat crates)", ""},
+		{"gem install $(cat gems)", ""},
+		{"npm create $(echo vite)", ""},
+		{"npx $(cat tool) evil", ""},
+		{"go run $(echo mod@v1) x", ""},
+		{"pip install requests $(cat reqs)", "pypi:requests"},
+		{"npm install $(cat pkgs) evil", "npm:evil"},
+		{"pipx inject $(echo venv) evil", "pypi:evil"},
+		{"yarn workspace $(echo web) add evil", "npm:evil"},
+		{"npm $(echo --silent) install evil", "npm:evil"},
+		{"pip $(echo -q) install evil", "pypi:evil"},
+		{"python $(echo -I) -m pip install evil", "pypi:evil"},
 	}
 	for _, c := range cases {
 		if got := names(specsOf(t, c.cmd)); got != c.want {
@@ -303,6 +325,10 @@ func TestCommandPrivateShapes(t *testing.T) {
 		{"GOENV=/tmp/e go get example.com/x", "", true, false, "go:example.com/x"},
 		{"export CARGO_HOME=/tmp/c && cargo add serde", "", true, false, "cargo:serde"},
 		{"export NPM_CONFIG_REGISTRY=https://x.example/ && npm i y", "", true, true, "npm:y"},
+		// NF-2: a substituted word (kept as an empty word) before the verb.
+		{"npm $(echo --silent) config set registry https://x.example/ && npm i y", "", true, true, "npm:y"},
+		{"pip $(echo -q) config set global.index-url https://x.example/simple && pip install y", "", true, true, "pypi:y"},
+		{"poetry $(echo -q) source add corp https://x.example/simple && poetry add y", "", true, true, "pypi:y"},
 	}
 	for _, c := range cases {
 		got := ParseInstalls(&policy.Event{Kind: policy.KindShellExec, Target: c.cmd, Dialect: c.dialect})

@@ -63,6 +63,24 @@ func TestDestinationAllowed(t *testing.T) {
 		{"public v6", net.ParseIP("2001:4860:4860::8888"), ""},
 		{"nat64 public", net.ParseIP("64:ff9b::808:808"), ""},
 		{"test-net-3", net.ParseIP("203.0.113.7"), ""},
+		// SEC-02: 6to4 (2002::/16) carries an IPv4 address in bytes 2..5 the
+		// policy unwraps like NAT64 (one classifier, internal/ipclass).
+		{"6to4 loopback", net.ParseIP("2002:7f00:1::"), RuleLoopback},
+		{"6to4 rfc1918", net.ParseIP("2002:a00:1::"), RulePrivate},
+		{"6to4 link-local metadata", net.ParseIP("2002:a9fe:a9fe::"), RuleLinkLocalUnicast},
+		{"6to4 cgnat", net.ParseIP("2002:6440:1::"), RuleSharedAddress},
+		{"6to4 public", net.ParseIP("2002:808:808::"), ""},
+		// NEW-05: a cloud metadata endpoint outside link-local space is its
+		// own rule, never allow-listable, in every encoding.
+		{"alibaba metadata", net.ParseIP("100.100.100.200"), RuleCloudMetadata},
+		{"alibaba metadata mapped", net.ParseIP("::ffff:100.100.100.200"), RuleCloudMetadata},
+		{"alibaba metadata nat64", net.ParseIP("64:ff9b::6464:64c8"), RuleCloudMetadata},
+		{"alibaba metadata 6to4", net.ParseIP("2002:6464:64c8::"), RuleCloudMetadata},
+		{"aws imds over ipv6", net.ParseIP("fd00:ec2::254"), RuleCloudMetadata},
+		{"aws ipv6 dns", net.ParseIP("fd00:ec2::23"), RuleCloudMetadata},
+		{"ecs task metadata", net.ParseIP("169.254.170.2"), RuleLinkLocalUnicast},
+		{"cgnat next to alibaba metadata", net.ParseIP("100.100.100.201"), RuleSharedAddress},
+		{"ula next to aws imds", net.ParseIP("fd00:ec2::253"), RuleUniqueLocal},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +144,11 @@ func TestPolicyAllowList(t *testing.T) {
 		{"loopback stays refused", net.ParseIP("127.0.0.1"), RuleLoopback},
 		{"metadata stays refused", net.ParseIP("169.254.169.254"), RuleLinkLocalUnicast},
 		{"public still allowed", net.ParseIP("8.8.8.8"), ""},
+		// NEW-05: 100.100.0.0/16 is allow-listed above; the Alibaba metadata
+		// address inside it is carved out.
+		{"alibaba metadata inside an allow-listed prefix", net.ParseIP("100.100.100.200"), RuleCloudMetadata},
+		{"alibaba metadata nat64 inside an allow-listed prefix", net.ParseIP("64:ff9b::6464:64c8"), RuleCloudMetadata},
+		{"allow-listed 6to4 v4", net.ParseIP("2002:a14:1e28::"), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,6 +163,58 @@ func TestPolicyAllowList(t *testing.T) {
 			var re *RefusedError
 			if !errors.As(err, &re) || re.Rule != tc.wantRule {
 				t.Fatalf("Check(%v) = %v, want rule %s", tc.ip, err, tc.wantRule)
+			}
+		})
+	}
+}
+
+// TestPolicyAllowListNeverOpensMetadata is NEW-05 (NEW-A-02, 2026-11-22):
+// an allow-list entry is lifted only for the allow-listable private rows, and
+// a cloud metadata endpoint inside an allowed prefix stays refused. Before the
+// cloud-metadata rule, `100.64.0.0/10` (the tailnet range) opened the Alibaba
+// Cloud metadata service and `fd00::/8` opened AWS IMDS over IPv6. The rest
+// of each prefix stays allowed: the address is carved out, the prefix is not
+// rejected.
+func TestPolicyAllowListNeverOpensMetadata(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		allow    string
+		ip       string
+		wantRule string
+	}{
+		{"100.64.0.0/10", "100.100.100.200", RuleCloudMetadata},
+		{"100.64.0.0/10", "100.64.0.1", ""},
+		{"100.64.0.0/10", "100.100.100.199", ""},
+		{"100.100.100.200/32", "100.100.100.200", RuleCloudMetadata},
+		{"fd00::/8", "fd00:ec2::254", RuleCloudMetadata},
+		{"fd00::/8", "fd00:ec2::23", RuleCloudMetadata},
+		{"fd00::/8", "fd00::5", ""},
+		{"fc00::/7", "fd00:ec2::254", RuleCloudMetadata},
+		{"10.0.0.0/8", "169.254.169.254", RuleLinkLocalUnicast},
+		{"10.0.0.0/8", "::ffff:169.254.169.254", RuleLinkLocalUnicast},
+		{"10.0.0.0/8", "2002:a9fe:a9fe::", RuleLinkLocalUnicast},
+		{"10.0.0.0/8", "64:ff9b::a9fe:a9fe", RuleLinkLocalUnicast},
+	}
+	for _, tc := range cases {
+		t.Run(tc.allow+" "+tc.ip, func(t *testing.T) {
+			t.Parallel()
+			allow, err := ParseAllowCIDRs([]string{tc.allow})
+			if err != nil {
+				t.Fatalf("ParseAllowCIDRs(%s): %v", tc.allow, err)
+			}
+			err = Policy{Allow: allow}.Check(net.ParseIP(tc.ip), nil)
+			if tc.wantRule == "" {
+				if err != nil {
+					t.Fatalf("Check(%s) under %s = %v, want allowed", tc.ip, tc.allow, err)
+				}
+				return
+			}
+			var re *RefusedError
+			if !errors.As(err, &re) || re.Rule != tc.wantRule || re.AllowListable {
+				t.Fatalf("Check(%s) under %s = %v, want rule %s, not allow-listable", tc.ip, tc.allow, err, tc.wantRule)
+			}
+			if tc.wantRule == RuleCloudMetadata && (!strings.Contains(err.Error(), "never allow-listed") || !strings.Contains(err.Error(), AllowCIDRsConfigKey)) {
+				t.Fatalf("metadata refusal %q does not say it is carved out of %s", err, AllowCIDRsConfigKey)
 			}
 		})
 	}

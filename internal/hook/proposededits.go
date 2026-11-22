@@ -122,7 +122,8 @@ func replaceEditIn(m map[string]any) (policy.ProposedEdit, bool) {
 // patchEditsFor reads the part of an apply_patch envelope (any string input
 // field holding one) that touches target: an added file is its whole
 // content, an updated file is a fragment of the lines it removes and adds
-// (hunks cannot be replayed onto the file without their context).
+// (hunks cannot be replayed onto the file without their context), and the
+// destination of a rename ends with an EditUnknown marker (NEW-07).
 func patchEditsFor(input map[string]any, target string) []policy.ProposedEdit {
 	keys := make([]string, 0, len(input))
 	for k := range input {
@@ -134,44 +135,111 @@ func patchEditsFor(input map[string]any, target string) []policy.ProposedEdit {
 		if !ok || !strings.Contains(s, "*** Begin Patch") {
 			continue
 		}
-		if e, ok := patchSectionEdit(s, target); ok {
-			return []policy.ProposedEdit{e}
+		if edits := patchSectionEdits(s, target); edits != nil {
+			return edits
 		}
 	}
 	return nil
 }
 
-// patchSectionEdit collects the added and removed lines of target's
-// section(s) of one patch envelope.
-func patchSectionEdit(patch, target string) (policy.ProposedEdit, bool) {
-	var added, removed []string
-	in, adding, found := false, false, false
+// patchSection is one file section of a patch envelope: its header path,
+// where a rename moves it, and the lines its hunks remove and add.
+type patchSection struct {
+	path, moveTo   string
+	adding         bool
+	added, removed []string
+}
+
+// patchSectionHeaders are the headers that open a section the edits are
+// read from; the bool marks the destination-only header (`Move File:`, whose
+// grammar no fixture grounds), which names a path the patch writes with
+// unseen content. Any other `*** ` line (`Delete File:`, `End Patch`) ends
+// the current section and opens none: a delete proposes no content.
+var patchSectionHeaders = []struct {
+	header   string
+	moveOnly bool
+}{
+	{"Add File:", false},
+	{"Update File:", false},
+	{"Move File:", true},
+}
+
+// parsePatchSections splits one patch envelope into its file sections. A
+// `Move to:` line belongs to the Update section it follows: the hunk lines
+// after it are still that section's.
+func parsePatchSections(patch string) []patchSection {
+	var out []patchSection
+	cur := -1
 	for _, line := range strings.Split(patch, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if rest, ok := strings.CutPrefix(trimmed, "*** "); ok {
-			in = false
-			for _, h := range []string{"Add File:", "Update File:"} {
-				if p, ok := strings.CutPrefix(rest, h); ok && strings.TrimSpace(p) == target {
-					in, adding, found = true, h == "Add File:", true
+			if p, ok := strings.CutPrefix(rest, "Move to:"); ok && cur >= 0 {
+				out[cur].moveTo = strings.TrimSpace(p)
+				continue
+			}
+			cur = -1
+			for _, h := range patchSectionHeaders {
+				p, ok := strings.CutPrefix(rest, h.header)
+				if !ok {
+					continue
 				}
+				sec := patchSection{path: strings.TrimSpace(p), adding: h.header == "Add File:"}
+				if h.moveOnly {
+					sec.path, sec.moveTo = "", sec.path
+				}
+				out = append(out, sec)
+				cur = len(out) - 1
 			}
 			continue
 		}
-		if !in {
+		if cur < 0 {
 			continue
 		}
 		switch {
 		case strings.HasPrefix(line, "+"):
-			added = append(added, line[1:])
+			out[cur].added = append(out[cur].added, line[1:])
 		case strings.HasPrefix(line, "-"):
-			removed = append(removed, line[1:])
+			out[cur].removed = append(out[cur].removed, line[1:])
 		}
 	}
+	return out
+}
+
+// patchSectionEdits collects target's edits from one patch envelope: the
+// added and removed lines of every section that names it, as its header
+// path or as a rename destination. A destination lands the source file's
+// content, which the patch does not carry, so its edits end with an
+// EditUnknown marker: the content rules then judge it as content that may
+// set anything, rather than seeing no edit at all (NEW-07). Nil when no
+// section names target.
+func patchSectionEdits(patch, target string) []policy.ProposedEdit {
+	var added, removed []string
+	adding, found, moved := false, false, false
+	for _, sec := range parsePatchSections(patch) {
+		switch {
+		case sec.path != "" && sec.path == target:
+			adding = adding || sec.adding
+		case sec.moveTo != "" && sec.moveTo == target:
+			moved = true
+		default:
+			continue
+		}
+		found = true
+		added = append(added, sec.added...)
+		removed = append(removed, sec.removed...)
+	}
 	if !found {
-		return policy.ProposedEdit{}, false
+		return nil
 	}
-	if adding && len(removed) == 0 {
-		return policy.ProposedEdit{Kind: policy.EditWhole, New: strings.Join(added, "\n")}, true
+	if !moved {
+		if adding && len(removed) == 0 {
+			return []policy.ProposedEdit{{Kind: policy.EditWhole, New: strings.Join(added, "\n")}}
+		}
+		return []policy.ProposedEdit{{Kind: policy.EditFragment, Old: strings.Join(removed, "\n"), New: strings.Join(added, "\n")}}
 	}
-	return policy.ProposedEdit{Kind: policy.EditFragment, Old: strings.Join(removed, "\n"), New: strings.Join(added, "\n")}, true
+	var out []policy.ProposedEdit
+	if len(added) > 0 || len(removed) > 0 {
+		out = append(out, policy.ProposedEdit{Kind: policy.EditFragment, Old: strings.Join(removed, "\n"), New: strings.Join(added, "\n")})
+	}
+	return append(out, policy.ProposedEdit{Kind: policy.EditUnknown})
 }

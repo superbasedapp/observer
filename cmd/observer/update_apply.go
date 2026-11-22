@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/quiesce"
+	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/update"
 )
@@ -51,6 +52,15 @@ type updateStateStore interface {
 	SchemaVersion(ctx context.Context) (int, error)
 	AppliedMigrationSteps(ctx context.Context) (int, error)
 	SnapshotDatabase(ctx context.Context, dest string) error
+	// LoadUpdateApplyBackoff / SaveUpdateApplyBackoff hold the durable
+	// per-target apply backoff (FR-SEC-12, update.ApplyBackoff as JSON).
+	LoadUpdateApplyBackoff(ctx context.Context) (string, error)
+	SaveUpdateApplyBackoff(ctx context.Context, js string) error
+	// LoadUpdateSupervisorRestart / SaveUpdateSupervisorRestart hold the
+	// record a launchd hand-over leaves for the new binary's boots
+	// (update.SupervisorRestart as JSON).
+	LoadUpdateSupervisorRestart(ctx context.Context) (string, error)
+	SaveUpdateSupervisorRestart(ctx context.Context, js string) error
 }
 
 // applyDeps is everything the apply reaches the world through. Every field
@@ -75,6 +85,11 @@ type applyDeps struct {
 	// (modular packaging plan 5.6). Consulted only when the artifact names
 	// one (a v2 artifact); nil skips it.
 	ProbeComponents func(ctx context.Context, binPath string) (string, error)
+	// Supervision decides, before anything is downloaded or drained,
+	// whether this node's supervisor can follow the hand-over the apply
+	// ends with (service.DecideHandover over this process's own facts).
+	// Nil checks nothing: a CLI apply with no daemon hands nothing over.
+	Supervision func() service.HandoverRefusal
 	// Supervise is the fork-exec-and-watch handshake (§3.7 step 7).
 	Supervise func(ctx context.Context, exePath, stateDir string, timeout time.Duration) (handshakeResult, error)
 	// WarmUp runs the swapped-in binary once after a successful apply
@@ -201,6 +216,12 @@ type applyOutcome struct {
 	// Applied reports that the handshake succeeded and the CALLER MUST NOW
 	// EXIT — the child is the daemon.
 	Applied bool
+	// RestartBySupervisor qualifies Applied for a launchd hand-over: the
+	// caller stops the child (stopChild) and exits
+	// service.SupervisorRestartExitCode, and the supervisor starts the new
+	// binary, which settles the state (RecoverAtBoot). State stays applying.
+	RestartBySupervisor bool
+	stopChild           func(grace time.Duration) error
 	// RolledBack / Deferred describe the two non-failure endings.
 	RolledBack bool
 	Deferred   bool
@@ -555,6 +576,29 @@ func (r *applyRun) gate(ctx context.Context) (applyOutcome, bool, error) {
 		return out, true, r.record(ctx, out)
 	}
 
+	// The update-handover interlock's parent half (UPD-9 with SVC-1 and
+	// SVC-3): a node whose supervisor cannot follow the hand-over this apply
+	// ends with is refused HERE, before a byte is downloaded or a request
+	// drained, so a release with this check never drains, swaps or restarts
+	// a node it would take down. Recorded as a healthcheck failure, the same
+	// class an older parent records when the new binary's self-check refuses
+	// for the same reason, so the org board reads both alike.
+	if r.deps.Supervision != nil {
+		if refusal := r.deps.Supervision(); refusal != service.HandoverAllowed {
+			out := applyOutcome{
+				State: update.StateFailed, ErrorClass: update.ErrorHealthcheck,
+				Detail: "refused before downloading or draining anything: " + refusal.Explain(),
+				Steps:  r.plan.Steps,
+			}
+			err := fmt.Errorf("observer update: %s", refusal.Explain())
+			if r.opts.DryRun {
+				return out, true, err
+			}
+			_ = r.record(ctx, out)
+			return out, true, err
+		}
+	}
+
 	// The vendor-signature gate runs BEFORE the download, deliberately: an
 	// artifact with no vendor signature must be refused "without downloading
 	// a second byte" (§4 W3). Until the W6 release pipeline produces those
@@ -809,6 +853,9 @@ func (r *applyRun) swapAndHandshake(ctx context.Context, stage applyStage) (appl
 	}
 
 	hs, herr := r.deps.Supervise(ctx, r.opts.Installed.ExecPath, r.opts.StateDir, r.opts.HandshakeTimeout)
+	if herr == nil && hs.Ready && hs.RestartBySupervisor {
+		return r.handToSupervisor(ctx, hs)
+	}
 	if herr == nil && hs.Ready {
 		out := applyOutcome{
 			State: update.StateApplied, Applied: true,
@@ -822,6 +869,7 @@ func (r *applyRun) swapAndHandshake(ctx context.Context, stage applyStage) (appl
 			ManifestVersion: r.opts.Manifest.ManifestVersion, State: update.StateApplied,
 			Detail: out.Detail, DurationMS: r.now().Sub(r.started).Milliseconds(),
 		})
+		recordApplyBackoff(ctx, r.deps.Store, r.opts, out, r.now(), r.deps.Logger)
 		// The warm-up runs after the history event, so the DurationMS
 		// `observer update history` shows is the apply alone, and it says
 		// why the command pauses while it runs.
@@ -838,6 +886,39 @@ func (r *applyRun) swapAndHandshake(ctx context.Context, stage applyStage) (appl
 	// still alive to act on it.
 	return rollbackAfterFailedHandshake(ctx, r.deps, r.opts, r.plan, stage.schemaBefore, stage.appliedBefore,
 		stage.snapshotPath, stage.snapshotAt, hs.Detail, r.started)
+}
+
+// handToSupervisor ends a successful hand-over that the supervisor completes
+// (launchd, SVC-3 option b). The child passed its self-check, so the swap
+// stands: it is flushed to disk, the distro facts of the success are
+// recorded, and the state STAYS applying with a SupervisorRestart record for
+// the target. This process then stops the child and exits non-zero
+// (finishApply), launchd starts the new binary from the path, and that boot
+// settles applied once it stays up, or restores the previous binary after
+// update.MaxSupervisorRestartBoots failed boots (RecoverAtBoot).
+func (r *applyRun) handToSupervisor(ctx context.Context, hs handshakeResult) (applyOutcome, error) {
+	if err := syncSwappedBinary(r.opts.Installed.ExecPath); err != nil && r.deps.Logger != nil {
+		r.deps.Logger.Warn("update: could not flush the swapped binary before the restart", "err", err)
+	}
+	if row, err := r.deps.Store.LoadUpdateState(ctx); err == nil {
+		recordAppliedDistro(&row, r.opts)
+		_ = r.deps.Store.SaveUpdateState(ctx, row)
+	}
+	js, _ := update.EncodeSupervisorRestart(update.SupervisorRestart{Target: r.plan.TargetVersion})
+	if err := r.deps.Store.SaveUpdateSupervisorRestart(ctx, js); err != nil && r.deps.Logger != nil {
+		r.deps.Logger.Warn("update: could not record the launchd hand-over; the restarted binary settles it at its first boot", "err", err)
+	}
+	out := applyOutcome{
+		State: update.StateApplying, Applied: true, RestartBySupervisor: true, stopChild: hs.stopChild,
+		Detail: fmt.Sprintf("%s -> %s: %s (child pid %d); launchd starts the new binary: this daemon stops the child and exits %d, which the agent restarts, and the new binary settles the apply once it stays up",
+			r.opts.Installed.Version, r.plan.TargetVersion, hs.Detail, hs.ChildPID, service.SupervisorRestartExitCode),
+	}
+	_ = r.deps.Store.AppendUpdateEvent(ctx, store.UpdateEventRow{
+		At: r.now(), FromVersion: r.opts.Installed.Version, ToVersion: r.plan.TargetVersion,
+		ManifestVersion: r.opts.Manifest.ManifestVersion, State: update.StateApplying,
+		Detail: out.Detail, DurationMS: r.now().Sub(r.started).Milliseconds(),
+	})
+	return out, nil
 }
 
 // record writes one outcome to the ledger. It is the run-scoped spelling of
@@ -997,17 +1078,19 @@ func versionProbeMatches(got, target string) bool {
 	if got == "" || target == "" {
 		return false
 	}
-	if got == target {
+	if update.SameVersion(got, target) {
 		return true
 	}
-	bare := strings.TrimPrefix(target, "v")
 	matched := false
 	for _, field := range strings.Fields(strings.ReplaceAll(got, "\n", " ")) {
 		f := strings.Trim(field, "\"',;()[]")
 		if !looksLikeVersionToken(f) {
 			continue
 		}
-		if f == target || f == bare {
+		// update.SameVersion is the one spelling rule the child's
+		// self-check and the boot-time recovery also use (UPD-9): "v1.42.0"
+		// and "1.42.0" are the same release, on either side.
+		if update.SameVersion(f, target) {
 			matched = true
 			continue
 		}
@@ -1269,7 +1352,68 @@ func recordOutcome(ctx context.Context, deps applyDeps, opts applyOptions, out a
 	}); aerr != nil && deps.Logger != nil {
 		deps.Logger.Warn("update: recording the outcome event failed", "err", aerr)
 	}
+	// The backoff is recorded HERE, through the same handle as the outcome:
+	// on the DB-restoring rollback branch that is the handle on the restored
+	// file, and the process that recorded it is about to exit (FR-SEC-12).
+	recordApplyBackoff(ctx, deps.Store, opts, out, now(), deps.Logger)
 	return nil
+}
+
+// applyBackoffKey names the target an apply is about: the manifest's version
+// and the selected artifact's archive hash.
+func applyBackoffKey(opts applyOptions) update.BackoffKey {
+	return update.BackoffKey{Target: opts.Manifest.Version, ArtifactSHA256: opts.Artifact.SHA256}
+}
+
+// loadApplyBackoff reads the durable apply backoff. A record that cannot be
+// read or decoded reads as none: the backoff only ever delays an apply, so
+// losing it costs one more attempt, never a wrong apply.
+func loadApplyBackoff(ctx context.Context, st updateStateStore) update.ApplyBackoff {
+	if st == nil {
+		return update.ApplyBackoff{}
+	}
+	js, err := st.LoadUpdateApplyBackoff(ctx)
+	if err != nil {
+		return update.ApplyBackoff{}
+	}
+	b, err := update.DecodeApplyBackoff(js)
+	if err != nil {
+		return update.ApplyBackoff{}
+	}
+	return b
+}
+
+// recordApplyBackoff applies one outcome to the durable backoff
+// (update.BackoffStep): an applied target clears it, a deterministic failure
+// advances it, anything else leaves it. A dry run changes nothing. A failure
+// to write is logged and never changes the apply's outcome.
+func recordApplyBackoff(ctx context.Context, st updateStateStore, opts applyOptions, out applyOutcome, now time.Time, logger *slog.Logger) {
+	if st == nil || opts.DryRun {
+		return
+	}
+	var js string
+	switch update.BackoffStep(out.Applied, out.ErrorClass) {
+	case update.BackoffKeep:
+		return
+	case update.BackoffAdvance:
+		next := update.NextApplyBackoff(loadApplyBackoff(ctx, st), applyBackoffKey(opts),
+			opts.Manifest.ManifestVersion, out.ErrorClass, string(service.HandoverRefusalIn(out.Detail)),
+			now, updateAutoApplyInterval, autoApplyMaxBackoff)
+		encoded, err := update.EncodeApplyBackoff(next)
+		if err != nil {
+			return
+		}
+		js = encoded
+		if logger != nil {
+			logger.Warn("update: backing off this target rather than re-running it every auto-apply cycle",
+				"target", next.Target, "error_class", next.ErrorClass, "failures", next.Failures,
+				"next_attempt", next.NextAttempt.Format(time.RFC3339))
+		}
+	case update.BackoffClear:
+	}
+	if err := st.SaveUpdateApplyBackoff(ctx, js); err != nil && logger != nil {
+		logger.Warn("update: recording the apply backoff failed", "err", err)
+	}
 }
 
 // moveUpdateState walks the state machine, re-arming through `available`

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/browserhost"
+	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/mcpregister"
@@ -412,27 +413,14 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 			}
 		}
 
-		if routeOn && routeSupported(t) {
-			// Dispatch on the base adapter's route KIND (CLAUDE.md #3), and on
-			// the "-windows" virtual-target suffix for the cross-OS writer —
-			// mirrors the batch dispatch in wireAIClients.
-			base, isWindows := strings.CutSuffix(t, "-windows")
-			ic, _ := integration.For(base)
-			var previewFn, writeFn func() proxyroute.RegistrationResult
-			switch ic.Proxy.Kind {
-			case integration.RouteEnvSettings:
-				if isWindows {
-					previewFn, writeFn = previewRoute.RegisterClaudeCodeWindows, writeRoute.RegisterClaudeCodeWindows
-				} else {
-					previewFn, writeFn = previewRoute.RegisterClaudeCode, writeRoute.RegisterClaudeCode
-				}
-			case integration.RouteConfigFile:
-				if isWindows {
-					previewFn, writeFn = previewRoute.RegisterCodexWindows, writeRoute.RegisterCodexWindows
-				} else {
-					previewFn, writeFn = previewRoute.RegisterCodex, writeRoute.RegisterCodex
-				}
-			}
+		// The same dispatch as the batch loop (routeWriterFor, CMD-02): a
+		// tool whose own config-lane writer the probe-route step applies
+		// (qwen-code, kimi-code) gets no writer here, so it is never offered
+		// the codex/claude-code writer its shared route KIND would select.
+		previewFn, previewOK := routeWriterFor(previewRoute, t)
+		writeFn, writeOK := routeWriterFor(writeRoute, t)
+		if routeOn && routeSupported(t) && previewOK && writeOK {
+			_, isWindows := strings.CutSuffix(t, clientwire.WindowsSuffix)
 			pre := previewFn()
 			switch {
 			case pre.Error != nil:
@@ -476,13 +464,13 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 		return err
 	}
 
-	// Probe-route step: tools whose guarded, ADDITIVE config-lane writer
-	// exists but is NOT yet live-verified (registry ProxyProbe != nil).
-	// They aren't surfaced by selectTools (not hook/MCP clients), so the
-	// eligible set derives from the registry and is detected by config-file
-	// presence (ConfigMissing → silent skip). Being unverified, the write
-	// is opt-in (default no), one consent per tool — the checklist's
-	// semantics.
+	// Probe-route step: tools whose route their OWN guarded, ADDITIVE
+	// config-lane writer applies (registry ProxyProbe != nil), including
+	// qwen-code and kimi-code, which the main step above skips through
+	// routeWriterFor. Several are not hook/MCP clients, so the eligible set
+	// derives from the registry and is detected by config-file presence
+	// (ConfigMissing → silent skip). The write is opt-in (default no), one
+	// consent per tool — the checklist's semantics.
 	for _, t := range probeRouteTools() {
 		if !routeOn || !gate.snap.AdapterActive(t) {
 			continue

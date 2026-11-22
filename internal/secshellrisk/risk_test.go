@@ -23,6 +23,25 @@ func TestAnalyze(t *testing.T) {
 		{"apt-get pinned", "apt-get install -y curl=7.88.1-10+deb12u5", policy.DialectPosix, nil},
 		{"apt-get value flag is not a package", "apt-get -o Dpkg::Options::=--force-confnew install -y curl=1.0", policy.DialectPosix, nil},
 		{"apt local deb", "apt-get install -y ./pkg.deb", policy.DialectPosix, nil},
+		// A word that was nothing but a command substitution is kept by the
+		// parser as an empty word (NF-2). Its value is unknown, so it is never
+		// judged as a package; a package named beside it still is, and one
+		// before the verb does not hide the install.
+		{"apt-get substituted package list", "apt-get install -y $(cat pkgs)", policy.DialectPosix, nil},
+		{"apt-get backtick package list", "apt-get install -y `cat pkgs` --no-install-recommends", policy.DialectPosix, nil},
+		{"apt-get quoted substitution", `apt-get install -y "$(cat pkgs)"`, policy.DialectPosix, nil},
+		{
+			"apt-get package list from a file", `DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $(grep -v '^#' /tmp/observer-packages.txt | grep -v '^$')`,
+			policy.DialectPosix, nil,
+		},
+		{
+			"apt-get named package beside a substitution", "apt-get install -y curl $(cat pkgs)", policy.DialectPosix,
+			[]Hit{{Kind: OSInstallUnpinned, Line: 0, Detail: "apt-get"}},
+		},
+		{
+			"apt-get substitution before the verb", "apt-get $(echo -q) install -y curl", policy.DialectPosix,
+			[]Hit{{Kind: OSInstallUnpinned, Line: 0, Detail: "apt-get"}},
+		},
 		{
 			"apk unpinned under sudo", "sudo apk add --no-cache git", policy.DialectPosix,
 			[]Hit{{Kind: OSInstallUnpinned, Line: 0, Detail: "apk"}},
@@ -49,6 +68,15 @@ func TestAnalyze(t *testing.T) {
 			[]Hit{{Kind: LangInstallUnpinned, Line: 0, Detail: "npm"}},
 		},
 		{"npm ci", "npm ci", policy.DialectPosix, nil},
+		{"pip substituted requirement list", "pip install $(cat requirements.in)", policy.DialectPosix, nil},
+		{"npm backtick package list", "npm install -g `cat tools.txt` --no-fund", policy.DialectPosix, nil},
+		{"go get substituted module list", "go get $(cat mods.txt)", policy.DialectPosix, nil},
+		{"npm create substituted initializer", "npm create $(echo vite)", policy.DialectPosix, nil},
+		{"npx substituted package", "npx $(cat tool) --yes", policy.DialectPosix, nil},
+		{
+			"pip named package beside a substitution", "pip install requests $(cat requirements.in)", policy.DialectPosix,
+			[]Hit{{Kind: LangInstallUnpinned, Line: 0, Detail: "pypi"}},
+		},
 		{
 			"go install latest", "go install golang.org/x/tools/cmd/goimports@latest", policy.DialectPosix,
 			[]Hit{{Kind: LangInstallUnpinned, Line: 0, Detail: "go"}},

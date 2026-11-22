@@ -147,6 +147,161 @@ func TestParseCommand_Wrappers(t *testing.T) {
 	}
 }
 
+// TestParseCommand_ExecPrefixWrappers pins the exec-prefix commands that
+// run their argv as a command (NEW-02 / NEW-F-01, 2026-11-22). Before
+// these rows `ionice -c3 rm -rf ~` parsed with Base "ionice" and every
+// rule that switches on Base (R-101's deleteShape among them) matched
+// nothing. Each row names the wrapper's value-taking flags and leading
+// operands, so the wrapped program is the one the wrapper really runs.
+// pkexec, runuser and su are privilege wrappers and set Sudo. The sudo
+// rows pin the value-taking flags the review's lead named (-r, -t, -U)
+// and the getopt cluster whose last letter takes the next word.
+func TestParseCommand_ExecPrefixWrappers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, in     string
+		wantBase     string
+		wantSudo     bool
+		wantWrappers []string
+	}{
+		{"ionice attached class", "ionice -c3 rm -rf ~", "rm", false, []string{"ionice"}},
+		{"ionice class and level", "ionice -c 2 -n 7 rm -rf ~", "rm", false, []string{"ionice"}},
+		{"ionice long class", "ionice --class 3 rm -rf ~", "rm", false, []string{"ionice"}},
+		{"ionice pid flag", "ionice -p 1 rm -rf ~", "rm", false, []string{"ionice"}},
+		{"taskset mask", "taskset 0x3 rm -rf ~", "rm", false, []string{"taskset"}},
+		{"taskset cpu list", "taskset -c 0,1 rm -rf ~", "rm", false, []string{"taskset"}},
+		{"taskset long cpu list", "taskset --cpu-list 0-3 rm -rf ~", "rm", false, []string{"taskset"}},
+		{"chrt fifo priority", "chrt -f 99 rm -rf ~", "rm", false, []string{"chrt"}},
+		{"chrt default policy priority", "chrt 10 rm -rf ~", "rm", false, []string{"chrt"}},
+		{"chrt long policy", "chrt --rr 5 rm -rf ~", "rm", false, []string{"chrt"}},
+		{"chrt optional priority omitted", "chrt -o rm -rf ~", "rm", false, []string{"chrt"}},
+		{"chrt deadline values", "chrt -d -T 1000 -P 2000 -D 1500 0 rm -rf ~", "rm", false, []string{"chrt"}},
+		{"flock file", "flock /tmp/l rm -rf ~", "rm", false, []string{"flock"}},
+		{"flock wait", "flock -w 5 /tmp/l rm -rf ~", "rm", false, []string{"flock"}},
+		{"flock conflict code", "flock -E 3 -x /tmp/l rm -rf ~", "rm", false, []string{"flock"}},
+		{"flock long timeout", "flock --timeout 5 /tmp/l rm -rf ~", "rm", false, []string{"flock"}},
+		{"pkexec", "pkexec rm -rf ~", "rm", true, []string{"pkexec"}},
+		{"pkexec user", "pkexec --user root rm -rf ~", "rm", true, []string{"pkexec"}},
+		{"pkexec short user", "pkexec -u root rm -rf ~", "rm", true, []string{"pkexec"}},
+		{"runuser user dashdash", "runuser -u root -- rm -rf ~", "rm", true, []string{"runuser"}},
+		{"runuser long user", "runuser --user=root -- rm -rf ~", "rm", true, []string{"runuser"}},
+		{"runuser user and group", "runuser -u root -g wheel -- rm -rf ~", "rm", true, []string{"runuser"}},
+		{"chroot", "chroot / rm -rf ~", "rm", false, []string{"chroot"}},
+		{"chroot userspec", "chroot --userspec root:root /srv/jail rm -rf ~", "rm", false, []string{"chroot"}},
+		{"chroot userspec attached", "chroot --userspec=1:1 /srv/jail rm -rf ~", "rm", false, []string{"chroot"}},
+		{"unshare", "unshare -r rm -rf ~", "rm", false, []string{"unshare"}},
+		{"unshare ids", "unshare -S 0 -G 0 rm -rf ~", "rm", false, []string{"unshare"}},
+		{"unshare root and wd", "unshare --root /srv -w / rm -rf ~", "rm", false, []string{"unshare"}},
+		{"nsenter target", "nsenter -t 1 -m rm -rf ~", "rm", false, []string{"nsenter"}},
+		{"nsenter long target", "nsenter --target 1 --mount rm -rf ~", "rm", false, []string{"nsenter"}},
+		{"strace output", "strace -o /dev/null rm -rf ~", "rm", false, []string{"strace"}},
+		{"strace expr", "strace -e trace=unlink -f rm -rf ~", "rm", false, []string{"strace"}},
+		{"strace pid and size", "strace -s 64 -p 1 rm -rf ~", "rm", false, []string{"strace"}},
+		{"strace cluster then value", "strace -fo /tmp/t rm -rf ~", "rm", false, []string{"strace"}},
+		{"ltrace output", "ltrace -o /tmp/t rm -rf ~", "rm", false, []string{"ltrace"}},
+		{"fakeroot", "fakeroot rm -rf ~", "rm", false, []string{"fakeroot"}},
+		{"fakeroot state", "fakeroot -s state -i state -- rm -rf ~", "rm", false, []string{"fakeroot"}},
+		{"caffeinate timeout", "caffeinate -t 10 rm -rf ~", "rm", false, []string{"caffeinate"}},
+		{"caffeinate pid", "caffeinate -i -w 123 rm -rf ~", "rm", false, []string{"caffeinate"}},
+		{"sudo role", "sudo -u root -r role rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo type", "sudo -t type rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo other user", "sudo -U bob rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo login class", "sudo -c class rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo long role and type", "sudo --role r --type t rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo long chdir and prompt", "sudo --chdir /tmp --prompt pw --host h rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo existing value flags", "sudo -g wheel -C 3 -D /tmp -h host -p pw rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo cluster ending in a value flag", "sudo -nu root rm -rf ~", "rm", true, []string{"sudo"}},
+		{"sudo cluster with attached value", "sudo -nuroot rm -rf ~", "rm", true, []string{"sudo"}},
+		{"xargs optional replace", "xargs -i rm -rf {}", "rm", false, []string{"xargs"}},
+		{"xargs long optional replace", "xargs --replace rm -rf {}", "rm", false, []string{"xargs"}},
+		{"xargs required replace", "xargs -I {} rm -rf {}", "rm", false, []string{"xargs"}},
+		{"chained new wrappers", "ionice -c3 nice -n 5 taskset 0x1 rm -rf ~", "rm", false, []string{"ionice", "nice", "taskset"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmds := ParseCommand(tc.in, DialectPosix)
+			if len(cmds) == 0 {
+				t.Fatal("no commands")
+			}
+			c := cmds[0]
+			if c.Base != tc.wantBase || c.Sudo != tc.wantSudo {
+				t.Errorf("base=%q sudo=%v, want %q/%v", c.Base, c.Sudo, tc.wantBase, tc.wantSudo)
+			}
+			if fmt.Sprint(c.Wrappers) != fmt.Sprint(tc.wantWrappers) {
+				t.Errorf("wrappers = %v, want %v", c.Wrappers, tc.wantWrappers)
+			}
+		})
+	}
+}
+
+// TestParseCommand_ShellLineWrappers pins the wrappers whose command is a
+// SHELL LINE rather than an argv tail: `flock FILE -c LINE`, `su -c LINE`,
+// `runuser -l USER -c LINE`, `script -c LINE` and `watch` (which joins its
+// arguments and hands them to `sh -c`). The wrapper stays the unit's Base
+// and its line is parsed one level deeper, like `bash -c`, so the rules see
+// the inner command. A privilege wrapper (su, runuser) marks the inner
+// units Sudo (so does a privilege wrapper around the wrapper), and every
+// inner unit lists the wrapper, the way a launched command lists its
+// launcher. `env -S` is the same shape: its value is split and run with
+// the rest of the argv appended, so it is a command line too.
+func TestParseCommand_ShellLineWrappers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, in     string
+		wantOuter    string
+		wantSudo     bool
+		wantWrappers []string
+	}{
+		{"flock -c", "flock /tmp/l -c 'rm -rf ~'", "flock", false, []string{"flock"}},
+		{"flock --command", "flock -w 3 /tmp/l --command 'rm -rf ~'", "flock", false, []string{"flock"}},
+		{"su -c", "su -c 'rm -rf ~'", "su", true, []string{"su"}},
+		{"su user then -c", "su root -c 'rm -rf ~'", "su", true, []string{"su"}},
+		{"su login dash", "su - root -c 'rm -rf ~'", "su", true, []string{"su"}},
+		{"su cluster", "su -lc 'rm -rf ~'", "su", true, []string{"su"}},
+		{"su long command", "su --command='rm -rf ~' root", "su", true, []string{"su"}},
+		{"runuser login -c", "runuser -l root -c 'rm -rf ~'", "runuser", true, []string{"runuser"}},
+		{"runuser session-command", "runuser root --session-command 'rm -rf ~'", "runuser", true, []string{"runuser"}},
+		{"script -c", "script -q -c 'rm -rf ~' /dev/null", "script", false, []string{"script"}},
+		{"watch argv", "watch -n 1 rm -rf ~", "watch", false, []string{"watch"}},
+		{"watch quoted line", "watch 'rm -rf ~'", "watch", false, []string{"watch"}},
+		{"watch line with a list", "watch -n 5 'date; rm -rf ~'", "watch", false, []string{"watch"}},
+		{"sudo outside flock -c", "sudo flock /tmp/l -c 'rm -rf ~'", "flock", true, []string{"flock"}},
+		{"env split string", "env -S 'rm -rf' ~", "env", false, []string{"env"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmds := ParseCommand(tc.in, DialectPosix)
+			if len(cmds) == 0 || cmds[0].Base != tc.wantOuter {
+				t.Fatalf("outer unit = %s, want %s first", bases(cmds), tc.wantOuter)
+			}
+			rm, ok := findCmd(cmds, "rm")
+			if !ok {
+				t.Fatalf("rm not unwrapped: %s", bases(cmds))
+			}
+			if rm.Depth != 1 {
+				t.Errorf("rm depth = %d, want 1", rm.Depth)
+			}
+			if rm.Sudo != tc.wantSudo {
+				t.Errorf("rm sudo = %v, want %v", rm.Sudo, tc.wantSudo)
+			}
+			if fmt.Sprint(rm.Wrappers) != fmt.Sprint(tc.wantWrappers) {
+				t.Errorf("rm wrappers = %v, want %v", rm.Wrappers, tc.wantWrappers)
+			}
+		})
+	}
+
+	// A wrapper with no command left is still visible as itself.
+	for _, in := range []string{"su", "su - root", "flock /tmp/l", "watch", "script out.log", "chrt -p 1234", "taskset -p 1234"} {
+		cmds := ParseCommand(in, DialectPosix)
+		want := strings.Fields(in)[0]
+		if len(cmds) != 1 || cmds[0].Base != want {
+			t.Errorf("ParseCommand(%q) = %s, want the single unit %s", in, bases(cmds), want)
+		}
+	}
+}
+
 // TestParseCommand_Unwrap pins recursive -c unwrapping, the depth
 // cap, eval, command substitution and interpreter payload capture.
 func TestParseCommand_Unwrap(t *testing.T) {

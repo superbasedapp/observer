@@ -27,8 +27,10 @@
 #   when      on an affected gate the row runs when a changed file matches
 #             one entry: *.ext (suffix), dir/ (prefix) or an exact path;
 #             always on --full
-#   tools     - or a comma list: node, golangci-lint (pinned in
-#             gate-tools.tsv), own-tree (a fresh copy of the source for
+#   tools     - or a comma list: a tool pinned in gate-tools.tsv and
+#             allowed by units.GateTools (node, golangci-lint, the SDK
+#             runtimes nodeNN and python3.N, shellcheck, jdk17, maven),
+#             own-tree (a fresh copy of the source for
 #             a command that writes into the tree, so it never races the
 #             other units of a multi-slot box; list it before git-index),
 #             git-index (a git repository of the tree the command runs in,
@@ -85,14 +87,19 @@ structcheck	-	internal/,cmd/observer-org/,tools/structcheck/,tools/orgstateinv/	
 #   every ops script; test-roll.sh runs roll.sh's dry run and its promote, halt and inconclusive paths with stubbed
 #   ssh, curl and judge. The Go rules are the tools/gatedriver and internal/trainhalt Go units.
 opsgate	-	deploy/saas-ovh/ops/,deploy/saas-ovh/roll.sh,deploy/saas-ovh/test-roll.sh,tools/gatedriver/	-	60	bash deploy/saas-ovh/ops/test-ops.sh && bash deploy/saas-ovh/test-roll.sh
+# gate-record: the L-145 gate record script (scripts/ci/gate-record.sh: build, check, add-images, show),
+#   tested hermetically by test-gate-record.sh against a throwaway bare origin with stub runner and verifier
+#   scripts (no Go, no network). It needs git, jq and tar; a missing jq fails the unit here instead of
+#   the script's own SKIP, so a worker without jq never passes it silently.
+gate-record	-	scripts/ci/gate-record.sh,scripts/ci/test-gate-record.sh	-	30	command -v jq >/dev/null 2>&1 || { echo "gate-record: jq is not installed"; exit 1; }; bash scripts/ci/test-gate-record.sh
 # drift: ci-private.yml's generated-file drift jobs that need only go, git and make
 #   (L-139: the v1.39.0 release found stale OpenAPI stubs and a stale track sitemap
-#   that no gate row had checked). Not here: the website accuracy check (it reads the
-#   GitHub API) and verify-distribution-readmes (it needs python3, absent from the
-#   golang image); the release preflight runs both. Nor verify-track-build: its
-#   sitemap <lastmod> dates come from `git log`, and the git-index snapshot is one
-#   commit made today, so every page would read as changed (ci-private.yml's
-#   track-build-drift job keeps running it on GitHub). verify-docs-build masks the
+#   that no gate row had checked). The website accuracy check and
+#   verify-distribution-readmes are units of their own (website-accuracy, drift:readmes,
+#   below). Not here: verify-track-build: its sitemap <lastmod> dates come from
+#   `git log`, and the git-index snapshot is one commit made today, so every page would
+#   read as changed; it is the host check host:track-build
+#   (scripts/ci/gate-host-checks.tsv), run in a checkout with the real history. verify-docs-build masks the
 #   two git-derived page dates for the same reason, so it runs here; docs/sdk/ and
 #   shared/lib/productNames.json are in `when` because gen publishes the first
 #   (nav.toml [roots] sdk) and expands @@name@@ tokens from the second. git-index: the
@@ -114,6 +121,11 @@ website-tests	-	website/	node	60	node --test --test-reporter=spec website/tools/
 #   safely. sdk:e2e needs PostgreSQL 16 binaries on the worker (initdb,
 #   pg_ctl; on PATH or under /usr/lib/postgresql/*/bin), or a server named
 #   by OBSERVER_CONTROL_STORE_DSN.
+#   sdk:java-17 is ci.yml's sdk job's java-17 leg (setup-java temurin 17 and
+#   the runner's Maven): sdk.sh java (mvn test) on the Temurin 17 JDK and the
+#   Maven pinned in gate-tools.tsv, with JAVA_HOME set to that JDK as
+#   setup-java sets it. Maven fetches its plugins and the test dependencies
+#   from Maven Central (repo.maven.apache.org) into the unit user's ~/.m2.
 sdk:python-3.9	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.9	90	bash scripts/ci/sdk.sh python
 sdk:python-3.10	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.10	180	bash scripts/ci/sdk.sh python
 sdk:python-3.11	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	python3.11	180	bash scripts/ci/sdk.sh python
@@ -122,6 +134,7 @@ sdk:python-3.13	-	sdk/python/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-to
 sdk:node-20	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node20	120	bash scripts/ci/sdk.sh node
 sdk:node-22	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node22	120	bash scripts/ci/sdk.sh node
 sdk:node-24	-	sdk/typescript/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	node24	120	bash scripts/ci/sdk.sh node
+sdk:java-17	-	sdk/java/,sdk/contract/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	jdk17,maven	240	JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")" && export JAVA_HOME && bash scripts/ci/sdk.sh java
 # sdk:widget-*: the end-user feedback widget (@superbased/feedback-widget),
 #   which releases with the SDKs on their version line (review E-11): its
 #   typecheck and tests on every Node major the SDK is tested on.
@@ -146,3 +159,85 @@ sdk:e2e	-	sdk/,tests/sdke2e/,scripts/ci/sdk.sh,internal/obs/,internal/ingest/otl
 #   scripts/planea-e2e/run.sh --dry-run --destination all) joins when the gate's
 #   workers have PostgreSQL 16 for the throwaway org.
 planea-e2e:unit	-	scripts/planea-e2e/,examples/ai-apps/	python3.12	30	python3 -m unittest scripts/planea-e2e/test_e2e.py
+
+# Jobs the gate stands in for so that GitHub runs only what needs GitHub
+# (docs/plans/ci-github-only-what-needs-github-2026-11-21.md, section 9.1;
+# the shard reports these units land in are combined into one unsigned gate
+# record by scripts/ci/gate-record.sh). Each row runs its job's steps minus
+# the GitHub-only setup (checkout, setup-*, caches, the free-disk step); a
+# job that wrote bin/ writes under the unit's $TMPDIR instead, removed on
+# exit.
+# govet:linux, govet:windows, copylint, build:observer, build:windows:
+#   ci.yml's go job, one unit per step: vet, vet (windows), copy lint, build
+#   (the observer and the Windows antigravity-bridge, into $TMPDIR, not
+#   bin/), windows cross-compile (go build of several packages writes
+#   nothing). The job's latency step is the host check host:latency
+#   (scripts/ci/gate-host-checks.tsv: it needs an idle box) and its
+#   toolchain tests run in the gate's tests/invariant unit (the runner does
+#   not set SBO_SKIP_TOOLCHAIN_TESTS). copylint reads Go, docs, website copy
+#   and the workflows, hence its when.
+govet:linux	-	*.go,go.mod,go.sum	-	300	go vet ./...
+govet:windows	-	*.go,go.mod,go.sum	-	360	GOOS=windows GOARCH=amd64 go vet ./...
+copylint	-	*.go,*.md,*.ts,*.tsx,go.mod,docs/,website/,deploy/,.github/workflows/,scripts/copylint/	-	60	go run ./scripts/copylint
+build:observer	-	*.go,go.mod,go.sum,internal/intelligence/dashboard/webapp/dist/	-	240	o="$(mktemp -d "${TMPDIR:-/tmp}/build.XXXXXX")" && trap 'rm -rf "$o"' EXIT && go build -trimpath -o "$o/observer" ./cmd/observer && GOOS=windows GOARCH=amd64 go build -trimpath -o "$o/antigravity-bridge.exe" ./cmd/antigravity-bridge && ls -l "$o"
+build:windows	-	*.go,go.mod,go.sum	-	480	GOOS=windows GOARCH=amd64 go build ./...
+# distro:*: ci.yml's distros job, one unit per matrix leg: build + proof +
+#   SBOM (scripts/build-distro.sh <d> --proof, with --out under $TMPDIR in
+#   place of bin/distro; distro-smoke.sh refuses a binary under /tmp, and a
+#   worker's TMPDIR is /var/tmp/sXXXX, hence the /var/tmp default), then
+#   the listener smoke (scripts/distro-smoke.sh, in its own user, mount and
+#   network namespace: the box needs unprivileged user namespaces, which
+#   WSL and the cloud boxes have; the job's apparmor sysctl is the GitHub
+#   runner's). The full leg skips on a tree without cmd/observer/obs_wire.go
+#   (the public snapshot), as the job does.
+distro:minimal	-	*.go,go.mod,go.sum,scripts/build-distro.sh,scripts/distro-smoke.sh	-	330	o="$(mktemp -d "${TMPDIR:-/var/tmp}/distro.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh minimal --proof --out "$o" && scripts/distro-smoke.sh "$o/observer-minimal-$(go env GOOS)-$(go env GOARCH)"
+distro:developer	-	*.go,go.mod,go.sum,scripts/build-distro.sh,scripts/distro-smoke.sh	-	330	o="$(mktemp -d "${TMPDIR:-/var/tmp}/distro.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh developer --proof --out "$o" && scripts/distro-smoke.sh "$o/observer-developer-$(go env GOOS)-$(go env GOARCH)"
+distro:managed	-	*.go,go.mod,go.sum,scripts/build-distro.sh,scripts/distro-smoke.sh	-	330	o="$(mktemp -d "${TMPDIR:-/var/tmp}/distro.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh managed --proof --out "$o" && scripts/distro-smoke.sh "$o/observer-managed-$(go env GOOS)-$(go env GOARCH)"
+distro:full	-	*.go,go.mod,go.sum,scripts/build-distro.sh,scripts/distro-smoke.sh	-	360	if [ ! -f cmd/observer/obs_wire.go ]; then echo "distro full skipped, this tree has no cmd/observer/obs_wire.go (the public snapshot)"; exit 0; fi; o="$(mktemp -d "${TMPDIR:-/var/tmp}/distro.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh full --proof --out "$o" && scripts/distro-smoke.sh "$o/observer-full-$(go env GOOS)-$(go env GOARCH)"
+# installer:linux: ci.yml's installer job, Linux leg (the macOS and Windows
+#   legs stay on GitHub): shellcheck (pinned, gate-tools.tsv), the
+#   mxc-files.sh offline checks, then scripts/test-install.sh against a
+#   fixture release signed by a vendorsign built into $TMPDIR (the job's
+#   $RUNNER_TEMP). node is on PATH, as on the GitHub runner, so the test's
+#   node Ed25519 verifier case runs too. test-install.sh hands the caller's
+#   PATH to install.sh, which refuses a second copy when an `observer` is
+#   already on PATH (a WSL box sees the Windows PATH, often with an npm
+#   install of observer; the GitHub runner has none), so the test runs with
+#   every PATH directory holding an observer left out.
+installer:linux	-	scripts/install.sh,scripts/test-install.sh,scripts/connect.sh,scripts/mxc-files.sh,scripts/test-mxc-files.sh,scripts/vendorsign/,internal/update/,scripts/ci/gate-tools.tsv	shellcheck,node	150	shellcheck scripts/install.sh scripts/test-install.sh && bash scripts/test-mxc-files.sh && vs="$(mktemp -d "${TMPDIR:-/tmp}/vendorsign.XXXXXX")" && trap 'rm -rf "$vs"' EXIT && go build -o "$vs/vendorsign" ./scripts/vendorsign && clean_path="$(printf '%s' "$PATH" | tr : '\n' | while IFS= read -r d; do if [ -n "$d" ] && [ ! -e "$d/observer" ]; then printf '%s:' "$d"; fi; done)" && PATH="${clean_path%:}" VENDORSIGN_BIN="$vs/vendorsign" bash scripts/test-install.sh
+# drift:plugins: ci.yml's plugins-build-drift job (web's npm ci, then make
+#   verify-plugins-build, then the plugins-repo assembly self-check).
+#   plugingen runs the real observer init registrars (about 150 packages
+#   of this module), so any Go change triggers it. own-tree: npm ci writes
+#   node_modules into the tree.
+drift:plugins	-	*.go,go.mod,go.sum,plugins/,scripts/verify-plugins-build.sh,scripts/assemble-plugins-repo.sh,web/package.json,package.json,package-lock.json,Makefile	node,own-tree	360	cd web && npm ci && cd .. && make verify-plugins-build && bash scripts/assemble-plugins-repo.sh --self-check
+# drift:taxonomy: ci.yml's taxonomy-build-drift job (web's npm ci, then its
+#   seven make verify-* steps in order, one make stopping at the first
+#   failure as the job stops at its first failed step); its webcloud step is
+#   the web:webcloud unit. The generators read Go source (cfgschema parses
+#   internal/config's doc comments; about 35 packages in all), shared/lib,
+#   web/src/lib, the migrations and testdata/agentconfig, hence its when.
+#   own-tree: npm ci.
+drift:taxonomy	-	*.go,go.mod,go.sum,shared/lib/,web/src/lib/,web/package.json,package.json,package-lock.json,internal/db/migrations/,internal/config/schema/,testdata/agentconfig/,scripts/verify-taxonomy-build.sh,scripts/verify-taxonomy-ts.sh,scripts/verify-taxonomy-migration.sh,scripts/verify-assistant-migration.sh,scripts/verify-reasoning-migration.sh,scripts/verify-config-schema-build.sh,scripts/verify-agentconfig-catalog.sh,Makefile	node,own-tree	480	cd web && npm ci && cd .. && make verify-taxonomy-build verify-taxonomy-ts verify-taxonomy-migration verify-assistant-migration verify-reasoning-migration verify-config-schema verify-agentconfig-catalog
+# drift:readmes: ci-private.yml's distribution-readmes job (make
+#   verify-distribution-readmes: the npm and PyPI READMEs against their
+#   templates and the shared body), with the pinned Python 3.12's python3.
+#   git-index: the script starts with git rev-parse --show-toplevel.
+drift:readmes	-	docs/distribution/,npm/observer/README.md,npm/superbased/README.md,pypi/observer/README.md,scripts/verify-distribution-readmes.sh,Makefile.private	python3.12,git-index	20	make verify-distribution-readmes
+# website-accuracy: ci-private.yml's website-accuracy job, whose two steps
+#   live in scripts/ci/website-accuracy.sh (the job calls it too). It asks
+#   the public GitHub API (api.github.com, no token here) whether the
+#   canonical release is published, then runs
+#   website/tools/accuracy-check.mjs over the site and its canonical sources.
+website-accuracy	-	website/,CHANGELOG.md,CLAUDE.md,docs/mcp-tools.md,internal/intelligence/cost/pricing.go,npm/observer/,pypi/observer/README.md,vscode/README.md,vscode/package.json,vscode/walkthroughs/,scripts/ci/website-accuracy.sh	node	30	bash scripts/ci/website-accuracy.sh
+# model-pricing-pg: ci-private.yml's model-pricing-pg job (the model-pricing
+#   module's ./internal/observerexport/... against a live PostgreSQL,
+#   failing on a PRICING_DSN skip), in scripts/ci/model-pricing-pg.sh with a
+#   private PostgreSQL from the worker's binaries (initdb and pg_ctl, 16 or
+#   newer, like sdk:e2e) in place of the job's postgres:16 service.
+model-pricing-pg	-	model-pricing/go.mod,model-pricing/go.sum,model-pricing/internal/,model-pricing/db/,scripts/ci/model-pricing-pg.sh	-	300	bash scripts/ci/model-pricing-pg.sh
+# image:full, image:core: ci-private.yml's org-image-proof job, one unit per
+#   matrix leg (scripts/build-distro.sh --image <i> --proof: build, proof,
+#   SBOM), with --out under $TMPDIR in place of bin/distro.
+image:full	-	*.go,go.mod,go.sum,scripts/build-distro.sh	-	420	o="$(mktemp -d "${TMPDIR:-/tmp}/image.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh --image full --proof --out "$o"
+image:core	-	*.go,go.mod,go.sum,scripts/build-distro.sh	-	360	o="$(mktemp -d "${TMPDIR:-/tmp}/image.XXXXXX")" && trap 'rm -rf "$o"' EXIT && scripts/build-distro.sh --image core --proof --out "$o"

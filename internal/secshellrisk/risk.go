@@ -132,7 +132,10 @@ func Analyze(script string, dialect policy.Dialect) (hits []Hit, truncated bool)
 }
 
 // osUnpinned reports an OS install unit that names at least one package
-// with no version.
+// with no version. An empty word is a word that was nothing but a command
+// substitution (`$(cat pkgs)`, which the parser keeps as an empty word whose
+// value it cannot know, NF-2): it is never a package name, and before the
+// verb it is skipped like an option.
 func osUnpinned(c *policy.Command) (string, bool) {
 	for _, row := range osInstallTable {
 		if c.Base != row.base {
@@ -142,6 +145,9 @@ func osUnpinned(c *policy.Command) (string, bool) {
 		verbAt := -1
 		for i := 0; i < len(args); i++ {
 			a := args[i]
+			if a == "" {
+				continue
+			}
 			if strings.HasPrefix(a, "-") {
 				if row.valueFlags[a] {
 					i++
@@ -166,8 +172,8 @@ func osUnpinned(c *policy.Command) (string, bool) {
 				}
 				continue
 			}
-			if strings.ContainsAny(a, "/$") || strings.HasSuffix(a, ".deb") || strings.HasSuffix(a, ".rpm") || strings.HasSuffix(a, ".apk") {
-				continue // a local file or an unexpanded variable: not a registry name
+			if a == "" || strings.ContainsAny(a, "/$") || strings.HasSuffix(a, ".deb") || strings.HasSuffix(a, ".rpm") || strings.HasSuffix(a, ".apk") {
+				continue // a substituted word, a local file or an unexpanded variable: not a registry name
 			}
 			if !row.pinned(a) {
 				return row.base, true

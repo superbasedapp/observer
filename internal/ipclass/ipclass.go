@@ -147,6 +147,36 @@ var metadataAddresses = func() []net.IP {
 	return out
 }()
 
+// MetadataAddresses returns the cloud instance-metadata endpoints Detail
+// names KindMetadata, in table order. The slice and its addresses are a copy:
+// a caller cannot change the set. internal/sandboxnet's never-liftable
+// cloud-metadata rule reads the same set through Detail.
+func MetadataAddresses() []net.IP {
+	out := make([]net.IP, len(metadataAddresses))
+	for i, m := range metadataAddresses {
+		out[i] = append(net.IP(nil), m...)
+	}
+	return out
+}
+
+// Unwrap returns the IPv4 address an IPv4-mapped (::ffff:a.b.c.d), NAT64
+// (64:ff9b::/96) or 6to4 (2002::/16) address carries, and any other address
+// unchanged (IPv4 in its 4-byte form). It is the unwrap Classify and Detail
+// apply, so Detail(Unwrap(ip)) == Detail(ip) for every ip; a caller that
+// compares an address against IPv4 prefixes (an allow-list) unwraps with it.
+func Unwrap(ip net.IP) net.IP {
+	if ip == nil {
+		return nil
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	if v4, ok := embeddedIPv4(ip); ok {
+		return v4
+	}
+	return ip
+}
+
 // isMetadata reports whether ip (already To4-normalized by the caller) is one
 // of the metadata endpoints, in either IPv4 or IPv6 form.
 func isMetadata(ip net.IP) bool {

@@ -154,6 +154,7 @@ func (a *CLIAdapter) ParseSessionFile(ctx context.Context, path string, fromOffs
 	res.ToolEvents = append(res.ToolEvents, todos...)
 	res.TokenEvents = append(res.TokenEvents, tokens...)
 	res.CacheObservations = append(res.CacheObservations, cacheObservations...)
+	adapter.NoteMalformedRows(&res, models.ToolKiloCodeCLI, dbPath, countMalformedRows(ctx, database, fromOffset))
 	// Issue 2: the Kilo CLI build version rides on the `session` row
 	// (session.version, e.g. "7.3.40"). Stamp it node-local for the
 	// sessions this slice touched. Store write is first-wins-unless-empty

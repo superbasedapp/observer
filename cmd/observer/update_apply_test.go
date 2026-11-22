@@ -55,6 +55,28 @@ type fakeUpdateStore struct {
 	// swap: a rise with an unchanged schema is a late step the target ran.
 	applied   int
 	appliedAt int
+	// backoff is the durable apply backoff record (FR-SEC-12).
+	backoff string
+	// supervisorRestart is the launchd hand-over's boot record (SVC-3).
+	supervisorRestart string
+}
+
+func (f *fakeUpdateStore) LoadUpdateSupervisorRestart(context.Context) (string, error) {
+	return f.supervisorRestart, nil
+}
+
+func (f *fakeUpdateStore) SaveUpdateSupervisorRestart(_ context.Context, js string) error {
+	f.supervisorRestart = js
+	return nil
+}
+
+func (f *fakeUpdateStore) LoadUpdateApplyBackoff(context.Context) (string, error) {
+	return f.backoff, nil
+}
+
+func (f *fakeUpdateStore) SaveUpdateApplyBackoff(_ context.Context, js string) error {
+	f.backoff = js
+	return nil
 }
 
 func newFakeUpdateStore() *fakeUpdateStore {
@@ -1075,38 +1097,51 @@ func (failingRenameFS) Rename(string, string) error        { return errors.New("
 func (failingRenameFS) Remove(n string) error              { return os.Remove(n) }
 func (failingRenameFS) Stat(n string) (os.FileInfo, error) { return os.Stat(n) }
 
-// TestADeterministicFailureIsBackedOffNotReRunEveryCycle is M2's third half.
+// TestADeterministicFailureIsBackedOffNotReRunEveryCycle is M2's third half,
+// now durable (FR-SEC-12).
 //
-// A hash mismatch, a bad signature, an unwritable target or a cross-device
-// swap gives the SAME answer on the next tick — so re-running it every ten
-// minutes re-downloads the archive and (before the manifest declared its
-// schema) re-took a full VACUUM INTO of the whole database, forever. That is
-// the automatic full-file rewrite class the 2026-08-26 disk audit forbids.
+// A hash mismatch, a bad signature, an unwritable target, a cross-device swap
+// or a failed hand-over gives the SAME answer on the next tick, so re-running
+// it every ten minutes re-downloads the archive, re-takes a snapshot and, for
+// a failed hand-over, drains, swaps, rolls back and restarts the daemon,
+// forever. The record is written where the outcome is, and it grows.
 func TestADeterministicFailureIsBackedOffNotReRunEveryCycle(t *testing.T) {
-	u := &updateRuntime{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-
-	u.noteAutoApplyOutcome(applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorSwap})
-	if !u.autoNextAttempt.After(time.Now()) {
-		t.Fatal("a deterministic failure was not backed off; the loop would re-run it every cycle")
+	f := newApplyFixture(t)
+	f.deps.FS = failingRenameFS{}
+	if out, _ := f.run(); out.ErrorClass != update.ErrorSwap {
+		t.Fatalf("the swap failure did not fail the apply: %+v", out)
 	}
-	first := u.autoNextAttempt
-	u.noteAutoApplyOutcome(applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorSwap})
-	if !u.autoNextAttempt.After(first) {
-		t.Error("the backoff did not grow on a repeat failure")
+	first, err := update.DecodeApplyBackoff(f.st.backoff)
+	if err != nil || first.Failures != 1 || first.ErrorClass != update.ErrorSwap || !first.NextAttempt.After(time.Now()) {
+		t.Fatalf("a deterministic failure was not backed off: %+v, %v", first, err)
 	}
-
-	// A TRANSIENT class must not back off: a failed fetch or a busy node is
-	// exactly what the plain cadence is for.
-	u.noteAutoApplyOutcome(applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorDownload})
-	if !u.autoNextAttempt.IsZero() {
-		t.Error("a transient download failure was backed off")
+	if out, _ := f.run(); out.ErrorClass != update.ErrorSwap {
+		t.Fatalf("the second swap failure did not fail the apply: %+v", out)
+	}
+	second, _ := update.DecodeApplyBackoff(f.st.backoff)
+	if second.Failures != 2 || !second.NextAttempt.After(first.NextAttempt) {
+		t.Fatalf("the backoff did not grow on a repeat failure: %+v after %+v", second, first)
 	}
 
-	// And any non-failure clears it, so a fixed manifest re-arms at once.
-	u.noteAutoApplyOutcome(applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorHash})
-	u.noteAutoApplyOutcome(applyOutcome{State: update.StateAvailable, Deferred: true, Reason: update.ReasonWindow})
-	if !u.autoNextAttempt.IsZero() || u.autoFailCount != 0 {
-		t.Error("a deferred (window) outcome left the node backed off")
+	// A TRANSIENT class leaves the record as it is: a failed fetch says
+	// nothing about the target.
+	f.deps.FS = osSwapFS{}
+	f.deps.Download = func(context.Context, string, string, io.Writer, int64) error { return errors.New("mirror unreachable") }
+	if out, _ := f.run(); out.ErrorClass != update.ErrorDownload {
+		t.Fatalf("the failed download did not fail the apply: %+v", out)
+	}
+	if f.st.backoff == "" {
+		t.Fatal("a transient download failure cleared the backoff")
+	}
+
+	// And an applied target clears it.
+	g := newApplyFixture(t)
+	g.st.backoff = f.st.backoff
+	if out, err := g.run(); err != nil || !out.Applied {
+		t.Fatalf("apply: %+v, %v", out, err)
+	}
+	if g.st.backoff != "" {
+		t.Fatalf("an applied target left the backoff: %s", g.st.backoff)
 	}
 }
 

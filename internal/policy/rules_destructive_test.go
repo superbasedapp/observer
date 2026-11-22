@@ -270,6 +270,54 @@ func TestDestructiveRules(t *testing.T) {
 	runRuleCases(t, cases, KindShellExec, "run_command")
 }
 
+// TestR101BehindExecPrefixWrappers is NEW-02 (NEW-F-01, 2026-11-22): the
+// critical recursive-delete row must hold behind every exec-prefix command
+// that runs its argv (or a shell line) as a command. Before the wrapper
+// rows each of these allowed in ModeEnforce, because the unit's Base was
+// the wrapper and deleteShape matches only delete commands.
+func TestR101BehindExecPrefixWrappers(t *testing.T) {
+	t.Parallel()
+	var cases []destructiveCase
+	for _, cmd := range []string{
+		"ionice -c3 rm -rf ~",
+		"taskset 0x3 rm -rf ~",
+		"taskset -c 0,1 rm -rf ~",
+		"chrt -f 99 rm -rf ~",
+		"chrt -o rm -rf ~",
+		"flock /tmp/l rm -rf ~",
+		"flock /tmp/l -c 'rm -rf ~'",
+		"pkexec rm -rf ~",
+		"pkexec --user root rm -rf ~",
+		"runuser -u root -- rm -rf ~",
+		"runuser -l root -c 'rm -rf ~'",
+		"chroot / rm -rf ~",
+		"unshare -r rm -rf ~",
+		"nsenter -t 1 -m rm -rf ~",
+		"strace -o /dev/null rm -rf ~",
+		"ltrace -o /dev/null rm -rf ~",
+		"fakeroot rm -rf ~",
+		"watch -n 1 rm -rf ~",
+		"watch 'rm -rf ~'",
+		"caffeinate -t 10 rm -rf ~",
+		"su -c 'rm -rf ~'",
+		"su root -c 'rm -rf ~'",
+		"script -q -c 'rm -rf ~' /dev/null",
+		"sudo -u root -r role rm -rf ~",
+		"sudo -t type rm -rf ~",
+		"sudo -U bob rm -rf ~",
+		"sudo -nu root rm -rf ~",
+		"xargs -i rm -rf ~",
+	} {
+		cases = append(cases, destructiveCase{name: "R-101 hit: " + cmd, cmd: cmd, wantRule: "R-101", wantEnforce: DecisionDeny})
+	}
+	// Near-misses: the same wrappers around a delete inside the project.
+	cases = append(cases,
+		destructiveCase{name: "R-101 near-miss: ionice inside project", cmd: "ionice -c3 rm -rf ./build"},
+		destructiveCase{name: "R-101 near-miss: flock -c inside project", cmd: "flock /tmp/l -c 'rm -rf ./build'"},
+	)
+	runRuleCases(t, cases, KindShellExec, "run_command")
+}
+
 // TestR101ThroughSymlink pins Sol A2-04's second bypass: a delete whose
 // operand is lexically inside the project but whose existing prefix is a
 // symlink to the home directory (or out of the project) is judged by

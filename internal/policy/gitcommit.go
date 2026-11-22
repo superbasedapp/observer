@@ -668,6 +668,9 @@ func applyShortFlag(row commitShellRow, in *GitWrite, l byte) {
 func gitDirOption(argv []string) string {
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
+		if t == "" {
+			continue // a substituted word (parseGitInvocation)
+		}
 		if !strings.HasPrefix(t, "-") {
 			return ""
 		}
@@ -1128,6 +1131,9 @@ func stagingGitUnit(argv []string, inline, table map[string]string, depth int) (
 func gitWorkTreeOption(argv []string) bool {
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
+		if t == "" {
+			continue // a substituted word (parseGitInvocation)
+		}
 		if !strings.HasPrefix(t, "-") {
 			return false
 		}

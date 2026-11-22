@@ -31,12 +31,18 @@ def test_rc04_pack_needs_the_gate_attestation_and_e2e():
     wf = _read(".github/workflows/sdk-release.yml")
     e2e = _job(wf, "e2e")
     assert "go run ./tests/sdke2e" in e2e
-    assert "if:" not in e2e.split("steps:")[0], "the e2e job is never skipped"
+    # e2e skips only on the gate record (L-139: the release gate's sdk:e2e
+    # unit ran the same suite against servers built from the same commit);
+    # without it the job always runs.
+    ifs = re.findall(r"^    if: (.*)$", e2e.split("steps:")[0], re.M)
+    assert ifs == ["needs.gate.outputs.gated != 'true'"], ifs
     pack = _job(wf, "pack")
     needs = re.search(r"^    needs: \[(.*?)\]", pack, re.M).group(1)
     assert {n.strip() for n in needs.split(",")} >= {"gate", "verify", "e2e"}
     assert "needs.e2e.result == 'success'" in pack
-    assert "needs.gate.outputs.attested" in pack and '!= "true"' in pack and "exit 1" in pack
+    # A skipped e2e publishes only together with the gate record.
+    assert "(needs.e2e.result == 'skipped' && needs.gate.outputs.gated == 'true')" in pack
+    assert "needs.gate.outputs.gated" in pack and '!= "true"' in pack and "exit 1" in pack
     for pub in ("publish-pypi", "publish-npm"):
         assert re.search(r"needs: \[gate, pack\]", _job(wf, pub)), pub
         assert "needs.pack.result == 'success'" in _job(wf, pub)

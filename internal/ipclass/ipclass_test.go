@@ -137,6 +137,59 @@ func TestDetail(t *testing.T) {
 	}
 }
 
+// TestMetadataAddresses pins the exported metadata set (NEW-05): every
+// address in it is KindMetadata, and the returned slice is a copy, so a
+// caller cannot change what Detail tests.
+func TestMetadataAddresses(t *testing.T) {
+	t.Parallel()
+	got := MetadataAddresses()
+	want := []string{"169.254.169.254", "169.254.170.2", "169.254.170.23", "100.100.100.200", "fd00:ec2::254", "fd00:ec2::23"}
+	if len(got) != len(want) {
+		t.Fatalf("MetadataAddresses() = %v, want %v", got, want)
+	}
+	for i, ip := range got {
+		if !ip.Equal(net.ParseIP(want[i])) {
+			t.Errorf("MetadataAddresses()[%d] = %v, want %s", i, ip, want[i])
+		}
+		if Detail(ip) != KindMetadata {
+			t.Errorf("Detail(%v) = %v, want metadata", ip, Detail(ip))
+		}
+	}
+	got[3][0], got[0] = 1, net.ParseIP("8.8.8.8")
+	if Detail(net.ParseIP("100.100.100.200")) != KindMetadata || Detail(net.ParseIP("169.254.169.254")) != KindMetadata {
+		t.Fatal("changing the returned slice changed the set")
+	}
+}
+
+// TestUnwrap pins the IPv4-in-IPv6 forms Unwrap reads (the ones Classify and
+// Detail classify as the IPv4 they carry) and the forms it leaves alone.
+func TestUnwrap(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"10.1.2.3", "10.1.2.3"},
+		{"::ffff:10.1.2.3", "10.1.2.3"},
+		{"64:ff9b::a01:203", "10.1.2.3"},
+		{"2002:a01:203::", "10.1.2.3"},
+		{"2002:a01:203:ffff::1", "10.1.2.3"},
+		{"::a01:203", "::a01:203"},
+		{"::1", "::1"},
+		{"fd00:ec2::254", "fd00:ec2::254"},
+		{"2001:db8::1", "2001:db8::1"},
+	}
+	for _, tc := range cases {
+		got := Unwrap(net.ParseIP(tc.in))
+		if !got.Equal(net.ParseIP(tc.want)) {
+			t.Errorf("Unwrap(%s) = %v, want %s", tc.in, got, tc.want)
+		}
+		if Detail(got) != Detail(net.ParseIP(tc.in)) {
+			t.Errorf("Detail(Unwrap(%s)) = %v, Detail = %v", tc.in, Detail(got), Detail(net.ParseIP(tc.in)))
+		}
+	}
+	if Unwrap(nil) != nil {
+		t.Error("Unwrap(nil) != nil")
+	}
+}
+
 // TestKindPrivate pins which Kinds R-175 counts as a non-public internal
 // address.
 func TestKindPrivate(t *testing.T) {

@@ -41,10 +41,12 @@ type LaunchAgentOptions struct {
 // RenderLaunchAgent renders the LaunchAgent plist. The output is
 // deterministic, so a re-install with the same inputs is byte-identical.
 //
-// KeepAlive is SuccessfulExit=false rather than true for the reason the
-// template documents: after a successful update handshake the old process
-// exits 0 on purpose with the new binary already running, and a hard
-// KeepAlive would race launchd's restart against it. A crash still restarts.
+// KeepAlive is SuccessfulExit=false: launchd restarts an unsuccessful exit
+// only. An in-place update relies on it (SVC-3, HandoverEndFor): after the new
+// binary's self-check the old daemon stops it and exits
+// SupervisorRestartExitCode, and this restarts the job from the swapped
+// binary. A crash restarts too; a deliberate stop (exit 0) stays stopped.
+// LaunchAgentRestartsOnFailure is the interlock's reading of this key.
 func RenderLaunchAgent(o LaunchAgentOptions) string {
 	path := o.Path
 	if path == "" {

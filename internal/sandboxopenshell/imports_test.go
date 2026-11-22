@@ -14,6 +14,7 @@ func TestPackageImports_Bounded(t *testing.T) {
 	importpin.Check(t, importpin.Spec{
 		Forbidden: []string{"database/sql", "net/http", "net", "os", "os/exec", "syscall", "github.com/fsnotify/fsnotify"},
 		Allowed: []string{
+			"github.com/marmutapp/superbased-observer/internal/ipclass",
 			"github.com/marmutapp/superbased-observer/internal/sandboxbackend",
 			"github.com/marmutapp/superbased-observer/internal/sandboxcidr",
 			"github.com/marmutapp/superbased-observer/internal/sandboxselect",

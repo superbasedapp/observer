@@ -85,7 +85,24 @@ func matchHookSwitchWrite(ctx *MatchContext) (bool, string) {
 			return true, switchDetail(sw) + " (" + ev.Target + ")"
 		}
 	}
+	if hasUnseenEdit(ev.Edits) {
+		return true, sws[0].Desc + " file written with content the guard cannot see, by a rename onto it (" + ev.Target + ")"
+	}
 	return false, ""
+}
+
+// hasUnseenEdit reports an edit whose content the boundary cannot see
+// (EditUnknown: the destination of an apply_patch rename, NEW-07). A
+// content rule treats it as content that may set anything, so a rename
+// cannot carry a switch, driver or override past the rule that would judge
+// the same content written directly.
+func hasUnseenEdit(edits []ProposedEdit) bool {
+	for _, e := range edits {
+		if e.Kind == EditUnknown {
+			return true
+		}
+	}
+	return false
 }
 
 // switchDetail is the verdict detail naming the switch and its value.

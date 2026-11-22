@@ -11,7 +11,7 @@ import (
 // pinnedMaxVersion is the version pin (plan §6 CI-P3: "its own max-version pin
 // test from 0001"). Bump it deliberately, in the same change that adds a
 // migration, so a stray file cannot slip in.
-const pinnedMaxVersion = 150
+const pinnedMaxVersion = 153
 
 func TestMaxEmbeddedVersionPin(t *testing.T) {
 	got, err := db.MaxEmbeddedVersion()
@@ -26,6 +26,9 @@ func TestMaxEmbeddedVersionPin(t *testing.T) {
 func TestResultRetentionDoesNotUseCallerOwnedScratch(t *testing.T) {
 	pool := cloudtestpg.NewDB(t)
 	ctx := context.Background()
+	// The attacker modelled here kept TEMP, which 0153 revokes from every
+	// application role: the function must be safe without the revoke.
+	grantAttackerTemp(t, pool, "sbci_worker")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

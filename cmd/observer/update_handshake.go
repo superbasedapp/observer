@@ -8,10 +8,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/service"
+	"github.com/marmutapp/superbased-observer/internal/update"
 )
 
 // update_handshake.go is §3.7 step 7 — fork-exec-and-watch, never
@@ -38,7 +42,7 @@ import (
 //	    a bind failure)                        -> cmd.Wait returns first;
 //	(c) the child hangs and never reports      -> the timer fires.
 //
-// A supervisor (systemd Restart=always, launchd KeepAlive, a Windows service)
+// A supervisor (the systemd unit, launchd KeepAlive, a Windows service)
 // is RECOMMENDED and templated under deploy/supervisor/, but it is not a
 // precondition (ruling R14): it covers only the residual window after the old
 // parent has exited, and a host reboot.
@@ -84,6 +88,15 @@ type handshakeResult struct {
 	// Defender scan of the swapped-in file before any hook could
 	// (update_handshake_warmup.go).
 	Started bool
+	// RestartBySupervisor reports a hand-over that ends with the supervisor
+	// starting the new binary (service.EndRestartBySupervisor, launchd):
+	// the caller stops the child with stopChild and exits
+	// service.SupervisorRestartExitCode, instead of exiting 0.
+	RestartBySupervisor bool
+	// stopChild sends the self-checked child SIGTERM and waits up to grace
+	// for it to drain and exit, then kills it. Set only with
+	// RestartBySupervisor.
+	stopChild func(grace time.Duration) error
 }
 
 // superviseNewBinary spawns exePath as a child and watches it.
@@ -145,7 +158,18 @@ func superviseNewBinary(ctx context.Context, exePath string, argv []string, stat
 		case msg := <-reported:
 			ok, detail := interpretHandshakeMessage(msg, nonce)
 			if ok {
-				return handshakeResult{Ready: true, Detail: detail, ChildPID: pid, Started: true}, nil
+				// The child is the daemon now: under systemd, make it the
+				// unit's main process before this one exits 0 (INFRA-01).
+				handOverMainPID(pid, logger)
+				res := handshakeResult{Ready: true, Detail: detail, ChildPID: pid, Started: true}
+				// Under launchd there is no MAINPID: the agent must start
+				// the new binary itself, so this process stops the child
+				// and exits for the restart (SVC-3 option b).
+				if service.HandoverEndFor(currentSupervisor()) == service.EndRestartBySupervisor {
+					res.RestartBySupervisor = true
+					res.stopChild = func(grace time.Duration) error { return stopHandshakeChild(cmd, exited, grace) }
+				}
+				return res, nil
 			}
 			if strings.TrimSpace(msg) == "" {
 				// The channel closed with nothing written, which is what a
@@ -233,6 +257,130 @@ func interpretHandshakeMessage(msg, nonce string) (bool, string) {
 	default:
 		return false, "the new binary sent an unrecognised handshake message"
 	}
+}
+
+// handoverCgroup reads this process's cgroup membership (a seam for tests).
+var handoverCgroup = func() (string, error) {
+	b, err := os.ReadFile("/proc/self/cgroup")
+	return string(b), err
+}
+
+// launchAgentPlist reads the installed LaunchAgent's plist ("" when there is
+// none or it cannot be read). A seam for tests.
+var launchAgentPlist = func() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(service.LaunchAgentPath(home))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// handoverFacts resolves the interlock's input from this process's own
+// facts: its cgroup, $NOTIFY_SOCKET, $XPC_SERVICE_NAME and the installed
+// agent plist (read only under launchd). parentKeeps says whether the daemon
+// running the apply performs its half of the hand-over.
+func handoverFacts(parentKeeps bool) service.HandoverInput {
+	in := service.HandoverInput{
+		Supervisor:             currentSupervisor(),
+		NotifySocket:           strings.TrimSpace(os.Getenv("NOTIFY_SOCKET")) != "",
+		ParentKeepsSupervision: parentKeeps,
+	}
+	if in.Supervisor == service.SupervisorLaunchd {
+		in.AgentRestartsOnFailure = service.LaunchAgentRestartsOnFailure(launchAgentPlist())
+	}
+	return in
+}
+
+// parentHandoverRefusal is the apply parent's interlock, checked before
+// anything is downloaded or drained. The parent is this release, so its own
+// half of the hand-over is never the problem; the supervisor's half is.
+func parentHandoverRefusal() service.HandoverRefusal {
+	return service.DecideHandover(handoverFacts(true))
+}
+
+// childHandoverRefusal is the new binary's interlock, checked in its
+// self-check before it reports ready. parentVersion is the apply row's
+// previous version: the daemon that spawned this one.
+func childHandoverRefusal(parentVersion string) service.HandoverRefusal {
+	return service.DecideHandover(handoverFacts(update.ParentKeepsSupervision(parentVersion)))
+}
+
+// handOverMainPID tells a systemd manager that runs this daemon as
+// observer.service (NotifyAccess=main, internal/service/supervision.go) that
+// childPID is the unit's main process now. Without it systemd reads the old
+// daemon's exit 0 as the service stopping and SIGTERMs the new daemon.
+//
+// It runs only after the child passed its self-check, the point after which
+// the apply never rolls back, and it is a no-op outside that unit (no
+// NOTIFY_SOCKET, or a cgroup that is not observer.service). A failed send is
+// logged, not fatal: the handover itself has succeeded, and on systemd 250+
+// the unit's ExitType=cgroup still keeps it up.
+func handOverMainPID(childPID int, logger *slog.Logger) {
+	cg, _ := handoverCgroup()
+	n, ok := service.MainPIDHandover(os.Getenv("NOTIFY_SOCKET"), cg, childPID)
+	if !ok {
+		return
+	}
+	err := sendSupervisorNotification(n)
+	if logger == nil {
+		return
+	}
+	if err != nil {
+		logger.Warn("update handshake: could not tell systemd the new daemon is the unit's main process; on systemd < 250 the unit may stop when this process exits",
+			"pid", childPID, "err", err)
+		return
+	}
+	logger.Info("update handshake: told systemd the new daemon is the unit's main process", "pid", childPID)
+}
+
+// sendSupervisorNotification writes one sd_notify datagram. systemd reads the
+// sender's credentials from the socket (SO_PASSCRED) and accepts it only from
+// the unit's main process.
+func sendSupervisorNotification(n service.Notification) error {
+	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: n.Socket, Net: "unixgram"})
+	if err != nil {
+		return fmt.Errorf("observer update: notify socket: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte(n.Message)); err != nil {
+		return fmt.Errorf("observer update: notify socket: %w", err)
+	}
+	return nil
+}
+
+// stopHandshakeChild asks a self-checked child to drain and exit, waits up to
+// grace for it, and kills it after that. exited is the channel the
+// handshake's cmd.Wait goroutine reports on; nothing else reads it once the
+// handshake returned ready.
+func stopHandshakeChild(cmd *exec.Cmd, exited <-chan error, grace time.Duration) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if err := terminateHandshakeChild(cmd.Process); err != nil {
+		killHandshakeChild(cmd)
+	}
+	select {
+	case <-exited:
+		return nil
+	case <-time.After(grace):
+	}
+	killHandshakeChild(cmd)
+	select {
+	case <-exited:
+	case <-time.After(handshakeExitGrace):
+	}
+	return fmt.Errorf("observer update: the new binary did not exit within %s of SIGTERM and was killed", grace)
+}
+
+// currentSupervisor is this process's supervisor (service.DetectSupervisor
+// over its cgroup and $XPC_SERVICE_NAME).
+func currentSupervisor() service.Supervisor {
+	cg, _ := handoverCgroup()
+	return service.DetectSupervisor(cg, os.Getenv("XPC_SERVICE_NAME"))
 }
 
 // killHandshakeChild terminates a child that failed or hung. It is

@@ -1401,6 +1401,12 @@ func newWorkerCmd() *cobra.Command {
 			// loop — it only ever calls store methods, never HTTP.
 			go jobs.RunDigestScheduler(ctx, s, time.Now, jobs.DigestSchedulerConfig{Logger: log, Credentials: credentials, Attestor: attestor})
 
+			// CLOUD-01: delete evidence at its expires_at whatever its job's
+			// state (jobs/evidencesweep.go, SBCI_EVIDENCE_SWEEP_INTERVAL).
+			if err := jobs.StartEvidenceSweeper(ctx, log, s, os.Getenv); err != nil {
+				return err
+			}
+
 			// W5 results retention: age out a plan's results past
 			// results_retention_days (free 30d, Plus 365d). Daily-scale work, once
 			// at start plus a daily cadence, mirroring the W6d retention loop's

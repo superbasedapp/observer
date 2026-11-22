@@ -549,3 +549,75 @@ func TestAppliedMigrationStepsCountsTheLineage(t *testing.T) {
 		t.Fatalf("saving the update row moved the count %d -> %d", n, again)
 	}
 }
+
+// TestUpdateApplyBackoffSurvivesAReopen pins FR-SEC-12's storage half: the
+// apply backoff is written through this seam and read back by a DIFFERENT
+// handle on the same file, because a failed hand-over ends with the process
+// that recorded it exiting. An empty record deletes the key.
+func TestUpdateApplyBackoffSurvivesAReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observer.db")
+	open := func() (*Store, func()) {
+		database, err := db.Open(ctx, db.Options{Path: path})
+		if err != nil {
+			t.Fatalf("db.Open: %v", err)
+		}
+		return New(database), func() { _ = database.Close() }
+	}
+	s, done := open()
+	if got, err := s.LoadUpdateApplyBackoff(ctx); err != nil || got != "" {
+		t.Fatalf("fresh database: %q, %v", got, err)
+	}
+	const rec = `{"target":"v1.43.0","failures":2,"error_class":"healthcheck"}`
+	if err := s.SaveUpdateApplyBackoff(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated state write must not disturb it.
+	row, err := s.LoadUpdateState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.State = update.StateFailed
+	if err := s.SaveUpdateState(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	done()
+
+	s2, done2 := open()
+	defer done2()
+	if got, err := s2.LoadUpdateApplyBackoff(ctx); err != nil || got != rec {
+		t.Fatalf("after reopen: %q, %v; want %q", got, err, rec)
+	}
+	if err := s2.SaveUpdateApplyBackoff(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s2.LoadUpdateApplyBackoff(ctx); err != nil || got != "" {
+		t.Fatalf("after clearing: %q, %v", got, err)
+	}
+}
+
+// TestUpdateSupervisorRestartRoundTrips: the launchd hand-over's boot record
+// is its own key beside the backoff, and "" deletes it.
+func TestUpdateSupervisorRestartRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	s := updateTestStore(t)
+	const rec = `{"target":"v1.43.0","attempts":1}`
+	if err := s.SaveUpdateSupervisorRestart(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveUpdateApplyBackoff(ctx, `{"target":"v1.43.0","failures":1}`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.LoadUpdateSupervisorRestart(ctx); err != nil || got != rec {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if err := s.SaveUpdateSupervisorRestart(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.LoadUpdateSupervisorRestart(ctx); got != "" {
+		t.Fatalf("after clearing: %q", got)
+	}
+	if got, _ := s.LoadUpdateApplyBackoff(ctx); got == "" {
+		t.Fatal("clearing the boot record cleared the backoff")
+	}
+}

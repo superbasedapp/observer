@@ -348,9 +348,15 @@ model-pricing/scripts/extract-cache/
 /scripts/ci/release-dispatch.sh
 /scripts/ci/release-dispatch-paths.tsv
 /tests/invariant/release_dispatch_test.go
-# The gate attestation's private half (L-139).
-/scripts/ci/publish-gate-attestation.sh
+# The gate record's private half (L-139); scripts/ci/gate-record.sh is public.
 /scripts/ci/gate-coverage.tsv
+/scripts/ci/release-record.sh
+/tests/invariant/release_record_test.go
+/scripts/ci/gate-shard.sh
+/scripts/ci/gate-host-checks.sh
+/scripts/ci/gate-host-checks.tsv
+/scripts/ci/website-accuracy.sh
+/scripts/ci/model-pricing-pg.sh
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
 /examples/copilot-harness/README-orgplane.md

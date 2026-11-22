@@ -160,6 +160,7 @@ var gatewayRuleRows = []gatewayRuleRow{
 	{RuleMulticast, RefusalSSRFFloor, KeyEgress},
 	{RuleLimitedBroadcast, RefusalSSRFFloor, KeyEgress},
 	{RuleIPv4Compatible, RefusalSSRFFloor, KeyEgress},
+	{RuleCloudMetadata, RefusalSSRFFloor, KeyEgress},
 }
 
 // stageKeyRows overrides a row's key when the named check reported the

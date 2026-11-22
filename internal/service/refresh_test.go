@@ -28,6 +28,14 @@ func TestDecideRefresh(t *testing.T) {
 		{"replaced binary, idle proxy", stale, RefreshRestart, "no proxy route is active"},
 		{"executable unreadable, idle proxy", with(func(in *RefreshInputs) { in.ExecChanged, in.ExecUnknown = false, true }), RefreshRestart, ""},
 		{"new ExecStart arguments, idle proxy", with(func(in *RefreshInputs) { in.ExecChanged, in.ExecStartChanged = false, true }), RefreshRestart, ""},
+		// UPD-9 interlock: a daemon started under a unit without the update
+		// hand-over (no NOTIFY_SOCKET) is refused every in-place update until
+		// it restarts under the rewritten unit, so the same binary still
+		// needs the restart, under the same proxy-safety rows.
+		{"same binary, started without the hand-over, idle proxy", with(func(in *RefreshInputs) { in.ExecChanged, in.HandoverMissing = false, true }), RefreshRestart, "no proxy route is active"},
+		{"same binary, started without the hand-over, route active", with(func(in *RefreshInputs) {
+			in.ExecChanged, in.HandoverMissing, in.Routes = false, true, []string{"codex (x)"}
+		}), RefreshAdvise, "proxy route is active"},
 	}
 	for _, c := range cases {
 		d := DecideRefresh(c.in)

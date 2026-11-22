@@ -232,8 +232,11 @@ func TestParseAttributesSubstitutionToItsUnit(t *testing.T) {
 			}
 		}
 	}
-	if cmds[0].Base != "cd" || len(cmds[0].Argv) != 1 {
-		t.Fatalf("cd $(x) argv = %q, want just [cd] as before the marker", cmds[0].Argv)
+	// Since NF-6 (guard-parser lane, 2026-11-22) a whole-word substitution
+	// keeps its place as an empty word, as the quoted `"$(x)"` always did,
+	// recorded as lost; the directory change stays unknown (argUnknown).
+	if cmds[0].Base != "cd" || !equalStrings(cmds[0].Argv, []string{"cd", ""}) || !equalInts(cmds[0].lostArgs, []int{1}) {
+		t.Fatalf("cd $(x) argv = %q lost %v, want [cd \"\"] with the empty word lost", cmds[0].Argv, cmds[0].lostArgs)
 	}
 }
 

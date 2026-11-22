@@ -1,8 +1,12 @@
 package policy
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"github.com/marmutapp/superbased-observer/internal/ipclass"
 )
 
 // Exfiltration & network rules R-170…R-173 (spec §5.3) — the exfil
@@ -549,6 +553,10 @@ func matchFileUpload(ctx *MatchContext, cmd *Command) (bool, string) {
 		if v, ok := cmd.FlagValue("-F", "--form"); ok && strings.Contains(v, "=@") {
 			return true, "curl --form " + v
 		}
+	case "wget":
+		if flag, file, ok := wgetUploadFile(cmd.Args()); ok {
+			return true, "wget " + flag + " " + file
+		}
 	case "invoke-webrequest", "invoke-restmethod":
 		// PS parameters are case-insensitive and not in the posix
 		// flag tables; scan argv directly.
@@ -567,6 +575,100 @@ func matchFileUpload(ctx *MatchContext, cmd *Command) (bool, string) {
 	return false, ""
 }
 
+// wgetUploadOptions are the wget options that send a file's contents as
+// the request body (NF-4, guard-parser lane 2026-11-22): the long option,
+// the shortest prefix of it GNU getopt accepts (wget takes any unambiguous
+// prefix: `--post-` is ambiguous with --post-data, `--post-f` is not), and
+// the wgetrc command that does the same through -e/--execute (wgetrc
+// command names ignore case, `_` and `-`).
+var wgetUploadOptions = []struct{ long, minPrefix, wgetrc string }{
+	{long: "--post-file", minPrefix: "--post-f", wgetrc: "postfile"},
+	{long: "--body-file", minPrefix: "--body-f", wgetrc: "bodyfile"},
+}
+
+// wgetExecute is wget's option that runs a wgetrc command, and the
+// shortest prefix getopt accepts (`--ex` is ambiguous with --exclude-*).
+const wgetExecute, wgetExecuteMin = "--execute", "--exe"
+
+// wgetUploadFile reports a wget upload form among wget's arguments: the
+// option (or wgetrc command) that sends a file and the file it names. The
+// walk follows wget's option table (posixHostSpecs) so a value is never
+// read as an option, and stops at `--`.
+func wgetUploadFile(args []string) (flag, file string, ok bool) {
+	spec := posixHostSpecs["wget"]
+	value := func(i int, val string, hasEq bool) string {
+		if hasEq || i+1 >= len(args) {
+			return val
+		}
+		return args[i+1]
+	}
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		if t == "--" {
+			break
+		}
+		if len(t) < 2 || t[0] != '-' {
+			continue
+		}
+		if strings.HasPrefix(t, "--") {
+			name, val, hasEq := strings.Cut(t, "=")
+			for _, o := range wgetUploadOptions {
+				if len(name) >= len(o.minPrefix) && strings.HasPrefix(o.long, name) {
+					return o.long, value(i, val, hasEq), true
+				}
+			}
+			if len(name) >= len(wgetExecuteMin) && strings.HasPrefix(wgetExecute, name) {
+				if f, v, hit := wgetrcUpload(value(i, val, hasEq)); hit {
+					return f, v, true
+				}
+			}
+			if !hasEq && spec.longValued[name] {
+				i++
+			}
+			continue
+		}
+		for k := 1; k < len(t); k++ {
+			if strings.IndexByte(spec.shortValued, t[k]) < 0 {
+				continue
+			}
+			v := t[k+1:]
+			if v == "" && i+1 < len(args) {
+				i++
+				v = args[i]
+			}
+			if t[k] == 'e' {
+				if f, fv, hit := wgetrcUpload(v); hit {
+					return f, fv, true
+				}
+			}
+			break
+		}
+	}
+	return "", "", false
+}
+
+// wgetrcUpload reports a wgetrc command (`post_file = ./a.bin`) that sends
+// a file (wgetUploadOptions).
+func wgetrcUpload(command string) (flag, file string, ok bool) {
+	name, val, hasEq := strings.Cut(command, "=")
+	if !hasEq {
+		return "", "", false
+	}
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', ' ', '\t':
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, name)
+	for _, o := range wgetUploadOptions {
+		if name == o.wgetrc {
+			return "-e " + o.wgetrc, strings.TrimSpace(val), true
+		}
+	}
+	return "", "", false
+}
+
 // isRemoteCopySpec reports an scp/rsync remote-destination operand
 // (user@host:path or host:path). Single-letter prefixes before ':'
 // are treated as Windows drive paths, never hosts.
@@ -582,40 +684,461 @@ func isRemoteCopySpec(p string) bool {
 	return true
 }
 
-// safeUploadLocalhostOnly exempts R-171 uploads whose URL targets are
-// all loopback — posting a file to a local dev server is routine.
-// Units with no URL-shaped argument are NOT exempt (scp/rsync forms
-// carry host specs, not URLs).
-func safeUploadLocalhostOnly(_ *MatchContext, cmd *Command) bool {
-	if cmd == nil {
+// safeUploadLocalhostOnly exempts R-171 uploads whose every destination is
+// loopback — posting a file to a local dev server is routine.
+//
+// The exemption is narrow on purpose (NEW-03 / NEW-F-02, 2026-11-22). It
+// used to cut a URL's host at the first of `/:?#`, so
+// `http://127.0.0.1:1@evil.example/` (userinfo 127.0.0.1:1, host
+// evil.example) read as loopback, and it ignored every destination that
+// was not an http(s) URL. Now:
+//
+//   - only a URL tool is ever exempt (curl, Invoke-WebRequest,
+//     Invoke-RestMethod); scp/sftp/rsync name a remote spec, not a URL,
+//     so a stray `http://localhost/` beside one exempts nothing;
+//   - a URL is parsed with net/url, a URL carrying userinfo is never
+//     loopback, and the host must be a loopback literal or `localhost`
+//     (ipclass.IsLoopbackHost; `0.0.0.0` is not loopback);
+//   - for curl, EVERY URL operand counts (positional, scheme-less,
+//     any scheme, `--url`), so `http://localhost/ evil.example` is not
+//     exempt;
+//   - an option or variable that can send a request for a loopback URL
+//     to another host voids the exemption whatever its value: a proxy,
+//     `--connect-to`, `--resolve`, a DNS override, a config file
+//     (uploadRouteFlags, uploadRouteEnv);
+//   - a unit that had a command substitution is never exempt (FR-SEC-1,
+//     review 2026-11-22): the parser strips the substitution out of the
+//     word, so `http://127.0.0.1$(echo .evil.example)/` reads as
+//     `http://127.0.0.1/` while curl is given 127.0.0.1.evil.example. The
+//     guard cannot know what the substitution prints, wherever it sits.
+//
+// A routing variable set by ANOTHER unit of the same event voids the
+// exemption too (FR-SEC-3, review 2026-11-22): `export ALL_PROXY=...;
+// curl -T f http://127.0.0.1:9/` sends the file to the proxy
+// (eventSetsRouteEnv).
+func safeUploadLocalhostOnly(ctx *MatchContext, cmd *Command) bool {
+	if cmd == nil || cmd.hadSub || uploadRerouteEnv(cmd.Env) || eventSetsRouteEnv(ctx) {
 		return false
 	}
-	urls := 0
-	for _, t := range cmd.Args() {
-		lt := strings.ToLower(t)
-		if !strings.HasPrefix(lt, "http://") && !strings.HasPrefix(lt, "https://") {
+	switch cmd.Base {
+	case "curl":
+		return curlLoopbackOnly(cmd.Args())
+	case "invoke-webrequest", "invoke-restmethod":
+		return psLoopbackOnly(cmd.Base, cmd.Args())
+	}
+	return false
+}
+
+// uploadRouteFlags are the curl options that can send a request for a
+// loopback URL to another host: proxies, connection and address
+// overrides, DNS overrides, and a config file (which can set any of
+// them). Each voids the R-171 loopback exemption whatever its value.
+// An unambiguous prefix of one (`--resol`, which older curl accepts) and
+// its `--expand-` form (curl 8.3+) void it too. `--ipfs-gateway` names the
+// host an ipfs:// URL is rewritten onto, and `--alt-svc` / `--hsts` read a
+// cache file that can move the request, the same class as a config file
+// (FR-SEC-9, review 2026-11-22).
+var uploadRouteFlags = []string{
+	"--proxy", "--preproxy", "--proxy1.0", "--socks4", "--socks4a", "--socks5", "--socks5-hostname",
+	"--connect-to", "--resolve", "--doh-url", "--dns-servers", "--config",
+	"--ipfs-gateway", "--alt-svc", "--hsts",
+}
+
+// uploadRouteShort are curl's short spellings of uploadRouteFlags
+// (`-x` proxy, `-K` config).
+const uploadRouteShort = "xK"
+
+// uploadRouteEnv are the environment variables (lower-cased) that can
+// send a curl request elsewhere: the proxy variables, the IPFS gateway, and
+// the ones that move where curl reads its config file from (USERPROFILE and
+// APPDATA are where curl on Windows looks after HOME).
+var uploadRouteEnv = setOf("http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "ipfs_gateway",
+	"curl_home", "home", "xdg_config_home", "userprofile", "appdata")
+
+// uploadRerouteEnv reports an environment assignment on the unit that
+// can reroute an upload (uploadRouteEnv).
+func uploadRerouteEnv(env []string) bool {
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if uploadRouteEnv[strings.ToLower(name)] {
+			return true
+		}
+	}
+	return false
+}
+
+// routeEnvSetter is one way a unit of a command line can put a variable
+// into the environment of the commands after it. names returns the
+// variable names the unit sets (any case; uploadRouteEnv is matched
+// lower-cased), or routeEnvAny when the unit may set any variable.
+type routeEnvSetter struct {
+	shape string
+	names func(c *Command) []string
+}
+
+// routeEnvSetters is walked over every unit of the event by
+// eventSetsRouteEnv. A row that over-reads (a declaration that only
+// re-exports, an assignment to a variable that is not exported) can only
+// refuse the exemption, never grant it. The bare assignment `NAME=value;`
+// yields no unit; the parser records it on the line's step sequence
+// (seqStep.assigns) and lineAssignNames reads it.
+var routeEnvSetters = []routeEnvSetter{
+	// `. FILE` / `source FILE` (POSIX shells, csh, fish, and PowerShell's
+	// dot-source operator): the file runs in the current shell and can
+	// export anything, which the guard does not read (FR-SEC-3 open
+	// question 2; lead ruling 2026-11-22, guard-parser lane).
+	{"sourced file", func(c *Command) []string {
+		if !sourceBases[c.Base] {
+			return nil
+		}
+		return []string{routeEnvAny}
+	}},
+	// export / declare -x / typeset -x / local / readonly NAME[=value]:
+	// every operand that is not an option names a variable.
+	{"declaration builtin", func(c *Command) []string {
+		if !declarationBases[c.Base] {
+			return nil
+		}
+		return operandNames(c.Args())
+	}},
+	// csh/tcsh setenv NAME value.
+	{"setenv", func(c *Command) []string {
+		if c.Base != "setenv" {
+			return nil
+		}
+		if p := c.Positionals(); len(p) > 0 {
+			return p[:1]
+		}
+		return nil
+	}},
+	// cmd `set NAME=value`, fish `set -x NAME value` (and POSIX `set`,
+	// whose operands set positional parameters: over-reading is safe).
+	{"set", func(c *Command) []string {
+		if c.Base != "set" {
+			return nil
+		}
+		return operandNames(c.Args())
+	}},
+	// PowerShell `$env:NAME = v`, `${env:NAME} = v`, `$env:NAME += v`.
+	{"PowerShell $env: assignment", func(c *Command) []string {
+		return psEnvAssignNames(strings.ToLower(c.Raw))
+	}},
+	// PowerShell Set-Item / New-Item / Set-Content / Add-Content on the
+	// Env: drive (`Set-Item -Path Env:HTTP_PROXY -Value v`).
+	{"PowerShell Env: drive", func(c *Command) []string {
+		if !psEnvDriveWriters[c.Base] {
+			return nil
+		}
+		var out []string
+		for _, a := range c.Args() {
+			if n, ok := envDriveItem(a); ok {
+				out = append(out, n)
+			}
+		}
+		return out
+	}},
+	// [Environment]::SetEnvironmentVariable('NAME', v[, target]).
+	{"SetEnvironmentVariable", func(c *Command) []string {
+		raw := strings.ToLower(c.Raw)
+		var out []string
+		for {
+			i := strings.Index(raw, "setenvironmentvariable(")
+			if i < 0 {
+				return out
+			}
+			raw = raw[i+len("setenvironmentvariable("):]
+			arg := raw
+			if j := strings.IndexAny(arg, ",)"); j >= 0 {
+				arg = arg[:j]
+			}
+			out = append(out, strings.Trim(arg, " '\""))
+		}
+	}},
+}
+
+// routeEnvAny is the name a routeEnvSetters row returns for a unit that
+// may set ANY variable (a sourced file), so the guard cannot tell which.
+const routeEnvAny = "*"
+
+// sourceBases are the commands that run a file in the current shell: the
+// POSIX `.` (also PowerShell's dot-source operator) and `source`.
+var sourceBases = setOf(".", "source")
+
+// declarationBases are the shell builtins that declare or export
+// variables.
+var declarationBases = setOf("export", "declare", "typeset", "local", "readonly")
+
+// psEnvDriveWriters are the canonical PowerShell cmdlets that can write an
+// item of the Env: drive (aliases resolve to these in the PowerShell
+// dialect).
+var psEnvDriveWriters = setOf("set-item", "new-item", "set-content", "add-content")
+
+// operandNames returns the variable names a declaration or `set` names:
+// every argument that is not an option, cut at '='.
+func operandNames(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "" || a[0] == '-' || a[0] == '+' || a[0] == '/' {
 			continue
 		}
-		urls++
-		if !isLoopbackURL(lt) {
+		name, _, _ := strings.Cut(a, "=")
+		out = append(out, name)
+	}
+	return out
+}
+
+// envDriveItem reads an Env: drive path argument (`Env:NAME`, `env:\NAME`,
+// or the colon form `-Path:Env:NAME`) and returns NAME.
+func envDriveItem(a string) (string, bool) {
+	la := strings.ToLower(a)
+	if strings.HasPrefix(la, "-") {
+		_, v, ok := strings.Cut(la, ":")
+		if !ok {
+			return "", false
+		}
+		la = v
+	}
+	rest, ok := strings.CutPrefix(la, "env:")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimLeft(rest, `\/`), true
+}
+
+// psEnvAssignNames returns the variables a lower-cased PowerShell unit
+// text assigns through the env: scope (`$env:name =`, `${env:name}=`,
+// `$env:name +=`). Reading `$env:name` assigns nothing.
+func psEnvAssignNames(raw string) []string {
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(raw[i:], "env:")
+		if j < 0 {
+			return out
+		}
+		j += i
+		i = j + len("env:")
+		if j == 0 || (raw[j-1] != '$' && raw[j-1] != '{') {
+			continue
+		}
+		k := i
+		for k < len(raw) && (raw[k] == '_' || isASCIILetter(raw[k]) || raw[k] >= '0' && raw[k] <= '9') {
+			k++
+		}
+		rest := strings.TrimLeft(strings.TrimPrefix(raw[k:], "}"), " ")
+		if strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "==") || strings.HasPrefix(rest, "+=") {
+			out = append(out, raw[i:k])
+		}
+	}
+}
+
+// eventSetsRouteEnv reports whether any unit of the event puts an
+// uploadRouteEnv variable into the environment, or may put any variable
+// there (a sourced file): routeEnvSetters, and the bare assignments the
+// parser recorded on each unit's step sequence.
+// The whole event is read, before or after the upload: a later unit can
+// only refuse the exemption.
+func eventSetsRouteEnv(ctx *MatchContext) bool {
+	if ctx == nil {
+		return false
+	}
+	seen := map[*unitSeq]bool{}
+	for i := range ctx.Cmds {
+		c := &ctx.Cmds[i]
+		for _, row := range routeEnvSetters {
+			for _, n := range row.names(c) {
+				if n == routeEnvAny || uploadRouteEnv[strings.ToLower(n)] {
+					return true
+				}
+			}
+		}
+		for s := c.seq; s != nil && !seen[s]; s = s.parent {
+			seen[s] = true
+			for _, st := range s.steps {
+				if uploadRerouteEnv(st.assigns) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// curlRouteOption reports whether a long curl option name is, starts, or
+// is the --expand- form of an uploadRouteFlags entry.
+func curlRouteOption(name string) bool {
+	if rest, ok := strings.CutPrefix(name, "--expand-"); ok {
+		name = "--" + rest
+	}
+	if len(name) <= 2 {
+		return false
+	}
+	for _, f := range uploadRouteFlags {
+		if strings.HasPrefix(f, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// curlLoopbackOnly walks curl's arguments with the curl option table
+// (posixHostSpecs) and reports whether every URL operand (positional,
+// after `--`, or `--url`) is loopback, at least one exists, and no
+// rerouting option is present. A value an option takes is never read as
+// a URL; an option the table does not know leaves its value to be read as
+// a URL, which can only refuse the exemption.
+func curlLoopbackOnly(args []string) bool {
+	spec := posixHostSpecs["curl"]
+	targets := 0
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		if t == "--" {
+			for _, p := range args[i+1:] {
+				targets++
+				if !isLoopbackOperand(p) {
+					return false
+				}
+			}
+			break
+		}
+		if len(t) < 2 || t[0] != '-' {
+			targets++
+			if !isLoopbackOperand(t) {
+				return false
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "--") {
+			name, val, hasEq := strings.Cut(t, "=")
+			if curlRouteOption(name) {
+				return false
+			}
+			takesValue := spec.longValued[name] || spec.hostOpts[name] != nil
+			if name == "--url" {
+				if !hasEq {
+					if i+1 >= len(args) {
+						continue
+					}
+					i++
+					val = args[i]
+				}
+				targets++
+				if !isLoopbackOperand(val) {
+					return false
+				}
+				continue
+			}
+			if takesValue && !hasEq {
+				i++
+			}
+			continue
+		}
+		for k := 1; k < len(t); k++ {
+			if strings.IndexByte(uploadRouteShort, t[k]) >= 0 {
+				return false
+			}
+			if strings.IndexByte(spec.shortValued, t[k]) >= 0 {
+				if k == len(t)-1 {
+					i++
+				}
+				break
+			}
+		}
+	}
+	return targets > 0
+}
+
+// psLoopbackOnly is the R-171 exemption for Invoke-WebRequest and
+// Invoke-RestMethod. The destination is ONLY what the cmdlet binds to
+// -Uri (an explicit -Uri, or else its first positional): it must be
+// present, a literal (psLiteralURL) and loopback. No other token adds a
+// destination (FR-SEC-2, review 2026-11-22: a loopback URL in -UserAgent
+// used to count as one, so `iwr -Uri $u -InFile f -UserAgent
+// http://localhost/` was exempt while the guard could not read $u). Any
+// other URL-shaped token that is not loopback still refuses, and so does a
+// -Proxy parameter (any prefix of it).
+func psLoopbackOnly(base string, args []string) bool {
+	for _, t := range args {
+		lt := strings.ToLower(t)
+		if strings.HasPrefix(lt, "-prox") {
+			return false
+		}
+		if hasURLScheme(t) && !isLoopbackURL(t) {
 			return false
 		}
 	}
-	return urls > 0
+	spec, ok := netPSSpecs[base]
+	if !ok {
+		return false
+	}
+	uris := spec.bound(args)
+	if len(uris) == 0 {
+		return false
+	}
+	for _, u := range uris {
+		if !psLiteralURL(u) || !isLoopbackOperand(u) {
+			return false
+		}
+	}
+	return true
 }
 
-// isLoopbackURL reports whether a lowercased URL targets loopback.
-func isLoopbackURL(u string) bool {
-	rest := strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
-	host := rest
-	if i := strings.IndexAny(rest, "/:?#"); i >= 0 {
-		host = rest[:i]
+// psNonLiteral are the characters that make a PowerShell argument
+// something other than literal text: a variable or subexpression ($), a
+// grouping or call ((), splatting or an array or hash literal (@), a
+// script block ({) and the escape character (`).
+const psNonLiteral = "$(@{`"
+
+// psLiteralURL reports a -Uri value the guard can read as written.
+func psLiteralURL(v string) bool {
+	return v != "" && !strings.ContainsAny(v, psNonLiteral)
+}
+
+// exemptSchemes are the URL schemes an R-171 destination may have and still
+// be exempt (FR-SEC-9, review 2026-11-22). Another scheme with a loopback
+// host is not a loopback upload: curl rewrites ipfs:// and ipns:// onto a
+// gateway, and smtp://localhost hands the file to a relay.
+var exemptSchemes = setOf("http", "https", "ws", "wss")
+
+// isLoopbackOperand reports whether a URL operand (scheme-less allowed:
+// curl and PowerShell default it to http) is an exempt scheme
+// (exemptSchemes) and targets loopback.
+func isLoopbackOperand(t string) bool {
+	if !hasURLScheme(t) {
+		t = "http://" + t
 	}
-	switch host {
-	case "localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0":
-		return true
+	scheme, _, _ := strings.Cut(t, "://")
+	return exemptSchemes[strings.ToLower(scheme)] && isLoopbackURL(t)
+}
+
+// hasURLScheme reports whether t starts with an RFC 3986 scheme and
+// "://".
+func hasURLScheme(t string) bool {
+	i := strings.Index(t, "://")
+	if i <= 0 {
+		return false
 	}
-	return false
+	for k := 0; k < i; k++ {
+		c := t[k]
+		switch {
+		case isASCIILetter(c):
+		case k > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isLoopbackURL reports whether a URL targets loopback: it parses with
+// net/url, carries no userinfo (whose `@` would move the real host after
+// it), and its host is a loopback literal or `localhost`, in any case
+// (ipclass.IsLoopbackHost). Anything that does not parse is not loopback.
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" {
+		return false
+	}
+	return ipclass.IsLoopbackHost(u.Hostname())
 }
 
 // matchSecretsInNetworkArgs implements the R-172 shell-arg half: the

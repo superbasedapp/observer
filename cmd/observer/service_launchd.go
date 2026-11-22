@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 )
@@ -61,6 +62,10 @@ type launchdDeps struct {
 	ident func(pid int) (string, bool)
 	sleep func(time.Duration)
 	now   func() time.Time
+	// serving reports an observer daemon that serves this node's database
+	// (its start lock beside the database, liveDaemonFor), whether or not
+	// launchd tracks it (seam; nil is resolved to the start-lock read).
+	serving func() (int, bool)
 	// out receives the stop report.
 	out io.Writer
 }
@@ -120,7 +125,30 @@ func (d launchdDeps) resolve() (launchdDeps, error) {
 	if d.out == nil {
 		d.out = os.Stdout
 	}
+	if d.serving == nil {
+		d.serving = servingDaemonForDefaultConfig
+	}
 	return d, nil
+}
+
+// servingDaemonForDefaultConfig finds a daemon serving the default config's
+// database through its start lock (liveDaemonFor), launchd-tracked or not.
+func servingDaemonForDefaultConfig() (int, bool) {
+	cfg, err := config.Load(config.LoadOptions{})
+	if err != nil {
+		return 0, false
+	}
+	l, ok := liveDaemonFor(cfg.Observer.DBPath)
+	return l.PID, ok
+}
+
+// untrackedDaemonError is the stop's refusal to call it done while an
+// observer daemon launchd does not track still serves the node (SVC-3): one
+// started by hand, or one an update left outside the agent.
+func untrackedDaemonError(pid int) error {
+	return fmt.Errorf("observer service stop: observer pid %d still serves this node's database outside the LaunchAgent "+
+		"(started by hand, or left running by an update), so the node is NOT stopped; stop it with `kill %d` "+
+		"(take any tool's proxy route off first: docs/daemon-restart-runbook.md), then `observer service start` runs it under the agent", pid, pid)
 }
 
 // launchdLoaded reports whether the agent is loaded in the user's domain.
@@ -252,6 +280,12 @@ func runLaunchdStop(d launchdDeps, target string) error {
 		// harmless when nothing runs) and say what is known.
 		err := d.run(service.Launchctl("kill", "SIGTERM", target))
 		fmt.Fprintln(d.out, "launchd reports no running daemon process for the agent; sent SIGTERM to be sure.")
+		// "Nothing tracked" is not "nothing running": a daemon the agent
+		// does not track can still serve the node, and a stop that reports
+		// success then is a lie (SVC-3).
+		if serving, ok := d.serving(); ok {
+			return untrackedDaemonError(serving)
+		}
 		return err
 	}
 	rep := escalateLaunchdStop(d, target, pid, service.LaunchdStopSteps)
@@ -270,6 +304,9 @@ func runLaunchdStop(d launchdDeps, target string) error {
 			return fmt.Errorf("observer service stop: launchd restarted the daemon as pid %d, which is still running after launchctl bootout and SIGKILL", newPID)
 		}
 		unloaded = true
+	}
+	if serving, ok := d.serving(); ok && serving != pid && serving != newPID {
+		return untrackedDaemonError(serving)
 	}
 	if unloaded {
 		fmt.Fprintln(d.out, "The agent was unloaded to stop it; `observer service start` loads it again (it also loads at your next login).")

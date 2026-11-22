@@ -4,6 +4,98 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.42.1] - 2026-11-23
+
+Patch release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). It fixes the findings of the 2026-11-22 security reviews: commands a
+coding agent could get past the guard, an org member's access outliving their deactivation, and
+an update path that could leave a supervised node down or roll every update back. Like 1.37.x to
+1.42.0 it needs macOS 13 Ventura or later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Upgrade notes
+
+- **A node run by `observer service install` takes 1.42.1 once by hand.** On a systemd unit or a
+  launchd agent, install 1.42.1 with the installer, or run `observer service upgrade` and then
+  `observer service restart` if it says a restart is needed. From 1.42.1 on, `observer update
+  apply` hands the running daemon over to the new binary and the service stays up. Until a node
+  has done this, an in-place update is refused before it starts, with a reason that names the fix
+  (`observer update history`, `observer update status` and `observer doctor` show it), and the
+  node stays on its current version.
+- An in-place update from 1.42.1 back to 1.42.0 or older still rolls back: the older binary checks
+  its own version the old way.
+
+### Security
+
+- **The guard judges more of what a coding agent runs.**
+  - A command behind an exec prefix (`sudo VAR=value`, `env -`, `timeout`, `nice` and the others,
+    with their value flags) is judged as the command itself. A delete, a device command or an
+    interpreter one-liner behind a prefix the guard does not know asks.
+  - A command substitution before a subcommand no longer hides it: `git $(…) push --force`,
+    `git $(…) reset --hard`, `kubectl $(…) delete`, `npm $(…) publish` and the like get the
+    verdict they get without it, and `git $(…) commit` is a commit for the commit gate.
+  - R-171's exemption for an upload to this machine holds only for a plain `http`, `https`, `ws`
+    or `wss` upload. A command substitution in the upload, a proxy variable set elsewhere in the
+    line, a sourced file, an IPFS or cache file, or a reroute ends it, and in PowerShell it binds
+    to `-Uri` only. `wget --post-file` and `--body-file` are judged as uploads.
+  - PowerShell: a parenthesised argument (`iwr -Uri ('http://' + 'x')`) no longer splits the
+    command, `powershell "<command>"` is read as `-Command`, `-Name:value` reads like
+    `-Name value`, and a word that names an executable file is never resolved as an alias.
+  - A rename onto a guard-override startup file, and the destination of an `apply_patch` rename,
+    are judged as content the guard has not seen.
+  - The commit gate treats a computed folder (`cd $(…)`, `git -C $(…)`, `env -C $(…)`) as
+    unknown, not as the current folder.
+- **Sandboxed terminals refuse cloud metadata addresses** even when an egress allow-list covers
+  their range (IPv6 and 6to4 forms included), and an OpenShell box's allowed IPs leave them out.
+- **Deactivating an org member ends their access.** Their dashboard sessions, bearer tokens and AI
+  gateway keys are revoked. The AI gateway refuses an inactive member's key, or a key whose user
+  has no member row, with `403 member_inactive` before any policy runs, and a key mint or rotation
+  for a member who is not active is refused, with the server's reason on the AI Gateway page.
+  "Sign this member out" and "Sign everyone out" now end every session, older cookies included.
+- **superbased's hosted service** hardens its database functions against temporary-table
+  shadowing and runs its expired-evidence sweep.
+
+### Changed
+
+- **New guard asks:** `rm -rf "$(mktemp -d)"` and `Remove-Item -Recurse -Force (Join-Path $PWD
+  build)` ask, because their target is computed. Every `wget` upload asks, and so does an upload to
+  this machine in a line that sources a file.
+
+### Fixed
+
+- **In-place updates of a real release no longer roll back.** The new binary compared the
+  manifest's `v1.42.0` with its own `1.42.0` and failed its self-check.
+- **A systemd service stays up across an update,** and `observer service stop` after an update
+  waits for the daemon to drain (systemd 245 to 255). On macOS the launchd agent restarts from the
+  new binary instead of stopping the new daemon.
+- **A failed update target backs off** (20 minutes, doubling, at most 6 hours), across a restart
+  too, instead of being retried every interval. `observer update apply` by hand clears it.
+- **`observer update rollback` in a supervised daemon** exits so that its supervisor restarts it,
+  and no longer migrates the restored database to the newer schema.
+- **`observer service upgrade` restarts a daemon still running under the old unit** when the
+  proxy is idle, and otherwise says that a restart is needed and why.
+- **OpenCode and zcode capture skip a malformed row** instead of stopping for good on it. The
+  skipped rows are counted in the watcher log, as Kilo Code's now are.
+- **`observer init`'s interactive checklist** no longer offers a Codex proxy route under Qwen
+  Code's or Kimi Code's name, and no longer creates `~/.codex/config.toml` when Codex is not
+  installed.
+- **The install checks** no longer read a command substitution as a package (`apt-get install -y
+  $(cat pkgs)` raised S-753), and still check `npm $(…) install <package>`.
+
+### Known issues
+
+- The macOS launchd hand-over is covered by tests but has not been run on a Mac yet.
+- AI Apps is not offered on superbased's hosted service yet. The AI gateway runs only on a
+  self-hosted org server, off by default.
+- On Windows, `observer sdk sign-in` keeps no key file: set `SUPERBASED_API_KEY` in the app.
+- After AI Apps is turned on in a running daemon, admission, egress routing, alerts and
+  organization share tiers wait for the next daemon start; the dashboard lists them.
+- An SDK experiment's items do not link to the traces its task produced.
+- An org server is tested on PostgreSQL 16, which every shipped deployment uses. On PostgreSQL
+  18 its database migration can stop with "out of shared memory" at the default
+  `max_locks_per_transaction`: stay on PostgreSQL 16 for now.
+
 ## [1.42.0] - 2026-11-21
 
 Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

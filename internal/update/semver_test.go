@@ -120,3 +120,57 @@ func TestPreReleaseAndDevPredicates(t *testing.T) {
 		t.Error("IsDevBuild flagged a stamped release")
 	}
 }
+
+// TestSameVersion pins UPD-9: an org manifest names a release "v1.42.0" while
+// a release build stamps itself "1.42.0", and the two must read as the same
+// version wherever the updater compares them (the child's self-check, the
+// boot-time recovery and the staged-binary probe).
+func TestSameVersion(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"v1.42.0", "1.42.0", true},
+		{"1.42.0", "v1.42.0", true},
+		{"v1.42.0", "v1.42.0", true},
+		{"1.42.0", "1.42.0", true},
+		{" v1.42.0\n", "1.42.0", true},
+		{"V1.42.0", "1.42.0", true},
+		{"v1.42.0-rc.1", "1.42.0-rc.1", true},
+		{"v1.42.0", "1.42.1", false},
+		{"v1.42.0", "1.42.0-rc.1", false},
+		{"vv1.42.0", "1.42.0", false},
+		{"v1.42.0", "", false},
+		{"", "", false},
+		{"v", "", false},
+		{"dev", "dev", true},
+	} {
+		if got := SameVersion(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameVersion(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// TestParentKeepsSupervision: the new binary reads the parent's version from
+// the apply row, and anything it cannot place counts as a release that does
+// not hand over.
+func TestParentKeepsSupervision(t *testing.T) {
+	for _, tc := range []struct {
+		v    string
+		want bool
+	}{
+		{FirstSupervisedHandoverRelease, true},
+		{"v" + FirstSupervisedHandoverRelease, true},
+		{"v1.43.0", true},
+		{"2.0.0", true},
+		{"1.42.0", false},
+		{"v1.42.0", false},
+		{"1.41.99", false},
+		{"dev", false},
+		{"", false},
+	} {
+		if got := ParentKeepsSupervision(tc.v); got != tc.want {
+			t.Errorf("ParentKeepsSupervision(%q) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}

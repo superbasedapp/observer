@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/marmutapp/superbased-observer/internal/ipclass"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcidr"
 )
 
@@ -23,6 +24,17 @@ const (
 	RuleLimitedBroadcast        = "limited-broadcast"
 	RuleIPv4Compatible          = "ipv4-compatible"
 	RuleHostLocal               = "host-local-address"
+	// RuleCloudMetadata refuses a cloud instance-metadata endpoint
+	// (ipclass.MetadataAddresses) that no earlier row names: the ones
+	// outside link-local space, 100.100.100.200 (Alibaba Cloud, inside
+	// 100.64.0.0/10) and fd00:ec2::254 / fd00:ec2::23 (AWS over IPv6, inside
+	// fc00::/7), in every encoding. No allow-list lifts it, and it is checked
+	// before the allow-listable private rows, so an allow-listed prefix that
+	// contains a metadata address allows the rest of the prefix only (the
+	// address is carved out; the prefix is not rejected). The link-local
+	// metadata addresses (169.254.169.254, ...) keep reporting
+	// link-local-unicast.
+	RuleCloudMetadata = "cloud-metadata"
 	// The four allow-listable private-range rules are defined in
 	// internal/sandboxcidr (the neutral owner of the ranges, shared with
 	// config validation) and re-exported here.
@@ -52,30 +64,48 @@ type RefusedError struct {
 // Error implements error.
 func (e *RefusedError) Error() string {
 	msg := fmt.Sprintf("sandboxnet: destination %s refused by rule %s", e.IP, e.Rule)
-	if e.AllowListable {
+	switch {
+	case e.AllowListable:
 		msg += " (to allow it, add its CIDR to " + AllowCIDRsConfigKey + ")"
+	case e.Rule == RuleCloudMetadata:
+		msg += " (a cloud metadata endpoint is never allow-listed: a prefix in " + AllowCIDRsConfigKey +
+			" that contains it allows the rest of the prefix, never this address)"
 	}
 	return msg
 }
 
+// addrClass is one destination as the policy rows read it: the address
+// after ipclass.Unwrap (IPv4-mapped, NAT64 and 6to4 forms carry an IPv4
+// address the rows judge) and its ipclass.Detail kind. ipclass is the one
+// owner of the classification (SEC-02): before, this package carried its
+// own classifier, which unwrapped IPv4-mapped and NAT64 but not 6to4, and had
+// no metadata rule.
+type addrClass struct {
+	ip   net.IP
+	kind ipclass.Kind
+}
+
 // policyRule is one row of the egress policy: a named predicate over a
-// normalised address. allowListable rows (the private ranges) are skipped
+// classified address. allowListable rows (the private ranges) are skipped
 // for a destination inside a Policy.Allow prefix; every other row always
 // applies.
 type policyRule struct {
 	name          string
 	allowListable bool
-	match         func(ip net.IP, local []net.IP) bool
+	match         func(a addrClass, local []net.IP) bool
 }
 
-// nat64Prefix is the RFC 6052 well-known NAT64 prefix 64:ff9b::/96; an
-// address inside it carries an IPv4 destination in its last four bytes.
-var nat64Prefix = net.IP{0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}
+// isKind returns a row predicate for one ipclass Kind.
+func isKind(k ipclass.Kind) func(addrClass, []net.IP) bool {
+	return func(a addrClass, _ []net.IP) bool { return a.kind == k }
+}
 
-// inRanges reports whether ip lies in any prefix of the named private rule.
-func inRanges(rule string) func(ip net.IP, _ []net.IP) bool {
-	return func(ip net.IP, _ []net.IP) bool {
-		a, ok := toAddr(ip)
+// inRanges reports whether an address lies in any prefix of the named
+// sandboxcidr rule. It backs the one allow-listable row ipclass reads as
+// public: the deprecated site-local fec0::/10.
+func inRanges(rule string) func(addrClass, []net.IP) bool {
+	return func(a addrClass, _ []net.IP) bool {
+		addr, ok := toAddr(a.ip)
 		if !ok {
 			return false
 		}
@@ -84,7 +114,7 @@ func inRanges(rule string) func(ip net.IP, _ []net.IP) bool {
 				continue
 			}
 			for _, p := range r.Prefixes {
-				if p.Contains(a) {
+				if p.Contains(addr) {
 					return true
 				}
 			}
@@ -93,63 +123,53 @@ func inRanges(rule string) func(ip net.IP, _ []net.IP) bool {
 	}
 }
 
-// policyRules is walked top-down; the first matching row refuses. Order only
-// matters for which name is reported (0.0.0.0 reports unspecified, not
-// this-network; a host interface address in 192.168/16 reports
-// host-local-address, which no allow-list can lift).
+// policyRules is walked top-down; the first matching row refuses. The rows
+// read the ipclass.Detail kind and split it into this package's stable rule
+// names. Order only matters for which name is reported (0.0.0.0 reports
+// unspecified, not this-network; 169.254.169.254 reports link-local-unicast,
+// not cloud-metadata; a host interface address in 192.168/16 reports
+// host-local-address, which no allow-list can lift), except that
+// cloud-metadata must precede the allow-listable rows: a metadata address
+// lives inside CGNAT and ULA space. Two rows refine what ipclass reads as
+// public: limited-broadcast and site-local-ipv6.
 var policyRules = []policyRule{
-	{name: RuleUnspecified, match: func(ip net.IP, _ []net.IP) bool { return ip.IsUnspecified() }},
-	{name: RuleThisNetwork, match: func(ip net.IP, _ []net.IP) bool {
-		v4 := ip.To4()
-		return v4 != nil && v4[0] == 0
+	{name: RuleUnspecified, match: func(a addrClass, _ []net.IP) bool {
+		return a.kind == ipclass.KindUnspecified && a.ip.IsUnspecified()
 	}},
-	{name: RuleLoopback, match: func(ip net.IP, _ []net.IP) bool { return ip.IsLoopback() }},
-	{name: RuleLinkLocalUnicast, match: func(ip net.IP, _ []net.IP) bool { return ip.IsLinkLocalUnicast() }},
-	{name: RuleLinkLocalMulticast, match: func(ip net.IP, _ []net.IP) bool { return ip.IsLinkLocalMulticast() }},
-	{name: RuleInterfaceLocalMulticast, match: func(ip net.IP, _ []net.IP) bool { return ip.IsInterfaceLocalMulticast() }},
-	{name: RuleMulticast, match: func(ip net.IP, _ []net.IP) bool { return ip.IsMulticast() }},
-	{name: RuleLimitedBroadcast, match: func(ip net.IP, _ []net.IP) bool { return ip.Equal(net.IPv4bcast) }},
-	{name: RuleIPv4Compatible, match: func(ip net.IP, _ []net.IP) bool {
-		// Deprecated IPv4-compatible IPv6 (::a.b.c.d, RFC 4291 2.5.5.1). :: and
-		// ::1 are caught above; nothing legitimate lives in the rest of ::/96.
-		if ip.To4() != nil || len(ip) != net.IPv6len {
-			return false
-		}
-		for _, b := range ip[:12] {
-			if b != 0 {
-				return false
-			}
-		}
-		return true
+	{name: RuleThisNetwork, match: func(a addrClass, _ []net.IP) bool {
+		return a.kind == ipclass.KindUnspecified && len(a.ip) == net.IPv4len
 	}},
-	{name: RuleHostLocal, match: func(ip net.IP, local []net.IP) bool {
+	{name: RuleLoopback, match: isKind(ipclass.KindLoopback)},
+	{name: RuleLinkLocalUnicast, match: func(a addrClass, _ []net.IP) bool {
+		return a.kind == ipclass.KindLinkLocal || (a.kind == ipclass.KindMetadata && a.ip.IsLinkLocalUnicast())
+	}},
+	{name: RuleLinkLocalMulticast, match: func(a addrClass, _ []net.IP) bool {
+		return a.kind == ipclass.KindMulticast && a.ip.IsLinkLocalMulticast()
+	}},
+	{name: RuleInterfaceLocalMulticast, match: func(a addrClass, _ []net.IP) bool {
+		return a.kind == ipclass.KindMulticast && a.ip.IsInterfaceLocalMulticast()
+	}},
+	{name: RuleMulticast, match: isKind(ipclass.KindMulticast)},
+	{name: RuleLimitedBroadcast, match: func(a addrClass, _ []net.IP) bool { return a.ip.Equal(net.IPv4bcast) }},
+	// Deprecated IPv4-compatible IPv6 (::a.b.c.d, RFC 4291 2.5.5.1): the
+	// rest of ipclass's KindUnspecified once :: and 0.0.0.0/8 are named.
+	{name: RuleIPv4Compatible, match: isKind(ipclass.KindUnspecified)},
+	{name: RuleHostLocal, match: func(a addrClass, local []net.IP) bool {
 		for _, l := range local {
-			if l != nil && normalize(l).Equal(ip) {
+			if l != nil && ipclass.Unwrap(l).Equal(a.ip) {
 				return true
 			}
 		}
 		return false
 	}},
-	{name: RulePrivate, allowListable: true, match: inRanges(RulePrivate)},
-	{name: RuleSharedAddress, allowListable: true, match: inRanges(RuleSharedAddress)},
-	{name: RuleUniqueLocal, allowListable: true, match: inRanges(RuleUniqueLocal)},
+	{name: RuleCloudMetadata, match: isKind(ipclass.KindMetadata)},
+	{name: RulePrivate, allowListable: true, match: isKind(ipclass.KindPrivate)},
+	{name: RuleSharedAddress, allowListable: true, match: isKind(ipclass.KindCGNAT)},
+	{name: RuleUniqueLocal, allowListable: true, match: isKind(ipclass.KindULA)},
 	{name: RuleSiteLocal, allowListable: true, match: inRanges(RuleSiteLocal)},
 }
 
-// normalize returns the IPv4 form of an IPv4-mapped (::ffff:a.b.c.d) or
-// NAT64 well-known-prefix (64:ff9b::a.b.c.d) address so neither can bypass an
-// IPv4 rule; any other address is returned unchanged.
-func normalize(ip net.IP) net.IP {
-	if v4 := ip.To4(); v4 != nil {
-		return v4
-	}
-	if len(ip) == net.IPv6len && ip[:12].Equal(nat64Prefix) {
-		return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4()
-	}
-	return ip
-}
-
-// toAddr converts a normalised net.IP to an unmapped netip.Addr.
+// toAddr converts an unwrapped net.IP to an unmapped netip.Addr.
 func toAddr(ip net.IP) (netip.Addr, bool) {
 	a, ok := netip.AddrFromSlice(ip)
 	if !ok {
@@ -162,15 +182,15 @@ func toAddr(ip net.IP) (netip.Addr, bool) {
 // private prefixes a sandboxed agent may reach (corporate registries or git
 // servers on private addresses). Allow only ever lifts the allow-listable
 // rows (private-rfc1918, shared-address-cgnat, unique-local-ipv6,
-// site-local-ipv6); loopback, link-local (including cloud metadata),
-// multicast, broadcast and the host's own interface addresses stay refused
-// whatever it says. The zero Policy allows no private destination. Build
-// Allow with ParseAllowCIDRs.
+// site-local-ipv6); loopback, link-local, cloud metadata (also the
+// endpoints inside CGNAT and ULA space), multicast, broadcast and the
+// host's own interface addresses stay refused whatever it says. The zero
+// Policy allows no private destination. Build Allow with ParseAllowCIDRs.
 type Policy struct {
 	Allow []netip.Prefix
 }
 
-// allowed reports whether a (normalised) ip lies inside an Allow prefix.
+// allowed reports whether an (unwrapped) ip lies inside an Allow prefix.
 func (p Policy) allowed(ip net.IP) bool {
 	if len(p.Allow) == 0 {
 		return false
@@ -195,19 +215,22 @@ func (p Policy) allowed(ip net.IP) bool {
 // including cloud metadata 169.254.169.254, and fe80::/10); link-local,
 // interface-local and all other multicast; the IPv4 limited broadcast
 // 255.255.255.255; deprecated IPv4-compatible IPv6 (::/96); any address
-// equal to one in local (the host's own interface addresses); and, unless
-// the address lies inside p.Allow, the RFC 1918 private ranges, the RFC 6598
-// shared address space 100.64.0.0/10, IPv6 unique local fc00::/7 and the
-// deprecated site-local fec0::/10. IPv4-mapped (::ffff:a.b.c.d) and NAT64
-// (64:ff9b::a.b.c.d) addresses are normalised to IPv4 first so they cannot
-// bypass an IPv4 rule.
+// equal to one in local (the host's own interface addresses); every other
+// cloud metadata endpoint (100.100.100.200, fd00:ec2::254, fd00:ec2::23);
+// and, unless the address lies inside p.Allow, the RFC 1918 private ranges,
+// the RFC 6598 shared address space 100.64.0.0/10, IPv6 unique local
+// fc00::/7 and the deprecated site-local fec0::/10. IPv4-mapped
+// (::ffff:a.b.c.d), NAT64 (64:ff9b::a.b.c.d) and 6to4 (2002:aabb:ccdd::)
+// addresses are unwrapped to the IPv4 they carry first (ipclass.Unwrap) so
+// they cannot bypass an IPv4 rule; the classification is ipclass.Detail's.
 func (p Policy) Check(ip net.IP, local []net.IP) error {
 	if len(ip) != net.IPv4len && len(ip) != net.IPv6len {
 		return &RefusedError{IP: ip, Rule: RuleNil}
 	}
-	n := normalize(ip)
+	n := ipclass.Unwrap(ip)
+	a := addrClass{ip: n, kind: ipclass.Detail(n)}
 	for _, r := range policyRules {
-		if !r.match(n, local) {
+		if !r.match(a, local) {
 			continue
 		}
 		if r.allowListable && p.allowed(n) {

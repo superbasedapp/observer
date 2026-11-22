@@ -61,6 +61,10 @@ type updateApplyRequest struct {
 	Force    bool   `json:"force,omitempty"`
 	DryRun   bool   `json:"dry_run,omitempty"`
 	Rollback bool   `json:"rollback,omitempty"`
+	// Auto marks the daemon's own auto-apply loop, which a durable backoff
+	// may hold (FR-SEC-12); every other caller is an operator, whose apply
+	// clears it. Never on the loopback wire.
+	Auto bool `json:"-"`
 }
 
 type updateApplyResponse struct {

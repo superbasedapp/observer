@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/ipclass"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcidr"
 	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
@@ -362,8 +363,15 @@ var netPublicV6 = netip.MustParsePrefix("2000::/3")
 // NetAllowedIPs returns the allowed_ips list every endpoint carries: the
 // public IPv4 space (all of it less the floor and the private ranges), the
 // IPv6 global unicast space, and the operator's private allow-list, each
-// less the host's own addresses, sorted IPv4 first. It refuses an
-// allow-list entry sandboxcidr does not accept (ErrNetCIDR).
+// less the host's own addresses and the cloud metadata endpoints
+// (metadataPrefixes), sorted IPv4 first. It refuses an allow-list entry
+// sandboxcidr does not accept (ErrNetCIDR).
+//
+// The metadata endpoints are carved out of every prefix, the way
+// sandboxnet's never-liftable cloud-metadata row refuses them under any
+// allow-list (FR-SEC-6, review 2026-11-22): before, an allow-listed
+// 100.64.0.0/10 or fd00::/8 was added whole, so 100.100.100.200 and
+// fd00:ec2::254 were reachable on this row.
 func NetAllowedIPs(allowCIDRs []string, hostAddrs []netip.Addr) ([]netip.Prefix, error) {
 	allow, err := sandboxcidr.ParseAllowCIDRs(allowCIDRs)
 	if err != nil {
@@ -388,6 +396,7 @@ func NetAllowedIPs(allowCIDRs []string, hostAddrs []netip.Addr) ([]netip.Prefix,
 		}
 	}
 	out = subtractAll(out, hosts)
+	out = subtractAll(out, metadataPrefixes())
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Addr().Is4() != b.Addr().Is4() {
@@ -399,6 +408,25 @@ func NetAllowedIPs(allowCIDRs []string, hostAddrs []netip.Addr) ([]netip.Prefix,
 		return a.Bits() < b.Bits()
 	})
 	return out, nil
+}
+
+// metadataPrefixes returns the cloud instance-metadata endpoints
+// (ipclass.MetadataAddresses, their one owner) as /32 and /128 prefixes.
+func metadataPrefixes() []netip.Prefix {
+	var out []netip.Prefix
+	for _, ip := range ipclass.MetadataAddresses() {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
+	return out
+}
+
+// isMetadataAddr reports whether a is a cloud instance-metadata endpoint.
+func isMetadataAddr(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	return slices.ContainsFunc(metadataPrefixes(), func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
 // NetSubtractBlocked removes the blocked ranges from an allowed set, last

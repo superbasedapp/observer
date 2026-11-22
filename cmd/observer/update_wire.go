@@ -20,6 +20,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/quiesce"
+	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/update"
 )
@@ -71,12 +72,6 @@ type updateRuntime struct {
 	// daemon any more, so an apply that does NOT end in a handover must end
 	// in an exit rather than in a live process serving nothing.
 	released atomic.Bool
-	// autoFailManifest / autoFailCount / autoNextAttempt are the auto-apply
-	// loop's backoff memory. Written and read only by AutoApplyLoop's single
-	// goroutine.
-	autoFailManifest int64
-	autoFailCount    int
-	autoNextAttempt  time.Time
 	// extensionVersion is what the VS Code extension last told us (W5,
 	// ruling R6). atomic because the report arrives on a dashboard request
 	// goroutine while the push composer reads it. Empty = no extension has
@@ -349,34 +344,58 @@ func (u *updateRuntime) ReportChildSelfCheck(ctx context.Context) {
 		// The feature is disabled on the NEW binary. Report ready anyway:
 		// the parent is waiting, and a daemon that came up healthy must not
 		// be rolled back because its config turned the updater off.
-		_ = reportHandshakeReady(nonce)
+		_ = childHandshakeReport.ready(nonce)
 		return
 	}
 	row, err := u.store.LoadUpdateState(ctx)
 	if err != nil {
-		_ = reportHandshakeFailure("the update state could not be read")
+		_ = childHandshakeReport.fail("the update state could not be read")
 		return
 	}
 	target := strings.TrimSpace(row.TargetVersion)
-	if target != "" && target != version {
-		_ = reportHandshakeFailure(fmt.Sprintf("this binary is %s, the apply targeted %s", version, target))
+	if target != "" && !update.SameVersion(target, version) {
+		_ = childHandshakeReport.fail(fmt.Sprintf("this binary is %s, the apply targeted %s", version, target))
 		return
 	}
-	if err := reportHandshakeReady(nonce); err != nil {
+	// The interlock (UPD-9 with SVC-1/SVC-3): this check is the only code of
+	// this release that runs during an update FROM an older one. Reporting
+	// ready to a parent whose supervisor cannot follow the hand-over would
+	// let it exit 0 and take this daemon down with it; a failed self-check
+	// makes any parent roll back and stay up, with the fix in the ledger.
+	if refusal := childHandoverRefusal(row.PreviousVersion); refusal != service.HandoverAllowed {
+		u.logger.Warn("update handshake: refusing the hand-over; the previous daemon rolls back and stays up",
+			"refusal", string(refusal), "parent_version", row.PreviousVersion)
+		_ = childHandshakeReport.fail(refusal.Explain())
+		return
+	}
+	if err := childHandshakeReport.ready(nonce); err != nil {
 		u.logger.Warn("update handshake: could not report ready", "err", err)
 		return
 	}
 	u.logger.Info("update handshake: reported ready to the previous daemon", "version", version)
 }
 
+// childHandshakeReport is how the child's self-check speaks to the watching
+// parent: the two words of the handshake vocabulary. A seam so a test can
+// hear the report without owning the handshake descriptor.
+var childHandshakeReport = struct {
+	ready func(nonce string) error
+	fail  func(reason string) error
+}{ready: reportHandshakeReady, fail: reportHandshakeFailure}
+
 // RecoverAtBoot handles a node that starts while its state says `applying`
-// and NO parent is watching — a kill after the old parent exited, or a host
-// reboot. It is the residual ruling R14 names a supervisor for.
+// and NO parent is watching — a kill after the old parent exited, a host
+// reboot, or the launchd hand-over, where the agent itself starts the new
+// binary after the parent's restart exit (SVC-3 option b). It is the residual
+// ruling R14 names a supervisor for.
 //
 // The rule is decided by which binary is actually running, because that is
-// the only fact that survives the crash: if this process IS the target, the
-// swap completed and the apply simply lost its witness; if it is not, the
-// swap did not happen or was already undone.
+// the only fact that survives the crash, and by whether a launchd hand-over
+// left a boot record (update.DecideBootRecovery): with none, the running
+// binary settles it at once (the target: applied; anything else: failed);
+// with one, each boot of the target counts an attempt, the target settles
+// applied once a boot stays up, and after update.MaxSupervisorRestartBoots
+// failed boots the previous binary is restored.
 func (u *updateRuntime) RecoverAtBoot(ctx context.Context) {
 	if u == nil || handshakeChildNonce() != "" {
 		return // a watched child settles through the handshake instead
@@ -395,18 +414,69 @@ func (u *updateRuntime) RecoverAtBoot(ctx context.Context) {
 	}
 
 	target := strings.TrimSpace(row.TargetVersion)
-	settled, detail := update.StateFailed, fmt.Sprintf(
-		"the daemon restarted while an apply was in progress and no parent was watching; the running binary is %s, the apply targeted %s", version, target)
-	class := update.ErrorHealthcheck
-	if target != "" && target == version {
-		settled, class = update.StateApplied, update.ErrorNone
-		detail = fmt.Sprintf("the apply completed but lost its watching parent (a restart or a host reboot); the running binary is the target %s", version)
+	restart := loadSupervisorRestart(ctx, u.store)
+	awaiting := restart.Matches(target)
+	if awaiting {
+		// Counted BEFORE anything that could fail this boot, so a binary
+		// that never stays up reaches the restore.
+		restart.Attempts++
+		saveSupervisorRestart(ctx, u.store, restart)
 	}
+	switch update.DecideBootRecovery(update.BootRecoveryInput{
+		Applying: true, RunningIsTarget: update.SameVersion(target, version),
+		AwaitingRestart: awaiting, Attempts: restart.Attempts,
+	}) {
+	case update.BootSettleFailed:
+		saveSupervisorRestart(ctx, u.store, update.SupervisorRestart{})
+		u.settleOrphanedApply(ctx, row, update.StateFailed, update.ErrorHealthcheck, fmt.Sprintf(
+			"the daemon restarted while an apply was in progress and no parent was watching; the running binary is %s, the apply targeted %s", version, target))
+	case update.BootSettleApplied:
+		u.settleOrphanedApply(ctx, row, update.StateApplied, update.ErrorNone, fmt.Sprintf(
+			"the apply completed but lost its watching parent (a restart or a host reboot); the running binary is the target %s", version))
+	case update.BootSettleAppliedWhenHealthy:
+		go u.settleWhenHealthy(ctx, restart.Attempts)
+	case update.BootRestorePrevious:
+		u.restoreAfterFailedBoots(ctx, row, restart.Attempts-1)
+	case update.BootNothing:
+	}
+}
+
+// supervisorRestartHealthyAfter is how long a boot of the new binary that
+// launchd started after a hand-over must stay up before the apply settles
+// applied. The child passed the full self-check (config, migrations, bound
+// listeners) seconds earlier with the same binary, config and database; this
+// wait covers a boot that dies anyway. A test seam.
+var supervisorRestartHealthyAfter = 30 * time.Second
+
+// settleWhenHealthy settles a launchd hand-over applied once this boot has
+// stayed up, and forgets the boot record and the target's backoff. A boot
+// that dies first leaves both, and the next boot counts another attempt.
+func (u *updateRuntime) settleWhenHealthy(ctx context.Context, boot int) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(supervisorRestartHealthyAfter):
+	}
+	row, err := u.store.LoadUpdateState(ctx)
+	if err != nil || row.State != update.StateApplying || !update.SameVersion(row.TargetVersion, version) {
+		return
+	}
+	u.settleOrphanedApply(ctx, row, update.StateApplied, update.ErrorNone, fmt.Sprintf(
+		"launchd started the new binary %s after the hand-over and it stayed up for %s (boot %d)", version, supervisorRestartHealthyAfter, boot))
+}
+
+// settleOrphanedApply writes the terminal state of an apply no parent is
+// watching, its ledger line, and, for applied, forgets the launchd boot
+// record and the target's backoff.
+func (u *updateRuntime) settleOrphanedApply(ctx context.Context, row store.UpdateStateRow, settled update.State, class update.ErrorClass, detail string) {
+	target := strings.TrimSpace(row.TargetVersion)
 	row.State = settled
 	row.ErrorClass = class
 	row.ApplyingStartedAt = ""
 	if settled == update.StateApplied {
 		row.AppliedAt = time.Now().UTC().Format(time.RFC3339)
+		saveSupervisorRestart(ctx, u.store, update.SupervisorRestart{})
+		_ = u.store.SaveUpdateApplyBackoff(ctx, "")
 	}
 	if err := u.store.SaveUpdateState(ctx, row); err != nil {
 		u.logger.Warn("update: could not settle an orphaned apply", "err", err)
@@ -416,6 +486,57 @@ func (u *updateRuntime) RecoverAtBoot(ctx context.Context) {
 		ManifestVersion: row.LastManifestVersion, State: settled, ErrorClass: class, Detail: detail,
 	})
 	u.logger.Warn("update: settled an orphaned apply at boot", "state", settled, "detail", detail)
+}
+
+// restoreAfterFailedBoots puts the previous binary back (with its config.toml
+// and, when the target advanced the schema, the pre-apply snapshot) after the
+// target failed to stay up through update.MaxSupervisorRestartBoots boots
+// that launchd started, backs the target off, and ends this process with the
+// restart exit so launchd starts the restored binary.
+func (u *updateRuntime) restoreAfterFailedBoots(ctx context.Context, row store.UpdateStateRow, failedBoots int) {
+	saveSupervisorRestart(ctx, u.store, update.SupervisorRestart{})
+	why := fmt.Sprintf("the new binary %s did not stay up through %d boots that launchd started after the hand-over; ", version, failedBoots)
+	key := update.BackoffKey{Target: row.TargetVersion}
+	if man, art, err := u.resolveTarget(ctx, row, ""); err == nil {
+		key = update.BackoffKey{Target: man.Version, ArtifactSHA256: art.SHA256}
+	}
+	out, err := u.rollbackWith(ctx, why, func(writer updateStateStore, out applyOutcome) {
+		if writer == nil {
+			return
+		}
+		next := update.NextApplyBackoff(loadApplyBackoff(ctx, writer), key, row.LastManifestVersion,
+			update.ErrorHealthcheck, "", time.Now(), updateAutoApplyInterval, autoApplyMaxBackoff)
+		if js, eerr := update.EncodeApplyBackoff(next); eerr == nil {
+			_ = writer.SaveUpdateApplyBackoff(ctx, js)
+		}
+	})
+	if err != nil {
+		u.logger.Error("update: the new binary keeps failing to stay up and the previous binary could not be restored",
+			"state", out.State, "detail", out.Detail, "err", err)
+	}
+}
+
+// loadSupervisorRestart reads the launchd hand-over's boot record; an
+// unreadable one reads as none (the boot then settles as an orphaned apply).
+func loadSupervisorRestart(ctx context.Context, st updateStateStore) update.SupervisorRestart {
+	js, err := st.LoadUpdateSupervisorRestart(ctx)
+	if err != nil {
+		return update.SupervisorRestart{}
+	}
+	r, err := update.DecodeSupervisorRestart(js)
+	if err != nil {
+		return update.SupervisorRestart{}
+	}
+	return r
+}
+
+// saveSupervisorRestart writes the boot record; the zero value clears it.
+func saveSupervisorRestart(ctx context.Context, st updateStateStore, r update.SupervisorRestart) {
+	js, err := update.EncodeSupervisorRestart(r)
+	if err != nil {
+		return
+	}
+	_ = st.SaveUpdateSupervisorRestart(ctx, js)
 }
 
 // ApplySeam is the dashapi.Options.UpdateApplyFunc value.
@@ -593,6 +714,13 @@ func (u *updateRuntime) applyLocked(ctx context.Context, req updateApplyRequest)
 	if err != nil {
 		return applyOutcome{}, err
 	}
+	if !req.DryRun {
+		key := update.BackoffKey{Target: man.Version, ArtifactSHA256: art.SHA256}
+		if held, b := applyBackoffGate(ctx, u.store, key, req.Auto, parentHandoverRefusal, time.Now()); held {
+			return applyOutcome{}, fmt.Errorf("%w: %s failed %d time(s) (%s); the next automatic attempt is at %s, or run `observer update apply` now",
+				errAutoApplyBackingOff, b.Target, b.Failures, b.ErrorClass, b.NextAttempt.Format(time.RFC3339))
+		}
+	}
 	dc := u.distroContext(ctx, man.Channel)
 	transition := man.Schema == update.SchemaV2 &&
 		update.NormalizeDistro(art.Distro) != update.NormalizeDistro(dc.Current)
@@ -616,6 +744,9 @@ func (u *updateRuntime) applyLocked(ctx context.Context, req updateApplyRequest)
 		VerifyVendorSignature: verifyVendorSignature,
 		Probe:                 probeBinaryVersion,
 		ProbeComponents:       probeBinaryComponentsDigest,
+		// The interlock's parent half: refuse before the download and the
+		// drain when this node's supervisor cannot follow the hand-over.
+		Supervision: parentHandoverRefusal,
 		Supervise: func(sctx context.Context, exe, stateDir string, timeout time.Duration) (handshakeResult, error) {
 			// preflightRestart's instinct, kept and strengthened: the config
 			// is re-Loaded and re-Validated BEFORE the successor is spawned,
@@ -707,6 +838,11 @@ func (u *updateRuntime) applyLocked(ctx context.Context, req updateApplyRequest)
 // serving, and it goes on serving.
 func (u *updateRuntime) finishApply(out applyOutcome, targetVersion string) bool {
 	switch {
+	case out.Applied && out.RestartBySupervisor:
+		u.logger.Info("update handed over to launchd: stopping the new binary and exiting so the agent starts it",
+			"version", targetVersion, "exit_code", service.SupervisorRestartExitCode)
+		go u.exitForSupervisorRestart(out)
+		return true
 	case out.Applied:
 		u.logger.Info("update applied; the previous daemon is exiting in favour of the new binary",
 			"version", targetVersion, "detail", out.Detail)
@@ -728,6 +864,34 @@ func (u *updateRuntime) finishApply(out applyOutcome, targetVersion string) bool
 func (u *updateRuntime) exitAfterHandover() {
 	time.Sleep(500 * time.Millisecond)
 	updateExitFunc(0)
+}
+
+// supervisorRestartChildGrace bounds how long the parent waits for the
+// self-checked child to drain and exit after SIGTERM before it kills it; the
+// daemon's own shutdown watchdog is 20 seconds.
+const supervisorRestartChildGrace = 30 * time.Second
+
+// exitForSupervisorRestart ends a launchd hand-over (SVC-3 option b): the
+// child is stopped FIRST, so its sockets are free when launchd starts the new
+// binary, and this process then exits service.SupervisorRestartExitCode,
+// which KeepAlive{SuccessfulExit=false} restarts at once (the job has lived
+// longer than its ThrottleInterval). launchd stays the only supervisor.
+func (u *updateRuntime) exitForSupervisorRestart(out applyOutcome) {
+	if out.stopChild != nil {
+		if err := out.stopChild(supervisorRestartChildGrace); err != nil {
+			u.logger.Warn("update: the new binary did not stop cleanly before the restart", "err", err)
+		}
+	}
+	updateExitFunc(service.SupervisorRestartExitCode)
+}
+
+// exitForRestart ends a process so the binary now at its path starts again
+// (after a rollback restored it): with the restart exit under a supervisor,
+// which restarts only an unsuccessful exit, and 0 with none. The delay lets
+// an HTTP reply that reported the outcome flush first.
+func (u *updateRuntime) exitForRestart() {
+	time.Sleep(500 * time.Millisecond)
+	updateExitFunc(service.RestartExitCode(currentSupervisor()))
 }
 
 // exitAfterFailedHandover ends a process that released its listeners and then
@@ -756,12 +920,14 @@ var updateExitFunc = os.Exit
 // reopenUpdateStore opens a fresh handle on the agent database at path.
 //
 // Used on exactly one path: after a rollback has restored the pre-apply
-// snapshot over the live file. db.Open runs migrations, which is right here —
-// the file is the OLD schema and this is the OLD binary, so its own migration
-// set is already applied and the call is a no-op that also proves the restored
-// file opens at all.
+// snapshot over the live file, to record the rollback in it. It opens the
+// file WITHOUT migrating it (db.OpenPlain). The process doing this is not
+// always the previous binary: the daemon-side `observer update rollback` and
+// the launchd boot restore run in the NEWER one, and its migrations would
+// carry the restored file forward to the very schema the snapshot exists to
+// undo. The previous binary migrates (a no-op) at its own start.
 func reopenUpdateStore(path string) (updateStateStore, error) {
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := db.OpenPlain(context.Background(), path)
 	if err != nil {
 		return nil, err
 	}
@@ -838,8 +1004,22 @@ func (u *updateRuntime) rollbackDryRun(ctx context.Context) (applyOutcome, error
 }
 
 // rollback restores the previous binary and its pre-apply config.toml, and
-// the snapshot when the schema advanced.
+// the snapshot when the schema advanced (the operator's `observer update
+// rollback` through the daemon).
 func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
+	return u.rollbackWith(ctx, "operator-invoked rollback: ", nil)
+}
+
+// rollbackWith is the daemon-side rollback, shared by the operator's verb and
+// the launchd boot restore. why starts the ledger detail; afterRecord, when
+// set, runs with the handle the rollback recorded through (the restored file
+// on the DB-restoring branch, nil when that reopen failed).
+//
+// It ends this process so the restored binary starts: with the restart exit
+// under a supervisor (exitForRestart). An exit 0 there left the node down,
+// because the unit restarts on failure only (Restart=on-failure) and the agent
+// on an unsuccessful exit only.
+func (u *updateRuntime) rollbackWith(ctx context.Context, why string, afterRecord func(writer updateStateStore, out applyOutcome)) (applyOutcome, error) {
 	row, decision, err := u.rollbackDecision(ctx)
 	if err != nil {
 		return applyOutcome{}, err
@@ -896,7 +1076,7 @@ func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
 	row.TargetVersion = row.PreviousVersion
 	row.ErrorClass = decision.ErrorClass
 	row.ApplyingStartedAt = ""
-	detail := "operator-invoked rollback: " + decision.Reason
+	detail := why + decision.Reason
 	if decision.DiscardsDataWindow {
 		detail += "; rows ingested after the pre-apply snapshot were discarded"
 	}
@@ -917,13 +1097,16 @@ func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
 			ErrorClass: row.ErrorClass, Detail: detail,
 		})
 	}
+	if afterRecord != nil {
+		afterRecord(writer, out)
+	}
 	if cfgRes.Err != nil {
 		// The previous binary (and any snapshot) is already in place, so
 		// this process still hands over, non-zero, and says why.
 		go u.exitAfterFailedHandover(out)
 		return out, fmt.Errorf("observer update rollback: the previous binary was restored but config.toml was not: %w", cfgRes.Err)
 	}
-	go u.exitAfterHandover()
+	go u.exitForRestart()
 	return out, nil
 }
 
@@ -1006,16 +1189,13 @@ func (u *updateRuntime) AutoApplyLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		if now := time.Now(); u.autoNextAttempt.After(now) {
-			// A deterministic failure is being backed off. Saying nothing
-			// would be indistinguishable from a healthy quiet node.
-			u.logger.Debug("update: auto-apply is backing off a failed manifest",
-				"manifest_version", u.autoFailManifest, "next_attempt", u.autoNextAttempt.Format(time.RFC3339))
-			continue
-		}
-		out, err := u.Apply(ctx, updateApplyRequest{})
-		u.noteAutoApplyOutcome(out)
+		out, err := u.Apply(ctx, updateApplyRequest{Auto: true})
 		switch {
+		case errors.Is(err, errAutoApplyBackingOff):
+			// A deterministic failure is being backed off (durably, so a
+			// restart does not reset it). Saying nothing would be
+			// indistinguishable from a healthy quiet node.
+			u.logger.Debug("update: auto-apply is backing off a failed target", "detail", err.Error())
 		case err != nil && out.State == "":
 			// Nothing published, not enrolled, or already applying — all
 			// normal conditions on a quiet node, logged at debug so a fleet
@@ -1029,59 +1209,50 @@ func (u *updateRuntime) AutoApplyLoop(ctx context.Context) {
 	}
 }
 
-// deterministicApplyFailures are the error classes that will produce the SAME
-// answer on the next tick, given the same manifest and the same node.
-//
-// Re-running one of these every ten minutes is not a retry, it is a loop: it
-// re-downloads the archive and (before the manifest declares its schema
-// version) re-takes a full VACUUM INTO snapshot of a database that may be
-// tens of gigabytes, forever. That is the automatic full-file rewrite the
-// 2026-08-26 disk-exhaustion audit made a hard invariant against.
-//
-// Deliberately NOT listed: download and drain. A failed fetch or a busy node
-// is a transient condition and the plain ten-minute cadence is the right
-// answer for both.
-var deterministicApplyFailures = map[update.ErrorClass]bool{
-	update.ErrorHash:       true,
-	update.ErrorSignature:  true,
-	update.ErrorProbe:      true,
-	update.ErrorSwap:       true,
-	update.ErrorPermission: true,
-}
+// errAutoApplyBackingOff is the auto-apply loop's "this target is being
+// backed off" answer: nothing ran, nothing was recorded.
+var errAutoApplyBackingOff = errors.New("observer update: auto-apply is backing off this target")
 
 // autoApplyMaxBackoff caps the backoff. An operator who fixes the underlying
 // condition (frees disk, repairs a permission, publishes a corrected
 // manifest) must not wait a day for the node to notice.
 const autoApplyMaxBackoff = 6 * time.Hour
 
-// noteAutoApplyOutcome advances or clears the loop's backoff.
+// applyBackoffGate decides whether an apply of key's target runs now
+// (FR-SEC-12). The record is durable (update.ApplyBackoff in the node
+// database), so a failed hand-over, which ends with this process exiting,
+// does not reset it. Which classes advance it is update.BackoffStep; the
+// gate decides only who it holds:
 //
-// The key is the MANIFEST VERSION, not the error: a new manifest is a new
-// question, so publishing a fixed release re-arms the node on the very next
-// tick regardless of how long the previous one had backed off to.
-func (u *updateRuntime) noteAutoApplyOutcome(out applyOutcome) {
-	if !deterministicApplyFailures[out.ErrorClass] {
-		u.autoFailManifest, u.autoFailCount, u.autoNextAttempt = 0, 0, time.Time{}
-		return
+//   - an operator's apply (auto false) is never held, and clears the record:
+//     running `observer update apply` by hand is the retry-now;
+//   - a record about another target (a new release, or a corrected artifact
+//     for the same version) holds nothing;
+//   - a record a hand-over refusal left is dropped as soon as this node's
+//     supervisor no longer refuses (refusalNow), so `observer service
+//     upgrade` and a restart re-arm the next tick, not hours later;
+//   - otherwise the auto-apply loop waits until the record's next attempt.
+func applyBackoffGate(ctx context.Context, st updateStateStore, key update.BackoffKey, auto bool, refusalNow func() service.HandoverRefusal, now time.Time) (bool, update.ApplyBackoff) {
+	b := loadApplyBackoff(ctx, st)
+	if b.Failures == 0 {
+		return false, b
 	}
-	manifestVersion := int64(0)
-	if u.store != nil {
-		if row, err := u.store.LoadUpdateState(context.Background()); err == nil {
-			manifestVersion = row.LastManifestVersion
+	forget := func() {
+		if st != nil {
+			_ = st.SaveUpdateApplyBackoff(ctx, "")
 		}
 	}
-	if manifestVersion != u.autoFailManifest {
-		u.autoFailManifest, u.autoFailCount = manifestVersion, 0
+	switch {
+	case !auto:
+		forget()
+		return false, update.ApplyBackoff{}
+	case !b.Matches(key):
+		return false, b
+	case b.Refusal != "" && refusalNow != nil && string(refusalNow()) != b.Refusal:
+		forget()
+		return false, update.ApplyBackoff{}
 	}
-	u.autoFailCount++
-	wait := updateAutoApplyInterval << u.autoFailCount
-	if wait > autoApplyMaxBackoff || wait <= 0 {
-		wait = autoApplyMaxBackoff
-	}
-	u.autoNextAttempt = time.Now().Add(wait)
-	u.logger.Warn("update: auto-apply hit a deterministic failure; backing off rather than re-running it every cycle",
-		"error_class", out.ErrorClass, "manifest_version", manifestVersion,
-		"attempt", u.autoFailCount, "next_attempt_in", wait.String())
+	return b.Holds(key, now), b
 }
 
 // updateAutoApplyInterval is how often an auto-applying node re-checks its

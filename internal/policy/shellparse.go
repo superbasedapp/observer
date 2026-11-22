@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -262,6 +263,10 @@ type Command struct {
 	// output is substituted into an interpreter's -c payload is told apart
 	// from a fetch the payload merely runs (demo finding #22).
 	hadSub, fromSubst bool
+	// lostArgs lists the argv indices (>= 1) of the words that were
+	// nothing but a command substitution: an empty word whose value the
+	// guard cannot know (unit.lost; NF-2, R-102).
+	lostArgs []int
 	// procSubIn marks a unit that reads a process substitution as its input
 	// or an operand (`bash <(curl ...)`, `bash < <(curl ...)`), and
 	// procSubSrc the first unit of that substitution. Both are lexer facts;
@@ -367,9 +372,18 @@ func setOf(items ...string) map[string]bool {
 // additionally "/" for cmd) and the per-base valueFlags table. In the
 // PowerShell dialect parameter VALUES are intentionally kept ("-Path
 // C:\x" — the value IS the target of interest).
+//
+// A leading operand that was nothing but a command substitution (lostArgs,
+// NF-2) is left out: its value is unknown and it may be an option, so it
+// does not take the subcommand's place (`git $(x) push` reads push, as it
+// did before NF-2 kept the word). The rules that judge such a word read
+// lostArgs (R-102) or positionalOperands, which keep it.
 func (c *Command) Positionals() []string {
 	idx := c.positionalIndexes()
-	if idx == nil {
+	for len(idx) > 0 && c.lostArg(idx[0]) {
+		idx = idx[1:]
+	}
+	if len(idx) == 0 {
 		return nil
 	}
 	out := make([]string, len(idx))
@@ -417,20 +431,80 @@ type operand struct {
 	item bool
 }
 
-// positionalOperands is Positionals with each word's literal offsets.
+// positionalOperands is Positionals with each word's literal offsets,
+// plus, for a PowerShell cmdlet with a psColonPathParams row, the value of
+// each colon-bound path parameter (`-Path:~` names `~` exactly as `-Path
+// ~` does).
 func (c *Command) positionalOperands() []operand {
 	idx := c.positionalIndexes()
 	known := len(c.ArgvLiterals) == len(c.Argv)
 	out := make([]operand, 0, len(idx))
-	for _, i := range idx {
-		op := operand{text: c.Argv[i]}
+	add := func(i int, text string, off int) {
+		op := operand{text: text}
 		if known {
-			op.lit = c.ArgvLiterals[i]
+			for _, o := range c.ArgvLiterals[i] {
+				if o >= off {
+					op.lit = append(op.lit, o-off)
+				}
+			}
 		}
 		op.item = c.inScriptBlock && isPipelineItem(op.text, op.lit)
 		out = append(out, op)
 	}
+	for _, i := range idx {
+		add(i, c.Argv[i], 0)
+	}
+	if params := psColonPathParams[c.Base]; c.Dialect == DialectPowerShell && params != nil {
+		for i := 1; i < len(c.Argv); i++ {
+			if name, v, ok := psColonParam(c.Argv[i]); ok && v != "" && psParamIn(name, params) {
+				add(i, v, len(c.Argv[i])-len(v))
+			}
+		}
+	}
 	return out
+}
+
+// psColonPathParams are, per PowerShell cmdlet, the parameters whose
+// colon-bound value (`-Path:~`) names a path the cmdlet acts on, with the
+// shortest prefix PowerShell binds (guard-parser lane, 2026-11-22: the
+// colon form was read as one flag word, so `Remove-Item -Path:~ -Recurse
+// -Force` had no target and was allowed). Only path parameters are read: a
+// switch's colon value (`-Recurse:$true`) is not a target.
+var psColonPathParams = map[string][]psHostParam{
+	"remove-item": {
+		{name: "path", minLen: 1},
+		{name: "literalpath", minLen: 1, aliases: []string{"pspath", "lp"}},
+	},
+}
+
+// psColonParam splits a PowerShell colon-bound parameter token
+// (`-Path:~`, `-LiteralPath:`) into its lowercased name and its value; ok
+// is false for any other word.
+func psColonParam(t string) (name, value string, ok bool) {
+	if len(t) < 3 || t[0] != '-' {
+		return "", "", false
+	}
+	n, v, found := strings.Cut(t[1:], ":")
+	if !found || n == "" {
+		return "", "", false
+	}
+	for k := 0; k < len(n); k++ {
+		if !isASCIILetter(n[k]) && (n[k] < '0' || n[k] > '9') && n[k] != '_' {
+			return "", "", false
+		}
+	}
+	return strings.ToLower(n), v, true
+}
+
+// psParamIn reports whether a lowercased parameter name binds to one of
+// the rows (an alias, or a prefix at the row's minimum length).
+func psParamIn(name string, rows []psHostParam) bool {
+	for _, r := range rows {
+		if slices.Contains(r.aliases, name) || psParamMatches("-"+name, r.name, r.minLen) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFlagToken reports whether t is flag-shaped in the unit's dialect.
@@ -445,13 +519,25 @@ func (c *Command) isFlagToken(t string) bool {
 }
 
 // Sub returns the unit's first positional operand — the subcommand
-// for multi-command CLIs ("push" in `git push -f origin main`).
+// for multi-command CLIs ("push" in `git push -f origin main`, and in
+// `git $(x) push`: see Positionals).
 func (c *Command) Sub() string {
 	p := c.Positionals()
 	if len(p) == 0 {
 		return ""
 	}
 	return p[0]
+}
+
+// lostArg reports whether argv index i was nothing but a command
+// substitution (lostArgs).
+func (c *Command) lostArg(i int) bool {
+	for _, j := range c.lostArgs {
+		if j == i {
+			return true
+		}
+	}
+	return false
 }
 
 // FlagValue returns the value of the first matching flag, supporting
@@ -493,6 +579,7 @@ func ParseArgv(argv []string, dialect Dialect) []Command {
 		return nil
 	}
 	var subs []string
+	var lost []int
 	words := make([]string, 0, len(argv))
 	for _, w := range argv {
 		// Every dialect, for the reason parseDepth documents: a
@@ -503,12 +590,15 @@ func ParseArgv(argv []string, dialect Dialect) []Command {
 		subs = append(subs, s...)
 		w = cw
 		if strings.TrimSpace(w) != "" || len(words) > 0 {
+			if w == "" && len(s) > 0 {
+				lost = append(lost, len(words)) // the whole word was a substitution (NF-2)
+			}
 			words = append(words, w)
 		}
 	}
 	var out []Command
 	st := newParseState()
-	processUnit(unit{words: words, hadSub: len(subs) > 0}, dialect, st, &out)
+	processUnit(unit{words: words, hadSub: len(subs) > 0, lost: lost}, dialect, st, &out)
 	for _, sub := range subs {
 		out = appendSubstitutionUnits(out, parseDepth(sub, dialect, st.deeper()), st.depth+1)
 	}
@@ -538,6 +628,9 @@ type unit struct {
 	// this unit's text (stripSubstitutions leaves subMarker in its
 	// place), so a directory change or link it named cannot be resolved.
 	hadSub bool
+	// lost lists the indices in words of the words that were nothing but
+	// a command substitution (ptoken.subWord).
+	lost []int
 	// procSubIn / procSubSrc: see Command.procSubIn.
 	procSubIn, procSubSrc bool
 }
@@ -613,7 +706,7 @@ func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	if dialect != DialectCmd && (!ps || psInert) {
 		raw, restore = shieldQuotedHeredocBodies(raw)
 	}
-	raw, subs, tickSpan := stripSubstitutionsOpts(raw, stripOpts{mark: true, psEscape: ps, psTicks: ps && st.psTicks})
+	raw, subs, tickSpan := stripSubstitutionsOpts(raw, stripOpts{mark: true, psEscape: ps, psTicks: ps && st.psTicks, psParens: ps})
 	raw = restore(raw)
 	for k := range subs {
 		subs[k] = restore(subs[k])
@@ -792,6 +885,7 @@ func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
 		seqPos:           st.curPos,
 		chdir:            chdir,
 		hadSub:           u.hadSub,
+		lostArgs:         argvLost(u.lost, len(u.words), len(stripped)),
 		procSubIn:        u.procSubIn,
 		procSubSrc:       u.procSubSrc,
 	}
@@ -801,6 +895,20 @@ func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
 	nested = append(nested, unwrapScriptBlocks(&cmd, st)...)
 	*out = append(*out, cmd)
 	*out = append(*out, nested...)
+}
+
+// argvLost maps a unit's lost-word indices (unit.lost) onto its argv, the
+// last n of its words (stripAssignments and stripWrappers only drop
+// leading words). A lost word among the dropped words or in the command
+// position is not an argument and is left out.
+func argvLost(lost []int, words, n int) []int {
+	var out []int
+	for _, p := range lost {
+		if i := p - (words - n); i >= 1 && i < n {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // leadingKeywords are the reserved words that may stand in COMMAND
@@ -886,31 +994,89 @@ func isEnvAssign(w string) bool {
 // arguments before the wrapped command begins.
 type wrapperSpec struct {
 	// argFlags are wrapper flags that consume a following value
-	// ("sudo -u root").
+	// ("sudo -u root"). A short flag also takes its value from the rest
+	// of a getopt cluster ("-uroot") or, when it ends the cluster, from
+	// the next word ("sudo -nu root").
 	argFlags map[string]bool
 	// leadingOperand marks wrappers whose first positional is their
 	// own operand, not the wrapped command ("timeout 5 cmd").
 	leadingOperand bool
+	// operandIf, when set, limits leadingOperand to a word it accepts.
+	// chrt's priority is optional for the policies that have none
+	// (`chrt -o cmd`), so only a number is read as the operand there.
+	operandIf func(string) bool
+	// noOperandFlags are flags after which there is no leading operand:
+	// `runuser -u USER CMD` names its user with -u and runs the argv,
+	// where `runuser USER -c LINE` takes the user as an operand.
+	noOperandFlags map[string]bool
+	// loginDash marks wrappers that read a lone "-" as an option (su's
+	// and runuser's login shell, env's -i), not as their leading operand
+	// or their command.
+	loginDash bool
 	// assignments marks wrappers that consume VAR=value operands
 	// ("env FOO=1 cmd").
 	assignments bool
+	// lineFlags are flags whose value is a SHELL LINE the wrapper runs
+	// (`flock FILE -c LINE`, `su -c LINE`, `script -c LINE`). A wrapper
+	// that meets one is not stripped: it stays the unit's command and
+	// analyzeNested parses the line one level deeper, like `bash -c`.
+	lineFlags map[string]bool
+	// lineTakesTail marks a lineFlags value that the remaining words are
+	// appended to before it runs (`env -S 'rm -rf' ~` runs `rm -rf ~`).
+	lineTakesTail bool
+	// lineTail marks wrappers that join every word after their own
+	// options into one shell line (`watch` hands its arguments to
+	// `sh -c`, so `watch 'rm -rf ~; x'` is two commands).
+	lineTail bool
+	// lineTailFlags are flags that make the wrapper behave like lineTail
+	// for the rest of its words: `sudo -s` and `sudo -i` join the command
+	// and its arguments and run them with the shell's -c, so `sudo -i
+	// 'rm -rf ~'` runs `rm -rf ~` (FR-SEC-7). A getopt cluster carrying one
+	// of the letters (`sudo -iu root`) counts.
+	lineTailFlags map[string]bool
 }
 
 // posixWrappers is the table of wrappers stripped before matching
-// (spec §4.3). sudo/doas additionally set Command.Sudo. eval/exec are
-// handled separately: exec strips like a wrapper; eval re-parses its
-// arguments as a command line (see analyzeNested).
+// (spec §4.3). The privilege wrappers (privilegeWrappers) additionally
+// set Command.Sudo. eval/exec are handled separately: exec strips like a
+// wrapper; eval re-parses its arguments as a command line (see
+// analyzeNested).
+//
+// Every exec-prefix command that runs its argv as a command belongs here
+// with its value-taking flags and leading operands, or every rule that
+// switches on Command.Base is blind behind it: before the rows from
+// ionice down, `ionice -c3 rm -rf ~` had Base "ionice" and R-101 allowed
+// it in enforce mode (NEW-02 / NEW-F-01, 2026-11-22; the H5 / H5b class).
+// A wrapper with no command left (`flock /tmp/l`, `su - root`) keeps its
+// own words, so it is still visible as itself.
 var posixWrappers = map[string]wrapperSpec{
-	"sudo": {argFlags: setOf("-u", "-g", "-p", "-C", "-D", "-R", "-T", "-h", "--user", "--group")},
-	"doas": {argFlags: setOf("-u")},
+	// sudo accepts VAR=value operands before the command and passes them
+	// in the command's environment (`sudo DEBIAN_FRONTEND=noninteractive
+	// cmd`); without `assignments` the first one was the unit's Base
+	// (FR-SEC-4, review 2026-11-22).
+	// sudo -s / -i hand the command words to the shell's -c (FR-SEC-7).
+	"sudo": {
+		assignments: true,
+		argFlags: setOf("-u", "-g", "-p", "-C", "-D", "-R", "-T", "-h", "-r", "-t", "-U", "-c",
+			"--user", "--group", "--prompt", "--close-from", "--chdir", "--chroot", "--command-timeout",
+			"--host", "--role", "--type", "--other-user", "--login-class"),
+		lineTailFlags: setOf("-s", "-i", "--shell", "--login"),
+	},
+	"doas": {argFlags: setOf("-u", "-C")},
 	// gsudo is the widely-installed third-party sudo for Windows and
 	// wraps its command exactly like sudo does. It is listed in BOTH
 	// dialect tables for the reason cmdWrappers documents: a Windows
 	// command line can arrive tagged with any dialect, and a wrapper
 	// that strips under one dialect and not another is the asymmetry
 	// H5 was.
-	"gsudo":   {argFlags: setOf("-u", "--user", "-i", "--integrity")},
-	"env":     {assignments: true, argFlags: setOf("-u", "-S", "-C", "-P", "--unset", "--split-string", "--chdir")},
+	"gsudo": {argFlags: setOf("-u", "--user", "-i", "--integrity")},
+	// env -S splits its value into words and runs them with the rest of
+	// the argv appended, so the value is a command line, not an operand.
+	// A lone `-` is GNU env's -i (FR-SEC-4).
+	"env": {
+		assignments: true, loginDash: true, argFlags: setOf("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"),
+		lineFlags: setOf("-S", "--split-string"), lineTakesTail: true,
+	},
 	"timeout": {leadingOperand: true, argFlags: setOf("-k", "-s", "--kill-after", "--signal")},
 	"nice":    {argFlags: setOf("-n", "--adjustment")},
 	"nohup":   {},
@@ -923,11 +1089,14 @@ var posixWrappers = map[string]wrapperSpec{
 		"--uid", "--gid", "--nice", "--working-directory", "--slice", "--description", "--service-type",
 		"--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar",
 		"--timer-property", "--path-property", "--socket-property", "--expand-environment")},
-	"time":    {},
-	"stdbuf":  {argFlags: setOf("-i", "-o", "-e")},
+	// GNU time (/usr/bin/time) takes a format and an output file; the
+	// bash keyword takes only -p.
+	"time":    {argFlags: setOf("-f", "-o", "--format", "--output")},
+	"stdbuf":  {argFlags: setOf("-i", "-o", "-e", "--input", "--output", "--error")},
 	"command": {},
 	"builtin": {},
-	"exec":    {},
+	// exec -a NAME sets argv[0] (bash).
+	"exec": {argFlags: setOf("-a")},
 	// busybox / toybox are multi-call binaries: `busybox APPLET [args…]` runs
 	// the applet as if it were the command (NET-5). Stripping the leading
 	// busybox/toybox makes the applet the Base every rule family sees, so
@@ -937,9 +1106,122 @@ var posixWrappers = map[string]wrapperSpec{
 	// no argFlags is correct; an applet begins at the first non-dashed word.
 	"busybox": {},
 	"toybox":  {},
-	"xargs": {argFlags: setOf("-I", "-n", "-P", "-d", "-a", "-E", "-s", "-L", "-i",
-		"--max-args", "--max-procs", "--delimiter", "--arg-file", "--max-chars", "--max-lines", "--replace")},
+	// xargs -i and --replace take an OPTIONAL value that must be attached
+	// (`-i{}`, `--replace={}`); listing them as value flags ate the
+	// command (`xargs -i rm -rf {}` had Base "{}"). -I takes a value.
+	"xargs": {argFlags: setOf("-I", "-n", "-P", "-d", "-a", "-E", "-s", "-L",
+		"--max-args", "--max-procs", "--delimiter", "--arg-file", "--max-chars", "--max-lines", "--process-slot-var")},
+
+	// --- NEW-02: scheduling, locking, namespace and tracing prefixes ---
+	"ionice": {argFlags: setOf("-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid")},
+	// taskset's mask (or, with -c, its CPU list) is a leading operand;
+	// -c itself takes no value, it changes how the mask is read.
+	"taskset": {leadingOperand: true},
+	"chrt": {
+		leadingOperand: true, operandIf: isDecimal,
+		argFlags: setOf("-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"),
+	},
+	// flock FILE CMD... runs an argv; flock FILE -c LINE runs a shell line.
+	"flock": {
+		leadingOperand: true, argFlags: setOf("-w", "-E", "--wait", "--timeout", "--conflict-exit-code"),
+		lineFlags: setOf("-c", "--command"),
+	},
+	"pkexec": {argFlags: setOf("-u", "--user")},
+	// runuser -u USER [--] CMD... runs an argv; the su-compatible form
+	// runuser [-l|-] USER -c LINE runs a shell line. su is the same shape.
+	"runuser": {
+		leadingOperand: true, loginDash: true, noOperandFlags: setOf("-u", "--user"),
+		argFlags: setOf("-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell",
+			"--whitelist-environment"),
+		lineFlags: setOf("-c", "--command", "--session-command"),
+	},
+	"su": {
+		leadingOperand: true, loginDash: true,
+		argFlags:  setOf("-g", "-G", "-s", "-w", "--group", "--supp-group", "--shell", "--whitelist-environment"),
+		lineFlags: setOf("-c", "--command", "--session-command"),
+	},
+	"chroot": {leadingOperand: true, argFlags: setOf("--userspec", "--groups")},
+	"unshare": {argFlags: setOf("-S", "-G", "-R", "-w", "--setuid", "--setgid", "--root", "--wd", "--propagation",
+		"--setgroups", "--map-user", "--map-group", "--map-users", "--map-groups", "--monotonic", "--boottime",
+		"--load-interp", "--owner")},
+	"nsenter": {argFlags: setOf("-t", "-S", "-G", "-W", "-N", "--target", "--setuid", "--setgid", "--wdns", "--net-socket")},
+	"strace": {argFlags: setOf("-a", "-b", "-e", "-E", "-I", "-o", "-O", "-p", "-P", "-s", "-S", "-u", "-U", "-X",
+		"--columns", "--detach-on", "--env", "--interruptible", "--output", "--overhead", "--attach",
+		"--trace-path", "--string-limit", "--summary-sort-by", "--user", "--summary-columns",
+		"--const-print-style", "--trace", "--signal", "--status", "--inject", "--fault", "--trace-fds", "--argv0")},
+	"ltrace": {argFlags: setOf("-a", "-A", "-D", "-e", "-F", "-l", "-n", "-o", "-p", "-s", "-u", "-w", "-x",
+		"--align", "--output", "--library", "--indent")},
+	"fakeroot": {argFlags: setOf("-l", "-i", "-s", "-b", "--lib", "--faked", "--fd-base")},
+	// watch joins its arguments and runs them with sh -c.
+	"watch":      {lineTail: true, argFlags: setOf("-n", "-q", "--interval", "--equexit")},
+	"caffeinate": {argFlags: setOf("-t", "-w")},
+	// script -c LINE runs the line in a shell; the typescript file is its
+	// optional operand. With no -c it starts an interactive shell.
+	"script": {
+		leadingOperand: true, argFlags: setOf("-E", "-I", "-O", "-B", "-T", "-m", "-o",
+			"--echo", "--log-in", "--log-out", "--log-io", "--log-timing", "--logging-format", "--output-limit"),
+		lineFlags: setOf("-c", "--command"),
+	},
+
+	// --- FR-SEC-7 (review 2026-11-22): the measured prefixes that were
+	// still missing, with the value flags and operands from their man
+	// pages. ---
+	"setpriv": {argFlags: setOf("--inh-caps", "--ambient-caps", "--bounding-set", "--groups", "--egid", "--euid",
+		"--rgid", "--ruid", "--regid", "--reuid", "--securebits", "--pdeathsig", "--selinux-label",
+		"--apparmor-profile", "--landlock-access", "--landlock-rule")},
+	// prlimit's resource options take an OPTIONAL value that must be
+	// attached (`--nofile=1024`, `-n1024`), so only -p and -o take the
+	// next word.
+	"prlimit": {argFlags: setOf("-p", "-o", "--pid", "--output")},
+	"numactl": {argFlags: setOf("-i", "-p", "-m", "-N", "-C", "-P", "-w", "-c", "-S", "-f", "-L", "-o", "-M", "-I",
+		"--interleave", "--preferred", "--membind", "--cpunodebind", "--physcpubind", "--preferred-many",
+		"--weighted-interleave", "--cpubind", "--shm", "--file", "--length", "--offset", "--shmmode", "--shmid")},
+	"cgexec":          {argFlags: setOf("-g")},
+	"systemd-inhibit": {argFlags: setOf("--what", "--who", "--why", "--mode")},
+	"unbuffer":        {},
+	"chronic":         {},
+	// firejail takes every option value attached (`--private=DIR`).
+	"firejail":     {},
+	"proxychains":  {argFlags: setOf("-f")},
+	"proxychains4": {argFlags: setOf("-f")},
+	"torsocks":     {argFlags: setOf("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port")},
+	// setarch ARCH [options] CMD: the architecture is optional since
+	// util-linux 2.33 (`setarch -R cmd`), so only a known one is read as
+	// the operand. linux32 / linux64 imply theirs.
+	"setarch": {leadingOperand: true, operandIf: isSetarchArch},
+	"linux32": {},
+	"linux64": {},
+	// sg [-] GROUP [-c] LINE runs LINE with /bin/sh -c, with or without
+	// -c.
+	"sg":               {leadingOperand: true, loginDash: true, lineFlags: setOf("-c"), lineTail: true},
+	"dbus-run-session": {argFlags: setOf("--config-file", "--dbus-daemon")},
+	"xvfb-run": {argFlags: setOf("-e", "-f", "-n", "-p", "-s", "-w",
+		"--error-file", "--auth-file", "--server-num", "--xauth-protocol", "--server-args", "--wait")},
+	"ssh-agent": {argFlags: setOf("-a", "-E", "-P", "-t", "-O")},
+	// GNU parallel joins its command words and runs them with the shell,
+	// so the command is a shell line (`parallel 'cmd {}' ::: x`); the
+	// argument lists after `:::` are read as more operands, which can only
+	// make a match more likely.
+	"parallel": {lineTail: true, argFlags: setOf("-a", "-C", "-d", "-E", "-I", "-j", "-L", "-n", "-N", "-P", "-s", "-S",
+		"--arg-file", "--arg-file-sep", "--arg-sep", "--basefile", "--bf", "--block", "--block-size", "--bs",
+		"--colsep", "--compress-program", "--decompress-program", "--delay", "--delimiter", "--env", "--group-by",
+		"--halt", "--halt-on-error", "--header", "--id", "--joblog", "--jobs", "--limit", "--load", "--max-args",
+		"--max-chars", "--max-lines", "--max-procs", "--memfree", "--memsuspend", "--nice", "--recend", "--recstart",
+		"--res", "--results", "--retries", "--return", "--semaphorename", "--semaphoretimeout", "--slf", "--ssh",
+		"--sshdelay", "--sshlogin", "--sshloginfile", "--st", "--tag-string", "--tagstring", "--termseq", "--tf",
+		"--timeout", "--tmpdir", "--transferfile", "--wd", "--workdir", "--sql", "--sqlmaster", "--sqlworker")},
 }
+
+// setarchArchs are the architecture names setarch accepts as its first
+// operand (util-linux setarch.c's transition table).
+var setarchArchs = setOf("uname26", "linux32", "linux64", "i386", "i486", "i586", "i686", "athlon", "x86_64",
+	"ia64", "parisc", "parisc32", "parisc64", "ppc", "ppc32", "ppc64", "ppcle", "ppc64le", "s390", "s390x",
+	"sparc", "sparc32", "sparc32bash", "sparc64", "mips", "mips32", "mips64", "alpha", "alphaev5", "alphaev56",
+	"alphaev6", "alphaev67", "arm", "armv7l", "armh", "armv8l", "armv8b", "aarch64", "riscv32", "riscv64",
+	"loongarch", "loongarch32", "loongarch64", "m68k", "sh", "e2k", "e2k-32", "e2k-64")
+
+// isSetarchArch reports whether w names a setarch architecture.
+func isSetarchArch(w string) bool { return setarchArchs[strings.ToLower(w)] }
 
 // cmdWrappers is the cmd-dialect wrapper table. cmd.exe has no
 // wrapper convention of its own, but Windows 11 (24H2) ships
@@ -954,7 +1236,7 @@ var posixWrappers = map[string]wrapperSpec{
 // reused wholesale here: cmd's `timeout` is a SLEEP, not a wrapper,
 // and `start` is a launcher with its own syntax (launcher.go).
 var cmdWrappers = map[string]wrapperSpec{
-	"sudo":  {argFlags: setOf("-u", "--user")},
+	"sudo":  {assignments: true, argFlags: setOf("-u", "--user")},
 	"doas":  {argFlags: setOf("-u")},
 	"gsudo": {argFlags: setOf("-u", "--user", "-i", "--integrity")},
 }
@@ -963,11 +1245,16 @@ var cmdWrappers = map[string]wrapperSpec{
 // privilege-escalation fact that survives wrapper stripping. Derived
 // from one place so the two dialect tables cannot disagree about
 // which of their rows escalate.
-var privilegeWrappers = map[string]bool{"sudo": true, "doas": true, "gsudo": true}
+var privilegeWrappers = map[string]bool{
+	"sudo": true, "doas": true, "gsudo": true, "pkexec": true, "runuser": true, "su": true,
+}
 
 // stripWrappers iteratively removes leading wrapper commands,
 // returning the remaining argv, the stripped wrapper names in order,
-// and whether a privilege-escalation wrapper (sudo/doas) was present.
+// and whether a privilege-escalation wrapper (privilegeWrappers) was
+// present. A wrapper that runs a SHELL LINE (wrapperSpec.lineFlags,
+// lineTail) is not stripped: it stays the command, and analyzeNested
+// parses its line.
 func stripWrappers(words []string, dialect Dialect) (rest, wrappers []string, sudo bool) {
 	table := posixWrappers
 	if dialect == DialectCmd {
@@ -979,42 +1266,175 @@ func stripWrappers(words []string, dialect Dialect) (rest, wrappers []string, su
 		if !ok {
 			break
 		}
+		args := readWrapperArgs(words[1:], spec)
+		if args.hasLine {
+			break
+		}
 		wrappers = append(wrappers, base)
 		if privilegeWrappers[base] {
 			sudo = true
 		}
-		words = consumeWrapperArgs(words[1:], spec)
+		words = args.tail
 	}
 	return words, wrappers, sudo
 }
 
 // consumeWrapperArgs skips a wrapper's own flags/operands and returns
-// the argv tail where the wrapped command begins.
+// the argv tail where the wrapped command begins. A wrapper that runs a
+// shell line has no argv tail (nil).
 func consumeWrapperArgs(rest []string, spec wrapperSpec) []string {
-	tookOperand := false
+	return readWrapperArgs(rest, spec).tail
+}
+
+// wrapperArgs is what readWrapperArgs read off a wrapper's arguments:
+// either the argv tail the wrapped command begins at, or the shell line
+// the wrapper runs.
+type wrapperArgs struct {
+	tail    []string
+	line    string
+	hasLine bool
+}
+
+// readWrapperArgs walks a wrapper's own options and operands (spec) and
+// returns where its command begins. Options are read after the leading
+// operand too, because su, runuser and script let getopt permute them
+// (`su root -c LINE`).
+func readWrapperArgs(rest []string, spec wrapperSpec) wrapperArgs {
+	tookOperand, joinTail := false, false
 	for len(rest) > 0 {
 		w := rest[0]
 		switch {
+		case w == "-" && spec.loginDash:
+			rest = rest[1:]
 		case len(w) > 1 && w[0] == '-':
-			name, hasEq := w, false
-			if i := strings.IndexByte(w, '='); i >= 0 {
-				name, hasEq = w[:i], true
+			f := spec.readFlag(w)
+			if f.noOperand {
+				tookOperand = true
 			}
-			if spec.argFlags[name] && !hasEq && len(rest) > 1 {
+			joinTail = joinTail || f.joinTail
+			switch {
+			case f.line && f.attached:
+				return spec.lineResult(f.value, rest[1:])
+			case f.line && len(rest) > 1:
+				return spec.lineResult(rest[1], rest[2:])
+			case f.takesNext && len(rest) > 1:
 				rest = rest[2:]
-			} else {
+			default:
 				rest = rest[1:]
 			}
 		case spec.assignments && isEnvAssign(w):
 			rest = rest[1:]
-		case spec.leadingOperand && !tookOperand:
+		case spec.leadingOperand && !tookOperand && (spec.operandIf == nil || spec.operandIf(w)):
 			tookOperand = true
 			rest = rest[1:]
+		case spec.lineTail || joinTail:
+			return wrapperArgs{line: strings.Join(rest, " "), hasLine: true}
 		default:
-			return rest
+			return wrapperArgs{tail: rest}
 		}
 	}
-	return rest
+	return wrapperArgs{tail: rest}
+}
+
+// lineResult builds the shell-line result for a lineFlags value; after
+// is the words following the value.
+func (spec wrapperSpec) lineResult(value string, after []string) wrapperArgs {
+	if spec.lineTakesTail && len(after) > 0 {
+		value += " " + strings.Join(after, " ")
+	}
+	return wrapperArgs{line: value, hasLine: true}
+}
+
+// wrapperFlag is how one option word of a wrapper reads.
+type wrapperFlag struct {
+	// takesNext: the option's value is the next word.
+	takesNext bool
+	// line: the option's value is a shell line; attached when the value
+	// is in the same word (`--command=LINE`, `-cLINE`).
+	line, attached bool
+	value          string
+	// noOperand: the option rules out the wrapper's leading operand.
+	noOperand bool
+	// joinTail: the option makes the rest of the words a shell line
+	// (wrapperSpec.lineTailFlags).
+	joinTail bool
+}
+
+// readFlag reads one option word against the spec: an exact flag, a
+// `--long=value` word, or a getopt cluster of short flags where the
+// first value-taking letter takes the rest of the word or, when it ends
+// the word, the next word.
+func (spec wrapperSpec) readFlag(w string) wrapperFlag {
+	name, val, hasEq := strings.Cut(w, "=")
+	if strings.HasPrefix(w, "--") || len(w) == 2 {
+		f := wrapperFlag{noOperand: spec.noOperandFlags[name], joinTail: spec.lineTailFlags[name]}
+		switch {
+		case spec.lineFlags[name]:
+			f.line, f.attached, f.value = true, hasEq, val
+		case spec.argFlags[name]:
+			f.takesNext = !hasEq
+		}
+		return f
+	}
+	var f wrapperFlag
+	for i := 1; i < len(w); i++ {
+		short := "-" + w[i:i+1]
+		f.noOperand = f.noOperand || spec.noOperandFlags[short]
+		f.joinTail = f.joinTail || spec.lineTailFlags[short]
+		if spec.lineFlags[short] {
+			f.line = true
+			if i+1 < len(w) {
+				f.attached, f.value = true, w[i+1:]
+			}
+			return f
+		}
+		if spec.argFlags[short] {
+			f.takesNext = i == len(w)-1
+			return f
+		}
+	}
+	return f
+}
+
+// isDecimal reports whether s is a non-empty run of ASCII digits.
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// wrapperShellLine returns the shell line a wrapper unit runs
+// (`flock FILE -c LINE`, `su -c LINE`, `watch LINE`), when it runs one.
+func wrapperShellLine(cmd *Command) (string, bool) {
+	if cmd.Dialect == DialectCmd || len(cmd.Argv) < 2 {
+		return "", false
+	}
+	spec, ok := posixWrappers[cmd.Base]
+	if !ok {
+		return "", false
+	}
+	args := readWrapperArgs(cmd.Argv[1:], spec)
+	return args.line, args.hasLine
+}
+
+// unwrapWrapperLine parses a wrapper's shell line one level deeper, the
+// way unwrapPayload parses `bash -c`, and marks every inner unit with
+// the wrapper (and with Sudo when the wrapper escalates), the way
+// unwrapLauncher marks a launched command.
+func unwrapWrapperLine(cmd *Command, line string, st parseState) []Command {
+	nested := unwrapPayload(cmd, line, DialectPosix, "shell", st)
+	sudo := cmd.Sudo || privilegeWrappers[cmd.Base]
+	for i := range nested {
+		nested[i].Wrappers = append([]string{cmd.Base}, nested[i].Wrappers...)
+		nested[i].Sudo = nested[i].Sudo || sudo
+	}
+	return nested
 }
 
 // canonicalBase derives Command.Base from a command word: directory
@@ -1026,10 +1446,16 @@ func canonicalBase(word string, dialect Dialect) string {
 		b = b[i+1:]
 	}
 	b = strings.ToLower(b)
+	hadExt := false
 	for _, ext := range [...]string{".exe", ".com", ".bat", ".cmd"} {
-		b = strings.TrimSuffix(b, ext)
+		if t, ok := strings.CutSuffix(b, ext); ok {
+			b, hadExt = t, true
+		}
 	}
-	if dialect == DialectPowerShell {
+	// A word naming an executable file is never a PowerShell alias:
+	// PowerShell resolves aliases for bare names only, and `curl.exe` is
+	// the real curl, not Invoke-WebRequest (FR-SEC-10, review 2026-11-22).
+	if dialect == DialectPowerShell && !hadExt {
 		if canon, ok := psAliases[b]; ok {
 			return canon
 		}
@@ -1122,11 +1548,11 @@ func analyzeNested(cmd *Command, st parseState) []Command {
 		}
 		return unwrapPayload(cmd, payload, DialectPowerShell, "powershell", st)
 	case cmd.Base == "powershell" || cmd.Base == "pwsh":
-		payload, ok := psCommandPayload(cmd.Argv)
-		if !ok {
-			return nil
+		var out []Command
+		for _, payload := range psCommandPayloads(cmd.Argv, cmd.Base) {
+			out = append(out, unwrapPayload(cmd, payload, DialectPowerShell, "powershell", st)...)
 		}
-		return unwrapPayload(cmd, payload, DialectPowerShell, "powershell", st)
+		return out
 	case cmd.Base == "cmd":
 		payload, ok := cmdSlashCPayload(cmd.Argv)
 		if !ok {
@@ -1134,6 +1560,9 @@ func analyzeNested(cmd *Command, st parseState) []Command {
 		}
 		return unwrapPayload(cmd, payload, DialectCmd, "cmd", st)
 	default:
+		if line, ok := wrapperShellLine(cmd); ok {
+			return unwrapWrapperLine(cmd, line, st)
+		}
 		if spec, ok := interpreterFor(cmd.Base); ok {
 			if code := inlineCode(cmd, spec); len(code) > 0 {
 				cmd.Payload, cmd.PayloadKind = strings.Join(code, "\n"), spec.kind
@@ -1510,6 +1939,12 @@ type ptoken struct {
 	// separate list from lit because a double-quoted '$' still expands
 	// while a double-quoted brace is plain text.
 	qbr []int
+	// subWord marks a word that was nothing but command substitutions
+	// (`$(x)`, `"$(x)"`): its text is empty and its value unknown (NF-2).
+	// synth marks the empty word the lexer made for an UNQUOTED one, which
+	// used to leave no word at all (NF-6); buildUnits keeps it only in
+	// argument position.
+	subWord, synth bool
 }
 
 // lexSpec parametrizes lexLine per dialect.
@@ -1575,12 +2010,23 @@ type lexer struct {
 	lits []int
 	// qbr collects the current word's quoted-brace offsets (ptoken.qbr).
 	qbr []int
+	// sub records a substitution marker read into the current word
+	// (ptoken.subWord).
+	sub bool
 }
 
 // flush emits the current word (if any) as a token, honoring the
 // PowerShell stop-parsing token.
 func (lx *lexer) flush() {
+	sub := lx.sub
+	lx.sub = false
 	if !lx.has && lx.cur.Len() == 0 {
+		if sub {
+			// A whole unquoted word that was a command substitution: it
+			// keeps its place as an empty word, as the quoted `"$(x)"`
+			// always did (NF-2, NF-6).
+			lx.toks = append(lx.toks, ptoken{subWord: true, synth: true})
+		}
 		return
 	}
 	w := lx.cur.String()
@@ -1602,7 +2048,22 @@ func (lx *lexer) flush() {
 		lx.i = len(lx.src)
 		return
 	}
-	lx.toks = append(lx.toks, ptoken{text: w, lit: lits, qbr: qbr})
+	lx.toks = append(lx.toks, ptoken{text: w, lit: lits, qbr: qbr, subWord: sub && lx.lostValue(w)})
+}
+
+// lostValue reports whether a word that read a substitution marker is
+// nothing but that substitution: an empty word, or under PowerShell a
+// colon-bound parameter whose whole value was one (`-Path:$(x)`, `-Path:(x)`
+// after psArgScan). The word keeps its text; its value is unknown.
+func (lx *lexer) lostValue(w string) bool {
+	if w == "" {
+		return true
+	}
+	if !lx.spec.psSyntax {
+		return false
+	}
+	_, v, ok := psColonParam(w)
+	return ok && v == ""
 }
 
 // opSubMark is the zero-width operator token the lexer emits for a
@@ -1615,6 +2076,7 @@ const opSubMark = "\x01sub"
 func (lx *lexer) writeLit(c byte) {
 	if c == subMarker {
 		lx.toks = append(lx.toks, ptoken{text: opSubMark, op: true})
+		lx.sub = true
 		return
 	}
 	if c == '$' || c == '%' || c == '`' {
@@ -1637,6 +2099,7 @@ func (lx *lexer) writeQuoted(c byte) {
 func (lx *lexer) write(c byte) {
 	if c == subMarker {
 		lx.toks = append(lx.toks, ptoken{text: opSubMark, op: true})
+		lx.sub = true
 		return
 	}
 	if lx.cur.Len() == 0 {
@@ -1919,6 +2382,11 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 			}
 			continue
 		}
+		if t.synth && (len(cur.words) == 0 || redirNext || dropNext || inNext) {
+			// An unquoted substitution standing as the command word or
+			// as a redirect operand keeps its old reading: no word.
+			continue
+		}
 		switch {
 		case redirNext:
 			cur.redirects = append(cur.redirects, t.text)
@@ -1929,6 +2397,9 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 			cur.inputs = append(cur.inputs, t.text)
 			inNext = false
 		default:
+			if t.subWord {
+				cur.lost = append(cur.lost, len(cur.words))
+			}
 			cur.words = append(cur.words, t.text)
 			cur.lits = append(cur.lits, t.lit)
 			cur.qbr = append(cur.qbr, t.qbr)
@@ -1986,13 +2457,20 @@ func stripSubstitutionsFor(s string, mark, psEscape bool) (string, []string) {
 // substitution from every dialect), and under psEscape a here-string body
 // (psHereStringAt) is read with apostrophes as text (psHereBody).
 func stripSubstitutionsOpts(s string, o stripOpts) (string, []string, bool) {
-	if !strings.ContainsAny(s, "`$") {
+	o.psParens = o.psParens && strings.IndexByte(s, '(') >= 0
+	if !o.psParens && !strings.ContainsAny(s, "`$") {
 		return s, nil, false
 	}
 	st := &stripScan{s: s, o: o}
+	var args *psArgScan
+	if o.psParens {
+		args = &psArgScan{}
+	}
 	inS, inD := false, false
 	for i := 0; i < len(s); {
 		c := s[i]
+		// argParen: the byte opens a PowerShell argument (NF-1, psArgScan).
+		argParen := args != nil && !inS && !inD && args.step(s, i)
 		switch {
 		case inS:
 			st.out.WriteByte(c)
@@ -2017,6 +2495,13 @@ func stripSubstitutionsOpts(s string, o stripOpts) (string, []string, bool) {
 			i = st.tickSpanAt(i)
 		case c == '$' && i+1 < len(s) && s[i+1] == '(':
 			i = st.dollarParen(i)
+		case argParen:
+			next, ok := st.parenArg(i)
+			if !ok {
+				// Never closed: the lexer reads it as before (a group).
+				args.open(false)
+			}
+			i = next
 		default:
 			st.out.WriteByte(c)
 			i++
@@ -2098,6 +2583,22 @@ func (st *stripScan) tickSpanAt(i int) int {
 	st.tickSpan = true
 	st.mark()
 	return i + 1 + j + 1
+}
+
+// parenArg removes a parenthesised PowerShell argument (stripOpts.psParens,
+// NF-1) as a substitution: the expression is parsed as a nested unit and
+// the unit it sat in records that it lost a value. ok is false, nothing
+// consumed but the `(` (copied as text), when the parenthesis is never
+// closed.
+func (st *stripScan) parenArg(i int) (next int, ok bool) {
+	j, ok := psParenEnd(st.s, i)
+	if !ok {
+		st.out.WriteByte(st.s[i])
+		return i + 1, false
+	}
+	st.subs = append(st.subs, st.s[i+1:j])
+	st.mark()
+	return j + 1, true
 }
 
 // dollarParen removes a $( ) substitution (nested parentheses balanced); an

@@ -277,3 +277,26 @@ func preserveExecutable(exePath, dest string) error {
 	}
 	return nil
 }
+
+// syncSwappedBinary makes a completed swap durable: the new executable's
+// bytes and the directory entry that names it are flushed, so a power loss
+// after the old daemon exits for a supervisor restart (the launchd
+// hand-over) finds the new binary at the path, or the recoverable aside
+// file, never a torn one. A directory that cannot be opened for a flush
+// (Windows) is skipped: the rename itself is what that platform offers.
+func syncSwappedBinary(exePath string) error {
+	f, err := os.Open(exePath) //nolint:gosec // this daemon's own executable path
+	if err != nil {
+		return fmt.Errorf("observer update: flushing the swapped binary: %w", err)
+	}
+	serr := f.Sync()
+	_ = f.Close()
+	if serr != nil {
+		return fmt.Errorf("observer update: flushing the swapped binary: %w", serr)
+	}
+	if d, derr := os.Open(filepath.Dir(exePath)); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}

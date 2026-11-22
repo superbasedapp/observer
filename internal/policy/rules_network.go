@@ -431,32 +431,13 @@ func (s hostOptSpec) hosts(args []string) []string {
 // hosts reads the host operands of a PowerShell cmdlet's arguments: a
 // host-bearing parameter's value, and the first positional operand.
 func (s netPSSpec) hosts(args []string) []string {
-	resolve := func(name string) (string, netPSParam, bool) {
-		name = strings.ToLower(name)
-		if full, ok := s.aliases[name]; ok {
-			name = full
-		}
-		if role, ok := s.params[name]; ok {
-			return name, role, true
-		}
-		match, n := "", 0
-		for p := range s.params {
-			if strings.HasPrefix(p, name) {
-				match, n = p, n+1
-			}
-		}
-		if n == 1 {
-			return match, s.params[match], true
-		}
-		return "", netPSSwitch, false
-	}
 	var out []string
 	positionalSeen := false
 	for i := 0; i < len(args); i++ {
 		t := args[i]
 		if len(t) >= 2 && t[0] == '-' {
 			name, val, hasColon := strings.Cut(t[1:], ":")
-			full, role, ok := resolve(name)
+			full, role, ok := s.resolve(name)
 			if !ok || role == netPSSwitch {
 				continue
 			}
@@ -478,6 +459,71 @@ func (s netPSSpec) hosts(args []string) []string {
 		}
 	}
 	return out
+}
+
+// resolve maps a parameter name as written (any case, an alias, or an
+// unambiguous prefix, the way PowerShell binds it) to its full name and
+// role. An unknown or ambiguous name is reported as not found.
+func (s netPSSpec) resolve(name string) (string, netPSParam, bool) {
+	name = strings.ToLower(name)
+	if full, ok := s.aliases[name]; ok {
+		name = full
+	}
+	if role, ok := s.params[name]; ok {
+		return name, role, true
+	}
+	match, n := "", 0
+	for p := range s.params {
+		if strings.HasPrefix(p, name) {
+			match, n = p, n+1
+		}
+	}
+	if n == 1 {
+		return match, s.params[match], true
+	}
+	return "", netPSSwitch, false
+}
+
+// bound returns the raw values the cmdlet binds to its positional
+// parameter (s.positional): every `-Param value` / `-Param:value` naming
+// it, or, when none does, the first word that is not a parameter or a
+// parameter's value. A parameter the table does not know is read as a
+// switch, so its value can only be read as the positional, which a caller
+// then judges.
+func (s netPSSpec) bound(args []string) []string {
+	var named []string
+	first, hasFirst := "", false
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		if len(t) >= 2 && t[0] == '-' {
+			name, val, hasColon := strings.Cut(t[1:], ":")
+			full, role, ok := s.resolve(name)
+			if !ok || role == netPSSwitch {
+				continue
+			}
+			if !hasColon {
+				if i+1 >= len(args) {
+					continue
+				}
+				i++
+				val = args[i]
+			}
+			if full == s.positional {
+				named = append(named, val)
+			}
+			continue
+		}
+		if !hasFirst {
+			first, hasFirst = t, true
+		}
+	}
+	if len(named) > 0 {
+		return named
+	}
+	if hasFirst {
+		return []string{first}
+	}
+	return nil
 }
 
 // plausibleHostOperand reads a URL / host operand (scheme-less allowed) and

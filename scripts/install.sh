@@ -1346,6 +1346,12 @@ verify_signature() {
 do_install() {
   detect_platform
   if [ -z "$prefix" ]; then prefix=$(default_prefix); fi
+  # The test key is refused before anything else looks at the machine: the
+  # other-install scan below reads the real /proc on the download path, and
+  # a running daemon would stop the install there first.
+  if [ -n "${OBSERVER_INSTALL_TEST_VENDOR_KEY:-}" ] && [ -z "$from_dir" ]; then
+    die "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with --from-dir"
+  fi
   # U4: another observer on PATH (npm, pip, another copy) or a running
   # daemon from another binary is found and explained BEFORE anything is
   # chosen or downloaded.
@@ -1354,9 +1360,6 @@ do_install() {
   choose_edition
   if [ -n "$base_url" ]; then
     case "$base_url" in https://*) ;; *) die "--base-url must be https" ;; esac
-  fi
-  if [ -n "${OBSERVER_INSTALL_TEST_VENDOR_KEY:-}" ] && [ -z "$from_dir" ]; then
-    die "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with --from-dir"
   fi
   if [ -n "$from_dir" ]; then
     [ -d "$from_dir" ] || die "--from-dir: not a directory: $from_dir"

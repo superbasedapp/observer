@@ -765,7 +765,8 @@ func TestOrgMembershipFunctionsAreHardenedDefiners(t *testing.T) {
 			  WHERE p.oid = $1::regprocedure`, sig).Scan(&owner, &secDef, &config); err != nil {
 			t.Fatalf("introspect %s: %v", sig, err)
 		}
-		if owner != "sbci_defs" || !secDef || !containsConfig(config, "search_path=pg_catalog, public") {
+		// pg_temp last since 0152 (CLOUD-DEFINER-TEMP-2).
+		if owner != "sbci_defs" || !secDef || !containsConfig(config, "search_path=pg_catalog, public, pg_temp") {
 			t.Errorf("%s: owner %q definer %v config %v; want sbci_defs, true, a pinned search_path", sig, owner, secDef, config)
 		}
 		for _, role := range []string{"sbci_api", "sbci_app"} {
