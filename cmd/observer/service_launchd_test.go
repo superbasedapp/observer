@@ -135,7 +135,7 @@ func TestLaunchdInstallNeverRestartsALoadedAgent(t *testing.T) {
 	if len(f.calls) != 0 {
 		t.Errorf("a loaded agent was touched: %v", f.calls)
 	}
-	if !strings.Contains(out.String(), "route off first") {
+	if !strings.Contains(out.String(), "observer service restart") || !strings.Contains(out.String(), "proxy routes off first") {
 		t.Errorf("output lacks the safe restart order:\n%s", out.String())
 	}
 }

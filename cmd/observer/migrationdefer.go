@@ -148,7 +148,7 @@ func migrationDeferNotice(holder diag.LockInfo, applied, latest int, pending []i
 	}
 	return first +
 		"  Restart the daemon to finish the upgrade: it migrates the database when it starts.\n" +
-		"  Turn any proxy route off first if a live AI session uses it (docs/daemon-restart-runbook.md).\n" +
+		"  Run `observer service restart`: it takes the proxy routes off first and puts them back.\n" +
 		"  This command read the database without migrating it, so newer fields may be missing.\n"
 }
 

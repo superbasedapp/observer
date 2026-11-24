@@ -4,6 +4,288 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-24
+
+Minor release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.42.1. It fixes what the 2026-11-23
+ship-readiness audit found: OpenAI sessions through the proxy that failed on every follow-up turn
+with conversation compression on, a restart that cut off the AI tools routed through the proxy,
+hook registration that dropped a developer's own hook settings, and hints that named commands and
+pages a user cannot reach. superbased's hosted service gets an AI Apps gateway on each
+organization's own address and an org dashboard that no longer tells a hosted admin to do what
+only a server operator can, and the opt-in community cost aggregate now has a live collector. The superbased SDKs are on the
+package registries for the first time (0.1.0 on PyPI and npm, and a tagged Go module), and every
+npm and PyPI package of this release is published with provenance. Like
+1.37.x to 1.42.1 it needs macOS 13 Ventura or later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Upgrade notes
+
+- **`observer service restart` now takes the proxy routes off first** and puts them back once the
+  new daemon's proxy answers (see Fixed). On a managed machine whose organization maintains its
+  routes it refuses and names `observer service restart --keep-routes`, which restarts with the
+  routes left on, as before; `observer service stop` refuses there too without `--keep-routes`.
+  Both refuse inside a session the daemon started, such as a dashboard terminal: run them from a
+  terminal the daemon did not start.
+- **A hooks file Observer cannot edit without guessing is now left untouched.** Before, `observer
+  start` replaced a Cursor `hooks` member it could not read. Now a `hooks` member that is not an
+  object, an event listed twice or not holding a list, or an entry that is not an object is
+  refused with a message that names the file and says "nothing was written; fix the file by hand,
+  then re-run".
+- **Agent migration 261 runs at the first start.** It is node-local: it records whether the
+  organization a machine is enrolled with is the developer's own personal dashboard (see Fixed).
+  A machine already connected to one learns it on its next push, without enrolling again.
+- **Org servers have no database migration.** A member's own SDK key now needs the server's AI
+  Apps gateway on (`[gateway].enabled`): with it off, the key is refused and the enrolment hint
+  sends members to an admin. superbased's hosted service also runs cloud migration 0154, an
+  additive step for its staff console's availability changes; it changes nothing until superbased
+  staff issue one.
+
+### Security
+
+- **The proxy's forward secret scrub skips only what the provider wrote and verifies.** With
+  conversation compression on, a request going back to its provider is scrubbed for secrets. That
+  scrub now leaves the fields the provider verifies byte for byte: OpenAI `encrypted_content` on
+  reasoning and compaction items (kept wherever it appears, as before) and, only at their place in
+  the provider's protocol, Anthropic `thinking` text with its `signature`, `redacted_thinking`
+  data, and Gemini thought signatures. The provider refuses any change to them, so scrubbing them
+  broke the session and protected nothing. Thinking and signature look-alikes inside tool input
+  or tool output, the other fields of those blocks, and JSON keys are still scrubbed.
+- **superbased's hosted service: an SDK key works only on its own organization's address.** On
+  another organization's host the AI Apps gateway refuses it exactly like an unknown key, and a
+  stream of such requests cannot slow down other organizations' key checks.
+
+### Fixed
+
+- **`npx superbased` works again.** The `superbased` 3.42.1 package was packed without its
+  launcher, `bin/superbased.js`, so `npx superbased` failed; 3.43.0 includes it.
+- **OpenAI sessions through the proxy no longer fail on every follow-up turn.** With conversation
+  compression on, a Codex or other Responses API session got HTTP 400 "encrypted content could not
+  be verified" from its second turn on once its history held a tool output ending in a
+  secret-like line such as `OPENAI_API_KEY=…`: the scrub broke the request's JSON, then redacted
+  part of an encrypted reasoning item, and the client resent that item every turn. Anthropic
+  thinking blocks and Gemini thought signatures were open to the same failure and are now kept
+  the same way (see Security).
+- **The scrub never deletes part of a request.** A secret pattern could swallow whole items and
+  still leave valid JSON, so a reasoning item and the user's next message could vanish without an
+  error. The scrub now keeps its rewrite only when the JSON shape is unchanged, and otherwise
+  replaces just the changed values in place, keeping keys, key order and escapes.
+- **Compression keeps reasoning with its answer.** It never drops, compresses or re-encodes a
+  Responses `reasoning` or `compaction` item, or any item carrying `encrypted_content`, nor the
+  item right after a reasoning item, and a rolling summary never splits such a pair. Items it
+  leaves alone are sent on without HTML escaping.
+- **A restart no longer cuts off the AI tools routed through the proxy.** The daemon is the
+  proxy, so restarting it gave a routed session `ConnectionRefused`, and the safe order existed
+  only as a script in the source checkout. `observer service restart` now does it as one step: it
+  takes off the routes that reach this proxy (Claude Code, Codex, Kimi Code, Qwen Code and
+  Crush), so live sessions reach their providers directly; restarts the daemon through systemd or
+  launchd, or in place (same terminal, log and arguments) when no service manager runs it; waits
+  for the new proxy (`--timeout`, 90 seconds by default); and puts the routes back. `--dry-run`
+  shows the plan. It now also works on macOS and without a service manager. `observer service
+  stop` takes the routes off before stopping, and `observer service start` puts them back.
+- **A restart never loses a route or your settings.** Routes your organization wrote stay on. A
+  route comes off only when putting it back is proven to restore every setting and comment in the
+  file, so a Codex provider table holding your own keys keeps its route on. The file's original
+  bytes go back when nothing else wrote it, and a value changed during the restart is never
+  written over. An interrupted restart leaves the routes still off in
+  `~/.observer/route-hold.json` (no file contents), and the daemon puts them back itself once its
+  proxy answers; `observer doctor` warns while any are off. Only one restart, stop or start runs
+  at a time.
+- **Every restart hint names the shipped command.** The CLI, `observer doctor`, the npm
+  postinstall and the installers pointed at the source checkout's restart script or an internal
+  runbook. They now name `observer service restart`, or `observer service stop` and `start`
+  around work that needs the daemon down. On native Windows, which has no in-place restart, they
+  say to quit the daemon and run `observer start` again between AI turns. The dashboard's Restart
+  button still leaves the routes on, and its dialog now names `observer service restart`.
+- **Hook registration keeps your own hook settings.** `observer start` registers hooks for every
+  detected AI tool, and several writers rewrote the file through a shape that held only
+  Observer's own fields. A developer's entries lost their `timeout`, `matcher`, `type`, `env` and
+  any other field in Cursor's `hooks.json` (and its Windows copy for a WSL daemon), Claude Code's
+  Windows `settings.json`, the Gemini CLI, Qwen Code and Qoder settings, and Codex's
+  `hooks.json`, which also lost every top-level key beside `hooks` and was rewritten at every
+  start. Native Claude Code lost group keys such as `description`, and Kiro lost unknown
+  top-level keys. Now every entry stays as written, only Observer's own handlers are added,
+  refreshed or removed, an unchanged file is not rewritten, and commands are no longer
+  HTML-escaped. Cursor's `version` is written only when the file has none.
+- **A refresh replaces Observer's hook where it sits.** When a developer's handler shared
+  Observer's matcher group, a refresh moved Observer's handler out, the next start counted the
+  leftover group as a conflict, and that tool's hooks kept running the old binary. Codex, which
+  trusts a handler by its position, also stopped running the developer's handler. Observer's
+  stale handler is now replaced in place and the group stays whole; a file the old refresh split
+  recovers on the next start. Kiro's uninstall no longer deletes the file while it holds a key of
+  yours, and a hosted sandbox box's seeded hooks no longer keep a stale Observer hook beside the
+  fresh one.
+- **A machine connected to your own personal dashboard keeps its AI apps pages.** Connecting made
+  the machine organization-managed with a team member's defaults, which hid the Your AI apps
+  pages (Egress and Policies included), Routing, and Settings > Routing and Settings > AI Apps, so
+  the SDK's `score()`, `feedback()` and `get_trace_cost()` failed. On a machine its owner manages
+  they now stay visible. A team's machines keep the team defaults, and an organization's explicit
+  setting still wins.
+- **Hints name only commands that exist and pages you can open.**
+  - `observer stop, then observer start` (there is no `observer stop`) now reads `observer service
+    restart`, or stop `observer start` and run it again; `observer db check` now reads `observer
+    doctor db`.
+  - About 115 CLI strings and the local dashboard's help cited `docs/*.md` files that exist only
+    in the source repository. They now link the matching page on superbased.app/docs, name a
+    command that helps (`observer handoff --help`, `observer guard lint` and others), or drop the
+    path. That includes the comments Observer writes into Codex's `config.toml` and into the
+    `[org_client]` block of `config.toml`, and the header of the guard policy files the dashboards
+    compose.
+  - `observer apps` linked a page that does not exist; it now links
+    `https://superbased.app/docs/sdk/quickstart-machine`.
+  - `observer init` ends with `https://github.com/superbasedapp/observer` and its issues page.
+  - Help and messages no longer carry internal tracker ids, `observer admission` says what observe
+    and enforce modes do, and the local dashboard drops its stale MCP tool counts.
+- **The SDK key hint after enrolling says what applies to you.** It told every member to run
+  `observer sdk sign-in`, which fails where the organization gives members no keys of their own.
+  It now follows the organization's answer: run `observer sdk sign-in` (or Settings > AI Apps >
+  Get my SDK key); ask an admin for a key (Machine identities, in the organization's dashboard
+  settings); or, when the organization's plan does not include AI Apps (`not_on_plan`), its
+  billing owner changes the plan on the organization's own page in the superbased portal. With no
+  answer (an older server, or `observer org status`) it gives the first two. When `observer sdk
+  sign-in` is refused because the organization gives members no keys, it says to ask an admin.
+
+### Added
+
+- **The superbased SDKs install from the package registries.** SDK 0.1.0 is published with this
+  release: `pip install superbased-sdk` (PyPI), `npm install @superbased/sdk` and `npm install
+  @superbased/feedback-widget` (npm), and `go get github.com/superbasedapp/observer/sdk/go` (the
+  module tag `sdk/go/v0.1.0` on the public repository). Before, every install line said to install
+  from a checkout, and PyPI held only a 0.0.1 name placeholder that broke `sb.init()`; that
+  placeholder is yanked once 0.1.0 is verified. The Java SDK is not on Maven Central yet and
+  still installs from a checkout.
+- **A live collector for the community cost aggregate.** `observer aggregate submit` sent to
+  `https://aggregate.superbased.app/v1/submit`, which answered 404; the collector now runs there.
+  The rail stays off until you run `observer aggregate enable`, read the preview and type `yes`,
+  and a month is sent only when you run `observer aggregate submit`. The collector stores no IP
+  address and no time finer than the day, and its rollup keeps a total only when enough
+  submissions contribute (50 to start) and none dominates. `/docs/reference/aggregate-rail`
+  describes what is sent, what is kept and for how long, and how submissions are admitted.
+
+### Changed
+
+- **npm and PyPI packages are published from the public repository with trusted publishing.**
+  Every npm package of the release (`@superbased/observer`, its five platform packages, the
+  `superbased` short name and the two SDK packages) and both PyPI projects (`superbased-observer`,
+  `superbased-sdk`) are published by the public repository's release workflow without a stored
+  token: each npm version carries provenance and each PyPI file an attestation naming the release
+  workflow that published it. The `superbased` short name is no longer published by hand.
+- **The consent screen lists what a managed machine hides.** On a managed enrolment, the local
+  dashboard's consent card and the CLI list exactly which dashboard pages and Settings sections
+  start hidden or read-only on this machine, from the same table the machine applies. For your own
+  personal dashboard it also says which pages stay visible and why.
+- **The sandbox backend list and the New Terminal Isolation picker say which backends need an
+  image you build.** Docker or Podman and gVisor need a container image you build and pin by
+  digest, Apple container a linux/arm64 image you build, and the Cloud Hypervisor microVM a guest
+  image set you build and import: Observer publishes no default image for them yet. No option is
+  removed.
+
+### superbased's hosted service
+
+These reach hosted organizations when superbased's hosted service is updated to 1.43.0,
+shortly after this release.
+
+- **An AI Apps gateway on each organization's own address.** Apps and agents send OpenTelemetry
+  traces, logs and metrics to `https://<your-org>.superbased.app/v1/traces` (and `/v1/logs`,
+  `/v1/metrics`), and the superbased SDKs reach their control API under `/v1/sdk/` on the same
+  host. Langfuse SDKs send to `https://<your-org>.superbased.app/api/public/otel/v1/traces`.
+  Settings > Apps & SDKs shows the organization's own address, and says so when AI apps tracing
+  is not set up for the organization yet, as do the AI apps empty states.
+- **Members get their own SDK keys.** A hosted organization issued none. `observer sdk sign-in`
+  and Settings > AI Apps > Get my SDK key now mint a member's key on a hosted organization whose
+  plan includes AI Apps, addressed to the organization's own host; a member who is not active
+  gets none. On a plan without AI Apps no key is minted, and enrolment answers `not_on_plan` so
+  the hint names the plan (see Fixed).
+- **Alert emails reach the organization's admins.** A hosted organization's budget and AI Apps
+  alert emails went to nobody. Each now goes to that organization's active admins and its
+  super-admin seat holder, never to another organization or a shared inbox; an organization with
+  no such address gets none.
+- **The org dashboard is honest about what a hosted organization gets.** Self-hosted org servers
+  are unchanged.
+  - A feature a hosted organization's server does not serve shows one panel, "Not available on
+    hosted organizations yet", naming the feature and what to do instead, never a raw
+    `not_available_in_pooled` 404 or a Retry that cannot succeed.
+  - Pages a hosted organization cannot use leave the navigation (AI gateway, Assistant,
+    Deployment, My connections and Change records), and so do the Enforcement mode, Server
+    maintenance and Org-hosted OpenShell sections of Settings; a direct link shows the panel. A
+    page that needs a permission a hosted organization never holds shows it too, not "Access
+    denied".
+  - Controls whose route is refused are disabled with the reason, for example re-price Apply and
+    Revert, an integration's Test connection and Run now, and approving an MCP server's pending
+    tool list.
+  - A fix only a server operator can make (edit the server config, run `observer-org`, restart
+    the server) reads in hosted words: what superbased does, where to go instead, or that it is
+    not available yet, with contact@superbased.app. The sign-in page's lockout note points at your
+    superbased account and its recovery codes, and first-run setup says a hosted organization
+    needs no setup.
+  - Publishing managed security settings, managed sandbox settings or AI tool settings warns "Not
+    delivered to machines yet": machines connected to a hosted organization do not receive them
+    yet. The publish still goes through.
+  - Approvals stays, and lists and decides held MCP tool calls.
+- **Code security stays off for a hosted organization by default,** and its switch says
+  superbased's default decides until an admin chooses, instead of naming a server config file.
+- **Deleting your account cancels its billing first.** Deleting a superbased account removed the
+  record of its personal subscription without canceling it at Paddle, so Paddle kept billing.
+  Before anything is deleted, every subscription Paddle may still bill is now canceled: the
+  account's own plan, its personal dashboard's Personal Pro, a team already being deleted, and a
+  refunded or charged-back subscription (a refund or chargeback ends the plan, but Paddle would
+  renew it). A live team still blocks the deletion. If Paddle does not confirm a cancellation,
+  nothing is deleted and the console says why and what to do. An account whose personal dashboard
+  pays for Personal Pro can now be deleted; it was refused as paying for a team. Deleting a team
+  also cancels a refunded or charged-back subscription.
+- **A renewal never moves a plan to an older version.** An organization's Paddle renewal, update
+  or cancellation could write its subscription back to an older version of its plan; the version
+  now only moves forward.
+
+### Docs and website
+
+- **Every SDK install line gives the registry command** instead of "from a checkout: not on PyPI
+  yet": the machine dashboard's AI Apps card, the org dashboard's Apps & SDKs page, `/docs/sdk`,
+  the SDK READMEs, the website and the AI Apps examples (which still install the SDK beside them,
+  so they test that code).
+- **The Teams docs say what a team server receives for each kind of enrolment.** An individual
+  enrolment sends hashes and metadata, with raw values only when that machine turns on full
+  content; a team (managed) enrolment sends the full session record under the organization's
+  signed grant, shown at consent and in `observer org status`. The getting-started, comparison and
+  glossary pages said metadata only.
+- **The install page** says `go install` must use the module path the public `go.mod` declares,
+  `github.com/marmutapp/superbased-observer`, and that a source build is the public edition,
+  without AI Apps.
+- **`/download`** shows the Claude Code plugin's second step, `/plugin install
+  superbased@superbased`.
+- **The AI Apps machine quickstart** turns AI Apps on with `observer apps on`, which needs no
+  restart, and the Langfuse page gives the hosted address,
+  `https://<your-org>.superbased.app/api/public/otel/v1/traces`.
+- **The browser extension is described as a preview,** in no store and loaded unpacked from the
+  public repository, and the OpenCode plugin's README says its npm package is published by hand
+  and can lag behind a release.
+- **The `examples/copilot-harness` README** installs a release build and uses only commands that
+  exist.
+
+### Known issues
+
+- The macOS launchd hand-over and `observer service restart` through launchd are covered by tests
+  but have not been run on a Mac yet.
+- On native Windows, `observer service restart` refuses: the daemon cannot restart itself there.
+  Quit it and run `observer start` again between AI turns.
+- The safe restart does not take off the Windows-side Claude Code and Codex routes a WSL daemon
+  wrote, or Cline's VS Code route: those stay on through a restart. `observer proxy start` (the
+  standalone proxy) does not put held routes back.
+- Machines connected to a hosted organization do not receive its managed security, sandbox or AI
+  tool settings yet; the org dashboard says so when you publish them.
+- On superbased's hosted service, AI Apps (the gateway and member SDK keys) works only for an
+  organization whose plan includes it.
+- The superbased SDKs are not on PyPI, npm or Maven Central yet: install them from a checkout
+  (`docs/sdk/README.md`).
+- On Windows, `observer sdk sign-in` keeps no key file: set `SUPERBASED_API_KEY` in the app.
+- After AI Apps is turned on in a running daemon, admission, egress routing, alerts and
+  organization share tiers wait for the next daemon start; the dashboard lists them.
+- An SDK experiment's items do not link to the traces its task produced.
+- An org server is tested on PostgreSQL 16, which every shipped deployment uses. On PostgreSQL
+  18 its database migration can stop with "out of shared memory" at the default
+  `max_locks_per_transaction`: stay on PostgreSQL 16 for now.
+
 ## [1.42.1] - 2026-11-23
 
 Patch release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

@@ -325,7 +325,8 @@ func (c *Client) UpdateSubscriptionItems(ctx context.Context, id string, req sea
 
 // cancelNowBody is the cancel request: effective immediately, so the
 // subscription stops at once instead of renewing to the period's end (an
-// org deletion has already waited out its cooling-off window).
+// org deletion has already waited out its cooling-off window; an account
+// deletion runs to completion now).
 var cancelNowBody = []byte(`{"effective_from":"immediately"}`)
 
 // StatusCanceled is the status of a canceled subscription.
@@ -333,7 +334,8 @@ const StatusCanceled = "canceled"
 
 // CancelSubscription cancels the subscription now (POST
 // /subscriptions/{id}/cancel with effective_from "immediately"; plan 07
-// M6.9, the org deletion's cancel_billing step) and returns Paddle's answer.
+// M6.9, the org deletion's cancel_billing step, and ORGDEL-7, the account
+// deletion's cancellations) and returns Paddle's answer.
 // Paddle refuses to cancel a subscription that is already canceled; the
 // caller reads the subscription to tell that apart (the deletion's billing
 // seam reads it before and after). It needs an API key with the

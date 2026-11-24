@@ -69,7 +69,7 @@ func newCloudSessionWorkerCmd() *cobra.Command {
 			"point the agent's base URL at it, so accurate tokens, compression and\n" +
 			"routing work as on a laptop under this worker's own config. Sessions\n" +
 			"are stamped execution_location=customer_worker. Refused on a\n" +
-			"vendor-hosted sandbox. See docs/cloud-agents.md \"Customer-run compute\".\n\n" +
+			"vendor-hosted sandbox.\n\n" +
 			"  check  say what would happen here, change nothing\n" +
 			"  run    proxy + the agent as a child + teardown, in one command\n" +
 			"  start  start a background proxy and hand the route to later steps\n" +

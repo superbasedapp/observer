@@ -878,6 +878,12 @@ func newServeCmd() *cobra.Command {
 			// FR-9: the account path drops a past_due Personal Pro after the same
 			// dunning window (SBCI_PADDLE_PAST_DUE_GRACE_DAYS) the org view applies.
 			s.SetPaddlePastDueGrace(paddleServe.pastDueGrace)
+			// ORGDEL-7: an account deletion cancels the account's live
+			// subscriptions at Paddle before it purges them; without a
+			// Paddle API key such a deletion is refused (never run without
+			// the cancellation). The key needs the subscription write
+			// permission here too, as on the worker.
+			s.SetDeletionBilling(paddleServe.deletionBilling)
 
 			startServeSweepers(ctx, s, log)
 
@@ -1443,8 +1449,9 @@ func newWorkerCmd() *cobra.Command {
 
 			// M6.4 + M6.3 worker side: the host-API client and the
 			// entitlements issuer. Off (nothing started, nothing read) unless
-			// SBCI_HOSTAPI_HOSTS_FILE is set (hostapiworker.go).
-			if err := startWorkerHostAPI(ctx, log, s); err != nil {
+			// SBCI_HOSTAPI_HOSTS_FILE is set (hostapiworker.go, through
+			// hostapiworker_hook.go so the public tree compiles).
+			if err := startWorkerHostAPIFn(ctx, log, s); err != nil {
 				return err
 			}
 			// W16-D9: the org usage retention pass (usageretention.go).

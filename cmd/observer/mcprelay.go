@@ -32,9 +32,9 @@ import (
 // table), and `wrap` — the TRUE stdio-wrapper entry the AI clients spawn in
 // place of the original server.
 
-const mcpRelayRestartNote = "The relay rides the daemon's :8820. Never stop/restart the daemon while an\n" +
-	"MCP session or a proxied route is live: route OFF -> stop -> relaunch ->\n" +
-	"route ON, as one atomic op (docs/daemon-restart-runbook.md)."
+const mcpRelayRestartNote = "The relay rides the daemon's :8820. Never stop the daemon by hand while an\n" +
+	"MCP session or a proxied route is live; restart it with `observer service restart`,\n" +
+	"which runs route OFF -> stop -> relaunch -> route ON as one operation."
 
 // mcpRelayRemoteProbeTimeout bounds the status / enable remote resolution
 // (an idempotent registration against the org server).
@@ -316,7 +316,7 @@ func newMCPRelayEnableCmd() *cobra.Command {
 			} else {
 				out("mcp-relay: remote forwarding OFF (%s)", remote.Reason)
 			}
-			out("mcp-relay: projected %d client config(s), %d failed; restart the daemon (route OFF -> stop -> relaunch -> route ON) to bind the relay seams", changed, failed)
+			out("mcp-relay: projected %d client config(s), %d failed; restart the daemon (observer service restart: route OFF -> stop -> relaunch -> route ON) to bind the relay seams", changed, failed)
 			if failed > 0 {
 				return errors.New("mcp-relay enable: some client configs were not projected (see above)")
 			}
@@ -389,7 +389,7 @@ func newMCPRelayDisableCmd() *cobra.Command {
 			if err := runMCPRelayRestore(cmd, configPath); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "mcp-relay: restart the daemon (route OFF first) to unbind the seams")
+			fmt.Fprintln(cmd.OutOrStdout(), "mcp-relay: restart the daemon (observer service restart, which takes the proxy routes off first) to unbind the seams")
 			return nil
 		},
 	}

@@ -32,6 +32,22 @@ def _copy_surfaces(dst: str) -> None:
     _copy(dst, sis.CATALOG)
 
 
+def _copy_pre(dst: str) -> None:
+    """The surfaces in their pre-release state, whatever state the repository
+    is in: copy them, then put every row's pre-release text back and clear the
+    catalog's published flags."""
+    _copy_surfaces(dst)
+    for row in sis.ROWS:
+        for path in sis._files(dst, row.pattern):
+            text = sis._read(path)
+            if row.after in text:
+                _write(dst, os.path.relpath(path, dst), text.replace(row.after, row.before))
+    doc = _catalog(dst)
+    for r in doc["sdks"]:
+        r["published"] = False
+    sis.write_catalog(dst, doc)
+
+
 def _catalog(root: str) -> dict:
     with open(os.path.join(root, sis.CATALOG), encoding="utf-8") as f:
         return json.load(f)
@@ -53,10 +69,9 @@ class InstallStrings(unittest.TestCase):
         self.assertIn(next(iter(states)), (sis.PRE, sis.POST))
 
     def test_flip_rewrites_every_row_once(self):
-        if set(sis.check(ROOT)) != {sis.PRE}:
-            self.skipTest("already flipped")
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
+            self.assertEqual(set(sis.check(tmp)), {sis.PRE})
             written = sis.flip(tmp)
             self.assertTrue(written)
             self.assertEqual(set(sis.check(tmp)), {sis.POST})
@@ -66,7 +81,7 @@ class InstallStrings(unittest.TestCase):
 
     def test_a_changed_surface_fails_the_check(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
             path = os.path.join(tmp, "docs", "sdk", "README.md")
             with open(path, encoding="utf-8") as f:
                 text = f.read()
@@ -79,12 +94,21 @@ class InstallStrings(unittest.TestCase):
 
 
 class Catalog(unittest.TestCase):
-    def test_the_catalog_has_the_four_sdks_and_none_is_published(self):
+    def test_the_catalog_has_the_four_sdks_and_java_is_unpublished(self):
+        # v1.43.0 publishes Python and TypeScript (PyPI, npm) and tags the Go
+        # module; Java (Maven Central) has no publish path yet.
         doc = sis.load_catalog(ROOT)
         self.assertEqual([r["id"] for r in doc["sdks"]], ["python", "typescript", "go", "java"])
         self.assertEqual({r["id"]: r["release"] for r in doc["sdks"]},
                          {"python": "sdk-release", "typescript": "sdk-release", "go": "none", "java": "none"})
-        self.assertFalse(any(r["published"] for r in doc["sdks"]))
+        self.assertEqual({r["id"]: r["published"] for r in doc["sdks"]},
+                         {"python": True, "typescript": True, "go": True, "java": False})
+
+    def test_java_stays_on_its_checkout_text(self):
+        with open(os.path.join(ROOT, "docs", "sdk", "README.md"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("Java is not on Maven Central", text)
+        self.assertIn("mvn -f sdk/java install", text)
 
     def test_write_catalog_keeps_the_committed_layout(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,30 +118,48 @@ class Catalog(unittest.TestCase):
                 self.assertEqual(a.read(), b.read())
 
     def test_flip_publishes_only_the_workflow_rows(self):
-        if set(sis.check(ROOT)) != {sis.PRE}:
-            self.skipTest("already flipped")
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
             sis.flip(tmp)
             got = {r["id"]: r["published"] for r in _catalog(tmp)["sdks"]}
             self.assertEqual(got, {"python": True, "typescript": True, "go": False, "java": False})
 
     def test_flip_sdk_marks_one_hand_released_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
             self.assertEqual(sis.main(["flip", "--sdk", "go", "--root", tmp]), 0)
             got = {r["id"]: r["published"] for r in _catalog(tmp)["sdks"]}
             self.assertEqual(got, {"python": False, "typescript": False, "go": True, "java": False})
             self.assertEqual(sis.main(["check", "--root", tmp]), 0)
+            with open(os.path.join(tmp, "docs", "sdk", "go.md"), encoding="utf-8") as f:
+                self.assertIn("go get github.com/superbasedapp/observer/sdk/go", f.read())
             for bad in ("go", "python", "ruby"):
                 with self.assertRaises(ValueError, msg=bad):
                     sis.flip_sdk(tmp, bad)
             with self.assertRaises(SystemExit):  # --sdk goes with flip only
                 sis.main(["check", "--sdk", "go", "--root", tmp])
 
+    def test_go_text_and_catalog_must_agree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _copy_pre(tmp)
+            doc = _catalog(tmp)
+            doc["sdks"][2]["published"] = True  # the flag flipped, the text did not
+            sis.write_catalog(tmp, doc)
+            self.assertEqual(sis.main(["check", "--root", tmp]), 1)
+            with self.assertRaises(ValueError):
+                sis.flip_sdk(tmp, "go")
+
+    def test_java_can_stay_unpublished_after_the_other_flips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _copy_pre(tmp)
+            sis.flip(tmp)
+            sis.flip_sdk(tmp, "go")
+            self.assertEqual(sis.main(["check", "--root", tmp]), 0)
+            self.assertFalse([r for r in _catalog(tmp)["sdks"] if r["id"] == "java"][0]["published"])
+
     def test_the_workflow_rows_must_agree(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
             doc = _catalog(tmp)
             doc["sdks"][0]["published"] = True
             sis.write_catalog(tmp, doc)
@@ -162,14 +204,11 @@ class Catalog(unittest.TestCase):
         with open(FIXTURE, encoding="utf-8") as f:
             row = json.load(f)["row"]
         with tempfile.TemporaryDirectory() as tmp:
-            _copy_surfaces(tmp)
+            _copy_pre(tmp)
             doc = _catalog(tmp)
             doc["sdks"].append(row)
             sis.write_catalog(tmp, doc)
             self.assertEqual(sis.main(["check", "--root", tmp]), 0)
-            if set(sis.check(ROOT)) == {sis.PRE}:
-                sis.flip(tmp)
-                self.assertEqual(sis.main(["check", "--root", tmp]), 0)
             sis.flip_sdk(tmp, row["id"])
             self.assertEqual(sis.main(["check", "--root", tmp]), 0)
             self.assertTrue([r for r in _catalog(tmp)["sdks"] if r["id"] == row["id"]][0]["published"])

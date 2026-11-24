@@ -146,6 +146,7 @@ var orgclientStoreWriters = map[string]writerDecision{
 
 	"WriteEnrolment":                  {reason: "the enrolment row itself"},
 	"SetEnrolmentOrgName":             {reason: "a column of the enrolment row itself, and the write is bound to that row's org id; Enroll's WriteEnrolment rewrites the name and unenroll deletes the row"},
+	"SetEnrolmentOwnerManaged":        {reason: "a column of the enrolment row itself (agent migration 261), and the write is bound to that row's org id; Enroll's WriteEnrolment rewrites it and unenroll deletes the row"},
 	"BumpEnrolmentGeneration":         {reason: "the identity fence itself"},
 	"ReplaceEnrolmentGrant":           {reason: "keyed by org key and fenced by the enrolment generation (P0-5)"},
 	"SavePolicyResourceETag":          {reason: "keyed by org key; Enroll runs ClearPolicyResourceState for the old key"},

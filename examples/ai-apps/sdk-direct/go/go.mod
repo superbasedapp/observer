@@ -30,5 +30,5 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-// The example tests the SDK beside it (the module is not tagged yet).
+// The example tests the SDK beside it.
 replace github.com/superbasedapp/observer/sdk/go => ../../../../sdk/go

@@ -6,7 +6,7 @@
 // token). The server is still the gate (role, freshness, CSRF, reason); this
 // only makes the gate's demands visible before the request.
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { KeyRound } from "lucide-react";
 import { Button } from "@shared/primitives/Button";
 import { Callout } from "@shared/primitives/Callout";
@@ -120,6 +120,10 @@ export interface ChangeDialogProps {
   blocking?: string[];
   destructive?: boolean;
   confirmLabel?: string;
+  /** checkKey names what the staff member is checking (e.g. the digest of
+   *  the changes shown); when it changes while the dialog is open, the "I
+   *  have checked" tick is cleared, so a new diff is checked again. */
+  checkKey?: string;
   /** run sends the change with the reason; it throws on a refusal. */
   run: (reason: string) => Promise<void>;
   onClose: () => void;
@@ -132,6 +136,9 @@ export function ChangeDialog(p: ChangeDialogProps) {
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setConfirmed(false);
+  }, [p.checkKey]);
 
   function close() {
     if (busy) return;

@@ -10,7 +10,7 @@
 // running the deleted binary until it is restarted (the rc.3 roll found
 // every npm node in that state). npm must never restart it: the daemon IS the
 // proxy on :8820, and stopping it while an AI session routes through it
-// breaks that session (docs/daemon-restart-runbook.md). So this script only
+// breaks that session (`observer service restart` is the safe restart). So this script only
 // looks (Linux: /proc/<pid>/exe of `observer start` processes running a
 // replaced @superbased package binary, see below) and prints what to run. It
 // never downloads, writes, signals or fails the install.
@@ -118,8 +118,8 @@ function note(pids, procRoot) {
   }
   if (plain) {
     lines.push(
-      '  It was started with `observer start`: when no AI session uses the proxy, turn the proxy route off,',
-      '    stop that process (Ctrl-C in its terminal, or kill ' + which.replace(/^pids? /, '') + '), then run `observer start` again (docs/daemon-restart-runbook.md).'
+      '  It was started with `observer start`: restart it with  observer service restart',
+      '    It takes the proxy routes off first, has the daemon restart itself in place, and puts them back.'
     );
   }
   lines.push('  npm restarts nothing.', '');

@@ -168,3 +168,21 @@ func TestSubscriptionLive(t *testing.T) {
 		t.Error("no subscription id is not live")
 	}
 }
+
+// TestSubscriptionMayBill: every stored status but canceled may still be
+// billed at Paddle. A refunded or charged-back subscription is not Live (it
+// holds no live slot) but Paddle still renews it (FR-7), so a deletion must
+// cancel it.
+func TestSubscriptionMayBill(t *testing.T) {
+	t.Parallel()
+	for status, may := range map[string]bool{"active": true, "trialing": true, "past_due": true, "paused": true, "refunded": true, "charged_back": true, "canceled": false, "": false} {
+		if got := (Subscription{ID: "sub_1", Status: status}).MayBill(); got != may {
+			t.Errorf("status %q may bill = %v", status, got)
+		}
+	}
+	for _, status := range []string{"active", "refunded"} {
+		if (Subscription{Status: status}).MayBill() {
+			t.Errorf("status %q with no subscription id may bill", status)
+		}
+	}
+}

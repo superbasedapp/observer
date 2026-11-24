@@ -287,7 +287,7 @@ func updateUnderDaemonRefusal(lock diag.LockInfo, dbPath, addr string, rollback 
 	if dashboardInBuild {
 		b.WriteString("  - if the daemon serves its dashboard on another address, point this command at it with OBSERVER_DASHBOARD_ADDR; or\n")
 	}
-	fmt.Fprintf(&b, "  - stop that daemon (take any tool's proxy route off first: docs/daemon-restart-runbook.md), run `observer update %s` again, then start it.\n", verb)
+	fmt.Fprintf(&b, "  - stop that daemon (`observer service stop` takes the proxy routes off first), run `observer update %s` again, then start it (`observer service start` puts them back).\n", verb)
 	b.WriteString("If that pid is not an observer daemon, the lock is stale: remove the lock file and run this again.")
 	return b.String()
 }

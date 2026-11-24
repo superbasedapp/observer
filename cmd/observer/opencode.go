@@ -52,7 +52,7 @@ func newOpencodeCmd() *cobra.Command {
 			"    observer opencode -- run \"summarize the diff\"\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via opencode's --prompt flag\n" +
-			"(delivery=inject_prompt). See docs/session-handoff.md.\n\n" +
+			"(delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"Caveat: an Azure-direct provider configured in OpenCode may\n" +
 			"bypass OPENAI_BASE_URL (observer then sees local activity but no\n" +
 			"proxy-level api_turns). Run `observer doctor opencode` to check.\n\n" +
@@ -152,7 +152,7 @@ func newOpencodeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&opencodePath, "opencode-path", "", "Path to the opencode binary (default: resolve `opencode` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via opencode's --prompt flag (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via opencode's --prompt flag (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

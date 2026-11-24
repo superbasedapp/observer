@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # sdk.sh - the one owner of the SDK build and test commands (plan W2-4, lane
 # B4). The ops gate's sdk:* units (scripts/ci/gate-commands.tsv) and the
-# release workflow (.github/workflows/sdk-release.yml) both call it, so the
-# gate tests exactly what the release builds.
+# release workflow (.github/workflows/npm-release.yml, job sdk_pack) both call
+# it, so the gate tests exactly what the release builds.
 #
 #   scripts/ci/sdk.sh python
 #       Tests sdk/python with the python3 on PATH (the gate puts one pinned
@@ -42,8 +42,9 @@
 #       wheel (python -m build) and the two npm tarballs (npm pack:
 #       @superbased/sdk and @superbased/feedback-widget), checks that each
 #       carries its licence, typing marker and entry points, and with
-#       --version checks that every manifest names that version (an
-#       sdk-v<x.y.z> tag must match them). Needs python3 and node on PATH.
+#       --version checks that every manifest names that version
+#       (release.sh sdk-preflight passes the one it was given). Needs
+#       python3 and node on PATH.
 #
 # Every mode works on a copy of the package in a temporary directory, never
 # in the source tree: several gate units run at once on one worker and share
@@ -229,7 +230,7 @@ pack() {
   grep -rEq --include='*.go' "^const Version = \"${pyver}\"\$" "${go_src}" \
     || die "pack: no const Version = \"${pyver}\" under sdk/go (the Go SDK releases in lockstep)"
   if [[ -n "${version}" && "${version}" != "${pyver}" ]]; then
-    die "pack: the tag names ${version} but the manifests say ${pyver}"
+    die "pack: --version names ${version} but the manifests say ${pyver}"
   fi
   log "pack: version ${pyver}"
 

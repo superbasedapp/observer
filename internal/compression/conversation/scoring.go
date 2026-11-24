@@ -51,6 +51,14 @@ type Message struct {
 	// OpenAI tool-call producer messages use this so the compressor
 	// never drops an unfinished assistant/function_call turn.
 	Pinned bool
+	// KeepWithNext marks a message the provider verifies together with
+	// the message right after it, so the two must never be separated: a
+	// rolling-summary boundary never falls between them (the pair is
+	// summarized whole or kept whole). OpenAI Responses reasoning items
+	// set it — the provider rejects a reasoning item that lost its
+	// following output item. The drop pass needs no separate rule
+	// because both sides are Pinned.
+	KeepWithNext bool
 	// NoCompress prevents per-type compression from rewriting this
 	// message's body. Set on tool_result messages from MCP tools
 	// (`mcp__*`) where the values ARE the answer (action_ids, file

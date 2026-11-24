@@ -126,7 +126,7 @@ func newRemoteEnableCmd(configPath *string) *cobra.Command {
 			fmt.Fprintf(out, "       tailscale serve --bg %s\n", remotecfg.BackendPortOnly(info.BackendAddr))
 			fmt.Fprintf(out, "     (this terminates HTTPS on the tailnet and forwards to %s)\n", info.BackendAddr)
 			fmt.Fprintf(out, "  2. Restart the observer daemon so the backend listener binds:\n")
-			fmt.Fprintf(out, "       (route OFF → stop → `observer start` → route ON - see the daemon-restart-runbook)\n")
+			fmt.Fprintf(out, "       observer service restart   (takes the proxy routes off first and puts them back)\n")
 			fmt.Fprintf(out, "  3. On your phone/laptop (same tailnet), open the pairing URL and pair:\n\n")
 			fmt.Fprintf(out, "     %s\n\n", info.PairingURL)
 			fmt.Fprintf(out, "  The secret rides the URL FRAGMENT (after #) - it is never sent to or logged\n")
@@ -137,8 +137,8 @@ func newRemoteEnableCmd(configPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&useTailscale, "tailscale", false, "Arm tailnet-HTTPS remote access (the only supported mode in v1)")
-	cmd.Flags().BoolVar(&useLAN, "lan", false, "Deferred (Phase 3) - refuses")
-	cmd.Flags().BoolVar(&allowTerminal, "allow-terminal", false, "Also enable the execute-tier remote terminal (Phase 4; default off - separate opt-in)")
+	cmd.Flags().BoolVar(&useLAN, "lan", false, "Not available yet - refuses")
+	cmd.Flags().BoolVar(&allowTerminal, "allow-terminal", false, "Also enable the execute-tier remote terminal (default off - separate opt-in)")
 	cmd.Flags().StringVar(&host, "host", "", "The tailnet HTTPS host (e.g. my-machine.tailnet.ts.net); auto-detected via `tailscale status` when omitted")
 	return cmd
 }

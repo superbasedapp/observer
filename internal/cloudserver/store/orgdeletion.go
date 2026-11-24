@@ -1022,7 +1022,7 @@ func lockOwnedTeamOrgsTx(ctx context.Context, tx pgx.Tx, ms []orgdeletion.Member
 
 // refuseIfOrgsBlockTx returns an *AccountDeletionBlockedError when the
 // account's memberships block its deletion (the paid-live rule is checked
-// before, by refuseIfPaysForLiveOrgTx, with its own error). It locks the
+// before, by refuseIfPaysForLiveOrg, with its own error). It locks the
 // team orgs the account owns first and reads the memberships again under
 // the locks.
 func refuseIfOrgsBlockTx(ctx context.Context, tx pgx.Tx, accountID string) error {

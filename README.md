@@ -166,7 +166,8 @@ Crush, Kimi Code, Grok, Devin, Aider, Qoder, goose, droid, Open Interpreter, Com
 Poolside, Zed, Mistral Code, Muse, Prime Agent, DeepSeek, zcode, Freebuff, Cowork, Grok Bot, Autohand
 Code, IBM Bob, Cortex Code, CodeBuddy Code, Deep Agents Code, DimCode, Dirac, Kimchi, Stakpak and
 VT Code, plus ChatGPT, Claude, Gemini, Copilot and Perplexity on the web through an optional browser
-extension.
+extension. The extension is a preview: it is not in any browser store yet, so you load it unpacked
+from [`browser-extension/`](browser-extension/README.md#install).
 Per-tool setup: [superbased.app/docs/track](https://superbased.app/docs/track/overview).
 
 ## Inside a session

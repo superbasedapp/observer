@@ -189,6 +189,39 @@ func TestEnroll_Success(t *testing.T) {
 	}
 }
 
+// TestEnroll_CarriesSDKKeys (SR-9): the enrol response's sdk_keys answer
+// rides on the returned enrolment in memory, for the hint the CLI prints, and
+// is never stored; an older server that omits it leaves it empty.
+func TestEnroll_CarriesSDKKeys(t *testing.T) {
+	for _, keys := range []string{orgcontract.SDKKeysMember, orgcontract.SDKKeysAdminOnly, orgcontract.SDKKeysNotOnPlan, ""} {
+		t.Run("sdk_keys="+keys, func(t *testing.T) {
+			s := newAgentStore(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(w, http.StatusOK, orgcontract.EnrollResponse{
+					Bearer: "bearer-xyz", BearerExpiresAt: "2026-08-23T00:00:00Z",
+					OrgID: "org-1", OrgName: "Acme", UserID: "scim-42", UserEmail: "dev@acme.example",
+					SDKKeys: keys,
+				})
+			}))
+			defer srv.Close()
+			enr, _, err := newTestClient(t, s, &memBearerStore{}).Enroll(context.Background(), srv.URL, "tok_id.secret")
+			if err != nil {
+				t.Fatalf("Enroll: %v", err)
+			}
+			if enr.SDKKeys != keys {
+				t.Errorf("enrolment SDKKeys = %q, want %q", enr.SDKKeys, keys)
+			}
+			loaded, err := s.LoadEnrolment(context.Background())
+			if err != nil || loaded == nil {
+				t.Fatalf("LoadEnrolment: %v %v", loaded, err)
+			}
+			if loaded.SDKKeys != "" {
+				t.Errorf("stored enrolment SDKKeys = %q, want it never stored", loaded.SDKKeys)
+			}
+		})
+	}
+}
+
 func TestEnroll_AuthFailure(t *testing.T) {
 	s := newAgentStore(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

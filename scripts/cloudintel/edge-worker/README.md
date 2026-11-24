@@ -1,5 +1,9 @@
 # sbci-cloud-edge-staging — the W6e authenticated Cloudflare hop
 
+**Retired: do not deploy.** The Azure origins it fronted are gone and its
+routes were deleted live (L-106, L-107, L-111 B2). See the header of
+`wrangler.toml`. The steps below are history.
+
 Extracted verbatim from `../README.md` (W6e section) so the operator can deploy
 without copy-pasting out of prose. `src/index.js` is the Worker; `wrangler.toml`
 pins the staging ACA origin. The shared secret is NEVER in this directory — it is

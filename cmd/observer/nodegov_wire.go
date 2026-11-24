@@ -1170,6 +1170,7 @@ func grantFromStore(row store.EnrolmentGrant, enr *store.Enrolment) *govern.Gran
 	return &govern.Grant{
 		Tenancy:               tenancy,
 		EnrolmentOrgID:        enrolmentOrgID,
+		OwnerManaged:          enr != nil && enr.OwnerManaged,
 		ReplacementGeneration: row.ReplacementGeneration,
 		OrgKey:                row.OrgKey,
 		Generation:            row.Generation,

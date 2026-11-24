@@ -156,7 +156,7 @@ func TestValidateCaptureRate_FullBypassWithPreflight(t *testing.T) {
 	if !strings.Contains(warn, "0 of 21") {
 		t.Errorf("warn missing 0-of-21 phrasing: %s", warn)
 	}
-	if !strings.Contains(warn, "confirms V5-1 bypass") {
+	if !strings.Contains(warn, "bypassed the proxy") {
 		t.Errorf("warn should cross-reference pre-flight: %s", warn)
 	}
 	if !strings.Contains(warn, "--exclusive") {
@@ -181,8 +181,8 @@ func TestValidateCaptureRate_FullBypassWithoutPreflight(t *testing.T) {
 	if !strings.Contains(warn, "no shared app-server was detected") {
 		t.Errorf("warn should note pre-flight was clean: %s", warn)
 	}
-	if !strings.Contains(warn, "V5 follow-up") {
-		t.Errorf("warn should ask for V5 follow-up: %s", warn)
+	if !strings.Contains(warn, "please report it at https://github.com/superbasedapp/observer/issues") {
+		t.Errorf("warn should ask for a report on the public issue tracker: %s", warn)
 	}
 }
 
@@ -221,7 +221,7 @@ func TestValidateCaptureRate_PartialBypass(t *testing.T) {
 	if !strings.Contains(warn, "only 3 of 21") {
 		t.Errorf("warn missing 3-of-21 phrasing: %s", warn)
 	}
-	if !strings.Contains(warn, "partial V5-1 bypass") {
+	if !strings.Contains(warn, "partial proxy bypass") {
 		t.Errorf("warn should name partial bypass: %s", warn)
 	}
 }

@@ -104,7 +104,7 @@ func newContractCmd() *cobra.Command {
 			"and every adapter's public capability row. Pass --json for the\n" +
 			"machine-readable artifact, which carries a contract_version an\n" +
 			"integrator can pin. The prose contract - what each tier actually\n" +
-			"promises - lives in docs/mcp-contract.md; this command and that doc\n" +
+			"promises - lives at https://superbased.app/docs/reference/mcp-contract; this command and that doc\n" +
 			"read the same Go table, so they cannot drift.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -207,7 +207,7 @@ func renderContract(w io.Writer, doc contractDoc) {
 	fmt.Fprintf(w, "\n%d tools: %d stable, %d conditional, %d experimental.\n",
 		len(doc.MCP.Tools), counts[mcp.TierStable], counts[mcp.TierConditional], counts[mcp.TierExperimental])
 	fmt.Fprintf(w, "%d adapter capability rows (see `observer adapters` for the full matrix).\n", len(doc.Adapters))
-	fmt.Fprintln(w, "\nWhat each tier promises: docs/mcp-contract.md")
+	fmt.Fprintln(w, "\nWhat each tier promises: https://superbased.app/docs/reference/mcp-contract")
 	fmt.Fprintln(w, "Machine-readable artifact: `observer contract --json`")
 	fmt.Fprintln(w, "The dashboard HTTP API is NOT part of this contract - integrate over MCP.")
 }

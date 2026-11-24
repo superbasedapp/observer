@@ -106,7 +106,7 @@ func readDroidHooks(path string, lift func(event string) bool) (droidHooksDoc, m
 	if len(inner) == 0 {
 		delete(doc, "hooks")
 	} else {
-		b, err := marshalDroidJSON(inner)
+		b, err := marshalHookJSON(inner)
 		if err != nil {
 			return nil, nil, fmt.Errorf("readDroidHooks: %s: %w", path, err)
 		}
@@ -149,7 +149,7 @@ func (d droidHooksDoc) setGroups(event string, gs []json.RawMessage) error {
 		delete(d, event)
 		return nil
 	}
-	b, err := marshalDroidJSON(gs)
+	b, err := marshalHookJSON(gs)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", event, err)
 	}
@@ -167,21 +167,9 @@ func droidGroupCommands(g json.RawMessage) []claudeHookCommand {
 	return cg.Hooks
 }
 
-// marshalDroidJSON encodes v compactly without HTML escaping, so a command
-// holding && keeps its bytes.
-func marshalDroidJSON(v any) (json.RawMessage, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
-}
-
 // writeDroidHooks writes doc as 2-space-indented JSON with sorted root
 // keys. Callers own the advisory lock and pass the target pinned before
-// the read (pinnedTarget, F6), exactly as for writeCodexHooks.
+// the read (pinnedTarget, F6), exactly as for writeCodexHooksFile.
 func writeDroidHooks(dir string, pinned pinnedTarget, doc droidHooksDoc) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("hook.writeDroidHooks: mkdir: %w", err)

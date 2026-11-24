@@ -77,12 +77,12 @@ func newCodexCmd() *cobra.Command {
 			"or `observer proxy start` first.\n\n" +
 			"Shared codex `app-server` processes (e.g., the VS Code Codex\n" +
 			"extension or Codex Desktop) can silently intercept `codex exec`\n" +
-			"calls via codex's global IPC pipe and bypass the proxy override\n" +
-			"(V5-1). Pre- and post-flight checks warn when this happens; pass\n" +
+			"calls via codex's global IPC pipe and bypass the proxy override.\n" +
+			"Pre- and post-flight checks warn when this happens; pass\n" +
 			"`--exclusive` to terminate the shared app-server(s) before exec,\n" +
 			"`--detect-only` to inspect without running codex, or\n" +
 			"`--no-app-server-check` to silence. See\n" +
-			"docs/codex-shared-app-server-gotcha.md.",
+			"https://superbased.app/docs/setup/codex.",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -117,16 +117,16 @@ func newCodexCmd() *cobra.Command {
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&codexPath, "codex-path", "", "Path to the codex binary (default: resolve `codex` on PATH)")
 	cmd.Flags().BoolVar(&exclusive, "exclusive", false,
-		"Terminate detected shared codex app-servers (e.g., VS Code Codex extension) before exec. Operator-hostile but bounded - see docs/codex-shared-app-server-gotcha.md.")
+		"Terminate detected shared codex app-servers (e.g., VS Code Codex extension) before exec. Operator-hostile but bounded - see https://superbased.app/docs/setup/codex.")
 	cmd.Flags().BoolVar(&noAppServerCheck, "no-app-server-check", false,
 		"Skip pre- and post-flight detection of shared codex app-servers. For scripts that have verified the host is clean.")
 	cmd.Flags().BoolVar(&detectOnly, "detect-only", false,
 		"Run pre-flight detection only and exit. Exit code 1 if any shared app-server is detected, 0 otherwise. Does not run codex.")
 	cmd.Flags().BoolVar(&writeConfig, "write-config", false,
-		"Auto-fix V6-2: when $CODEX_HOME/config.toml is missing openai_base_url (or points elsewhere), write it pointing at the observer proxy. A .bak file is created next to the original before any mutation. Codex 0.130+ silently drops the wrapper's -c override; until upstream fixes that, the file value is the only thing that works. See docs/proxy-wrappers.md.")
+		"Auto-fix: when $CODEX_HOME/config.toml is missing openai_base_url (or points elsewhere), write it pointing at the observer proxy. A .bak file is created next to the original before any mutation. Codex 0.130+ silently drops the wrapper's -c override; until upstream fixes that, the file value is the only thing that works. See https://superbased.app/docs/setup/codex.")
 	cmd.Flags().BoolVar(&verify, "verify", false,
-		"Run every pre-flight check (proxy reachability + V5-1 shared app-server detection + V6-2 config.toml correctness) and exit. Does NOT launch codex. Exit 0 if every check passes, 1 if any fail. Composes with --write-config to auto-fix V6-2 issues during verify. See docs/proxy-wrappers.md.")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as codex's first prompt (delivery=inject_prompt). See docs/session-handoff.md.")
+		"Run every pre-flight check (proxy reachability + shared app-server detection + config.toml base URL) and exit. Does NOT launch codex. Exit 0 if every check passes, 1 if any fail. Composes with --write-config to auto-fix the config.toml base URL during verify. See https://superbased.app/docs/setup/codex.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as codex's first prompt (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")
@@ -142,7 +142,7 @@ func newCodexCmd() *cobra.Command {
 	// if --attach is set without the capability.
 	if capCodex, _ := integration.For("codex"); capCodex.Attach != nil {
 		cmd.Flags().BoolVar(&attach, "attach", false,
-			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching leaves the codex child running under the daemon, and Ctrl-C still reaches codex. Requires `observer start`. Attach is the DEFAULT for an interactive `observer codex` when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching leaves the codex child running under the daemon, and Ctrl-C still reaches codex. Requires `observer start`. Attach is the DEFAULT for an interactive `observer codex` when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See https://superbased.app/docs/guides/terminals.")
 		cmd.Flags().BoolVar(&noAttach, "no-attach", false,
 			"Opt out of attach for this launch: exec codex as a normal child of your shell (the bare launcher) even when attach would otherwise be the default. Use it to bypass the daemon-owned PTY for one run without changing [terminal.attach].default_on. Composes with --resume and --continue-from.")
 		cmd.Flags().BoolVar(&noProxy, "no-proxy", false,
@@ -156,7 +156,7 @@ func newCodexCmd() *cobra.Command {
 	// combinable with --attach (the daemon owns the resumed PTY).
 	if capCodex, _ := integration.For("codex"); capCodex.Resume.Kind == integration.ResumeNative {
 		cmd.Flags().StringVar(&resume, "resume", "",
-			"Resume a CLOSED codex session by its id: launches `codex resume <id>`, reattaching the tool's REAL prior session - NOT a distilled fork. Composes with proxy routing (`codex -c openai_base_url=… resume <id>`). Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Resume a CLOSED codex session by its id: launches `codex resume <id>`, reattaching the tool's REAL prior session - NOT a distilled fork. Composes with proxy routing (`codex -c openai_base_url=… resume <id>`). Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See https://superbased.app/docs/guides/terminals.")
 	}
 	return cmd
 }
@@ -879,11 +879,11 @@ func runDetectOnly(stderr interface{ Write([]byte) (int, error) }, procs []codex
 		fmt.Fprintln(stderr, "observer codex: no shared codex app-servers detected; proxy capture should be reliable.")
 		return nil
 	}
-	fmt.Fprintf(stderr, "observer codex: detected %d shared codex app-server(s) - V5-1 bypass risk:\n", len(procs))
+	fmt.Fprintf(stderr, "observer codex: detected %d shared codex app-server(s) - they can bypass the proxy:\n", len(procs))
 	for _, p := range procs {
 		fmt.Fprintf(stderr, "  PID %-6d  %-16s  %s\n", p.PID, p.Source, displayPath(p))
 	}
-	fmt.Fprintln(stderr, "observer codex: re-run with --exclusive to terminate them before exec, or terminate manually. See docs/codex-shared-app-server-gotcha.md.")
+	fmt.Fprintln(stderr, "observer codex: re-run with --exclusive to terminate them before exec, or terminate manually. See https://superbased.app/docs/setup/codex.")
 	return exitErr(1)
 }
 
@@ -916,7 +916,7 @@ func emitPreflightWarning(stderr interface{ Write([]byte) (int, error) }, procs 
 	fmt.Fprintf(stderr,
 		"observer codex: detected %d shared codex app-server(s) - %s; capture may be incomplete. "+
 			"Pass --exclusive to terminate them before this run, --no-app-server-check to silence, "+
-			"or see docs/codex-shared-app-server-gotcha.md.\n",
+			"or see https://superbased.app/docs/setup/codex.\n",
 		len(procs), strings.Join(pidParts, ", "))
 }
 
@@ -1083,19 +1083,19 @@ func runCodexVerify(stderr interface{ Write([]byte) (int, error) }, r codexVerif
 	}
 
 	if len(r.PreflightProcs) == 0 {
-		fmt.Fprintln(stderr, "  PASS  no shared codex app-servers detected (V5-1 bypass risk: clean)")
+		fmt.Fprintln(stderr, "  PASS  no shared codex app-servers detected (no proxy bypass risk)")
 	} else {
 		var labels []string
 		for _, p := range r.PreflightProcs {
 			labels = append(labels, fmt.Sprintf("PID %d (%s)", p.PID, p.Source))
 		}
-		fmt.Fprintf(stderr, "  FAIL  V5-1: %d shared codex app-server(s) running - %s. Pass --exclusive to terminate them, or close the VS Code Codex extension / Codex Desktop.\n",
+		fmt.Fprintf(stderr, "  FAIL  shared app-server: %d shared codex app-server(s) running - %s. Pass --exclusive to terminate them, or close the VS Code Codex extension / Codex Desktop.\n",
 			len(r.PreflightProcs), strings.Join(labels, ", "))
 		failed++
 	}
 
 	if len(r.Misconfigs) == 0 {
-		fmt.Fprintln(stderr, "  PASS  every $CODEX_HOME/config.toml routes codex's selected provider to the proxy (V6-2: clean)")
+		fmt.Fprintln(stderr, "  PASS  every $CODEX_HOME/config.toml routes codex's selected provider to the proxy")
 	} else {
 		for _, m := range r.Misconfigs {
 			var detail string
@@ -1110,7 +1110,7 @@ func runCodexVerify(stderr interface{ Write([]byte) (int, error) }, r codexVerif
 				fmt.Fprintf(stderr, "  FAIL  %s - model_provider=%q base_url=%q (want %s). Point that provider at the proxy or run `observer init --codex --force`.\n", m.ConfigPath, m.Provider, m.CurrentValue, m.WantURL)
 				continue
 			}
-			fmt.Fprintf(stderr, "  FAIL  V6-2: %s - %s. Pass --write-config to auto-fix (creates a .bak before mutating).\n", m.ConfigPath, detail)
+			fmt.Fprintf(stderr, "  FAIL  config.toml base URL: %s - %s. Pass --write-config to auto-fix (creates a .bak before mutating).\n", m.ConfigPath, detail)
 		}
 		failed++
 	}

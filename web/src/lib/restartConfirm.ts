@@ -10,8 +10,9 @@ import type { RestartStatus } from "./useDaemonRestart";
 // B-R2: that needs the route writers to run before the self re-exec and
 // again in the new process once its proxy serves, which lives in the start
 // path, not here). The dialog says so, gives the practical way to avoid a
-// dropped request (restart between turns), and names the source checkout's
-// scripts/restart-daemon.sh together with why it runs from a shell.
+// dropped request (restart between turns), and names the shipped
+// `observer service restart` (lane sr-restart) together with why it runs from
+// a terminal the daemon did not start.
 
 /** RestartConfirm is what a caller says about its own restart: the dialog's
  *  question and the one line on why (pending config, a new binary). */
@@ -67,8 +68,8 @@ export function restartConfirmBody(lead: string, status: RestartStatus | null, u
     );
     out.push(
       "To avoid that, restart between turns: the new process answers in about a second. " +
-        "This restart does not take the proxy route off first. The source checkout's scripts/restart-daemon.sh does " +
-        "(route off, restart, route on); it runs from a shell because it stops and relaunches the daemon from outside it.",
+        "This restart does not take the proxy route off first. `observer service restart` does " +
+        "(route off, restart, route on); run it in a terminal the daemon did not start, because it restarts the daemon from outside it.",
     );
   } else {
     out.push("No proxied requests in the last minute, so no coding session should notice.");

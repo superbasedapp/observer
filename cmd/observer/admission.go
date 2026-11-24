@@ -46,8 +46,10 @@ func newAdmissionCmd() *cobra.Command {
 		Use:   "admission",
 		Short: "Input-admission gate: status, dry-run test, and policy lint",
 		Long: "Evaluate incoming user requests to a co-resident agentic app against\n" +
-			"an admin policy (requires [observability] enabled). P1 is observe-only:\n" +
-			"verdicts are recorded but never enforced.",
+			"an admin policy (requires [observability] enabled). In observe mode (the\n" +
+			"default) verdicts are recorded and never enforced; with\n" +
+			"[observability.admission] mode = \"enforce\" a request the policy refuses\n" +
+			"is blocked.",
 	}
 	cmd.AddCommand(newAdmissionStatusCmd(), newAdmissionTestCmd(), newAdmissionLintCmd(),
 		newAdmissionSetupCmd(), newAdmissionSimulateCmd(), newAdmissionBudgetCmd(),

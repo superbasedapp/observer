@@ -249,6 +249,9 @@ func sdkSignIn(ctx context.Context, svc sdkcredsvc.Service, m sdkcredsvc.Minter)
 		return status, nil
 	case errors.Is(err, orgclient.ErrNotEnrolled):
 		return status, fmt.Errorf("this machine is not signed in to an organization; run `observer org enroll` first (without an organization, SDKs send to this machine only)")
+	case errors.Is(err, orgclient.ErrSDKCredentialNotSupported):
+		// SR-9: a hosted organization issues no member keys; say what to do.
+		return status, fmt.Errorf("this organization does not give members their own SDK keys yet; ask an admin for an SDK key (Machine identities, in the organization's dashboard settings). Until you have one, your apps' data does not reach the organization")
 	default:
 		return status, err
 	}

@@ -156,8 +156,8 @@ export function SandboxVMPanel({
           Used only when <span className="font-mono">cloud-hypervisor</span> is in the backend list above and a launch picks
           it by name: automatic selection never does. Each run is its own microVM with no network device; the terminal and
           the capture relay cross vsock. Needs Linux or WSL2 with a usable <span className="font-mono">/dev/kvm</span>,
-          Cloud Hypervisor 54 and virtiofsd, and a signed guest image set (import one below). Not yet proven end to end on
-          real hardware (register LIN-2 onward).
+          Cloud Hypervisor 54 and virtiofsd, and a signed guest image set (import one below; Observer does not publish one
+          yet, so you must build your own). Not yet proven end to end on real hardware.
         </p>
         {confirmToken && <SandboxVMImport confirmToken={confirmToken} />}
         <div className="grid gap-3 md:grid-cols-2">

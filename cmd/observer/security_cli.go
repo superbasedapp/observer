@@ -409,7 +409,7 @@ func securityDoctorCheck(ctx context.Context, configPath string, st *store.Store
 	for _, k := range keys {
 		c.Details = append(c.Details, fmt.Sprintf("%d project(s) %s", byState[k], k))
 	}
-	c.Details = append(c.Details, "rule pack "+rep.RulePack, "quick scan: not available in this release (security Phase C)")
+	c.Details = append(c.Details, "rule pack "+rep.RulePack, "quick scan: not available in this release")
 	if line, warn := securityDirtyDetail(secposture.Layout{Dir: rep.SecurityDir}, time.Now()); line != "" {
 		c.Details = append(c.Details, line)
 		if warn {

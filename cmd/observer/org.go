@@ -545,7 +545,7 @@ the machine, enrolling with any other server is refused.`,
 			fmt.Fprintf(out, "Enrolled in %s (org_id %s) as %s.\n", enr.OrgName, enr.OrgID, enr.UserEmail)
 			fmt.Fprintf(out, "Pushing to %s.\n", enr.OrgServerURL)
 			// U-26: the SDK key is a separate step; say so when AI Apps is on.
-			for _, l := range sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, true)) {
+			for _, l := range sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, true, enr.SDKKeys)) {
 				fmt.Fprintln(out, l)
 			}
 			if seq.bindTried {
@@ -1035,7 +1035,7 @@ var enrolShareDefaults = []enrolShareDefault{
 			"# a node-authored value in this file, not a remote toggle. A managed node that\n" +
 			"# ships hashes only is a defect, so lower this only on an explicit admin\n" +
 			"# decision (the org can also lower it through its signed governance policy).\n" +
-			"# See docs/teams-getting-started.md.\n",
+			"# See https://superbased.app/docs/teams/getting-started.\n",
 		summary: "organization-managed enrolment (teams/enterprise) ships full content; a node-authored value you can read in the file",
 	},
 	{
@@ -1054,7 +1054,7 @@ var enrolShareDefaults = []enrolShareDefault{
 			"# (task_complete), and raw filesystem paths to your personal dashboard. This\n" +
 			"# machine is connected to your OWN personal dashboard (managed by you), and\n" +
 			"# a personal dashboard gets a summary only, so the default is false. Only you\n" +
-			"# can change it, here. See docs/teams-getting-started.md.\n",
+			"# can change it, here. See https://superbased.app/docs/teams/getting-started.\n",
 		summary: "your personal dashboard (managed by you) gets a summary only; set full_content = true here to send full detail",
 	},
 	{
@@ -1064,7 +1064,7 @@ var enrolShareDefaults = []enrolShareDefault{
 		comment: "# full_content = true ships raw command bodies (run_command), assistant prose\n" +
 			"# (task_complete), and raw filesystem paths to the org server. Default false\n" +
 			"# ships only hashes - the metadata-only posture. The org admin cannot flip\n" +
-			"# this remotely; it lives solely in this file. See docs/teams-getting-started.md.\n",
+			"# this remotely; it lives solely in this file. See https://superbased.app/docs/teams/getting-started.\n",
 		summary: "individual enrolment keeps the node-side opt-in (hashes only until you set it to true)",
 	},
 }
@@ -1354,7 +1354,7 @@ func appendManagedPolicyBlock(path string, families []string) error {
 		"# Removing it re-imposes manual consent: these families revert to \"reported\n" +
 		"# but never durably installed\" until you (or a future accepted grant) add\n" +
 		"# them back.\n" +
-		"# See docs/teams-getting-started.md and `observer org grant show`.\n" +
+		"# See https://superbased.app/docs/teams/getting-started and `observer org grant show`.\n" +
 		keys.String()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -1376,7 +1376,7 @@ func managedPolicyInsertionLines(missing []string) []string {
 		"# managed governance grant, and this table already existed for an",
 		"# unrelated reason, so only the key(s) below were inserted rather than",
 		"# the whole block being appended again. Edit or remove either key at",
-		"# any time. See docs/teams-getting-started.md and `observer org grant show`.",
+		"# any time. See https://superbased.app/docs/teams/getting-started and `observer org grant show`.",
 	}
 	return append(lines, missing...)
 }
@@ -1529,7 +1529,7 @@ func newOrgStatusCmd() *cobra.Command {
 			}
 			printOrgStatus(cmd.OutOrStdout(), rep)
 			// U-26: point at the SDK key when AI Apps is on and none is held.
-			if hint := sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, rep.State.Enrolled)); len(hint) > 0 {
+			if hint := sdkKeyHintLines(sdkKeyHintFactsFor(b.cfg, rep.State.Enrolled, "")); len(hint) > 0 {
 				for _, l := range hint {
 					fmt.Fprintln(cmd.OutOrStdout(), l)
 				}
@@ -1790,7 +1790,7 @@ the org budget policy first (the same verified, fail-open fetch the daemon
 runs) and persists the verified document. While a daemon is running this is
 a second writer of that cache, so a fenced daemon intervention (TERM/KILL
 under an org cap) can be refused as "witness changed" until the daemon's own
-next fetch (default 120 s) - a bounded window, documented in docs/budgets.md.
+next fetch (default 120 s) - a bounded window.
 
 When nothing is queued the command reports the current cursor state
 and the last push so the operator can tell why nothing happened -

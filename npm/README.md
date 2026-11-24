@@ -16,6 +16,7 @@ tool with `npm install -g @superbased/observer`.
 | `observer-darwin-x64/`    | macOS Intel binary.                                                |
 | `observer-darwin-arm64/`  | macOS Apple Silicon binary.                                        |
 | `observer-win32-x64/`     | Windows x64 binary.                                                |
+| `superbased/`             | The short name `superbased`; depends on the exact main package.    |
 
 Each per-platform package's `package.json` carries `os` + `cpu`
 fields so npm only installs the matching one. The main package's
@@ -24,24 +25,37 @@ at runtime via `require.resolve()` and spawns the binary inside.
 
 ## Versioning
 
-All 6 packages share the same version. The version field in every
-`package.json` is `"0.0.0"` in the source tree — the
-`scripts/sync-npm-version.sh` script stamps the real version (from
-the git tag) into all of them right before publish.
+The six `@superbased/observer*` packages share the same version, and
+`superbased` carries it with the major raised by 2 (observer 1.43.0 is
+superbased 3.43.0). The `scripts/sync-npm-version.sh` script stamps the
+real version (from the git tag) into all seven right before packing.
 
 ## Publishing (CI, the normal flow)
 
-`.github/workflows/npm-release.yml` triggers on a `v*` git tag push:
+The packages are published with npm trusted publishing (OIDC): no npm
+token is involved, and every version carries npm provenance. On a `v*`
+release tag the maintainers' release run:
 
-1. Cross-compile 5 binaries via `GOOS=… GOARCH=… go build`.
-2. Drop each binary into the matching `npm/observer-<plat>-<arch>/bin/`
+1. Cross-compiles 5 binaries via `GOOS=… GOARCH=… go build`.
+2. Drops each binary into the matching `npm/observer-<plat>-<arch>/bin/`
    directory.
-3. Run `scripts/sync-npm-version.sh ${TAG}` to stamp the version.
-4. Run `npm publish --access public` for each platform package.
-5. Run `npm publish --access public` for the main package last.
+3. Runs `scripts/sync-npm-version.sh ${TAG}` to stamp the version (the
+   short name in `superbased/` gets the major raised by 2).
+4. Runs `npm pack` for the seven packages and checks them with
+   `scripts/npm-pack-check.mjs`.
+5. Attaches the seven tarballs, listed in the vendor-signed `SHA256SUMS`,
+   to this repository's GitHub release, and publishes the release.
 
-The workflow uses the `NPM_TOKEN_OBSERVER` repo secret (a granular
-token scoped to `@superbased/observer*`).
+Publishing the release runs `.github/workflows/publish.yml` here. Its
+`npm` job, in the GitHub environment `npm`, verifies the tarballs against
+`SHA256SUMS` and its signature (`scripts/publish-verify.sh`), then runs
+`npm publish <tarball> --access public --provenance` for the platform
+packages, the main package and `superbased`, in that order
+(`scripts/publish-npm.sh`); from a final release it then publishes the
+SDK packages `@superbased/sdk` and `@superbased/feedback-widget`. Each
+package has a trusted publisher on npmjs.com for this repository, that
+workflow file and the environment `npm`. The same workflow's `pypi` job
+uploads the PyPI wheels.
 
 ## Publishing manually (rarely needed — only for emergencies)
 

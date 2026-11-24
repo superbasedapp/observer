@@ -79,6 +79,13 @@ const (
 	// only, no tenant data). Also GET /staff/api/availability/document (the
 	// issued envelope) rides ActionReadAvailability, not this row.
 	ActionReadOrgs Action = "orgs.read"
+	// ActionIssueAvailability is POST /staff/api/availability/issue: asking
+	// the control plane to sign and deliver the availability envelope
+	// composed from the inputs (cloud 0154). The worker carries it out; the
+	// staff process never reaches the signer. Cancelling a pending request
+	// (POST /staff/api/availability/issue/{id}/cancel) is the same
+	// authority and rides this row.
+	ActionIssueAvailability Action = "availability.issue"
 )
 
 // FreshAssertionWindow is how old a session's WebAuthn assertion may be for
@@ -109,6 +116,7 @@ var actionRules = []actionRule{
 	{action: ActionReadTeamAllowlist, roles: []Role{RoleSupport, RoleOps, RoleAdmin}},
 	{action: ActionWriteTeamAllowlist, roles: []Role{RoleOps, RoleAdmin}, fresh: true},
 	{action: ActionReadOrgs, roles: []Role{RoleSupport, RoleOps, RoleAdmin}},
+	{action: ActionIssueAvailability, roles: []Role{RoleOps, RoleAdmin}, fresh: true},
 }
 
 // Decision is Authorize's verdict. Code is empty when Allowed, else one of

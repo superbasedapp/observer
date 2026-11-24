@@ -16,13 +16,10 @@ too.
 ## Install
 
 The module is `github.com/superbasedapp/observer/sdk/go` (package
-`superbased`), Go 1.25 or newer. It is not tagged on the public repository yet;
-until the first `sdk/go/v0.1.0` tag, use a checkout:
+`superbased`), Go 1.25 or newer:
 
 ```bash
-go mod edit -require=github.com/superbasedapp/observer/sdk/go@v0.0.0 \
-  -replace=github.com/superbasedapp/observer/sdk/go=<checkout>/sdk/go
-go mod tidy
+go get github.com/superbasedapp/observer/sdk/go
 ```
 
 ```go

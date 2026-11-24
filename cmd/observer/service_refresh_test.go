@@ -98,7 +98,7 @@ func TestApplyServiceRefresh(t *testing.T) {
 		{
 			name:    "upgrade, a proxy route is active: advise, never restart",
 			f:       fakeServiceProbe{active: true, pid: 7, exe: exe + " (deleted)", listening: true, routes: []string{"claude-code (/home/u/.claude/settings.json)"}},
-			wantOut: []string{"was NOT restarted", "a proxy route is active: claude-code", "observer service restart", "route off first", "daemon-restart-runbook"},
+			wantOut: []string{"was NOT restarted", "a proxy route is active: claude-code", "observer service restart", "takes the proxy routes off first"},
 		},
 		{
 			name:    "upgrade, an open proxy connection: advise",

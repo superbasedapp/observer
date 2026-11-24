@@ -731,8 +731,23 @@ func sandboxSetupPrintGuide(w io.Writer, _ string, st dashapi.SandboxSetupStep) 
 	}
 	sandboxSetupPrintAfter(w, st)
 	if st.Docs != "" {
-		fmt.Fprintf(w, "  Docs: %s\n", st.Docs)
+		fmt.Fprintf(w, "  Docs: %s\n", sandboxSetupDocsLink(st.Docs))
 	}
+}
+
+// sandboxSetupPublicDocs is the public page about sandboxed terminals. A
+// step's Docs value is an anchor into the repository's own sandbox notes
+// (pinned by internal/sandboxsetup's TestRemedyDocsAnchorsResolve and used by
+// the dashboard to pick a help entry); users cannot open that file, so the
+// CLI points at the public page instead (SR-29).
+const sandboxSetupPublicDocs = "https://superbased.app/docs/guides/terminals"
+
+// sandboxSetupDocsLink is what the CLI prints for a step's Docs anchor.
+func sandboxSetupDocsLink(anchor string) string {
+	if anchor == "" {
+		return ""
+	}
+	return sandboxSetupPublicDocs + " (Sandboxed terminals)"
 }
 
 // sandboxSetupPrintNever prints a step Observer must never touch: the words
@@ -746,7 +761,7 @@ func sandboxSetupPrintNever(w io.Writer, _ string, st dashapi.SandboxSetupStep) 
 		fmt.Fprintf(w, "  %s\n", st.Display)
 	}
 	if st.Docs != "" {
-		fmt.Fprintf(w, "  Docs: %s\n", st.Docs)
+		fmt.Fprintf(w, "  Docs: %s\n", sandboxSetupDocsLink(st.Docs))
 	}
 }
 
@@ -755,7 +770,7 @@ var sandboxSetupAfterText = map[string]string{
 	"relogin":        "Afterwards: sign out and back in (or start a new login shell) so the change applies.",
 	"reboot":         "Afterwards: restart the computer.",
 	"engine_restart": "Afterwards: restart the container engine.",
-	"daemon_restart": "Afterwards: restart Observer (observer stop, then observer start).",
+	"daemon_restart": "Afterwards: restart Observer (`observer service restart` when it runs as a service, otherwise stop `observer start` and run it again).",
 }
 
 func sandboxSetupPrintAfter(w io.Writer, st dashapi.SandboxSetupStep) {
@@ -841,7 +856,7 @@ func (ss *sandboxSetupSession) printStep(plan dashapi.SandboxSetupPlan, idx int,
 	}
 	sandboxSetupPrintAfter(w, st)
 	if st.Docs != "" {
-		fmt.Fprintf(w, "  Docs: %s\n", st.Docs)
+		fmt.Fprintf(w, "  Docs: %s\n", sandboxSetupDocsLink(st.Docs))
 	}
 }
 
@@ -1203,7 +1218,7 @@ func renderSandboxSetupPlan(w io.Writer, plan dashapi.SandboxSetupPlan) error {
 			fmt.Fprintf(w, "       Record: %s on %s\n", st.Record.Status, st.Record.InstalledAt.Format("2006-01-02 15:04"))
 		}
 		if st.Docs != "" && (st.Class == "never" || st.Class == "guide") {
-			fmt.Fprintf(w, "       Docs: %s\n", st.Docs)
+			fmt.Fprintf(w, "       Docs: %s\n", sandboxSetupDocsLink(st.Docs))
 		}
 	}
 	if plan.Blocked == "" && !plan.Ready && plan.Next >= 0 && plan.Next < len(plan.Steps) {
@@ -1465,7 +1480,7 @@ func sandboxSetupDoctorChecks(ctx context.Context, s dashapi.SandboxSetup, host 
 				}
 				c.Details = append(c.Details, "Observer does not do this step")
 				if next.Docs != "" {
-					c.Details = append(c.Details, "docs: "+next.Docs)
+					c.Details = append(c.Details, "docs: "+sandboxSetupDocsLink(next.Docs))
 				}
 			}
 		}

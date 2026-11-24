@@ -90,8 +90,9 @@ func newArchiveReclaimCmd() *cobra.Command {
 			"copy, renames the original aside, and puts the copy in its place. Nothing\n" +
 			"is deleted: the original stays on disk under a .pre-reclaim name until you\n" +
 			"remove it (`observer archive reclaim-cleanup --delete` verifies the new\n" +
-			"database, then deletes it). Requires the daemon to be stopped\n" +
-			"(docs/daemon-restart-runbook.md).",
+			"database, then deletes it). Requires the daemon to be stopped:\n" +
+			"`observer service stop` takes the proxy routes off and stops it, and\n" +
+			"`observer service start` afterwards puts the routes back.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
@@ -234,7 +235,7 @@ func performReclaim(cmd *cobra.Command, cfg config.Config, database *sql.DB, clo
 	if srcFP.QuickCheck != "ok" {
 		return fmt.Errorf(
 			"archive reclaim: the SOURCE database fails quick_check (%q) - compaction would faithfully copy the damage.\n"+
-				"Investigate with `observer db check` before reclaiming", srcFP.QuickCheck,
+				"Investigate with `observer doctor db` (the whole-database integrity check) before reclaiming", srcFP.QuickCheck,
 		)
 	}
 

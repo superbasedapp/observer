@@ -37,7 +37,7 @@ func newGuardPromptCmd() *cobra.Command {
 		Long: "Operator surface for the prompt-submit intervention feature\n" +
 			"([guard.prompt]): warn/ask-once/block/redact when the developer's\n" +
 			"own prompt contains an API token or deterministic PII, before it\n" +
-			"reaches the model. See docs/guard-prompt.md.",
+			"reaches the model. See https://superbased.app/docs/guides/security-guard.",
 	}
 	cmd.AddCommand(newGuardPromptStatusCmd())
 	cmd.AddCommand(newGuardPromptAllowCmd())
@@ -56,7 +56,7 @@ func newGuardPromptCmd() *cobra.Command {
 func promptRuleIDForDetector(detector string) (ruleID string, err error) {
 	class, ok := scrub.DetectorClass(detector)
 	if !ok {
-		return "", fmt.Errorf("unknown detector %q (see `observer guard status` or docs/guard-prompt.md for the full list)", detector)
+		return "", fmt.Errorf("unknown detector %q (see `observer guard status` for the full list)", detector)
 	}
 	if class == scrub.ClassSecret {
 		return "R-172", nil

@@ -872,6 +872,8 @@ func (c *Client) EnrollWithOptions(ctx context.Context, orgURL, token string, op
 		Tenancy: er.Tenancy,
 		// In memory only (not stored): picks the share-default row.
 		OwnerManaged: er.OwnerManaged,
+		// In memory only (not stored): words the SDK key hint (SR-9).
+		SDKKeys: er.SDKKeys,
 	}
 
 	// Plane-A P0-5 (plan §6.9 / R6-B2 / R3-B2 / Codex B1): activate the new
@@ -1533,6 +1535,9 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// A renamed org (T-862): the acknowledgment carries the org's current
 		// display name, recorded in place of the enrolment's. Best-effort.
 		c.noteOrgName(ctx, resp.JSON200, enr)
+		// Whether the org is the developer's own (finding F12): recorded so
+		// the daemon picks the owner audience's managed defaults. Best-effort.
+		c.noteOwnerManaged(ctx, resp.JSON200, enr)
 		// An accepted push proves this node is not below the org's floor, so
 		// a previously-recorded 426 refusal is stale the instant we get here.
 		c.clearAgentTooOld()

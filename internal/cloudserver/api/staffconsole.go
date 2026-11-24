@@ -67,6 +67,9 @@ var staffFeatures = []staffFeature{
 	// (cloud 0095); until a ruling adds this route the console shows the
 	// grant history and prepares the `observer-cloud grant-plan org` command.
 	{name: "plan_grant_write", pattern: "POST /staff/api/orgs/{id}/plan-grant"},
+	// The availability issue step and the per-org components (staffavail.go).
+	{name: "availability_issue", pattern: "POST /staff/api/availability/issue", need: (*Server).hasStaffIssueStore},
+	{name: "org_components", pattern: "GET /staff/api/orgs/{id}/components", need: (*Server).hasStaffIssueStore},
 }
 
 func (s *Server) hasStaffConsoleStore() bool {
@@ -214,11 +217,19 @@ var staffCSP = strings.Join([]string{
 	"object-src 'none'",
 }, "; ")
 
-// staffSecurityHeaders overrides the customer CSP with staffCSP. It runs
-// inside securityHeaders, so every other header is the customer handler's.
+// staffPermissionsPolicy is the staff host's Permissions-Policy: the
+// customer one grants payment to Paddle's hosts, which the staff console
+// never loads (staff console e2e finding SC-8). The WebAuthn features keep
+// their default (this origin), which the passkey ceremonies need.
+const staffPermissionsPolicy = `camera=(), microphone=(), geolocation=(), payment=()`
+
+// staffSecurityHeaders overrides the customer CSP and Permissions-Policy with
+// the staff ones. It runs inside securityHeaders, so every other header is
+// the customer handler's.
 func staffSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", staffCSP)
+		w.Header().Set("Permissions-Policy", staffPermissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

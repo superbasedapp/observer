@@ -44,7 +44,7 @@ func newSSHCmd() *cobra.Command {
 		Short: "Connect to a configured [[terminal.ssh.profiles]] remote system",
 		Long: "Builds the exact ssh argv the dashboard's SSH instance switcher uses for\n" +
 			"the named profile and runs it as an interactive login attached to this\n" +
-			"terminal (docs/ssh-terminals.md). Config-only - does not require\n" +
+			"terminal. Config-only - does not require\n" +
 			"`observer start` to be running.\n\n" +
 			"--print shows the composed argv (shell-quoted) without connecting.\n" +
 			"--test runs the same bounded, non-interactive connectivity probe the\n" +
@@ -103,7 +103,7 @@ func runSSH(_ context.Context, name string, opts sshCmdOptions) error {
 	if !cfg.Terminal.Enabled || !cfg.Terminal.SSH.Enabled {
 		fmt.Fprintln(opts.stderr,
 			"observer ssh: remote-system terminals are disabled - set [terminal.ssh].enabled = true\n"+
-				"(and [terminal].enabled = true) in your config.toml. See docs/ssh-terminals.md.")
+				"(and [terminal].enabled = true) in your config.toml. See `observer ssh --help`.")
 		return exitErr(1)
 	}
 
@@ -111,7 +111,7 @@ func runSSH(_ context.Context, name string, opts sshCmdOptions) error {
 	if len(profiles) == 0 {
 		fmt.Fprintln(opts.stderr,
 			"observer ssh: no [[terminal.ssh.profiles]] are configured. Add at least one\n"+
-				"profile to config.toml - see docs/ssh-terminals.md.")
+				"profile to config.toml - see `observer ssh --help`.")
 		return exitErr(1)
 	}
 

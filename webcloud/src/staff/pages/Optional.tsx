@@ -1,6 +1,6 @@
-// OptionalScreen renders a screen whose route another lane adds (the
-// team-creation allow-list from w17/portal-guardrails, the deletion queue
-// from w17/deletion-purge). The console shows it only when GET
+// OptionalScreen renders a screen whose route another lane adds (today the
+// deletion queue from w17/deletion-purge; the team allow-list has its own
+// page, pages/TeamAllowlist.tsx). The console shows it only when GET
 // /staff/api/features says its route is mounted, and renders the read
 // generically (a table of its rows, else the JSON) until that lane's own
 // screen lands here. Writes, when the lane adds them, go through ChangeDialog

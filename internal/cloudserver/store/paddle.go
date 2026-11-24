@@ -808,7 +808,7 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 	if err != nil {
 		return BillingIntake{}, fmt.Errorf("resolve current plan: %w", err)
 	}
-	plan = paddlePlanNotOlderThan(plan, current)
+	plan = paddlePlanFloor(plan, heldPlan(current))
 	// Read the row's EXISTING status/trial_ends_at BEFORE the upsert -
 	// resolveActivateStatus needs to know whether this subscription is
 	// already trialing (to preserve it) or has no row yet (to decide whether
@@ -846,8 +846,11 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 			activatePeriodEnd = &t
 		}
 	}
-	if e := upsertSubscriptionTx(ctx, tx, account, "", ev, plan, rowStatus, nil, activatePeriodEnd, occurred); e != nil {
-		return BillingIntake{}, fmt.Errorf("upsert subscription: %w", e)
+	// The row's own version is the floor's other half (paddle_floor.go):
+	// the account is assigned exactly what the row now says.
+	plan, err = upsertSubscriptionTx(ctx, tx, account, "", ev, plan, rowStatus, nil, activatePeriodEnd, occurred)
+	if err != nil {
+		return BillingIntake{}, fmt.Errorf("upsert subscription: %w", err)
 	}
 	if rowStatus == "trialing" {
 		if e := recordTrialUseTx(ctx, tx, account, "", ev.SubscriptionID, occurred); e != nil {
@@ -911,7 +914,7 @@ func applyPaddleCancel(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEvent,
 			plan = PaddlePlan{Name: PlanPlusBeta, Version: 1}
 		}
 	}
-	if e := upsertSubscriptionTx(ctx, tx, account, "", ev, plan, "canceled", &now, periodEnd, occurred); e != nil {
+	if _, e := upsertSubscriptionTx(ctx, tx, account, "", ev, plan, "canceled", &now, periodEnd, occurred); e != nil {
 		return BillingIntake{}, fmt.Errorf("upsert subscription: %w", e)
 	}
 	effective := ev.CurrentPeriodEnd
@@ -1116,7 +1119,25 @@ func applyScopedActionTx(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 // exactly as before). It is set on insert and never moved by a later event
 // (COALESCE keeps the stored scope), so a subscription stays with the org it
 // was bound to.
-func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account, orgID string, ev PaddleEvent, plan PaddlePlan, status string, canceledAt, periodEnd *time.Time, occurred time.Time) error {
+//
+// NEW-12: it is the only writer of plan_name/plan_version, so it applies the
+// plan-version floor (paddle_floor.go) at the row it overwrites and returns
+// the plan it wrote, which the account path assigns.
+func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account, orgID string, ev PaddleEvent, plan PaddlePlan, status string, canceledAt, periodEnd *time.Time, occurred time.Time) (PaddlePlan, error) {
+	// NEW-12: the plan-version floor at the row this write overwrites
+	// (paddle_floor.go), on every branch. No row yet: a new subscription
+	// takes its mapped plan.
+	var held PaddlePlan
+	switch e := tx.QueryRow(ctx,
+		`SELECT plan_name, plan_version FROM paddle_subscriptions
+		  WHERE account_id=$1::uuid AND paddle_subscription_id=$2`,
+		account, ev.SubscriptionID).Scan(&held.Name, &held.Version); {
+	case errors.Is(e, pgx.ErrNoRows):
+	case e != nil:
+		return PaddlePlan{}, fmt.Errorf("read subscription plan: %w", e)
+	default:
+		plan = paddlePlanFloor(plan, held)
+	}
 	var trialEndsAt *time.Time
 	if status == "trialing" {
 		switch {
@@ -1162,7 +1183,10 @@ func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account, orgID string,
 		     updated_at            = now()`,
 		account, ev.CustomerID, ev.SubscriptionID, plan.Name, plan.Version,
 		status, periodEnd, canceledAt, occurred, trialEndsAt, updateURL, cancelURL, orgArg, quantity)
-	return e
+	if e != nil {
+		return PaddlePlan{}, e
+	}
+	return plan, nil
 }
 
 // validatePaddleManagementURL accepts a Paddle-hosted management URL (gap 1.4)
@@ -1291,19 +1315,6 @@ func (s *Store) AccountSubscription(ctx context.Context, accountID string) (Padd
 		out.ManagementURLs = m
 	}
 	return out, nil
-}
-
-// paddlePlanNotOlderThan floors a Paddle-mapped plan at the version of the
-// SAME plan the account currently holds. A different plan name, or a mapped
-// version at or above the current one, passes through unchanged; only a
-// same-name OLDER version is raised to the current version (D-299: the
-// assignment a plan-version migration moved forward must survive a renewal
-// whose price still maps to the version it moved off). Pure.
-func paddlePlanNotOlderThan(mapped PaddlePlan, current Plan) PaddlePlan {
-	if current.Name == mapped.Name && current.Version > mapped.Version {
-		mapped.Version = current.Version
-	}
-	return mapped
 }
 
 // priceMap is the compiled-in Paddle price → plan mapping, overridable at

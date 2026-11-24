@@ -34,7 +34,7 @@ func newRoutingExportCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export the decision log as CSV or JSON (§R19.5 audit export)",
+		Short: "Export the decision log as CSV or JSON (audit export)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			days, err := parseWindowDays(window)
 			if err != nil {

@@ -20,14 +20,32 @@ export type StaffQuery<T> = {
   reload: () => void;
 };
 
-/** useStaffQuery reads key through fetcher via the staff cache. */
-export function useStaffQuery<T>(key: string | null, fetcher: () => Promise<T>, deps: readonly unknown[] = []): StaffQuery<T> {
+/** useStaffQuery reads key through fetcher via the staff cache. refreshMs,
+ *  when above zero, re-reads the key that often while mounted (the issue
+ *  card polls the preview while a request is in flight). */
+export function useStaffQuery<T>(
+  key: string | null,
+  fetcher: () => Promise<T>,
+  deps: readonly unknown[] = [],
+  opts: { refreshMs?: number } = {},
+): StaffQuery<T> {
   const run = useCallback(() => fetcher(), [fetcher]); // eslint-disable-line react-hooks/exhaustive-deps
-  const q = useQuery<T, T>(staffCache, key, run, deps, { keepPrevious: false });
+  const q = useQuery<T, T>(staffCache, key, run, deps, { keepPrevious: false, refreshMs: opts.refreshMs });
   const raw = q.error;
   const error = raw != null && !(q.loading || q.isRefreshing) ? (raw instanceof Error ? raw.message : String(raw)) : null;
   return { data: q.data, error, loading: q.loading, reload: q.reload };
 }
+
+/** staffKeys names the reads that more than one screen invalidates after a
+ *  change (the availability inputs, the issued envelope, the issue preview,
+ *  one org's components). */
+export const staffKeys = {
+  inputs: "staff:availability",
+  doc: "staff:availability-doc",
+  preview: "staff:availability-preview",
+  orgComponents: (orgId: string) => `staff:org-components:${orgId}`,
+  teamAllowlist: (includeRemoved: boolean) => `staff:team-allowlist:${includeRemoved ? "all" : "active"}`,
+} as const;
 
 /** invalidateStaff refetches a key after a change. */
 export function invalidateStaff(key: string): void {

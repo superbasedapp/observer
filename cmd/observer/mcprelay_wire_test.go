@@ -213,7 +213,7 @@ func TestMCPRelayCmd_Registered(t *testing.T) {
 				t.Errorf("mcp-relay missing subcommand %s", want)
 			}
 		}
-		if !strings.Contains(c.Long, "route OFF -> stop -> relaunch") {
+		if !strings.Contains(c.Long, "observer service restart") || !strings.Contains(c.Long, "route OFF -> stop -> relaunch") {
 			t.Error("mcp-relay --help lacks the daemon-restart route-OFF order note")
 		}
 	}

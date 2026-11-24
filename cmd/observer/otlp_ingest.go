@@ -180,7 +180,7 @@ func (o *otlpIngest) traces(planeA otlpingest.TraceHandler) otlpingest.TraceHand
 	return func(ctx context.Context, req *coltracepb.ExportTraceServiceRequest) error {
 		mine, rest, dropped := splitClaimedTraces(req)
 		if dropped > 0 {
-			o.warnOnce("own-agent:malformed", "otlp ingest: dropped spans whose sbo.agent resource attribute is not a usable agent name (see docs/own-agents.md)", "resources", dropped)
+			o.warnOnce("own-agent:malformed", "otlp ingest: dropped spans whose sbo.agent resource attribute is not a usable agent name", "resources", dropped)
 		}
 		var err error
 		if mine != nil {

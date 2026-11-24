@@ -183,7 +183,7 @@ func TestContractHumanRender(t *testing.T) {
 		"stable",
 		"conditional",
 		"experimental",
-		"docs/mcp-contract.md",
+		"https://superbased.app/docs/reference/mcp-contract",
 		"The dashboard HTTP API is NOT part of this contract",
 	} {
 		if !strings.Contains(out, want) {

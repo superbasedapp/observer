@@ -9,7 +9,7 @@
 // daemon is the proxy on :8820, so a restart is only automatic when nothing
 // can be routed through it; otherwise the old process keeps running and the
 // safe order is printed (CLAUDE.md "never stop the daemon while the proxy
-// route is active", docs/daemon-restart-runbook.md). The decision itself is
+// route is active"; `observer service restart` is the safe restart). The decision itself is
 // internal/service.DecideRefresh; this file gathers its inputs and acts.
 
 package main
@@ -279,11 +279,11 @@ func applyServiceRefresh(r serviceRefresh, p serviceProbe) error {
 			fmt.Fprintln(r.w, "It was started without the update hand-over this unit now gives it, so every in-place update is refused\n"+
 				"(systemd_unit_predates_handover) until it restarts under this unit.")
 		}
-		fmt.Fprintf(r.w, "The daemon is the proxy on :%d: restarting it cuts any AI request in flight through the proxy\n"+
-			"and refuses new ones until it is back. When no AI session is using the proxy, run:\n"+
+		fmt.Fprintf(r.w, "The daemon is the proxy on :%d: a plain restart cuts any AI request in flight through the proxy\n"+
+			"and refuses new ones until it is back. Restart it with:\n"+
 			"    observer service restart%s\n"+
-			"To keep sessions running across it, take the proxy route off first and put it back after\n"+
-			"(docs/daemon-restart-runbook.md).\n", r.port, suffix)
+			"which takes the proxy routes off first, restarts it, and puts them back once the new daemon answers,\n"+
+			"so AI sessions reach their providers directly meanwhile.\n", r.port, suffix)
 	}
 	return nil
 }

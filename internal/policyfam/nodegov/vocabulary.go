@@ -19,7 +19,8 @@ type VocabSection struct {
 	Unhideable bool   `json:"unhideable"`
 	// ManagedDefault is the level a MANAGED developer machine applies when
 	// the org publishes nothing for this id (ManagedNavDefaults /
-	// ManagedSettingsDefaults); ManagedWhy is that row's reason. The org's
+	// ManagedSettingsDefaults), for the audience the vocabulary was built
+	// for (VocabularyFor); ManagedWhy is that row's reason. The org's
 	// Developer dashboards card marks the default from these two fields, so
 	// the admin console cannot disagree with what nodes actually apply.
 	ManagedDefault Visibility `json:"managed_default"`
@@ -121,13 +122,22 @@ const (
 	authorityFeatureLock         = "feature.lock"
 )
 
-// Vocabulary returns the closed vocabularies of the current body schema.
+// Vocabulary returns the closed vocabularies of the current body schema, with
+// the team audience's managed defaults (VocabularyFor(ManagedAudienceTeam)).
 func Vocabulary() Vocab {
+	return VocabularyFor(ManagedAudienceTeam)
+}
+
+// VocabularyFor is Vocabulary with each section's managed default and reason
+// chosen for audience a: what a machine of an organization of that audience
+// applies when the org publishes nothing. Everything else is
+// audience-independent.
+func VocabularyFor(a ManagedAudience) Vocab {
 	v := Vocab{Family: "node.governance", Schema: MaxSchema}
 	for _, id := range NavSectionIDs {
 		v.NavSections = append(v.NavSections, VocabSection{
 			ID: id, Label: SectionLabel(id), Unhideable: IsUnhideableNavSection(id),
-			ManagedDefault: ManagedNavDefault(id), ManagedWhy: managedDefaultWhy(managedNavIndex, id),
+			ManagedDefault: ManagedNavDefault(id, a), ManagedWhy: managedDefaultWhy(managedNavIndex, id, a),
 		})
 	}
 	for _, p := range NavTabs {
@@ -138,7 +148,7 @@ func Vocabulary() Vocab {
 	for _, id := range SettingsSectionIDs {
 		v.SettingsSections = append(v.SettingsSections, VocabSection{
 			ID: id, Label: SectionLabel(id), Unhideable: IsUnhideableSettingsSection(id),
-			ManagedDefault: ManagedSettingsDefault(id), ManagedWhy: managedDefaultWhy(managedSettingsIndex, id),
+			ManagedDefault: ManagedSettingsDefault(id, a), ManagedWhy: managedDefaultWhy(managedSettingsIndex, id, a),
 		})
 	}
 	for _, k := range PinnableKeys {

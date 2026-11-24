@@ -108,7 +108,7 @@ var knownPlatforms = map[string]bool{"darwin": true, "linux": true, "windows": t
 //		Severity:  SeverityNotice,
 //		Title:     "Conversation compression is now off by default",
 //		Body:      "v1.30 flips [compression.conversation].enabled to false ...",
-//		URL:       "https://superbased.app/docs/reference/compression",
+//		URL:       "https://superbased.app/docs/guides/compression",
 //		ExpiresAt: "2026-10-01T00:00:00Z",
 //		Source:    SourceRelease,
 //	}

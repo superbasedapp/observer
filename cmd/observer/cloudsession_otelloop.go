@@ -89,8 +89,7 @@ func newCloudSessionOTelReceiverCmd() *cobra.Command {
 			"receiver when none answers, writing into the sandbox's own Observer\n" +
 			"database so the flush hooks ship its rows. A no-op anywhere else.\n" +
 			"Part of component ingest.otlp: while it is not active serve is refused\n" +
-			"(exit 3) and ensure prints the refusal and exits 0.\n" +
-			"See docs/cloud-agents.md \"Claude Code cloud sessions over OpenTelemetry\".",
+			"(exit 3) and ensure prints the refusal and exits 0.",
 	}
 	cmd.AddCommand(newOTelLoopEnsureCmd(), newOTelLoopServeCmd())
 	return cmd

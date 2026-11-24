@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 )
 
-// findClaudeGroupWithObserver returns the index of a group whose
 // genericSettingsHookTarget parameterizes registerGenericSettingsHooks
 // (Part B item 1, docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
 // §6.7): a single-event, Claude-Code-shaped
@@ -85,41 +84,6 @@ func (t genericSettingsHookTarget) rulesTool() string {
 	return t.tool
 }
 
-// removeObserverGroups drops, for each event, the hook groups made only of
-// Observer's commands for tool, deleting an event left with none, and
-// returns the events it changed.
-func removeObserverGroups(hooks map[string][]claudeHookGroup, events []string, tool string) []string {
-	var changed []string
-	for _, event := range events {
-		groups := hooks[event]
-		kept := groups[:0]
-		removed := false
-		for _, g := range groups {
-			isOurs := len(g.Hooks) > 0
-			for _, h := range g.Hooks {
-				if h.Type != "command" || !isObserverAnyHookEntry(h.Command, tool) {
-					isOurs = false
-				}
-			}
-			if isOurs {
-				removed = true
-				continue
-			}
-			kept = append(kept, g)
-		}
-		if !removed {
-			continue
-		}
-		if len(kept) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = kept
-		}
-		changed = append(changed, event)
-	}
-	return changed
-}
-
 // registerGenericSettingsHooks is the shared writer behind
 // registerGeminiCLI, registerQwenCode and registerQoder. Conflict/refresh
 // discipline mirrors registerClaudeCode exactly, per event in t.events():
@@ -160,16 +124,14 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 			return res
 		}
 	}
-	var hooks map[string][]claudeHookGroup
-	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooks); err != nil {
-			res.Error = fmt.Errorf("%s: parse hooks: %w", t.errPrefix, err)
-			return res
-		}
+	// NEW-06: every group and handler stays raw, so a field Observer does
+	// not write survives the rewrite.
+	hooks, err := decodeHookEvents(settings["hooks"], groupedHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape(t.errPrefix, path, err)
+		return res
 	}
-	if hooks == nil {
-		hooks = map[string][]claudeHookGroup{}
-	}
+	ours := func(c string) bool { return isObserverAnyHookEntry(c, t.tool) }
 
 	// FU-192: an entry in Observer's shape running another binary is kept.
 	if r.refusesForeignBinary(&res, t.errPrefix, path, identityContent, shapedHooksInText(settings["hooks"], t.tool)) {
@@ -177,59 +139,42 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 	}
 	binPath := forwardSlashPath(r.opts.BinaryPath)
 	// T-847: a matcher or an extra field on Observer's entry is never
-	// "already set" (hook_shape.go); the typed groups cannot see the field.
-	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(func(c string) bool { return isObserverAnyHookEntry(c, t.tool) }))
+	// "already set" (hook_shape.go).
+	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(ours))
 	for _, event := range r.registeredEventsFor(t.tool, t.event) {
 		if r.skipEvent(t.tool, event) {
 			continue
 		}
 		cmd := t.wrapper + genericSettingsHookCommand(binPath, t.tool, event, r.configFlagSuffixForwardSlash())
-		groups := hooks[event]
-		idx := -1
-		for i, g := range groups {
-			for _, h := range g.Hooks {
-				if h.Type == "command" && isObserverAnyHookEntry(h.Command, t.tool) {
-					idx = i
-				}
-			}
+		// Stale-observer-args / cross-binary refresh: Observer's stale
+		// handler is replaced where it sits (refreshObserverGroup).
+		added, err := r.putObserverGroup(&res, hooks, groupEntryRule{
+			errPrefix: t.errPrefix, path: res.ConfigPath, event: event, cmd: cmd,
+			ours: ours, drift: shapeDrift[event],
+		})
+		if err != nil {
+			res.Error = err
+			return res
 		}
-		if idx >= 0 {
-			if genericGroupCurrent(&res, event, cmd, groups[idx], shapeDrift[event]) {
-				res.AlreadySet = append(res.AlreadySet, event)
-				continue
-			}
-			// Stale-observer-args / cross-binary refresh. Drop the stale
-			// group; the fresh append below restores.
-			groups = append(groups[:idx], groups[idx+1:]...)
+		if added {
+			res.HooksAdded = append(res.HooksAdded, event)
 		}
-		if r.refuses(res.ConfigPath, identityContent) {
-			for _, g := range groups {
-				for _, h := range g.Hooks {
-					if h.Type == "command" && !isObserverAnyHookEntry(h.Command, t.tool) {
-						res.Error = hookConflictError(t.errPrefix, event)
-						return res
-					}
-				}
-			}
-		}
-		groups = append(groups, genericObserverGroup(cmd))
-		hooks[event] = groups
-		res.HooksAdded = append(res.HooksAdded, event)
 	}
 	// An opt-in event whose component is not selected loses the entry
 	// Observer wrote for it (Options.Selected, lane sec-h); nothing else in
 	// the file changes.
-	removed := removeObserverGroups(hooks, r.optInEventsOff(t.tool), t.tool)
+	removed, err := removeObserverEvents(hooks, r.optInEventsOff(t.tool), ours)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
 	if len(res.HooksAdded) == 0 && len(removed) == 0 {
 		return res
 	}
-
-	patched, err := json.Marshal(hooks)
-	if err != nil {
-		res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
+	if err := setHooksMember(settings, "hooks", hooks, false); err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
 		return res
 	}
-	settings["hooks"] = patched
 
 	if r.opts.DryRun {
 		return res
@@ -245,16 +190,23 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 	return res
 }
 
-// genericGroupCurrent reports whether Observer's group is exactly the one
-// this writer emits: a single command handler equal to cmd and, since T-847,
-// no shape drift (a matcher or an extra field the typed group cannot see).
-// A drifted group is recorded as a shape rewrite.
-func genericGroupCurrent(res *RegistrationResult, event, cmd string, g claudeHookGroup, drift bool) bool {
-	if drift {
-		shapeRewrite(res, event, cmd, cmd)
-		return false
+// removeObserverEvents drops Observer's handlers (ours) from each of
+// events, keeping every other group and handler with its data and order, and
+// returns the events it changed.
+func removeObserverEvents(hooks *hookEvents, events []string, ours func(string) bool) ([]string, error) {
+	var changed []string
+	for _, event := range events {
+		kept, removed, _, err := groupedHookEntries.removeHandlers(hooks.entries(event), ours)
+		if err != nil {
+			return nil, err
+		}
+		if removed == 0 {
+			continue
+		}
+		hooks.set(event, kept)
+		changed = append(changed, event)
 	}
-	return len(g.Hooks) == 1 && g.Hooks[0].Type == "command" && g.Hooks[0].Command == cmd
+	return changed, nil
 }
 
 // registerGeminiCLI installs the prompt-submit hook into
@@ -330,32 +282,37 @@ func (r *Registry) unregisterGenericSettingsHooks(t genericSettingsHookTarget) U
 	if !ok {
 		return res
 	}
-	var hooks map[string][]claudeHookGroup
-	if err := json.Unmarshal(existing, &hooks); err != nil {
-		res.Error = fmt.Errorf("%s: parse hooks: %w", t.errPrefix, err)
+	hooks, err := decodeHookEvents(existing, groupedHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape(t.errPrefix, path, err)
 		return res
 	}
-	// FU-203: removeObserverGroups's strict recogniser never takes an entry
-	// in Observer's shape that runs another binary; it is reported kept.
+	ours := func(c string) bool { return isObserverAnyHookEntry(c, t.tool) }
+	// FU-203: the strict recogniser never takes an entry in Observer's
+	// shape that runs another binary; it is reported kept.
 	for _, ev := range allEventsFor(t.tool, t.event) {
-		for _, g := range hooks[ev] {
-			for _, h := range g.Hooks {
-				if r.keepsForeignBinary(shapedHooksInText([]byte(h.Command), t.tool)) {
+		for _, g := range hooks.entries(ev) {
+			for _, c := range groupedHookEntries.commands(g) {
+				if r.keepsForeignBinary(shapedHooksInText([]byte(c), t.tool)) {
 					noteKeptForeign(&res, ev)
 				}
 			}
 		}
 	}
-	res.HooksRemoved = removeObserverGroups(hooks, allEventsFor(t.tool, t.event), t.tool)
+	res.HooksRemoved, err = removeObserverEvents(hooks, allEventsFor(t.tool, t.event), ours)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
 	if len(res.HooksRemoved) == 0 {
 		return res
 	}
-	if len(hooks) == 0 && t.hostTarget != "" {
+	if hooks.empty() && t.hostTarget != "" {
 		delete(settings, "hooks")
-	} else {
-		patched, err := json.Marshal(hooks)
+	} else if len(hooks.dirty) > 0 {
+		patched, err := hooks.encode()
 		if err != nil {
-			res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
+			res.Error = fmt.Errorf("%s: encode hooks: %w", t.errPrefix, err)
 			return res
 		}
 		settings["hooks"] = patched

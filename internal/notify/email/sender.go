@@ -239,6 +239,13 @@ func NewNotifier(cfg Config, logger *slog.Logger) (*Notifier, error) {
 	return &Notifier{sender: NewSMTPSender(cfg.Resolve()), defaultTo: cfg.To, logger: logger}, nil
 }
 
+// NewNotifierWithSender returns a Notifier over a caller-supplied Sender (a
+// capturing sender in a test, or a transport other than SMTP), with defaultTo
+// as its default recipients. logger nil uses the default.
+func NewNotifierWithSender(sender Sender, defaultTo []string, logger *slog.Logger) *Notifier {
+	return newNotifierWithSender(sender, defaultTo, logger)
+}
+
 // newNotifierWithSender is the test seam: a Notifier over an arbitrary Sender.
 func newNotifierWithSender(sender Sender, defaultTo []string, logger *slog.Logger) *Notifier {
 	if logger == nil {
@@ -247,9 +254,27 @@ func newNotifierWithSender(sender Sender, defaultTo []string, logger *slog.Logge
 	return &Notifier{sender: sender, defaultTo: defaultTo, logger: logger}
 }
 
+// WithoutDefaultRecipients returns a copy of n over the same transport that
+// never falls back to the configured default recipients ([email].to): a
+// message with no recipients of its own is logged and dropped. It is the
+// notifier for mail whose audience is decided per message, such as a pooled
+// host's per-organization alert mail, where a shared default inbox would
+// gather every tenant's mail in one place. n itself is unchanged; a nil n
+// returns nil (email off).
+func (n *Notifier) WithoutDefaultRecipients() *Notifier {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	c.defaultTo = nil
+	return &c
+}
+
 // Send delivers m best-effort. A nil Notifier, an empty recipient set, or a
 // delivery error are all logged (at most a warning) and swallowed — Send never
-// returns an error and never panics, upholding the fail-soft contract.
+// returns an error and never panics, upholding the fail-soft contract. A
+// message with no recipients of its own goes to the default recipients,
+// unless n came from WithoutDefaultRecipients.
 func (n *Notifier) Send(ctx context.Context, m Message) {
 	if n == nil {
 		return

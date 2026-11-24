@@ -35,7 +35,7 @@ func newCostCmd() *cobra.Command {
 			"Proxy data is accurate (spec §24); JSONL data is approximate or unreliable\n" +
 			"and tagged as such. When both sources cover the same session, proxy wins.\n\n" +
 			"Group keys: model | session | day | project | tool | none\n\n" +
-			"V4-2: --filter narrows the rollup by Row.Key substring match.\n" +
+			"--filter narrows the rollup by Row.Key substring match.\n" +
 			"Repeatable; multiple filters are OR-combined.\n" +
 			"  observer cost --group-by model --filter 'claude' --filter 'gpt-5'",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,7 +81,7 @@ func newCostCmd() *cobra.Command {
 	cmd.Flags().StringVar(&projectRoot, "project", "", "Filter to a project root path")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Cap returned rows")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
-	cmd.Flags().StringSliceVar(&filters, "filter", nil, "Filter rows by Key substring (repeatable; OR-combined). V4-2 restore.")
+	cmd.Flags().StringSliceVar(&filters, "filter", nil, "Filter rows by Key substring (repeatable; OR-combined).")
 	return cmd
 }
 

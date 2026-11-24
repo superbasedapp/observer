@@ -59,3 +59,54 @@ func TestPushAdoptsTheOrgsCurrentName(t *testing.T) {
 		}
 	}
 }
+
+// TestPushRecordsOwnerManaged is finding F12's node half: an accepted push
+// whose acknowledgment restates owner_managed records it on the enrolment (a
+// machine enrolled before agent migration 261 heals), an explicit false
+// clears it, and an acknowledgment without the key (an older server, or a
+// failed org-kind read) leaves it alone.
+func TestPushRecordsOwnerManaged(t *testing.T) {
+	s := newAgentStore(t)
+	bs := &memBearerStore{}
+	var ack *bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, _ := io.ReadAll(r.Body)
+		env := decodeEnvelope(t, wire)
+		rows := int64(len(env.Sessions) + len(env.Actions) + len(env.APITurns) + len(env.TokenUsage))
+		writeTestJSON(w, http.StatusOK, orgcontract.PushResponse{
+			AcceptedRows: rows, NextCursor: env.CursorTo, OwnerManaged: ack,
+		})
+	}))
+	defer srv.Close()
+	pub := enrolFixture(t, s, bs, srv.URL)
+	bindPub(srv, pub)
+	c := newTestClient(t, s, bs)
+	ctx := context.Background()
+
+	yes, no := true, false
+	steps := []struct {
+		name string
+		ack  *bool
+		want bool
+	}{
+		{"an older server sends nothing", nil, false},
+		{"a personal org says true: the old enrolment heals", &yes, true},
+		{"absent again changes nothing", nil, true},
+		{"the same value again is a no-op", &yes, true},
+		{"an explicit false clears it", &no, false},
+	}
+	for i, st := range steps {
+		ack = st.ack
+		seedActivity(t, s, i+1)
+		if _, err := c.PushOnce(ctx); err != nil {
+			t.Fatalf("%s: PushOnce: %v", st.name, err)
+		}
+		enr, err := s.LoadEnrolment(ctx)
+		if err != nil || enr == nil {
+			t.Fatalf("%s: LoadEnrolment: %v", st.name, err)
+		}
+		if enr.OwnerManaged != st.want {
+			t.Errorf("%s: enrolment owner_managed = %v, want %v", st.name, enr.OwnerManaged, st.want)
+		}
+	}
+}

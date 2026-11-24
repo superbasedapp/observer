@@ -1,5 +1,5 @@
 # Exact versions this example ran green with (2026-11-20, Python 3.12).
-# Install the superbased SDK from a checkout first (it is not on PyPI yet):
+# Install the superbased SDK from this checkout first (the examples test it):
 #   pip install "<repo>/sdk/python[anthropic]"
 anthropic==2.11.0
 openinference-instrumentation-anthropic==3.3.7

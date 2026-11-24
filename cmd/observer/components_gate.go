@@ -53,12 +53,17 @@ var daemonLoopComponents = map[string][]string{
 	// until the user links an account.
 	"cloud-agents": nil,
 
-	"proxy":          {"capture.proxy"},
-	"dashboard":      {"ui.dashboard"},
-	"guidance-scan":  {"analytics"},
-	"session-score":  {"analytics"},
-	"advisor-digest": {"analytics"},
-	"commit-scan":    {"projects"},
+	"proxy": {"capture.proxy"},
+	// The route hold put-back (routehold_putback.go) puts routes back only
+	// once this daemon's own proxy serves; with capture.proxy inactive the
+	// proxy never serves, so a held route stays off (the doctor names it)
+	// instead of pointing an AI tool at a port nothing answers.
+	"route-hold-putback": {"capture.proxy"},
+	"dashboard":          {"ui.dashboard"},
+	"guidance-scan":      {"analytics"},
+	"session-score":      {"analytics"},
+	"advisor-digest":     {"analytics"},
+	"commit-scan":        {"projects"},
 	// The Projects-page quality trend reads report files and the codeintel
 	// index only; duplication answers not_in_build without codeintel.
 	"code-quality": {"projects"},

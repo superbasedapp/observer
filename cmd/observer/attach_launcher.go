@@ -198,7 +198,7 @@ func registerAttachFlags(cmd *cobra.Command, tool string) (attach, noAttach *boo
 	noAttach = new(bool)
 	if capab, _ := integration.For(tool); capab.Attach != nil {
 		cmd.Flags().BoolVar(attach, "attach", false,
-			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching leaves the child running under the daemon, and Ctrl-C still reaches the tool. Requires `observer start`. Attach is the DEFAULT for an interactive launch when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching leaves the child running under the daemon, and Ctrl-C still reaches the tool. Requires `observer start`. Attach is the DEFAULT for an interactive launch when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See https://superbased.app/docs/guides/terminals.")
 		cmd.Flags().BoolVar(noAttach, "no-attach", false,
 			"Opt out of attach for this launch: run the tool as a normal child of your shell (the bare launcher) even when attach would otherwise be the default. Use it to bypass the daemon-owned PTY for one run without changing [terminal.attach].default_on.")
 	}

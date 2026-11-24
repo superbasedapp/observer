@@ -32,8 +32,21 @@ export type GrantDisclosure = {
   config_writes?: string[] | null;
   families?: string[] | null;
   config_writes_note?: string;
+  /** One sentence on what accepting makes managed in this dashboard (absent
+   *  on an individual enrolment, which has no managed defaults). */
+  managed_summary?: string;
+  /** The managed pages and Settings sections as the lines the CLI prints too,
+   *  grouped by level ("Hidden pages: Security, ..."). */
+  managed_lines?: string[] | null;
+  /** The same two lists as rows, generated from the node's managed-default
+   *  table for this machine's audience (a team member's, or its owner's). */
+  managed_pages?: ManagedRestriction[] | null;
+  managed_settings?: ManagedRestriction[] | null;
   may_not: string[] | null;
 };
+
+/** One page or Settings section a managed machine starts hidden or read-only. */
+export type ManagedRestriction = { id: string; label: string; level: "hidden" | "read_only" };
 
 export type PendingGrant = {
   offer_id: string;

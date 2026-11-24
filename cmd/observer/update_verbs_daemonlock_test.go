@@ -40,8 +40,8 @@ func TestUpdateUnderDaemonRefusalNamesCauseAndFix(t *testing.T) {
 		want     []string
 		notWant  []string
 	}{
-		{false, []string{"observer update apply refused", "pid 4242", "swap the binary", "[update].auto_apply", "docs/daemon-restart-runbook.md", "observer-4242.lock"}, nil},
-		{true, []string{"observer update rollback refused", "pid 4242", "database snapshot", "docs/daemon-restart-runbook.md"}, []string{"auto_apply"}},
+		{false, []string{"observer update apply refused", "pid 4242", "swap the binary", "[update].auto_apply", "observer service stop", "observer-4242.lock"}, nil},
+		{true, []string{"observer update rollback refused", "pid 4242", "database snapshot", "observer service stop"}, []string{"auto_apply"}},
 	} {
 		msg := updateUnderDaemonRefusal(lock, db, "127.0.0.1:8081", tc.rollback)
 		for _, w := range tc.want {

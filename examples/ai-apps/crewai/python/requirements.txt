@@ -1,6 +1,6 @@
 # Pinned set the live test ran green with (2026-11-20, Python 3.12).
-# Install the superbased SDK from this checkout first (README step 2); it is
-# not on PyPI yet.
+# Install the superbased SDK from this checkout first (README step 2); the
+# examples test it.
 crewai==1.15.44
 openai==2.54.0
 openinference-instrumentation-crewai==1.1.28

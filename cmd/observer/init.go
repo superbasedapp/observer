@@ -637,7 +637,7 @@ func runStatuslineInit(out io.Writer, opts hook.Options, selected []string, unin
 	native := contains(selected, "claude-code")
 	windowsOnly := !native && contains(selected, "claude-code-windows")
 	if windowsOnly {
-		fmt.Fprintln(out, "statusline: claude-code was detected only on the Windows side of a cross-OS WSL setup - v1 scope is native-OS only, skipping (see docs/observer-statusline.md). Run `observer init --statusline` from the OS where Claude Code itself runs.")
+		fmt.Fprintln(out, "statusline: claude-code was detected only on the Windows side of a cross-OS WSL setup - the statusline is set up on the native OS only, skipping. Run `observer init --statusline` from the OS where Claude Code itself runs.")
 		return nil
 	}
 	if !native {
@@ -1259,7 +1259,7 @@ func printProxyRoutingHintFor(out io.Writer, port int, goos string) {
 		fmt.Fprintln(out, "  or persist via ~/.claude/settings.json:")
 	}
 	fmt.Fprintf(out, "      \"env\": { \"ANTHROPIC_BASE_URL\": %q }\n", url)
-	fmt.Fprintln(out, "  see docs/proxy-routing.md for verification + per-shell setup.")
+	fmt.Fprintln(out, "  see https://superbased.app/docs/setup/claude-code for verification and per-shell setup.")
 }
 
 // printCommunityFooter echoes a short "get involved" line at the tail of
@@ -1268,8 +1268,8 @@ func printProxyRoutingHintFor(out io.Writer, port int, goos string) {
 func printCommunityFooter(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "★ Observer is open source - a star helps others find it:")
-	fmt.Fprintln(out, "    https://github.com/marmutapp/superbased-observer")
-	fmt.Fprintln(out, "  issues + feedback: .../issues · contact@superbased.app")
+	fmt.Fprintln(out, "    https://github.com/superbasedapp/observer")
+	fmt.Fprintln(out, "  issues + feedback: https://github.com/superbasedapp/observer/issues · contact@superbased.app")
 }
 
 // printProxyRouteResult prints the outcome of a proxyroute registration

@@ -66,7 +66,7 @@ func newOpenclawCmd() *cobra.Command {
 			"and seeds it via `openclaw chat --message \"<handover>\"` (the\n" +
 			"interactive TUI). That path runs NON-PROXIED to avoid the known\n" +
 			"`--local` proxy-routing stall; token capture stays on openclaw's\n" +
-			"own adapter. See docs/session-handoff.md.\n\n" +
+			"own adapter. See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to openclaw. Use\n" +
 			"`--` to separate observer flags from openclaw flags. NEVER touches\n" +
 			"API keys. Requires a running observer proxy (`observer start`).",
@@ -140,7 +140,7 @@ func newOpenclawCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&binPath, "openclaw-path", "", "Path to the openclaw binary (default: resolve `openclaw` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via `openclaw chat --message` (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via `openclaw chat --message` (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

@@ -40,7 +40,7 @@ func TestPlanReclaim(t *testing.T) {
 			name:         "daemon live refuses first",
 			mutate:       func(in *ReclaimInput) { in.DaemonLive = true },
 			want:         ReclaimDaemonLive,
-			reasonSubstr: "daemon-restart-runbook",
+			reasonSubstr: "observer service stop",
 		},
 		{
 			// Ordering proof: a live daemon is refused even when the space

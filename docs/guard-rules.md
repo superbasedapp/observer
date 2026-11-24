@@ -153,7 +153,7 @@ appear once per row.
 ## Code security: package checks (pack `security.deps`)
 
 These rows fire only while the security module and its `security.deps`
-child are active (see `docs/package-checks.md`). S-741 is the only
+child are active (see `observer security deps --help`). S-741 is the only
 row that denies by default; S-744 and S-748 deny only in the variant a
 node's `[security.deps]` unknown_action or online_unknown_action chooses.
 S-746 is reserved (the `--ignore-scripts` rewrite).
@@ -177,7 +177,7 @@ S-746 is reserved (the `--ignore-scripts` rewrite).
 ## Code security: commit gate
 
 These rows fire only while the security module is active (see
-`docs/code-security.md`). S-792 holds a push while a commit the push's
+`observer security --help`). S-792 holds a push while a commit the push's
 remote does not have yet adds a secret, also after the secret is removed
 from the files. Amending, rebasing or resetting does not release that
 hold until the reflog no longer reaches the old commit (30 days by

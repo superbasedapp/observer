@@ -149,10 +149,10 @@ func newRemoteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remote",
 		Short: "Remote dashboard access (LOCAL-ONLY; tailnet-HTTPS view tier)",
-		Long: "Manage remote dashboard access ([remote] config). Phase 2 ships the\n" +
+		Long: "Manage remote dashboard access ([remote] config). This release ships the\n" +
 			"tailnet-HTTPS view tier: `enable --tailscale` mints a pairing secret and\n" +
 			"arms the config; the backend listener binds on the next `observer start`.\n" +
-			"Execute-tier terminal (`approve-execute`) is a separate Phase-4 opt-in.",
+			"Execute-tier terminal (`approve-execute`) is a separate opt-in.",
 	}
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to config.toml")
 

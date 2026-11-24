@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -640,32 +641,98 @@ func writePaysForLiveOrg(w http.ResponseWriter, orgs []store.PaidLiveOrg) {
 }
 
 // refuseDeletionWhilePaying answers 409 and returns false when the account
-// pays for a live org. It is the early check, before a step-up the deletion
-// would refuse anyway; the store re-checks inside the deletion transaction.
-// A failed read lets the request through to the store's own check.
+// pays for a live org, or has a live subscription the deletion would have to
+// cancel at Paddle and this deployment cannot (ORGDEL-7). It is the early
+// check, before a step-up the deletion would refuse anyway; the store
+// re-checks inside the deletion. A failed read lets the request through to
+// the store's own check.
 func (s *Server) refuseDeletionWhilePaying(w http.ResponseWriter, r *http.Request, accountID string) bool {
-	orgs, err := s.store.PaidLiveOrgs(r.Context(), accountID)
+	b, err := s.store.AccountDeletionBilling(r.Context(), accountID)
 	if err != nil {
-		s.log.Error("cloudserver/api: paid live orgs", "err", err)
+		s.log.Error("cloudserver/api: account deletion billing", "err", err)
 		return true
 	}
-	if len(orgs) > 0 {
+	if len(b.PaysFor) > 0 {
 		s.audit(r.Context(), accountID, "deletion_refused_pays_for_org")
-		writePaysForLiveOrg(w, orgs)
+		writePaysForLiveOrg(w, b.PaysFor)
+		return false
+	}
+	if b.Cancel > 0 && !b.CancelAvailable {
+		s.audit(r.Context(), accountID, "deletion_refused_billing_cancel")
+		writeBillingCancelRefused(w, store.BillingCancelUnavailable)
 		return false
 	}
 	// M6.9: a team the account solely owns or is the billing owner of.
 	return s.refuseDeletionBlockedByOrgs(w, r, accountID)
 }
 
-// deletionRefused answers a store refusal of a deletion because the account
-// pays for a live org; false when err is not that refusal.
+// deletionRefused answers a store refusal of a deletion: the account pays
+// for a live org, a live subscription could not be canceled at Paddle
+// (ORGDEL-7), or the account's orgs block it. false when err is none of
+// them.
 func (s *Server) deletionRefused(w http.ResponseWriter, r *http.Request, accountID string, err error) bool {
 	var paid *store.PaysForLiveOrgError
-	if !errors.As(err, &paid) {
-		return s.accountDeletionBlocked(w, r, accountID, err) // M6.9
+	if errors.As(err, &paid) {
+		s.audit(r.Context(), accountID, "deletion_refused_pays_for_org")
+		writePaysForLiveOrg(w, paid.Orgs)
+		return true
 	}
-	s.audit(r.Context(), accountID, "deletion_refused_pays_for_org")
-	writePaysForLiveOrg(w, paid.Orgs)
-	return true
+	var cancel *store.BillingCancelError
+	if errors.As(err, &cancel) {
+		if cancel.Reason != store.BillingCancelUnavailable {
+			// The class and the subscription id only; never Paddle's text.
+			s.log.Warn("cloudserver/api: account deletion refused: a subscription was not canceled at Paddle",
+				"reason", string(cancel.Reason), "class", cancel.Class, "subscription_id", cancel.SubscriptionID)
+		}
+		s.audit(r.Context(), accountID, "deletion_refused_billing_cancel")
+		writeBillingCancelRefused(w, cancel.Reason)
+		return true
+	}
+	return s.accountDeletionBlocked(w, r, accountID, err) // M6.9
+}
+
+// billingCancelAnswer is the console's answer to an account deletion refused
+// because a live subscription was not canceled at Paddle (ORGDEL-7). In
+// every case nothing was deleted and a step-up was not spent, so the same
+// request can be sent again.
+type billingCancelAnswer struct {
+	status int
+	code   string
+	msg    string
+	// retryAfter, when non-zero, is the Retry-After header in seconds.
+	retryAfter int
+}
+
+// billingCancelAnswers is one answer per store.BillingCancelReason.
+var billingCancelAnswers = map[store.BillingCancelReason]billingCancelAnswer{
+	store.BillingCancelUnavailable: {
+		status: http.StatusConflict, code: billingCancelUnavailableRefusal,
+		msg: "Your account has a subscription that is still billing, and it cannot be canceled from here right now, so nothing was deleted. " +
+			"Cancel the subscription from your billing page (or the link in Paddle's receipt email), then delete your account.",
+	},
+	store.BillingCancelRefused: {
+		status: http.StatusConflict, code: "billing_cancel_refused",
+		msg: "Paddle refused to cancel your subscription, so nothing was deleted. " +
+			"Cancel it from your billing page or contact support, then delete your account.",
+	},
+	store.BillingCancelFailed: {
+		status: http.StatusServiceUnavailable, code: "billing_cancel_failed", retryAfter: 60,
+		msg: "Your subscription could not be canceled at Paddle just now, so nothing was deleted. Try again in a minute.",
+	},
+	store.BillingCancelChanged: {
+		status: http.StatusConflict, code: "billing_changed",
+		msg: "Your billing changed while your account was being deleted, so nothing was deleted. Try again.",
+	},
+}
+
+// writeBillingCancelRefused answers reason's refusal.
+func writeBillingCancelRefused(w http.ResponseWriter, reason store.BillingCancelReason) {
+	a, ok := billingCancelAnswers[reason]
+	if !ok {
+		a = billingCancelAnswers[store.BillingCancelFailed]
+	}
+	if a.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(a.retryAfter))
+	}
+	writeErr(w, a.status, a.code, a.msg)
 }

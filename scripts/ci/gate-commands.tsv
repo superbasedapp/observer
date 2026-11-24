@@ -107,12 +107,20 @@ gate-record	-	scripts/ci/gate-record.sh,scripts/ci/test-gate-record.sh	-	30	comm
 drift	-	docs/openapi/,internal/orgserver/,internal/orgclient/,internal/integration/,internal/guard/,tools/guardcoveragegen/,tools/adapterparitygen/,website/,web/,CHANGELOG.md,Makefile,Makefile.private,scripts/verify-website-build.sh,scripts/verify-docs-build.sh,scripts/w8-claim-inventory.sh,docs/sdk/,shared/lib/productNames.json	git-index	300	make verify-openapi verify-website-build verify-docs-build verify-w8-claims verify-adapter-parity-doc verify-guard-coverage-ts
 # website-tests: ci-private.yml's website worker tests.
 website-tests	-	website/	node	60	node --test --test-reporter=spec website/tools/test/*.test.mjs
+# aggregate-collector: the hosted aggregate collector's Worker tests
+#   (deploy/aggregate-collector/README.md "Test it", its package.json test script):
+#   node:test over a node:sqlite D1 stand-in with the migrations applied. The tests
+#   import only Node built-ins and committed files, so no npm ci. node: the pinned
+#   Node 22 (node:sqlite needs 22.13+). No GitHub workflow runs them: the collector
+#   is deployed by hand, never from CI. A schema change regenerates
+#   deploy/aggregate-collector/schema/, so the path covers tools/aggregateschemagen too.
+aggregate-collector	-	deploy/aggregate-collector/	node	30	cd deploy/aggregate-collector && node --test test/*.test.js
 
 # sdk: the SDK matrix (plan W2-4 and principle 9, lane B4): sdk/python on
 #   every CPython its requires-python admits (3.9 to 3.13) and sdk/typescript
 #   on Node 20, 22 and 24 (Node 18 dropped: past end of life), each on the runtime pinned in gate-tools.tsv;
-#   sdk:pack builds the release artifacts exactly as sdk-release.yml does
-#   (scripts/ci/sdk.sh pack); sdk:e2e is the contract suite against a real
+#   sdk:pack builds the release artifacts exactly as npm-release.yml's
+#   sdk_pack job does (scripts/ci/sdk.sh pack); sdk:e2e is the contract suite against a real
 #   machine and a real org gateway (tests/sdke2e: builds observer and
 #   observer-org, starts both on scratch ports with a private PostgreSQL,
 #   runs both SDKs' example apps to the local, online and both destinations
@@ -149,7 +157,7 @@ sdk:widget-node-24	-	sdk/widget/,scripts/ci/sdk.sh,scripts/ci/gate-tools.tsv	nod
 #   toolchain the gate already runs (no new tool).
 sdk:go	-	sdk/go/,sdk/contract/,scripts/ci/sdk.sh	-	120	bash scripts/ci/sdk.sh go
 sdk:install-strings	-	scripts/sdk-install-strings.py,scripts/test_sdk_install_strings.py,shared/lib/sdkCatalog.json,shared/lib/sdkCatalog.ts,docs/sdk/,sdk/python/README.md,sdk/typescript/README.md,sdk/widget/README.md,sdk/go/README.md,sdk/java/README.md,web/src/lib/planeaFirstRun.ts,web2/src/,webcloud/src/,examples/ai-apps/,website/pages-src/	python3.12	30	python3 -m unittest scripts/test_sdk_install_strings.py
-sdk:pack	-	sdk/,scripts/ci/sdk.sh,.github/workflows/sdk-release.yml	python3.12,node22	120	bash scripts/ci/sdk.sh pack "${TMPDIR:-/tmp}/sdk-pack"
+sdk:pack	-	sdk/,scripts/ci/sdk.sh,.github/workflows/npm-release.yml	python3.12,node22	120	bash scripts/ci/sdk.sh pack "${TMPDIR:-/tmp}/sdk-pack"
 sdk:e2e	-	sdk/,tests/sdke2e/,scripts/ci/sdk.sh,internal/obs/,internal/ingest/otlp/,internal/genaiattr/,internal/otelident/,internal/intelligence/cost/,internal/orgserver/gateway/,internal/orgserver/consumers/otlpapplier/,internal/orgserver/obstracestore/,internal/orgserver/sdkapi/,cmd/observer/obs_wire.go,cmd/observer/start.go,go.mod,go.sum	python3.12,node22	900	go run ./tests/sdke2e
 
 # planea-e2e:unit: the AI Apps live e2e runner's unit tests (review P-36): the

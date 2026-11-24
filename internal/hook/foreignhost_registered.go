@@ -166,20 +166,22 @@ func (r *Registry) cursorObserverEvents() (map[string]bool, bool) {
 	if err != nil {
 		return nil, false
 	}
-	hooks := map[string][]cursorHookEntry{}
+	hooks, _ := decodeHookEvents(nil, flatHookEntries)
 	if len(raw) > 0 {
 		settings, err := decodeSettingsObject(path, raw)
 		if err != nil {
 			return nil, false
 		}
-		if h, ok := settings["hooks"]; ok && json.Unmarshal(h, &hooks) != nil {
+		if hooks, err = decodeHookEvents(settings["hooks"], flatHookEntries); err != nil {
 			return nil, false
 		}
 	}
-	for ev, entries := range hooks {
-		for _, e := range entries {
-			if observerRunCommand(e.Command, "cursor") {
-				out[ev] = true
+	for _, ev := range hooks.names() {
+		for _, e := range hooks.entries(ev) {
+			for _, cmd := range flatHookEntries.commands(e) {
+				if observerRunCommand(cmd, "cursor") {
+					out[ev] = true
+				}
 			}
 		}
 	}

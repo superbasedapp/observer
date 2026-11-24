@@ -97,8 +97,8 @@ func writeCodexConfigBaseURL(configPath, targetURL, stamp string) (string, error
 // observer-managed openai_base_url entry. Short on purpose — the
 // pointer is to the canonical doc, not a verbose explainer.
 func codexConfigHeader(targetURL string) string {
-	return "# observer codex: route through the observer proxy (V6-2).\n" +
-		"# See docs/proxy-wrappers.md or docs/observer-platform-issues-v6.md.\n"
+	return "# observer codex: route through the observer proxy.\n" +
+		"# See https://superbased.app/docs/setup/codex\n"
 }
 
 // topLevelOpenAIBaseURLLine matches `openai_base_url = ...` lines that

@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/deletionjournal"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/orgdeletion"
 	"github.com/marmutapp/superbased-observer/internal/tenantctx"
 )
 
@@ -102,6 +103,10 @@ type Store struct {
 	// CreateDeletionRequest* refuse to run with it unset, so a deletion can
 	// never reach 'done' without a durable record that survives a PITR restore.
 	deletionJournal deletionjournal.Journal
+	// deletionBilling cancels an account deletion's live Paddle
+	// subscriptions before it purges them (ORGDEL-7; SetDeletionBilling).
+	// nil: a deletion that must cancel one is refused.
+	deletionBilling orgdeletion.Billing
 	// paddlePrices maps a Paddle price id to the W4 plan it grants (W9). Empty
 	// until SetPaddlePriceMap wires the deploy config, so every activation
 	// fail-closes as unknown-price until real pri_* ids are provisioned.

@@ -25,7 +25,7 @@ func newModelValueCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "model-value",
-		Short: "Model Value Report - observed cost/latency/outcome per model × turn-kind (§R7.2/§R17)",
+		Short: "Model Value Report - observed cost/latency/outcome per model × turn-kind",
 		Long: "Aggregates the deduped proxy∪JSONL substrate into per model × turn-kind\n" +
 			"× project cells (volume, cost/turn, latency p50/p95, error rate,\n" +
 			"tool-failure rate) and grades pairwise deltas against the highest-tier\n" +

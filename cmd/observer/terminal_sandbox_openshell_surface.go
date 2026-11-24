@@ -47,7 +47,7 @@ var openShellDisclosureRows = []sandboxDisclosureRow{
 	},
 	{
 		sandboxbackend.DiscloseGatewayBindMounts, vocab.GatewayExternal,
-		"Your OpenShell gateway must allow driver config and bind mounts (allow_driver_config and enable_bind_mounts in its gateway.toml), and that applies to every sandbox it runs, not only Observer's. Observer never writes your gateway config: turning the opt-in on, and off again, is your own step (docs/sandbox-openshell.md, \"The gateway-wide bind-mount opt-in\").",
+		"Your OpenShell gateway must allow driver config and bind mounts (allow_driver_config and enable_bind_mounts in its gateway.toml), and that applies to every sandbox it runs, not only Observer's. Observer never writes your gateway config: turning the opt-in on, and off again, is your own step.",
 	},
 	{
 		sandboxbackend.DiscloseCLITelemetry, vocab.GatewayManagedLocal,

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/credfile"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
 
@@ -154,6 +155,103 @@ func TestRenderBoxHooksMerge(t *testing.T) {
 	}
 	if again.Changed {
 		t.Fatal("re-rendering the seeded file must change nothing (a resumed box)")
+	}
+}
+
+// TestRenderBoxHooksSharedGroup: the box seed goes through the shared raw
+// round-trip (hookentries.go). A stale Observer handler sharing a group with
+// a developer's handler is refreshed in its place, never left running
+// beside a newly appended group (before, only an Observer-only group was
+// replaced, so such a box ran Observer's hook twice, once on the stale
+// binary); a stray Observer group later on the event goes; the developer's
+// handler and group keep every field and their positions; the developer's
+// event order is kept; nothing is HTML-escaped; and rendering the result
+// again changes nothing.
+func TestRenderBoxHooksSharedGroup(t *testing.T) {
+	claude, _ := integration.For("claude-code")
+	const (
+		stale   = `{"type":"command","command":"/usr/bin/observer hook claude-code pre-tool"}`
+		dev     = `{"type":"command","command":"/opt/acme/audit.sh && echo <done>","timeout":30,"statusMessage":"auditing"}`
+		devPost = `{"matcher":"Bash","description":"team gate","hooks":[{"type":"command","command":"/opt/acme/post.sh"}]}`
+	)
+	existing := []byte(`{"model":"opus","hooks":{` +
+		`"Stop":[{"hooks":[{"type":"command","command":"/opt/acme/notify"}]}],` +
+		`"PreToolUse":[{"matcher":"*","hooks":[` + stale + `,` + dev + `]},` +
+		`{"matcher":"*","hooks":[{"type":"command","command":"/usr/lib/observer hook claude-code pre-tool"}]}],` +
+		`"PostToolUse":[` + devPost + `]}}`)
+	f, err := RenderBoxHooks(BoxHookInput{Capability: claude, Home: boxTestHome, Binary: boxTestBinary, Existing: existing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(f.Content)
+	for _, gone := range []string{"/usr/bin/observer", "/usr/lib/observer"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("a stale Observer handler (%s) survived beside the new one:\n%s", gone, body)
+		}
+	}
+	if n := strings.Count(body, " hook claude-code pre-tool"); n != 1 {
+		t.Errorf("pre-tool registered %d times, want 1:\n%s", n, body)
+	}
+	if !strings.Contains(body, "&& echo <done>") || strings.Contains(body, "u0026") {
+		t.Errorf("a command was HTML-escaped:\n%s", body)
+	}
+	var doc struct {
+		Hooks map[string][]json.RawMessage `json:"hooks"`
+	}
+	if err := json.Unmarshal(f.Content, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pre := doc.Hooks["PreToolUse"]
+	if len(pre) != 1 {
+		t.Fatalf("PreToolUse holds %d groups, want Observer's shared group only (the stray goes): %s", len(pre), pre)
+	}
+	hs := groupedHookEntries.handlers(pre[0])
+	if len(hs) != 2 || !credfile.SameJSON(hs[1], []byte(dev)) {
+		t.Fatalf("the developer's handler is not at group 0 handler 1 with every field: %s", pre[0])
+	}
+	if cmd, _ := groupedHookEntries.command(hs[0]); cmd != boxTestBinary+" hook claude-code pre-tool" {
+		t.Errorf("Observer's handler at group 0 handler 0 runs %q", cmd)
+	}
+	if post := doc.Hooks["PostToolUse"]; len(post) != 2 || !credfile.SameJSON(post[0], []byte(devPost)) {
+		t.Errorf("PostToolUse: the developer's group is not kept first with every field: %s", post)
+	}
+	stop, pre0, post0 := strings.Index(body, `"Stop"`), strings.Index(body, `"PreToolUse"`), strings.Index(body, `"PostToolUse"`)
+	if stop < 0 || pre0 < 0 || post0 < 0 || stop > pre0 || pre0 > post0 {
+		t.Errorf("the developer's event order (Stop, PreToolUse, PostToolUse) was not kept:\n%s", body)
+	}
+	again, err := RenderBoxHooks(BoxHookInput{Capability: claude, Home: boxTestHome, Binary: boxTestBinary, Existing: f.Content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Changed || string(again.Content) != string(f.Content) {
+		t.Errorf("re-rendering the seeded file changed it:\n%s", again.Content)
+	}
+}
+
+// TestRenderBoxHooksNarrowedEntryIsRewritten: Observer's own entry, current
+// binary but narrowed to one tool (T-847), is never kept as seeded: it is
+// rebuilt on the match-all matcher, in its place.
+func TestRenderBoxHooksNarrowedEntryIsRewritten(t *testing.T) {
+	claude, _ := integration.For("claude-code")
+	cur := boxTestBinary + " hook claude-code pre-tool"
+	existing := []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"` + cur + `"}]},` +
+		`{"matcher":"Edit","hooks":[{"type":"command","command":"/opt/acme/a.sh"}]}]}}`)
+	f, err := RenderBoxHooks(BoxHookInput{Capability: claude, Home: boxTestHome, Binary: boxTestBinary, Existing: existing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Hooks map[string][]json.RawMessage `json:"hooks"`
+	}
+	if err := json.Unmarshal(f.Content, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pre := doc.Hooks["PreToolUse"]
+	if len(pre) != 2 || groupedHookEntries.matcher(pre[0]) != "*" || groupedHookEntries.observerCommand(pre[0], func(c string) bool { return c == cur }) == "" {
+		t.Fatalf("the narrowed Observer entry was not rebuilt on \"*\" in its place: %s", pre)
+	}
+	if groupedHookEntries.matcher(pre[1]) != "Edit" {
+		t.Errorf("the developer's group moved or changed: %s", pre)
 	}
 }
 

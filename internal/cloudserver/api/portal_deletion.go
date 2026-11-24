@@ -60,10 +60,13 @@ type orgDeletionJSON struct {
 
 // orgDeletionPreviewJSON is what an owner's request would do now.
 type orgDeletionPreviewJSON struct {
-	CanRequest       bool     `json:"can_request"`
-	Refusal          string   `json:"refusal"`
-	CoolingOffDays   int      `json:"cooling_off_days"`
-	PurgeAfter       string   `json:"purge_after"`
+	CanRequest     bool   `json:"can_request"`
+	Refusal        string `json:"refusal"`
+	CoolingOffDays int    `json:"cooling_off_days"`
+	PurgeAfter     string `json:"purge_after"`
+	// LiveSubscription reports a subscription the deletion cancels so it
+	// stops renewing (orgdeletion.Subscription.MayBill: a refunded or
+	// charged-back one too, which Paddle still renews).
 	LiveSubscription bool     `json:"live_subscription"`
 	Members          int      `json:"members"`
 	Kept             []string `json:"kept"`
@@ -113,7 +116,7 @@ func (s *Server) billingCancelAvailable() bool { return s.paddlePortal != nil }
 // orgDeletionRefusal is the deciding refusal of an owner's request now, ""
 // when it may be requested: one row per check, top-down (the preview and the
 // request route share it).
-func (s *Server) orgDeletionRefusal(org store.MyOrg, open, live bool) string {
+func (s *Server) orgDeletionRefusal(org store.MyOrg, open, cancels bool) string {
 	rules := []struct {
 		refuse bool
 		code   string
@@ -122,7 +125,7 @@ func (s *Server) orgDeletionRefusal(org store.MyOrg, open, live bool) string {
 		{org.Kind == store.OrgPersonal, personalOrgRefusal},
 		{open, "deletion_open"},
 		{!deletableStatus(org.Status), "org_not_deletable"},
-		{live && !s.billingCancelAvailable(), billingCancelUnavailableRefusal},
+		{cancels && !s.billingCancelAvailable(), billingCancelUnavailableRefusal},
 	}
 	for _, r := range rules {
 		if r.refuse {
@@ -137,18 +140,23 @@ func deletableStatus(st platformcontract.TenantState) bool {
 	return st == platformcontract.StateActive || st == platformcontract.StateSuspended
 }
 
-// orgWindow is the cooling-off window an owner's request opens now.
-func (s *Server) orgWindow(r *http.Request, accountID, orgID string) (time.Duration, bool) {
-	live := false
-	if sub, err := s.store.PortalOrgSubscription(r.Context(), accountID, orgID); err == nil {
-		live = orgdeletion.Subscription{ID: sub.SubscriptionID, Status: sub.Status}.Live()
+// orgWindow is the cooling-off window an owner's request opens now, and
+// whether the deletion's cancel_billing step will cancel the org's
+// subscription (orgdeletion.Subscription.MayBill: a refunded or charged-back
+// one too, which Paddle still renews). The window follows the paid plan
+// (Live); the cancellation follows what Paddle may still bill.
+func (s *Server) orgWindow(r *http.Request, accountID, orgID string) (window time.Duration, cancels bool) {
+	var sub orgdeletion.Subscription
+	if ps, err := s.store.PortalOrgSubscription(r.Context(), accountID, orgID); err == nil {
+		sub = orgdeletion.Subscription{ID: ps.SubscriptionID, Status: ps.Status}
 	}
 	last, err := s.store.OrgLastSeatDay(r.Context(), accountID, orgID)
 	if err != nil {
 		s.log.Warn("cloudserver/api: org last seat day", "err", err)
 		last = s.now() // fail toward the longer window
 	}
-	return orgdeletion.CoolingOff(orgdeletion.CoolingFacts{Origin: orgdeletion.OriginOwner, LiveSubscription: live, LastSeatDay: last, Now: s.now()}), live
+	window = orgdeletion.CoolingOff(orgdeletion.CoolingFacts{Origin: orgdeletion.OriginOwner, LiveSubscription: sub.Live(), LastSeatDay: last, Now: s.now()})
+	return window, sub.MayBill()
 }
 
 // loadOrgForDeletion reads the caller's view of the org, answering 404 when
@@ -187,15 +195,15 @@ func (s *Server) handlePortalOrgDeletion(w http.ResponseWriter, r *http.Request)
 	if found {
 		view.Deletion = deletionJSON(v, owner)
 	}
-	window, live := s.orgWindow(r, p.AccountID, org.OrgID)
+	window, cancels := s.orgWindow(r, p.AccountID, org.OrgID)
 	view.Preview.CoolingOffDays = int(window / (24 * time.Hour))
 	view.Preview.PurgeAfter = rfc3339(s.now().Add(window))
-	view.Preview.LiveSubscription = live
+	view.Preview.LiveSubscription = cancels
 	view.Preview.Reauth = orgdeletion.ReauthKind(s.portalDevAuth(), s.portalWorkOSEnabled)
 	if members, err := s.store.ListOrgMembers(r.Context(), p.AccountID, org.OrgID); err == nil {
 		view.Preview.Members = len(members)
 	}
-	view.Preview.Refusal = s.orgDeletionRefusal(org, open, live)
+	view.Preview.Refusal = s.orgDeletionRefusal(org, open, cancels)
 	view.Preview.CanRequest = view.Preview.Refusal == ""
 	if org.ConsoleRole == store.ConsoleOwner || org.ConsoleRole == store.ConsoleAdmin {
 		if ns, err := s.store.OrgDepartureNotices(r.Context(), p.AccountID, org.OrgID); err == nil {
@@ -272,8 +280,8 @@ func (s *Server) handlePortalOrgDeletionRequest(w http.ResponseWriter, r *http.R
 		writeErr(w, http.StatusBadRequest, "confirm_mismatch", "Type the team's address exactly to confirm.")
 		return
 	}
-	window, live := s.orgWindow(r, p.AccountID, org.OrgID)
-	if code := s.orgDeletionRefusal(org, false, live); code != "" {
+	window, cancels := s.orgWindow(r, p.AccountID, org.OrgID)
+	if code := s.orgDeletionRefusal(org, false, cancels); code != "" {
 		if code == billingCancelUnavailableRefusal {
 			s.audit(r.Context(), p.AccountID, "org_deletion_refused_billing_cancel_unavailable")
 		}
@@ -406,6 +414,16 @@ type accountPrecheckJSON struct {
 	Blockers           []blockerJSON `json:"blockers"`
 	PersonalOrg        *orgRefJSON   `json:"personal_org"`
 	MembershipsRemoved []orgRefJSON  `json:"memberships_removed"`
+	// SubscriptionsCanceled is how many live subscriptions the deletion
+	// cancels at Paddle before it deletes anything (ORGDEL-7), and
+	// BillingCancelAvailable whether this deployment can: with a
+	// subscription to cancel and no way to, the deletion is refused
+	// (billing_cancel_unavailable) and the console asks the customer to
+	// cancel from the billing page first. can_delete stays the orgs' answer;
+	// the deletion route itself answers the billing refusal with its message
+	// before any re-authentication.
+	SubscriptionsCanceled  int  `json:"subscriptions_canceled"`
+	BillingCancelAvailable bool `json:"billing_cancel_available"`
 }
 
 func blockersJSON(bs []orgdeletion.Blocker) []blockerJSON {
@@ -417,7 +435,7 @@ func blockersJSON(bs []orgdeletion.Blocker) []blockerJSON {
 }
 
 // handlePortalAccountDeletionPrecheck answers what deleting the account does
-// with its orgs and what blocks it.
+// with its orgs and its subscriptions, and what blocks it.
 func (s *Server) handlePortalAccountDeletionPrecheck(w http.ResponseWriter, r *http.Request) {
 	p, _ := portalPrincipalFrom(r.Context())
 	plan, err := s.store.AccountDeletionPlan(r.Context(), p.AccountID)
@@ -426,8 +444,17 @@ func (s *Server) handlePortalAccountDeletionPrecheck(w http.ResponseWriter, r *h
 		writeErr(w, http.StatusInternalServerError, "internal", "could not check the account's teams")
 		return
 	}
+	billing, err := s.store.AccountDeletionBilling(r.Context(), p.AccountID)
+	if err != nil {
+		s.log.Error("cloudserver/api: account deletion billing", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "could not check the account's billing")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	out := accountPrecheckJSON{CanDelete: plan.CanDelete(), Blockers: blockersJSON(plan.Blockers), MembershipsRemoved: []orgRefJSON{}}
+	out := accountPrecheckJSON{
+		CanDelete: plan.CanDelete(), Blockers: blockersJSON(plan.Blockers), MembershipsRemoved: []orgRefJSON{},
+		SubscriptionsCanceled: billing.Cancel, BillingCancelAvailable: billing.CancelAvailable,
+	}
 	if po := plan.PersonalOrg; po != nil {
 		out.PersonalOrg = &orgRefJSON{OrgID: po.OrgID, Slug: po.Slug, DisplayName: po.DisplayName}
 	}

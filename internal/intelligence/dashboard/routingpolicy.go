@@ -78,7 +78,7 @@ func parseRoutingRulesTOML(text string) ([]config.RoutingRuleConfig, []string) {
 		problems = append(problems, fmt.Sprintf("key %q is outside [[routing.rules]] - the editor saves rules only; edit other [routing] shapes in the section form or the config file", k.String()))
 	}
 	if strings.TrimSpace(text) != "" && len(doc.Routing.Rules) == 0 && len(problems) == 0 {
-		problems = append(problems, "no [[routing.rules]] blocks found - the fragment must use the [[routing.rules]] table-array shape (see the recipe gallery in docs/model-routing.md)")
+		problems = append(problems, "no [[routing.rules]] blocks found - the fragment must use the [[routing.rules]] table-array shape")
 	}
 	return doc.Routing.Rules, problems
 }

@@ -112,8 +112,7 @@ func tempWatchdogLoop(ctx context.Context, configPath string) {
 		if fdBytes < tempWatchdogThresholdBytes {
 			return
 		}
-		logger.Warn("large deleted-but-open file backing detected - likely an unindexed sort or a VACUUM temp spill; "+
-			"see docs/audits/observer-disk-compute-exhaustion-audit-2026-08-26.md",
+		logger.Warn("large deleted-but-open file backing detected - likely an unindexed sort or a VACUUM temp spill",
 			"deleted_open_fd_bytes", fdBytes,
 			"threshold_bytes", int64(tempWatchdogThresholdBytes))
 	}

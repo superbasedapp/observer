@@ -15,6 +15,7 @@ import {
 } from "@/components/SandboxOpenShellPanel";
 import { SandboxIsolationPicker } from "@/components/SandboxIsolationPicker";
 import { isolationPickerProps } from "@/lib/newTerminalSandbox";
+import { noPublishedImageNote } from "@/lib/sandboxIsolation";
 import type { ComponentsView } from "@/lib/componentState";
 import type { SandboxAvailability, SandboxBackendAvail } from "@/lib/types";
 
@@ -75,7 +76,9 @@ test("the Isolation picker lists an unavailable row with its reason and the chos
   } as SandboxAvailability;
   const props = isolationPickerProps("claude-code", probe, true, "openshell");
   assert.deepEqual(props.notes, ["SENTINEL-PREREQ docker group, which is root-equivalent", "SENTINEL-D3 your own gateway config is never read or written"]);
-  assert.deepEqual(props.unavailable, [{ id: "oci-runc", label: "Docker or Podman", reason: "SENTINEL-NO-RUNTIME", notes: [] }]);
+  // The container row needs an image Observer does not publish (SR-26): its
+  // note leads; it has no daemon sentences of its own here.
+  assert.deepEqual(props.unavailable, [{ id: "oci-runc", label: "Docker or Podman", reason: "SENTINEL-NO-RUNTIME", notes: [noPublishedImageNote("oci-runc")] }]);
   const html = renderToStaticMarkup(<SandboxIsolationPicker {...props} onChange={() => {}} />);
   assert.match(html, /gateway: Observer&#x27;s private gateway/);
   assert.match(html, /SENTINEL-PREREQ/);

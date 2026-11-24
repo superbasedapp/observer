@@ -49,7 +49,7 @@ host = "beta.example.com"
 }
 
 // TestRunSSHNoProfilesConfigured pins the honest empty-config message
-// pointing at [[terminal.ssh.profiles]] and docs/ssh-terminals.md.
+// pointing at [[terminal.ssh.profiles]] and `observer ssh --help`.
 func TestRunSSHNoProfilesConfigured(t *testing.T) {
 	t.Parallel()
 	cfgPath := writeSSHTestConfig(t, `
@@ -67,8 +67,8 @@ enabled = true
 	if !strings.Contains(got, "no [[terminal.ssh.profiles]] are configured") {
 		t.Fatalf("stderr = %q, want the no-profiles-configured message", got)
 	}
-	if !strings.Contains(got, "docs/ssh-terminals.md") {
-		t.Fatalf("stderr = %q, want a pointer at docs/ssh-terminals.md", got)
+	if !strings.Contains(got, "observer ssh --help") {
+		t.Fatalf("stderr = %q, want a pointer at observer ssh --help", got)
 	}
 }
 

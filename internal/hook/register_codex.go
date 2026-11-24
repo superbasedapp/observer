@@ -144,7 +144,7 @@ func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult 
 				}
 			}
 		}
-		own, err := marshalDroidJSON(codexHookGroup{
+		own, err := marshalHookJSON(codexHookGroup{
 			Matcher: "*",
 			Hooks:   []claudeHookCommand{{Type: "command", Command: cmd}},
 		})
@@ -305,16 +305,18 @@ const codexHooksFile = "hooks.json"
 
 // codexHookGroup mirrors claudeHookGroup — codex inherited Claude Code's
 // hooks-config schema verbatim (top-level `hooks` map → event-name
-// arrays → group with matcher + nested hooks list).
+// arrays → group with matcher + nested hooks list). Read-only: an
+// ownership check decodes into it (droidGroupCommands,
+// codexGroupsForCheck); nothing decoded into it is ever written back.
 type codexHookGroup struct {
 	Matcher string              `json:"matcher,omitempty"`
 	Hooks   []claudeHookCommand `json:"hooks"`
 }
 
-// codexHooksFile body is `{"hooks": {<event>: [<group>...]}}`.
-type codexHooksConfig struct {
-	Hooks map[string][]codexHookGroup `json:"hooks"`
-}
+// codexHooksFile's body is `{"hooks": {<event>: [<group>...]}}`. The
+// writers read and write it through readCodexHooksFile (every group,
+// handler and top-level key kept raw, NEW-06), never through
+// codexHookGroup, which only a read-only ownership check decodes into.
 
 // registerCodex installs observer hooks into ~/.codex/hooks.json AND
 // ensures `[features].hooks = true` in ~/.codex/config.toml so codex
@@ -469,15 +471,15 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 	// Pin the write target now, before the read — see pinnedTarget (F6).
 	pinned := pinWriteTarget(hooksPath)
 
-	cfg, err := readCodexHooks(hooksPath)
+	top, hooks, err := readCodexHooksFile(hooksPath, t.errPrefix)
 	if err != nil {
 		res.Error = err
 		return res
 	}
 
-	// T-847: the typed decode cannot see a field Observer never writes on
-	// its own entry; read the raw shape once (hook_shape.go).
-	hooksRaw := fileHooksRaw(hooksPath)
+	// T-847: a field Observer never writes on its own entry is a shape
+	// drift (hook_shape.go).
+	hooksRaw := top["hooks"]
 	// FU-192: an entry in Observer's shape running another binary is kept.
 	if r.refusesForeignBinary(&res, t.errPrefix, hooksPath, identityContent, shapedHooksInText(hooksRaw, "codex")) {
 		return res
@@ -493,35 +495,29 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 		if t.commandFor != nil {
 			cmd = t.commandFor(event, cmd)
 		}
-		groups := cfg.Hooks[event]
-		idx := findCodexGroupWithObserver(groups, t.matchMine)
-		if idx >= 0 && shapeDrift[event] {
-			shapeRewrite(&res, event, cmd, cmd)
-		}
-		if idx >= 0 {
-			if observerCodexCmdMatches(groups[idx], cmd) && !shapeDrift[event] {
-				res.AlreadySet = append(res.AlreadySet, event)
-				continue
-			}
-			// Stale-observer-args / cross-binary refresh — recognised
-			// as ours via t.matchMine's content-heuristic. Drop the
-			// stale group; the fresh append below restores.
-			groups = append(groups[:idx], groups[idx+1:]...)
-		}
-		if r.refuses(res.ConfigPath, identityContent) && hasConflictingCodexHook(groups, t.matchMine) {
-			if onlyCodexBridgeConflicts(groups, t.matchMine) {
-				res.Error = codexBridgeConflictError(t.errPrefix, event)
-				return res
-			}
-			res.Error = hookConflictError(t.errPrefix, event)
+		// Stale-observer-args / cross-binary refresh, recognised as ours
+		// via t.matchMine's content-heuristic: Observer's stale handler is
+		// replaced where it sits (refreshObserverGroup), so no developer
+		// handler changes the position Codex keys its trust by. Codex's own
+		// entry is set only on the "*" matcher (exactMatcher).
+		prefix := t.errPrefix
+		added, err := r.putObserverGroup(&res, hooks, groupEntryRule{
+			errPrefix: t.errPrefix, path: res.ConfigPath, event: event, cmd: cmd,
+			matcher: "*", exactMatcher: true, ours: t.matchMine, drift: shapeDrift[event],
+			conflictErr: func(groups []json.RawMessage) error {
+				if onlyCodexBridgeConflicts(codexGroupsForCheck(groups), t.matchMine) {
+					return codexBridgeConflictError(prefix, event)
+				}
+				return hookConflictError(prefix, event)
+			},
+		})
+		if err != nil {
+			res.Error = err
 			return res
 		}
-		groups = append(groups, codexHookGroup{
-			Matcher: "*",
-			Hooks:   []claudeHookCommand{{Type: "command", Command: cmd}},
-		})
-		cfg.Hooks[event] = groups
-		res.HooksAdded = append(res.HooksAdded, event)
+		if added {
+			res.HooksAdded = append(res.HooksAdded, event)
+		}
 	}
 
 	if r.opts.DryRun {
@@ -529,7 +525,7 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 		return res
 	}
 
-	if err := writeCodexHooks(t.dir, pinned, cfg); err != nil {
+	if err := writeCodexHooksFile(t.dir, pinned, top, hooks); err != nil {
 		res.Error = err
 		return res
 	}
@@ -573,7 +569,7 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string, trustKey func(
 	// Pin the write target now, before the read — see pinnedTarget (F6).
 	pinned := pinWriteTarget(hooksPath)
 
-	raw, err := os.ReadFile(hooksPath)
+	raw, err := readSettingsFile(hooksPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			res.Skipped = true
@@ -582,32 +578,16 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string, trustKey func(
 		res.Error = fmt.Errorf("%s: read: %w", errPrefix, err)
 		return res
 	}
-	var cfg codexHooksConfig
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		res.Error = fmt.Errorf("%s: parse %s: %w", errPrefix, hooksPath, err)
+	top, hooks, err := decodeCodexHooksFile(hooksPath, errPrefix, raw)
+	if err != nil {
+		res.Error = err
 		return res
 	}
-	if cfg.Hooks == nil {
-		cfg.Hooks = map[string][]codexHookGroup{}
-	}
-
-	for event, groups := range cfg.Hooks {
-		foreign := false
-		newGroups, removed, kept := filterCodexGroups(groups, r.removableEntry("codex", isObserverCodexEntry, &foreign))
-		if foreign {
-			noteKeptForeign(&res, event)
-		}
-		if removed > 0 {
-			res.HooksRemoved = append(res.HooksRemoved, event)
-		}
-		if kept > 0 {
-			res.HooksKept = append(res.HooksKept, event)
-		}
-		if len(newGroups) == 0 {
-			delete(cfg.Hooks, event)
-		} else {
-			cfg.Hooks[event] = newGroups
-		}
+	// Only Observer's handlers go; a developer's handler in the same group
+	// keeps its group and every field (NEW-06).
+	if err := r.removeObserverHandlers(&res, hooks, groupedHookEntries, "codex", isObserverCodexEntry); err != nil {
+		res.Error = fmt.Errorf("%s: %w", errPrefix, err)
+		return res
 	}
 	sort.Strings(res.HooksRemoved)
 	sort.Strings(res.HooksKept)
@@ -635,7 +615,7 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string, trustKey func(
 	// the user may have added their own entries we don't know about
 	// (kept-rows above already short-circuit if any non-observer entries
 	// remain).
-	if err := writeCodexHooks(dir, pinned, cfg); err != nil {
+	if err := writeCodexHooksFile(dir, pinned, top, hooks); err != nil {
 		res.Error = err
 		return res
 	}
@@ -649,74 +629,62 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string, trustKey func(
 	return res
 }
 
-// readCodexHooks loads ~/.codex/hooks.json, returning an empty config
-// when the file doesn't exist.
-func readCodexHooks(path string) (codexHooksConfig, error) {
-	cfg := codexHooksConfig{Hooks: map[string][]codexHookGroup{}}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, fmt.Errorf("hook.readCodexHooks: read: %w", err)
+// readCodexHooksFile reads ~/.codex/hooks.json under the caller's lock (a
+// missing or empty file is an empty one): its top-level object, every
+// member kept raw, and its "hooks" event map with every group and handler
+// kept raw (NEW-06). A file or member Observer cannot read without
+// guessing is refused, never overwritten.
+func readCodexHooksFile(path, errPrefix string) (map[string]json.RawMessage, *hookEvents, error) {
+	raw, err := readSettingsFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, fmt.Errorf("%s: read: %w", errPrefix, err)
 	}
-	if len(raw) == 0 {
-		return cfg, nil
-	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return cfg, fmt.Errorf("hook.readCodexHooks: parse %s: %w", path, err)
-	}
-	if cfg.Hooks == nil {
-		cfg.Hooks = map[string][]codexHookGroup{}
-	}
-	return cfg, nil
+	return decodeCodexHooksFile(path, errPrefix, raw)
 }
 
-// writeCodexHooks marshals cfg as 2-space-indented JSON with stable
-// event ordering. Creates the parent dir if missing. Callers own the
-// advisory lock (see lockSettings) — this function must never take it
-// itself, matching writeJSONIndented's contract.
-//
-// pinned must have been produced by pinWriteTarget against the hooks
-// file, right after the lock was acquired and before it was first
-// read — see pinnedTarget's doc comment for why (F6).
-func writeCodexHooks(dir string, pinned pinnedTarget, cfg codexHooksConfig) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("hook.writeCodexHooks: mkdir: %w", err)
-	}
-	// Emit with sorted event keys so JSON diffs stay clean across
-	// re-registrations.
-	keys := make([]string, 0, len(cfg.Hooks))
-	for k := range cfg.Hooks {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var buf bytes.Buffer
-	buf.WriteString("{\n  \"hooks\": {")
-	for i, k := range keys {
-		if i > 0 {
-			buf.WriteString(",")
+// decodeCodexHooksFile is readCodexHooksFile for bytes already read.
+func decodeCodexHooksFile(path, errPrefix string, raw []byte) (map[string]json.RawMessage, *hookEvents, error) {
+	top := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		var err error
+		if top, err = decodeSettingsObject(path, raw); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", errPrefix, err)
 		}
-		buf.WriteString("\n    ")
-		ke, _ := json.Marshal(k)
-		buf.Write(ke)
-		buf.WriteString(": ")
-		ge, err := json.MarshalIndent(cfg.Hooks[k], "    ", "  ")
-		if err != nil {
-			return fmt.Errorf("hook.writeCodexHooks: encode %s: %w", k, err)
-		}
-		buf.Write(ge)
 	}
-	if len(keys) > 0 {
-		buf.WriteString("\n  ")
+	hooks, err := decodeHookEvents(top["hooks"], groupedHookEntries)
+	if err != nil {
+		return nil, nil, refuseHookShape(errPrefix, path, err)
 	}
-	buf.WriteString("}\n}\n")
+	return top, hooks, nil
+}
 
-	if err := atomicWriteFile(pinned, buf.Bytes()); err != nil {
-		return fmt.Errorf("hook.writeCodexHooks: %w", err)
+// writeCodexHooksFile writes top back with hooks as its "hooks" member
+// (always present: Codex reads an empty {"hooks":{}} as no hooks, and a
+// developer's own entries may follow). Every other top-level member and
+// every untouched event keeps its data (writeJSONIndented sorts the
+// top-level keys and re-indents every member, so not its bytes); a file
+// already holding exactly this document is left alone (T-407). Callers own the
+// advisory lock and pass the target pinned before the read (F6).
+func writeCodexHooksFile(dir string, pinned pinnedTarget, top map[string]json.RawMessage, hooks *hookEvents) error {
+	member, err := hooks.encode()
+	if err != nil {
+		return fmt.Errorf("hook.writeCodexHooksFile: encode hooks: %w", err)
 	}
-	return nil
+	top["hooks"] = member
+	return writeJSONIndented(dir, pinned, top)
+}
+
+// codexGroupsForCheck decodes raw groups for a read-only ownership check
+// (onlyCodexBridgeConflicts); nothing decoded here is ever written back.
+func codexGroupsForCheck(groups []json.RawMessage) []codexHookGroup {
+	out := make([]codexHookGroup, 0, len(groups))
+	for _, g := range groups {
+		var cg codexHookGroup
+		if json.Unmarshal(g, &cg) == nil {
+			out = append(out, cg)
+		}
+	}
+	return out
 }
 
 // isObserverCodexEntry recognises a hook command as one previously
@@ -777,59 +745,6 @@ func isObserverCodexEntryNative(cmd string) bool {
 	return true
 }
 
-// findCodexGroupWithObserver returns the index of a codex hook
-// group whose single entry is recognised as observer-written by
-// matchMine (t.matchMine — either isObserverCodexEntry or
-// isObserverCodexEntryNative, see codexHookTarget's doc comment), or
-// -1. Content-heuristic so cross-binary stale entries are still
-// detected as ours and refreshed.
-func findCodexGroupWithObserver(groups []codexHookGroup, matchMine func(string) bool) int {
-	for i, g := range groups {
-		for _, h := range g.Hooks {
-			if h.Type == "command" && matchMine(h.Command) {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// observerCodexCmdMatches reports whether g already encodes the observer
-// hook entry shape we'd write — same matcher ("*"), single command of
-// type "command", same command body. Drift in any of these fields means
-// the entry is stale and registerCodex should refresh it.
-func observerCodexCmdMatches(g codexHookGroup, cmd string) bool {
-	if g.Matcher != "*" {
-		return false
-	}
-	if len(g.Hooks) != 1 {
-		return false
-	}
-	h := g.Hooks[0]
-	return h.Type == "command" && h.Command == cmd
-}
-
-// hasConflictingCodexHook reports whether any group carries a
-// command that isn't observer-shaped per matchMine (t.matchMine —
-// see codexHookTarget's doc comment). Force-less guard against
-// silently overwriting user-authored hooks (or, for the native
-// target, an existing bridge entry — see isObserverCodexEntryNative).
-// Content-heuristic — cross-binary stale entries fall through to the
-// refresh path.
-func hasConflictingCodexHook(groups []codexHookGroup, matchMine func(string) bool) bool {
-	for _, g := range groups {
-		for _, h := range g.Hooks {
-			if h.Type != "command" {
-				continue
-			}
-			if !matchMine(h.Command) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // onlyCodexBridgeConflicts reports whether every command matchMine does
 // not own is Observer's own wsl.exe bridge entry (the codex-windows shape
 // a WSL daemon writes). The native target still refuses those (B4: a
@@ -865,37 +780,6 @@ const codexBridgeConflictCommand = "observer uninstall --codex --skip-mcp --skip
 func codexBridgeConflictError(prefix, event string) error {
 	return safeErrorf("%s: event %s has Observer hooks that run through WSL (wsl.exe bridge, written by an Observer daemon in WSL); remove them first with `%s` (removes only Observer's hook entries) and re-run, or keep the WSL daemon, which already captures this Codex",
 		prefix, event, codexBridgeConflictCommand)
-}
-
-// filterCodexGroups returns groups with all observer-owned entries
-// (recognised via isObserverCodexEntry) stripped, plus counts
-// (removed, kept) for the result struct. Content-heuristic so
-// cross-binary stale entries are also cleaned up on uninstall —
-// mirrors the register-side findCodexGroupWithObserver /
-// hasConflictingCodexHook usage.
-//
-// mine is the uninstall's recogniser (isObserverCodexEntry under the FU-203
-// judgement, removableEntry).
-func filterCodexGroups(groups []codexHookGroup, mine func(string) bool) ([]codexHookGroup, int, int) {
-	var out []codexHookGroup
-	var removed, kept int
-	for _, g := range groups {
-		var keepHooks []claudeHookCommand
-		for _, h := range g.Hooks {
-			if h.Type == "command" && mine(h.Command) {
-				removed++
-				continue
-			}
-			keepHooks = append(keepHooks, h)
-		}
-		if len(keepHooks) == 0 {
-			continue
-		}
-		kept += len(keepHooks)
-		g.Hooks = keepHooks
-		out = append(out, g)
-	}
-	return out, removed, kept
 }
 
 // ensureCodexHooksFeatureFlag patches `[features].hooks = true` into

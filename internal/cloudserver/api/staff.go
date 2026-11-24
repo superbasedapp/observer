@@ -167,7 +167,10 @@ type staffRoute struct {
 	pattern string
 	// action is the authorization row a session route is checked against;
 	// empty for the pre-session WebAuthn routes.
-	action  staffauth.Action
+	action staffauth.Action
+	// noCSRF exempts a session mutation from the CSRF header (sign-out
+	// only; the Origin check still applies).
+	noCSRF  bool
 	handler func(*Server) http.HandlerFunc
 }
 
@@ -179,7 +182,11 @@ var staffRoutes = []staffRoute{
 	{pattern: "POST /staff/auth/webauthn/register/finish", handler: func(s *Server) http.HandlerFunc { return s.handleStaffRegisterFinish }},
 	{pattern: "POST /staff/auth/webauthn/assert/begin", handler: func(s *Server) http.HandlerFunc { return s.handleStaffAssertBegin }},
 	{pattern: "POST /staff/auth/webauthn/assert/finish", handler: func(s *Server) http.HandlerFunc { return s.handleStaffAssertFinish }},
-	{pattern: "POST /staff/auth/logout", action: staffauth.ActionSignOut, handler: func(s *Server) http.HandlerFunc { return s.handleStaffLogout }},
+	// Sign-out needs no CSRF token (SC-5): the token lives only in a tab's
+	// memory, so after a reload the button could never end the session. The
+	// Origin check and the SameSite=Strict cookie still apply; a forged
+	// sign-out only signs a staff member out.
+	{pattern: "POST /staff/auth/logout", action: staffauth.ActionSignOut, noCSRF: true, handler: func(s *Server) http.HandlerFunc { return s.handleStaffLogout }},
 	{pattern: "GET /staff/api/me", action: staffauth.ActionReadSelf, handler: func(s *Server) http.HandlerFunc { return s.handleStaffMe }},
 	{pattern: "GET /staff/api/log", action: staffauth.ActionReadLog, handler: func(s *Server) http.HandlerFunc { return s.handleStaffLog }},
 	{pattern: "GET /staff/api/availability", action: staffauth.ActionReadAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffAvailabilityList }},
@@ -195,6 +202,12 @@ var staffRoutes = []staffRoute{
 	{pattern: "GET /staff/api/orgs", action: staffauth.ActionReadOrgs, handler: func(s *Server) http.HandlerFunc { return s.handleStaffOrgs }},
 	{pattern: "GET /staff/api/orgs/{id}", action: staffauth.ActionReadOrgs, handler: func(s *Server) http.HandlerFunc { return s.handleStaffOrg }},
 	{pattern: "GET /staff/api/availability/document", action: staffauth.ActionReadAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffAvailabilityDocument }},
+	// The issue step and the per-org components (staffavail.go, cloud 0154).
+	{pattern: "GET /staff/api/availability/preview", action: staffauth.ActionReadAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffAvailabilityPreview }},
+	{pattern: "POST /staff/api/availability/issue", action: staffauth.ActionIssueAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffAvailabilityIssue }},
+	{pattern: "POST /staff/api/availability/issue/{id}/cancel", action: staffauth.ActionIssueAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffAvailabilityIssueCancel }},
+	{pattern: "GET /staff/api/orgs/{id}/components", action: staffauth.ActionReadOrgs, handler: func(s *Server) http.HandlerFunc { return s.handleStaffOrgComponents }},
+	{pattern: "PUT /staff/api/orgs/{id}/components/{component}", action: staffauth.ActionWriteAvailability, handler: func(s *Server) http.HandlerFunc { return s.handleStaffOrgComponentSet }},
 }
 
 // StaffHandler returns the staff process's handler: the staff route group,
@@ -223,18 +236,77 @@ func (s *Server) handleStaffHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "surface": "staff"})
 }
 
-// mountStaff registers the staff route group. Every route is per-IP rate
-// limited and answers Cache-Control: no-store.
+// mountStaff registers the staff route group. Every route answers
+// Cache-Control: no-store. The pre-session WebAuthn ceremonies are rate
+// limited per client IP. A session route is limited per staff member once
+// the session resolves (the per-account budget), and per IP only when it
+// carries no staff cookie or a cookie that does not resolve (SC-2: the
+// anonymous per-IP budget used to count every signed-in read, so ordinary
+// navigation hit 429).
 func (s *Server) mountStaff(mux *http.ServeMux) {
 	s.staff.mounted = make(map[string]bool, len(staffRoutes))
 	for _, rt := range staffRoutes {
 		s.staff.mounted[rt.pattern] = true
 		var h http.Handler = rt.handler(s)
 		if rt.action != "" {
-			h = s.staffAuth(rt.action, h)
+			h = s.staffAuth(rt.action, rt.noCSRF, h)
+			h = s.rateLimitIPWithoutStaffCookie(h)
+		} else {
+			h = s.rateLimitIP(h)
 		}
-		mux.Handle(rt.pattern, s.rateLimitIP(staffNoStore(h)))
+		mux.Handle(rt.pattern, staffNoStore(h))
 	}
+}
+
+// rateLimitIPWithoutStaffCookie applies the per-IP limit to a session route
+// called with no staff cookie (staffAuth charges the IP for a cookie that
+// does not resolve).
+func (s *Server) rateLimitIPWithoutStaffCookie(next http.Handler) http.Handler {
+	limited := s.rateLimitIP(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(s.staffCookieName()); err == nil && c.Value != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		limited.ServeHTTP(w, r)
+	})
+}
+
+// allowStaffMember applies the per-staff-member limit (the per-account
+// budget, SBCI_RATELIMIT_ACCOUNT, default 240 a minute) to a resolved
+// session, before its CSRF and authorization checks, so a signed-in member
+// cannot write refusal rows without bound either. It answers 429 (or 503
+// when the limiter cannot answer) and false when the request must stop.
+func (s *Server) allowStaffMember(w http.ResponseWriter, r *http.Request, staffID string) bool {
+	if s.rl == nil || s.rl.account == nil || s.rl.account.limit <= 0 {
+		return true
+	}
+	allowed, retry, err := s.rl.account.allowContext(r.Context(), "staff:"+staffID)
+	if err != nil {
+		s.log.Error("cloudserver/api: staff rate limiter", "err", err)
+		writeRateLimitUnavailable(w)
+		return false
+	}
+	if !allowed {
+		writeRateLimited(w, retry)
+		return false
+	}
+	return true
+}
+
+// chargeIP counts one request against the client IP's budget and reports
+// whether it is still within it (a resolve failure counts as within: the
+// caller answers 401 anyway).
+func (s *Server) chargeIP(r *http.Request) bool {
+	if s.rl == nil || s.rl.ip == nil || s.rl.ip.limit <= 0 {
+		return true
+	}
+	key, err := rateLimitKey(r)
+	if err != nil {
+		return true
+	}
+	ok, _, err := s.rl.ip.allowContext(r.Context(), key)
+	return err != nil || ok
 }
 
 // staffNoStore marks a staff response uncacheable.
@@ -296,7 +368,7 @@ func staffPrincipalFrom(ctx context.Context) (staffPrincipal, bool) {
 // (never the portal's), checks the staff CSRF header and the request Origin
 // on every non-GET, and applies the staffauth authorization table for
 // action. A refusal by the table is logged in staff_actions.
-func (s *Server) staffAuth(action staffauth.Action, next http.Handler) http.Handler {
+func (s *Server) staffAuth(action staffauth.Action, noCSRF bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if s.staff.db == nil {
@@ -315,7 +387,16 @@ func (s *Server) staffAuth(action staffauth.Action, next http.Handler) http.Hand
 				s.log.Error("cloudserver/api: staff session", "err", err)
 			}
 			s.setStaffCookie(w, s.staffCookieName(), "", time.Time{}, -1)
+			// A cookie that does not resolve is charged to the client IP
+			// (it skipped the per-IP limit for carrying a cookie).
+			if !s.chargeIP(r) {
+				writeErr(w, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded; retry later")
+				return
+			}
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "staff session expired or invalid")
+			return
+		}
+		if !s.allowStaffMember(w, r, p.StaffID) {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -323,6 +404,8 @@ func (s *Server) staffAuth(action staffauth.Action, next http.Handler) http.Hand
 				writeErr(w, http.StatusForbidden, "origin_mismatch", "cross-origin staff request refused")
 				return
 			}
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !noCSRF {
 			presented := csrfHash(r.Header.Get(headerStaffCSRF))
 			if p.CSRFHash == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(p.CSRFHash)) != 1 {
 				writeErr(w, http.StatusForbidden, "csrf_failed", "missing or invalid staff CSRF token")

@@ -431,12 +431,18 @@ func TestPaddleStaleEventIgnored(t *testing.T) {
 func TestPaddleDeletionPurgesSubscription(t *testing.T) {
 	s, acct, now := paddleStore(t)
 	ctx := context.Background()
+	billing := &fakeBilling{}
+	s.SetDeletionBilling(billing)
 	activatePaid(t, s, acct, "sub_1", now)
 	if _, err := s.CreateDeletionRequest(ctx, acct, now); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.AccountSubscription(ctx, acct); err == nil {
 		t.Fatalf("subscription survived account deletion")
+	}
+	// ORGDEL-7: the live subscription was canceled at Paddle before the purge.
+	if got := billing.canceled(); len(got) != 1 || got[0] != "sub_1" {
+		t.Fatalf("canceled at Paddle %v, want sub_1", got)
 	}
 }
 

@@ -16,6 +16,11 @@ bin/
 !npm/observer/bin/observer.js
 !npm/observer-*/bin/
 !npm/observer-*/bin/.gitkeep
+# The superbased short-name wrapper's launcher. Without these lines the
+# bin/ rule hid it, and superbased 3.42.1 was packed from a clean checkout
+# without it (`npx superbased` failed).
+!npm/superbased/bin/
+!npm/superbased/bin/superbased.js
 
 # Same story for the VS Code extension: vscode/bin/ holds a .gitkeep
 # committed to source and gets populated per-target by the
@@ -316,6 +321,9 @@ model-pricing/scripts/extract-cache/
 # The adapter-count manifest generator: writes into website/tools/,
 # which is private, and its drift test reads the committed manifest.
 /tools/toolcountgen/
+# The aggregate collector schema generator: writes into deploy/ (private),
+# and its drift test reads the committed schema there.
+/tools/aggregateschemagen/
 # The adapter parity doc generator: rewrites docs/adapter-parity.md
 # (private) and its test reads that doc.
 /tools/adapterparitygen/
@@ -336,7 +344,6 @@ model-pricing/scripts/extract-cache/
 # private-only paths.
 /.github/workflows/ci-private.yml
 /.github/workflows/npm-release.yml
-/.github/workflows/sdk-release.yml
 /.github/workflows/teams-golden-path.yml
 /.github/workflows/obs-eval.yml
 /.github/workflows/website-deploy.yml

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -140,6 +141,18 @@ func (d *StaticDirectory) Host(id string) (Host, bool) {
 
 // Place implements Directory.
 func (d *StaticDirectory) Place(context.Context, string) (string, error) { return d.placeOn, nil }
+
+// HostIDs returns every host's id, sorted: the hosts the availability
+// envelope is delivered to (it is platform-wide, so every listed host gets
+// it, whether or not a tenant is placed there yet).
+func (d *StaticDirectory) HostIDs() []string {
+	out := make([]string, 0, len(d.hosts))
+	for id := range d.hosts {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // PrivateAddress is the default dial filter (design 4.6: the host API runs
 // over the private network only): RFC 1918 and RFC 4193 addresses.

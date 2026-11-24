@@ -231,6 +231,9 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	for _, c := range checkRecordedRoutes(opts.HomeDir) {
 		r.add(c)
 	}
+	for _, c := range checkRouteHold(opts.HomeDir) {
+		r.add(c)
+	}
 	r.add(checkSupervisor(opts.HomeDir, supervisor.OSProbe()))
 	r.add(checkCodexProviderRoute(opts.HomeDir, opts.Getenv, codexSystemRequirementsPath()))
 	r.add(checkLiveGatedWriters())
@@ -1443,7 +1446,7 @@ func checkDaemonVersion(cfg config.Config, cliVersion string) Check {
 	}
 	return Check{
 		Name: name, Status: StatusWarn,
-		Message: fmt.Sprintf("the running daemon is not v%s (this CLI): %s - restart it to finish the upgrade (turn any proxy route off first, docs/daemon-restart-runbook.md)",
+		Message: fmt.Sprintf("the running daemon is not v%s (this CLI): %s - restart it to finish the upgrade: observer service restart (it takes the proxy routes off first and puts them back)",
 			cli, strings.Join(stale, "; ")),
 		Remediations: []remedy.Remediation{remedy.Of(remedy.RestartDaemon, "")},
 	}

@@ -1089,8 +1089,8 @@ connect_finish() {
     stale=$(stale_daemons)
     if [ -n "$stale" ]; then
       say ""
-      say "\`observer start\` (pid ${stale% }) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-      say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md)."
+      say "\`observer start\` (pid ${stale% }) still runs the previous binary. Restart it with \`observer service restart\`:"
+      say "the daemon is the proxy, so it takes the proxy routes off first and puts them back once the new daemon answers."
     fi
   else
     offer_service
@@ -1257,7 +1257,7 @@ upgrade_service() {
     if "$installed" service upgrade $us_flag; then
       service_done=1
     else
-      warn "\`observer service upgrade$us_flag\` reported a problem; the previous daemon may still be running (docs/daemon-restart-runbook.md)"
+      warn "\`observer service upgrade$us_flag\` reported a problem; the previous daemon may still be running (restart it with \`observer service restart$us_flag\`)"
     fi
   done
   return "$us_found"
@@ -1484,8 +1484,8 @@ do_install() {
     stale=$(stale_daemons)
     if [ -n "$stale" ]; then
       say ""
-      say "\`observer start\` (pid ${stale% }) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-      say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md)."
+      say "\`observer start\` (pid ${stale% }) still runs the previous binary. Restart it with \`observer service restart\`:"
+      say "the daemon is the proxy, so it takes the proxy routes off first and puts them back once the new daemon answers."
     fi
     say ""
     say "Your configuration and data in ~/.observer are unchanged."
@@ -1503,8 +1503,8 @@ do_install() {
     say ""
     if [ "$connect" -eq 1 ]; then connect_machine || true; fi
     say "A daemon from another install is running ($(printf '%s\n' "$other_daemons" | awk '{ printf "%s%s", s, $1; s = ", " }' | sed 's/^/pid /')),"
-    say "so no service was offered and nothing was started. To move to this copy: when no AI session uses the proxy, turn"
-    say "the proxy route off, stop that daemon, then start this one (docs/daemon-restart-runbook.md)."
+    say "so no service was offered and nothing was started. To move to this copy: stop that daemon between AI turns (its"
+    say "proxy stops answering until this one runs), then start this one."
     say ""
     say "Next steps:"
     say "  $installed components status   # what this edition runs"

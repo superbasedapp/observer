@@ -206,6 +206,17 @@ func TestPortalOrgDeletionRefusals(t *testing.T) {
 				}
 			},
 		},
+		{
+			// A refund revokes the plan but Paddle still renews the
+			// subscription (FR-7), so cancel_billing must cancel it too.
+			name: "a refunded subscription with no billing client", kind: "team", status: http.StatusConflict, code: "billing_cancel_unavailable",
+			setup: func(owner *portalClient, org string) {
+				if _, err := h.pool.Exec(ctx, `INSERT INTO paddle_subscriptions (account_id, org_id, paddle_customer_id, paddle_subscription_id, plan_name, plan_version, status)
+					VALUES ($1::uuid, $2::uuid, 'ctm_1', 'sub_refunded_ref', 'team', 1, 'refunded')`, owner.accountID, org); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

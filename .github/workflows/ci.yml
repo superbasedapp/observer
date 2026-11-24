@@ -1262,14 +1262,14 @@ jobs:
 
   # ----------------------------------------------------------------
   # SDK suites (review E-91): scripts/ci/sdk.sh, the one owner of the SDK
-  # test commands (the ops gate's sdk:* units and sdk-release.yml call it
-  # too), runs sdk/python's pytest and sdk/typescript's typecheck and npm
+  # test commands (the ops gate's sdk:* units and npm-release.yml's
+  # sdk_pack call it too), runs sdk/python's pytest and sdk/typescript's typecheck and npm
   # test, sdk/java's mvn test, and sdk/go's gofmt, vet and go test -race, each
   # against sdk/contract. The plan job's `sdk` output path-
   # filters it: a push or PR runs it only when it touches sdk/** or
   # scripts/ci/sdk.sh; a full (dispatch) run always does. One Python and
-  # one Node version here; sdk-release.yml runs the whole version matrix
-  # before a publish. Same skips as the other jobs: never on a tag push,
+  # one Node version here; the gate's sdk:* units run the whole version
+  # matrix before a release. Same skips as the other jobs: never on a tag push,
   # not on a gate record (the sdk:python-3.12, sdk:node-22,
   # sdk:java-17 and sdk:go units), and the workflow's paths-ignore and
   # concurrency apply.

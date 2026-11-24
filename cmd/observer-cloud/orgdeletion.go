@@ -75,8 +75,10 @@ type paddleSubscriptions interface {
 	CancelSubscription(ctx context.Context, id string) (seatbilling.Subscription, error)
 }
 
-// deletionBilling is orgdeletion.Billing over the Paddle API (FR-1). It is
-// idempotent by reading first: a subscription Paddle already reports
+// deletionBilling is orgdeletion.Billing over the Paddle API (FR-1): the
+// worker's org deletion uses it at cancel_billing, and serve's account
+// deletion before it purges the account's live subscriptions (ORGDEL-7,
+// paddleServeConfigFromEnv). It is idempotent by reading first: a subscription Paddle already reports
 // canceled is done (the request's retry, or a cancel the customer made in
 // Paddle's portal), and a refused cancel is read again before it counts as
 // a refusal. Paddle keeps no idempotency key; the read stands in for it.

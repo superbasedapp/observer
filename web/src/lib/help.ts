@@ -108,7 +108,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     formula:
       "code lines written = added_code + modified_code (deleted lines are NOT included); code vs comments: code = added_code + modified_code, comments = added_comment, comment share = comments ÷ (code + comments), AI actor, code category, computed server-side by internal/loc.SplitAuthored (ai_split / ai_sidechain_split); low confidence = files whose classification degraded at a fragment boundary or on a truncated input; overwrite = a whole-file write over an existing file, counted as added because the before-image came from the prior read, or from nothing",
     source:
-      "GET /api/session/<id>/loc. Node-local `file_changes` (agent migration 103); pure logic internal/loc; seam internal/store/loc.go. Plan: docs/plans/lines-of-code-tracking-plan-2026-09-07.md.",
+      "GET /api/session/<id>/loc. Node-local `file_changes` (agent migration 103); pure logic internal/loc; seam internal/store/loc.go.",
     related: ["card.verbosity", "tile.loc_per_dollar"],
   },
   {
@@ -830,7 +830,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "column",
     title: "Cost › Cost",
     oneLiner: "Computed dollar cost for this row. Always derived from token counts × the model's pricing entry - neither Anthropic nor OpenAI returns cost_usd in their API responses.",
-    detail: "For api_turns rows (proxy): tokens × pricing-table[model]. For token_usage rows from OpenCode and Pi (which compute cost client-side and write it into their JSONL): the recorded estimated_cost_usd is used as-is. Every other JSONL adapter goes through the same tokens × pricing path. Pricing-table source-of-truth: docs/pricing-reference.md.",
+    detail: "For api_turns rows (proxy): tokens × pricing-table[model]. For token_usage rows from OpenCode and Pi (which compute cost client-side and write it into their JSONL): the recorded estimated_cost_usd is used as-is. Every other JSONL adapter goes through the same tokens × pricing path. Pricing: https://superbased.app/docs/guides/token-cost-tracking.",
     related: ["calc.cost_math", "glossary.cost_provenance"],
   },
   {
@@ -861,7 +861,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "column",
     title: "Cost › Reliab.",
     oneLiner: "Trust level for this row's tokens - accurate / approximate / unreliable / unknown - plus a \"~\" suffix when pricing was inferred via family-prefix fallback.",
-    detail: "Token-side reliability: accurate = proxy-captured (provider usage envelope verbatim); approximate = JSONL-captured but the client recorded the provider's usage envelope intact; unreliable = JSONL streaming-time placeholders (Claude Code, ~10% off output); unknown = no pricing-table entry. Pricing-side: if the value carries a \"~\", the rate came from a family-prefix fallback (e.g. claude-opus-4-99 inheriting claude-opus-4 family rates) rather than an exact-match table entry - hover the tilde for details. Pricing source-of-truth: docs/pricing-reference.md.",
+    detail: "Token-side reliability: accurate = proxy-captured (provider usage envelope verbatim); approximate = JSONL-captured but the client recorded the provider's usage envelope intact; unreliable = JSONL streaming-time placeholders (Claude Code, ~10% off output); unknown = no pricing-table entry. Pricing-side: if the value carries a \"~\", the rate came from a family-prefix fallback (e.g. claude-opus-4-99 inheriting claude-opus-4 family rates) rather than an exact-match table entry - hover the tilde for details. Pricing: https://superbased.app/docs/guides/token-cost-tracking.",
     related: ["metric.reliability", "glossary.cost_provenance"],
   },
   {
@@ -1490,15 +1490,15 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "How cost is calculated",
     oneLiner: "Cost is always computed locally from token_count × pricing_table[model]. Neither Anthropic nor OpenAI returns cost_usd in API responses, so we never have provider-billed ground truth from the proxy.",
-    detail: "The pricing table source of truth lives in docs/pricing-reference.md (Anthropic + OpenAI + Gemini + others). Two adapters - OpenCode and Pi - capture cost client-side from the client's own usage envelope and write it into estimated_cost_usd; for those rows the cost engine uses the recorded value as-is. Every other path goes through tokens × rates. When a model isn't in the pricing table the engine falls back to the family prefix (claude-opus-4-7 inherits claude-opus-4 family rates); the Cost-tab Reliability column flags fallback rows with a \"~\" so you know the rate isn't exact-match.",
+    detail: "How prices are chosen (Anthropic + OpenAI + Gemini + others): https://superbased.app/docs/guides/token-cost-tracking. Two adapters - OpenCode and Pi - capture cost client-side from the client's own usage envelope and write it into estimated_cost_usd; for those rows the cost engine uses the recorded value as-is. Every other path goes through tokens × rates. When a model isn't in the pricing table the engine falls back to the family prefix (claude-opus-4-7 inherits claude-opus-4 family rates); the Cost-tab Reliability column flags fallback rows with a \"~\" so you know the rate isn't exact-match.",
     related: ["column.cost.cost", "column.cost.reliab", "glossary.proxy_vs_jsonl"],
   },
   {
     id: "glossary.cross_platform_tool_calling",
     category: "glossary",
     title: "Cross-platform tool calling (MCP sharing)",
-    oneLiner: "Every connected AI client can read every other client's recorded actions through the observer's 12-tool MCP server.",
-    detail: "When `observer init` registers the MCP server with Claude Code, Cursor, and Codex, each client gains 12 tools that query the observer's unified database - not their own scoped slice. Concretely: when Cursor invokes `get_last_test_result`, the answer can be a `go test` run that Claude Code executed an hour earlier. When Codex calls `check_file_freshness(\"auth.ts\")`, the freshness signal reflects every adapter that touched the file. The 12 cross-querying MCP tools: check_file_freshness, get_file_history, get_session_summary, search_past_outputs, get_last_test_result, get_failure_context, get_action_details, check_command_freshness, get_session_recovery_context, get_project_patterns, get_cost_summary, get_redundancy_report. Two layers ship today: (1) read-side via MCP queries - any agent reads any other agent's recorded data; (2) write-side via patterns - Derive patterns now (or `observer patterns`) derives `cross_tool_file` patterns and Generate suggestions (or `observer suggest`) writes them into CLAUDE.md/AGENTS.md/.cursorrules so future sessions inherit. Not yet shipped: synthetic-tool-result injection (replaying agent A's tool execution into agent B's conversation context) - the MCP query model gives you the result on-demand instead.",
+    oneLiner: "Every connected AI client can read every other client's recorded actions through the observer's MCP server.",
+    detail: "When `observer init` registers the MCP server with Claude Code, Cursor, and Codex, each client gains tools that query the observer's unified database - not their own scoped slice. Concretely: when Cursor invokes `get_last_test_result`, the answer can be a `go test` run that Claude Code executed an hour earlier. When Codex calls `check_file_freshness(\"auth.ts\")`, the freshness signal reflects every adapter that touched the file. Cross-querying MCP tools include check_file_freshness, get_file_history, get_session_summary, search_past_outputs, get_last_test_result, get_failure_context, get_action_details, check_command_freshness, get_session_recovery_context, get_project_patterns, get_cost_summary, get_redundancy_report. Two layers ship today: (1) read-side via MCP queries - any agent reads any other agent's recorded data; (2) write-side via patterns - Derive patterns now (or `observer patterns`) derives `cross_tool_file` patterns and Generate suggestions (or `observer suggest`) writes them into CLAUDE.md/AGENTS.md/.cursorrules so future sessions inherit. Not yet shipped: synthetic-tool-result injection (replaying agent A's tool execution into agent B's conversation context) - the MCP query model gives you the result on-demand instead.",
     related: ["glossary.tool", "column.pattern_type"],
   },
   {
@@ -1787,7 +1787,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Custom routing rules editor",
     oneLiner: "Edit [[routing.rules]] as TOML with a lint-gated save - a fragment that would fail the next daemon start is refused with the file untouched.",
-    detail: "Custom rules are §R6.3 rows appended AFTER the chosen template's rules; the composed table is walked top-down, first match wins (the Routing page shows the expanded result). The editor loads the current rules from config.toml in the same TOML dialect the file holds, validates on demand, and saves through the ONE config-write seam (PUT /api/config/section/routing) - the rules ride the same body as the section form, never a second write path.\n\nThe save gate runs three checks, identical between the Validate button and the save itself: (1) TOML parse, refusing stray keys outside [[routing.rules]] so pasted content is never silently dropped; (2) the exact shape checks config.Load applies at daemon start (rule names required, closed effort/entitlement vocabularies, budget-band bounds); (3) the policy compiler's 14-check lint over the COMPOSED policy - error-severity findings (unknown tiers, unreachable rules, bad reason codes) block, warnings show but don't.\n\nSaving replaces ALL custom rules - an empty editor clears them. The prior config.toml is kept at .bak (Settings → backup restore). Restart-honest: the daemon binds the policy at start. Worked examples live in docs/model-routing.md's recipe gallery.",
+    detail: "Custom rules are §R6.3 rows appended AFTER the chosen template's rules; the composed table is walked top-down, first match wins (the Routing page shows the expanded result). The editor loads the current rules from config.toml in the same TOML dialect the file holds, validates on demand, and saves through the ONE config-write seam (PUT /api/config/section/routing) - the rules ride the same body as the section form, never a second write path.\n\nThe save gate runs three checks, identical between the Validate button and the save itself: (1) TOML parse, refusing stray keys outside [[routing.rules]] so pasted content is never silently dropped; (2) the exact shape checks config.Load applies at daemon start (rule names required, closed effort/entitlement vocabularies, budget-band bounds); (3) the policy compiler's 14-check lint over the COMPOSED policy - error-severity findings (unknown tiers, unreachable rules, bad reason codes) block, warnings show but don't.\n\nSaving replaces ALL custom rules - an empty editor clears them. The prior config.toml is kept at .bak (Settings → backup restore). Restart-honest: the daemon binds the policy at start.",
     source: "GET /api/routing/policy · POST /api/routing/policy/lint · PUT /api/config/section/routing (RulesTOML)",
     related: ["glossary.settings_routing", "chart.routing_rules", "tab.routing"],
   },
@@ -1900,7 +1900,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Configure the on-demand retrieval tools and their audit log, and see whether MCP registration earns its ~1,900-token-per-turn schema overhead from your own numbers.",
     detail:
-      "The MCP section covers the four on-demand retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed): per-tool toggles, the shared file allow/deny lists, response caps, an optional tool allow-list, and the audit log. The 13 observability tools (get_cost_summary, search_past_outputs, …) ship whenever the observer MCP server is registered and are not filtered here.\n\nSaves are SOFT: every AI session spawns its own observer MCP server, which reads config at start - changes bind on the next session, no daemon restart, and running sessions keep what they spawned with.\n\nThe value meter underneath answers the standing question the advisor's mcp_overhead nudge asks once: registered MCP schemas cost ~1,900 tokens on EVERY turn, so are the tools being used enough to justify that? It compares retrieval-tool calls (from the audit log) against turn volume; ~3 calls per 100 turns is the worth-it line, matching the advisor exactly. Verdicts are honest about their blind spots: with the audit log disabled the meter reads 'no usage data', never 'unused' - silence then means invisibility, not absence.\n\nIf the verdict stays 'paying tax, zero calls' and you don't query observer mid-session, removing observer's MCP entry drops the tax (Settings → Connected tools → Set up → \"Remove Observer's wiring from <tool>\" → MCP server → Remove takes out only that entry; `observer uninstall --<tool> --skip-hooks` is the CLI twin); hooks, proxy capture, and the dashboard are all unaffected.",
+      "The MCP section covers the four on-demand retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed): per-tool toggles, the shared file allow/deny lists, response caps, an optional tool allow-list, and the audit log. The always-on observability tools (get_cost_summary, search_past_outputs, …) ship whenever the observer MCP server is registered and are not filtered here.\n\nSaves are SOFT: every AI session spawns its own observer MCP server, which reads config at start - changes bind on the next session, no daemon restart, and running sessions keep what they spawned with.\n\nThe value meter underneath answers the standing question the advisor's mcp_overhead nudge asks once: registered MCP schemas cost ~1,900 tokens on EVERY turn, so are the tools being used enough to justify that? It compares retrieval-tool calls (from the audit log) against turn volume; ~3 calls per 100 turns is the worth-it line, matching the advisor exactly. Verdicts are honest about their blind spots: with the audit log disabled the meter reads 'no usage data', never 'unused' - silence then means invisibility, not absence.\n\nIf the verdict stays 'paying tax, zero calls' and you don't query observer mid-session, removing observer's MCP entry drops the tax (Settings → Connected tools → Set up → \"Remove Observer's wiring from <tool>\" → MCP server → Remove takes out only that entry; `observer uninstall --<tool> --skip-hooks` is the CLI twin); hooks, proxy capture, and the dashboard are all unaffected.",
     related: ["glossary.connected_tools", "glossary.setup_wizard", "tab.settings"],
   },
   {
@@ -1966,7 +1966,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Settings - Secrets scrubbing section",
     oneLiner: "Redaction applied to captured tool output before anything is written to the database.",
-    detail: "superbased scrubs secrets from captured output BEFORE storage - the database never holds the raw value.\n\n• Scrubbing - default on. Built-in patterns cover common credential shapes: API keys (Anthropic, OpenAI, AWS, GitHub, …), bearer tokens, connection strings.\n• Extra patterns - your own regex additions, for org-specific shapes the built-ins can't know: internal token prefixes, license keys, hostnames. Comma-separated; each pattern's matches are replaced at capture time.\n\nScrubbing is capture-time and irreversible by design: rows written while a pattern was active stay scrubbed forever, and rows written before you added a pattern are NOT retroactively scrubbed (this node has no retroactive scrub; on an org server, `observer-org scrub-content` cleans what was already pushed, see docs/teams-operations.md). Restart required after saving.",
+    detail: "superbased scrubs secrets from captured output BEFORE storage - the database never holds the raw value.\n\n• Scrubbing - default on. Built-in patterns cover common credential shapes: API keys (Anthropic, OpenAI, AWS, GitHub, …), bearer tokens, connection strings.\n• Extra patterns - your own regex additions, for org-specific shapes the built-ins can't know: internal token prefixes, license keys, hostnames. Comma-separated; each pattern's matches are replaced at capture time.\n\nScrubbing is capture-time and irreversible by design: rows written while a pattern was active stay scrubbed forever, and rows written before you added a pattern are NOT retroactively scrubbed (this node has no retroactive scrub; on an org server, `observer-org scrub-content` cleans what was already pushed). Restart required after saving.",
     related: ["tab.settings", "tab.actions"],
   },
 
@@ -2022,7 +2022,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Enforce readiness",
     oneLiner: "The observe→enforce migration evidence: replay your captured history under the enforce projection and review what would block - before anything actually blocks.",
-    detail: "Click-to-run (a replay over up to 50k actions is too heavy to fire on every page view): GET /api/guard/simulate replays the chosen window against today's ON-DISK policy with a fresh engine - a dry run, nothing persists, the live guard is untouched; a saved-but-unrestarted policy edit is exactly what gets simulated. The table splits would-blocks per rule (deny/ask-class only, so flag-only noise doesn't inflate it); 'filter' jumps to those verdicts in the timeline, 'approve…' pre-fills a scoped exception. The noise-concentration check is a heuristic, not a gate: one rule carrying ≥50% of would-blocks usually means tuning beats enforcing. Honesty notes: the replay does not consult the Approvals register (live enforce blocks at most this much), and ask-class verdicts degrade to deny-with-reason on clients without a native ask. The full migration path - simulate → review → per-rule ramp → enable → monitor → rollback - is docs/guard-enforce-runbook.md. CLI parity: observer guard simulate --since 168h --enforce.",
+    detail: "Click-to-run (a replay over up to 50k actions is too heavy to fire on every page view): GET /api/guard/simulate replays the chosen window against today's ON-DISK policy with a fresh engine - a dry run, nothing persists, the live guard is untouched; a saved-but-unrestarted policy edit is exactly what gets simulated. The table splits would-blocks per rule (deny/ask-class only, so flag-only noise doesn't inflate it); 'filter' jumps to those verdicts in the timeline, 'approve…' pre-fills a scoped exception. The noise-concentration check is a heuristic, not a gate: one rule carrying ≥50% of would-blocks usually means tuning beats enforcing. Honesty notes: the replay does not consult the Approvals register (live enforce blocks at most this much), and ask-class verdicts degrade to deny-with-reason on clients without a native ask. The full migration path - simulate → review → per-rule ramp → enable → monitor → rollback - is on https://superbased.app/docs/guides/security-guard. CLI parity: observer guard simulate --since 168h --enforce.",
     source: "/api/guard/simulate?hours=&enforce=1",
     related: ["card.security_mode", "card.security_approvals", "chart.security_timeline", "glossary.guard_decisions"],
   },
@@ -2065,7 +2065,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Policy layers + editor",
     oneLiner: "Every policy source in effect - org bundle, your user file, per-project files - with lint findings, plus a lint-gated editor for the user layer.",
-    detail: "Effective policy = merge(org bundle, user file, project file, built-ins), and strictness is one-way: a layer can escalate a verdict but never relax a stricter layer above it (org > user > project > builtin). Only the USER layer is editable here, deliberately: project files belong to their repos and are the least-trusted layer (the agent can edit them - R-161 flags exactly that), and the org bundle arrives Ed25519-signed from the org server. Saves run the exact strict parse `observer guard lint` runs - unknown keys, bad regexes, duplicate ids, rules that could never fire are all refused (HTTP 422) before anything lands on disk, and a file that lints clean is a file that loads with zero issues. The prior version is kept at <path>.bak; Restore swaps file and backup (lint-checked first), so a second restore undoes the first. Restart-honest: the daemon binds policy at start; hook processes read config per invocation and follow immediately. This editor and the PUT behind it are the only dashboard path that touches the file. CLI parity: observer guard lint / rules --effective; syntax reference docs/guard-policy-authoring.md.",
+    detail: "Effective policy = merge(org bundle, user file, project file, built-ins), and strictness is one-way: a layer can escalate a verdict but never relax a stricter layer above it (org > user > project > builtin). Only the USER layer is editable here, deliberately: project files belong to their repos and are the least-trusted layer (the agent can edit them - R-161 flags exactly that), and the org bundle arrives Ed25519-signed from the org server. Saves run the exact strict parse `observer guard lint` runs - unknown keys, bad regexes, duplicate ids, rules that could never fire are all refused (HTTP 422) before anything lands on disk, and a file that lints clean is a file that loads with zero issues. The prior version is kept at <path>.bak; Restore swaps file and backup (lint-checked first), so a second restore undoes the first. Restart-honest: the daemon binds policy at start; hook processes read config per invocation and follow immediately. This editor and the PUT behind it are the only dashboard path that touches the file. CLI parity: observer guard lint / rules --effective.",
     source: "/api/guard/policy",
     related: ["glossary.guard_rules", "card.security_enforce_readiness", "card.security_approvals", "glossary.settings_guard"],
   },
@@ -2277,7 +2277,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "metric",
     title: "Compliance evidence",
     oneLiner: "One-click auditor outputs: the §14.4 evidence pack, a SIEM export of the audit rows (jsonl/cef), and the full tamper-evidence chain walk - each with a download.",
-    detail: "Each button runs the matching CLI surface as an async job (the same registry as the backfill Run-Now buttons, so the page never blocks): Report assembles the §14.4 pack - effective policy at the period boundaries, the policy-change log, verdict statistics, the audit-chain verification result, the coverage matrix and the active-approval exception register (SOC 2 CC-series / NIST AU-2/AU-3/AU-9/AC-6 mapping in docs/guard-compliance.md). Export streams guard_events in chain order as JSONL or CEF for your SIEM's collector; the artifact lands under <db-dir>/exports/ and stays on this machine - the export path is file-based and pull-based by design, no network call is ever made. Verify walks every guard_events row recomputing each SHA-256 chain link; a found divergence reports as a FAILED job on purpose - the divergence detail is the evidence, and the download still serves it. CLI parity: observer guard report --period / export --format jsonl|cef / verify-audit.",
+    detail: "Each button runs the matching CLI surface as an async job (the same registry as the backfill Run-Now buttons, so the page never blocks): Report assembles the §14.4 pack - effective policy at the period boundaries, the policy-change log, verdict statistics, the audit-chain verification result, the coverage matrix and the active-approval exception register (SOC 2 CC-series / NIST AU-2/AU-3/AU-9/AC-6). Export streams guard_events in chain order as JSONL or CEF for your SIEM's collector; the artifact lands under <db-dir>/exports/ and stays on this machine - the export path is file-based and pull-based by design, no network call is ever made. Verify walks every guard_events row recomputing each SHA-256 chain link; a found divergence reports as a FAILED job on purpose - the divergence detail is the evidence, and the download still serves it. CLI parity: observer guard report --period / export --format jsonl|cef / verify-audit.",
     source: "/api/guard/evidence",
     related: ["tile.security.audit_chain", "card.security_approvals", "chart.security_timeline", "tab.security"],
   },
@@ -2340,7 +2340,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Guard rules (the R-1xx catalog)",
     oneLiner: "The built-in deterministic rule table - every rule has an ID, category, severity, an observe/enforce decision pair, a one-line definition, and remediation advice.",
-    detail: "Rule IDs like R-151 name rows in the built-in catalog, grouped by category: destructive (force-push, reset --hard, rm -rf …), boundary (reads/writes outside the project root; R-151 is a write into a DIFFERENT observed project's root - cross-project bleed), secrets (credential/profile locations), exfil (output egress shapes), pii (deterministic PII - credit card, SSN, IBAN, ... - typed into the developer's own prompt; R-190), posture (sandbox/yolo flags), mcp (server pinning), taint (untrusted-content flows), budget, and anomaly. Each rule carries two decisions - one for observe mode, one for enforce - plus the doc one-liner and advice you see when hovering a rule ID in the verdict timeline (served by /api/guard/rules). This install's effective rules: `observer guard rules` on the CLI; the built-in catalog: `observer guard rules --catalog`, or docs/guard-rules.md. User / project / org policy layers can ADD rules and tighten built-ins, but a lower-trust layer can never relax a built-in's decision.",
+    detail: "Rule IDs like R-151 name rows in the built-in catalog, grouped by category: destructive (force-push, reset --hard, rm -rf …), boundary (reads/writes outside the project root; R-151 is a write into a DIFFERENT observed project's root - cross-project bleed), secrets (credential/profile locations), exfil (output egress shapes), pii (deterministic PII - credit card, SSN, IBAN, ... - typed into the developer's own prompt; R-190), posture (sandbox/yolo flags), mcp (server pinning), taint (untrusted-content flows), budget, and anomaly. Each rule carries two decisions - one for observe mode, one for enforce - plus the doc one-liner and advice you see when hovering a rule ID in the verdict timeline (served by /api/guard/rules). This install's effective rules: `observer guard rules` on the CLI; the built-in catalog: `observer guard rules --catalog`. User / project / org policy layers can ADD rules and tighten built-ins, but a lower-trust layer can never relax a built-in's decision.",
     source: "/api/guard/rules (this install's effective rules, guard.RuleListing; ?catalog=1 for the built-ins)",
     related: ["tab.security", "chart.security_timeline", "glossary.guard_decisions"],
   },
@@ -2705,7 +2705,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "A checklist per backend: each card is one thing this machine needs, with its state and the one action the dashboard can take for it.",
     detail:
       "Pick a backend in the list; its next missing step is named beside it. Each card reads Done, Needed, Not checked yet, In progress, Blocked on this machine, Not needed here or Not allowed by your organization. The button on a card does exactly one thing: Turn on changes a setting or selects a module in place; Install, Start, Pull or Sign in in terminal opens a setup terminal in the dock where you watch it run (a password prompt is yours to answer); Copy command copies a command for you to run yourself; a key step shows a field to paste the key into. A card with no button is something Observer never changes for you (a kernel setting, a group, the OS version, an account) and its text says what to do. Check this machine runs the backend's own probe once and judges the steps Observer cannot see without running anything. Undo reverses only what this dashboard did for that step. On a machine your organization manages, a backend the organization does not allow shows every step as not allowed, and steps can also turn into copy-only guides when guided installs are switched off.",
-    source: "docs/sandboxed-terminals.md and docs/sandbox-backend-checklist.md (section B, setup and installation)",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_module", "glossary.terminals_sandbox_setup_enable", "glossary.terminals_sandbox_setup_hosted"],
   },
   {
@@ -2715,7 +2715,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "Each sandbox backend's driver is its own module; Turn on selects it in Settings > Components.",
     detail:
       "Every backend other than Bubblewrap is a module you opt into, and most are off in every edition until selected. Turn on selects the backend's module the same way Settings > Components does, and Undo removes it again (its data is kept). The Bubblewrap planners belong to the isolation engine module, which sandboxed terminals require. When your organization chooses the components on this machine, this step says so and cannot be changed here.",
-    source: "docs/sandboxed-terminals.md, section \"The isolation engine (component isolation)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_enable"],
   },
   {
@@ -2725,7 +2725,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The last step adds the backend to the sandbox backends list and turns sandbox support on when it is off.",
     detail:
       "Turn on appends the backend to the end of the backends list in the Sandbox isolation card (Terminals > Settings) and turns sandbox support on if it was off. The change takes effect in the running Observer at once, no restart: the next probe or launch reads it. Beta backends are never picked automatically; a launch uses one only when it names it (the New Terminal picker, or a launch that names the backend). Undo takes the backend off the list again, unless the list would then fall back to it anyway.",
-    source: "docs/sandboxed-terminals.md, section \"Enabling it\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_module"],
   },
   {
@@ -2735,7 +2735,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The Bubblewrap backend needs bwrap 0.4.0 or newer and a kernel that lets your user create user and network namespaces.",
     detail:
       "On Debian and Ubuntu the step installs the bubblewrap package with the system package manager in a setup terminal (it asks for your password, so it needs \"Let a setup step ask for your password\" in the Sandbox isolation card). On other distributions it is a guide: install bubblewrap with your own package manager, then press Re-check. User namespaces are a kernel security setting (for example Ubuntu's AppArmor restriction on unprivileged user namespaces, or a container host); Observer never changes it, and the step says so when it is refused. Once both are present, enabling the backend in the Sandbox isolation card takes effect without a restart.",
-    source: "docs/sandboxed-terminals.md, section \"Enabling it\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup", "glossary.terminals_sandbox_setup_enable"],
   },
   {
@@ -2745,7 +2745,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The container backends drive a Podman or Docker Engine inside this Linux through a local socket you own; Docker Desktop's VM is refused.",
     detail:
       "Rootless engines are preferred: on Debian and Ubuntu the step installs Podman, which runs containers as your own user, and then starts Podman's socket for your user (a systemd user unit, no password). Only a local socket is ever used: a remote or TCP endpoint, a symlinked path or a socket that changed identity is refused. A rootful Docker socket counts only when the backend allows rootful use, because membership of the docker group is root on this machine; Observer never adds you to that group (the step tells you the command if you accept that). Docker Desktop's VM is not a same-kernel engine and is refused.",
-    source: "docs/sandboxed-terminals.md, section \"Which engine, which socket\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_image", "glossary.terminals_sandbox_setup_gvisor"],
   },
   {
@@ -2755,7 +2755,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The container the agent runs in starts from an image pulled by its digest, never by a moving tag.",
     detail:
       "The step pulls the configured image (or Observer's signed default image, once one is published) in a setup terminal, by repository and digest only. Before anything is fetched it says the source and the declared size, and it stops a pull that grows past that size or runs over ten minutes, removing what it fetched. Nothing is pulled in the background: only this step, a launch you start or the pull command does it.",
-    source: "docs/sandboxed-terminals.md, section \"The default image on this machine (pull and revoked images)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_engine"],
   },
   {
@@ -2765,7 +2765,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The gVisor backend runs the container under gVisor's user-space kernel; it needs rootful Docker with runsc registered.",
     detail:
       "Install gVisor's runsc from gVisor's own release instructions (Observer only guides this step). Register it with Docker with host sockets open (the step shows the exact command; it edits Docker's daemon settings and asks for your password), then restart Docker, which stops every running container. The backend also needs rootful engine use allowed, because gVisor's Docker integration does not work rootless; with gVisor the boundary between the agent and this kernel is gVisor itself. It is beta and never picked automatically.",
-    source: "docs/sandboxed-terminals.md, section \"gVisor (oci-runsc, beta)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_engine"],
   },
   {
@@ -2775,7 +2775,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The Landlock-only backend needs a kernel with Landlock at the ABI it asks for; there is nothing to install.",
     detail:
       "The lightest Linux backend: no namespaces and no container, only a Landlock ruleset applied before the agent starts. It is for a host where Bubblewrap cannot run. The check reads the running kernel's Landlock ABI and names what it found; an older kernel (WSL2's reports ABI 7 today, below the default floor of 9) cannot use it, and upgrading the kernel is yours to do. It is beta and used only when a launch names it.",
-    source: "docs/sandboxed-terminals.md, section \"Landlock only (process_lite, beta)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup"],
   },
   {
@@ -2785,7 +2785,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The microVM backend runs the agent in its own kernel; it needs Cloud Hypervisor, virtiofsd, e2fsprogs and the signed guest images.",
     detail:
       "Cloud Hypervisor's pinned static release is downloaded into Observer's own tools folder after you agree to the version, size and checksum shown on the button, and checked against that checksum before it is placed. virtiofsd and e2fsprogs come from the system package manager on Debian and Ubuntu (a password step), or from your own package manager elsewhere. Nothing opens the hypervisor device, looks for a program or touches the network until the module is selected and the backend is listed.",
-    source: "docs/sandboxed-terminals.md, section \"microVM sandboxes (cloud-hypervisor, beta)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_kvm", "glossary.terminals_sandbox_setup_vm_images"],
   },
   {
@@ -2795,7 +2795,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The microVM backend needs a usable KVM device that your user can open; Observer never changes firmware, the hypervisor or your groups.",
     detail:
       "On a physical machine, turn on Intel VT-x or AMD-V in the firmware; on a VM, turn on nested virtualization. On WSL2, turn on nested virtualization in your Windows WSL settings and restart WSL. Your user must be able to open the device, usually through the kvm group: add yourself with your own administrator command, then sign out and back in. The check stops at the first thing missing and names it.",
-    source: "docs/sandboxed-terminals.md, section \"The probe\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_vm"],
   },
   {
@@ -2805,7 +2805,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The microVM boots only a signed root filesystem and guest helper, verified against keys compiled into Observer.",
     detail:
       "The set is a kernel, an initramfs, a read-only root filesystem with its verity tree, and a guest helper whose version equals this Observer's. The step imports it from a folder you name, verifying every file before any is installed (never a partial set), or fetches it once a set is published. Bytes arrive only on your action.",
-    source: "docs/sandboxed-terminals.md, section \"Image set and import\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_vm"],
   },
   {
@@ -2815,7 +2815,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The native Windows backends run the agent in a Microsoft Execution Containers process container, which needs a Windows 11 build that offers it.",
     detail:
       "The container tier comes with Windows itself: when this build does not offer it, the step says so and updating Windows is yours to do. The native code runs only in short-lived helper processes, never in Observer's daemon, and each Microsoft file is hash-checked and signature-checked before it is loaded. The AppContainer tier is weaker than the process container and is offered separately.",
-    source: "docs/sandboxed-terminals.md, section \"Native Windows: MXC ProcessContainer (mxc-process, beta)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_mxc_files"],
   },
   {
@@ -2825,7 +2825,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "Microsoft's two MXC files are checked against pins compiled into Observer; a signed manifest can only narrow what is accepted.",
     detail:
       "The step fetches the signed MXC file set, or imports it from a folder you name. A signed manifest may revoke the set, raise the minimum version or expire, but it can never name a file, hash or size the compiled pins do not, so newer MXC files still need a newer Observer. A manifest that fails verification is refused, never used.",
-    source: "docs/sandboxed-terminals.md, section \"The MXC files as a signed kind\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_mxc"],
   },
   {
@@ -2835,7 +2835,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "Seatbelt uses macOS's built-in sandbox and needs macOS 12 or newer; Apple container needs macOS 26 on Apple silicon and Apple's container CLI.",
     detail:
       "Seatbelt needs nothing installed: the system's own sandbox tool is part of macOS. Apple container needs Apple's signed installer package from Apple's container releases page: check its signature (the signer must be Apple) and install it with an administrator, then press Re-check. Starting its system service runs in a setup terminal; the first start downloads a Linux kernel from Apple's own release, which Observer cannot verify. The image is pulled by digest from the reference you configure. Both backends are beta and used only when a launch names them.",
-    source: "docs/sandboxed-terminals.md, section \"macOS sandboxes (beta): Seatbelt and Apple container\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup"],
   },
   {
@@ -2846,7 +2846,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "A hosted backend runs the agent in a box on a provider's machines (E2B, Modal, Vercel Sandbox, Docker Sandboxes, Daytona, InstaBox): you bring the account and its key, and agree to what leaves this machine.",
     detail:
       "Four steps: select the provider's module, store its key in this machine's keychain, agree to the upload, and enable the backend. Your project is uploaded to the provider's machines for each run (or the box clones the repository itself), model traffic and transcripts come back through your own daemon, and every box is deleted at the end of the run. Hosted backends are beta, never picked automatically, and run the host side on a Linux or WSL2 daemon only. The Hosted sandboxes card in Terminals > Settings shows each provider's credential source, the consent screen, today's box-minutes and leftover boxes.",
-    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted_account", "glossary.terminals_sandbox_setup_hosted_key", "glossary.terminals_sandbox_setup_hosted_consent"],
   },
   {
@@ -2856,7 +2856,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "You need your own account with the hosted provider; Observer never creates one.",
     detail:
       "This step has no button: sign up on the provider's own site. Observer cannot check an account by itself, so the step reads Not checked yet until a key is stored, and Done once one is. Billing is between you and the provider; the Hosted sandboxes card shows a dated estimate of today's box-minutes, and each provider row caps how many minutes a day this machine may use.",
-    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted_key"],
   },
   {
@@ -2867,7 +2867,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "Paste the key into the field on this step's card and press Store in this machine's keychain; it is sent once to the local daemon, never shown again and never logged.",
     detail:
       "Make the key in the provider's own dashboard, then paste it into the step's field (a provider that needs more than one value shows one field per value). The daemon stores it in this machine's keychain, bound to the endpoint of the region saved for that provider, and the field is cleared as soon as you press the button. Values per provider: E2B, E2B_API_KEY; Modal, MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; Vercel Sandbox, VERCEL_TOKEN, VERCEL_TEAM_ID and VERCEL_PROJECT_ID; Docker Sandboxes, DOCKER_SANDBOXES_TOKEN (an access token with Cloud Sandboxes access) and DOCKER_SANDBOXES_ID; Daytona, DAYTONA_API_KEY (Keys, Create Key, with the write and delete sandbox permissions); InstaBox, INSTABOX_API_KEY (with the machines write and delete scopes). The same form is on the Hosted sandboxes card, which can also replace or disconnect a stored key. Instead of storing a key you can set those variables in the daemon's environment; they are then read at use time and bound to the provider's default endpoint only. The key field only works from this computer's own dashboard: a remote view cannot store it. When guided installs are switched off, the card shows the command that asks for the same values in a terminal of your own instead. A key is never written to a config file, a log, an error or the box.",
-    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\" (step 3) and the Daytona section",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_consent"],
   },
   {
@@ -2878,7 +2878,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "A hosted box needs a way for the agent to reach its model provider: either this machine adds your key to the agent's requests, or the key is put in the box.",
     detail:
       "By default the model key stays on this machine. That works only when this machine can add it to the agent's requests: a key you stored for credential injection, or your organization's AI gateway. When neither is there, this step reads missing and offers one button, Put the API key in the box, which shows what it changes before it runs: the agent in the box can then read the key and use it directly. It is one setting for every hosted provider, so Undo changes it back for all of them and says which ones before it runs. Changing it reopens your consent, so you agree to the new way before the next upload.",
-    source: "docs/sandbox-credential-custody.md, section \"The four custody modes\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_key", "glossary.terminals_sandbox_setup_hosted_consent"],
   },
   {
@@ -2888,7 +2888,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "Before the first run you read exactly what leaves this machine for the provider and agree to it; any change to those facts asks again.",
     detail:
       "Pick the folder the consent is for, then open the consent screen: it runs in a setup terminal and lists the files that would be uploaded for that folder and the ones kept back. The step starts on the Observer workspace, a scratch folder that is not one of your projects, so agreeing here uploads nothing of a project; pick one of your projects instead to agree to uploading that project. Your home folder is never uploaded, so the step always needs a folder. The Hosted sandboxes card in Terminals > Settings records the same consent from the page: pick the project, read the list and press Agree. A clone-only launch (the box clones the repository itself, nothing is uploaded from here) asks for its own agreement, chosen on the same card. The agreement covers the provider, endpoint, region, credential source, network tier, capture, upload scope and the spend caps; changing any of them asks again.",
-    source: "docs/sandboxed-terminals.md, section \"Hosted sandboxes (beta): E2B, Modal and Vercel Sandbox\" (step 4)",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_key", "glossary.default_workspace"],
   },
   {
@@ -2899,7 +2899,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "A scratch folder Observer uses when a step needs a folder that is not one of your projects, so that work never lands in a project.",
     detail:
       "Observer sets the folder up when it starts (and when you run observer init) if it is missing or empty: it creates it, writes a small .observer-workspace marker file and makes it its own git repository, because the hosted consent screen lists a repository's files. The marker is how Observer tells the folder apart from your projects; it never changes anything else in the folder, never sets up a folder that already holds files without the marker, and never touches a repository it did not create. Unless you choose another one it is the observer-workspace folder in your home folder. Change it on the Default workspace card in Terminals > Settings (also under Settings > Terminal): you see the exact config.toml change first, and the folder is set up when you save. Use the built-in folder puts it back. The folder must be a full path and must not be your home folder or a folder that holds it, a drive root, inside Observer's own data folder (.observer in your home folder), inside another git repository, a folder that holds your projects, or a folder that already holds files without the marker. Without git installed the folder is created but not set up, and the consent step does not start on it. Its first user is the hosted sandbox consent step, which starts on it so a consent never defaults to a real project; agreeing there sends only the marker file. It is not added to the New Terminal folder allow-list: launching an agent or a shell there still needs the folder in Folder Selection.",
-    source: "docs/sandboxed-terminals.md, section \"Default workspace\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted_consent"],
   },
   {
@@ -2909,7 +2909,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The OpenShell backend needs native Linux with Landlock ABI 3 or newer, Docker Engine, and OpenShell v0.1.6 installed root-owned.",
     detail:
       "WSL2 is refused before any OpenShell command runs (its seccomp profile breaks OpenShell's supervisor); macOS and Windows have no OpenShell backend. Install OpenShell (openshell and openshell-gateway) as OpenShell's own instructions describe; Observer only guides this step. Docker access through the docker group is root-equivalent on this machine, and Observer never adds you to it.",
-    source: "docs/sandbox-openshell.md, section \"What you need\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_openshell_gateway"],
   },
   {
@@ -2919,7 +2919,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "By default Observer runs its own private OpenShell gateway under your systemd user manager, on a loopback port of its own.",
     detail:
       "The private gateway never reads or switches your own OpenShell gateway or its settings, and its images are pinned by digest. It runs under your systemd user manager, which needs a user session; on a machine you do not stay signed in to, enabling lingering for your user keeps it running. You can point the backend at your own gateway instead (the external gateway mode).",
-    source: "docs/sandbox-openshell.md, section \"Managed gateway mode (the default)\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_openshell"],
   },
   {
@@ -2929,7 +2929,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The org-hosted backend runs boxes on your organization's own gateway; there is no provider key, you sign this machine in once.",
     detail:
       "It is offered only on a machine your organization manages whose enrolment holds the sandboxed terminals authority, and only to the teams the organization allows. The step opens the sign-in in a setup terminal: it prints a page on your organization's dashboard and a short code; open the page, sign in, and type the code. The grant lasts what your organization sets (12 hours by default). Each run then gets a short-lived token; model traffic and hooks travel through this laptop, which must stay online for the run.",
-    source: "docs/sandbox-openshell-org.md, section \"Turning it on\"",
+    source: "https://superbased.app/docs/guides/terminals, section \"Sandboxed terminals (opt-in)\"; `observer sandbox status` lists what this machine can run",
     related: ["glossary.terminals_sandbox_setup_hosted"],
   },
   {
@@ -2939,7 +2939,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner: "The person or account behind a request to an app you build, as the app names it with the SDK's user option.",
     detail:
       "An end user is personal data. This machine stores it as the app sent it. It leaves this machine when the app's data also goes to your organization: an SDK destination of online or both (Settings > AI Apps), or an AI apps share your organization turned on. Your organization's dashboard then shows the same end users. A trace without an end user is counted on its own.",
-    source: "docs/plans/plane-a-sdk-buildout/contracts/destination.md",
+    source: "https://superbased.app/docs/sdk/destination",
   },
 ];
 // The registry as the dashboard shows it: verbatim normally, the token-usage

@@ -159,7 +159,7 @@ func TestListStaffActionsFiltered(t *testing.T) {
 	now := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 	e := enrolTestStaff(t, s, staffauth.RoleOps, now)
 	orgA, orgB := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
-	in, err := staffauth.ValidateAvailabilityInput("org_controls", orgA, []byte(`{"ingest":{"mode":"pause"}}`))
+	in, err := staffauth.ValidateAvailabilityInput("org_controls", orgA, []byte(`{"org":"`+orgA+`","ingest":{"mode":"pause"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

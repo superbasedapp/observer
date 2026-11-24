@@ -7,7 +7,7 @@
 import {
   ISOLATION_AUTO,
   ISOLATION_NONE,
-  backendNotes,
+  offerNotes,
   isolationChoiceSummary,
   isolationOptions,
   launchBackend,
@@ -104,7 +104,7 @@ export type IsolationPickerProps = {
   disabled: boolean;
   reason: string | null;
   chip: string | null;
-  /** The daemon's sentences about the chosen row (backendNotes). */
+  /** The notes about the chosen row (offerNotes: the image note, then the daemon's sentences). */
   notes: string[];
   /** The offered rows that cannot run here, each with its reason. */
   unavailable: UnavailableRow[];
@@ -134,7 +134,7 @@ export function isolationPickerProps(
     disabled: reason !== null,
     reason,
     chip: isolationChoiceSummary(probe, choice),
-    notes: backendNotes(chosen),
+    notes: offerNotes(chosen),
     unavailable: unavailableRows(probe),
   };
 }

@@ -1,9 +1,10 @@
 # Cloud Intelligence — Azure staging IaC
 
 > **Historical (2026-11-11).** Azure is gone since the Azure exit on
-> 2026-10-19 (D-775, D-777): no Azure estate exists, and the hosted service
-> runs from `deploy/cloud-box` on Hetzner (D-838, D-843, D-864; see
-> `docs/cloud-intelligence.md`). This directory and `cloudintel-azure.sh` are
+> 2026-10-19 (D-775, D-777): no Azure estate exists. The hosted service
+> ran from `deploy/cloud-box` on Hetzner (D-838, D-843, D-864) and runs on
+> OVH app-0 since about 21:40 UTC on 2026-11-14 (L-107; see
+> `docs/cloud-intelligence.md` and `docs/infrastructure-inventory.md`). This directory and `cloudintel-azure.sh` are
 > kept as the dated record of the Azure substrate; nothing here describes how
 > the service runs today. The `patch-worker-scale` verb's patch file
 > (`deploy/cloudintel/worker-scale-patch.yaml`) was deleted as a dead Azure

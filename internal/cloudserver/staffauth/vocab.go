@@ -46,6 +46,15 @@ const (
 	VerbTeamAllowlistAdded Verb = "team_allowlist.added"
 	// VerbTeamAllowlistRemoved: a team create allow-list entry was removed.
 	VerbTeamAllowlistRemoved Verb = "team_allowlist.removed"
+	// VerbAvailabilityIssueRequested: a staff member asked the control plane
+	// to issue the availability envelope composed from the inputs they
+	// previewed (cloud 0154); written in the same transaction as the
+	// request. The worker signs, stores and delivers it.
+	VerbAvailabilityIssueRequested Verb = "availability.issue_requested"
+	// VerbAvailabilityIssueCancelled: a staff member cancelled a pending
+	// issue request (cloud 0154; it becomes failed with error class
+	// cancelled); written in the same transaction as the cancel.
+	VerbAvailabilityIssueCancelled Verb = "availability.issue_cancelled"
 )
 
 // KnownVerbs lists every verb.
@@ -53,7 +62,8 @@ var KnownVerbs = []Verb{
 	VerbStaffCreated, VerbEnrolmentMinted, VerbCredentialRegistered,
 	VerbCredentialRevoked, VerbSessionStarted, VerbSessionEnded, VerbAvailabilitySet,
 	VerbAvailabilityDeleted, VerbActionRefused, VerbSupportSignIn,
-	VerbTeamAllowlistAdded, VerbTeamAllowlistRemoved,
+	VerbTeamAllowlistAdded, VerbTeamAllowlistRemoved, VerbAvailabilityIssueRequested,
+	VerbAvailabilityIssueCancelled,
 }
 
 // Known reports whether v is in the vocabulary.

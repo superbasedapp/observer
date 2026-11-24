@@ -208,17 +208,17 @@ func checkCodexConfigTOMLBaseURL(codexHomeRootsList []string, proxyURL, profile 
 		switch m.Status {
 		case configTOMLOK:
 			warnings = append(warnings, fmt.Sprintf(
-				"observer codex: %s sets openai_base_url=%q but the proxy is %s. Codex 0.130+ silently drops the -c openai_base_url override (V6-2); update the file or expect 0 captures. See docs/codex-shared-app-server-gotcha.md.",
+				"observer codex: %s sets openai_base_url=%q but the proxy is %s. Codex 0.130+ silently drops the -c openai_base_url override; update the file or expect 0 captures. See https://superbased.app/docs/setup/codex.",
 				m.ConfigPath, m.CurrentValue, m.WantURL,
 			))
 		case configTOMLMissingKey:
 			warnings = append(warnings, fmt.Sprintf(
-				"observer codex: %s has no openai_base_url; codex 0.130+ silently drops the -c override (V6-2). Add `openai_base_url = %q` to the file or expect 0 captures. See docs/codex-shared-app-server-gotcha.md.",
+				"observer codex: %s has no openai_base_url; codex 0.130+ silently drops the -c override. Add `openai_base_url = %q` to the file or expect 0 captures. See https://superbased.app/docs/setup/codex.",
 				m.ConfigPath, m.WantURL,
 			))
 		case configTOMLMissingFile:
 			warnings = append(warnings, fmt.Sprintf(
-				"observer codex: %s does not exist; codex 0.130+ silently drops the -c openai_base_url override (V6-2). Create the file with `openai_base_url = %q` or expect 0 captures. See docs/codex-shared-app-server-gotcha.md.",
+				"observer codex: %s does not exist; codex 0.130+ silently drops the -c openai_base_url override. Create the file with `openai_base_url = %q` or expect 0 captures. See https://superbased.app/docs/setup/codex.",
 				m.ConfigPath, m.WantURL,
 			))
 		case configTOMLProviderMismatch:

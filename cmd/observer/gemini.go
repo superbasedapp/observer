@@ -59,7 +59,7 @@ func newGeminiCmd() *cobra.Command {
 			"session files instead.\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via gemini's -i/--prompt-interactive\n" +
-			"flag (delivery=inject_prompt). See docs/session-handoff.md.\n\n" +
+			"flag (delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to gemini. Use\n" +
 			"`--` to separate observer flags from gemini flags. NEVER touches\n" +
 			"the API key. Requires a running observer proxy (`observer start`).",
@@ -180,7 +180,7 @@ func newGeminiCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&binPath, "gemini-path", "", "Path to the gemini binary (default: resolve `gemini` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via gemini's -i flag (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via gemini's -i flag (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

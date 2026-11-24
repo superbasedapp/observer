@@ -57,7 +57,7 @@ const STEPS: StepText[] = [
     id: "mcp",
     title: "MCP server",
     blurb:
-      "On-demand project-knowledge queries inside the tool (13 observer tools).",
+      "On-demand project-knowledge queries inside the tool.",
     note: "Honest trade-off: the registered tool schemas add roughly 1,800 tokens to every turn. Worth it if you use the queries; skip this step if unsure - everything else works without it.",
     action: "Register MCP server",
     body: (tool, force, dry_run) => ({ tool, force, dry_run }),

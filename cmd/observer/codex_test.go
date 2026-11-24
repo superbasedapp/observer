@@ -216,7 +216,7 @@ func TestEmitPreflightWarning_OneLine(t *testing.T) {
 		"PID 35388 (vscode-extension)",
 		"--exclusive",
 		"--no-app-server-check",
-		"docs/codex-shared-app-server-gotcha.md",
+		"https://superbased.app/docs/setup/codex",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("warning missing %q: %s", want, s)

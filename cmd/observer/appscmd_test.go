@@ -430,8 +430,10 @@ func TestAppsOnWithADaemonReportsABindFailure(t *testing.T) {
 }
 
 // TestAppsOnWithADaemonWithoutTheSeam: a daemon older than the seam (404)
-// or a process without it (501) gets "restart `observer start` to finish";
-// the config is written and nothing is restarted.
+// or a process without it (501) is told to finish with `observer service
+// restart`, the safe restart that takes the proxy routes off first and puts
+// them back (SR-12, docs/daemon-restart-runbook.md); the config is written
+// and nothing is restarted.
 func TestAppsOnWithADaemonWithoutTheSeam(t *testing.T) {
 	skipWithoutObs(t)
 	for name, set := range map[string]func(*fakeAppsDaemon){
@@ -447,8 +449,10 @@ func TestAppsOnWithADaemonWithoutTheSeam(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v\n%s", err, out)
 			}
-			if !strings.Contains(out, "Restart `observer start` to finish") || !strings.Contains(out, "Nothing was restarted.") {
-				t.Fatalf("output:\n%s", out)
+			for _, want := range []string{"Restart the daemon to finish: observer service restart", "takes the proxy routes off first", "Nothing was restarted."} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output lacks %q:\n%s", want, out)
+				}
 			}
 			if strings.Count(out, "Turning on AI Apps") != 1 {
 				t.Fatalf("asked twice:\n%s", out)

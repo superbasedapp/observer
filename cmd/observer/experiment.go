@@ -30,7 +30,7 @@ func newExperimentCmd() *cobra.Command {
 			"cache causes, compression savings). ADVISORY measurement tooling:\n" +
 			"experiments select profiles exactly like assignments do - the master\n" +
 			"compression switch and every safety invariant stay untouched.\n\n" +
-			"Methodology (docs/plans/profile-content-refresh-ab-plan-2026-06-10.md):\n" +
+			"Methodology:\n" +
 			"single-variable candidates, n>=8 sessions per arm before believing a\n" +
 			"delta, and a candidate that wins on $ but degrades cache health fails.",
 	}

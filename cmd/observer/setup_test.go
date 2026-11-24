@@ -140,7 +140,7 @@ func TestSetupInstallNamesTheRestartWhenOurDaemonRuns(t *testing.T) {
 	if !errors.As(err, &ec) || int(ec) != setupExitRestartNotice {
 		t.Fatalf("err = %v, want exit code %d", err, setupExitRestartNotice)
 	}
-	for _, want := range []string{"pid 4242", "previous version", "route off first"} {
+	for _, want := range []string{"pid 4242", "previous version", setupRestartHint()} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

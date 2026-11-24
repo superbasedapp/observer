@@ -147,8 +147,8 @@ func servingDaemonForDefaultConfig() (int, bool) {
 // started by hand, or one an update left outside the agent.
 func untrackedDaemonError(pid int) error {
 	return fmt.Errorf("observer service stop: observer pid %d still serves this node's database outside the LaunchAgent "+
-		"(started by hand, or left running by an update), so the node is NOT stopped; stop it with `kill %d` "+
-		"(take any tool's proxy route off first: docs/daemon-restart-runbook.md), then `observer service start` runs it under the agent", pid, pid)
+		"(started by hand, or left running by an update), so the node is NOT stopped; stop it with `kill %d` between AI turns "+
+		"(its proxy stops answering until it runs again), then `observer service start` runs it under the agent", pid, pid)
 }
 
 // launchdLoaded reports whether the agent is loaded in the user's domain.
@@ -216,8 +216,8 @@ func runLaunchdInstall(opts serviceInstallOptions, d launchdDeps) error {
 	switch {
 	case loaded:
 		fmt.Fprintln(opts.stdout, "The agent is loaded and keeps its current process until it is restarted.\n"+
-			"The daemon is the proxy: restart it when no AI session uses the proxy, with the route off first\n"+
-			"(docs/daemon-restart-runbook.md), with: observer service restart")
+			"The daemon is the proxy; restart it with: observer service restart\n"+
+			"(it takes the proxy routes off first and puts them back once the new daemon answers)")
 	case opts.now && !opts.upgrade:
 		if err := d.run(service.Launchctl("bootstrap", service.LaunchdDomain(d.uid), plistPath)); err != nil {
 			return fmt.Errorf("launchctl bootstrap: %w", err)

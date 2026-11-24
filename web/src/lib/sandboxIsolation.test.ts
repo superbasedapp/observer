@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   backendNotes,
   backendState,
+  noPublishedImageNote,
+  offerNotes,
   captureLabel,
   gatewayModeLabel,
   unavailableRows,
@@ -141,6 +143,23 @@ test("backendNotes renders the daemon's sentences in order: prerequisite, hint, 
     backendNotes({ ...bwrap, prerequisite: "P", hint: "H", disclosures: [{ id: "a", text: "D1" }, { id: "b", text: "" }, { id: "c", text: "D2" }] }),
     ["P", "H", "D1", "D2"],
   );
+});
+
+test("offerNotes puts the no-published-image sentence first on the rows that need a user-built image (SR-26)", () => {
+  for (const id of ["oci-runc", "oci-runsc", "apple-container", "cloud-hypervisor"]) {
+    const note = noPublishedImageNote(id);
+    assert.match(note, /does not publish/, id);
+    assert.match(note, /build/, id);
+    assert.deepEqual(offerNotes({ ...bwrap, id, prerequisite: "P" }), [note, "P"], id);
+  }
+  // A row with no image of its own (a process sandbox, a hosted box) and no
+  // row at all get only the daemon's sentences.
+  for (const id of ["bwrap", "e2b", "openshell"]) {
+    assert.equal(noPublishedImageNote(id), "", id);
+    assert.deepEqual(offerNotes({ ...bwrap, id, hint: "H" }), ["H"], id);
+  }
+  assert.equal(noPublishedImageNote(undefined), "");
+  assert.deepEqual(offerNotes(undefined), []);
 });
 
 test("gatewayModeLabel names the closed modes and passes an unknown one through", () => {

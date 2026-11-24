@@ -28,7 +28,7 @@ checks the cost at Haiku 5.5's rates.
 ## Install
 
 Node 22 (the file is plain `.ts`, run with Node's built-in type
-stripping). The SDK is not on npm yet: `package.json` installs it from
+stripping). The examples test the SDK beside them: `package.json` installs it from
 this checkout (`file:../../../../sdk/typescript`). Build the SDK once
 first; `npm install` here alone fails with `Cannot find module
 'typescript/bin/tsc'`, because npm does not install a linked folder's

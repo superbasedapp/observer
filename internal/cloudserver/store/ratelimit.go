@@ -45,7 +45,7 @@ func (s *Store) AllowRateLimit(ctx context.Context, bucket, key string, limit in
 		allowed    bool
 		retryAfter time.Duration
 	)
-	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	err := s.withCounterTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var retryMS int64
 		if err := tx.QueryRow(ctx,
 			`SELECT allowed, retry_after_ms
@@ -68,6 +68,19 @@ func (s *Store) AllowRateLimit(ctx context.Context, bucket, key string, limit in
 		return false, 0, err
 	}
 	return allowed, retryAfter, nil
+}
+
+// withCounterTx runs the counter call in the store's own system-style
+// transaction: WithStaff for the staff process's store (bound to sbci_staff,
+// which holds EXECUTE on sbci_rate_limit since cloud 0076 but not on
+// sbci_current_account, so WithSystem's no-tenant check always failed there
+// and every staff route answered rate_limit_unavailable: staff console e2e
+// finding SC-1), WithSystem for every other role.
+func (s *Store) withCounterTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	if s.appRole == RoleStaff {
+		return s.WithStaff(ctx, fn)
+	}
+	return s.WithSystem(ctx, fn)
 }
 
 // hashRateLimitKey keeps raw IP, device, and account identifiers out of the

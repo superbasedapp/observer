@@ -3,7 +3,8 @@
 // for the seat sync (it implements seatbilling.API), POST
 // /customers/{id}/portal-sessions for the portal's billing link, and POST
 // /subscriptions/{id}/cancel (effective immediately) for an org deletion's
-// cancel_billing step (FR-1). Nothing else.
+// cancel_billing step (FR-1) and an account deletion's cancellation of the
+// account's live subscriptions (ORGDEL-7). Nothing else.
 //
 // The base URL table (client.go baseRules) names Paddle's sandbox API, its
 // live API and a loopback test server. A key must belong to the base URL's

@@ -37,13 +37,26 @@ type Subscription struct {
 	Status string
 }
 
-// Live reports a subscription still billing (the 0090 live-slot rule).
+// Live reports a subscription that holds a live slot and grants a paid plan
+// (the 0090 live-slot rule). It is NOT the test for "Paddle may still bill
+// it": a refunded or charged-back subscription is not Live but still renews
+// at Paddle (MayBill).
 func (s Subscription) Live() bool {
 	switch s.Status {
 	case "", "canceled", "refunded", "charged_back":
 		return false
 	}
 	return s.ID != ""
+}
+
+// MayBill reports a subscription Paddle may still charge, so a deletion that
+// drops its row must cancel it first: every stored status but canceled. A
+// full refund or chargeback revokes the plan but does not cancel the Paddle
+// subscription (FR-7, store/paddle_lifecycle.go; the go-live runbook 5c:
+// "a refund does not cancel it"), and Paddle renews it at the next period.
+// No subscription id or no status is nothing to cancel.
+func (s Subscription) MayBill() bool {
+	return s.ID != "" && s.Status != "" && s.Status != "canceled"
 }
 
 // OrgFacts is what the steps read about an org.
@@ -425,13 +438,15 @@ func (dr *Driver) orgStep(ctx context.Context, r OrgRequest, now time.Time) Outc
 	return block("unknown_step")
 }
 
-// cancelBilling cancels a live subscription through the billing seam.
+// cancelBilling cancels, through the billing seam, a subscription Paddle may
+// still bill (Subscription.MayBill: a live one, and a refunded or
+// charged-back one, which Paddle still renews).
 func (dr *Driver) cancelBilling(ctx context.Context, r OrgRequest, now time.Time) Outcome {
 	f, err := dr.d.Orgs.OrgFacts(ctx, r.OrgID)
 	if err != nil {
 		return retry("org_facts", err)
 	}
-	if f.Subscription.Live() {
+	if f.Subscription.MayBill() {
 		if dr.d.Billing == nil {
 			return block(ReasonBillingSeamUnwired)
 		}
@@ -719,8 +734,8 @@ type Preview struct {
 	Steps []Step
 	// Window is the cooling-off window an owner request opened now gets.
 	Window time.Duration
-	// WillCancelSubscription reports a live subscription the cancel_billing
-	// step would cancel.
+	// WillCancelSubscription reports a subscription the cancel_billing step
+	// would cancel (Subscription.MayBill).
 	WillCancelSubscription bool
 	// BillingWired and IdentityWired report the seams.
 	BillingWired bool
@@ -735,7 +750,7 @@ func (dr *Driver) PreviewOrg(ctx context.Context, orgID string, lastSeatDay time
 		return p, fmt.Errorf("orgdeletion.PreviewOrg: %w", err)
 	}
 	p.Facts = f
-	p.WillCancelSubscription = f.Subscription.Live()
+	p.WillCancelSubscription = f.Subscription.MayBill()
 	p.Window = CoolingOff(CoolingFacts{Origin: OriginOwner, LiveSubscription: f.Subscription.Live(), LastSeatDay: lastSeatDay, Now: dr.d.Now()})
 	r, ok, err := dr.d.Orgs.OpenOrgRequest(ctx, orgID)
 	if err != nil {

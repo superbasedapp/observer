@@ -265,7 +265,7 @@ func newHermesCmd() *cobra.Command {
 	cmd.Flags().StringVar(&binPath, "hermes-path", "", "path to the hermes binary (default: looked up on PATH)")
 	cmd.Flags().StringVar(&upstream, "upstream", hermesDefaultUpstream, "the [proxy.upstreams] id to route through")
 	cmd.Flags().StringVar(&keyEnv, "key-env", hermesDefaultKeyEnv, "env var NAME hermes reads the provider key from (never written to disk)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open `hermes --tui` (doc-assisted - hermes' TUI has no initial-prompt seed). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open `hermes --tui` (doc-assisted - hermes' TUI has no initial-prompt seed). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

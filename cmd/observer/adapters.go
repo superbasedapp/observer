@@ -208,7 +208,7 @@ func renderAdapterMatrix(w io.Writer, caps []integration.Capability, disallowed 
 	fmt.Fprintln(tw, "\tinit) vs DEPRECATED / DEAD (never advertised - but ALWAYS")
 	fmt.Fprintln(tw, "\tstill captured; rows are never deleted). `observer doctor")
 	fmt.Fprintln(tw, "\t<tool>` prints the grounded reason verbatim. PROMPT = the")
-	fmt.Fprintln(tw, "\tprompt-submit intervention lane (docs/guard-prompt.md):")
+	fmt.Fprintln(tw, "\tprompt-submit intervention lane (`observer guard prompt --help`):")
 	fmt.Fprintln(tw, "\thook (a verified, wired dialect) / proxy-only (no hook, the")
 	fmt.Fprintln(tw, "\tproxy lane is the only path) / probe (a documented mechanism")
 	fmt.Fprintln(tw, "\twhose exact wire shape is unverified - `observer doctor")

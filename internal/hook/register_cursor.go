@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -55,6 +54,10 @@ func CursorEvents() []string {
 	return append([]string(nil), cursorEvents...)
 }
 
+// cursorHookEntry is Observer's own flat Cursor hook entry, as Observer
+// writes it. A registrar never decodes ~/.cursor/hooks.json into it: a
+// developer's entries carry fields it does not model (timeout, matcher,
+// type), so they stay raw (hookentries.go, NEW-06).
 type cursorHookEntry struct {
 	Command string `json:"command"`
 }
@@ -96,9 +99,13 @@ func (r *Registry) registerCursor() RegistrationResult {
 			return res
 		}
 	}
-	hooks := map[string][]cursorHookEntry{}
-	if existing, ok := settings["hooks"]; ok {
-		_ = json.Unmarshal(existing, &hooks)
+	// NEW-06: every entry stays raw, so a field Observer does not write (a
+	// developer's timeout, matcher or type) survives the rewrite, and a
+	// hooks member Observer cannot read is refused, never overwritten.
+	hooks, err := decodeHookEvents(settings["hooks"], flatHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.registerCursor", path, err)
+		return res
 	}
 	// FU-192: an entry in Observer's shape running another binary is kept.
 	if r.refusesForeignBinary(&res, "hook.registerCursor", path, identityContent, shapedHooksInText(settings["hooks"], "cursor")) {
@@ -113,16 +120,16 @@ func (r *Registry) registerCursor() RegistrationResult {
 	plan := r.managedHooksPlanFor("cursor", cursorEvents)
 	res.Warnings = append(res.Warnings, plan.warnings...)
 	for _, ev := range plan.drop {
-		kept := dropCursorEntries(hooks[ev], isObserverCursorEntry)
-		if len(kept) == len(hooks[ev]) {
+		kept, removed, _, err := flatHookEntries.removeHandlers(hooks.entries(ev), isObserverCursorEntry)
+		if err != nil {
+			res.Error = fmt.Errorf("hook.registerCursor: %w", err)
+			return res
+		}
+		if removed == 0 {
 			continue
 		}
 		res.HooksDropped = append(res.HooksDropped, ev)
-		if len(kept) == 0 {
-			delete(hooks, ev)
-		} else {
-			hooks[ev] = kept
-		}
+		hooks.set(ev, kept)
 	}
 	if plan.complete && len(res.HooksDropped) == 0 {
 		return plan.finish(res)
@@ -137,44 +144,34 @@ func (r *Registry) registerCursor() RegistrationResult {
 		// strip). Forward slashes survive any shell wrapping.
 		binPath := forwardSlashPath(r.opts.BinaryPath)
 		cmd := shellQuoteIfNeeded(binPath) + " hook cursor " + event + r.configFlagSuffixForwardSlash()
-		if shapeDrift[event] {
-			// T-847: an Observer entry with a field Observer never writes
-			// (a matcher, a timeout) is rewritten, never "already set";
-			// the typed decode above would otherwise drop the field without
-			// anyone hearing about it.
-			shapeRewrite(&res, event, cmd, cmd)
-			hooks[event] = dropCursorEntries(hooks[event], isObserverCursorEntry)
-		}
-		if slicesContainsCommand(hooks[event], cmd) {
-			res.AlreadySet = append(res.AlreadySet, event)
-			continue
-		}
-		// Stale-observer-args case: existing command is recognised as
-		// observer-written (by content-heuristic — see
-		// isObserverCursorEntry) but has different args. Covers
+		// Stale-observer-args case: an existing command recognised as
+		// observer-written (by content-heuristic, see
+		// isObserverCursorEntry) but with different args. Covers
 		// same-binary arg drift (e.g. missing --config after we add a
 		// new flag) AND cross-binary upgrade (e.g. an npm-bundled
 		// observer in node_modules being replaced by a fresh local
-		// build). Silently refresh; non-observer entries are still
-		// treated as conflicts via hasCursorConflict below.
-		if hasStaleObserverEntry(hooks[event], cmd) {
-			hooks[event] = filterStaleObserverEntries(hooks[event], cmd)
-		}
-		if r.refuses(res.ConfigPath, identityContent) && hasCursorConflict(hooks[event]) {
-			res.Error = fmt.Errorf("hook.registerCursor: event %s already has a non-observer hook; pass --force to overwrite", event)
+		// build). Silently refreshed; non-observer entries are still
+		// treated as conflicts. T-847: an Observer entry with a field
+		// Observer never writes (a matcher, a timeout) is rewritten,
+		// never "already set".
+		added, err := r.putObserverEntry(&res, hooks, flatEntryRule{
+			errPrefix: "hook.registerCursor", path: res.ConfigPath, event: event, cmd: cmd,
+			ours: isObserverCursorEntry, drift: shapeDrift[event],
+		})
+		if err != nil {
+			res.Error = err
 			return res
 		}
-		hooks[event] = append(hooks[event], cursorHookEntry{Command: cmd})
-		res.HooksAdded = append(res.HooksAdded, event)
+		if added {
+			res.HooksAdded = append(res.HooksAdded, event)
+		}
 	}
 
-	settings["version"] = json.RawMessage("1")
-	hookJSON, err := json.Marshal(hooks)
+	settings, err = cursorSettingsWith(settings, hooks)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerCursor: marshal hooks: %w", err)
+		res.Error = fmt.Errorf("hook.registerCursor: %w", err)
 		return res
 	}
-	settings["hooks"] = hookJSON
 
 	if r.opts.DryRun {
 		return plan.finish(res)
@@ -188,6 +185,72 @@ func (r *Registry) registerCursor() RegistrationResult {
 		return res
 	}
 	return plan.finish(res)
+}
+
+// flatEntryRule is one event of a flat (Cursor-shaped) hooks file to put
+// Observer's entry into: the command to write, the recogniser of
+// Observer's entries, whether its entry drifted from the canonical shape
+// (T-847), and stale, which also drops entries Observer owns that ours
+// does not recognise (a dangling debug shim, cursor-windows); nil drops
+// none.
+type flatEntryRule struct {
+	errPrefix, path, event, cmd string
+	ours                        func(string) bool
+	stale                       func(string) bool
+	drift                       bool
+}
+
+// putObserverEntry is the per-event write the flat Cursor registrars share
+// (native and the wsl.exe bridge): already set when Observer's exact
+// command is there in its canonical shape; otherwise Observer's stale
+// entries are dropped (every other entry keeps its data and order, NEW-06),
+// a developer's own entry blocks without --force, and Observer's entry is
+// appended. added reports a new entry.
+func (r *Registry) putObserverEntry(res *RegistrationResult, hooks *hookEvents, rule flatEntryRule) (added bool, err error) {
+	entries := hooks.entries(rule.event)
+	if rule.drift {
+		shapeRewrite(res, rule.event, rule.cmd, rule.cmd)
+		if entries, _, _, err = flatHookEntries.removeHandlers(entries, rule.ours); err != nil {
+			return false, fmt.Errorf("%s: %w", rule.errPrefix, err)
+		}
+	}
+	if flatHookEntries.hasCommand(entries, rule.cmd) {
+		res.AlreadySet = append(res.AlreadySet, rule.event)
+		return false, nil
+	}
+	if entries, _, _, err = flatHookEntries.removeHandlers(entries, func(c string) bool {
+		return c != rule.cmd && (rule.ours(c) || (rule.stale != nil && rule.stale(c)))
+	}); err != nil {
+		return false, fmt.Errorf("%s: %w", rule.errPrefix, err)
+	}
+	if r.refuses(rule.path, identityContent) && flatHookEntries.hasForeign(entries, rule.ours) {
+		return false, fmt.Errorf("%s: event %s already has a non-observer hook; pass --force to overwrite", rule.errPrefix, rule.event)
+	}
+	entry, err := observerFlatEntry(rule.cmd)
+	if err != nil {
+		return false, fmt.Errorf("%s: marshal entry: %w", rule.errPrefix, err)
+	}
+	hooks.set(rule.event, append(entries, entry))
+	return true, nil
+}
+
+// cursorSettingsWith returns settings carrying hooks (re-encoded only when
+// an event changed, so an unchanged member is left as read) and Cursor's
+// required "version": 1 when the file names no version (a version the file
+// already states is the developer's and stays).
+func cursorSettingsWith(settings map[string]json.RawMessage, hooks *hookEvents) (map[string]json.RawMessage, error) {
+	if _, ok := settings["version"]; !ok {
+		settings["version"] = json.RawMessage("1")
+	}
+	if len(hooks.dirty) == 0 {
+		return settings, nil
+	}
+	b, err := hooks.encode()
+	if err != nil {
+		return nil, fmt.Errorf("encode hooks: %w", err)
+	}
+	settings["hooks"] = b
+	return settings, nil
 }
 
 // IsOrphanedObserverCursorHTTPHook reports whether cmd is a stale
@@ -289,44 +352,6 @@ func commandArgsInclude(cmd, token string) bool {
 	return false
 }
 
-// hasCursorConflict reports whether any entry carries a command
-// that isn't recognised as observer-shaped. Used by the force-less
-// path to refuse silent overwrite of user-authored hooks.
-// Content-heuristic via isObserverCursorEntry so entries from a
-// different observer install path (npm bundle, cross-binary upgrade)
-// fall through to the refresh path rather than being flagged as
-// foreign.
-func hasCursorConflict(entries []cursorHookEntry) bool {
-	for _, e := range entries {
-		if !isObserverCursorEntry(e.Command) {
-			return true
-		}
-	}
-	return false
-}
-
-// slicesContainsCommand reports whether entries holds a hook with
-// Command == want.
-// dropCursorEntries removes every entry whose command ours recognises.
-func dropCursorEntries(entries []cursorHookEntry, ours func(string) bool) []cursorHookEntry {
-	out := entries[:0:0]
-	for _, e := range entries {
-		if !ours(e.Command) {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func slicesContainsCommand(entries []cursorHookEntry, want string) bool {
-	for _, e := range entries {
-		if e.Command == want {
-			return true
-		}
-	}
-	return false
-}
-
 // isObserverCursorEntry recognises a hook command as one previously
 // written by ANY observer cursor (Linux/default) registrar. The
 // ` hook cursor ` token sequence is the stable signature, regardless
@@ -360,37 +385,6 @@ func isObserverCursorEntry(cmd string) bool {
 	return true
 }
 
-// hasStaleObserverEntry reports whether entries holds an observer-
-// recognised hook command that doesn't match want (i.e. an old
-// registration — possibly from a different observer binary — that
-// needs refreshing). Different from a non-observer conflict — those
-// go through hasCursorConflict.
-func hasStaleObserverEntry(entries []cursorHookEntry, want string) bool {
-	for _, e := range entries {
-		if isObserverCursorEntry(e.Command) && e.Command != want {
-			return true
-		}
-	}
-	return false
-}
-
-// filterStaleObserverEntries drops entries recognised as observer-
-// written that don't match the canonical want. Used by the refresh
-// path to clear a previous registration (including ones from a
-// different observer binary path) before appending the fresh one.
-// Non-observer entries (other tools the user wired in by hand) pass
-// through untouched.
-func filterStaleObserverEntries(entries []cursorHookEntry, want string) []cursorHookEntry {
-	out := make([]cursorHookEntry, 0, len(entries))
-	for _, e := range entries {
-		if isObserverCursorEntry(e.Command) && e.Command != want {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
 func (r *Registry) unregisterCursor() UnregistrationResult {
 	res := UnregistrationResult{Tool: "cursor", DryRun: r.opts.DryRun}
 	path := r.cursorHooksPath()
@@ -422,47 +416,20 @@ func (r *Registry) unregisterCursor() UnregistrationResult {
 		res.Error = fmt.Errorf("hook.unregisterCursor: %w", err)
 		return res
 	}
-	hooks := map[string][]cursorHookEntry{}
-	if existing, ok := settings["hooks"]; ok {
-		_ = json.Unmarshal(existing, &hooks)
+	hooks, err := decodeHookEvents(settings["hooks"], flatHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.unregisterCursor", path, err)
+		return res
 	}
-
-	for event, entries := range hooks {
-		var survivors []cursorHookEntry
-		removed := 0
-		foreign := false
-		mine := r.removableEntry("cursor", isObserverCursorEntry, &foreign)
-		for _, e := range entries {
-			// Content-heuristic so cross-binary installs (npm bundle,
-			// renamed $HOME, prior worktree binary) get cleaned up
-			// when uninstalling from a different observer build.
-			// Mirrors the register-side isObserverCursorEntry usage —
-			// without this, byte-exact prefix-match would leave
-			// orphaned entries behind on `observer uninstall cursor`.
-			if mine(e.Command) {
-				removed++
-				continue
-			}
-			survivors = append(survivors, e)
-		}
-		if foreign {
-			noteKeptForeign(&res, event)
-		}
-		if removed > 0 {
-			res.HooksRemoved = append(res.HooksRemoved, event)
-		}
-		if len(survivors) > 0 {
-			res.HooksKept = append(res.HooksKept, event)
-		}
-		if len(survivors) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = survivors
-		}
+	// Content-heuristic so cross-binary installs (npm bundle, renamed
+	// $HOME, prior worktree binary) get cleaned up when uninstalling from
+	// a different observer build. Mirrors the register-side
+	// isObserverCursorEntry usage; without it a byte-exact prefix match
+	// would leave orphaned entries behind on `observer uninstall cursor`.
+	if err := r.removeObserverHandlers(&res, hooks, flatHookEntries, "cursor", isObserverCursorEntry); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursor: %w", err)
+		return res
 	}
-	sort.Strings(res.HooksRemoved)
-	sort.Strings(res.HooksKept)
-
 	if len(res.HooksRemoved) == 0 {
 		res.Skipped = true
 		return res
@@ -479,15 +446,9 @@ func (r *Registry) unregisterCursor() UnregistrationResult {
 		return res
 	}
 
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		hookJSON, err := json.Marshal(hooks)
-		if err != nil {
-			res.Error = fmt.Errorf("hook.unregisterCursor: marshal hooks: %w", err)
-			return res
-		}
-		settings["hooks"] = hookJSON
+	if err := setHooksMember(settings, "hooks", hooks, true); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursor: %w", err)
+		return res
 	}
 
 	if r.opts.DryRun {

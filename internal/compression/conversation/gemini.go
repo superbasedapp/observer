@@ -388,13 +388,7 @@ func compressGeminiString(s string, registry *Registry, allow map[types.ContentT
 // marshalEnvelope's encoder for objects, keeping the whole Gemini path
 // byte-neutral on the changed turn.
 func marshalGeminiArray(arr []json.RawMessage) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(arr); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+	return marshalRawArray(arr)
 }
 
 // compressGeminiToolDefinitions trims informational fields from

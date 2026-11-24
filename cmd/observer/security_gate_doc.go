@@ -21,7 +21,7 @@ func commitGateRuleCatalogMarkdown() string {
 	var b strings.Builder
 	b.WriteString("\n## Code security: commit gate\n\n")
 	b.WriteString("These rows fire only while the security module is active (see\n")
-	b.WriteString("`docs/code-security.md`). S-792 holds a push while a commit the push's\n")
+	b.WriteString("`observer security --help`). S-792 holds a push while a commit the push's\n")
 	b.WriteString("remote does not have yet adds a secret, also after the secret is removed\n")
 	b.WriteString("from the files. Amending, rebasing or resetting does not release that\n")
 	b.WriteString("hold until the reflog no longer reaches the old commit (30 days by\n")

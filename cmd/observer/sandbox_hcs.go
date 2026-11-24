@@ -26,7 +26,7 @@ func init() {
 		build: func(r *sandboxRuntime, _ config.Config) sandboxDriver {
 			return &gatesProbeOnlyDriver{
 				r: r, id: sandboxbackend.BackendHCS, probeFn: hcsProbe,
-				notBuilt: "the hcs run path is not built in this release (beta, probe only: no utility VM image is published yet; register WIN-10)",
+				notBuilt: "the hcs run path is not built in this release (beta, probe only: no utility VM image is published yet)",
 			}
 		},
 	})

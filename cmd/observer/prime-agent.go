@@ -78,7 +78,7 @@ func newPrimeAgentCmd() *cobra.Command {
 			"key via OPENAI_API_KEY or prime-agent's --api-key flag.\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it as prime-agent's trailing positional\n" +
-			"message (delivery=inject_prompt). See docs/session-handoff.md.\n\n" +
+			"message (delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to prime-agent.\n" +
 			"Use `--` to separate observer flags from prime-agent flags.\n" +
 			"Requires a running observer proxy (`observer start`).",
@@ -247,7 +247,7 @@ func newPrimeAgentCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "path to observer config.toml")
 	cmd.Flags().StringVar(&proxyURL, "proxy-url", "", "override the proxy base URL (default from config)")
 	cmd.Flags().StringVar(&binPath, "prime-agent-path", "", "path to the prime-agent binary (default: looked up on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as prime-agent's first message (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as prime-agent's first message (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

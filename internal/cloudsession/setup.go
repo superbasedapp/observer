@@ -94,8 +94,8 @@ func renderSetupScript(opts PlanOptions) string {
 	keys := strings.Join(opts.VendorKeys, " ")
 	src := opts.installSource()
 	var b strings.Builder
-	b.WriteString(`# Installs a pinned, verified SuperBased Observer for Rail S
-# (docs/cloud-sessions.md). Run it from the agent's setup step; it is
+	b.WriteString(`# Installs a pinned, verified SuperBased Observer for a cloud agent session
+# (` + "`observer cloud-session --help`" + `). Run it from the agent's setup step; it is
 # idempotent, so a vendor snapshot that already holds the binary skips it.
 set -eu
 
@@ -216,8 +216,7 @@ got=$(sha512sum "$work/pkg.tgz" | awk '{ print $1 }')
 mkdir -p "$work/x"
 tar -xzf "$work/pkg.tgz" -C "$work/x" package/bin/observer || fail "$pkg has no bin/observer"
 what="npm dist.integrity (sha512)"
-# A vendor signature shipped inside the package is checked when present
-# (docs/plans/cloud-agents/npm-vendor-signature-proposal-2026-10-31.md).
+# A vendor signature shipped inside the package is checked when present.
 if tar -tzf "$work/pkg.tgz" | grep -qx 'package/bin/observer.sig'; then
   need_verifier
   tar -xzf "$work/pkg.tgz" -C "$work/x" package/bin/observer.sig || fail "cannot extract the vendor signature"

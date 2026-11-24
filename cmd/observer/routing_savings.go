@@ -44,11 +44,11 @@ func newRoutingSavingsCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "savings",
-		Short: "Routing savings report: realized + would-have, by project/tool/tier, with error bars (§R17.3)",
+		Short: "Routing savings report: realized + would-have, by project/tool/tier, with error bars",
 		Long: "Groups the window's routing decisions by project, tool, and the original\n" +
 			"model's tier. 'realized' sums decision-time estimates on APPLIED rewrites\n" +
 			"(enforce mode); 'would-have' sums the same estimates on unapplied advise\n" +
-			"decisions. Both are estimates graded by the §R18.3 calibration loop, not\n" +
+			"decisions. Both are estimates graded by the calibration loop, not\n" +
 			"provider-invoice deltas.\n\n" +
 			"Reading the error bars: '$/decision = m ± c' is the group's mean\n" +
 			"per-decision saving with a 95% confidence interval over the per-decision\n" +
@@ -109,7 +109,7 @@ func newRoutingExplainCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "explain <decision-id>",
-		Short: "Explain one routing decision: why, counterfactual dollars, cache math (§R17.6)",
+		Short: "Explain one routing decision: why, counterfactual dollars, cache math",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.ParseInt(args[0], 10, 64)
@@ -161,7 +161,7 @@ func newRoutingAdviseCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "advise",
-		Short: "Recent routing decisions feed - what the router did or would have done (§R17.6)",
+		Short: "Recent routing decisions feed - what the router did or would have done",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
 			if err != nil {
@@ -209,7 +209,7 @@ func newRoutingShadowCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "shadow",
-		Short: "Advise-shadow report: would-have savings vs quality flags - the §R18.2 promotion surface",
+		Short: "Advise-shadow report: would-have savings vs quality flags, to decide when to turn routing on",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			days, err := parseWindowDays(window)
 			if err != nil {
@@ -272,7 +272,7 @@ func newRoutingShadowCmd() *cobra.Command {
 func newRoutingImportBenchmarkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "import-benchmark <file>",
-		Short: "Validate a §R7.3 benchmark file and print the tier placements it derives (dry-run)",
+		Short: "Validate a benchmark file and print the tier placements it derives (dry-run)",
 		Long: "Parses a versioned RouterBench/RouterEval-format coding-score file and\n" +
 			"prints the tier placements it would derive. To ACTIVATE an import, add\n" +
 			"the file to [routing] benchmark_files in config.toml - placements load\n" +

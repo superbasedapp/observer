@@ -6658,7 +6658,7 @@ func migrateRemovedCodeIntelKeys(_ *Config, metas []toml.MetaData) []string {
 		warnings = append(warnings,
 			"codeintel.index.disk_budget_mb is removed; it was never implemented (no size-based eviction ever ran). "+
 				"Bound the code index with codeintel.retention_days, and set [archive].enabled = true to archive stale "+
-				"projects to cold storage instead of deleting them (docs/codeintel/configuration.md)")
+				"projects to cold storage instead of deleting them")
 	}
 	return warnings
 }

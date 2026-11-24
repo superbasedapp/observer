@@ -411,9 +411,10 @@ func TestStaffAuthorizationTableOnRoutes(t *testing.T) {
 	supportAuth, opsAuth := NewStaffTestAuthenticator(5), NewStaffTestAuthenticator(6)
 	h.register(staffTestSupp, staffauth.RoleSupport, supportAuth)
 	h.register(staffTestOps, staffauth.RoleOps, opsAuth)
-	body := map[string]any{"value": map[string]string{"ingest": "pause"}, "reason": "incident 9"}
+	const org1 = "11111111-1111-4111-8111-111111111111"
+	body := map[string]any{"value": map[string]any{"org": org1, "ingest": map[string]string{"mode": "pause"}}, "reason": "incident 9"}
 	put := func(c *http.Cookie, csrf string) *httptest.ResponseRecorder {
-		return h.do(staffReq{method: "PUT", path: "/staff/api/availability/org_controls/org-1", cookies: []*http.Cookie{c}, headers: map[string]string{headerStaffCSRF: csrf}, body: body})
+		return h.do(staffReq{method: "PUT", path: "/staff/api/availability/org_controls/" + org1, cookies: []*http.Cookie{c}, headers: map[string]string{headerStaffCSRF: csrf}, body: body})
 	}
 
 	supp, suppCSRF := h.signIn(staffTestSupp, supportAuth, nil)
@@ -529,13 +530,17 @@ func TestStaffSignOut(t *testing.T) {
 	auth := NewStaffTestAuthenticator(11)
 	h.register(staffTestAdmin, staffauth.RoleAdmin, auth)
 	sess, csrf := h.signIn(staffTestAdmin, auth, nil)
-	if rec := h.do(staffReq{method: "POST", path: "/staff/auth/logout", cookies: []*http.Cookie{sess}}); rec.Code != http.StatusForbidden {
-		t.Fatalf("logout without CSRF = %d, want 403", rec.Code)
+	// A foreign Origin is still refused.
+	if rec := h.do(staffReq{method: "POST", path: "/staff/auth/logout", cookies: []*http.Cookie{sess}, headers: map[string]string{"Origin": "https://evil.example"}}); rec.Code != http.StatusForbidden || errCode(t, rec) != "origin_mismatch" {
+		t.Fatalf("logout from a foreign origin = %d %s, want 403 origin_mismatch", rec.Code, rec.Body)
 	}
-	rec := h.do(staffReq{method: "POST", path: "/staff/auth/logout", cookies: []*http.Cookie{sess}, headers: map[string]string{headerStaffCSRF: csrf}})
+	// Sign-out needs no CSRF token (SC-5): a tab that reloaded holds none,
+	// and the session must still end.
+	rec := h.do(staffReq{method: "POST", path: "/staff/auth/logout", cookies: []*http.Cookie{sess}})
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("logout = %d %s", rec.Code, rec.Body)
+		t.Fatalf("logout without a CSRF token = %d %s, want 204", rec.Code, rec.Body)
 	}
+	_ = csrf
 	if c := cookieNamed(rec, staffCookieSecure); c == nil || c.MaxAge >= 0 {
 		t.Fatal("logout did not delete the staff cookie")
 	}

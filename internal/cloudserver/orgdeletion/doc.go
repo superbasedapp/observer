@@ -20,6 +20,17 @@
 // account deletion transaction (internal/cloudserver/store) refuses with the
 // blockers before it consumes the step-up or writes the journal.
 //
+// # Account deletion: billing
+//
+// [DecideBilling] walks the billingRules table over each Paddle subscription
+// the account pays for (ORGDEL-7): one that bills nothing is only a record;
+// the account's own plan, its personal org's, and an org's already on its way
+// out are canceled through the [Billing] seam before the deletion deletes
+// anything (the purge deletes their rows); a live team org's refuses the
+// deletion (PORTALORG-9). The store cancels outside any transaction and
+// re-checks inside its deletion transaction; a cancellation that fails
+// refuses the deletion, never the other way round.
+//
 // # Org deletion: the cooling-off window
 //
 // [CoolingOff] walks the coolingRules table: a personal org deleted with its
@@ -40,7 +51,8 @@
 //
 //	announce        org -> pending_deletion (lifecycle_gen + 1), set_state intent
 //	cooling_off     wait until purge_after
-//	cancel_billing  cancel the org's live subscription through the billing seam
+//	cancel_billing  cancel the org's subscription through the billing seam while
+//	                Paddle may still bill it (refunded and charged back too)
 //	fence           journal accepted (kind org) first; then org -> purging
 //	                (purge_gen = gen + 1), set_state purging, evict, set_state
 //	                purged at purge_gen + 1 queued behind them, the org's OIDC

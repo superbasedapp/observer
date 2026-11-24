@@ -46,7 +46,7 @@ func newZcodeCmd() *cobra.Command {
 			"zcode adapter (the model_usage table in the CLI's SQLite store).\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via zcode's --prompt flag\n" +
-			"(delivery=inject_prompt). See docs/session-handoff.md.\n\n" +
+			"(delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to zcode. Use `--`\n" +
 			"to separate observer flags from zcode flags:\n" +
 			"    observer zcode -- --resume sess_...\n\n" +
@@ -148,7 +148,7 @@ func newZcodeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "zcode-path", "", "Path to the zcode binary (default: resolve `zcode` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via zcode's --prompt flag (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via zcode's --prompt flag (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

@@ -2,7 +2,10 @@
 // row, where its plan comes from and the entitlements document in force, the
 // plan grant history (with the operator's command to change it), its
 // org_controls kill switches (editable by ops and admin), usage, lifecycle
-// intents, deletion state, and the staff log rows about it.
+// intents, deletion state, and the staff log rows about it. With the
+// per-org component routes on, its component switches (Code security); with
+// the issue route on, the changes not issued yet and this org's host's
+// delivery (a switch reaches the host only once the envelope is issued).
 
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -22,10 +25,12 @@ import { getOrg, listAvailability, listLog, postPlanGrant, type StaffOrgDetail }
 import { ChangeDialog } from "../components/ChangeDialog";
 import { GrantCommand } from "../components/GrantCommand";
 import { InputEditorDialog, RemoveInputDialog } from "../components/InputEditor";
+import { IssueCard } from "../components/IssueCard";
 import { LogTable } from "../components/LogTable";
+import { OrgComponentsCards } from "../components/OrgComponents";
 import { PLATFORM_KEY, describeOrgControl, orgControlTone } from "../lib/envelope";
 import { actorLabel, formatTime, grantInForce, isDeletionStatus, orgStatusTone, planSummary, relativeTime, subscriptionTone } from "../lib/model";
-import { invalidateStaff, useStaff, useStaffQuery } from "../session";
+import { invalidateStaff, staffKeys, useStaff, useStaffQuery } from "../session";
 
 export function OrgDetail() {
   const { id = "" } = useParams();
@@ -51,8 +56,11 @@ function BackLink() {
 }
 
 export function OrgDetailView({ d, reload, now = new Date() }: { d: StaffOrgDetail; reload: () => void; now?: Date }) {
+  const staff = useStaff();
   const o = d.org;
   const plan = planSummary(o, now);
+  const components = staff.feature("org_components");
+  const issuable = staff.feature("availability_issue");
   return (
     <div className="flex flex-col gap-5">
       <BackLink />
@@ -71,7 +79,7 @@ export function OrgDetailView({ d, reload, now = new Date() }: { d: StaffOrgDeta
         }
       />
       {(d.deletion || isDeletionStatus(o.status)) && <DeletionCard d={d} />}
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card title="Registry" sub="The control plane's row for this org.">
           <DefinitionList>
             <DefinitionRow
@@ -96,8 +104,16 @@ export function OrgDetailView({ d, reload, now = new Date() }: { d: StaffOrgDeta
         <PlanCard d={d} now={now} />
       </div>
       <GrantsCard d={d} now={now} reload={reload} />
-      <OrgControlsCard orgId={o.org_id} />
-      <div className="grid gap-5 lg:grid-cols-2">
+      {components ? (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <OrgControlsCard orgId={o.org_id} />
+          <OrgComponentsCards orgId={o.org_id} orgName={o.display_name} />
+        </div>
+      ) : (
+        <OrgControlsCard orgId={o.org_id} />
+      )}
+      {issuable && <IssueCard orgId={o.org_id} hostId={o.host_id || null} names={new Map([[o.org_id, o.display_name]])} />}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <UsageCard d={d} />
         <IntentsCard d={d} now={now} />
       </div>
@@ -279,7 +295,7 @@ function GrantsCard({ d, now, reload }: { d: StaffOrgDetail; now: Date; reload: 
 
 function OrgControlsCard({ orgId }: { orgId: string }) {
   const staff = useStaff();
-  const inputs = useStaffQuery("staff:availability", listAvailability);
+  const inputs = useStaffQuery(staffKeys.inputs, listAvailability);
   const [editing, setEditing] = useState<null | "edit" | "remove">(null);
   const rows = (inputs.data?.inputs ?? []).filter((i) => i.section === "org_controls");
   const own = rows.find((i) => i.key === orgId);
@@ -287,7 +303,8 @@ function OrgControlsCard({ orgId }: { orgId: string }) {
   const canWrite = staff.may("availability.write");
   const done = () => {
     setEditing(null);
-    invalidateStaff("staff:availability");
+    invalidateStaff(staffKeys.inputs);
+    invalidateStaff(staffKeys.preview);
   };
   return (
     <Card

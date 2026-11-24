@@ -219,7 +219,7 @@ var settingsSharedRoutes = map[string]string{
 	"/api/demo":                     "demo mode is driven from the shell's demo banner and onboarding card, not a Settings subsection",
 	"/api/demo/start":               "demo mode is driven from the shell's demo banner and onboarding card, not a Settings subsection",
 	"/api/demo/stop":                "demo mode is driven from the shell's demo banner and onboarding card, not a Settings subsection",
-	"/api/update/status":            "the update banner reads it; developer-own banners are never governed (docs/managed-node-visibility.md)",
+	"/api/update/status":            "the update banner reads it; developer-own banners are never governed",
 	"/api/update/extension-version": "loopback self-report from the VS Code extension; renders on no page",
 	"/api/backfill/jobs/":           "one job by id in the shared job registry, which the Security page's evidence buttons also poll",
 }

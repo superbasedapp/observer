@@ -294,7 +294,7 @@ func codexManagedConfig(opts CodexOptions, pkg string) string {
 		b.WriteString("# Route Codex's OpenAI traffic through Observer's proxy for accurate token\n")
 		b.WriteString("# capture. This MUST live in the file: Codex 0.130+ drops the launcher's\n")
 		b.WriteString("# `-c openai_base_url` override before the inner app-server makes the call\n")
-		b.WriteString("# (docs/codex-shared-app-server-gotcha.md, V6-2).\n")
+		b.WriteString("# (https://superbased.app/docs/setup/codex).\n")
 		b.WriteString(fmt.Sprintf("openai_base_url = %q\n\n", opts.OpenAIBaseURL))
 
 		b.WriteString("# Enable Codex hooks so Observer captures session/permission/user-prompt rows.\n")

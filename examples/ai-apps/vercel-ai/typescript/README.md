@@ -12,7 +12,7 @@ user (`user-ada`), a session and a customer tenant (`acme`) set with
 ## Install
 
 Node 22 (the file is plain `.ts`, run with Node's built-in type
-stripping). The SDK is not on npm yet: `package.json` installs it from
+stripping). The examples test the SDK beside them: `package.json` installs it from
 this checkout (`file:../../../../sdk/typescript`); the first install also
 builds the SDK (it fetches the SDK's compiler and its OpenTelemetry
 dependencies, pinned by the SDK's lockfile).

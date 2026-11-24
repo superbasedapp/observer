@@ -215,6 +215,9 @@ func TestStaffConsoleSPAAndCSP(t *testing.T) {
 		if got := rec.Header().Get("Content-Security-Policy"); got != staffCSP {
 			t.Errorf("%s CSP = %q, want the staff policy", c.path, got)
 		}
+		if got := rec.Header().Get("Permissions-Policy"); got != staffPermissionsPolicy || strings.Contains(got, "paddle") {
+			t.Errorf("%s Permissions-Policy = %q, want the staff policy (SC-8)", c.path, got)
+		}
 	}
 	if strings.Contains(staffCSP, "paddle") || strings.Contains(staffCSP, "profitwell") {
 		t.Error("the staff CSP allows a billing host")

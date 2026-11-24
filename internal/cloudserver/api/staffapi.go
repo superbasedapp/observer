@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/availcompose"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/staffauth"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -109,7 +110,16 @@ func (s *Server) handleStaffAvailabilitySet(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusBadRequest, "invalid_input", err.Error())
 		return
 	}
+	// The envelope's own rules (STAFF-8); the store checks again.
+	if err := availcompose.ValidateInput(string(in.Section), in.Key, in.Value); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_input", err.Error())
+		return
+	}
 	if err := s.staff.db.SetAvailabilityInput(r.Context(), p.StaffID, in, reason, s.now()); err != nil {
+		if errors.Is(err, availcompose.ErrInvalidInput) {
+			writeErr(w, http.StatusBadRequest, "invalid_input", err.Error())
+			return
+		}
 		s.log.Error("cloudserver/api: staff availability set", "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "could not write the availability input")
 		return

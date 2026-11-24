@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,10 +367,57 @@ func (r *Registry) clearKiroDefaultAgent() error {
 	return writeJSONIndented(filepath.Dir(path), pinned, top)
 }
 
-// kiroV3File is the CLI V3 standalone hooks file shape.
+// kiroV3File is the CLI V3 standalone hooks file: its version, its hook
+// definitions (each kept as its raw JSON) and every other top-level member,
+// kept raw too, so a key Observer does not write survives a rewrite
+// (NEW-06).
 type kiroV3File struct {
-	Version string            `json:"version"`
-	Hooks   []json.RawMessage `json:"hooks"`
+	Version string
+	Hooks   []json.RawMessage
+	other   map[string]json.RawMessage
+}
+
+// encode renders f as 2-space-indented JSON: version, hooks, then every
+// other member in key order.
+func (f kiroV3File) encode() ([]byte, error) {
+	ver, err := marshalHookJSON(f.Version)
+	if err != nil {
+		return nil, err
+	}
+	hooks := f.Hooks
+	if hooks == nil {
+		hooks = []json.RawMessage{}
+	}
+	list, err := marshalHookJSON(hooks)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`{"version":`)
+	buf.Write(ver)
+	buf.WriteString(`,"hooks":`)
+	buf.Write(list)
+	keys := make([]string, 0, len(f.other))
+	for k := range f.other {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		kb, err := marshalHookJSON(k)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteByte(',')
+		buf.Write(kb)
+		buf.WriteByte(':')
+		buf.Write(f.other[k])
+	}
+	buf.WriteByte('}')
+	var out bytes.Buffer
+	if err := json.Indent(&out, buf.Bytes(), "", "  "); err != nil {
+		return nil, err
+	}
+	return append(out.Bytes(), '\n'), nil
 }
 
 // kiroV3Hook is one V3 hook definition Observer writes.
@@ -440,11 +488,26 @@ func readKiroV3(path string) (kiroV3File, []byte, error) {
 		return kiroV3File{}, nil, fmt.Errorf("hook.registerKiroCLI: read v3 hooks: %w", err)
 	}
 	f := kiroV3File{Version: "v1"}
-	if len(strings.TrimSpace(string(raw))) > 0 {
-		if err := json.Unmarshal(raw, &f); err != nil {
-			return kiroV3File{}, nil, fmt.Errorf("hook.registerKiroCLI: parse %s: %w", path, err)
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return f, raw, nil
+	}
+	top, err := decodeSettingsObject(path, raw)
+	if err != nil {
+		return kiroV3File{}, nil, fmt.Errorf("hook.registerKiroCLI: %w", err)
+	}
+	if v, ok := top["version"]; ok {
+		if err := json.Unmarshal(v, &f.Version); err != nil {
+			return kiroV3File{}, nil, safeErrorf("hook.registerKiroCLI: %s: version is not a string; refusing to modify it (nothing was written)", path)
 		}
 	}
+	if h, ok := top["hooks"]; ok {
+		if err := json.Unmarshal(h, &f.Hooks); err != nil {
+			return kiroV3File{}, nil, safeErrorf("hook.registerKiroCLI: %s: hooks is not a list; refusing to modify it (nothing was written)", path)
+		}
+	}
+	delete(top, "version")
+	delete(top, "hooks")
+	f.other = top
 	return f, raw, nil
 }
 
@@ -491,7 +554,7 @@ func (r *Registry) registerKiroV3Hooks() RegistrationResult {
 	if r.opts.DryRun {
 		return res
 	}
-	out, err := json.MarshalIndent(kiroV3File{Version: "v1", Hooks: append(foreign, want...)}, "", "  ")
+	out, err := kiroV3File{Version: "v1", Hooks: append(foreign, want...), other: f.other}.encode()
 	if err != nil {
 		res.Error = fmt.Errorf("hook.registerKiroCLI: marshal: %w", err)
 		return res
@@ -500,7 +563,7 @@ func (r *Registry) registerKiroV3Hooks() RegistrationResult {
 		res.Error = fmt.Errorf("hook.registerKiroCLI: mkdir: %w", err)
 		return res
 	}
-	if err := atomicWriteFile(pinned, append(out, '\n')); err != nil {
+	if err := atomicWriteFile(pinned, out); err != nil {
 		res.Error = fmt.Errorf("hook.registerKiroCLI: write: %w", err)
 		return res
 	}
@@ -524,7 +587,9 @@ func kiroHooksEqual(a, b []json.RawMessage) bool {
 }
 
 // unregisterKiroV3Hooks removes Observer's definitions from the V3 file,
-// deleting the file once it holds none.
+// deleting the file once it holds nothing else: no developer definition and
+// no top-level member beside version and hooks (NEW-06). A file still
+// holding either is rewritten without Observer's definitions.
 func (r *Registry) unregisterKiroV3Hooks() UnregistrationResult {
 	path := r.kiroV3Path()
 	res := UnregistrationResult{Tool: "kiro-cli", ConfigPath: path, DryRun: r.opts.DryRun}
@@ -561,7 +626,7 @@ func (r *Registry) unregisterKiroV3Hooks() UnregistrationResult {
 	if len(res.HooksRemoved) == 0 || r.opts.DryRun {
 		return res
 	}
-	if len(kept) == 0 {
+	if len(kept) == 0 && len(f.other) == 0 {
 		if err := removeEmptyConfigFile(path, raw); err != nil {
 			res.Error = fmt.Errorf("hook.unregisterKiroCLI: %w", err)
 			return res
@@ -569,12 +634,12 @@ func (r *Registry) unregisterKiroV3Hooks() UnregistrationResult {
 		_ = r.removeChecksum(path)
 		return res
 	}
-	out, err := json.MarshalIndent(kiroV3File{Version: f.Version, Hooks: kept}, "", "  ")
+	out, err := kiroV3File{Version: f.Version, Hooks: kept, other: f.other}.encode()
 	if err != nil {
 		res.Error = fmt.Errorf("hook.unregisterKiroCLI: marshal: %w", err)
 		return res
 	}
-	if err := atomicWriteFile(pinned, append(out, '\n')); err != nil {
+	if err := atomicWriteFile(pinned, out); err != nil {
 		res.Error = fmt.Errorf("hook.unregisterKiroCLI: write: %w", err)
 		return res
 	}
