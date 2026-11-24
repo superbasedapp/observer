@@ -16,7 +16,9 @@ import "github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 //   - the org's APPLIED node.governance directive lists (hidden / read_only /
 //     visible, already intersected with the grant by Resolve), and
 //   - on a MANAGED machine whose grant is live, the compiled-in default table
-//     (nodegov.ManagedNavDefaults / ManagedSettingsDefaults).
+//     (nodegov.ManagedNavDefaults / ManagedSettingsDefaults), at the level of
+//     the machine's audience (ManagedAudience: a team member's machine, or
+//     one its owner manages from a personal organization of one).
 //
 // An individual / BYO node has no defaults: it resolves exactly as before this
 // arc (visible unless its own consented body hid or locked it).
@@ -72,7 +74,8 @@ func constLevel(v nodegov.Visibility) func(visibilityInput) nodegov.Visibility {
 //     show is hidden, even when the org exposed it);
 //  4. an explicit org read-only lock;
 //  5. an explicit org expose;
-//  6. the managed default (managed machine, live grant);
+//  6. the managed default (managed machine, live grant), at the machine's
+//     audience's level (ManagedAudience);
 //  7. visible.
 //
 // nodegov.Compile guarantees an id appears in at most one of the three org
@@ -129,6 +132,14 @@ func (e Effective) ManagedDefaultsApply() bool {
 	return e.Managed && !e.GrantRefused()
 }
 
+// ManagedAudience is the audience whose managed defaults this machine applies:
+// the owner audience on a managed machine whose organization is the
+// developer's own (OwnerManaged), the team audience otherwise. It reads the
+// capability the boundary resolved, never an org id or kind.
+func (e Effective) ManagedAudience() nodegov.ManagedAudience {
+	return nodegov.AudienceFor(e.Managed && e.OwnerManaged)
+}
+
 // VisibilityActive reports whether anything on this machine can change a
 // page's visibility: an applied governance body, or the managed defaults. It
 // is the short-circuit every enforcement point takes, so an ungoverned
@@ -178,7 +189,7 @@ func (e Effective) navVisibilityBase(id string) (nodegov.Visibility, VisibilityS
 		readOnly:        e.Active && contains(e.ReadOnlySections, id),
 		visible:         e.Active && contains(e.VisibleSections, id),
 		managedDefaults: e.ManagedDefaultsApply(),
-		managedDefault:  nodegov.ManagedNavDefault(id),
+		managedDefault:  nodegov.ManagedNavDefault(id, e.ManagedAudience()),
 	})
 }
 
@@ -230,7 +241,7 @@ func (e Effective) SettingsVisibility(id string) (nodegov.Visibility, Visibility
 		readOnly:        e.Active && contains(e.ReadOnlySettings, id),
 		visible:         e.Active && contains(e.VisibleSettings, id),
 		managedDefaults: e.ManagedDefaultsApply(),
-		managedDefault:  nodegov.ManagedSettingsDefault(id),
+		managedDefault:  nodegov.ManagedSettingsDefault(id, e.ManagedAudience()),
 	})
 }
 

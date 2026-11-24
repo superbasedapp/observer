@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/ipclass"
 	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
@@ -166,7 +167,7 @@ func (b *ProviderBlock) checkResolved(ips []net.IP, resolve func(context.Context
 	b.mu.Lock()
 	hit := false
 	for _, ip := range ips {
-		if b.addrs[normalize(ip).String()] {
+		if b.addrs[ipclass.Unwrap(ip).String()] {
 			hit = true
 			break
 		}
@@ -218,7 +219,7 @@ func (b *ProviderBlock) refresh(resolve func(context.Context, string) ([]net.IP,
 			continue
 		}
 		for _, ip := range ips {
-			found[normalize(ip).String()] = true
+			found[ipclass.Unwrap(ip).String()] = true
 		}
 	}
 	b.mu.Lock()

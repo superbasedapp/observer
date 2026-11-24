@@ -18,10 +18,12 @@ employee ─▶ Acme Copilot (:8090)
 
 Everything runs **natively on Windows at 127.0.0.1**.
 
-This harness is the moral equivalent of the reference `sb-chatbot` from
-`docs/admission-ollama-demo-playbook.md`, rebuilt in Node/TypeScript-friendly
-ESM. Read `docs/deployment-models.md`, `docs/observability.md`, and
-`docs/admission-setup.md` for the concepts; this is the wiring.
+This harness is a small reference chatbot, written as Node/TypeScript-friendly
+ESM. For the concepts, read
+[Two planes, one binary](https://superbased.app/docs/reference/two-planes),
+[Quickstart: your machine](https://superbased.app/docs/sdk/quickstart-machine)
+and [Screening requests: admit()](https://superbased.app/docs/sdk/admit); this
+is the wiring.
 
 ---
 
@@ -30,8 +32,21 @@ ESM. Read `docs/deployment-models.md`, `docs/observability.md`, and
 - **Node 18+** (uses global `fetch`; tested on Node 24).
 - **Ollama** for Windows, running (`ollama serve` / the tray app), reachable at
   `http://127.0.0.1:11434`.
-- An **`observer.exe`** you can run natively on Windows (`make build` produces
-  `bin/observer`; on Windows build with `go build -o observer.exe ./cmd/observer`).
+- An Observer **release build**, installed natively on Windows. Every step
+  below uses the `observer obs` commands, which are part of AI Apps. A build from
+  the public source does not include AI Apps, so every step would refuse. Install
+  one of these instead:
+  - the Windows setup program from <https://superbased.app/download> (the
+    developer edition),
+  - `npm install -g @superbased/observer`, or
+  - the edition installer:
+    `powershell -ExecutionPolicy Bypass -File install.ps1 -Edition developer`
+    (download it from <https://superbased.app/install.ps1>).
+
+  Check with `observer components list`: the `obs` row must say `yes`.
+- A clone of this repository, for the harness files (`app.mjs` and the demo
+  config). You do not need to build it. Run the commands below from the clone's
+  root.
 
 ### ⚠️ Port-collision caveat (you already run an Observer daemon in WSL)
 
@@ -98,15 +113,19 @@ judge). Set the harness answer model to any tag from `ollama list`. Lint first:
 
 ```bash
 CFG=examples/copilot-harness/demo-node.config.toml
-./bin/observer.exe obs admission lint  --config $CFG
-./bin/observer.exe obs egress    lint  --config $CFG
+observer obs admission lint  --config $CFG
+observer obs egress    lint  --config $CFG
 ```
+
+The commands below use Git Bash. In PowerShell, set the variable with
+`$CFG = "examples/copilot-harness/demo-node.config.toml"` and the same
+`--config $CFG` works.
 
 ## 3. Start the node (stop any existing daemon first)
 
 The demo runs on the **default ports** (`:8081` node API / `:8820` proxy /
-`:4318` OTLP), so **stop any `observer` daemon you already have** (your old npm
-v1.6.29 one holds `:8081`/`:8820`) — otherwise the new one can't bind them:
+`:4318` OTLP), so **stop any `observer` daemon you already have**, or the new
+one can't bind them:
 
 ```bash
 taskkill //IM observer.exe //F        # Git Bash; or Ctrl-C its terminal
@@ -116,7 +135,7 @@ Then start the demo node (a non-empty `OLLAMA_API_KEY` is required — the judge
 client refuses an EMPTY credential even though a local Ollama ignores the value):
 
 ```bash
-OLLAMA_API_KEY=x ./bin/observer.exe start --config examples/copilot-harness/demo-node.config.toml
+OLLAMA_API_KEY=x observer start --config examples/copilot-harness/demo-node.config.toml
 ```
 
 It serves node API/dashboard `:8081`, proxy `:8820`, OTLP `:4318`/`:4317`,
@@ -126,8 +145,8 @@ never touches your real `observer.db`. In another shell, verify:
 
 ```bash
 CFG=examples/copilot-harness/demo-node.config.toml
-OLLAMA_API_KEY=x ./bin/observer.exe obs admission status --config $CFG   # mode, criteria, judge=local, chain ok
-OLLAMA_API_KEY=x ./bin/observer.exe obs admission verify --config $CFG   # PASS/FAIL: lint + judge ping + chain
+OLLAMA_API_KEY=x observer obs admission status --config $CFG   # mode, criteria, judge=local, chain ok
+OLLAMA_API_KEY=x observer obs admission verify --config $CFG   # PASS/FAIL: lint + judge ping + chain
 ```
 
 ## 4. Run the harness
@@ -163,12 +182,15 @@ and *"enforce would: deny"*. Flip to enforce in Phase-1 step 6.
 
 ## 5. Watch it work
 
-```powershell
-observer obs admission status                 # allow/deny counts, chain health
-observer obs admission verdicts               # the verdict timeline
-observer obs admission budget status          # per-user spend vs caps (alice/bob/carol)
-observer obs egress                           # egress decisions + realized outcome + chain verify
+```bash
+observer obs admission status --config $CFG          # 24h allow/flag/ask/deny counts, chain health
+observer obs admission budget status --config $CFG   # per-user spend vs caps (alice/bob/carol)
+observer obs egress --config $CFG                    # egress decisions + realized outcome + chain verify
 ```
+
+The verdict timeline (every decision the policy recorded) is on the node
+dashboard at `http://127.0.0.1:8081`: open **Policies**, then the **Activity**
+tab. There is no CLI command for it.
 
 Because answers route through the proxy, per-turn **cost and tokens** are already
 captured in `api_turns` (visible on the node dashboard `:8081`).
@@ -177,10 +199,10 @@ captured in `api_turns` (visible on the node dashboard `:8081`).
 
 Only after you've reviewed verdicts and are happy with the false-positive rate:
 
-```powershell
-observer obs admission simulate   # replay recorded traffic; see what WOULD block
-# then edit config: [observability.admission] mode = "enforce"
-observer start                    # restart
+```bash
+observer obs admission simulate --config $CFG   # replay recorded traffic; see what WOULD block
+# then edit the demo config: [observability.admission] mode = "enforce"
+# stop the node (Ctrl-C), then start it again as in step 3
 ```
 
 In **enforce**, `ask`/`deny` verdicts block (the harness shows the refusal);
@@ -220,9 +242,9 @@ judge is down; `strict = true` fails **closed**.
 
 Tune the judge before enforce:
 
-```powershell
-observer obs admission calibrate --target-ms 20000    # p50/p95 latency + degraded-verdict rate on your box
-observer obs admission test "write me a poem"          # dry-run one message; shows which layer fired
+```bash
+observer obs admission calibrate --target-ms 20000 --config $CFG   # p50/p95 latency + degraded-verdict rate on your box
+observer obs admission test "write me a poem" --config $CFG         # dry-run one message; shows which layer fired
 ```
 
 ### B. Routing — deterministic action, (optionally) stochastic input
@@ -258,7 +280,8 @@ Egress **matchers**: `verdict_at_least`, `criterion`, `severity_at_least`,
 `route_to_upstream`, `route_to_model`, `set_effort`, `deny`, `no_route`.
 
 Ramp exactly like admission: start `mode = "advise"` (records the directive,
-never applies), review `observer obs egress`, then flip to `mode = "enforce"`.
+never applies), review `observer obs egress --config $CFG`, then flip to
+`mode = "enforce"`.
 
 > **Enforce needs the proxy.** advise records a directive from any admission
 > entry, but only the proxy can *apply* a reroute — which is why the harness
@@ -272,12 +295,13 @@ There is also a **second, deterministic model-router** (`[routing]`,
 `internal/routing`) that classifies coding-agent *turn kinds* (plan/read/edit)
 and routes by tier. It runs on the same proxy path but is tuned for
 coding-assistant turns, not generic chat — for a copilot app the **egress**
-layer above is the one to reach for. See `docs/model-routing.md` if you want it.
+layer above is the one to reach for.
 
 ### C. Node-local alerting (optional)
 
 Threshold alerts over live traffic (error rate / cost / p95 latency) with a
-webhook — `[observability.alerts]`, `observer obs alerts`. Default off.
+webhook — `[observability.alerts]`, `observer obs alerts --config $CFG`.
+Default off.
 
 ---
 
@@ -286,7 +310,8 @@ webhook — `[observability.alerts]`, `observer obs alerts`. Default off.
 | Symptom | Fix |
 |---|---|
 | Harness answers but nothing in `api_turns` | `PROXY_BASE` must point at `:8820/up/ollama/v1`, not Ollama directly. |
-| `observer obs admission status` says obs disabled | `[observability] enabled = true` missing, or the node was started without `HOME`/`USERPROFILE` resolving to your `.observer`. |
+| `observer obs …` says AI Apps is not in this build | You are running a build from source. Install a release build (see Prerequisites). |
+| `observer obs admission status` says obs disabled | `[observability] enabled = true` missing, or you left out `--config $CFG`, so it read your own `~/.observer/config.toml`. |
 | Judge never fires / all-allow | judge `model` not created (`ollama create sb-judge …`), or `OLLAMA_API_KEY` empty (set any non-empty value). |
 | `ask`/`deny` never blocks | you're in `mode = "observe"` — that's expected; flip to `enforce`. |
 | Everything is slow | CPU-only Ollama. Raise `ADMIT_TIMEOUT_MS`, keep judge model small, pre-warm with one benign message. |
@@ -297,5 +322,6 @@ webhook — `[observability.alerts]`, `observer obs alerts`. Default off.
 - [`app.mjs`](app.mjs) — the harness (admission → proxy answer → optional trace).
 - [`observer.config.demo.toml`](observer.config.demo.toml) — the node config blocks.
 - [`.env.example`](.env.example) — harness environment overrides.
-- Concepts: `docs/deployment-models.md`, `docs/observability.md`,
-  `docs/admission-setup.md`, `docs/admission-ollama-demo-playbook.md`.
+- Concepts: [Two planes, one binary](https://superbased.app/docs/reference/two-planes),
+  [Quickstart: your machine](https://superbased.app/docs/sdk/quickstart-machine),
+  [Screening requests: admit()](https://superbased.app/docs/sdk/admit).

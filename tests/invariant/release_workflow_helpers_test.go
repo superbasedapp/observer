@@ -82,3 +82,20 @@ func jobText(t *testing.T, j workflowJob) string {
 	}
 	return string(b)
 }
+
+// needsOf returns a job's declared dependencies, tolerating both the scalar
+// (`needs: build`) and sequence (`needs: [build, channel]`) spellings.
+func needsOf(j workflowJob) []string {
+	switch j.Needs.Kind {
+	case yaml.ScalarNode:
+		return []string{j.Needs.Value}
+	case yaml.SequenceNode:
+		var out []string
+		for _, n := range j.Needs.Content {
+			out = append(out, n.Value)
+		}
+		return out
+	default:
+		return nil
+	}
+}

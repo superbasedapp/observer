@@ -1089,8 +1089,8 @@ connect_finish() {
     stale=$(stale_daemons)
     if [ -n "$stale" ]; then
       say ""
-      say "\`observer start\` (pid ${stale% }) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-      say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md)."
+      say "\`observer start\` (pid ${stale% }) still runs the previous binary. Restart it with \`observer service restart\`:"
+      say "the daemon is the proxy, so it takes the proxy routes off first and puts them back once the new daemon answers."
     fi
   else
     offer_service
@@ -1257,7 +1257,7 @@ upgrade_service() {
     if "$installed" service upgrade $us_flag; then
       service_done=1
     else
-      warn "\`observer service upgrade$us_flag\` reported a problem; the previous daemon may still be running (docs/daemon-restart-runbook.md)"
+      warn "\`observer service upgrade$us_flag\` reported a problem; the previous daemon may still be running (restart it with \`observer service restart$us_flag\`)"
     fi
   done
   return "$us_found"
@@ -1346,6 +1346,12 @@ verify_signature() {
 do_install() {
   detect_platform
   if [ -z "$prefix" ]; then prefix=$(default_prefix); fi
+  # The test key is refused before anything else looks at the machine: the
+  # other-install scan below reads the real /proc on the download path, and
+  # a running daemon would stop the install there first.
+  if [ -n "${OBSERVER_INSTALL_TEST_VENDOR_KEY:-}" ] && [ -z "$from_dir" ]; then
+    die "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with --from-dir"
+  fi
   # U4: another observer on PATH (npm, pip, another copy) or a running
   # daemon from another binary is found and explained BEFORE anything is
   # chosen or downloaded.
@@ -1354,9 +1360,6 @@ do_install() {
   choose_edition
   if [ -n "$base_url" ]; then
     case "$base_url" in https://*) ;; *) die "--base-url must be https" ;; esac
-  fi
-  if [ -n "${OBSERVER_INSTALL_TEST_VENDOR_KEY:-}" ] && [ -z "$from_dir" ]; then
-    die "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with --from-dir"
   fi
   if [ -n "$from_dir" ]; then
     [ -d "$from_dir" ] || die "--from-dir: not a directory: $from_dir"
@@ -1481,8 +1484,8 @@ do_install() {
     stale=$(stale_daemons)
     if [ -n "$stale" ]; then
       say ""
-      say "\`observer start\` (pid ${stale% }) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-      say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md)."
+      say "\`observer start\` (pid ${stale% }) still runs the previous binary. Restart it with \`observer service restart\`:"
+      say "the daemon is the proxy, so it takes the proxy routes off first and puts them back once the new daemon answers."
     fi
     say ""
     say "Your configuration and data in ~/.observer are unchanged."
@@ -1500,8 +1503,8 @@ do_install() {
     say ""
     if [ "$connect" -eq 1 ]; then connect_machine || true; fi
     say "A daemon from another install is running ($(printf '%s\n' "$other_daemons" | awk '{ printf "%s%s", s, $1; s = ", " }' | sed 's/^/pid /')),"
-    say "so no service was offered and nothing was started. To move to this copy: when no AI session uses the proxy, turn"
-    say "the proxy route off, stop that daemon, then start this one (docs/daemon-restart-runbook.md)."
+    say "so no service was offered and nothing was started. To move to this copy: stop that daemon between AI turns (its"
+    say "proxy stops answering until this one runs), then start this one."
     say ""
     say "Next steps:"
     say "  $installed components status   # what this edition runs"

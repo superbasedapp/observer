@@ -738,6 +738,16 @@ type Grant struct {
 	// rather than the organization's statement. Set at the same boundary as
 	// Integrity; the zero value means "not verified" and claims nothing.
 	ConsentEvidence ConsentEvidence
+	// OwnerManaged is true when the organization this grant's enrolment
+	// belongs to is the developer's own: its only admin and its only
+	// developer are the same person (a personal organization, managed by
+	// its owner; orgkind's OwnerManaged capability). Filled at the cmd
+	// boundary like Tenancy, from the enrolment row
+	// (store.Enrolment.OwnerManaged, agent migration 261). It grants no
+	// authority: it only picks the owner audience's managed defaults
+	// (Effective.ManagedAudience). False means a team organization or not
+	// stated, which keeps the team defaults.
+	OwnerManaged bool
 }
 
 // ConsentEvidence names the consent fields a stored grant's signature
@@ -916,6 +926,15 @@ type Effective struct {
 	// developer-transparency banner (T8) renders "this machine is managed by
 	// <OrgName>". False on every individual / BYO node, which is the default.
 	Managed bool `json:"managed"`
+	// OwnerManaged is true on a MANAGED node whose organization is the
+	// developer's own (Grant.OwnerManaged, only ever true together with
+	// Managed). It picks the managed defaults' owner audience
+	// (ManagedAudience): the developer keeps their own AI Apps pages,
+	// Routing and Policies. It is deliberately NOT part of Hash, exactly
+	// like Managed: Hash addresses the applied org body (the sidecar's pins,
+	// share, features and the org's lists), while the default table is
+	// compiled in and resolved live by every visibility read.
+	OwnerManaged bool `json:"owner_managed,omitempty"`
 
 	HiddenSections   []string `json:"hidden_sections"`
 	ReadOnlySections []string `json:"read_only_sections"`

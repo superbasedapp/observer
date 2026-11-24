@@ -689,9 +689,11 @@ export function composeRuleToml(
   disable: string[] = [],
   opts?: { allowDisable?: boolean },
 ): string {
+  // The file lands on a developer's machine, so it points at the public
+  // guide, never at an internal document path.
   const lines: string[] = [
     "# Guard policy (TOML) - composed by the dashboard's rule manager.",
-    "# Reference: docs/guard-policy-authoring.md",
+    "# Guide: https://superbased.app/docs/guides/security-guard",
   ];
   const allowDisable = opts?.allowDisable ?? false;
   const disableIds = [...new Set(disable.map((d) => d.trim()).filter(Boolean))];

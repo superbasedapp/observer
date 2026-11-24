@@ -57,7 +57,7 @@ func newKiloCmd() *cobra.Command {
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via kilo's --prompt flag, opening\n" +
 			"the interactive TUI seeded with that first prompt (the headless\n" +
-			"one-shot form is the `run` subcommand). See docs/session-handoff.md.",
+			"one-shot form is the `run` subcommand). See `observer handoff --help`.",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -142,7 +142,7 @@ func newKiloCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&kiloPath, "kilo-path", "", "Path to the kilo binary (default: resolve `kilo` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via kilo's --prompt flag (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via kilo's --prompt flag (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

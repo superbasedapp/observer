@@ -19,6 +19,19 @@ import {
 } from "./lib/webauthn";
 import type { Capability } from "./lib/model";
 import type { Section } from "./lib/envelope";
+import { normalizeOrgComponents, normalizePreview, type AvailabilityPreview, type OrgComponents } from "./lib/issue";
+
+import type { AllowlistEntry } from "./lib/allowlist";
+
+export type { AllowlistEntry } from "./lib/allowlist";
+export type {
+  AvailabilityPreview,
+  EnvelopeChange,
+  HostDelivery,
+  IssueRequest,
+  OrgComponentRow,
+  OrgComponents,
+} from "./lib/issue";
 
 const BASE = "/staff";
 const CSRF_HEADER = "X-SBCI-Staff-CSRF";
@@ -238,6 +251,83 @@ export const setAvailability = (section: Section, key: string, value: unknown, r
 
 export const deleteAvailability = (section: Section, key: string, reason: string) =>
   request<void>("DELETE", `/api/availability/${section}/${encodeURIComponent(key)}`, { reason });
+
+// ---- issuing the envelope, and per-org components ----------------------------
+
+/** getAvailabilityPreview reads what the next envelope would be if issued
+ *  now, against the newest issued one, with the pending request, the last
+ *  request's outcome and each host's delivery (action availability.read). */
+export const getAvailabilityPreview = () =>
+  request<Partial<AvailabilityPreview>>("GET", "/api/availability/preview").then(normalizePreview);
+
+/** IssueBody names the preview the staff member reviewed: the server refuses
+ *  (409 inputs_changed) when the inputs or the issued version moved since. */
+export interface IssueBody {
+  reason: string;
+  inputs_digest: string;
+  base_version: number;
+}
+
+/** issueAvailability queues one issue request (202; action
+ *  availability.issue, ops and admin, fresh). A worker signs, stores and
+ *  delivers it; poll the preview while it is pending. */
+export const issueAvailability = (body: IssueBody) =>
+  request<{ request_id: string; state: string }>("POST", "/api/availability/issue", body);
+
+/** cancelAvailabilityIssue cancels the pending issue request (action
+ *  availability.issue, ops and admin, fresh; a reason). It becomes failed with
+ *  error class "cancelled"; 409 not_pending when the worker finished it first.
+ *  The way out when no worker picks requests up, which would otherwise refuse
+ *  every later issue. */
+export const cancelAvailabilityIssue = (requestId: string, reason: string) =>
+  request<{ request_id: string; state: string; error_class: string }>(
+    "POST",
+    `/api/availability/issue/${encodeURIComponent(requestId)}/cancel`,
+    { reason },
+  );
+
+/** getOrgComponents reads the per-org components the console switches for
+ *  one org: offered in the issued envelope, in the next one, and what the
+ *  one button would write (action orgs.read). */
+export const getOrgComponents = (orgId: string) =>
+  request<Partial<OrgComponents>>("GET", `/api/orgs/${encodeURIComponent(orgId)}/components`).then(normalizeOrgComponents);
+
+/** OrgComponentChange is the components input a switch wrote. */
+export interface OrgComponentChange {
+  section: Section;
+  key: string;
+  value: unknown;
+  previous: unknown;
+}
+
+/** setOrgComponent turns one component on or off for one org. It changes
+ *  the INPUT only (action availability.write, ops and admin, fresh): the
+ *  org's host changes once an envelope is issued. */
+export const setOrgComponent = (orgId: string, component: string, on: boolean, reason: string) =>
+  request<OrgComponentChange>(
+    "PUT",
+    `/api/orgs/${encodeURIComponent(orgId)}/components/${encodeURIComponent(component)}`,
+    { on, reason },
+  );
+
+// ---- the team create allow-list (team_allowlist.read; writes
+// team_allowlist.write, ops and admin, fresh) -----------------------------------
+
+/** listTeamAllowlist reads the allow-list: active entries first, then the
+ *  removed ones when includeRemoved, newest first within each. */
+export const listTeamAllowlist = (includeRemoved: boolean) =>
+  request<{ entries: AllowlistEntry[] | null }>("GET", `/api/team-allowlist${includeRemoved ? "?include_removed=1" : ""}`).then((r) => ({
+    entries: r.entries ?? [],
+  }));
+
+/** addTeamAllowlistEntry adds one entry (201; 409 exists, 400 invalid_input). */
+export const addTeamAllowlistEntry = (kind: string, value: string, reason: string) =>
+  request<AllowlistEntry>("POST", "/api/team-allowlist", { kind, value, reason });
+
+/** removeTeamAllowlistEntry removes one active entry (200; 404 not_found). The
+ *  row is kept, stamped removed. */
+export const removeTeamAllowlistEntry = (entryId: string, reason: string) =>
+  request<AllowlistEntry>("DELETE", `/api/team-allowlist/${encodeURIComponent(entryId)}`, { reason });
 
 /** setCsrfForTest seeds the token (render tests only). */
 export function setCsrfForTest(t: string | null): void {

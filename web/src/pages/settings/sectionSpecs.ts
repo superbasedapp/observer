@@ -794,7 +794,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "tasks",
     path: ["Tasks"],
     description:
-      "Session-level todo/plan checklist tracking (docs/task-tracking.md) - decodes claude-code TaskCreate/TaskUpdate/TodoWrite, codex update_plan, kiro-cli todo_list, copilot manage_todo_list, and similar tool calls already captured in actions.raw_tool_input into a per-task lifecycle + cost report (the Tasks tab, and the Analysis page's Tasks section). No new capture surface, no adapter change. A change here needs a daemon restart to take effect - [tasks] has no hot-reload path yet (SetTasksEnabled/SetTasksOptions bind once at daemon startup, the same posture every section except pricing/profiles has).",
+      "Session-level todo/plan checklist tracking - decodes claude-code TaskCreate/TaskUpdate/TodoWrite, codex update_plan, kiro-cli todo_list, copilot manage_todo_list, and similar tool calls already captured in actions.raw_tool_input into a per-task lifecycle + cost report (the Tasks tab, and the Analysis page's Tasks section). No new capture surface, no adapter change. A change here needs a daemon restart to take effect - [tasks] has no hot-reload path yet (SetTasksEnabled/SetTasksOptions bind once at daemon startup, the same posture every section except pricing/profiles has).",
     fields: [
       {
         id: "Enabled",
@@ -1893,7 +1893,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // include that prefix (the strip convention — see compression).
     path: ["Intelligence", "MCP"],
     description:
-      "The on-demand MCP retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed) and their audit log. Settings here bind when an AI client spawns its next observer MCP server - each session runs a fresh one, so saves apply to new sessions without a daemon restart. The 13 observability tools (get_cost_summary, search_past_outputs, …) are always on when MCP is registered and are not filtered here.",
+      "The on-demand MCP retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed) and their audit log. Settings here bind when an AI client spawns its next observer MCP server - each session runs a fresh one, so saves apply to new sessions without a daemon restart. The other observability tools (get_cost_summary, search_past_outputs, …) are always on when MCP is registered and are not filtered here.",
     fields: [
       {
         id: "Features",

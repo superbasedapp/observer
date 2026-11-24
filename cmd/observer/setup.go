@@ -104,9 +104,10 @@ func defaultSetupDir() string {
 func newSetupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Install for this user: Path, start at sign-in, launch (used by the Windows setup program)",
-		Long: "Per-user install steps. The Windows setup program from superbased.app/download\n" +
-			"runs these for you; you can also run them yourself.\n\n" +
+		Short: "Install for this user: Path, start at sign-in, launch",
+		Long: "Per-user install steps. On Windows the setup program from superbased.app/download\n" +
+			"runs these for you; you can also run them yourself. `observer setup launch`\n" +
+			"works on every OS.\n\n" +
 			"    observer setup install --dir <bin dir> [--path] [--autostart]\n" +
 			"    observer setup uninstall --dir <bin dir> [--purge] [--stop-daemon]\n" +
 			"    observer setup preflight [--dir <bin dir>]   is another install on this computer?\n" +
@@ -328,9 +329,7 @@ func runSetupInstall(o setupInstallOptions) error {
 	}
 
 	if d := pre.OwnDaemon; d != nil && upgrade {
-		fmt.Fprintf(o.out, "\nSuperBased (pid %d) is still running the previous version. It keeps running until you restart it.\n"+
-			"The daemon is the proxy your AI tools may route through, so restart it when no AI session uses the proxy:\n"+
-			"turn the proxy route off first, then quit superbased and start it again (docs/daemon-restart-runbook.md).\n", d.PID)
+		fmt.Fprintf(o.out, "\nSuperBased (pid %d) is still running the previous version. It keeps running until you restart it.\n%s", d.PID, setupRestartHint())
 		if o.exitCodes {
 			return exitErr(setupExitRestartNotice)
 		}
@@ -747,9 +746,10 @@ func newSetupLaunchCmd(sys setupOS) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "launch",
 		Short: "Start the daemon in the background if it is not running, then optionally open the dashboard",
-		Long: "What the Start menu entry, start at sign-in and a double-click on observer.exe run.\n" +
-			"Starts `observer start` with no window when no daemon is running (its output goes to\n" +
-			"daemon.log beside your database), waits for it, and with --open opens the dashboard.",
+		Long: "Starts `observer start` in the background when no daemon is running (its output\n" +
+			"goes to daemon.log beside your database), waits for it, and with --open opens the\n" +
+			"dashboard. Works on every OS. On Windows it is also what the Start menu entry,\n" +
+			"start at sign-in and a double-click on observer.exe run.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			o.out = cmd.OutOrStdout()
 			return runSetupLaunch(o)
@@ -834,4 +834,18 @@ func runSetupLaunch(o setupLaunchOptions) error {
 		}
 	}
 	return nil
+}
+
+// setupRestartHint is how the upgrade notice says to restart the daemon that
+// still runs the previous version. Where the daemon can restart itself in
+// place (or a service manager runs it), `observer service restart` does it
+// with the proxy routes off; where it cannot (a native Windows daemon), the
+// way is to quit it and start it again between AI turns.
+func setupRestartHint() string {
+	if reexecSupported() {
+		return "Restart it with: observer service restart\n" +
+			"It takes the proxy routes your AI tools use off first and puts them back once the new version answers.\n"
+	}
+	return "The daemon is the proxy your AI tools may route through, so restart it between AI turns:\n" +
+		"quit superbased and start it again.\n"
 }

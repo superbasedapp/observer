@@ -224,17 +224,18 @@ func (f *fakeLiveClient) client() daemonLiveRunsClient {
 
 var oneCLIRun = []dashapi.LiveSandboxRun{{RunID: "r1", Tool: "claude-code", Backend: "bwrap", AgeSeconds: 120, NativeResume: true}}
 
-// stubServiceRestart makes `observer service restart` testable: systemd
-// present, systemctl recorded, the daemon client scripted.
+// stubServiceRestart makes `observer service restart` testable: a fake
+// systemd host (service_saferestart_test.go) whose daemon runs no proxy, the
+// restart recorded, the daemon client scripted.
 func stubServiceRestart(t *testing.T, fc *fakeLiveClient) *[]string {
 	t.Helper()
-	savedSD, savedCtl, savedClient := systemdAvailable, serviceSystemctl, newDaemonLiveRunsClient
-	t.Cleanup(func() { systemdAvailable, serviceSystemctl, newDaemonLiveRunsClient = savedSD, savedCtl, savedClient })
-	systemdAvailable = func() bool { return true }
-	var ran []string
-	serviceSystemctl = func(c service.Command) error { ran = append(ran, strings.Join(c.Args, " ")); return nil }
-	newDaemonLiveRunsClient = func(string) daemonLiveRunsClient { return fc.client() }
-	return &ran
+	f := newFakeRestart(t)
+	f.live = fc
+	f.serving, f.servingAfter = false, false
+	saved := newSafeRestartEnv
+	t.Cleanup(func() { newSafeRestartEnv = saved })
+	newSafeRestartEnv = func(string) safeRestartEnv { return f.env() }
+	return &f.ran
 }
 
 func runServiceRestart(t *testing.T, args ...string) (string, error) {
@@ -261,10 +262,10 @@ func TestServiceRestartLiveRuns(t *testing.T) {
 			t.Fatalf("err %v, systemctl %v, out %q", err, *ran, out)
 		}
 	})
-	t.Run("nothing live: restarts, says nothing", func(t *testing.T) {
+	t.Run("nothing live: restarts, says nothing about runs", func(t *testing.T) {
 		ran := stubServiceRestart(t, &fakeLiveClient{answered: true, drainAfter: -1})
 		out, err := runServiceRestart(t)
-		if err != nil || len(*ran) != 1 || out != "" {
+		if err != nil || len(*ran) != 1 || strings.Contains(out, "sandboxed") {
 			t.Fatalf("err %v, systemctl %v, out %q", err, *ran, out)
 		}
 	})

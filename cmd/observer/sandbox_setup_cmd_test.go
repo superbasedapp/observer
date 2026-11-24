@@ -458,7 +458,7 @@ func TestSandboxSetupCmdNeverStepPrintsAndRunsNothing(t *testing.T) {
 	if r.code != sandboxSetupExitBlocked {
 		t.Fatalf("code %d, want 3", r.code)
 	}
-	for _, want := range []string{"AppArmor restricts", "Docs: sandboxed-terminals.md#userns"} {
+	for _, want := range []string{"AppArmor restricts", "Docs: https://superbased.app/docs/guides/terminals"} {
 		if !strings.Contains(r.out, want) {
 			t.Errorf("never output lacks %q:\n%s", want, r.out)
 		}

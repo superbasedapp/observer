@@ -69,7 +69,7 @@ import {
 import { Link } from "react-router-dom";
 import { SandboxModuleOffCard } from "@/components/SandboxModuleOffCard";
 import { SandboxReturnsPanel } from "@/components/SandboxReturnsPanel";
-import { COMPONENTS_SETTINGS_PATH, backendNotes, backendState, classLabel, gatewayModeLabel } from "@/lib/sandboxIsolation";
+import { COMPONENTS_SETTINGS_PATH, backendState, classLabel, gatewayModeLabel, offerNotes } from "@/lib/sandboxIsolation";
 import { TERMINALS_SANDBOX_BACKENDS_HASH } from "@/lib/nodePageTabs";
 import type { SandboxAvailability, SandboxBackendAvail, SandboxOrgSettings } from "@/lib/types";
 
@@ -467,7 +467,7 @@ export function SandboxBackendsList({
               )}
               {b.capture_by_tier?.[egress] && <span className="text-fg-3">capture {b.capture_by_tier[egress]}</span>}
               {b.gateway_mode && <span className="text-fg-3">gateway: {gatewayModeLabel(b.gateway_mode)}</span>}
-              {backendNotes(b).map((n) => (
+              {offerNotes(b).map((n) => (
                 <span key={n} className="basis-full text-fg-3">
                   note: {n}
                 </span>
@@ -498,7 +498,7 @@ export function SandboxBackendsList({
       </ul>
       {planned.length > 0 && (
         <span className="block text-[11px] text-fg-3">
-          Not offered yet: {planned.map((b) => `${b.label}${b.phase ? ` (${b.phase})` : ""}`).join(", ")}.
+          Not offered yet: {planned.map((b) => b.label).join(", ")}.
         </span>
       )}
       <OrgSetNote show={!!orgNote} note={orgNote} />

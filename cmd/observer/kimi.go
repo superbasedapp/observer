@@ -55,7 +55,7 @@ func newKimiCmd() *cobra.Command {
 			"the TUI takes no seed flag), so the launcher writes the handover\n" +
 			"doc, prints its path for you to paste, and opens the interactive\n" +
 			"TUI in the source session's project root. See\n" +
-			"docs/session-handoff.md.\n\n" +
+			"`observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to kimi. Use `--`\n" +
 			"to separate observer flags from kimi flags. NEVER touches API keys.",
 		SilenceErrors:      true,
@@ -145,7 +145,7 @@ func newKimiCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "kimi-path", "", "Path to the kimi binary (default: resolve `kimi` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the kimi TUI (doc-assisted - kimi-code has no initial-prompt seed). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the kimi TUI (doc-assisted - kimi-code has no initial-prompt seed). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

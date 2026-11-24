@@ -54,7 +54,8 @@ func newPruneCmd() *cobra.Command {
 			if portUp(addr) {
 				return fmt.Errorf(
 					"prune: the observer daemon is live on %s and already runs its own retention pass - a manual `observer prune` would race it.\n"+
-						"Let the daemon's periodic tick handle it, or stop the daemon first (docs/daemon-restart-runbook.md: route OFF → stop → prune → relaunch → route ON) for an ad-hoc pass",
+						"Let the daemon's periodic tick handle it, or for an ad-hoc pass run it while the daemon is stopped: "+
+						"`observer service stop` (takes the proxy routes off first), `observer prune`, then `observer service start` (puts them back)",
 					addr,
 				)
 			}
@@ -70,7 +71,7 @@ func newPruneCmd() *cobra.Command {
 				if portUp(addr) {
 					return fmt.Errorf(
 						"prune --vacuum: the observer daemon is live on %s - a full VACUUM needs exclusive DB access.\n"+
-							"Stop the daemon first (safe order in docs/daemon-restart-runbook.md: route OFF → stop → prune --vacuum → relaunch → route ON), then re-run",
+							"Stop the daemon first: `observer service stop` takes the proxy routes off and stops it; re-run this, then `observer service start` puts the routes back",
 						addr,
 					)
 				}
@@ -200,7 +201,7 @@ func newPruneCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON")
 	cmd.Flags().BoolVar(&vacuum, "vacuum", false,
 		"After pruning, convert the DB to auto_vacuum=INCREMENTAL and run a full VACUUM. "+
-			"Refuses while the daemon is live - run in a restart window (docs/daemon-restart-runbook.md)")
+			"Refuses while the daemon is live - run it between `observer service stop` (proxy routes off) and `observer service start` (routes back on)")
 	cmd.Flags().BoolVar(&breakdown, "breakdown", true,
 		"Report a before/after per-table storage breakdown (dbstat) so you can see what was reclaimed and where the bulk lives. "+
 			"dbstat is a full DB scan - pass --breakdown=false to skip it on a very large DB")

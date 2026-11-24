@@ -52,6 +52,7 @@ var auditEvents = []string{
 	"connect_request_created",
 	"connect_signin_delivered",
 	"connect_signin_refused",
+	"deletion_refused_billing_cancel",
 	"deletion_refused_org_blockers",
 	"deletion_refused_pays_for_org",
 	"deletion_requested",

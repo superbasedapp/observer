@@ -180,6 +180,11 @@ var deletionDisposition = map[string]string{
 	"staff_sessions":             "excluded",
 	"staff_actions":              "excluded", // append-only; an org id in it is opaque and survives the org
 	"availability_inputs":        "excluded",
+	// M6.3 (0154): availability issue requests (a staff id, a reason, a
+	// digest, versions) and per-host delivery state (host ids, versions).
+	// No account id, no email, no org's data.
+	"availability_issue_requests": "excluded",
+	"availability_deliveries":     "excluded",
 	// Pre-auth anonymous (expire globally; auth_transactions ON DELETE CASCADE).
 	"exchange_nonces":   "excluded",
 	"auth_transactions": "excluded",

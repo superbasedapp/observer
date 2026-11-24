@@ -49,7 +49,7 @@ func newCommandCodeCmd() *cobra.Command {
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it as the initial message positional\n" +
 			"(delivery=inject_prompt), so Command Code opens an interactive\n" +
-			"session pre-loaded with the mission. See docs/session-handoff.md.\n\n" +
+			"session pre-loaded with the mission. See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to commandcode.\n" +
 			"Use `--` to separate observer flags from commandcode flags. NEVER\n" +
 			"touches API keys or stored auth.",
@@ -182,7 +182,7 @@ func newCommandCodeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "commandcode-path", "", "Path to the commandcode binary (default: resolve `commandcode` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as commandcode's initial message (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as commandcode's initial message (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

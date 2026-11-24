@@ -78,8 +78,8 @@
   installer says "Upgraded X -> Y". A running observer.exe cannot be
   overwritten, so it is renamed aside (<name>.exe.old-<time>, removed by the
   next install or uninstall) and keeps running the previous binary: the
-  installer names its pid and the safe restart order and never stops it,
-  because the daemon IS the proxy (docs/daemon-restart-runbook.md).
+  installer names its pid and says to restart it between AI turns, and never
+  stops it, because the daemon IS the proxy.
 
   The Windows sandbox files (lane SBX-P3B): an archive whose edition compiles
   the Windows sandbox driver carries mxc\ (mxc_ffi.dll, wxc-exec.exe and
@@ -733,9 +733,8 @@ function Complete-Connect([string]$exe, [string]$dir, $running, [bool]$appsOn = 
   if (@($running).Count -gt 0) {
     foreach ($p in $running) {
       Say ""
-      Say "observer (pid $($p.Id)) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-      Say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md): stop it"
-      Say "(Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
+      Say "observer (pid $($p.Id)) still runs the previous binary. The daemon is the proxy, so restart it between AI turns:"
+      Say "stop it (Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
     }
   } else {
     # Starts `observer start` with no window and waits for it; the
@@ -1031,9 +1030,8 @@ function Invoke-Install {
     if ($previous) {
       foreach ($p in $running) {
         Say ""
-        Say "observer (pid $($p.Id)) still runs the previous binary. The daemon is the proxy: restart it when no AI"
-        Say "session uses the proxy, with the proxy route off first (docs/daemon-restart-runbook.md): stop it"
-        Say "(Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
+        Say "observer (pid $($p.Id)) still runs the previous binary. The daemon is the proxy, so restart it between AI turns:"
+        Say "stop it (Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
       }
       Say ""
       Say "Your configuration and data in $env:USERPROFILE\.observer are unchanged."
@@ -1046,8 +1044,8 @@ function Invoke-Install {
     if ($otherDaemons.Count -gt 0) {
       Say ""
       Say "A daemon from another install is running (pid $(($otherDaemons | ForEach-Object { $_.Id }) -join ', ')), so nothing was started."
-      Say "To move to this copy: when no AI session uses the proxy, turn the proxy route off, stop that daemon, then start"
-      Say "this one (docs/daemon-restart-runbook.md)."
+      Say "To move to this copy: stop that daemon between AI turns (its proxy stops answering until this one runs), then"
+      Say "start this one."
       Say ""
       Say "Next steps:"
       Say "  & '$exe' components status   # what this edition runs"

@@ -261,6 +261,42 @@ export function backendNotes(b: SandboxBackendAvail | undefined): string[] {
 }
 
 /**
+ * NO_PUBLISHED_IMAGE (SR-26, ship-readiness audit 2026-11-23): the local
+ * container and microVM backends start from an image Observer does not
+ * publish yet, so a user must build (or build and import) one before a run.
+ * The daemon serves no sentence for this release-state fact, so it is worded
+ * here, keyed by backend id: the need belongs to each row's driver and its
+ * own config key, not to an isolation class (a hosted microVM needs no image).
+ * Drop a row once its default image is published.
+ */
+const NO_PUBLISHED_IMAGE: Record<string, string> = {
+  "oci-runc":
+    "Needs a container image you build yourself: Observer does not publish a default image yet. Set yours, pinned by digest, as the image in the container settings ([terminal.sandbox.oci] image).",
+  "oci-runsc":
+    "Needs a container image you build yourself: Observer does not publish a default image yet. Set yours, pinned by digest, as the image in the container settings ([terminal.sandbox.oci] image).",
+  "apple-container":
+    "Needs a linux/arm64 image you build yourself, with the agent and a linux/arm64 observer in it: Observer does not publish one yet. Set it, pinned by digest, as [terminal.sandbox.apple_container] image.",
+  "cloud-hypervisor":
+    "Needs a guest image set: Observer does not publish one yet, so you must build your own and import it before this backend can run.",
+};
+
+/** noPublishedImageNote is the row's "build your own image" sentence, or "". */
+export function noPublishedImageNote(id: string | undefined): string {
+  return (id && NO_PUBLISHED_IMAGE[id]) || "";
+}
+
+/**
+ * offerNotes are the notes shown where a backend is offered (the Settings
+ * backends list and the New Terminal Isolation picker): the image note
+ * first, when the row needs an image Observer does not publish, then the
+ * daemon's own sentences (backendNotes).
+ */
+export function offerNotes(b: SandboxBackendAvail | undefined): string[] {
+  const img = noPublishedImageNote(b?.id);
+  return img ? [img, ...backendNotes(b)] : backendNotes(b);
+}
+
+/**
  * One offered row the daemon says cannot run here, with its reason and the
  * daemon's own notes about it (prerequisite, hint, disclosures), so the
  * sentence that explains the reason (for the openshell row the D4
@@ -282,7 +318,7 @@ export function unavailableRows(probe: SandboxAvailability | null): UnavailableR
     .filter((b) => offeredHere(b) && !b.available)
     .map((b) => ({ b, st: backendState(b) }))
     .filter(({ st }) => st.state === "unavailable")
-    .map(({ b, st }) => ({ id: b.id, label: b.label, reason: st.reason, notes: backendNotes(b) }));
+    .map(({ b, st }) => ({ id: b.id, label: b.label, reason: st.reason, notes: offerNotes(b) }));
 }
 
 // CAUSE_LABELS names the capture relay's closed degraded-cause vocabulary

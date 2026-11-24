@@ -120,7 +120,7 @@ func newCursorCmd() *cobra.Command {
 			"from that session and seeds it as cursor-agent's first interactive\n" +
 			"prompt via a trailing positional (delivery=inject_prompt). cursor's\n" +
 			"interactive mode is the default; the headless -p/--print switch is\n" +
-			"never emitted. See docs/session-handoff.md.\n\n" +
+			"never emitted. See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to cursor-agent.\n" +
 			"Use `--` to separate observer flags from cursor-agent flags.",
 		SilenceErrors:      true,
@@ -271,7 +271,7 @@ func newCursorCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&binPath, "cursor-agent-path", "", "Path to the cursor-agent binary (default: resolve `cursor-agent` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as cursor-agent's first prompt (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as cursor-agent's first prompt (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

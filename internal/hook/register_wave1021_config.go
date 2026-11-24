@@ -205,7 +205,7 @@ func (r *Registry) registerAutohand() RegistrationResult {
 	res.ConfigPath = path
 	if sib := autohandSiblingConfig(path); sib != "" {
 		res.Skipped, res.SkipKind = true, SkipNotApplicable
-		res.SkipReason = "Autohand reads " + filepath.Base(sib) + " here, which Observer does not edit; add the hook entries by hand (docs/guard.md)"
+		res.SkipReason = "Autohand reads " + filepath.Base(sib) + " here, which Observer does not edit; add the hook entries by hand"
 		return res
 	}
 	unlock, err := r.lockSettings(path)
@@ -782,7 +782,7 @@ func (r *Registry) registerVTCode() RegistrationResult {
 	if path == "" {
 		return RegistrationResult{
 			Tool: "vtcode", DryRun: r.opts.DryRun, Skipped: true, SkipKind: SkipNotApplicable,
-			SkipReason: "VT Code's user config file cannot be named (VTCODE_CONFIG is a relative path); set an absolute path, or add the [[hooks.lifecycle.pre_tool_use]] group by hand (docs/guard.md)",
+			SkipReason: "VT Code's user config file cannot be named (VTCODE_CONFIG is a relative path); set an absolute path, or add the [[hooks.lifecycle.pre_tool_use]] group by hand",
 		}
 	}
 	return r.registerVTCodeAt("vtcode", path, "")

@@ -140,6 +140,12 @@ type seqStep struct {
 	copy       *copySpec
 	// raw is the unit's text, quoted in a reason that names the step.
 	raw string
+	// assigns are the NAME=value words of a unit that is nothing but
+	// assignments (`http_proxy=x;`). Such a unit yields no Command, so
+	// this is the only record that it ran: it sets shell variables, and
+	// an already-exported one changes the environment every later command
+	// inherits (R-171's exemption reads it, FR-SEC-3).
+	assigns []string
 }
 
 // unitSeq is the step sequence of one parsed line (one parseDepth call).
@@ -233,6 +239,13 @@ type cwdFrame struct {
 // produced none, e.g. a bare assignment).
 func (s *unitSeq) add(u unit, cmds []Command) {
 	st := seqStep{kind: stepOther, sep: u.sep, opens: u.opens, closes: u.closes, dialect: s.dialect}
+	if len(cmds) == 0 {
+		for _, w := range u.words {
+			if isEnvAssign(w) {
+				st.assigns = append(st.assigns, w)
+			}
+		}
+	}
 	if len(cmds) > 0 {
 		st.dialect = cmds[0].Dialect
 		st.raw = cmds[0].Raw
@@ -895,7 +908,15 @@ func deriveUnitAnchors(ctx *MatchContext, cmd *Command) []deleteAnchor {
 	for _, f := range frames {
 		cwd := f.cwd
 		for _, op := range cmd.chdir {
-			cwd = resolveDirOperand(env, cwd, op, cmd.Dialect)
+			if op.text == "" {
+				// An empty wrapper directory (`env -C $(x)`, `sudo -D
+				// "$(x)"`: NF-2 keeps a word that was nothing but a
+				// command substitution as an empty word) is unknown,
+				// never the directory the unit starts in.
+				cwd = dirRef{unknown: true}
+			} else {
+				cwd = resolveDirOperand(env, cwd, op, cmd.Dialect)
+			}
 			if cwd.unknown && cwd.why == "" {
 				cwd.why = cmd.Raw
 			}

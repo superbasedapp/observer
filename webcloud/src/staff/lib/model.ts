@@ -174,6 +174,10 @@ export const VERB_LABELS: Record<string, string> = {
   "availability.deleted": "Availability input removed",
   "action.refused": "Action refused",
   "support.signin": "Support sign-in",
+  "team_allowlist.added": "Team allow-list entry added",
+  "team_allowlist.removed": "Team allow-list entry removed",
+  "availability.issue_requested": "Availability envelope issue requested",
+  "availability.issue_cancelled": "Availability envelope issue cancelled",
 };
 
 export function verbLabel(verb: string): string {

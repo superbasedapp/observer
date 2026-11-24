@@ -1,4 +1,25 @@
 {"model":"opus","hooks":{
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/acme/audit",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code pre-tool --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
     "ConfigChange": [
       {
         "matcher": "*",
@@ -116,27 +137,6 @@
           {
             "type": "command",
             "command": "/usr/local/bin/observer hook claude-code pre-compact --config '/home/u/.observer/config.toml'"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/opt/acme/audit",
-            "timeout": 30
-          }
-        ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/local/bin/observer hook claude-code pre-tool --config '/home/u/.observer/config.toml'"
           }
         ]
       }

@@ -1,0 +1,27 @@
+-- 261: org_enrolment remembers whether the organization is the developer's
+-- own (finding F12 of the v1.42.1 ship-readiness audit).
+--
+-- A personal organization of one is managed by its owner (operator ruling
+-- 2026-11-19; the org server's orgkind row carries OwnerManaged). The enrol
+-- response says so (orgcontract.EnrollResponse.OwnerManaged), and until this
+-- step the node kept it in memory only, for the share-default row. The
+-- managed-default visibility table now has an owner audience (the owner keeps
+-- their own AI Apps pages, Routing and Policies), and the daemon resolves it
+-- on every governance refresh, long after the enrolment process exited, so
+-- the fact lives with the enrolment:
+--
+--   owner_managed  1 when the enrolment's organization is the developer's
+--                  own, 0 otherwise (a team organization, or not stated by
+--                  an older server)
+--
+-- Written by store.WriteEnrolment on every enrolment (a re-enrol overwrites
+-- it) and refreshed by store.SetEnrolmentOwnerManaged from the push
+-- acknowledgment (orgcontract.PushResponse.OwnerManaged), so a machine
+-- enrolled before this step heals on its next push. It grants no authority:
+-- it only picks which managed defaults a MANAGED enrolment applies.
+-- Additive only: existing rows read 0, the team defaults they apply today.
+--
+-- NODE-LOCAL: org_enrolment never crosses the push wire (orgpush.go never
+-- names it; the privacy sentinel lists it as this node's enrolment record).
+
+ALTER TABLE org_enrolment ADD COLUMN owner_managed INTEGER NOT NULL DEFAULT 0;

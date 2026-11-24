@@ -24,10 +24,11 @@ import (
 func newRoutingCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "routing",
-		Short: "Model-routing intelligence (P0: advisory only)",
-		Long: "Counterfactual analysis and status for the model-routing layer\n" +
-			"(docs/model-routing-spec.md). Phase P0 is advisory: simulate replays\n" +
-			"recorded traffic under a policy template; no live request is touched.",
+		Short: "Model-routing intelligence: status, simulate, advise and per-tool apply",
+		Long: "Counterfactual analysis and status for the model-routing layer.\n" +
+			"`observer routing simulate` replays recorded traffic under a policy\n" +
+			"template; no live request is touched. Live routing is off until\n" +
+			"[routing] enabled and mode are set.",
 	}
 	cmd.AddCommand(newRoutingSimulateCmd())
 	cmd.AddCommand(newRoutingStatusCmd())
@@ -49,7 +50,7 @@ func newRoutingStatusCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Routing layer state: phase, templates, tier table, decision-log counters (§R17.6)",
+		Short: "Routing layer state: phase, templates, tier table, decision-log counters",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
 			if err != nil {
@@ -131,7 +132,7 @@ func newRoutingLintCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "lint",
-		Short: "Validate a policy template's rule table (§R6.6)",
+		Short: "Validate a policy template's rule table",
 		Long: "Runs the table-driven policy checks (unique rule names, exactly-one\n" +
 			"action, closed-enum kinds and reasons, targetable tiers, downshift\n" +
 			"direction, shadowed/unreachable rules) and prints every finding.\n" +
@@ -209,7 +210,7 @@ func newRoutingSimulateCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "simulate",
-		Short: "Replay recorded turns through the decision engine under a policy template (§R18.1)",
+		Short: "Replay recorded turns through the decision engine under a policy template",
 		Long: "Replays the recorded api_turns + actions substrate through the routing\n" +
 			"decision engine under a named policy template and reports what WOULD have\n" +
 			"happened: reroute counts, estimated savings, cache-forfeit costs, and\n" +

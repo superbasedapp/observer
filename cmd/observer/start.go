@@ -1862,6 +1862,20 @@ func newStartCmd() *cobra.Command {
 					return nil
 				})
 			}
+			// The proxy routes a safe restart or stop took off and could not
+			// put back (`observer service stop`, a timed-out, killed or
+			// failed restart) go back on once this proxy serves, under the
+			// route hold lock the verbs take (routehold_putback.go). Every
+			// node with an active proxy runs it (components_gate.go classes
+			// it under capture.proxy): the journal exists only where a verb
+			// wrote it.
+			if holdPort, ok := proxyPortFromAddr(addr); ok {
+				putBack := newRouteHoldPutBack(holdPort, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				ng.Go("route-hold-putback", func() error {
+					putBack.run(gctx)
+					return nil
+				})
+			}
 			// T-849 (tamper audit fixes 7 + 8): hook maintenance on the
 			// policy-state heartbeat. On a managed node it re-runs the
 			// idempotent auto-registration (each repair is logged and

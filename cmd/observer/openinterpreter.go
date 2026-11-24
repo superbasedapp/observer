@@ -54,7 +54,7 @@ func newOpenInterpreterCmd() *cobra.Command {
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it as the trailing positional prompt\n" +
 			"(delivery=inject_prompt), so Open Interpreter opens pre-loaded with\n" +
-			"the mission. See docs/session-handoff.md.\n\n" +
+			"the mission. See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to interpreter.\n" +
 			"Use `--` to separate observer flags from interpreter flags. NEVER\n" +
 			"touches API keys or stored auth.",
@@ -145,7 +145,7 @@ func newOpenInterpreterCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "interpreter-path", "", "Path to the interpreter binary (default: resolve `interpreter` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as interpreter's positional prompt (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as interpreter's positional prompt (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

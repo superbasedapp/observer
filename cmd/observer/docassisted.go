@@ -66,7 +66,7 @@ func docAssistedContinue(ctx context.Context, stderr io.Writer, configPath, tool
 // DOC-ASSISTED launcher, wording each flag for the doc-assisted lane.
 func registerDocAssistedFlags(cmd *cobra.Command, label string, f *docAssistedFlags) {
 	cmdFlags := cmd.Flags()
-	cmdFlags.StringVar(&f.continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the "+label+" TUI (doc-assisted: no verified initial-prompt seed). See docs/session-handoff.md.")
+	cmdFlags.StringVar(&f.continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the "+label+" TUI (doc-assisted: no verified initial-prompt seed). See observer handoff --help.")
 	cmdFlags.StringVar(&f.carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmdFlags.IntVar(&f.fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmdFlags.StringVar(&f.fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

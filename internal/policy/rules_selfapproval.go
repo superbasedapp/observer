@@ -2080,7 +2080,9 @@ func matchGuardEnvPersist(ctx *MatchContext, cmd *Command) (bool, string) {
 
 // matchGuardEnvPersistFile is the file-access form: an agent edit or write
 // of a shell startup file whose text (either side of the edit) names
-// OBSERVER_GUARD_.
+// OBSERVER_GUARD_, or whose content the guard cannot see (an apply_patch
+// rename onto the file, EditUnknown), which may name it (FR-SEC-11, review
+// 2026-11-22; the marker HOOKSW-REN-1 added for R-162 and R-114).
 func matchGuardEnvPersistFile(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) {
 		return false, ""
@@ -2093,10 +2095,13 @@ func matchGuardEnvPersistFile(ctx *MatchContext) (bool, string) {
 	for _, e := range ctx.Event.Edits {
 		named = named || namesGuardEnv(e.Old) || namesGuardEnv(e.New)
 	}
-	if !named {
-		return false, ""
+	if named {
+		return true, "an OBSERVER_GUARD_ environment override written into " + desc + " (" + ctx.Event.Target + ")"
 	}
-	return true, "an OBSERVER_GUARD_ environment override written into " + desc + " (" + ctx.Event.Target + ")"
+	if hasUnseenEdit(ctx.Event.Edits) {
+		return true, desc + " (" + ctx.Event.Target + ") written with content the guard cannot see, by a rename onto it; it may set an OBSERVER_GUARD_ override"
+	}
+	return false, ""
 }
 
 // selfApprovalRules returns the R-165 rows (appended to the boundary

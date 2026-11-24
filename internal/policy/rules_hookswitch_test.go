@@ -249,6 +249,60 @@ func TestHookSwitchRules(t *testing.T) {
 	}
 }
 
+// TestContentRulesOnUnseenContent is NEW-07 (NEW-G-01, 2026-11-22): an
+// apply_patch rename (`*** Update File: a` then `*** Move to: b`) lands a's
+// content, plus the hunks, on b, and the boundary cannot see that content.
+// The hook marks b's edits with EditUnknown. Every content rule must then
+// judge the destination as content that may set anything: R-162 on a
+// hook-bearing settings file and R-114 on .gitattributes. Before the marker,
+// b's event carried no edits and both returned "no match" on it. (A rename
+// onto `.claude/settings.json` or a shell startup file was already denied by
+// a path rule, R-160 or R-154; the row pins that it still is.)
+func TestContentRulesOnUnseenContent(t *testing.T) {
+	t.Parallel()
+	unknown := []ProposedEdit{{Kind: EditUnknown}}
+	withFragment := []ProposedEdit{{Kind: EditFragment, Old: `"a": 1`, New: `"a": 2`}, {Kind: EditUnknown}}
+	visible := []ProposedEdit{{Kind: EditFragment, New: `"disableAllHooks": true`}, {Kind: EditUnknown}}
+	cases := []struct {
+		name     string
+		target   string
+		edits    []ProposedEdit
+		wantRule string
+		want     Decision
+	}{
+		{"rename onto project settings (path rule)", ".claude/settings.json", unknown, "R-160", DecisionDeny},
+		{"rename onto factory local settings", ".factory/settings.local.json", unknown, "R-162", DecisionDeny},
+		{"rename onto local settings with a hunk", ".claude/settings.local.json", withFragment, "R-162", DecisionDeny},
+		{"rename onto settings with a visible switch", ".claude/settings.local.json", visible, "R-162", DecisionDeny},
+		{"rename onto gemini settings", ".gemini/settings.json", unknown, "R-162", DecisionDeny},
+		{"rename onto .gitattributes", ".gitattributes", unknown, "R-114", DecisionAsk},
+		{"rename onto nested .gitattributes", "sub/.gitattributes", withFragment, "R-114", DecisionAsk},
+		{"rename onto a shell startup file (path rule)", "/home/u/.bashrc", unknown, "R-154", DecisionDeny},
+		{"rename onto an ordinary file", "src/main.go", unknown, "", DecisionAllow},
+		{"rename onto an ordinary json file", "config/settings.json", withFragment, "", DecisionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, err := New(Config{
+				Mode: ModeEnforce, Home: "/home/u", HookSwitches: testHookSwitches,
+				ReadFile: func(string) ([]byte, bool) { return nil, false },
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			v := e.Evaluate(Event{
+				Kind: KindFileAccess, ActionType: "edit_file", Target: tc.target, Edits: tc.edits,
+				Cwd: "/home/u/proj", ProjectRoot: "/home/u/proj", SessionID: "s1",
+				Now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
+			})
+			if v.RuleID != tc.wantRule || v.Decision != tc.want {
+				t.Fatalf("got %s/%s (%q), want %s/%s", v.RuleID, v.Decision, v.Reason, tc.wantRule, tc.want)
+			}
+		})
+	}
+}
+
 // TestHookSwitchRulesInertWithoutTable pins that the rows match nothing
 // when the guard layer injected no switch table.
 func TestHookSwitchRulesInertWithoutTable(t *testing.T) {

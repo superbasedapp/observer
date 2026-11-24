@@ -43,6 +43,10 @@ func TestAuthorizeTable(t *testing.T) {
 		{"team allow-list change refused when stale", RoleAdmin, ActionWriteTeamAllowlist, stale, Decision{Code: CodeReauthRequired}},
 		{"support reads orgs when stale", RoleSupport, ActionReadOrgs, stale, Decision{Allowed: true}},
 		{"admin reads orgs", RoleAdmin, ActionReadOrgs, stale, Decision{Allowed: true}},
+		{"support may not issue the envelope", RoleSupport, ActionIssueAvailability, fresh, Decision{Code: CodeForbiddenRole}},
+		{"ops issues the envelope when fresh", RoleOps, ActionIssueAvailability, fresh, Decision{Allowed: true}},
+		{"admin issues the envelope when fresh", RoleAdmin, ActionIssueAvailability, fresh, Decision{Allowed: true}},
+		{"issue refused when stale", RoleAdmin, ActionIssueAvailability, stale, Decision{Code: CodeReauthRequired}},
 		{"unknown role", Role("root"), ActionReadSelf, fresh, Decision{Code: CodeForbiddenRole}},
 		{"unknown action", RoleAdmin, Action("orgs.delete"), fresh, Decision{Code: CodeUnknownAction}},
 	}
@@ -62,10 +66,10 @@ func TestEveryActionHasOneRule(t *testing.T) {
 	t.Parallel()
 	// A support sign-in is held to the mutation rule: it mints a credential
 	// for a tenant (design m6.0 4.9, the claim only with a fresh assertion).
-	mutations := map[Action]bool{ActionWriteAvailability: true, ActionSupportSignIn: true, ActionWriteTeamAllowlist: true}
+	mutations := map[Action]bool{ActionWriteAvailability: true, ActionSupportSignIn: true, ActionWriteTeamAllowlist: true, ActionIssueAvailability: true}
 	all := []Action{
 		ActionReadSelf, ActionSignOut, ActionReadLog, ActionReadAvailability, ActionWriteAvailability, ActionSupportSignIn,
-		ActionReadDeletions, ActionReadTeamAllowlist, ActionWriteTeamAllowlist, ActionReadOrgs,
+		ActionReadDeletions, ActionReadTeamAllowlist, ActionWriteTeamAllowlist, ActionReadOrgs, ActionIssueAvailability,
 	}
 	for _, a := range all {
 		n := 0

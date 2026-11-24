@@ -59,6 +59,98 @@ func TestPatchEditsFor(t *testing.T) {
 	}
 }
 
+// TestPatchEditsForMoveTo is NEW-07 (NEW-G-01, 2026-11-22): an apply_patch
+// rename lands the SOURCE file's content, plus the hunks, on the
+// destination. The patch does not carry that content, so the destination's
+// edits are the section's own lines (when it has any) followed by an
+// EditUnknown marker the content rules judge. The source keeps the section's
+// lines (a `Move to:` line used to end the section and drop them).
+func TestPatchEditsForMoveTo(t *testing.T) {
+	t.Parallel()
+	moved := "*** Begin Patch\n*** Update File: scratch.json\n*** Move to: .claude/settings.local.json\n@@\n-  \"a\": 1\n+  \"a\": 2\n*** End Patch\n"
+	bare := "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: .gitattributes\n*** End Patch\n"
+	alt := "*** Begin Patch\n*** Move File: .gitattributes\n*** End Patch\n"
+	frag := policy.ProposedEdit{Kind: policy.EditFragment, Old: `  "a": 1`, New: `  "a": 2`}
+	unknown := policy.ProposedEdit{Kind: policy.EditUnknown}
+	cases := []struct {
+		name, patch, target string
+		want                []policy.ProposedEdit
+	}{
+		{"destination with a hunk", moved, ".claude/settings.local.json", []policy.ProposedEdit{frag, unknown}},
+		{"source keeps its hunk", moved, "scratch.json", []policy.ProposedEdit{frag}},
+		{"destination of a bare rename", bare, ".gitattributes", []policy.ProposedEdit{unknown}},
+		{"source of a bare rename", bare, "notes.txt", []policy.ProposedEdit{{Kind: policy.EditFragment}}},
+		{"Move File header", alt, ".gitattributes", []policy.ProposedEdit{unknown}},
+		{"untouched file", moved, "other.txt", nil},
+	}
+	for _, tc := range cases {
+		if got := patchEditsFor(map[string]any{"command": tc.patch}, tc.target); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestToolGatePatchRenameReachesContentRules drives a Codex apply_patch that
+// renames a file onto a protected destination through the shared tool gate
+// and a real guard in enforce mode (NEW-07): a rename onto a hook-bearing
+// settings file is R-162 (deny), onto .gitattributes R-114 (ask), and onto
+// an ordinary file nothing.
+func TestToolGatePatchRenameReachesContentRules(t *testing.T) {
+	proj := t.TempDir()
+	cfg := config.Default().Guard
+	cfg.Enabled, cfg.Mode = true, "enforce"
+	cfg.Rules.UserPolicy = ""
+	cfg.Rules.OrgBundle = filepath.Join(proj, "no-org-bundle.json")
+	g, err := guard.New(guard.Options{Config: cfg, Home: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rename := func(dst, hunk string) string {
+		return "*** Begin Patch\n*** Update File: scratch.txt\n*** Move to: " + dst + "\n" + hunk + "*** End Patch\n"
+	}
+	cases := []struct {
+		name, dst, hunk string
+		wantRule        string
+		wantDecision    policy.Decision
+	}{
+		{"onto a hook-bearing settings file", ".claude/settings.local.json", "@@\n-x\n+y\n", "R-162", policy.DecisionDeny},
+		{"onto a settings file with no hunk", ".gemini/settings.json", "", "R-162", policy.DecisionDeny},
+		{"onto .gitattributes", ".gitattributes", "@@\n-x\n+y\n", "R-114", policy.DecisionAsk},
+		{"onto an ordinary file", "src/notes.txt", "@@\n-x\n+y\n", "", policy.DecisionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingEvaluator{inner: g}
+			HandleToolGate(ToolGateRequest{
+				Tool: models.ToolCodex, Dialect: ToolGateDialectClaudeJSON, NativeEvent: "PreToolUse", Label: "codex:PreToolUse",
+				Body: toolPayload("s1", "apply_patch", map[string]any{"command": rename(tc.dst, tc.hunk)}),
+			}, rec, nil, &bytes.Buffer{}, &bytes.Buffer{})
+			v, ok := rec.byTarget[tc.dst]
+			if !ok {
+				t.Fatalf("no event for the destination %s; saw %v", tc.dst, rec.byTarget)
+			}
+			if v.RuleID != tc.wantRule || v.Decision != tc.wantDecision {
+				t.Fatalf("destination verdict = %s/%s (%q), want %s/%s", v.RuleID, v.Decision, v.Reason, tc.wantRule, tc.wantDecision)
+			}
+		})
+	}
+}
+
+// recordingEvaluator forwards to a real guard and keeps each target's verdict.
+type recordingEvaluator struct {
+	inner    guard.Evaluator
+	byTarget map[string]policy.Verdict
+}
+
+func (r *recordingEvaluator) EvaluateHook(ev policy.Event) (guard.ActionVerdict, bool) {
+	v, rw := r.inner.EvaluateHook(ev)
+	if r.byTarget == nil {
+		r.byTarget = map[string]policy.Verdict{}
+	}
+	r.byTarget[ev.Target] = v.Verdict
+	return v, rw
+}
+
 // TestToolGateEventsCarryProposedEdits pins that the shared tool gate hands
 // the write content to the guard for the vendor-shaped families too.
 func TestToolGateEventsCarryProposedEdits(t *testing.T) {

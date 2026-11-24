@@ -1,6 +1,7 @@
-"""Batch C review fixes owned by lane CF-C: R-C04 (the release gate), R-C09
-(the key on admit() and on OTEL endpoints), R-C08 (admit identity), R-C31
-(an unscored experiment) and R-C35 / R-C36 (public docs and READMEs)."""
+"""Batch C review fixes owned by lane CF-C: R-C04 (the release gate; the
+SDKs ride the binary release), R-C09 (the key on admit() and on OTEL
+endpoints), R-C08 (admit identity), R-C31 (an unscored experiment) and
+R-C35 / R-C36 (public docs and READMEs)."""
 
 import os
 import re
@@ -27,19 +28,29 @@ def _job(workflow, name):
     return m.group(1)
 
 
-def test_rc04_pack_needs_the_gate_attestation_and_e2e():
-    wf = _read(".github/workflows/sdk-release.yml")
-    e2e = _job(wf, "e2e")
-    assert "go run ./tests/sdke2e" in e2e
-    assert "if:" not in e2e.split("steps:")[0], "the e2e job is never skipped"
-    pack = _job(wf, "pack")
-    needs = re.search(r"^    needs: \[(.*?)\]", pack, re.M).group(1)
-    assert {n.strip() for n in needs.split(",")} >= {"gate", "verify", "e2e"}
-    assert "needs.e2e.result == 'success'" in pack
-    assert "needs.gate.outputs.attested" in pack and '!= "true"' in pack and "exit 1" in pack
-    for pub in ("publish-pypi", "publish-npm"):
-        assert re.search(r"needs: \[gate, pack\]", _job(wf, pub)), pub
-        assert "needs.pack.result == 'success'" in _job(wf, pub)
+def test_rc04_the_sdks_publish_only_from_the_gated_binary_release():
+    """R-C04, revised 2026-11-24: the SDKs ride the binary release, which is
+    tagged only on the release's own gate. No SDK tag or SDK workflow can
+    publish on unit tests alone: the private release workflow packs the SDKs
+    (scripts/ci/sdk.sh pack, the gate's sdk:pack command) and the public
+    publish.yml publishes them from a final release only."""
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "sdk-release.yml"))
+    pub = _read(".github/workflows/publish.yml")
+    plan = _job(pub, "plan")
+    # Only a final release (the stable channel) marks the SDKs for publishing.
+    assert 'elif [ "${CHANNEL}" = stable ]; then' in plan and "sdk=true" in plan
+    npm = _job(pub, "npm")
+    assert "publish-npm.sh" in npm and "needs.plan.outputs.sdk == 'true'" in npm
+    # PyPI: its own job, one upload (the action supports one run per job).
+    pypi_sdk = _job(pub, "pypi_sdk")
+    assert "packages-dir: publish-dist/sdk/" in pypi_sdk and "needs.plan.outputs.sdk == 'true'" in pypi_sdk
+    assert pypi_sdk.count("gh-action-pypi-publish@") == 1
+    assert "superbased_sdk" not in _job(pub, "pypi")
+    # The private release workflow is not on the public tree (skips there).
+    rel = _read(".github/workflows/npm-release.yml")
+    sdk_pack = _job(rel, "sdk_pack")
+    assert "bash scripts/ci/sdk.sh pack sdk-dist" in sdk_pack
+    assert "secrets." not in sdk_pack and "gh-action-pypi-publish" not in sdk_pack
 
 
 @pytest.mark.parametrize("rel", ["sdk/python/README.md", "sdk/typescript/README.md", "sdk/widget/README.md"])

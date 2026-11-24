@@ -110,7 +110,6 @@ var hookContextInventory = []inventoryRow{
 	{"internal/hook/hermes.go", "*", classRegistration},
 	{"internal/hook/hermes_mcp.go", "*", classRegistration},
 	{"internal/hook/hook_equivalence.go", "*", classRegistration},
-	{"internal/hook/hook_shape.go", "*", classRegistration},
 	{"internal/hook/ownership.go", "*", classRegistration},
 	{"internal/hook/reconcile.go", "*", classRegistration},
 	// The 2026-10-21 wave (merged 2026-10-25): the IBM Bob managed policy

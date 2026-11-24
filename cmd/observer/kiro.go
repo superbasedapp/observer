@@ -57,7 +57,7 @@ func newKiroCmd() *cobra.Command {
 			"from that session and seeds it via `kiro-cli chat \"<handover>\"`\n" +
 			"(the chat subcommand's positional prompt, delivery=inject_prompt),\n" +
 			"so Kiro opens pre-loaded with the mission. See\n" +
-			"docs/session-handoff.md.\n\n" +
+			"`observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to kiro-cli. Use\n" +
 			"`--` to separate observer flags from kiro-cli flags. NEVER touches\n" +
 			"API keys or AWS credentials.",
@@ -157,7 +157,7 @@ func newKiroCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "kiro-cli-path", "", "Path to the kiro-cli binary (default: resolve `kiro-cli` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via `kiro-cli chat \"<handover>\"` (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via `kiro-cli chat \"<handover>\"` (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

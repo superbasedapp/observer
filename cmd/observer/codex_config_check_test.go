@@ -265,8 +265,8 @@ func TestCheckCodexConfigTOML_NoFileWarns(t *testing.T) {
 	if !strings.Contains(warn, `openai_base_url = "http://127.0.0.1:8820/v1"`) {
 		t.Errorf("warn should suggest the v1-suffixed URL: %s", warn)
 	}
-	if !strings.Contains(warn, "V6-2") {
-		t.Errorf("warn should reference V6-2: %s", warn)
+	if !strings.Contains(warn, "https://superbased.app/docs/setup/codex") {
+		t.Errorf("warn should point at the public Codex setup page: %s", warn)
 	}
 }
 

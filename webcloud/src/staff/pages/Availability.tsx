@@ -4,6 +4,8 @@
 // per-component reach and the release flags - next to the envelope the
 // control plane last signed from them. ops and admin change them; support
 // reads. Every change goes through ChangeDialog (reason, tick, passkey).
+// A change reaches the hosts only once ops or admin issue a new envelope
+// from the inputs (the IssueCard at the top, when the issue route is on).
 
 import { useMemo, useState } from "react";
 import { Gauge, Pencil, Plus, Trash2 } from "lucide-react";
@@ -21,9 +23,10 @@ import { Table } from "@shared/primitives/Table";
 import { TabPanel, TabStrip } from "@shared/primitives/Tabs";
 import { getAvailabilityDocument, listAvailability, listOrgs, type AvailabilityInput, type SignedDoc } from "../api";
 import { InputEditorDialog, RemoveInputDialog } from "../components/InputEditor";
+import { IssueCard } from "../components/IssueCard";
 import { PLATFORM_KEY, describeOrgControl, describeReach, orgControlTone, type Section } from "../lib/envelope";
 import { actorLabel, envelopeBehind, formatTime } from "../lib/model";
-import { invalidateStaff, useStaff, useStaffQuery } from "../session";
+import { invalidateStaff, staffKeys, useStaff, useStaffQuery } from "../session";
 
 const TABS: { id: Section; label: string }[] = [
   { id: "org_controls", label: "Org controls" },
@@ -40,18 +43,20 @@ export function sortInputs(rows: AvailabilityInput[]): AvailabilityInput[] {
 
 export function Availability() {
   const staff = useStaff();
-  const inputs = useStaffQuery("staff:availability", listAvailability);
-  const doc = useStaffQuery("staff:availability-doc", getAvailabilityDocument);
+  const inputs = useStaffQuery(staffKeys.inputs, listAvailability);
+  const doc = useStaffQuery(staffKeys.doc, getAvailabilityDocument);
   const orgs = useStaffQuery(staff.feature("orgs") ? "staff:orgs" : null, listOrgs);
   const [tab, setTab] = useState<Section>("org_controls");
   const [editing, setEditing] = useState<Editing>(null);
   const canWrite = staff.may("availability.write");
+  const issuable = staff.feature("availability_issue");
   const names = useMemo(() => new Map((orgs.data?.orgs ?? []).map((o) => [o.org_id, o.display_name])), [orgs.data]);
 
   const done = () => {
     setEditing(null);
-    invalidateStaff("staff:availability");
-    invalidateStaff("staff:availability-doc");
+    invalidateStaff(staffKeys.inputs);
+    invalidateStaff(staffKeys.doc);
+    invalidateStaff(staffKeys.preview);
   };
 
   return (
@@ -61,7 +66,8 @@ export function Availability() {
         icon={Gauge}
         sub="The staff inputs the signed availability envelope is composed from: org kill switches, component reach and release flags."
       />
-      <EnvelopeCard doc={doc.data?.document ?? null} error={doc.error} loading={!doc.data && !doc.error} />
+      {issuable && <IssueCard names={names} />}
+      <EnvelopeCard doc={doc.data?.document ?? null} error={doc.error} loading={!doc.data && !doc.error} issuable={issuable} />
       {!canWrite && (
         <Callout tone="info" title="Read only">
           Your role ({staff.me.role}) can read the inputs. ops and admin change them.
@@ -105,7 +111,18 @@ export function Availability() {
   );
 }
 
-export function EnvelopeCard({ doc, error, loading }: { doc: SignedDoc | null; error: string | null; loading: boolean }) {
+export function EnvelopeCard({
+  doc,
+  error,
+  loading,
+  issuable = false,
+}: {
+  doc: SignedDoc | null;
+  error: string | null;
+  loading: boolean;
+  /** issuable: staff issue envelopes here (the issue card above). */
+  issuable?: boolean;
+}) {
   return (
     <Card title="Issued envelope" sub="What hosts hold now: the newest signed sbo-availability-v1 document.">
       {loading ? (
@@ -113,7 +130,11 @@ export function EnvelopeCard({ doc, error, loading }: { doc: SignedDoc | null; e
       ) : error ? (
         <ErrorState variant="inline" title="Could not load the issued envelope" error={error} />
       ) : !doc ? (
-        <p className="text-[12px] text-fg-2">No envelope has been issued yet. Inputs below take effect once the control plane signs one.</p>
+        <p className="text-[12px] text-fg-2">
+          {issuable
+            ? "No envelope has been issued yet. Hosts apply the inputs below once one is issued (Changes to issue, above)."
+            : "No envelope has been issued yet. Inputs below take effect once the control plane signs one."}
+        </p>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           <DefinitionList>

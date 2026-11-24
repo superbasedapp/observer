@@ -16,7 +16,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/quiesce"
-	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/update"
 )
@@ -110,17 +109,18 @@ func TestLiveSandboxedRunEndToEnd(t *testing.T) {
 	// 2. observer service restart, over loopback to the same daemon.
 	src.set(1)
 	client := httpLiveRunsClient(ts.URL + "/api/admin/restart")
-	savedSD, savedCtl, savedClient := systemdAvailable, serviceSystemctl, newDaemonLiveRunsClient
-	t.Cleanup(func() { systemdAvailable, serviceSystemctl, newDaemonLiveRunsClient = savedSD, savedCtl, savedClient })
-	systemdAvailable = func() bool { return true }
-	var ctl []string
-	serviceSystemctl = func(c service.Command) error { ctl = append(ctl, strings.Join(c.Args, " ")); return nil }
-	newDaemonLiveRunsClient = func(string) daemonLiveRunsClient { return client }
-	if out, err := runServiceRestart(t); err == nil || len(ctl) != 0 || !strings.Contains(err.Error(), "claude-code on bwrap") {
-		t.Fatalf("service restart with a live run: %v %v %q", err, ctl, out)
+	// A fake systemd host (service_saferestart_test.go) whose live-run
+	// client is the loopback one to this daemon.
+	fr := newFakeRestart(t)
+	fr.serving, fr.servingAfter = false, false
+	savedEnv := newSafeRestartEnv
+	t.Cleanup(func() { newSafeRestartEnv = savedEnv })
+	newSafeRestartEnv = func(string) safeRestartEnv { e := fr.env(); e.liveRuns = client; return e }
+	if out, err := runServiceRestart(t); err == nil || len(fr.ran) != 0 || !strings.Contains(err.Error(), "claude-code on bwrap") {
+		t.Fatalf("service restart with a live run: %v %v %q", err, fr.ran, out)
 	}
-	if out, err := runServiceRestart(t, "--end-sandboxed-runs"); err != nil || len(ctl) != 1 || src.LiveSandboxedCount() != 0 || len(src.ended) == 0 {
-		t.Fatalf("--end-sandboxed-runs: %v %v %q (live %d)", err, ctl, out, src.LiveSandboxedCount())
+	if out, err := runServiceRestart(t, "--end-sandboxed-runs"); err != nil || len(fr.ran) != 1 || src.LiveSandboxedCount() != 0 || len(src.ended) == 0 {
+		t.Fatalf("--end-sandboxed-runs: %v %v %q (live %d)", err, fr.ran, out, src.LiveSandboxedCount())
 	}
 
 	// 3. A deferred update apply: the drain holds it for the run (the gate

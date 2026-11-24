@@ -210,8 +210,8 @@ func newGuardReportCmd() *cobra.Command {
 		Use:   "report",
 		Short: "Render the §14.4 compliance evidence pack for a period",
 		Long: "Assembles the audit evidence an assessor asks for (SOC 2 CC-series,\n" +
-			"NIST 800-53 AU-2/AU-3/AU-9/AC-6 - field mapping in\n" +
-			"docs/guard-compliance.md): effective policy at period start/end,\n" +
+			"NIST 800-53 AU-2/AU-3/AU-9/AC-6): effective policy at period\n" +
+			"start/end,\n" +
 			"policy-change log, verdict statistics, audit-chain verification,\n" +
 			"coverage matrix, and the active-approval exception register.\n\n" +
 			"A broken audit chain is REPORTED, not an error - the evidence pack\n" +

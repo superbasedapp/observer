@@ -189,7 +189,7 @@ func gitWriteLocationsOne(ctx *MatchContext) []GitWriteLocation {
 func locateGitWrite(ctx *MatchContext, cmd *Command, w GitWrite, env map[string]string) GitWriteLocation {
 	loc := GitWriteLocation{Write: w}
 	home := ctx.Cfg.Home
-	moves, gitDir, workTree := gitUnitPlaces(cmd)
+	moves, gitDir, workTree, computed := gitUnitPlaces(cmd)
 	if w.Dir != "" && !containsString(moves, w.Dir) && w.Dir != gitDir {
 		// An alias expansion's own `-C` (the unit's argv does not show it).
 		moves = append(moves, w.Dir)
@@ -219,6 +219,12 @@ func locateGitWrite(ctx *MatchContext, cmd *Command, w GitWrite, env map[string]
 		if !loc.Unknown {
 			loc.Unknown, loc.UnknownVia = true, via
 		}
+	}
+	if computed {
+		// A place the line computes (gitUnitPlaces): unplaced, never the
+		// directory the unit runs in.
+		unknown(gitComputedPlaceVia)
+		return loc
 	}
 	// Another index, common directory or work tree than the one the
 	// directory implies: the write records somewhere the frames do not
@@ -289,16 +295,29 @@ func locateGitWrite(ctx *MatchContext, cmd *Command, w GitWrite, env map[string]
 	return loc
 }
 
+// gitComputedPlaceVia is the UnknownVia of a git write whose place the line
+// computes (gitUnitPlaces).
+const gitComputedPlaceVia = "a git location the shell computes"
+
 // gitUnitPlaces reads git's own location options from a unit's argv, before
 // the subcommand: every `-C` in order (git applies each against the one
-// before), and the last `--git-dir` and `--work-tree`.
-func gitUnitPlaces(cmd *Command) (moves []string, gitDir, workTree string) {
+// before), and the last `--git-dir` and `--work-tree`. computed reports a
+// place the line computes: an empty value for one of the three (`-C $(x)`,
+// `--git-dir "$(x)"`, `--work-tree=$(x)`: NF-2 keeps a word that was
+// nothing but a command substitution as an empty word), or an empty word
+// before the subcommand, which may itself be `-C dir` (`git $(x) commit`).
+// Such a write's place is unknown, never the directory it runs in.
+func gitUnitPlaces(cmd *Command) (moves []string, gitDir, workTree string, computed bool) {
 	if cmd == nil || cmd.Base != "git" {
-		return nil, "", ""
+		return nil, "", "", false
 	}
 	argv := cmd.Argv
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
+		if t == "" {
+			computed = true
+			continue
+		}
 		if !strings.HasPrefix(t, "-") || t == "-" {
 			break
 		}
@@ -310,6 +329,10 @@ func gitUnitPlaces(cmd *Command) (moves []string, gitDir, workTree string) {
 			i++
 			val = argv[i]
 		}
+		if val == "" && (name == "-C" || name == "--git-dir" || name == "--work-tree") {
+			computed = true
+			continue
+		}
 		switch name {
 		case "-C":
 			moves = append(moves, val)
@@ -319,7 +342,7 @@ func gitUnitPlaces(cmd *Command) (moves []string, gitDir, workTree string) {
 			workTree = val
 		}
 	}
-	return moves, gitDir, workTree
+	return moves, gitDir, workTree, computed
 }
 
 // gitRedirectEnv are the environment variables that move the index or the
@@ -342,6 +365,9 @@ func gitUnitRedirect(cmd *Command, env map[string]string) string {
 	argv := cmd.Argv
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
+		if t == "" {
+			continue // a substituted word (parseGitInvocation)
+		}
 		if !strings.HasPrefix(t, "-") || t == "-" {
 			break
 		}

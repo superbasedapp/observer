@@ -95,6 +95,17 @@ type EnrollResponse struct {
 	// team wording) and an older agent ignores it.
 	OwnerManaged bool `json:"owner_managed,omitempty"`
 
+	// SDKKeys says whether a member's own machine can get the member's SDK
+	// key from this organization (POST AgentSDKCredentialPath):
+	// SDKKeysMember when it can, SDKKeysAdminOnly when the server issues no
+	// member keys and an admin creates app keys instead, SDKKeysNotOnPlan
+	// when the organization's plan does not include AI Apps (a hosted server).
+	// A node that does not know a value prints its "unknown" wording.
+	// enrolling (SR-9): it never gates a request. omitempty on both sides of
+	// the compat invariant: an older server never sends it (the node then
+	// says it does not know) and an older agent ignores it.
+	SDKKeys string `json:"sdk_keys,omitempty"`
+
 	// ConsentMode / ConsentActor record HOW this enrolment was consented to
 	// when the server itself knows the answer, which today means exactly one
 	// case: an enrolment minted by the ACP-P6c IdP device-code rail
@@ -1237,6 +1248,21 @@ type PushResponse struct {
 	// an older server never sends it (the node keeps its enrolment name) and
 	// an older node ignores the unknown key.
 	OrgName string `json:"org_name,omitempty"`
+
+	// OwnerManaged is whether this organization is the developer's own: its
+	// only admin and its only developer are the same person (a personal
+	// organization of one, orgkind's OwnerManaged row), the same fact as
+	// EnrollResponse.OwnerManaged, restated on every accepted push so a node
+	// that enrolled before it stored the fact (agent migration 261), or
+	// whose organization's answer changed, records the current one
+	// (store.SetEnrolmentOwnerManaged, bound to the enrolment's org id). It
+	// grants no authority: on a managed enrolment it only picks the owner
+	// audience of the managed-default visibility table (finding F12). A
+	// POINTER so an explicit false can clear the node's record while an
+	// absent key (an older server, or a push whose org-kind read failed)
+	// changes nothing. omitempty on both sides of the compat invariant: an
+	// older node ignores the unknown key.
+	OwnerManaged *bool `json:"owner_managed,omitempty"`
 }
 
 // Rail keys of PushResponse.RailVersions / PolicyVersionsDoc.RailVersions.

@@ -63,15 +63,26 @@ func psParamMatches(token, full string, minLen int) bool {
 }
 
 // psHasParam reports whether any argv token matches the PowerShell
-// parameter under psParamMatches rules.
+// parameter under psParamMatches rules, spelled bare (`-Recurse`) or
+// colon-bound (`-Recurse:$true`, which PowerShell binds the same way). A
+// colon-bound false (`-Recurse:$false`, `:0`) turns a switch off and does
+// not count.
 func psHasParam(c *Command, full string, minLen int) bool {
 	for i := 1; i < len(c.Argv); i++ {
-		if psParamMatches(c.Argv[i], full, minLen) {
+		t := c.Argv[i]
+		if psParamMatches(t, full, minLen) {
+			return true
+		}
+		if name, v, ok := psColonParam(t); ok && !psFalseValues[strings.ToLower(v)] && psParamMatches("-"+name, full, minLen) {
 			return true
 		}
 	}
 	return false
 }
+
+// psFalseValues are the colon-bound switch values that turn a PowerShell
+// switch off.
+var psFalseValues = setOf("$false", "0")
 
 // psHostKind classifies what a powershell.exe / pwsh.exe HOST
 // parameter does with the argv that follows it — the only thing this
@@ -242,8 +253,23 @@ func psResolveHostParam(token string) (psHostParam, bool) {
 	return match, found
 }
 
-// psCommandPayload extracts the command text a powershell/pwsh
-// invocation executes, walking the argv the way the HOST parser does.
+// psHostPositional is what a PowerShell host binds its FIRST positional
+// argument (a word that names no host parameter) to, per host base (NF-3,
+// guard-parser lane 2026-11-22). Windows PowerShell 5.1 (`powershell.exe`)
+// binds it to -Command, so `powershell "Remove-Item -Recurse -Force ~"`
+// runs the text exactly as the -Command spelling does, and the remaining
+// argv is the rest of the command text. pwsh 7 binds it to -File, a script
+// this package cannot read; its row is absent so the walk keeps its old
+// reading (a positional is skipped and the scan goes on), which reads more,
+// never less.
+var psHostPositional = map[string]psHostKind{
+	"powershell": psHostCommandText,
+}
+
+// psCommandPayloads extracts the command text a powershell/pwsh
+// invocation executes, walking the argv the way the HOST parser does. base
+// is the host's canonical base; its psHostPositional row decides what a
+// bare positional starts.
 //
 // Three rows carry executable text (-Command, -CommandWithArgs,
 // -EncodedCommand); -File STOPS the walk because everything after it
@@ -258,33 +284,66 @@ func psResolveHostParam(token string) (psHostParam, bool) {
 // token that itself names a payload parameter. That asymmetry is
 // deliberate: a mistake in this table's valued-ness must never be able
 // to delete a `-Command`, which is the one direction that fails open.
-func psCommandPayload(argv []string) (string, bool) {
+//
+// BOTH READINGS OF A POSITIONAL. On a host whose first positional starts
+// the command text, the walk still goes on past the positional, and when
+// it also finds an explicit payload parameter both texts are returned and
+// both are analysed. The same asymmetry: the positional may really be the
+// value of a parameter the table reads as a switch (5.1's `-Version 2`),
+// in which case the explicit `-Command` after it is what runs; or it may
+// really start the command text, in which case `-c x` after it is only
+// more text (`powershell "Remove-Item -Recurse -Force ~;" -c x`). Taking
+// either reading alone would let the other hide the command.
+func psCommandPayloads(argv []string, base string) []string {
+	var out []string
+	explicit, ok, positional := psHostWalk(argv, psHostPositional[base] == psHostCommandText)
+	if ok {
+		out = append(out, explicit)
+	}
+	if positional > 0 {
+		text := strings.Join(argv[positional:], " ")
+		if len(out) == 0 || out[0] != text {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// psHostWalk is psCommandPayloads' walk over the host argv: the explicit
+// payload, and (when positionalIsCommand) the index of the first positional
+// the walk passed before it, -1 when there is none. A positional after
+// -File or after the explicit payload parameter is not the host's.
+func psHostWalk(argv []string, positionalIsCommand bool) (explicit string, ok bool, positional int) {
+	positional = -1
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
 		if !strings.HasPrefix(t, "-") {
+			if positionalIsCommand && positional < 0 {
+				positional = i
+			}
 			continue
 		}
-		p, ok := psResolveHostParam(t)
-		if !ok {
+		p, known := psResolveHostParam(t)
+		if !known {
 			continue // unknown parameter: keep looking, never skip a token
 		}
 		switch p.kind {
 		case psHostCommandText:
 			if i+1 < len(argv) {
-				return strings.Join(argv[i+1:], " "), true
+				return strings.Join(argv[i+1:], " "), true, positional
 			}
 		case psHostEncoded:
 			if i+1 < len(argv) {
-				if dec, ok := decodeEncodedPS(argv[i+1]); ok {
-					return dec, true
+				if dec, decoded := decodeEncodedPS(argv[i+1]); decoded {
+					return dec, true, positional
 				}
 			}
-			return "", false
+			return "", false, positional
 		case psHostScriptFile:
 			// Everything after -File belongs to the script. A script's
 			// argv cannot be statically unwrapped and must not be
 			// misread as host command text.
-			return "", false
+			return "", false, positional
 		case psHostValued:
 			if i+1 < len(argv) && !psCarriesCommandText(argv[i+1]) {
 				i++
@@ -292,7 +351,7 @@ func psCommandPayload(argv []string) (string, bool) {
 		case psHostSwitch:
 		}
 	}
-	return "", false
+	return "", false, positional
 }
 
 // psCarriesCommandText reports whether a token names a host parameter

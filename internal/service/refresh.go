@@ -34,6 +34,13 @@ type RefreshInputs struct {
 	// ExecStartChanged: the rewrite changed the unit's ExecStart line (new
 	// arguments only take effect on a restart).
 	ExecStartChanged bool
+	// HandoverMissing reports that the running daemon was started without
+	// the update hand-over the rewritten unit gives it (no NOTIFY_SOCKET in
+	// its environment, while the unit now writes NotifyAccess=main): every
+	// in-place update is refused (systemd_unit_predates_handover, UPD-9)
+	// until it restarts under the new unit, so the same binary still needs
+	// the restart, under the same proxy-safety rows.
+	HandoverMissing bool
 	// ProxyListening: something listens on the proxy port. When nothing
 	// does, no AI session can be routed through this daemon.
 	ProxyListening bool
@@ -84,7 +91,9 @@ type refreshRule struct {
 	reasons func(RefreshInputs) []string
 }
 
-func (in RefreshInputs) stale() bool { return in.ExecChanged || in.ExecUnknown || in.ExecStartChanged }
+func (in RefreshInputs) stale() bool {
+	return in.ExecChanged || in.ExecUnknown || in.ExecStartChanged || in.HandoverMissing
+}
 
 // refreshRules is the ordered decision table (CLAUDE.md rule 5).
 var refreshRules = []refreshRule{

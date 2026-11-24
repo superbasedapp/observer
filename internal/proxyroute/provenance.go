@@ -149,11 +149,44 @@ func keepPriorsOnFormChange(cur *routeprov.Record, rec *routeprov.Record) {
 // the tool's writer writes for the recorded route at a proxy port, move
 // rewrites a recorded route that is still exactly rec.Value to another value
 // in place. A shape without them is never moved.
+//
+// keys is every key the tool's writer writes or its remover changes (the
+// route hold, hold.go): a safe restart puts a route back with the writer
+// only while those keys are still exactly as the removal left them. A shape
+// without keys is never taken off for a restart.
 type routeShape struct {
 	read   func(path string, rec *routeprov.Record) (string, bool, error)
 	remove func(path string, rec routeprov.Record) error
 	want   func(rec routeprov.Record, port int) (string, bool)
 	move   func(path string, rec routeprov.Record, to string) error
+	keys   func(rec *routeprov.Record) routeKeySet
+}
+
+// routeKeySet is where a writer keeps its route: the file's format and the
+// key paths it writes (and its remover changes).
+type routeKeySet struct {
+	format cfgfmt.Format
+	paths  []cfgfmt.Path
+}
+
+// withKeys adds the writer's route keys to a shape.
+func withKeys(s routeShape, keys func(rec *routeprov.Record) routeKeySet) routeShape {
+	s.keys = keys
+	return s
+}
+
+// fixedKeys is the keys of a writer that always writes the same paths.
+func fixedKeys(format cfgfmt.Format, paths ...cfgfmt.Path) func(*routeprov.Record) routeKeySet {
+	return func(*routeprov.Record) routeKeySet { return routeKeySet{format: format, paths: paths} }
+}
+
+// kimiRouteKeys is Kimi Code's route key: where a lane route recorded it,
+// else the fixed [providers.openai].base_url.
+func kimiRouteKeys(rec *routeprov.Record) routeKeySet {
+	if rec != nil && len(rec.RouteKey) > 0 {
+		return routeKeySet{format: cfgfmt.FormatTOML, paths: []cfgfmt.Path{cfgfmt.Path(rec.RouteKey)}}
+	}
+	return routeKeySet{format: cfgfmt.FormatTOML, paths: []cfgfmt.Path{kimiBaseURLPath}}
 }
 
 // fixedShape adapts a reader / remover pair that knows only the tool's fixed
@@ -166,14 +199,19 @@ func fixedShape(read func(string) (string, bool, error), remove func(path, value
 }
 
 var routeShapes = map[string]routeShape{
-	"claude-code": movable(fixedShape(readClaudeRouteAt, removeClaudeRouteAt), fixedWant(claudeBaseURL), moveClaudeRouteAt),
-	"codex":       movable(fixedShape(readCodexRouteAt, removeCodexRouteAt), fixedWant(codexBaseURL), moveCodexRouteAt),
-	"kimi-code":   movable(routeShape{read: readKimiRouteFor, remove: removeKimiRouteFor}, laneAwareWant(openAICompatProxyURL), moveKimiRouteFor),
-	"qwen-code": movable(routeShape{
+	"claude-code": withKeys(movable(fixedShape(readClaudeRouteAt, removeClaudeRouteAt), fixedWant(claudeBaseURL), moveClaudeRouteAt),
+		fixedKeys(cfgfmt.FormatJSON, cfgfmt.Path{"env", "ANTHROPIC_BASE_URL"}, cfgfmt.Path{"env", ClaudeGatewayHintEnv})),
+	"codex": withKeys(movable(fixedShape(readCodexRouteAt, removeCodexRouteAt), fixedWant(codexBaseURL), moveCodexRouteAt),
+		fixedKeys(cfgfmt.FormatTOML, cfgfmt.Path{"model_provider"}, cfgfmt.Path{"model_providers", ProviderName}, cfgfmt.Path{"model_providers", "openai"})),
+	"kimi-code": withKeys(movable(routeShape{read: readKimiRouteFor, remove: removeKimiRouteFor}, laneAwareWant(openAICompatProxyURL), moveKimiRouteFor),
+		kimiRouteKeys),
+	"qwen-code": withKeys(movable(routeShape{
 		read:   func(path string, _ *routeprov.Record) (string, bool, error) { return readQwenRouteAt(path) },
 		remove: removeQwenRouteFor,
 	}, laneAwareWant(openAICompatProxyURL), moveQwenRouteFor),
-	"crush": movable(fixedShape(readCrushRouteAt, removeCrushRouteAt), fixedWant(openAICompatProxyURL), moveCrushRouteAt),
+		fixedKeys(cfgfmt.FormatJSON, qwenBaseURLPath, cfgfmt.Path{"modelProviders", "openai"})),
+	"crush": withKeys(movable(fixedShape(readCrushRouteAt, removeCrushRouteAt), fixedWant(openAICompatProxyURL), moveCrushRouteAt),
+		fixedKeys(cfgfmt.FormatJSON, crushBaseURLPath)),
 	"cline": movable(routeShape{read: readClineRouteFor, remove: removeClineRouteFor}, clineWant, moveClineRouteFor),
 }
 

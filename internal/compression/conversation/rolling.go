@@ -148,7 +148,33 @@ func (r *rollingState) set(sessionID string, s *sessionRolling) {
 // Returns 0 when the entire conversation forms one tool-pair chain;
 // the caller no-ops summarisation in that case (degraded gracefully —
 // the request just goes upstream uncompressed).
+//
+// Provider-verified pairs ([Message.KeepWithNext], an OpenAI Responses
+// reasoning item and its output item) are never split either: the
+// boundary moves back until the message before it does not glue to the
+// one after it, and the tool-pair expansion re-runs on the wider tail
+// until neither rule moves it.
 func summarizableBoundary(msgs []Message, initialK int) int {
+	if initialK <= 0 || initialK > len(msgs) {
+		return initialK
+	}
+	k := initialK
+	for {
+		next := toolPairBoundary(msgs, k)
+		for next > 0 && msgs[next-1].KeepWithNext {
+			next--
+		}
+		if next == k {
+			return k
+		}
+		k = next
+	}
+}
+
+// toolPairBoundary is the tool_use / tool_result half of
+// [summarizableBoundary]: the largest K ≤ initialK whose tail holds the
+// producer of every id its tool results reference.
+func toolPairBoundary(msgs []Message, initialK int) int {
 	if initialK <= 0 || initialK > len(msgs) {
 		return initialK
 	}

@@ -378,3 +378,72 @@ func TestRoleSplitRuntimeSmoke(t *testing.T) {
 		t.Fatal("NewForRole accepted an invalid role; it must fail loudly")
 	}
 }
+
+// TestRoleSplitWorkerCanSweepExpiredEvidence pins CLOUD-01 (findings
+// 2026-11-22): the worker process runs the expired-evidence sweep
+// (jobs.StartEvidenceSweeper), and the worker binds sbci_worker. Before
+// migration 0151 only sbci_app held EXECUTE on sbci_sweep_expired_evidence
+// (0005), so in the role-split deployment the sweep failed with "permission
+// denied for function" and evidence outlived its one-hour TTL whenever its job
+// never reached a terminal state. The test drives the real call path: a
+// worker-bound store sweeps an expired, still-queued job's evidence, and a
+// fresh object is left alone (the sweep deletes by expires_at only).
+func TestRoleSplitWorkerCanSweepExpiredEvidence(t *testing.T) {
+	appStore, pool := newStore(t)
+	ctx := context.Background()
+	acct := makeAccount(t, appStore)
+
+	now := time.Now()
+	// Created two hours ago, so expires_at (created_at + 1h) is an hour past.
+	expired := submitEvid(t, appStore, acct, "rs-expired", []byte(`{"secret":"old"}`), now.Add(-2*time.Hour))
+	fresh := submitEvid(t, appStore, acct, "rs-fresh", []byte(`{"secret":"new"}`), now)
+	if got := blobCount(t, appStore, acct); got != 2 {
+		t.Fatalf("precondition: want 2 evidence blobs, got %d", got)
+	}
+
+	workerStore, err := store.NewForRole(pool, store.RoleWorker)
+	if err != nil {
+		t.Fatalf("NewForRole(worker): %v", err)
+	}
+	n, err := workerStore.SweepExpiredEvidence(ctx, now)
+	if err != nil {
+		t.Fatalf("SweepExpiredEvidence under sbci_worker: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("SweepExpiredEvidence deleted %d blobs, want 1 (the expired one only)", n)
+	}
+
+	type evidenceState struct {
+		deleted  bool
+		hasBlob  bool
+		jobState string
+	}
+	read := func(jobID string) evidenceState {
+		t.Helper()
+		var st evidenceState
+		if err := pool.QueryRow(ctx,
+			`SELECT eo.deleted_at IS NOT NULL,
+			        EXISTS (SELECT 1 FROM evidence_blobs b
+			                 WHERE b.account_id = eo.account_id AND b.blob_ref = eo.blob_ref),
+			        j.state
+			   FROM analysis_jobs j
+			   JOIN evidence_objects eo ON eo.account_id = j.account_id AND eo.id = j.evidence_pk
+			  WHERE j.account_id = $1::uuid AND j.id = $2::uuid`, acct, jobID).
+			Scan(&st.deleted, &st.hasBlob, &st.jobState); err != nil {
+			t.Fatalf("read evidence state of job %s: %v", jobID, err)
+		}
+		return st
+	}
+	if st := read(expired.JobID); !st.deleted || st.hasBlob || st.jobState != "queued" {
+		t.Fatalf("expired evidence after the worker sweep = %+v, want deleted, no blob, job still queued", st)
+	}
+	if st := read(fresh.JobID); st.deleted || !st.hasBlob {
+		t.Fatalf("fresh evidence after the worker sweep = %+v, want untouched", st)
+	}
+	if !funcPriv(t, pool, "sbci_worker", "sbci_sweep_expired_evidence(timestamptz)") {
+		t.Error("sbci_worker MISSING EXECUTE on sbci_sweep_expired_evidence (0151)")
+	}
+	if funcPriv(t, pool, "sbci_api", "sbci_sweep_expired_evidence(timestamptz)") {
+		t.Error("sbci_api holds EXECUTE on sbci_sweep_expired_evidence; the sweep is a worker-plane job (0151 grants the worker only)")
+	}
+}

@@ -165,7 +165,7 @@ public static class P {
     $aside = @(Get-ChildItem -LiteralPath $p8 -Filter "observer.exe.old-*")
     $newVer = & (Join-Path $p8 "observer.exe") --version
     $alive = -not $daemon.HasExited
-    if ($r.rc -eq 0 -and $r.out -match "Upgraded .*9\.9\.8-old \(developer stub\) -> 9\.9\.9-test\.1 \(developer stub\)" -and $r.out -match "pid $($daemon.Id)\) still runs the previous binary" -and $r.out -match "route off first" -and $newVer -match "9\.9\.9-test\.1 \(developer stub\)" -and $aside.Count -eq 1 -and $alive -and $r.out -notmatch "observer init") {
+    if ($r.rc -eq 0 -and $r.out -match "Upgraded .*9\.9\.8-old \(developer stub\) -> 9\.9\.9-test\.1 \(developer stub\)" -and $r.out -match "pid $($daemon.Id)\) still runs the previous binary" -and $r.out -match "restart it between AI turns" -and $newVer -match "9\.9\.9-test\.1 \(developer stub\)" -and $aside.Count -eq 1 -and $alive -and $r.out -notmatch "observer init") {
       Ok "upgrade over a running daemon: renamed aside, new binary in place, daemon left running, Upgraded X -> Y and the safe order"
     } else { Bad "upgrade over a running daemon (rc=$($r.rc), aside=$($aside.Count), alive=$alive, new=$newVer)" $r.out }
   } finally {

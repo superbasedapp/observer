@@ -38,7 +38,7 @@ func newCacheHealthCmd() *cobra.Command {
 		Short: "Report the §10 cache mispredict-rate gate over persisted cache_events",
 		Long: "Computes the cachetrack reconciliation health metric per spec §10:\n" +
 			"the fraction of non-skipped cache_events whose kind is 'mispredict'.\n" +
-			"P0 soak exit gate: ≤5% rate over ≥200 graded events.\n" +
+			"Default gate: ≤5% rate over ≥200 graded events.\n" +
 			"Exits 0 when the gate passes; non-zero otherwise.\n\n" +
 			"Two secondary validations also run (informational; neither\n" +
 			"changes pass/fail):\n" +
@@ -82,8 +82,8 @@ func newCacheHealthCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON instead of formatted output")
-	cmd.Flags().IntVar(&minEvents, "min-events", 200, "Minimum graded events required for the gate to PASS (P0 = 200)")
-	cmd.Flags().Float64Var(&maxRate, "max-rate", 0.05, "Maximum mispredict rate allowed for the gate to PASS (P0 = 0.05 = 5%)")
+	cmd.Flags().IntVar(&minEvents, "min-events", 200, "Minimum graded events required for the gate to PASS")
+	cmd.Flags().Float64Var(&maxRate, "max-rate", 0.05, "Maximum mispredict rate allowed for the gate to PASS (0.05 = 5%)")
 	cmd.Flags().Float64Var(&maxRewriteReadRatio, "max-rewrite-read-ratio", 3.0, "Read:write ratio over which an invalidation/expiry/model-switch/compaction-reset event is flagged as mechanically inconsistent (informational)")
 	cmd.Flags().Float64Var(&maxCauseShare, "max-cause-share", 0.80, "Share threshold (0..1) over which any non-suffix_growth cause is flagged as dominating graded events (informational)")
 	return cmd

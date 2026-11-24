@@ -450,7 +450,7 @@ func newHookCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&bridgeSentinel, hookbridgeSentinelFlagName, false, "set by `observer hook-bridge`: map every exit code other than 0 and 2 to the bridge's sentinel (internal/hookbridge)")
 	_ = cmd.Flags().MarkHidden(hookbridgeSentinelFlagName)
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to observer config.toml; when set, hook DB writes land on the config's observer.db (matches the proxy / MCP server invocations)")
-	cmd.Flags().DurationVar(&maxRuntime, "max-runtime", 0, "Hard wall-clock cap on a single hook invocation; on exceedance the process exits 0 (fail-open) so the host AI tool is never pinned, except a gate hook (tool/prompt gate) while guard enforcement is on, which BLOCKS the call with a reason (see installHookWatchdog). 0 = use OBSERVER_HOOK_MAX_RUNTIME or the 30s default (gate events are also capped below the host's own hook timeout). See docs/observer-platform-issues-v3.md V3-1.")
+	cmd.Flags().DurationVar(&maxRuntime, "max-runtime", 0, "Hard wall-clock cap on a single hook invocation; on exceedance the process exits 0 (fail-open) so the host AI tool is never pinned, except a gate hook (tool/prompt gate) while guard enforcement is on, which BLOCKS the call with a reason (see installHookWatchdog). 0 = use OBSERVER_HOOK_MAX_RUNTIME or the 30s default (gate events are also capped below the host's own hook timeout).")
 	return cmd
 }
 

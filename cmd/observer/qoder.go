@@ -47,7 +47,7 @@ func newQoderCmd() *cobra.Command {
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via qoder's -i/--prompt-interactive\n" +
 			"flag (delivery=inject_prompt), so Qoder executes the mission prompt\n" +
-			"and stays interactive. See docs/session-handoff.md.\n\n" +
+			"and stays interactive. See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to qodercli. Use\n" +
 			"`--` to separate observer flags from qoder flags. NEVER touches API\n" +
 			"keys or auth state.",
@@ -142,7 +142,7 @@ func newQoderCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "qoder-path", "", "Path to the qodercli binary (default: resolve `qodercli` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via qoder's -i flag (delivery=inject_prompt, launched non-proxied). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via qoder's -i flag (delivery=inject_prompt, launched non-proxied). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

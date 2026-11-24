@@ -1,0 +1,662 @@
+# publish.yml: publish superbased's npm and PyPI packages from a GitHub
+# release, with trusted publishing (OIDC). There is no registry token anywhere
+# in this workflow.
+#
+# Why it runs here: npm and PyPI accept a trusted publish only from the GitHub
+# repository, workflow file and environment a package's trusted publisher
+# names, and every package below names this repository and this file (npm also
+# matches each package's repository.url,
+# git+https://github.com/superbasedapp/observer.git). The maintainers' release
+# run builds, packs, checks and vendor-signs everything, attaches it to this
+# repository's GitHub release while the release is still a draft, with
+# SHA256SUMS listing every file, and publishes the release as its last action.
+# Publishing the release is what starts this workflow, so the files are always
+# on it by then.
+#
+# What it publishes, in order:
+#   npm (job npm, environment npm), dependencies first:
+#     @superbased/observer-linux-x64, -linux-arm64, -darwin-x64,
+#     -darwin-arm64, -win32-x64     the platform binaries
+#     @superbased/observer           the launcher; its optionalDependencies
+#                                    pin the five platform packages
+#     superbased                     the short name, version major + 2
+#                                    (observer 1.43.0 is superbased 3.43.0)
+#     @superbased/sdk,               the SDK version line, from a final
+#     @superbased/feedback-widget    release only, under `latest`
+#   PyPI (environment pypi, one job per project):
+#     superbased-observer            job pypi: the five per-platform wheels
+#     superbased-sdk                 job pypi_sdk: sdist and wheel, from a
+#                                    final release only
+#
+# The SDK version line (sdk/python, sdk/typescript, sdk/widget and sdk/go, one
+# x.y.z) rides the binary release: every release carries the SDK artifacts of
+# the version in its tree, and a version a registry already has is skipped. A
+# pre-release never publishes an SDK: SDK versions are final versions, and a
+# registry never takes one back. (The Go SDK is a module tag,
+# sdk/go/v<x.y.z>, which scripts/release.sh public creates.)
+#
+# Jobs:
+#   plan  resolves the tag (the release event, or the `tag` input of a manual
+#         run) and checks the release's asset names: the seven observer npm
+#         tarballs, the five observer wheels and the SDK's four files, each
+#         set complete or absent. A tag that is not vX.Y.Z or
+#         vX.Y.Z-<pre-release> (sdk-v1.0.0, for example), and a release cut
+#         before this workflow existed (no .tgz or .whl assets), is skipped
+#         cleanly. The npm dist-tag follows the tag shape exactly as the
+#         release's channel job decides it: a hyphen after the version core is
+#         a pre-release, published under `edge`; anything else is a final
+#         release, published under `latest`, with `stable` added as a second
+#         name for the observer packages.
+#   npm   downloads the tarballs; scripts/publish-verify.sh checks SHA256SUMS
+#         against its vendor Ed25519 signature (the keys scripts/install.sh
+#         accepts) and every tarball against SHA256SUMS; then each tarball's
+#         package.json name, version and repository.url are checked.
+#         scripts/publish-npm.sh runs `npm publish <tgz> --access public --tag
+#         <dist-tag> --provenance` per package: a version npm already has with
+#         the same bytes is skipped, so a re-run is safe; an observer version
+#         with different bytes, or a final release older than the current
+#         `latest`, fails before anything after it is published.
+#   pypi  downloads the five wheels, verifies them the same way and uploads
+#         them with pypa/gh-action-pypi-publish (trusted publishing, PEP 740
+#         attestations, files PyPI already has skipped).
+#   pypi_sdk
+#         the same for superbased-sdk's sdist and wheel, from a final release
+#         only, after the pypi job (attempted even when that one failed). The
+#         upload action supports one run per job, hence two jobs; PyPI's
+#         trusted publisher names the workflow and the environment, not the
+#         job, so both use the environment pypi.
+# On a failure the job summary prints the manual fallback.
+#
+# One-time registry setup (the maintainers' release runbook, "Trusted publishing"):
+#   npm, per package, Settings -> Trusted publishing -> GitHub Actions:
+#     organization or user `superbasedapp`, repository `observer`, workflow
+#     filename `publish.yml`, environment name `npm`.
+#   PyPI, per project, Publishing -> Add a new publisher -> GitHub: owner
+#     `superbasedapp`, repository `observer`, workflow name `publish.yml`,
+#     environment name `pypi` (both projects exist; superbased-sdk holds a
+#     0.0.1 name placeholder).
+#   This repository: the environments `npm` and `pypi`.
+#
+# Pins: actions by commit sha; Node and npm are exact versions (trusted
+# publishing needs Node 22.14.0+ and npm 11.5.1+; `npm dist-tag` over OIDC
+# needs npm 11.21.0+). Like every workflow of this repository, it is enabled
+# for a release and disabled between releases.
+
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release to (re)publish, for example v1.43.0'
+        required: true
+        type: string
+
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  # Exact pins, each at least two weeks old when chosen (2026-11-24).
+  NODE_VERSION: '22.23.4'
+  NPM_VERSION: '11.21.2'
+
+jobs:
+  plan:
+    name: plan the release
+    # The same file lives in the maintainers' source repository, where it must
+    # never run: the registries would refuse it there anyway.
+    if: github.repository == 'superbasedapp/observer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # read the release
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      short_version: ${{ steps.resolve.outputs.short_version }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      dist_tag: ${{ steps.resolve.outputs.dist_tag }}
+      npm: ${{ steps.assets.outputs.npm }}
+      pypi: ${{ steps.assets.outputs.pypi }}
+      sdk: ${{ steps.assets.outputs.sdk }}
+      sdk_version: ${{ steps.assets.outputs.sdk_version }}
+    steps:
+      - name: Resolve the release tag and the dist-tag
+        id: resolve
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${EVENT_TAG:-${INPUT_TAG:-}}"
+          case "${TAG}" in
+            v[0-9]*) ;;
+            *)
+              echo "::notice::this release tag is not an observer release tag (v<x.y.z>); nothing to publish."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if ! [[ "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::the release tag is shaped like an observer release but is not vX.Y.Z or vX.Y.Z-<pre-release>; refusing to guess its package versions."
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          SHORT_VERSION="$((${VERSION%%.*} + 2)).${VERSION#*.}"
+          # The release channel job's rule, unchanged: a hyphen anywhere
+          # after the version core is a pre-release.
+          if [[ "${TAG}" == *-* ]]; then
+            CHANNEL=edge
+            DIST_TAG=edge
+          else
+            CHANNEL=stable
+            DIST_TAG=latest
+          fi
+          {
+            echo "publish=true"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "short_version=${SHORT_VERSION}"
+            echo "channel=${CHANNEL}"
+            echo "dist_tag=${DIST_TAG}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::${TAG} publishes on npm dist-tag ${DIST_TAG} (channel ${CHANNEL})"
+
+      - name: Check the release's assets
+        id: assets
+        if: steps.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          SHORT_VERSION: ${{ steps.resolve.outputs.short_version }}
+          CHANNEL: ${{ steps.resolve.outputs.channel }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          work="${RUNNER_TEMP}/plan"
+          mkdir -p "${work}"
+          cd "${work}"
+          if [ "$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)" = "true" ]; then
+            echo "::error::${TAG} is still a draft. Publish the release first; publishing it starts this workflow."
+            exit 1
+          fi
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | sort > assets.txt
+          npm=false pypi=false sdk=false sdk_version=""
+          fail=0
+
+          # 1. The observer npm tarballs: exactly these seven, or none. Every
+          #    other .tgz but the SDK's two is unexpected.
+          {
+            for t in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+              echo "superbased-observer-${t}-${VERSION}.tgz"
+            done
+            echo "superbased-observer-${VERSION}.tgz"
+            echo "superbased-${SHORT_VERSION}.tgz"
+          } | sort > npm-want.txt
+          { grep '\.tgz$' assets.txt || true; } | { grep -Ev '^superbased-(sdk|feedback-widget)-[0-9]' || true; } > npm-got.txt
+          if [ -s npm-got.txt ]; then
+            if diff -u npm-want.txt npm-got.txt; then
+              npm=true
+            else
+              echo "::error::release ${TAG} does not carry exactly the seven expected npm tarballs (diff above: - missing, + unexpected)."
+              fail=1
+            fi
+          fi
+
+          # 2. The observer wheels: one per platform tag, all at one version
+          #    whose release segment is the tag's (1.43.0, or 1.43.0rc1 for
+          #    v1.43.0-rc.1: the wheel build normalizes it the PEP 440 way),
+          #    or none.
+          { grep '\.whl$' assets.txt || true; } | { grep -Ev '^superbased_(observer|sdk)-' || true; } > whl-odd.txt
+          if [ -s whl-odd.txt ]; then
+            echo "::error::release ${TAG} carries wheels that are neither superbased-observer's nor superbased-sdk's:"
+            cat whl-odd.txt
+            fail=1
+          fi
+          { grep -E '^superbased_observer-.*\.whl$' assets.txt || true; } > whl.txt
+          if [ -s whl.txt ]; then
+            ok=1
+            for plat in manylinux2014_x86_64 manylinux2014_aarch64 macosx_13_0_x86_64 macosx_13_0_arm64 win_amd64; do
+              n=$(grep -c -- "-py3-none-${plat}\.whl\$" whl.txt || true)
+              if [ "${n}" != 1 ]; then
+                echo "::error::release ${TAG} carries ${n} superbased-observer wheels for ${plat}, want 1"
+                ok=0
+              fi
+            done
+            if [ "$(wc -l < whl.txt)" -ne 5 ]; then
+              echo "::error::release ${TAG} carries $(wc -l < whl.txt) superbased-observer wheels, want 5"
+              ok=0
+            fi
+            core="${VERSION%%-*}"
+            core_re="${core//./\\.}"
+            pyver=$(sed -E 's/^superbased_observer-([^-]+)-.*$/\1/' whl.txt | sort -u)
+            pyver_re="^${core_re}((a|b|rc)[0-9]+)?(\\.post[0-9]+)?(\\.dev[0-9]+)?\$"
+            # One version; the tag's core; a final tag's wheels exactly the
+            # core, a pre-release's never the bare core.
+            if [ "$(printf '%s\n' "${pyver}" | wc -l)" -ne 1 ] || ! [[ "${pyver}" =~ ${pyver_re} ]] \
+              || { [ "${VERSION}" = "${core}" ] && [ "${pyver}" != "${core}" ]; } \
+              || { [ "${VERSION}" != "${core}" ] && [ "${pyver}" = "${core}" ]; }; then
+              echo "::error::the superbased-observer wheels are version ${pyver//$'\n'/, }, which does not match ${TAG}"
+              ok=0
+            fi
+            if [ "${ok}" = 1 ]; then pypi=true; else fail=1; fi
+          fi
+
+          # 3. The SDK's four files at one x.y.z, or none. They ride every
+          #    release; only a final release publishes them.
+          { grep -E '^(superbased_sdk-|superbased-sdk-|superbased-feedback-widget-)' assets.txt || true; } > sdk-got.txt
+          if [ -s sdk-got.txt ]; then
+            s=$(sed -n 's/^superbased-sdk-\(.*\)\.tgz$/\1/p' sdk-got.txt)
+            if ! [[ "${s}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::release ${TAG} carries SDK files but no single @superbased/sdk tarball at an x.y.z version (found: ${s//$'\n'/, })"
+              fail=1
+            else
+              printf '%s\n' "superbased-sdk-${s}.tgz" "superbased-feedback-widget-${s}.tgz" \
+                "superbased_sdk-${s}-py3-none-any.whl" "superbased_sdk-${s}.tar.gz" | sort > sdk-want.txt
+              if ! diff -u sdk-want.txt sdk-got.txt; then
+                echo "::error::release ${TAG} does not carry exactly the SDK's four files at ${s} (diff above: - missing, + unexpected)."
+                fail=1
+              elif [ "${CHANNEL}" = stable ]; then
+                sdk=true
+                sdk_version="${s}"
+              else
+                echo "::notice::the SDK ${s} rides this pre-release; SDKs are published only from a final release."
+              fi
+            fi
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            exit 1
+          fi
+          if [ "${npm}" = false ] && [ "${pypi}" = false ] && [ "${sdk}" = false ]; then
+            echo "::warning::release ${TAG} carries nothing to publish (no npm tarballs, no wheels). Releases cut before trusted publishing do not carry them."
+          elif ! grep -qx 'SHA256SUMS' assets.txt; then
+            echo "::error::release ${TAG} has packages but no SHA256SUMS to check them against."
+            exit 1
+          fi
+          {
+            echo "npm=${npm}"
+            echo "pypi=${pypi}"
+            echo "sdk=${sdk}"
+            echo "sdk_version=${sdk_version}"
+          } >> "$GITHUB_OUTPUT"
+          echo "npm=${npm} pypi=${pypi} sdk=${sdk} ${sdk_version}"
+
+  npm:
+    name: publish to npm
+    needs: plan
+    if: needs.plan.outputs.npm == 'true' || needs.plan.outputs.sdk == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@superbased/observer
+    permissions:
+      contents: read   # read the release and this checkout
+      id-token: write  # npm trusted publishing and provenance (OIDC)
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download the npm tarballs and SHA256SUMS from the release
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHORT_VERSION: ${{ needs.plan.outputs.short_version }}
+          NPM: ${{ needs.plan.outputs.npm }}
+          SDK: ${{ needs.plan.outputs.sdk }}
+          SDK_VERSION: ${{ needs.plan.outputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/npm-release"
+          mkdir -p "${work}"
+          cd "${work}"
+          # The plan: one line per package, in publish order (dependencies
+          # first): name, version, tarball, kind. The later steps read only
+          # this.
+          : > plan.tsv
+          if [ "${NPM}" = true ]; then
+            for t in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+              printf '%s\t%s\t%s\t%s\n' "@superbased/observer-${t}" "${VERSION}" "superbased-observer-${t}-${VERSION}.tgz" observer >> plan.tsv
+            done
+            printf '%s\t%s\t%s\t%s\n' "@superbased/observer" "${VERSION}" "superbased-observer-${VERSION}.tgz" observer >> plan.tsv
+            printf '%s\t%s\t%s\t%s\n' "superbased" "${SHORT_VERSION}" "superbased-${SHORT_VERSION}.tgz" observer >> plan.tsv
+          fi
+          if [ "${SDK}" = true ]; then
+            printf '%s\t%s\t%s\t%s\n' "@superbased/sdk" "${SDK_VERSION}" "superbased-sdk-${SDK_VERSION}.tgz" sdk >> plan.tsv
+            printf '%s\t%s\t%s\t%s\n' "@superbased/feedback-widget" "${SDK_VERSION}" "superbased-feedback-widget-${SDK_VERSION}.tgz" sdk >> plan.tsv
+          fi
+          pats=(--pattern SHA256SUMS)
+          while IFS=$'\t' read -r _ _ file _; do
+            pats+=(--pattern "${file}")
+          done < plan.tsv
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' > assets.txt
+          if grep -qx 'SHA256SUMS.sig' assets.txt; then
+            pats+=(--pattern SHA256SUMS.sig)
+          fi
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir . "${pats[@]}"
+          rm -f assets.txt
+          ls -l
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install the pinned npm
+        run: |
+          set -euo pipefail
+          npm install -g "npm@${NPM_VERSION}"
+          echo "node $(node --version), npm $(npm --version)"
+          if [ "$(node --version)" != "v${NODE_VERSION}" ] || [ "$(npm --version)" != "${NPM_VERSION}" ]; then
+            echo "::error::want node v${NODE_VERSION} and npm ${NPM_VERSION}"
+            exit 1
+          fi
+
+      - name: Verify the tarballs against SHA256SUMS and its vendor signature
+        id: verify
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/npm-release"
+          # SHA256SUMS against its vendor signature, then every tarball
+          # against SHA256SUMS.
+          mapfile -t files < <(cut -f3 plan.tsv)
+          bash "${GITHUB_WORKSPACE}/scripts/publish-verify.sh" . "${files[@]}"
+          # The package inside is the one the plan names, and it declares
+          # this repository (npm refuses a trusted publish whose
+          # repository.url does not match it).
+          while IFS=$'\t' read -r name version file _ <&3; do
+            tar -xzOf "${file}" package/package.json > package.json.tmp
+            WANT_NAME="${name}" WANT_VERSION="${version}" WANT_REPO="git+https://github.com/${GITHUB_REPOSITORY}.git" node -e '
+              const p = JSON.parse(require("fs").readFileSync("package.json.tmp", "utf8"));
+              const repo = typeof p.repository === "string" ? p.repository : (p.repository || {}).url;
+              const e = process.env;
+              const bad = [];
+              if (p.name !== e.WANT_NAME) bad.push(`name ${p.name}, want ${e.WANT_NAME}`);
+              if (p.version !== e.WANT_VERSION) bad.push(`version ${p.version}, want ${e.WANT_VERSION}`);
+              if (repo !== e.WANT_REPO) bad.push(`repository.url ${repo}, want ${e.WANT_REPO}`);
+              for (const b of bad) console.log(`::error::${e.WANT_NAME}: ${b}`);
+              process.exit(bad.length ? 1 : 0);
+            '
+            echo "ok  ${file}  ${name}@${version}"
+          done 3< plan.tsv
+          rm -f package.json.tmp
+
+      - name: Publish the observer packages (trusted publishing)
+        id: npm
+        if: needs.plan.outputs.npm == 'true'
+        env:
+          DIST_TAG: ${{ needs.plan.outputs.dist_tag }}
+        run: bash "${GITHUB_WORKSPACE}/scripts/publish-npm.sh" "${RUNNER_TEMP}/npm-release" observer "${DIST_TAG}"
+
+      - name: Point the stable dist-tag at this release
+        id: stable
+        if: needs.plan.outputs.npm == 'true' && needs.plan.outputs.channel == 'stable'
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/npm-release"
+          # `stable` is a second name for the version `latest` points at, so
+          # a fleet can pin a channel by name without pinning a
+          # version. It is added rather than published under, because a
+          # version is published once and `latest` must keep working. It
+          # never moves back to an older version (a re-run of an old tag).
+          # The observer packages only: the SDKs have no channels.
+          newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+          while IFS=$'\t' read -r name version _ kind <&3; do
+            [ "${kind}" = observer ] || continue
+            current=$(npm view "${name}" dist-tags.stable 2>/dev/null </dev/null || true)
+            if [ "${current}" = "${version}" ]; then
+              echo "${name}: stable is already ${version}"
+              continue
+            fi
+            if [ -n "${current}" ] && newer "${current}" "${version}"; then
+              echo "::notice::${name}: stable is ${current}, newer than ${version}; left where it is."
+              continue
+            fi
+            npm dist-tag add "${name}@${version}" stable </dev/null
+          done 3< plan.tsv
+
+      # The SDK packages do not depend on the observer packages, so they are
+      # attempted even when an observer publish failed (the run still fails).
+      - name: Publish the SDK packages (trusted publishing)
+        id: sdk
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && needs.plan.outputs.sdk == 'true' }}
+        run: bash "${GITHUB_WORKSPACE}/scripts/publish-npm.sh" "${RUNNER_TEMP}/npm-release" sdk latest
+
+      - name: Manual fallback
+        id: fallback
+        if: failure()
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHORT_VERSION: ${{ needs.plan.outputs.short_version }}
+          DIST_TAG: ${{ needs.plan.outputs.dist_tag }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          NPM: ${{ needs.plan.outputs.npm }}
+          SDK: ${{ needs.plan.outputs.sdk }}
+          SDK_VERSION: ${{ needs.plan.outputs.sdk_version }}
+        run: |
+          TAG="${TAG:-<tag>}" VERSION="${VERSION:-<version>}" SHORT_VERSION="${SHORT_VERSION:-<short version>}" DIST_TAG="${DIST_TAG:-<dist-tag>}"
+          {
+            echo "## npm publish did not complete for ${TAG}"
+            echo ""
+            echo "The log above names the refusal. Common causes: a package has no trusted publisher for this repository, \`publish.yml\` and environment \`npm\`; a new trusted publisher expired before its first publish (npm allows 2 days); \`Allow npm dist-tag\` is off (only the stable step fails); or an observer version is already on npm with different bytes."
+            echo ""
+            echo "Fix the cause and re-run this workflow (\`gh workflow run publish.yml --repo ${GITHUB_REPOSITORY} -f tag=${TAG}\`): versions already published are skipped. Or publish the SAME tarballs by hand, in this order, signed in to npm with two-factor authentication (never a token):"
+            echo ""
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern '*.tgz' --pattern 'SHA256SUMS*'"
+            echo "sha256sum -c --ignore-missing SHA256SUMS"
+            if [ "${NPM:-true}" != false ]; then
+              for t in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+                echo "npm publish superbased-observer-${t}-${VERSION}.tgz --access public --tag ${DIST_TAG} --otp <code>"
+              done
+              echo "npm publish superbased-observer-${VERSION}.tgz --access public --tag ${DIST_TAG} --otp <code>"
+              echo "npm publish superbased-${SHORT_VERSION}.tgz --access public --tag ${DIST_TAG} --otp <code>"
+              if [ "${CHANNEL:-}" = stable ]; then
+                for p in observer-linux-x64 observer-linux-arm64 observer-darwin-x64 observer-darwin-arm64 observer-win32-x64 observer; do
+                  echo "npm dist-tag add @superbased/${p}@${VERSION} stable --otp <code>"
+                done
+                echo "npm dist-tag add superbased@${SHORT_VERSION} stable --otp <code>"
+              fi
+            fi
+            if [ "${SDK:-}" = true ]; then
+              echo "npm publish superbased-sdk-${SDK_VERSION}.tgz --access public --tag latest --otp <code>"
+              echo "npm publish superbased-feedback-widget-${SDK_VERSION}.tgz --access public --tag latest --otp <code>"
+            fi
+            echo '```'
+            echo ""
+            echo "\`SHA256SUMS.sig\` is the vendor signature over \`SHA256SUMS\`; the public key and the one-line \`openssl\` check are on https://superbased.app/download. Skip any package npm already has (\`npm view <name>@<version> version\`). A hand publish carries no provenance."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # PyPI: one job per project, each with exactly one upload. The upload
+  # action does not support being run twice in one job (its README), and
+  # PyPI's trusted publisher names this workflow and the environment `pypi`,
+  # not a job, so both jobs publish under the same publisher setup.
+  pypi:
+    name: publish superbased-observer to PyPI
+    needs: plan
+    if: needs.plan.outputs.pypi == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: pypi
+      url: https://pypi.org/project/superbased-observer/
+    permissions:
+      contents: read   # read the release and this checkout
+      id-token: write  # PyPI trusted publishing and attestations (OIDC)
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download the wheels and SHA256SUMS from the release
+        id: pypi_fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Inside the workspace: the upload action runs in a container that
+          # sees only the workspace. The wheels get a directory of their own,
+          # because the action uploads a whole directory.
+          work="${GITHUB_WORKSPACE}/publish-dist"
+          mkdir -p "${work}/observer"
+          cd "${work}"
+          pats=(--pattern SHA256SUMS --pattern 'superbased_observer-*.whl')
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' > assets.txt
+          if grep -qx 'SHA256SUMS.sig' assets.txt; then
+            pats+=(--pattern SHA256SUMS.sig)
+          fi
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir . "${pats[@]}"
+          rm -f assets.txt
+          shopt -s nullglob
+          for f in superbased_observer-*.whl; do mv "${f}" observer/; done
+          obs=(observer/*)
+          if [ "${#obs[@]}" -ne 5 ]; then
+            echo "::error::downloaded ${#obs[@]} superbased-observer wheels, want 5"
+            exit 1
+          fi
+          ls -lR
+
+      - name: Verify the wheels against SHA256SUMS and its vendor signature
+        id: pypi_verify
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/publish-dist"
+          files=(observer/*)
+          bash "${GITHUB_WORKSPACE}/scripts/publish-verify.sh" . "${files[@]}"
+
+      - name: Upload superbased-observer to PyPI (trusted publishing)
+        id: pypi_upload
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: publish-dist/observer/
+          # A re-run skips the files PyPI already has (PyPI never replaces
+          # a file, and keeps the first upload's bytes).
+          skip-existing: true
+          attestations: true
+          print-hash: true
+
+      - name: Manual fallback
+        id: pypi_fallback
+        if: failure()
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          TAG="${TAG:-<tag>}"
+          {
+            echo "## PyPI upload of superbased-observer did not complete for ${TAG}"
+            echo ""
+            echo "The log above names the refusal. Common causes: the project has no trusted publisher for this repository, \`publish.yml\` and environment \`pypi\`, or the \`pypi\` environment's protection rules stopped the job."
+            echo ""
+            echo "Fix the cause and re-run this workflow (\`gh workflow run publish.yml --repo ${GITHUB_REPOSITORY} -f tag=${TAG}\`): files PyPI already has are skipped. Or upload the SAME files by hand with twine and a PyPI API token scoped to superbased-observer, made for this upload and deleted right after it (a hand upload carries no attestation):"
+            echo ""
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern 'superbased_observer-*.whl' --pattern 'SHA256SUMS*'"
+            echo "sha256sum -c --ignore-missing SHA256SUMS"
+            echo "python3 -m pip install twine"
+            echo "twine upload --skip-existing superbased_observer-*.whl"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pypi_sdk:
+    name: publish superbased-sdk to PyPI
+    # After the observer wheels (the SDKs publish last), but attempted when
+    # that job failed or was skipped: superbased-sdk does not depend on
+    # superbased-observer (the run still fails). A final release only: plan
+    # marks the SDK for the stable channel alone.
+    needs: [plan, pypi]
+    if: ${{ !cancelled() && needs.plan.outputs.sdk == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: pypi
+      url: https://pypi.org/project/superbased-sdk/
+    permissions:
+      contents: read   # read the release and this checkout
+      id-token: write  # PyPI trusted publishing and attestations (OIDC)
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download the SDK sdist and wheel and SHA256SUMS from the release
+        id: pypi_sdk_fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          SDK_VERSION: ${{ needs.plan.outputs.sdk_version }}
+        run: |
+          set -euo pipefail
+          # Inside the workspace, in a directory of its own (see the pypi job).
+          work="${GITHUB_WORKSPACE}/publish-dist"
+          mkdir -p "${work}/sdk"
+          cd "${work}"
+          pats=(--pattern SHA256SUMS --pattern "superbased_sdk-${SDK_VERSION}-py3-none-any.whl" --pattern "superbased_sdk-${SDK_VERSION}.tar.gz")
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' > assets.txt
+          if grep -qx 'SHA256SUMS.sig' assets.txt; then
+            pats+=(--pattern SHA256SUMS.sig)
+          fi
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --dir . "${pats[@]}"
+          rm -f assets.txt
+          shopt -s nullglob
+          for f in superbased_sdk-*; do mv "${f}" sdk/; done
+          sdk=(sdk/*)
+          if [ "${#sdk[@]}" -ne 2 ]; then
+            echo "::error::downloaded ${#sdk[@]} superbased-sdk files, want the sdist and the wheel"
+            exit 1
+          fi
+          ls -lR
+
+      - name: Verify the SDK files against SHA256SUMS and its vendor signature
+        id: pypi_sdk_verify
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/publish-dist"
+          files=(sdk/*)
+          bash "${GITHUB_WORKSPACE}/scripts/publish-verify.sh" . "${files[@]}"
+
+      - name: Upload superbased-sdk to PyPI (trusted publishing)
+        id: pypi_sdk_upload
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: publish-dist/sdk/
+          skip-existing: true
+          attestations: true
+          print-hash: true
+
+      - name: Manual fallback
+        id: pypi_sdk_fallback
+        if: failure()
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          SDK_VERSION: ${{ needs.plan.outputs.sdk_version }}
+        run: |
+          TAG="${TAG:-<tag>}"
+          SDK_VERSION="${SDK_VERSION:-<x.y.z>}"
+          {
+            echo "## PyPI upload of superbased-sdk did not complete for ${TAG}"
+            echo ""
+            echo "The log above names the refusal. Common causes: the project has no trusted publisher for this repository, \`publish.yml\` and environment \`pypi\`, or the \`pypi\` environment's protection rules stopped the job."
+            echo ""
+            echo "Fix the cause and re-run this workflow (\`gh workflow run publish.yml --repo ${GITHUB_REPOSITORY} -f tag=${TAG}\`): files PyPI already has are skipped. Or upload the SAME files by hand with twine and a PyPI API token scoped to superbased-sdk, made for this upload and deleted right after it (a hand upload carries no attestation):"
+            echo ""
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${GITHUB_REPOSITORY} --pattern 'superbased_sdk-*' --pattern 'SHA256SUMS*'"
+            echo "sha256sum -c --ignore-missing SHA256SUMS"
+            echo "python3 -m pip install twine"
+            echo "twine upload --skip-existing superbased_sdk-${SDK_VERSION}-py3-none-any.whl superbased_sdk-${SDK_VERSION}.tar.gz"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

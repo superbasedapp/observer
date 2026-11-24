@@ -115,6 +115,35 @@ func TestParsePolicyFile_MatcherVocabulary(t *testing.T) {
 			decided: policy.DecisionFlag,
 		},
 		{
+			name: "sink git_push",
+			rule: "decision = 'flag'\nmatch.sink = 'git_push'",
+			hit: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git push origin main",
+			},
+			miss: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git commit -m x",
+			},
+			decided: policy.DecisionFlag,
+		},
+		{
+			// NF-2: the parser keeps a word that was nothing but a command
+			// substitution as an empty word; it may be an option, so it
+			// does not hide the subcommand.
+			name: "sink git_push past a substituted word",
+			rule: "decision = 'flag'\nmatch.sink = 'git_push'",
+			hit: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git $(echo -c x=y) push",
+			},
+			miss: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git $(echo -c x=y) status",
+			},
+			decided: policy.DecisionFlag,
+		},
+		{
 			name: "sink git_commit on an MCP commit tool",
 			rule: "decision = 'flag'\nmatch.sink = 'git_commit'",
 			hit: policy.Event{

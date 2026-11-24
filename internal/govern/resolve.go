@@ -390,6 +390,7 @@ func (e *Effective) normalize(grant *Grant) {
 		e.Authority = known
 		e.UnknownAuthority = unknown
 		e.Managed = GrantIsManaged(grant)
+		e.OwnerManaged = e.Managed && grant.OwnerManaged
 	}
 	e.Hash = e.contentHash()
 }

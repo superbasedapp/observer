@@ -312,8 +312,13 @@ func applyOrgPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleE
 			activatePeriodEnd = &t
 		}
 	}
+	// NEW-12: upsertSubscriptionTx floors the plan at the row's own version
+	// (paddle_floor.go), so a renewal at a price that still maps to an older
+	// version never moves an org's row back; note names what it wrote.
 	refused, err := inSavepointTx(ctx, tx, func(sp pgx.Tx) error {
-		return upsertSubscriptionTx(ctx, sp, account, orgID, ev, plan, rowStatus, nil, activatePeriodEnd, occurred)
+		written, e := upsertSubscriptionTx(ctx, sp, account, orgID, ev, plan, rowStatus, nil, activatePeriodEnd, occurred)
+		plan = written
+		return e
 	})
 	if err != nil {
 		return BillingIntake{}, fmt.Errorf("upsert org subscription: %w", err)
@@ -372,7 +377,7 @@ func applyOrgPaddleCancel(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEve
 		}
 		plan = rowPlan
 	}
-	if err := upsertSubscriptionTx(ctx, tx, account, orgID, ev, plan, "canceled", &now, periodEnd, occurred); err != nil {
+	if _, err := upsertSubscriptionTx(ctx, tx, account, orgID, ev, plan, "canceled", &now, periodEnd, occurred); err != nil {
 		return BillingIntake{}, fmt.Errorf("upsert org subscription: %w", err)
 	}
 	return BillingIntake{Applied: true, Outcome: "applied", Note: "org subscription canceled"}, nil

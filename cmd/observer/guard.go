@@ -39,7 +39,7 @@ func newGuardCmd() *cobra.Command {
 		Long: "The guard layer evaluates agent actions against a table-driven\n" +
 			"policy (built-in + user + project rules), records verdicts in a\n" +
 			"hash-chained audit table, and - in enforce mode - blocks at the\n" +
-			"hook seam. See docs/plans/guard-layer-implementation-spec-2026-06-10.md.",
+			"hook seam. See https://superbased.app/docs/guides/security-guard.",
 	}
 	cmd.AddCommand(newGuardStatusCmd())
 	cmd.AddCommand(newNodeControlProbeChildCmd())
@@ -319,7 +319,7 @@ func newGuardRulesCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&catalog, "catalog", false, "show the built-in rule catalog instead of THIS install's effective rules")
 	cmd.Flags().BoolVar(&effective, "effective", false, "show THIS install's effective rules (the default; kept for scripts that pass it)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-	cmd.Flags().BoolVar(&markdown, "markdown", false, "emit the docs/guard-rules.md catalog markdown (regenerate with `observer guard rules --markdown > docs/guard-rules.md`)")
+	cmd.Flags().BoolVar(&markdown, "markdown", false, "emit the rule catalog as Markdown")
 	return cmd
 }
 

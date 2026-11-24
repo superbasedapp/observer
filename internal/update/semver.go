@@ -48,6 +48,47 @@ func ParseSemver(v string) (Semver, bool) {
 	return Semver{Major: out[0], Minor: out[1], Patch: out[2]}, true
 }
 
+// NormalizeVersion is the ONE spelling rule for comparing a release version
+// across the update rail (UPD-9): surrounding space is ignored, and so is one
+// leading "v" (or "V"). An org manifest names a release "v1.42.0" while a
+// release build stamps itself "1.42.0"; both normalize to "1.42.0". Nothing
+// else is folded: a pre-release suffix still distinguishes a build, because
+// "1.42.0-rc.1" is not the release it precedes.
+func NormalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "v") || strings.HasPrefix(v, "V") {
+		v = v[1:]
+	}
+	return v
+}
+
+// SameVersion reports whether a and b name the same version under
+// NormalizeVersion. An empty version is never the same as anything, itself
+// included: "no version" is not a match a caller may act on.
+func SameVersion(a, b string) bool {
+	na, nb := NormalizeVersion(a), NormalizeVersion(b)
+	return na != "" && na == nb
+}
+
+// FirstSupervisedHandoverRelease is the first release whose apply PARENT
+// keeps a supervised daemon up across an in-place update: under systemd it
+// hands the unit's main PID to the new daemon (SVC-1), and under launchd it
+// ends the hand-over with the restart exit (SVC-3). A new binary started by
+// an older parent refuses its self-check under either supervisor
+// (service.DecideHandover), so the older parent rolls back and stays up.
+// It must name the release these changes ship in, or any version after
+// v1.42.0 up to and including it.
+const FirstSupervisedHandoverRelease = "1.42.1"
+
+// ParentKeepsSupervision reports whether a daemon of parentVersion performs
+// its half of a supervised hand-over. An unparseable version (a source build
+// stamped "dev", an empty row) counts as older: refusing is the direction
+// that keeps the node up.
+func ParentKeepsSupervision(parentVersion string) bool {
+	c, ok := CompareSemver(NormalizeVersion(parentVersion), FirstSupervisedHandoverRelease)
+	return ok && c >= 0
+}
+
 // CompareSemver returns -1 / 0 / +1 for a < b / a == b / a > b, and
 // ok=false when either side is unparseable. It is the Go twin of
 // compareSemver (version.ts:293-306), including the "pre-release

@@ -198,7 +198,7 @@ var browserRules = []browserRule{
 		name: "never-connected", state: StateNotDetected,
 		when: func(f browserFacts) bool { return f.in.Seen == nil },
 		out: func(f browserFacts) (string, string) {
-			return "the native host is installed but no extension has connected to it yet; Observer cannot see an extension that never connects", "load the extension in the browser (see docs/browser-extension.md)"
+			return "the native host is installed but no extension has connected to it yet; Observer cannot see an extension that never connects", "load the extension in the browser"
 		},
 	},
 	{
@@ -516,7 +516,7 @@ var helperRules = []helperRule{
 		when: func(in HelperInput) bool { return !in.Present },
 		out: func(in HelperInput) (string, string) {
 			if in.ComponentActive {
-				return "not found where Observer looks; " + in.Component + " runs without it", "install it from the release archive (see docs/components.md)"
+				return "not found where Observer looks; " + in.Component + " runs without it", "install it from the release archive (`observer components` lists what each component needs)"
 			}
 			return "not found where Observer looks", ""
 		},

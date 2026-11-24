@@ -1,9 +1,20 @@
 # gate-tools.tsv - the tools a tools/testrunner command unit may ask for
-# (scripts/ci/gate-commands.tsv, tools column), pinned by version and sha256
-# per architecture. tools/testrunner/bootstrap.sh installs a tool once per
-# worker from this row and refuses a tarball whose sha256 differs.
+# (scripts/ci/gate-commands.tsv, tools column) and the tools the host checks
+# install (scripts/ci/gate-host-checks.sh), pinned by version and digest per
+# architecture. tools/testrunner/bootstrap.sh installs a tool once per
+# machine from this row and refuses a download whose digest differs.
 #
-# Columns (tab separated): tool  version  arch  sha256  url
+# Columns (tab separated): tool  version  arch  digest  url
+#   digest  the project's published sha256 (64 hex); where a project
+#           publishes only SHA-512 (Apache Maven), its sha512 (128 hex).
+#           Never a digest computed here: every one comes from the
+#           project's own checksum file (or, where it has none, from the
+#           digest GitHub records for the release asset), named per tool
+#           below.
+#   url     a .tar.gz/.tgz or .tar.xz archive (unpacked; a single top
+#           directory is stripped, so bin/ or the binary lands at the
+#           tool's root) or a bare binary (installed as <tool>); bootstrap
+#           puts the tool's root and its bin/ on PATH.
 #
 # golangci-lint: the version ci.yml's lint job pins (golangci-lint-action
 #   `version: v2.14.0`); sha256 from the release's
@@ -22,11 +33,40 @@
 # python3.9 .. python3.13: the SDK matrix for sdk/python (requires-python
 #   >=3.9). CPython install_only_stripped builds from python-build-standalone
 #   (the builds uv installs): the tarball unpacks to python/, so bootstrap's
-#   --strip-components=1 leaves bin/python3 on PATH. The newest patch of each
+#   top-directory strip leaves bin/python3 on PATH. The newest patch of each
 #   minor at the time of writing; sha256 from uv 0.13.9's
 #   download-metadata.json, which uv verifies these same URLs against. 3.9
 #   is end of life upstream (its last build is 20251031); keep it while
 #   requires-python says >=3.9.
+# shellcheck: the installer:linux unit (ci.yml's installer job, Linux leg,
+#   runs the runner image's shellcheck, 0.9.0-1 from apt on ubuntu-24.04).
+#   Pinned to 0.11.0, the newest release: 0.9.0 publishes no checksum and
+#   GitHub recorded no digest for its assets, while 0.11.0's .tar.gz assets
+#   carry GitHub's sha256 digest (the release API's assets[].digest), which
+#   is the digest here. scripts/install.sh and scripts/test-install.sh are
+#   clean under 0.11.0 (checked 2026-11-21). The tarball unpacks to
+#   shellcheck-v0.11.0/shellcheck (no bin/).
+# jdk17: the sdk:java-17 unit (ci.yml's sdk job, java-17 leg: setup-java
+#   `distribution: temurin`, `java-version: 17`, which takes the newest 17).
+#   Eclipse Temurin 17.0.21.1+2, the newest 17 at the time of writing (the
+#   Adoptium API's assets/latest/17/hotspot); sha256 from the release's
+#   <file>.sha256.txt. Unpacks to jdk-17.0.21.1+2/ (bin/java, bin/javac).
+# maven: the sdk:java-17 unit's mvn (ci.yml's java leg uses the runner
+#   image's Maven, 3.10.1 on ubuntu-24.04). Apache Maven 3.10.1 from Maven
+#   Central (the same bytes as downloads.apache.org). Apache publishes only
+#   SHA-512, so the digest is the release's apache-maven-3.10.1-bin.tar.gz
+#   .sha512 (identical on Maven Central and downloads.apache.org). One
+#   archive for both architectures (Java). Unpacks to apache-maven-3.10.1/.
+# helm, kind, kubectl, tofu: the host checks (scripts/ci/gate-host-checks.sh),
+#   never a gate unit. helm: ci-private.yml's helm job (azure/setup-helm
+#   `version: v3.21.0`); sha256 from get.helm.sh's <file>.sha256sum.
+#   kind, kubectl: what helm/kind-action@v1.14.0 installs by default (its
+#   kind.sh: DEFAULT_KIND_VERSION=v0.31.0, DEFAULT_KUBECTL_VERSION=v1.35.0);
+#   bare binaries, sha256 from kind's kind-linux-<arch>.sha256sum release
+#   asset and dl.k8s.io's kubectl.sha256 (the files kind-action checks).
+#   tofu: ci-private.yml's tofu job (opentofu/setup-opentofu
+#   `tofu_version: 1.12.6`); sha256 from the release's
+#   tofu_1.12.6_SHA256SUMS. Its tarball has no top directory.
 golangci-lint	2.14.0	amd64	ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-amd64.tar.gz
 golangci-lint	2.14.0	arm64	ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-arm64.tar.gz
 node	22.23.5	amd64	c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz
@@ -47,3 +87,17 @@ python3.12	3.12.16	amd64	6a9e62dad033790aef722dbd370e0ce76ce17b73627ba3ae679f537
 python3.12	3.12.16	arm64	b6a41defec4975d94b4ff1950236e7383e5c02ba40ea48c9ec33c66087a35aab	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
 python3.13	3.13.18	amd64	f2d2199eb25880e07863b391cf7124e7ffa1338b0d65600dfcec117c4223a7fb	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
 python3.13	3.13.18	arm64	55c00325f7c1fddf325dfc621aabdfbbac4dc54adda224af88ec411dc12db239	https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+shellcheck	0.11.0	amd64	b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6	https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz
+shellcheck	0.11.0	arm64	68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc	https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.gz
+jdk17	17.0.21.1_2	amd64	0b0ac5eab6db6abaec68c9913bcddb31321e5da411c45073d520d9c125e6f7b4	https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21.1%2B2/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21.1_2.tar.gz
+jdk17	17.0.21.1_2	arm64	1d808f4b558e9de63d8ba3ead21ffc8b9de204894eff3c19d52c1480aa17cc58	https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21.1%2B2/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.21.1_2.tar.gz
+maven	3.10.1	amd64	8af2fcc48ee6b8f8fc0b21054226e14404b88500df6483cdeb3ae603408f6de27b1397ac591a9fb0d98fee64f4f624fee1383efd25b8998786cda1598fb9ea39	https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.10.1/apache-maven-3.10.1-bin.tar.gz
+maven	3.10.1	arm64	8af2fcc48ee6b8f8fc0b21054226e14404b88500df6483cdeb3ae603408f6de27b1397ac591a9fb0d98fee64f4f624fee1383efd25b8998786cda1598fb9ea39	https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.10.1/apache-maven-3.10.1-bin.tar.gz
+helm	3.21.0	amd64	0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36	https://get.helm.sh/helm-v3.21.0-linux-amd64.tar.gz
+helm	3.21.0	arm64	8de5a0c9a47431e59fd560e91e0779c8cf9316c383da7efb84128a4c339ecb2d	https://get.helm.sh/helm-v3.21.0-linux-arm64.tar.gz
+kind	0.31.0	amd64	eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa	https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64
+kind	0.31.0	arm64	8e1014e87c34901cc422a1445866835d1e666f2a61301c27e722bdeab5a1f7e4	https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-arm64
+kubectl	1.35.0	amd64	a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989	https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl
+kubectl	1.35.0	arm64	58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25	https://dl.k8s.io/release/v1.35.0/bin/linux/arm64/kubectl
+tofu	1.12.6	amd64	50a6106fa4de523d09c87af85f3db1dd47535fc005727fdca6852146476b88ec	https://github.com/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_amd64.tar.gz
+tofu	1.12.6	arm64	9bd0228a81bcd0c88f7045c74378f45a815779f19897191dff7d9efba9976b9e	https://github.com/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_arm64.tar.gz

@@ -149,6 +149,8 @@ type Registrar struct {
 	// crossmount auto-detection for the cross-OS "-windows" route writers —
 	// see crossmount.AutoDetectSuppressed (incident 2026-07-31).
 	homeOverride string
+	// holdLocked: this registrar holds the route hold lock (holdlock.go).
+	holdLocked bool
 }
 
 // NewRegistrar validates opts and returns a Registrar.

@@ -208,15 +208,23 @@ func reason(a Answer) string {
 // Judge decides what to do with queued row q after answer a. It never
 // returns ActionAck for an answer that is not AnswerVerified.
 func Judge(q Queued, a Answer) Decision {
+	return judgeWith(a, func(body []byte) (verdict, error) {
+		if s, ok := specFor(q.Verb); ok {
+			return s.judge(q, body)
+		}
+		return verdict{}, errBadResponse
+	})
+}
+
+// judgeWith reads a once (a verified success body through read) and walks
+// answerRules. Judge reads an outbox verb's answer; JudgeAvailability reads
+// the host-level availability verb's (availability.go).
+func judgeWith(a Answer, read func(body []byte) (verdict, error)) Decision {
 	f := answerFacts{a: a}
 	if a.Kind == AnswerVerified {
 		f.refusal, f.bodyErr = splitBody(a.Body)
 		if f.refusal == nil && f.bodyErr == nil {
-			if s, ok := specFor(q.Verb); ok {
-				f.verdict, f.bodyErr = s.judge(q, a.Body)
-			} else {
-				f.bodyErr = errBadResponse
-			}
+			f.verdict, f.bodyErr = read(a.Body)
 		}
 	}
 	for _, r := range answerRules {

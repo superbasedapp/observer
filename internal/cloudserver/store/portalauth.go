@@ -316,17 +316,39 @@ func (s *Store) CreateStepUpAuthorization(ctx context.Context, accountID, sessio
 // unexpired, unconsumed — so a step-up minted for another session, another
 // action, or already spent matches zero rows and yields ErrStepUpInvalid.
 func consumeStepUpTx(ctx context.Context, tx pgx.Tx, accountID, sessionID, action, authzID string, now time.Time) error {
+	return stepUpTx(ctx, tx,
+		`UPDATE step_up_authorizations SET consumed_at = $5
+		  WHERE `+stepUpUsable+`
+		  RETURNING authz_id::text`, "consume step-up", accountID, sessionID, action, authzID, now)
+}
+
+// stepUpUsable is the one predicate of a usable step-up authorization: bound
+// to the account, the authorization, the session and the action, unexpired
+// and unconsumed ($1 account, $2 authorization, $3 session, $4 action, $5
+// now).
+const stepUpUsable = `account_id = $1::uuid AND authz_id = $2::uuid
+		    AND session_id = $3::uuid AND action = $4
+		    AND consumed_at IS NULL AND expires_at > $5`
+
+// checkStepUpTx reports, without consuming it, whether a step-up
+// authorization is usable now (the same predicate as consumeStepUpTx). The
+// account deletion checks it before it cancels the account's subscriptions
+// at Paddle (ORGDEL-7), so no billing is canceled on an unauthorized
+// request; it consumes the authorization in its deletion transaction.
+func checkStepUpTx(ctx context.Context, tx pgx.Tx, accountID, sessionID, action, authzID string, now time.Time) error {
+	return stepUpTx(ctx, tx,
+		`SELECT authz_id::text FROM step_up_authorizations WHERE `+stepUpUsable,
+		"check step-up", accountID, sessionID, action, authzID, now)
+}
+
+// stepUpTx runs a one-row step-up statement over stepUpUsable's parameters:
+// no row is ErrStepUpInvalid.
+func stepUpTx(ctx context.Context, tx pgx.Tx, sql, what, accountID, sessionID, action, authzID string, now time.Time) error {
 	if authzID == "" || sessionID == "" {
 		return ErrStepUpInvalid
 	}
 	var claimed string
-	e := tx.QueryRow(ctx,
-		`UPDATE step_up_authorizations SET consumed_at = $6
-		  WHERE account_id = $1::uuid AND authz_id = $2::uuid
-		    AND session_id = $3::uuid AND action = $4
-		    AND consumed_at IS NULL AND expires_at > $5
-		  RETURNING authz_id::text`,
-		accountID, authzID, sessionID, action, now, now).Scan(&claimed)
+	e := tx.QueryRow(ctx, sql, accountID, authzID, sessionID, action, now).Scan(&claimed)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return ErrStepUpInvalid
 	}
@@ -336,7 +358,7 @@ func consumeStepUpTx(ctx context.Context, tx pgx.Tx, accountID, sessionID, actio
 		if isInvalidUUIDErr(e) {
 			return ErrStepUpInvalid
 		}
-		return fmt.Errorf("consume step-up: %w", e)
+		return fmt.Errorf("%s: %w", what, e)
 	}
 	return nil
 }

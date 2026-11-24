@@ -173,6 +173,16 @@ func psQuoteByte(b *strings.Builder, c byte) {
 // character is re-emitted escaped in the body. An unclosed block runs to
 // the end of the unit.
 func psScriptBlocks(argv []string, lits, qbr [][]int) []string {
+	return psScriptBlocksLost(argv, lits, qbr, nil)
+}
+
+// psScriptBlocksLost is psScriptBlocks for a unit whose argv holds words
+// that were nothing but a command substitution (Command.lostArgs, NF-2):
+// each such word is re-emitted as a substitution marker, so the nested
+// parse of the block records the same lost word the outer parse did
+// (`% { Remove-Item -Recurse (Join-Path $HOME $_) }` is R-102's
+// substituted-operand ask, not a delete with no target).
+func psScriptBlocksLost(argv []string, lits, qbr [][]int, lost map[int]bool) []string {
 	n := len(argv)
 	var out []string
 	for i := 1; i < n; i++ {
@@ -186,6 +196,10 @@ func psScriptBlocks(argv []string, lits, qbr [][]int) []string {
 			wl, wq := wordOffsets(lits, n, j), wordOffsets(qbr, n, j)
 			if j > i {
 				b.WriteByte(' ')
+			}
+			if lost[j] {
+				b.WriteByte(subMarker)
+				continue
 			}
 			for k := 0; k < len(w); k++ {
 				c := w[k]
@@ -274,12 +288,28 @@ func unwrapScriptBlocks(cmd *Command, st parseState) []Command {
 		return nil
 	}
 	argv, lits, qbr := cmd.Argv, cmd.ArgvLiterals, cmd.argvQuotedBraces
+	lost := make(map[int]bool, len(cmd.lostArgs))
+	for _, i := range cmd.lostArgs {
+		lost[i] = true
+	}
 	name := ""
 	if psDefinitionKeywords[cmd.Base] && len(argv) > 1 {
+		n := len(argv)
 		argv, lits, qbr = splitGluedDefinition(argv, lits, qbr)
+		if len(argv) > n {
+			// argv[1] was split in two: every later word moved up one.
+			moved := make(map[int]bool, len(lost))
+			for i := range lost {
+				if i >= 2 {
+					i++
+				}
+				moved[i] = true
+			}
+			lost = moved
+		}
 		name = canonicalBase(argv[1], DialectPowerShell)
 	}
-	blocks := psScriptBlocks(argv, lits, qbr)
+	blocks := psScriptBlocksLost(argv, lits, qbr, lost)
 	if len(blocks) == 0 {
 		return nil
 	}

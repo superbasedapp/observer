@@ -121,3 +121,10 @@ func sendHandshakeMessage(msg string) error {
 	}
 	return nil
 }
+
+// terminateHandshakeChild ends a self-checked child. No hand-over on Windows
+// ends with a supervisor restart (service.HandoverEndFor), so this is never
+// reached there; it kills, the only signal os.Process sends on Windows.
+func terminateHandshakeChild(p *os.Process) error {
+	return p.Kill()
+}

@@ -75,12 +75,23 @@ function stripComments(code: string): string {
     .replace(/(^|[^:\\])\/\/.*$/gm, "$1");
 }
 
-/** hiddenByDefault reads one managed-default table's VisibilityHidden ids. */
+/** hiddenByDefault reads one managed-default table's ids that some audience
+ *  hides: a row's `Level` (a team organization's machine) or its `Owner`
+ *  (a machine its owner manages) at VisibilityHidden. Each row is a keyed
+ *  `{ID: "...", Level: ..., Why: ..., Owner: ..., OwnerWhy: ...}` literal,
+ *  on one line or several; a row's fields run to the next row's `ID:`. */
 function hiddenByDefault(goSrc: string, table: string): string[] {
   const start = goSrc.indexOf(`var ${table} = []ManagedDefault{`);
   assert.ok(start >= 0, `${table} not found in managed_defaults.go`);
   const body = goSrc.slice(start, goSrc.indexOf("\n}\n", start));
-  return [...body.matchAll(/\{"([a-z0-9-]+)",\s*VisibilityHidden,/g)].map((m) => m[1]!);
+  const rows = [...body.matchAll(/\bID:\s*"([a-z0-9-]+)"/g)];
+  assert.ok(rows.length > 0, `${table} has no keyed {ID: ...} rows: did the row shape change?`);
+  return rows
+    .filter((m, i) => {
+      const fields = body.slice(m.index, i + 1 < rows.length ? rows[i + 1]!.index : body.length);
+      return /\b(?:Level|Owner):\s*VisibilityHidden\b/.test(fields);
+    })
+    .map((m) => m[1]!);
 }
 
 function escape(s: string): string {

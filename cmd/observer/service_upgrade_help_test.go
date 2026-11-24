@@ -24,7 +24,7 @@ func TestServiceUpgradeListedAndNoUnitMessage(t *testing.T) {
 		t.Fatal("`observer service upgrade` is not an available (listed) subcommand")
 	}
 	msg := serviceUpgradeNoUnitMessage("observer.service", "/h/.config/systemd/user/observer.service", "")
-	for _, want := range []string{"no service to upgrade", "run `observer start` again", "turn the proxy route off", "observer service install --now"} {
+	for _, want := range []string{"no service to upgrade", "run `observer service restart`", "proxy routes off", "observer service install --now"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message lacks %q: %s", want, msg)
 		}

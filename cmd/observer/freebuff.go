@@ -57,7 +57,7 @@ func newFreebuffCmd() *cobra.Command {
 			"into. With --continue-from <session-id> the launch is DOC-ASSISTED\n" +
 			"instead: the launcher writes the handover doc, prints its path for\n" +
 			"you to paste, and opens the interactive TUI in the source session's\n" +
-			"project root. See docs/session-handoff.md.\n\n" +
+			"project root. See `observer handoff --help`.\n\n" +
 			"Use --resume <conversation-id> for freebuff's own native resume.\n\n" +
 			"All arguments after the subcommand are forwarded to freebuff. Use\n" +
 			"`--` to separate observer flags from freebuff flags:\n" +
@@ -146,7 +146,7 @@ func newFreebuffCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
 	cmd.Flags().StringVar(&binPath, "freebuff-path", "", "Path to the freebuff binary (default: resolve `freebuff` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the freebuff TUI (doc-assisted - freebuff has no initial-prompt seed). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover, write it to disk, and open the freebuff TUI (doc-assisted - freebuff has no initial-prompt seed). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

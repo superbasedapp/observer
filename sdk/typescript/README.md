@@ -14,19 +14,9 @@ Full reference: [superbased.app/docs/sdk/typescript](https://superbased.app/docs
 
 ## Install
 
-The package is not on npm yet. Install from a checkout:
-
 ```bash
-cd /path/to/your-app && npm install /path/to/sdk/typescript
+npm install @superbased/sdk
 ```
-
-The first install builds the SDK in place (its `prepare` script): npm does
-not install a linked folder's development tools, so the script fetches the
-compiler, the Node types and the OpenTelemetry dependencies at the versions
-`package-lock.json` pins, without running any package's install scripts. In a
-development checkout where `npm install` already ran in `sdk/typescript`,
-nothing is fetched. `npm run test:install` checks this install from a fresh
-copy (it downloads packages).
 
 To use this machine's Observer, turn on Settings > Your apps in its
 dashboard (or `[observability] enabled = true`). The SDK sends spans to

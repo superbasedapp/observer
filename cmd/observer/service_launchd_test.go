@@ -40,7 +40,64 @@ func (f *fakeLaunchd) deps(home string) launchdDeps {
 			}
 			return "", errors.New("not loaded")
 		},
-		out: &bytes.Buffer{},
+		// No daemon serves the node's database unless a test says so.
+		serving: func() (int, bool) { return 0, false },
+		out:     &bytes.Buffer{},
+	}
+}
+
+// TestLaunchdStopIsNeverSuccessWhileADaemonServes (SVC-3): a stop must not
+// report success while an observer daemon still serves this node's database
+// outside the agent's tracking (launchd names no pid, or the pid it named
+// exited and another daemon is still up). The start lock beside the database
+// is what finds it, and the error says how to stop it.
+func TestLaunchdStopIsNeverSuccessWhileADaemonServes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tracked  bool
+		serving  int
+		wantErr  bool
+		wantText string
+	}{
+		{"no tracked pid, nothing serving", false, 0, false, "no running daemon"},
+		{"no tracked pid, an untracked daemon serves", false, 4321, true, "4321"},
+		{"tracked pid stopped, another daemon still serves", true, 4321, true, "4321"},
+		{"tracked pid stopped, nothing left", true, 0, false, "Stopped."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeLaunchd{loaded: true}
+			p := &fakeDaemon{exitOn: "kill SIGTERM", alive: true, clock: time.Unix(0, 0)}
+			var out bytes.Buffer
+			d := f.deps(t.TempDir())
+			if tc.tracked {
+				d.output = func(service.Command) (string, error) { return "state = running\n\tpid = 777\n", nil }
+			}
+			inner := d.run
+			d.run = func(c service.Command) error {
+				err := inner(c)
+				if strings.Contains(strings.Join(c.Args, " "), "kill SIGTERM") {
+					p.alive = false
+				}
+				return err
+			}
+			d.alive = func(pid int) bool { return pid == 777 && p.alive }
+			d.kill = func(int) error { return nil }
+			d.sleep = func(dur time.Duration) { p.clock = p.clock.Add(dur) }
+			d.now = func() time.Time { return p.clock }
+			d.serving = func() (int, bool) { return tc.serving, tc.serving != 0 }
+			d.out = &out
+			err := runLaunchdLifecycle("stop", false, d)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v\n%s", err, tc.wantErr, out.String())
+			}
+			text := out.String()
+			if err != nil {
+				text += err.Error()
+			}
+			if !strings.Contains(text, tc.wantText) {
+				t.Fatalf("stop output lacks %q:\n%s", tc.wantText, text)
+			}
+		})
 	}
 }
 
@@ -78,7 +135,7 @@ func TestLaunchdInstallNeverRestartsALoadedAgent(t *testing.T) {
 	if len(f.calls) != 0 {
 		t.Errorf("a loaded agent was touched: %v", f.calls)
 	}
-	if !strings.Contains(out.String(), "route off first") {
+	if !strings.Contains(out.String(), "observer service restart") || !strings.Contains(out.String(), "proxy routes off first") {
 		t.Errorf("output lacks the safe restart order:\n%s", out.String())
 	}
 }

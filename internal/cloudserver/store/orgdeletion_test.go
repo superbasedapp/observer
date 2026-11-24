@@ -369,6 +369,65 @@ func TestOrgDeletionBlockedAndResumed(t *testing.T) {
 	}
 }
 
+// TestOrgDeletionCancelsARefundedSubscription: a full refund or a chargeback
+// revokes the team's plan but does not cancel the Paddle subscription (FR-7),
+// so cancel_billing cancels a refunded or charged-back one before the fence,
+// as it does a live one; with no billing seam it blocks instead of purging
+// the org with Paddle still renewing it.
+func TestOrgDeletionCancelsARefundedSubscription(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"refunded", "charged_back"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			f := newDelFixture(t)
+			ctx := context.Background()
+			if _, err := f.pool.Exec(ctx, `INSERT INTO paddle_subscriptions (account_id, org_id, paddle_customer_id, paddle_subscription_id, plan_name, plan_version, status)
+				VALUES ($1::uuid, $2::uuid, 'ctm_1', 'sub_rev_1', 'team', 1, $3)`, f.owner, f.org.OrgID, status); err != nil {
+				t.Fatalf("seed a subscription: %v", err)
+			}
+			now := time.Now().Add(time.Minute)
+			if _, err := f.api.OpenOrgDeletion(ctx, f.owner, f.org.OrgID, now.Add(orgdeletion.DefaultCoolingOff)); err != nil {
+				t.Fatal(err)
+			}
+			p, err := f.driver(t, &now, &recBilling{}, nil).PreviewOrg(ctx, f.org.OrgID, time.Time{})
+			if err != nil || !p.WillCancelSubscription || p.Facts.Subscription.ID != "sub_rev_1" {
+				t.Fatalf("preview = %+v, %v; want it to cancel sub_rev_1", p, err)
+			}
+			unwired := f.driver(t, &now, nil, nil)
+			runPass(t, unwired)
+			now = now.Add(orgdeletion.DefaultCoolingOff + time.Minute)
+			runPass(t, unwired)
+			if st, _ := orgRow(t, f.pool, f.org.OrgID); st != "pending_deletion" {
+				t.Fatalf("an org whose subscription Paddle still renews was fenced with no billing seam: %s", st)
+			}
+			rows, err := f.app.ListDeletions(ctx, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got store.DeletionStatusRow
+			for _, r := range rows {
+				if r.Kind == "org" && r.OrgID == f.org.OrgID {
+					got = r
+				}
+			}
+			if got.State != "blocked" || got.BlockedReason != orgdeletion.ReasonBillingSeamUnwired || got.Step != "cancel_billing" {
+				t.Fatalf("staff row = %+v", got)
+			}
+			if ok, err := f.app.ResumeDeletion(ctx, got.RequestID, false, now); err != nil || !ok {
+				t.Fatalf("resume: %v %v", ok, err)
+			}
+			b := &recBilling{}
+			runPass(t, f.driver(t, &now, b, nil))
+			if len(b.calls) != 1 || b.calls[0].SubscriptionID != "sub_rev_1" || b.calls[0].IdempotencyKey != "orgdel:"+got.RequestID {
+				t.Fatalf("billing calls = %+v", b.calls)
+			}
+			if st, _ := orgRow(t, f.pool, f.org.OrgID); st != "purging" {
+				t.Errorf("after cancel: %s", st)
+			}
+		})
+	}
+}
+
 // TestAccountDeletionOrgPrecheck: sole ownership blocks, a plain membership
 // does not, and the console's plan names both.
 func TestAccountDeletionOrgPrecheck(t *testing.T) {

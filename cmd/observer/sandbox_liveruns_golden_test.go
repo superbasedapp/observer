@@ -35,7 +35,8 @@ func readLiveRunGolden(t *testing.T, name string) string {
 }
 
 // TestNoLiveRunGoldensServiceRestart: with a running daemon and nothing live,
-// `observer service restart` prints what the pre-lane binary printed.
+// `observer service restart` prints only the safe restart's own lines (lane
+// sr-restart): the live-run gate adds nothing.
 func TestNoLiveRunGoldensServiceRestart(t *testing.T) {
 	stubServiceRestart(t, &fakeLiveClient{answered: true, drainAfter: -1})
 	cmd := newServiceRestartCmd()
@@ -49,7 +50,7 @@ func TestNoLiveRunGoldensServiceRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := readLiveRunGolden(t, "service-restart.stdout"); out.String() != want {
-		t.Fatalf("stdout = %q, want the pre-lane %q", out.String(), want)
+		t.Fatalf("stdout = %q, want %q", out.String(), want)
 	}
 }
 

@@ -1,10 +1,12 @@
 package orgenrol
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/govern"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 )
 
 // AuthorityPlainEnglish is the plain-language rendering of each authority
@@ -157,6 +159,24 @@ type Disclosure struct {
 	Families []string `json:"families,omitempty"`
 	// ConfigWritesNote follows the config lines when there are any.
 	ConfigWritesNote string `json:"config_writes_note,omitempty"`
+	// ManagedSummary is one plain sentence saying what accepting makes
+	// managed in this dashboard (ManagedPages and ManagedSettings), "" when
+	// nothing is (an individual enrolment has no managed defaults).
+	ManagedSummary string `json:"managed_summary,omitempty"`
+	// ManagedLines are the two lists below as the lines every renderer
+	// prints, grouped by level ("Hidden pages: Security, ..."), so the CLI
+	// and the dashboard show the same words.
+	ManagedLines []string `json:"managed_lines,omitempty"`
+	// ManagedPages lists, on a managed enrolment, the dashboard pages that
+	// start hidden or read-only on this machine for its audience (a team
+	// member's machine, or one its owner manages from a personal
+	// organization of one). GENERATED from nodegov's managed-default table
+	// (nodegov.ManagedRestrictions), never a second list, so the screen
+	// cannot disagree with what the machine applies. The organization's own
+	// policy can change them later.
+	ManagedPages []nodegov.ManagedRestriction `json:"managed_pages,omitempty"`
+	// ManagedSettings is ManagedPages for Settings sections.
+	ManagedSettings []nodegov.ManagedRestriction `json:"managed_settings,omitempty"`
 	// MayNot lists what the organization may NOT do.
 	MayNot []string `json:"may_not"`
 }
@@ -175,6 +195,8 @@ const (
 	DisclosureOwnerManaged = "This is your own personal dashboard: you are its only admin and its only developer, so the settings below are ones you choose there yourself. " +
 		"Accepting lets them apply on this machine the same way a team's do: a budget you set to Enforce can block requests here " +
 		"(once guard mode on this machine is enforce), and settings you pin cannot be changed here. " +
+		"Your AI apps pages, Egress, Routing and Policies stay visible on this machine because they are yours; " +
+		"the dashboard pages and Settings sections listed below start hidden or read-only, as they do on a team member's machine. " +
 		"Your personal dashboard still gets a summary only: full detail is sent only if you turn it on in this machine's config."
 	mayNotReadAnything = "read anything beyond the lines above. This machine is organization-managed, so the extraction lines DO apply: some of them raise your tool inputs, outputs, and command text. The Privacy page always shows what is shared."
 	mayNotReadCode     = "read your code, your files, or your command output"
@@ -206,6 +228,9 @@ func BuildDisclosure(f GrantFacts) Disclosure {
 		d.May = append(d.May, AuthorityLine{Token: tok, Text: AuthorityPlainEnglish(tok)})
 	}
 	if f.Managed {
+		d.ManagedPages, d.ManagedSettings = nodegov.ManagedRestrictions(nodegov.AudienceFor(f.OwnerManaged))
+		d.ManagedSummary = managedSummary(f.OwnerManaged, len(d.ManagedPages), len(d.ManagedSettings))
+		d.ManagedLines = managedLines(d.ManagedPages, d.ManagedSettings)
 		if families := govern.GovernedFamilies(f.Authority); len(families) > 0 {
 			list := TOMLStringList(families)
 			d.Families = families
@@ -223,6 +248,81 @@ func BuildDisclosure(f GrantFacts) Disclosure {
 	}
 	d.MayNot = append(d.MayNot, mayNotHide, mayNotStopLeaving)
 	return d
+}
+
+// Managed-defaults sentences (ManagedSummary). One per audience; %s is the
+// count phrase from managedCount ("12 dashboard pages and 20 Settings
+// sections").
+const (
+	managedSummaryTeam  = "Accepting makes %s hidden or read-only on this machine by default (listed below); the organization can change that later, and the Privacy page always shows what applies."
+	managedSummaryOwner = "Accepting makes %s hidden or read-only on this machine by default (listed below), fewer than on a team member's machine because you are both the admin and the developer; the Privacy page always shows what applies."
+)
+
+// managedSummary is the one sentence over the two managed-default lists, ""
+// when both are empty.
+func managedSummary(ownerManaged bool, pages, settings int) string {
+	count := managedCount(pages, settings)
+	if count == "" {
+		return ""
+	}
+	if ownerManaged {
+		return fmt.Sprintf(managedSummaryOwner, count)
+	}
+	return fmt.Sprintf(managedSummaryTeam, count)
+}
+
+// managedCount renders "N dashboard pages and M Settings sections", leaving
+// out an empty half.
+func managedCount(pages, settings int) string {
+	var parts []string
+	if pages > 0 {
+		parts = append(parts, plural(pages, "dashboard page", "dashboard pages"))
+	}
+	if settings > 0 {
+		parts = append(parts, plural(settings, "Settings section", "Settings sections"))
+	}
+	return strings.Join(parts, " and ")
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
+}
+
+// managedLineGroups is the order and wording of ManagedLines: one row per
+// (list, level), walked top-down; a group with no entries prints nothing.
+var managedLineGroups = []struct {
+	settings bool
+	level    nodegov.Visibility
+	prefix   string
+}{
+	{false, nodegov.VisibilityHidden, "Hidden pages: "},
+	{false, nodegov.VisibilityReadOnly, "Read-only pages: "},
+	{true, nodegov.VisibilityHidden, "Hidden Settings sections: "},
+	{true, nodegov.VisibilityReadOnly, "Read-only Settings sections: "},
+}
+
+// managedLines groups the two lists into the lines every renderer prints.
+func managedLines(pages, settings []nodegov.ManagedRestriction) []string {
+	var out []string
+	for _, g := range managedLineGroups {
+		rows := pages
+		if g.settings {
+			rows = settings
+		}
+		var labels []string
+		for _, r := range rows {
+			if r.Level == g.level {
+				labels = append(labels, r.Label)
+			}
+		}
+		if len(labels) > 0 {
+			out = append(out, g.prefix+strings.Join(labels, ", "))
+		}
+	}
+	return out
 }
 
 // HonoursExtraction reports whether the offer's authority will actually be

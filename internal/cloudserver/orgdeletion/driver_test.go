@@ -506,6 +506,8 @@ func TestOrgDeletionStepOutcomes(t *testing.T) {
 	}{
 		{name: "no live subscription and no billing seam: proceed to the host wait", step: StepCancelBilling, host: "h1", sub: Subscription{ID: "s", Status: "canceled"}, wantStep: StepAwaitHost, wantClass: WaitHostIntentMissing, polls: true},
 		{name: "live subscription, no billing seam: blocked", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "active"}, wantStep: StepCancelBilling, wantBlock: ReasonBillingSeamUnwired},
+		{name: "refunded subscription Paddle still renews, no billing seam: blocked", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "refunded"}, wantStep: StepCancelBilling, wantBlock: ReasonBillingSeamUnwired},
+		{name: "charged-back subscription Paddle still renews, no billing seam: blocked", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "charged_back"}, wantStep: StepCancelBilling, wantBlock: ReasonBillingSeamUnwired},
 		{name: "seam answers unwired: blocked", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "active"}, billing: &fakeBilling{err: ErrSeamUnwired}, wantStep: StepCancelBilling, wantBlock: ReasonBillingSeamUnwired},
 		{name: "billing fails: retried", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "active"}, billing: &fakeBilling{err: errors.New("503")}, wantStep: StepCancelBilling, wantClass: "billing"},
 		{name: "billing refused for good: blocked, not retried (FR-1)", step: StepCancelBilling, sub: Subscription{ID: "s", Status: "active"}, billing: &fakeBilling{err: Classed("billing:http_403", fmt.Errorf("%w: forbidden", ErrBillingRefused))}, wantStep: StepCancelBilling, wantBlock: ReasonBillingRefused},
@@ -540,6 +542,50 @@ func TestOrgDeletionStepOutcomes(t *testing.T) {
 				t.Errorf("poll at %v, want now+waitPoll", f.deferred["r"])
 			case !tc.polls && tc.wantClass != "" && !f.deferred["r"].Equal(t0.Add(Backoff(1))):
 				t.Errorf("retry at %v, want the first backoff", f.deferred["r"])
+			}
+		})
+	}
+}
+
+// TestCancelBillingCancelsWhatPaddleMayBill: cancel_billing cancels every
+// subscription Paddle may still bill before the org is fenced, a refunded or
+// charged-back one included (a refund or chargeback revokes the plan but does
+// not cancel the Paddle subscription, FR-7), and calls nothing for a canceled
+// one or none.
+func TestCancelBillingCancelsWhatPaddleMayBill(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sub        Subscription
+		wantCancel bool
+	}{
+		{Subscription{ID: "sub_9", Status: "active"}, true},
+		{Subscription{ID: "sub_9", Status: "past_due"}, true},
+		{Subscription{ID: "sub_9", Status: "refunded"}, true},
+		{Subscription{ID: "sub_9", Status: "charged_back"}, true},
+		{Subscription{ID: "sub_9", Status: "canceled"}, false},
+		{Subscription{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sub.Status, func(t *testing.T) {
+			t.Parallel()
+			f := newFake()
+			f.orgs["o"] = &fakeOrg{kind: KindTeam, status: StatusPendingDeletion, gen: 2, host: "h1", sub: tc.sub}
+			f.reqs["r"] = &OrgRequest{RequestID: "r", OrgID: "o", State: StatePurging, Step: StepCancelBilling}
+			b := &fakeBilling{}
+			d := driverFor(t, f, &memJournal{}, b, nil, &clock{t: t0})
+			if p, err := d.PreviewOrg(context.Background(), "o", time.Time{}); err != nil || p.WillCancelSubscription != tc.wantCancel {
+				t.Errorf("preview will cancel = %v (%v), want %v", p.WillCancelSubscription, err, tc.wantCancel)
+			}
+			pass(t, d)
+			if tc.wantCancel {
+				if len(b.calls) != 1 || b.calls[0].SubscriptionID != "sub_9" || b.calls[0].IdempotencyKey != "orgdel:r" {
+					t.Fatalf("billing calls = %+v, want one cancel of sub_9", b.calls)
+				}
+			} else if len(b.calls) != 0 {
+				t.Fatalf("billing calls = %+v, want none", b.calls)
+			}
+			if got := f.reqs["r"].Step; got != StepAwaitHost || f.blocked["r"] != "" {
+				t.Errorf("step = %s blocked %q, want on to the host wait", got, f.blocked["r"])
 			}
 		})
 	}

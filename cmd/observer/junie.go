@@ -40,7 +40,7 @@ func newJunieCmd() *cobra.Command {
 			"With --continue-from <session-id> the launch is DOC-ASSISTED: the\n" +
 			"launcher writes the handover doc, prints its path for you to paste,\n" +
 			"and opens the interactive TUI in the source session's project root.\n" +
-			"See docs/session-handoff.md.\n\n" +
+			"See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to junie. Use `--`\n" +
 			"to separate observer flags from junie flags. A positional task or\n" +
 			"--task runs junie headless (it exits when done). NEVER touches keys.",

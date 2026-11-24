@@ -253,7 +253,7 @@ func RenderText(r Report) string {
 
 	b.WriteString("\n== Audit-chain verification ==\n")
 	if r.Chain.OK {
-		fmt.Fprintf(&b, "  OK - %d row(s) verified (tamper-evident, not tamper-proof: see docs/guard-compliance.md)\n", r.Chain.Checked)
+		fmt.Fprintf(&b, "  OK - %d row(s) verified (tamper-evident, not tamper-proof)\n", r.Chain.Checked)
 	} else {
 		fmt.Fprintf(&b, "  BROKEN at id %d (%d row(s) walked) — %s\n",
 			r.Chain.FirstDivergenceID, r.Chain.Checked, r.Chain.Detail)

@@ -1902,8 +1902,11 @@ function EnforceReadinessCard({
         <div className="py-3 text-[11.5px] text-fg-3">
           Nothing replayed yet. The check answers "what would enforce have blocked over my last{" "}
           {hours === "168" ? "7" : "30"} days?" from history the observer already captured - the question to settle
-          before promoting. Full migration path: the guard enforce runbook (
-          <code className="rounded-1 bg-bg-3 px-1">docs/guard-enforce-runbook.md</code>).
+          before promoting. Full migration path:{" "}
+          <a href="https://superbased.app/docs/guides/security-guard" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            the observe to enforce guide ↗
+          </a>
+          .
         </div>
       )}
       {error && <div className="py-2 text-[11.5px] text-danger">{error}</div>}
@@ -2389,7 +2392,7 @@ function GuardBudgetTokenCard() {
 // POLICY_PLACEHOLDER seeds an empty editor with the two §4.4 shapes
 // (shown as a placeholder only - saving stays an explicit act).
 const POLICY_PLACEHOLDER = `# ~/.observer/guard-policy.toml - your user policy layer.
-# Reference: docs/guard-policy-authoring.md
+# Check it with: observer guard lint
 
 # [[rule]]
 # id       = "U-001"
@@ -2635,8 +2638,8 @@ function PolicyLayersCard({ api }: { api: ApiState<GuardPolicyView> }) {
         <div className="mt-3 space-y-2 rounded-2 border border-line-2 bg-bg-3 p-3">
           <div className="text-caption text-fg-3">
             Editing <code className="rounded-1 bg-bg-2 px-1 font-mono text-[10.5px]">{view?.user.path}</code> - saves
-            are lint-gated (a malformed file is refused) and keep the prior version at .bak. Syntax:{" "}
-            <code className="rounded-1 bg-bg-2 px-1 font-mono text-[10.5px]">docs/guard-policy-authoring.md</code>.
+            are lint-gated (a malformed file is refused) and keep the prior version at .bak. Check a draft on the CLI with{" "}
+            <code className="rounded-1 bg-bg-2 px-1 font-mono text-[10.5px]">observer guard lint</code>.
           </div>
           <textarea
             className="h-64 w-full resize-y rounded-2 border border-line-2 bg-bg-2 p-2 font-mono text-[11.5px] leading-relaxed text-fg-1"

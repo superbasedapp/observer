@@ -63,6 +63,12 @@ type UnitOptions struct {
 	// must not be described as one). nil keeps the full set (proxy, watcher,
 	// dashboard).
 	Runs []string
+	// SystemdVersion is the major version of the systemd that will load the
+	// unit (`systemctl --version`, read with ParseSystemdVersion). It picks
+	// the update-handover row (supervision.go): ExitType=cgroup is written
+	// only for 250 and later. 0 means unknown and renders the row that
+	// works on every version.
+	SystemdVersion int
 }
 
 // defaultRuns is what a full node's `observer start` runs.
@@ -107,12 +113,21 @@ func RenderUnit(opts UnitOptions) string {
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=simple\n")
 	b.WriteString("ExecStart=" + execStart + "\n")
+	// The update handover (INFRA-01, supervision.go): the old daemon names
+	// its update child the unit's main process before it exits 0, so the
+	// unit stays up across an in-place update.
+	for _, line := range supervisionFor(opts.SystemdVersion).lines {
+		b.WriteString(line + "\n")
+	}
 	// on-failure, not always: systemd excludes SIGTERM from what counts as
 	// a "failure" restart trigger (systemd.service(5)), so this unit does
 	// NOT relaunch itself during scripts/restart-daemon.sh's deliberate
 	// graceful `kill -TERM` down-window — the script's own relaunch owns
 	// that transition. `always` fought the script: systemd would race it
-	// back onto :8820 mid-restart, and the two relaunches collided.
+	// back onto :8820 mid-restart, and the two relaunches collided. After an
+	// update handover the new daemon is the unit's main process, so its
+	// crash is a failure this still restarts; a failed handover exits 1
+	// and restarts the restored binary.
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=3\n")
 	path := opts.Path

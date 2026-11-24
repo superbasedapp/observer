@@ -232,7 +232,7 @@ func newCodeIntelQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query <cypher>",
 		Short: "Run a read-only Cypher-subset query over the symbol graph",
-		Long: "Supported subset (see docs/codeintel/query-cypher.md):\n" +
+		Long: "Supported subset:\n" +
 			"  MATCH (a)-[:CALLS]->(b) WHERE a.name = \"Run\" RETURN b.name, b.file LIMIT 10",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

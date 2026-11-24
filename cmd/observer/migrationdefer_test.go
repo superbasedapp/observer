@@ -63,7 +63,7 @@ func TestMigrationCmdClassOfRealCommands(t *testing.T) {
 // (or that it is older), both schema versions and the restart advice.
 func TestMigrationDeferNotice(t *testing.T) {
 	got := migrationDeferNotice(diag.LockInfo{PID: 42}, 147, 161, []int{148, 161}, "1.36.0")
-	for _, want := range []string{"an older build (pid 42)", "schema 147", "v1.36.0 (schema 161)", "Restart the daemon to finish the upgrade", "route off first"} {
+	for _, want := range []string{"an older build (pid 42)", "schema 147", "v1.36.0 (schema 161)", "Restart the daemon to finish the upgrade", "observer service restart"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notice %q lacks %q", got, want)
 		}

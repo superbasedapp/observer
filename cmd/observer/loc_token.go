@@ -60,7 +60,7 @@ func resolveLocEditorToken(path string, log *slog.Logger) string {
 	if env := strings.TrimSpace(os.Getenv(locEditorTokenEnv)); env != "" {
 		log.Warn("loc: " + locEditorTokenEnv + " is deprecated and will be removed in a " +
 			"future release; the daemon now generates a per-install token in " +
-			"[loc].editor_token_file (see docs/loc-tracking.md)")
+			"[loc].editor_token_file")
 		return env
 	}
 	if strings.TrimSpace(path) == "" {

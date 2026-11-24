@@ -33,8 +33,10 @@ OpenCode installs npm plugins with Bun at startup and caches them in
 `~/.cache/opencode/node_modules/` — there is no separate `npm install`
 step.
 
-> **Not published yet.** `@superbased/opencode-plugin` is not on npm; this
-> directory is the package source. Publishing is an operator-gated step.
+> **On npm, but it can lag.** `@superbased/opencode-plugin` is published on npm,
+> but by hand, not with every observer release, so the npm version can be older
+> than the observer you run. `npm view @superbased/opencode-plugin version` shows
+> the published version. This directory is the package source.
 
 ## What it wires
 

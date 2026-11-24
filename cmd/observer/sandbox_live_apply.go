@@ -130,7 +130,7 @@ var sandboxLiveApplyNotes = map[string]string{
 	sandboxLiveApplied:       "",
 	sandboxLiveDaemonApplied: "",
 	sandboxLiveNoDaemon:      "",
-	sandboxLiveNoAnswer:      "The running Observer did not confirm it picked this change up, so it may need a restart to use it (observer stop, then observer start).",
+	sandboxLiveNoAnswer:      "The running Observer did not confirm it picked this change up, so it may need a restart to use it: run `observer service restart` when Observer runs as a service, otherwise stop `observer start` and run it again.",
 }
 
 // The double-submit pair the setup routes require (the dashboard's

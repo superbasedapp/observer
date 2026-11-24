@@ -15,16 +15,14 @@ to 3.13.
 
 ## Install
 
-The package is not on PyPI yet. Install from a checkout:
-
 ```bash
-pip install -e sdk/python
+pip install superbased-sdk
 ```
 
 Auto-instrumentation for a framework is an extra:
 
 ```bash
-pip install -e "sdk/python[openai]"   # also [anthropic], [langchain] (LangGraph too), [mcp], [gemini],
+pip install "superbased-sdk[openai]"  # also [anthropic], [langchain] (LangGraph too), [mcp], [gemini],
                                       # [bedrock], [llama-index], [crewai], [pydantic-ai], [openai-agents], [all]
 ```
 

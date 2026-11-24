@@ -3,11 +3,13 @@ package orgenrol
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/govern"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
@@ -208,5 +210,117 @@ func TestBuildDisclosureOwnerManaged(t *testing.T) {
 		if got := d.Owner == DisclosureOwnerManaged; got != tc.want {
 			t.Errorf("%s: owner paragraph %q, want shown %v", tc.name, d.Owner, tc.want)
 		}
+	}
+}
+
+// TestBuildDisclosureManagedDefaults is finding F12's consent half: a managed
+// enrolment's screen lists the pages and Settings sections that start hidden
+// or read-only for its audience, generated from nodegov's default table
+// (never a second list), with one summary sentence; an individual enrolment
+// lists nothing because it has no managed defaults.
+func TestBuildDisclosureManagedDefaults(t *testing.T) {
+	ownerPages := []string{
+		"app-traces", "app-sessions", "app-analytics", "app-end-users",
+		"app-evals", "app-scores", "app-prompts", "app-alerts", "egress", "routing", "policies",
+	}
+	for _, tc := range []struct {
+		name           string
+		owner, managed bool
+		audience       nodegov.ManagedAudience
+		wantSummary    string // the sentence's fixed head
+		wantOwnPages   bool   // ownerPages absent from the hidden list
+	}{
+		{"team org, managed", false, true, nodegov.ManagedAudienceTeam, "Accepting makes ", false},
+		{"personal org, managed", true, true, nodegov.ManagedAudienceOwner, "Accepting makes ", true},
+		{"personal org, individual (an old enrolment)", true, false, "", "", false},
+		{"team org, individual", false, false, "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := BuildDisclosure(GrantFacts{OrgID: "o", ServerURL: "https://o.example", OwnerManaged: tc.owner, Managed: tc.managed})
+			if !tc.managed {
+				if d.ManagedSummary != "" || len(d.ManagedLines)+len(d.ManagedPages)+len(d.ManagedSettings) != 0 {
+					t.Fatalf("an individual enrolment lists managed defaults: %+v", d)
+				}
+				return
+			}
+			nav, settings := nodegov.ManagedRestrictions(tc.audience)
+			if !slices.Equal(d.ManagedPages, nav) || !slices.Equal(d.ManagedSettings, settings) {
+				t.Fatalf("lists do not come from the table for audience %q:\npages %+v\nwant  %+v\nsettings %+v\nwant     %+v",
+					tc.audience, d.ManagedPages, nav, d.ManagedSettings, settings)
+			}
+			if !strings.HasPrefix(d.ManagedSummary, tc.wantSummary) ||
+				!strings.Contains(d.ManagedSummary, strconv.Itoa(len(nav))+" dashboard pages") ||
+				!strings.Contains(d.ManagedSummary, strconv.Itoa(len(settings))+" Settings sections") {
+				t.Fatalf("summary %q does not count %d pages and %d sections", d.ManagedSummary, len(nav), len(settings))
+			}
+			if got := strings.Contains(d.ManagedSummary, "both the admin and the developer"); got != tc.owner {
+				t.Errorf("summary %q: owner wording %v, want %v", d.ManagedSummary, got, tc.owner)
+			}
+			listed := map[string]bool{}
+			for _, r := range d.ManagedPages {
+				listed[r.ID] = true
+				if r.Label == "" || r.Level == nodegov.VisibilityVisible {
+					t.Errorf("page row %+v: needs a label and a non-visible level", r)
+				}
+			}
+			for _, id := range ownerPages {
+				if listed[id] == tc.wantOwnPages {
+					t.Errorf("page %q listed %v for audience %q", id, listed[id], tc.audience)
+				}
+			}
+			// Every listed label appears in exactly one printed line.
+			joined := strings.Join(d.ManagedLines, "\n")
+			for _, r := range append(append([]nodegov.ManagedRestriction{}, d.ManagedPages...), d.ManagedSettings...) {
+				if !strings.Contains(joined, r.Label) {
+					t.Errorf("label %q missing from the printed lines %q", r.Label, d.ManagedLines)
+				}
+			}
+			for _, s := range append([]string{d.ManagedSummary, d.Owner}, d.ManagedLines...) {
+				if strings.Contains(s, "—") || strings.Contains(s, "Plane ") {
+					t.Errorf("copy rule broken in %q", s)
+				}
+			}
+		})
+	}
+}
+
+// TestOwnerParagraphNamesOnlyOwnerVisiblePages keeps DisclosureOwnerManaged
+// true to the table: the pages it says stay visible for the owner are
+// visible at the owner level (and hidden for a team member, which is why the
+// sentence is worth saying).
+func TestOwnerParagraphNamesOnlyOwnerVisiblePages(t *testing.T) {
+	if !strings.Contains(DisclosureOwnerManaged, "Your AI apps pages, Egress, Routing and Policies stay visible") {
+		t.Fatalf("owner paragraph no longer names the pages it keeps: %q", DisclosureOwnerManaged)
+	}
+	for _, id := range []string{
+		"app-traces", "app-sessions", "app-analytics", "app-end-users",
+		"app-evals", "app-scores", "app-prompts", "app-alerts", "egress", "routing", "policies",
+	} {
+		if got := nodegov.ManagedNavDefault(id, nodegov.ManagedAudienceOwner); got != nodegov.VisibilityVisible {
+			t.Errorf("owner paragraph says %q stays visible, the table says %q", id, got)
+		}
+		if got := nodegov.ManagedNavDefault(id, nodegov.ManagedAudienceTeam); got == nodegov.VisibilityVisible {
+			t.Errorf("%q is visible for a team member too; the owner sentence no longer distinguishes anything", id)
+		}
+	}
+}
+
+// TestManagedCount: the count phrase's singular, plural and empty halves.
+func TestManagedCount(t *testing.T) {
+	for _, tc := range []struct {
+		pages, settings int
+		want            string
+	}{
+		{0, 0, ""},
+		{1, 0, "1 dashboard page"},
+		{0, 1, "1 Settings section"},
+		{2, 3, "2 dashboard pages and 3 Settings sections"},
+	} {
+		if got := managedCount(tc.pages, tc.settings); got != tc.want {
+			t.Errorf("managedCount(%d, %d) = %q, want %q", tc.pages, tc.settings, got, tc.want)
+		}
+	}
+	if managedSummary(false, 0, 0) != "" {
+		t.Error("an empty pair of lists needs no summary")
 	}
 }

@@ -56,7 +56,11 @@ test("every offered backend has an Enabled checkbox matching the enabled list", 
   assert.doesNotMatch(input(render(["bwrap", "landlock"]), "Bubblewrap"), /disabled/);
   // Planned rows are listed, never offered.
   assert.doesNotMatch(html, /Enable E2B/);
-  assert.match(html, /Not offered yet: E2B \(P7\)/);
+  // Planned rows are named without their internal phase id (SR-26 copy pass).
+  assert.match(html, /Not offered yet: E2B\./);
+  assert.doesNotMatch(html, /\(P7\)/);
+  // A container row says plainly that it needs an image you build (SR-26).
+  assert.match(html, /Needs a container image you build yourself: Observer does not publish a default image yet/);
 });
 
 test("a row says whether enabling it would make it run here", () => {

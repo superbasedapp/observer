@@ -9,7 +9,7 @@ customer tenant (`acme`) set with `sb.propagate_attributes`.
 
 ## Install
 
-Python 3.10 to 3.13. The SDK is not on PyPI yet; install it from a
+Python 3.10 to 3.13. The examples install the SDK from a
 checkout of the repository, then the pinned framework:
 
 ```bash

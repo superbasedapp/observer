@@ -376,3 +376,26 @@ func TestProviderBlockPartialFirstRefreshFailsClosed(t *testing.T) {
 		t.Fatalf("a timed-out later refresh dropped the complete set: rule %q", rule)
 	}
 }
+
+// TestProviderBlockWrappedAddresses pins that the provider block unwraps
+// with ipclass.Unwrap, the same unwrap the egress policy uses (SEC-02): an
+// IPv4-mapped, NAT64 or 6to4 spelling of a dedicated provider address is
+// refused like the address itself.
+func TestProviderBlockWrappedAddresses(t *testing.T) {
+	t.Parallel()
+	b := NewProviderBlock(nil)
+	resolve := func(_ context.Context, host string) ([]net.IP, error) {
+		if host == "api.anthropic.com" {
+			return []net.IP{net.ParseIP("198.51.100.10")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	for _, s := range []string{"198.51.100.10", "::ffff:198.51.100.10", "64:ff9b::c633:640a", "2002:c633:640a::"} {
+		if rule := b.checkResolved([]net.IP{net.ParseIP(s)}, resolve); rule != RuleModelProviderAddress {
+			t.Errorf("%s: rule %q, want %s", s, rule, RuleModelProviderAddress)
+		}
+	}
+	if rule := b.checkResolved([]net.IP{net.ParseIP("2002:c633:640b::")}, resolve); rule != "" {
+		t.Errorf("a 6to4 spelling of another address: rule %q", rule)
+	}
+}

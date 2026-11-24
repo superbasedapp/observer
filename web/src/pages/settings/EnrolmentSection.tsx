@@ -717,6 +717,16 @@ function ConsentCard({
           {d.config_writes_note && <div className="mt-1 text-fg-3">{d.config_writes_note}</div>}
         </div>
       )}
+      {d.managed_summary && (
+        <div className="mb-3">
+          <p className="mb-1 text-fg-1">{d.managed_summary}</p>
+          <ul className="list-disc space-y-0.5 pl-5 text-fg-2">
+            {(d.managed_lines ?? []).map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="mb-1 font-medium text-fg-1">It may NOT:</div>
       <ul className="mb-3 list-disc space-y-1 pl-5 text-fg-2">
         {(d.may_not ?? []).map((l) => (

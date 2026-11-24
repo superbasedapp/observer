@@ -41,16 +41,6 @@ func claudeCodeHookCommand(binPath, event, configSuffix string) string {
 	return shellQuoteIfNeeded(binPath) + " hook claude-code " + hookEventArg(event) + configSuffix
 }
 
-// claudeObserverGroup is Observer's own Claude Code hook group for cmd: the
-// match-all matcher and one command entry.
-func claudeObserverGroup(cmd string) (claudeHookGroupRaw, error) {
-	entryJSON, err := json.Marshal(claudeHookCommand{Type: "command", Command: cmd})
-	if err != nil {
-		return claudeHookGroupRaw{}, err
-	}
-	return claudeHookGroupRaw{Matcher: "*", Hooks: []json.RawMessage{entryJSON}}, nil
-}
-
 // genericSettingsHookCommand is the command a Claude-Code-shaped settings
 // file's entry runs for tool's native event (registerGenericSettingsHooks:
 // Gemini CLI, Qwen Code, Qoder): the binary, `hook <tool> <event>` and
@@ -59,20 +49,15 @@ func genericSettingsHookCommand(binPath, tool, event, configSuffix string) strin
 	return shellQuoteIfNeeded(binPath) + " hook " + tool + " " + event + configSuffix
 }
 
-// genericObserverGroup is Observer's own group in such a file: one command
-// entry, no matcher.
-func genericObserverGroup(cmd string) claudeHookGroup {
-	return claudeHookGroup{Hooks: []claudeHookCommand{{Type: "command", Command: cmd}}}
-}
-
 // boxHookRenderer is one covered mechanism: the agentconfig artifact of the
-// user-scope file it writes, the events it registers for a row, and the
-// command and group of one event.
+// user-scope file it writes, the events it registers for a row, the command
+// of one event, and the matcher of Observer's group (the local writer's:
+// "*" for Claude Code, none for the generic settings files).
 type boxHookRenderer struct {
 	artifact string
 	events   func(c integration.Capability) []string
 	command  func(binPath, tool, event string) string
-	group    func(cmd string) (json.RawMessage, error)
+	matcher  string
 }
 
 // boxHookRenderers is the closed set of mechanisms a box can be seeded for
@@ -87,13 +72,7 @@ var boxHookRenderers = map[integration.HookMechanism]boxHookRenderer{
 		artifact: claudeSettingsArtifact,
 		events:   func(integration.Capability) []string { return claudeCodeEvents },
 		command:  func(bin, _, event string) string { return claudeCodeHookCommand(bin, event, "") },
-		group: func(cmd string) (json.RawMessage, error) {
-			g, err := claudeObserverGroup(cmd)
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(g)
-		},
+		matcher:  "*",
 	},
 	integration.HookQwenSettings:   genericBoxRenderer("qwen-code/user-settings"),
 	integration.HookGeminiSettings: genericBoxRenderer("gemini-cli/user-settings"),
@@ -110,7 +89,6 @@ func genericBoxRenderer(artifact string) boxHookRenderer {
 		command: func(bin, tool, event string) string {
 			return genericSettingsHookCommand(bin, tool, event, "")
 		},
-		group: func(cmd string) (json.RawMessage, error) { return json.Marshal(genericObserverGroup(cmd)) },
 	}
 }
 
@@ -179,12 +157,17 @@ var ErrBoxHooksNotCovered = errors.New("hook: the tool's hook mechanism cannot b
 var ErrBoxHooksSwitchedOff = errors.New("hook: the box turns the tool's hooks off")
 
 // RenderBoxHooks renders the box's settings file with Observer's entries
-// for every event the row's mechanism registers. Observer's earlier entries
-// for the tool (any observer binary) are replaced; every other key, event
-// and entry is kept. The file's encoding is the local writer's: a row
-// whose settings file shares a credential file keeps the existing bytes of
-// every other member (spliceTopLevelJSON), any other row the sorted
-// rendering (encodeSettingsJSON).
+// for every event the row's mechanism registers. It goes through the same
+// raw round-trip as the local writers (hookentries.go, NEW-06): Observer's
+// earlier entry for the tool (any observer binary) is refreshed where it
+// sits (mergeObserverGroup), any further Observer handler on the event is
+// dropped so a stale one never runs beside the current one, and every other
+// key, event, group and handler keeps its data and its order; a new event
+// is appended, and nothing is HTML-escaped. A hooks member that cannot be
+// edited without guessing is refused. The file's encoding is the local
+// writer's: a row whose settings file shares a credential file keeps the
+// existing bytes of every other member (spliceTopLevelJSON), any other row
+// the sorted rendering (encodeSettingsJSON).
 func RenderBoxHooks(in BoxHookInput) (BoxHookFile, error) {
 	c := in.Capability
 	if !BoxHooksCover(c) {
@@ -210,40 +193,34 @@ func RenderBoxHooks(in BoxHookInput) (BoxHookFile, error) {
 			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %w", err)
 		}
 	}
-	hooks := map[string]json.RawMessage{}
-	if raw, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(raw, &hooks); err != nil || hooks == nil {
-			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %s: the hooks member is not an object", out.Path)
-		}
+	hooks, err := decodeHookEvents(settings["hooks"], groupedHookEntries)
+	if err != nil {
+		return BoxHookFile{}, refuseHookShape("hook.RenderBoxHooks", out.Path, err)
 	}
+	ours := func(cmd string) bool { return isObserverAnyHookEntry(cmd, c.Tool) }
+	// T-847: Observer's entry in another shape than the one written here (a
+	// narrowed matcher, an extra field) is never kept as current.
+	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(ours))
 	for _, event := range rr.events(c) {
 		if in.SkipEvent != nil && in.SkipEvent(c.Tool, event) {
 			continue
 		}
-		var groups []json.RawMessage
-		if raw, ok := hooks[event]; ok && len(raw) > 0 {
-			if err := json.Unmarshal(raw, &groups); err != nil {
-				return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %s: hooks[%s] is not a list", out.Path, event)
-			}
+		if err := mergeObserverGroup(hooks, groupEntryRule{
+			event: event, cmd: rr.command(in.Binary, c.Tool, event),
+			matcher: rr.matcher, ours: ours, drift: shapeDrift[event],
+		}); err != nil {
+			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %s: %w", out.Path, err)
 		}
-		groups = slices.DeleteFunc(groups, func(g json.RawMessage) bool { return boxGroupIsObservers(g, c.Tool) })
-		ours, err := rr.group(rr.command(in.Binary, c.Tool, event))
-		if err != nil {
-			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %w", err)
-		}
-		groups = append(groups, ours)
-		b, err := json.Marshal(groups)
-		if err != nil {
-			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %w", err)
-		}
-		hooks[event] = b
 		out.Events = append(out.Events, event)
 	}
-	hb, err := json.Marshal(hooks)
-	if err != nil {
+	if err := setHooksMember(settings, "hooks", hooks, false); err != nil {
 		return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %w", err)
 	}
-	settings["hooks"] = hb
+	if _, ok := settings["hooks"]; !ok {
+		// Every event skipped on a file with no hooks member: still write
+		// the (empty) member, as before.
+		settings["hooks"] = json.RawMessage("{}")
+	}
 	if integration.HooksShareCredentialFile(c.Tool) {
 		if out.Content, err = spliceTopLevelJSON(in.Existing, settings); err != nil {
 			return BoxHookFile{}, fmt.Errorf("hook.RenderBoxHooks: %w", err)
@@ -259,23 +236,6 @@ func RenderBoxHooks(in BoxHookInput) (BoxHookFile, error) {
 		return BoxHookFile{}, fmt.Errorf("%w: %s", ErrBoxHooksSwitchedOff, why)
 	}
 	return out, nil
-}
-
-// boxGroupIsObservers reports whether a hook group holds only Observer's
-// commands for tool (any observer binary): the entries a box seed replaces.
-func boxGroupIsObservers(g json.RawMessage, tool string) bool {
-	var probe struct {
-		Hooks []claudeHookCommandProbe `json:"hooks"`
-	}
-	if json.Unmarshal(g, &probe) != nil || len(probe.Hooks) == 0 {
-		return false
-	}
-	for _, h := range probe.Hooks {
-		if h.Type != "command" || !isObserverAnyHookEntry(h.Command, tool) {
-			return false
-		}
-	}
-	return true
 }
 
 // boxHooksSwitchedOff is the hook-off switch (hookdisable's table, the one

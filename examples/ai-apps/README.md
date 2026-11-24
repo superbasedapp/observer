@@ -29,7 +29,9 @@ not arrive.
   (`observer components add obs --yes`, `observer config set observability.enabled true`,
   `observer start`), or an organization's trace gateway and an SDK key
   (`SUPERBASED_DESTINATION=online`, `SUPERBASED_ORG_URL`, `SUPERBASED_API_KEY`).
-- The SDK from a checkout of this repository (neither package is published yet):
+- The SDK from a checkout of this repository, so each example tests the SDK
+  beside it (in your own app: `pip install superbased-sdk` or
+  `npm install @superbased/sdk`):
   Python `pip install "<repo>/sdk/python[<extra>]"`; TypeScript: `npm install` in
   the example (its `package.json` names the SDK folder; the first install also
   builds the SDK); Java: `mvn -q -f <repo>/sdk/java install -DskipTests`.

@@ -1,0 +1,1 @@
+import{j as e,f as s}from"./vendor-react-BT-Z05uK.js";import{ht as o}from"./index-BEqmpjyr.js";const a={node:t=>e.jsx("span",{children:o(t.usd,t.tokens)}),text:t=>o(t.usd,t.tokens)},u=s.createContext(a);function x(){return s.useContext(u)}function l({usd:t,tokens:n}){const r=x();return e.jsx(e.Fragment,{children:r.node(n===void 0?{usd:t}:{usd:t,tokens:n})})}export{l as P,x as u};

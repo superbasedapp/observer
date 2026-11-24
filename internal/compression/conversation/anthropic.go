@@ -1080,6 +1080,20 @@ func marshalEnvelope(obj map[string]json.RawMessage) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
+// marshalRawArray serializes a []json.RawMessage with HTML escaping OFF,
+// so untouched elements that contain `<`, `>` or `&` keep their exact
+// bytes (the default json.Marshal would rewrite them to < etc.).
+// Shared by the Gemini and OpenAI Responses serializers.
+func marshalRawArray(arr []json.RawMessage) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(arr); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 // findByRaw returns the extractedMessage whose raw bytes equal target, or
 // nil when not found. Linear scan — request bodies rarely carry more than
 // a few dozen messages.

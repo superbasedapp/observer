@@ -14,6 +14,22 @@ package orgcontract
 // never ends the key of another (review finding R-B05).
 const AgentSDKCredentialPath = "/api/agent/sdk-credential" //nolint:gosec // G101: a route path, not a credential
 
+// The EnrollResponse.SDKKeys vocabulary: whether a member's machine can get
+// the member's own SDK key from the organization. Empty means the server did
+// not say (an older server).
+const (
+	// SDKKeysMember: the organization mints a member's own SDK key on
+	// AgentSDKCredentialPath (`observer sdk sign-in`).
+	SDKKeysMember = "member"
+	// SDKKeysAdminOnly: the organization issues no member SDK keys; an
+	// admin creates app keys on its dashboard instead.
+	SDKKeysAdminOnly = "admin_only"
+	// SDKKeysNotOnPlan: the organization's plan does not include AI Apps, so
+	// no one in it can get an SDK key until an admin changes the plan. An older
+	// node does not know this value and prints its "unknown" wording.
+	SDKKeysNotOnPlan = "not_on_plan"
+)
+
 // SDKCredentialRequest is the optional JSON body of a mint or a revoke.
 type SDKCredentialRequest struct {
 	// KeyID is the key id of the SDK key this machine holds ("" when it holds

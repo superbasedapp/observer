@@ -112,6 +112,9 @@ func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, 
 				// The sandbox module's section (sandbox plan v2 11.6).
 				sandboxChecks...)...),
 	})
+	// UPD-9 interlock: can the next in-place update hand the running
+	// daemon over under its supervisor (update_handover_doctor.go)?
+	report.Checks = append(report.Checks, updateHandoverDoctorChecks(ctx, cfg, database)...)
 	scope := in.Scope
 	if scope == "" {
 		return report, nil

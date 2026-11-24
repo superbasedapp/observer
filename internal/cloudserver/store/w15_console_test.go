@@ -429,6 +429,8 @@ func TestDeletionRefusedWhilePayingForLiveOrg(t *testing.T) {
 	t.Run("an org on its way out does not hold the account", func(t *testing.T) {
 		t.Parallel()
 		f := newOrgBillingFixture(t)
+		billing := &fakeBilling{}
+		f.s.SetDeletionBilling(billing)
 		f.activateOrg(t, "evt_w15_d3", "sub_w15_d3", orgTestPriceTeam, f.now)
 		if _, err := f.pool.Exec(ctx, `UPDATE orgs SET status = 'pending_deletion' WHERE org_id = $1::uuid`, f.org.OrgID); err != nil {
 			t.Fatal(err)
@@ -436,11 +438,19 @@ func TestDeletionRefusedWhilePayingForLiveOrg(t *testing.T) {
 		if dr, err := f.s.CreateDeletionRequest(ctx, f.owner, f.now); err != nil || dr.State != "done" {
 			t.Fatalf("deletion with the org pending deletion = %+v, %v", dr, err)
 		}
+		// ORGDEL-7: the purge deletes the org's row, so the deletion
+		// canceled it at Paddle first (the org's own cancel_billing step
+		// would find nothing left to cancel).
+		if got := billing.canceled(); len(got) != 1 || got[0] != "sub_w15_d3" {
+			t.Fatalf("canceled at Paddle %v, want sub_w15_d3", got)
+		}
 	})
 
 	t.Run("an account plan alone does not hold the account", func(t *testing.T) {
 		t.Parallel()
 		f := newOrgBillingFixture(t)
+		billing := &fakeBilling{}
+		f.s.SetDeletionBilling(billing)
 		if _, err := f.pool.Exec(ctx,
 			`INSERT INTO paddle_subscriptions (account_id, paddle_customer_id, paddle_subscription_id, plan_name, plan_version, status)
 			 VALUES ($1::uuid, 'ctm_acct', 'sub_acct', 'plus_beta', 1, 'active')`, f.owner); err != nil {
@@ -453,6 +463,10 @@ func TestDeletionRefusedWhilePayingForLiveOrg(t *testing.T) {
 		}
 		if dr, err := f.s.CreateDeletionRequest(ctx, f.owner, f.now); err != nil || dr.State != "done" {
 			t.Fatalf("deletion with an account subscription = %+v, %v", dr, err)
+		}
+		// ORGDEL-7: ...but it is canceled at Paddle before it is purged.
+		if got := billing.canceled(); len(got) != 1 || got[0] != "sub_acct" {
+			t.Fatalf("canceled at Paddle %v, want sub_acct", got)
 		}
 	})
 

@@ -1,0 +1,3 @@
+Restarting the Observer daemon: systemd runs the daemon, so systemd restarts it.
+Nothing answers on the proxy port :18833, so no AI tool is routed through this daemon and no route is taken off.
+Restarted.

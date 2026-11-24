@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/claudeplugin"
@@ -255,15 +254,12 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 			return res
 		}
 	}
-	var hooks map[string][]claudeHookGroup
-	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooks); err != nil {
-			res.Error = fmt.Errorf("hook.registerClaudeCodeWindows: parse hooks: %w", err)
-			return res
-		}
-	}
-	if hooks == nil {
-		hooks = map[string][]claudeHookGroup{}
+	// NEW-06: every group and handler stays raw, so a field Observer does
+	// not write survives the rewrite.
+	hooks, err := decodeHookEvents(settings["hooks"], groupedHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.registerClaudeCodeWindows", res.ConfigPath, err)
+		return res
 	}
 	// FU-192: an entry in Observer's shape running another binary is kept.
 	if r.refusesForeignBinary(&res, "hook.registerClaudeCodeWindows", res.ConfigPath, identityContent, shapedHooksInText(settings["hooks"], "claude-code")) {
@@ -274,44 +270,27 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 	for _, event := range claudeCodeEvents {
 		cmd := r.gateBridgeCommand("claude-code", filepath.Dir(claudeDir), distro, event, hookEventArg(event),
 			portableBridgeCommand(distro, r.opts.BinaryPath, "claude-code", hookEventArg(event), r.opts.ConfigPath))
-		groups := hooks[event]
 		// T-847: a narrowed matcher or an extra entry field is not "already
-		// set" (see registerClaudeCode and hook_shape.go).
-		groups, idx := dropShapeDriftedTyped(&res, event, cmd, groups, shapeDrift[event],
-			findClaudeGroupWithObserverWindows, isObserverWindowsClaudeEntry)
-		if idx >= 0 {
-			if observerCmdMatches(groups[idx], cmd) {
-				res.AlreadySet = append(res.AlreadySet, event)
-				continue
-			}
-			// Refresh-on-drift: binary path or config flag changed but
-			// the wsl-wrapped shape is still ours. Under
-			// KeepEquivalentHooks an equivalent entry stays (T-725);
-			// a native entry, another distro, a missing binary or
-			// another config is still rewritten. Drop the stale group
-			// and fall through to append the current one.
-			if r.keepOrRewrite(&res, event, observerCommandInGroup(groups[idx], isObserverWindowsClaudeEntry), cmd) {
-				res.AlreadySet = append(res.AlreadySet, event)
-				continue
-			}
-			groups = append(groups[:idx], groups[idx+1:]...)
-		}
-		if r.refuses(res.ConfigPath, identityContent) && hasConflictingClaudeHookWindows(groups) {
-			res.Error = hookConflictError("hook.registerClaudeCodeWindows", event)
+		// set" (see registerClaudeCode and hook_shape.go). Refresh-on-drift:
+		// binary path or config flag changed but the wsl-wrapped shape is
+		// still ours. Under KeepEquivalentHooks an equivalent entry stays
+		// (T-725); a native entry, another distro, a missing binary or
+		// another config is still rewritten.
+		added, err := r.putObserverGroup(&res, hooks, groupEntryRule{
+			errPrefix: "hook.registerClaudeCodeWindows", path: res.ConfigPath, event: event, cmd: cmd,
+			matcher: "*", ours: isObserverWindowsClaudeEntry, drift: shapeDrift[event], keepEquivalent: true,
+		})
+		if err != nil {
+			res.Error = err
 			return res
 		}
-		groups = append(groups, claudeHookGroup{
-			Matcher: "*",
-			Hooks:   []claudeHookCommand{{Type: "command", Command: cmd}},
-		})
-		hooks[event] = groups
-		res.HooksAdded = append(res.HooksAdded, event)
+		if added {
+			res.HooksAdded = append(res.HooksAdded, event)
+		}
 	}
 
 	// Nothing added (every event exact or kept as equivalent): never
-	// re-encode the typed groups, so the file stays byte-identical
-	// (T-725; the typed decode would otherwise drop a sibling entry's
-	// unknown fields on a no-op pass).
+	// re-encode the member, so the file stays byte-identical (T-725).
 	if len(res.HooksAdded) == 0 && len(raw) > 0 {
 		if r.opts.DryRun {
 			return res
@@ -322,12 +301,10 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 		return res
 	}
 
-	patched, err := json.Marshal(hooks)
-	if err != nil {
-		res.Error = fmt.Errorf("hook.registerClaudeCodeWindows: marshal hooks: %w", err)
+	if err := setHooksMember(settings, "hooks", hooks, false); err != nil {
+		res.Error = fmt.Errorf("hook.registerClaudeCodeWindows: %w", err)
 		return res
 	}
-	settings["hooks"] = patched
 
 	if r.opts.DryRun {
 		return res
@@ -426,48 +403,6 @@ func isObserverWindowsClaudeEntry(cmd string) bool {
 	return isObserverAnyHookEntry(cmd, "claude-code")
 }
 
-// findClaudeGroupWithObserverWindows returns the index of a group
-// whose single hook command is a wsl-wrapped observer claude-code
-// invocation, or -1.
-func findClaudeGroupWithObserverWindows(groups []claudeHookGroup) int {
-	for i, g := range groups {
-		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverWindowsClaudeEntry(h.Command) {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// observerCommandInGroup returns the command of the first entry in group
-// that ours recognises as observer-owned, or "" when there is none.
-func observerCommandInGroup(group claudeHookGroup, ours func(string) bool) string {
-	for _, h := range group.Hooks {
-		if h.Type == "command" && ours(h.Command) {
-			return h.Command
-		}
-	}
-	return ""
-}
-
-// hasConflictingClaudeHookWindows reports whether any group contains a
-// non-observer command. Used by the Windows registrar's --force-less
-// path to refuse silent overwrite of user-authored hooks.
-func hasConflictingClaudeHookWindows(groups []claudeHookGroup) bool {
-	for _, g := range groups {
-		for _, h := range g.Hooks {
-			if h.Type != "command" {
-				continue
-			}
-			if !isObserverWindowsClaudeEntry(h.Command) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // registerCursorWindows installs Cursor hooks into a Windows-side
 // .cursor/hooks.json (typically `/mnt/c/Users/<u>/.cursor/hooks.json`)
 // with each command wrapped in `wsl.exe -d <distro> -- <linux-bin>
@@ -529,9 +464,11 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 			return res
 		}
 	}
-	hooks := map[string][]cursorHookEntry{}
-	if existing, ok := settings["hooks"]; ok {
-		_ = json.Unmarshal(existing, &hooks)
+	// NEW-06: every entry stays raw (see registerCursor).
+	hooks, err := decodeHookEvents(settings["hooks"], flatHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.registerCursorWindows", res.ConfigPath, err)
+		return res
 	}
 
 	// NO MSYS_NO_PATHCONV=1 prefix here: Cursor executes hook commands via
@@ -557,42 +494,34 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 	shapeDrift := shapeDriftEvents(settings["hooks"], flatCommandEntries(isObserverWindowsCursorEntry))
 	for _, event := range cursorEvents {
 		cmd := wrapperPrefix + shellQuoteIfNeeded(r.opts.BinaryPath) + " hook cursor " + event + r.configFlagSuffix()
-		if shapeDrift[event] {
-			// T-847: an Observer entry with a field Observer never writes
-			// is rewritten (the typed decode below would drop it silently).
-			shapeRewrite(&res, event, cmd, cmd)
-			hooks[event] = dropCursorEntries(hooks[event], isObserverWindowsCursorEntry)
-		}
-		if slicesContainsCommand(hooks[event], cmd) {
-			res.AlreadySet = append(res.AlreadySet, event)
-			continue
-		}
-		// Stale-observer-entry case: any command starting with `wsl.exe`
-		// that contains ` hook cursor ` was clearly written by a prior
-		// observer install — we own it regardless of which observer
-		// binary path it points at. This matters across upgrades,
-		// distro changes, or smoke-test artifacts: the binary path
-		// changes but the entry is still ours and should be refreshed,
-		// not treated as a foreign conflict. filterStaleObserverWindowsCursorEntries
-		// ALSO drops dangling one-off observer debug shims (see
-		// isDanglingObserverWindowsCursorShim) that never carried the
-		// canonical " hook cursor " signature.
-		hooks[event] = filterStaleObserverWindowsCursorEntries(hooks[event], cmd, event, r.opts.ConfigPath)
-		if r.refuses(res.ConfigPath, identityContent) && hasNonObserverWindowsCursorEntry(hooks[event]) {
-			res.Error = fmt.Errorf("hook.registerCursorWindows: event %s already has a non-observer hook; pass --force to overwrite", event)
+		// T-847: an Observer entry with a field Observer never writes is
+		// rewritten. Stale-observer-entry case: any command starting with
+		// `wsl.exe` that contains ` hook cursor ` was clearly written by a
+		// prior observer install, so it is ours regardless of which
+		// observer binary path it points at (upgrades, distro changes,
+		// smoke-test artifacts): refreshed, not treated as a foreign
+		// conflict. Dangling one-off observer debug shims
+		// (isDanglingObserverWindowsCursorShim) that never carried the
+		// canonical " hook cursor " signature are dropped too.
+		added, err := r.putObserverEntry(&res, hooks, flatEntryRule{
+			errPrefix: "hook.registerCursorWindows", path: res.ConfigPath, event: event, cmd: cmd,
+			ours: isObserverWindowsCursorEntry, drift: shapeDrift[event],
+			stale: func(c string) bool { return isDanglingObserverWindowsCursorShim(c, event, r.opts.ConfigPath) },
+		})
+		if err != nil {
+			res.Error = err
 			return res
 		}
-		hooks[event] = append(hooks[event], cursorHookEntry{Command: cmd})
-		res.HooksAdded = append(res.HooksAdded, event)
+		if added {
+			res.HooksAdded = append(res.HooksAdded, event)
+		}
 	}
 
-	settings["version"] = json.RawMessage("1")
-	hookJSON, err := json.Marshal(hooks)
+	settings, err = cursorSettingsWith(settings, hooks)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerCursorWindows: marshal hooks: %w", err)
+		res.Error = fmt.Errorf("hook.registerCursorWindows: %w", err)
 		return res
 	}
-	settings["hooks"] = hookJSON
 
 	if r.opts.DryRun {
 		return res
@@ -677,37 +606,6 @@ func isDanglingObserverWindowsCursorShim(cmd, event, configPath string) bool {
 		return false
 	}
 	return commandArgsInclude(cmd, event)
-}
-
-// filterStaleObserverWindowsCursorEntries drops any
-// observer-recognised stale entry that doesn't match `want`,
-// including dangling debug shims for this event
-// (isDanglingObserverWindowsCursorShim). Used by the cursor-windows
-// registrar to clear prior registrations before appending the
-// canonical command. Non-observer entries pass through untouched so
-// the conflict check below can flag them.
-func filterStaleObserverWindowsCursorEntries(entries []cursorHookEntry, want, event, configPath string) []cursorHookEntry {
-	out := make([]cursorHookEntry, 0, len(entries))
-	for _, e := range entries {
-		isOurs := isObserverWindowsCursorEntry(e.Command) || isDanglingObserverWindowsCursorShim(e.Command, event, configPath)
-		if isOurs && e.Command != want {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-// hasNonObserverWindowsCursorEntry reports whether the slice has any
-// entry we don't recognise as observer-authored. Anything not
-// matching the wsl.exe + `hook cursor` shape counts as foreign.
-func hasNonObserverWindowsCursorEntry(entries []cursorHookEntry) bool {
-	for _, e := range entries {
-		if !isObserverWindowsCursorEntry(e.Command) {
-			return true
-		}
-	}
-	return false
 }
 
 // isWindowsPath returns true if s looks Windows-shaped (contains a
@@ -842,35 +740,21 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 		res.Error = fmt.Errorf("hook.unregisterClaudeCodeWindows: %w", err)
 		return res
 	}
-	hooks := map[string][]claudeHookGroup{}
-	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooks); err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCodeWindows: parse hooks: %w", err)
-			return res
-		}
+	hooks, err := decodeHookEvents(settings["hooks"], groupedHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.unregisterClaudeCodeWindows", res.ConfigPath, err)
+		return res
 	}
-
-	for event, groups := range hooks {
-		foreign := false
-		newGroups, removed, kept := filterClaudeGroupsWindows(groups, r.removableEntry("claude-code", isObserverWindowsClaudeEntry, &foreign))
-		if foreign {
-			noteKeptForeign(&res, event)
-		}
-		if removed > 0 {
-			res.HooksRemoved = append(res.HooksRemoved, event)
-		}
-		if kept > 0 {
-			res.HooksKept = append(res.HooksKept, event)
-		}
-		if len(newGroups) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = newGroups
-		}
+	// isObserverWindowsClaudeEntry owns the wsl.exe-wrapped bridge this
+	// registrar writes AND a native `observer.exe hook claude-code ...`
+	// entry from an earlier Windows-native npm install (class C2): `observer
+	// uninstall` must not leave behind the very entry that was writing the
+	// stranded Windows DB. Only Observer's handlers go; a developer's
+	// handler in the same group keeps its group and every field.
+	if err := r.removeObserverHandlers(&res, hooks, groupedHookEntries, "claude-code", isObserverWindowsClaudeEntry); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterClaudeCodeWindows: %w", err)
+		return res
 	}
-	sort.Strings(res.HooksRemoved)
-	sort.Strings(res.HooksKept)
-
 	if len(res.HooksRemoved) == 0 {
 		res.Skipped = true
 		return res
@@ -887,15 +771,9 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 		return res
 	}
 
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		patched, err := json.Marshal(hooks)
-		if err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCodeWindows: marshal hooks: %w", err)
-			return res
-		}
-		settings["hooks"] = patched
+	if err := setHooksMember(settings, "hooks", hooks, true); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterClaudeCodeWindows: %w", err)
+		return res
 	}
 
 	if r.opts.DryRun {
@@ -918,37 +796,6 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 		return res
 	}
 	return res
-}
-
-// filterClaudeGroupsWindows walks groups, drops any command
-// isObserverWindowsClaudeEntry recognises as ours — the wsl.exe-wrapped
-// bridge invocation this registrar writes AND a native
-// `observer.exe hook claude-code …` entry from an earlier
-// Windows-native npm install (class C2) — and discards groups left
-// empty. Removing the native shape too is deliberate: `observer
-// uninstall` must not leave behind the very entry that was writing the
-// stranded Windows DB. Returns the survivors plus removed / kept counts
-// so the caller can decide whether to touch the file at all.
-//
-// mine is the uninstall's recogniser (isObserverWindowsClaudeEntry under the
-// FU-203 judgement, removableEntry).
-func filterClaudeGroupsWindows(groups []claudeHookGroup, mine func(string) bool) (out []claudeHookGroup, removed, kept int) {
-	for _, g := range groups {
-		var survivors []claudeHookCommand
-		for _, h := range g.Hooks {
-			if h.Type == "command" && mine(h.Command) {
-				removed++
-				continue
-			}
-			survivors = append(survivors, h)
-		}
-		if len(survivors) == 0 {
-			continue
-		}
-		kept += len(survivors)
-		out = append(out, claudeHookGroup{Matcher: g.Matcher, Hooks: survivors})
-	}
-	return out, removed, kept
 }
 
 // unregisterCursorWindows is unregisterCursor's cross-OS-bridge
@@ -999,47 +846,21 @@ func (r *Registry) unregisterCursorWindows() UnregistrationResult {
 		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %w", err)
 		return res
 	}
-	hooks := map[string][]cursorHookEntry{}
-	if existing, ok := settings["hooks"]; ok {
-		_ = json.Unmarshal(existing, &hooks)
+	hooks, err := decodeHookEvents(settings["hooks"], flatHookEntries)
+	if err != nil {
+		res.Error = refuseHookShape("hook.unregisterCursorWindows", path, err)
+		return res
 	}
-
-	for event, entries := range hooks {
-		var survivors []cursorHookEntry
-		removed := 0
-		foreign := false
-		mine := r.removableEntry("cursor", isObserverWindowsCursorEntry, &foreign)
-		for _, e := range entries {
-			// isObserverWindowsCursorEntry recognises BOTH the wsl.exe
-			// cross-OS bridge shape this registrar writes AND a native
-			// observer.exe entry from an earlier Windows-native install
-			// — mirrors filterClaudeGroupsWindows's own native+bridge
-			// removal so `observer uninstall` never leaves behind the
-			// entry that was writing the stranded Windows DB.
-			if mine(e.Command) {
-				removed++
-				continue
-			}
-			survivors = append(survivors, e)
-		}
-		if foreign {
-			noteKeptForeign(&res, event)
-		}
-		if removed > 0 {
-			res.HooksRemoved = append(res.HooksRemoved, event)
-		}
-		if len(survivors) > 0 {
-			res.HooksKept = append(res.HooksKept, event)
-		}
-		if len(survivors) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = survivors
-		}
+	// isObserverWindowsCursorEntry recognises BOTH the wsl.exe cross-OS
+	// bridge shape this registrar writes AND a native observer.exe entry
+	// from an earlier Windows-native install, mirroring
+	// unregisterClaudeCodeWindows's native+bridge removal so `observer
+	// uninstall` never leaves behind the entry that was writing the
+	// stranded Windows DB.
+	if err := r.removeObserverHandlers(&res, hooks, flatHookEntries, "cursor", isObserverWindowsCursorEntry); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %w", err)
+		return res
 	}
-	sort.Strings(res.HooksRemoved)
-	sort.Strings(res.HooksKept)
-
 	if len(res.HooksRemoved) == 0 {
 		res.Skipped = true
 		return res
@@ -1056,15 +877,9 @@ func (r *Registry) unregisterCursorWindows() UnregistrationResult {
 		return res
 	}
 
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		hookJSON, err := json.Marshal(hooks)
-		if err != nil {
-			res.Error = fmt.Errorf("hook.unregisterCursorWindows: marshal hooks: %w", err)
-			return res
-		}
-		settings["hooks"] = hookJSON
+	if err := setHooksMember(settings, "hooks", hooks, true); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %w", err)
+		return res
 	}
 
 	if r.opts.DryRun {

@@ -34,7 +34,7 @@ func depsRuleCatalogMarkdown() string {
 	var b strings.Builder
 	b.WriteString("\n## Code security: package checks (pack `security.deps`)\n\n")
 	b.WriteString("These rows fire only while the security module and its `security.deps`\n")
-	b.WriteString("child are active (see `docs/package-checks.md`). S-741 is the only\n")
+	b.WriteString("child are active (see `observer security deps --help`). S-741 is the only\n")
 	b.WriteString("row that denies by default; S-744 and S-748 deny only in the variant a\n")
 	b.WriteString("node's `[security.deps]` unknown_action or online_unknown_action chooses.\n")
 	b.WriteString("S-746 is reserved (the `--ignore-scripts` rewrite).\n\n")

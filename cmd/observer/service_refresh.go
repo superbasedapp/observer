@@ -9,7 +9,7 @@
 // daemon is the proxy on :8820, so a restart is only automatic when nothing
 // can be routed through it; otherwise the old process keeps running and the
 // safe order is printed (CLAUDE.md "never stop the daemon while the proxy
-// route is active", docs/daemon-restart-runbook.md). The decision itself is
+// route is active"; `observer service restart` is the safe restart). The decision itself is
 // internal/service.DecideRefresh; this file gathers its inputs and acts.
 
 package main
@@ -43,17 +43,52 @@ type serviceProbe struct {
 	proxySockets func(port int) (listening bool, established int, err error)
 	// routes lists the proxy routes Observer wrote that are present.
 	routes func(binary string, port int) ([]string, error)
+	// version returns `systemctl --version` output, for the unit's
+	// update-handover row (INFRA-01). nil reads as an unknown version.
+	version func() (string, error)
+	// readEnv reads a process's environment (/proc/<pid>/environ), to see
+	// whether the running daemon has the update hand-over's NOTIFY_SOCKET.
+	// nil (or an error) reads as unknown, which never forces a restart.
+	readEnv func(pid int) (string, error)
 }
 
 // defaultServiceProbe is the production probe.
 func defaultServiceProbe() serviceProbe {
 	return serviceProbe{
-		run:          runServiceCommand,
-		show:         systemctlShow,
-		readExe:      func(pid int) (string, error) { return os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe") },
+		run:     runServiceCommand,
+		show:    systemctlShow,
+		readExe: func(pid int) (string, error) { return os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe") },
+		readEnv: func(pid int) (string, error) {
+			b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+			return string(b), err
+		},
 		proxySockets: procNetProxySockets,
 		routes:       presentProxyRoutes,
+		version:      systemctlVersion,
 	}
+}
+
+// systemctlVersion runs `systemctl --version` and returns its output.
+func systemctlVersion() (string, error) {
+	out, err := exec.Command("systemctl", "--version").Output() //nolint:gosec // fixed program name and argument
+	if err != nil {
+		return "", fmt.Errorf("systemctl --version: %w", err)
+	}
+	return string(out), nil
+}
+
+// systemdVersion is the probe's systemd major version, 0 when it cannot be
+// read (the unit then gets the row that works on every version).
+func (p serviceProbe) systemdVersion() int {
+	if p.version == nil {
+		return 0
+	}
+	out, err := p.version()
+	if err != nil {
+		return 0
+	}
+	v, _ := service.ParseSystemdVersion(out)
+	return v
 }
 
 // systemctlShow runs `systemctl [--user] show observer.service -p
@@ -177,6 +212,10 @@ type serviceRefresh struct {
 	oldExecStart, newExecStart string
 	// startIfInactive starts a stopped unit (install --now).
 	startIfInactive bool
+	// handsOver reports that the rewritten unit carries the update
+	// hand-over (NotifyAccess=main), so a daemon running without it needs a
+	// restart (UPD-9 interlock).
+	handsOver bool
 	// port is the proxy port.
 	port int
 	w    io.Writer
@@ -192,32 +231,7 @@ func applyServiceRefresh(r serviceRefresh, p serviceProbe) error {
 	in := service.RefreshInputs{Active: active && serr == nil, StartIfInactive: r.startIfInactive}
 	runningExe := ""
 	if in.Active {
-		link, rerr := p.readExe(pid)
-		switch {
-		case pid <= 0 || rerr != nil:
-			in.ExecUnknown = true
-		default:
-			runningExe = link
-			in.ExecChanged = runningExeDiffers(link, r.exe)
-		}
-		in.ExecStartChanged = r.oldExecStart != "" && r.oldExecStart != r.newExecStart
-		if in.ExecChanged || in.ExecUnknown || in.ExecStartChanged {
-			listening, established, perr := p.proxySockets(r.port)
-			in.ProxyListening = listening || perr != nil
-			in.ProxyClients = established
-			var probeErrs []string
-			if perr != nil {
-				probeErrs = append(probeErrs, perr.Error())
-			}
-			if in.ProxyListening {
-				routes, rerr := p.routes(r.exe, r.port)
-				if rerr != nil {
-					probeErrs = append(probeErrs, "proxy routes: "+rerr.Error())
-				}
-				in.Routes = routes
-			}
-			in.ProbeErr = strings.Join(probeErrs, "; ")
-		}
+		runningExe = probeRunningService(r, p, pid, &in)
 	}
 	d := service.DecideRefresh(in)
 	suffix := scopeFlagSuffix(r.scope)
@@ -253,18 +267,82 @@ func applyServiceRefresh(r serviceRefresh, p serviceProbe) error {
 			now = fmt.Sprintf(", now pid %d", newPID)
 		}
 		fmt.Fprintf(r.w, "Restarted the service onto this binary (was pid %d%s%s): %s.\n", pid, runningNote(runningExe), now, strings.Join(d.Reasons, "; "))
+		if in.HandoverMissing {
+			fmt.Fprintln(r.w, "It had been started without the update hand-over; it now runs under this unit, so in-place updates hand over.")
+		}
 	case service.RefreshAdvise:
 		fmt.Fprintf(r.w, "The service is still running the previous process (pid %d%s) and was NOT restarted, because the proxy may be in use:\n", pid, runningNote(runningExe))
 		for _, reason := range d.Reasons {
 			fmt.Fprintf(r.w, "  - %s\n", reason)
 		}
-		fmt.Fprintf(r.w, "The daemon is the proxy on :%d: restarting it cuts any AI request in flight through the proxy\n"+
-			"and refuses new ones until it is back. When no AI session is using the proxy, run:\n"+
+		if in.HandoverMissing {
+			fmt.Fprintln(r.w, "It was started without the update hand-over this unit now gives it, so every in-place update is refused\n"+
+				"(systemd_unit_predates_handover) until it restarts under this unit.")
+		}
+		fmt.Fprintf(r.w, "The daemon is the proxy on :%d: a plain restart cuts any AI request in flight through the proxy\n"+
+			"and refuses new ones until it is back. Restart it with:\n"+
 			"    observer service restart%s\n"+
-			"To keep sessions running across it, take the proxy route off first and put it back after\n"+
-			"(docs/daemon-restart-runbook.md).\n", r.port, suffix)
+			"which takes the proxy routes off first, restarts it, and puts them back once the new daemon answers,\n"+
+			"so AI sessions reach their providers directly meanwhile.\n", r.port, suffix)
 	}
 	return nil
+}
+
+// probeRunningService fills the refresh inputs that describe a RUNNING unit:
+// whether its process runs another executable, other ExecStart arguments or
+// no update hand-over, and, only when one of those calls for a restart,
+// whether the proxy is in use. It returns the running executable's link
+// ("" when unreadable), for the messages.
+func probeRunningService(r serviceRefresh, p serviceProbe, pid int, in *service.RefreshInputs) string {
+	runningExe := ""
+	link, rerr := p.readExe(pid)
+	switch {
+	case pid <= 0 || rerr != nil:
+		in.ExecUnknown = true
+	default:
+		runningExe = link
+		in.ExecChanged = runningExeDiffers(link, r.exe)
+	}
+	in.ExecStartChanged = r.oldExecStart != "" && r.oldExecStart != r.newExecStart
+	in.HandoverMissing = r.handsOver && runningWithoutHandover(p, pid)
+	if !(in.ExecChanged || in.ExecUnknown || in.ExecStartChanged || in.HandoverMissing) {
+		return runningExe
+	}
+	listening, established, perr := p.proxySockets(r.port)
+	in.ProxyListening = listening || perr != nil
+	in.ProxyClients = established
+	var probeErrs []string
+	if perr != nil {
+		probeErrs = append(probeErrs, perr.Error())
+	}
+	if in.ProxyListening {
+		routes, rerr := p.routes(r.exe, r.port)
+		if rerr != nil {
+			probeErrs = append(probeErrs, "proxy routes: "+rerr.Error())
+		}
+		in.Routes = routes
+	}
+	in.ProbeErr = strings.Join(probeErrs, "; ")
+	return runningExe
+}
+
+// runningWithoutHandover reports that the running daemon's environment has
+// no NOTIFY_SOCKET, which a unit with NotifyAccess=main always gives it. An
+// unreadable environment is unknown, and never forces a restart.
+func runningWithoutHandover(p serviceProbe, pid int) bool {
+	if p.readEnv == nil || pid <= 0 {
+		return false
+	}
+	env, err := p.readEnv(pid)
+	if err != nil {
+		return false
+	}
+	for _, kv := range strings.Split(env, "\x00") {
+		if v, ok := strings.CutPrefix(kv, "NOTIFY_SOCKET="); ok && strings.TrimSpace(v) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // runningNote describes the running executable for the messages.

@@ -32,6 +32,7 @@ var gatewayRuleConstants = map[string]string{
 	"RuleMulticast":                RuleMulticast,
 	"RuleLimitedBroadcast":         RuleLimitedBroadcast,
 	"RuleIPv4Compatible":           RuleIPv4Compatible,
+	"RuleCloudMetadata":            RuleCloudMetadata,
 	"RuleHostLocal":                RuleHostLocal,
 	"RulePrivate":                  RulePrivate,
 	"RuleSharedAddress":            RuleSharedAddress,
@@ -83,6 +84,7 @@ func TestGatewayRuleTable(t *testing.T) {
 		{RuleMulticast, RefusalSSRFFloor, KeyEgress},
 		{RuleLimitedBroadcast, RefusalSSRFFloor, KeyEgress},
 		{RuleIPv4Compatible, RefusalSSRFFloor, KeyEgress},
+		{RuleCloudMetadata, RefusalSSRFFloor, KeyEgress},
 	}
 	if len(cases) != len(gatewayRuleConstants) {
 		t.Fatalf("%d cases for %d gateway rule constants", len(cases), len(gatewayRuleConstants))

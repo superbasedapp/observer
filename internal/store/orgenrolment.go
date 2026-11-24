@@ -35,11 +35,21 @@ type Enrolment struct {
 	// never for CLI text.
 	DisplayName string
 	OnlineURL   string
-	// OwnerManaged is the enrol response's OwnerManaged (the organization is
-	// the developer's own), set IN MEMORY by the enrolment that just ran so
-	// its share-default row can be chosen. It is NOT stored: WriteEnrolment
-	// ignores it and LoadEnrolment leaves it false.
+	// OwnerManaged is the enrol response's OwnerManaged: the organization is
+	// the developer's own (a personal organization of one, managed by its
+	// owner). Stored since agent migration 261: WriteEnrolment writes it (a
+	// re-enrol overwrites it), LoadEnrolment reads it, and
+	// SetEnrolmentOwnerManaged refreshes it from the push acknowledgment
+	// (orgcontract.PushResponse.OwnerManaged) so a machine enrolled before
+	// the column existed heals. It picks the enrolment's share-default row
+	// and, on a managed enrolment, the owner audience of the managed-default
+	// visibility table (govern.Grant.OwnerManaged). It grants no authority.
 	OwnerManaged bool
+	// SDKKeys is the enrol response's SDKKeys (orgcontract.SDKKeysMember,
+	// SDKKeysAdminOnly, or "" when the server did not say), set IN MEMORY by
+	// the enrolment that just ran so its SDK key hint can be worded. It is
+	// NOT stored: WriteEnrolment ignores it and LoadEnrolment leaves it "".
+	SDKKeys string
 }
 
 // IsManaged reports whether this enrolment opted into Enterprise-Managed
@@ -61,8 +71,8 @@ func (s *Store) WriteEnrolment(ctx context.Context, e Enrolment) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO org_enrolment
-		   (id, org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+		   (id, org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy, owner_managed)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   org_id         = excluded.org_id,
 		   org_name       = excluded.org_name,
@@ -72,9 +82,10 @@ func (s *Store) WriteEnrolment(ctx context.Context, e Enrolment) error {
 		   enrolled_at    = excluded.enrolled_at,
 		   bearer_key_id  = excluded.bearer_key_id,
 		   tenancy        = excluded.tenancy,
+		   owner_managed  = excluded.owner_managed,
 		   display_name   = '',
 		   online_url     = ''`,
-		e.OrgID, e.OrgName, e.OrgServerURL, e.UserID, e.UserEmail, e.EnrolledAt, e.BearerKeyID, e.Tenancy)
+		e.OrgID, e.OrgName, e.OrgServerURL, e.UserID, e.UserEmail, e.EnrolledAt, e.BearerKeyID, e.Tenancy, boolInt(e.OwnerManaged))
 	if err != nil {
 		return fmt.Errorf("store.WriteEnrolment: %w", err)
 	}
@@ -101,6 +112,27 @@ func (s *Store) SetEnrolmentOrgName(ctx context.Context, orgID, name string) (bo
 	return n > 0, nil
 }
 
+// SetEnrolmentOwnerManaged records whether the enrolment's organization is the
+// developer's own, as the org server states it on a push acknowledgment
+// (orgcontract.PushResponse.OwnerManaged). It changes nothing else, only
+// while the row still names orgID (a late acknowledgment from an org this
+// node has since left cannot relabel the new enrolment), and only when the
+// value differs. It reports whether it changed.
+func (s *Store) SetEnrolmentOwnerManaged(ctx context.Context, orgID string, ownerManaged bool) (bool, error) {
+	v := boolInt(ownerManaged)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE org_enrolment SET owner_managed = ? WHERE id = 1 AND org_id = ? AND owner_managed <> ?`,
+		v, orgID, v)
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentOwnerManaged: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentOwnerManaged: %w", err)
+	}
+	return n > 0, nil
+}
+
 // LoadEnrolment returns the singleton org_enrolment row, or (nil, nil) when the
 // agent is not enrolled (no row, or a pre-028 schema with no table). The
 // not-enrolled path is never an error — org mode being absent is the default.
@@ -110,12 +142,13 @@ func (s *Store) LoadEnrolment(ctx context.Context) (*Enrolment, error) {
 
 func loadEnrolment(ctx context.Context, q querier) (*Enrolment, error) {
 	var e Enrolment
+	var ownerManaged int64
 	err := q.QueryRowContext(ctx,
 		`SELECT org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy,
-		        display_name, online_url
+		        display_name, online_url, owner_managed
 		   FROM org_enrolment WHERE id = 1`).
 		Scan(&e.OrgID, &e.OrgName, &e.OrgServerURL, &e.UserID, &e.UserEmail, &e.EnrolledAt, &e.BearerKeyID, &e.Tenancy,
-			&e.DisplayName, &e.OnlineURL)
+			&e.DisplayName, &e.OnlineURL, &ownerManaged)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -125,6 +158,7 @@ func loadEnrolment(ctx context.Context, q querier) (*Enrolment, error) {
 	if e.Tenancy == "" {
 		e.Tenancy = orgcontract.TenancyIndividual
 	}
+	e.OwnerManaged = ownerManaged != 0
 	return &e, nil
 }
 

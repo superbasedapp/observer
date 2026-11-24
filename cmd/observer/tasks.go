@@ -39,7 +39,7 @@ func newTasksCmd() *cobra.Command {
 		Long: "Reports what a session's todo/plan tool calls (claude-code TaskCreate/\n" +
 			"TaskUpdate/TodoWrite, codex update_plan, kiro-cli todo_list, …) actually\n" +
 			"cost - per task tokens/cost/elapsed/action-count, plus the between_tasks\n" +
-			"and shared buckets §R2.3.2 requires as first-class rows (only ~52% of a\n" +
+			"and shared buckets as first-class rows (only ~52% of a\n" +
 			"session's tokens are attributable to one specific task on average). A\n" +
 			"pure re-read of already-captured actions/token_usage rows - no new\n" +
 			"capture surface, gated by [tasks].enabled. Use --rollup for a project/\n" +

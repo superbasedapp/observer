@@ -55,7 +55,7 @@ func newCloudSessionCmd() *cobra.Command {
 			"inside its own sandbox, and ships the rows when the agent stops.\n\n" +
 			"init and remove write repository files you review and commit; flush is\n" +
 			"what the committed hooks run in the sandbox. Every committed hook is a\n" +
-			"no-op outside the vendor's cloud. See docs/cloud-sessions.md.",
+			"no-op outside the vendor's cloud.",
 	}
 	cmd.AddCommand(newCloudSessionInitCmd(), newCloudSessionRemoveCmd(), newCloudSessionFlushCmd(), newCloudSessionStatusCmd(), newCloudSessionTokenCmd(),
 		newCloudSessionGateCmd(), newCloudSessionSetupCmd())
@@ -322,7 +322,7 @@ func newCloudSessionInitCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&withMCP, "mcp", false, "register Observer's MCP server (observer serve) for the agent and build its database during setup")
 	cmd.Flags().BoolVar(&withCodeIntel, "codeintel", false, "with --mcp: index the repository for code intelligence during setup (off by default)")
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to observer config.toml (for --guard)")
-	cmd.Flags().BoolVar(&otelLoopback, "otel-loopback", false, "also start a loopback OTLP receiver in the sandbox for the agent's own telemetry export (Claude Code; see docs/cloud-agents.md)")
+	cmd.Flags().BoolVar(&otelLoopback, "otel-loopback", false, "also start a loopback OTLP receiver in the sandbox for the agent's own telemetry export (Claude Code)")
 	cmd.Flags().StringVar(&otelLoopbackAddr, "otel-loopback-addr", "", "loopback host:port of that receiver (default "+cloudsession.DefaultOTelLoopbackAddr+")")
 	return cmd
 }

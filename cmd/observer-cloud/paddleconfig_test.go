@@ -2,7 +2,11 @@ package main
 
 import (
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +134,45 @@ func TestPaddlePastDueGraceAndSeatSyncMode(t *testing.T) {
 	}
 	if _, err := seatSyncModeFrom(envMap(map[string]string{"SBCI_PADDLE_SEAT_SYNC": "yes"}), true); err == nil {
 		t.Error("mode yes accepted")
+	}
+}
+
+// TestPaddleServeWiresDeletionBilling (ORGDEL-7): serve's Paddle
+// configuration hands the account deletion the org deletion's billing seam
+// over its API client exactly when an API key is configured; without one the
+// seam stays nil and the store refuses a deletion that must cancel.
+func TestPaddleServeWiresDeletionBilling(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tc := range []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{"no key", "", false},
+		{"a sandbox key", "pdl_sdbx_apikey_not_a_real_key_000000", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SBCI_PADDLE_ENV", "sandbox")
+			t.Setenv("SBCI_PADDLE_API_KEY_FILE", "")
+			if tc.key != "" {
+				path := filepath.Join(t.TempDir(), "key")
+				if err := os.WriteFile(path, []byte(tc.key+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("SBCI_PADDLE_API_KEY_FILE", path)
+			}
+			ps, err := paddleServeConfigFromEnv(nil, "http://127.0.0.1:8090", log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ps.deletionBilling != nil; got != tc.want {
+				t.Fatalf("deletion billing wired = %v, want %v", got, tc.want)
+			}
+			if tc.want {
+				if _, ok := ps.deletionBilling.(deletionBilling); !ok {
+					t.Fatalf("deletion billing is %T, want the org deletion's deletionBilling", ps.deletionBilling)
+				}
+			}
+		})
 	}
 }

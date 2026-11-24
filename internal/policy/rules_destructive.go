@@ -73,6 +73,30 @@ func destructiveRules() []Rule {
 			Advice: "Use an explicit path, or chain directory changes with && so a failed cd stops the line; confirm if the target is intended.",
 		},
 		{
+			// FR-SEC-7 fallback (operator ruling 2026-11-22): a unit
+			// whose command the guard does not know, followed by words
+			// that are a catastrophic delete (unknownprefix.go). The
+			// guard cannot tell whether the prefix runs them, so this is
+			// the "cannot tell" ask tier, never a deny.
+			ID: "R-102", Category: CategoryDestructive, Severity: SeverityHigh,
+			AppliesTo: shell, MatchCmd: matchDeleteBehindUnknownPrefix,
+			Observe: DecisionFlag, Enforce: DecisionAsk,
+			Doc:    "recursive delete of a root, the home directory or a path outside the project, a disk or device operation, or an interpreter one-liner deleting such a tree, behind a command prefix the guard does not know",
+			Advice: "Run the delete directly so the guard can judge it, or confirm that the prefix and its target are intended.",
+		},
+		{
+			// NF-2 (guard-parser lane; operator ruling 2026-11-22: ask):
+			// a recursive delete one of whose operands is a whole word
+			// a command substitution computes. The substitution is
+			// stripped for analysis, so nothing of that operand is left
+			// to judge; the guard cannot tell what it names.
+			ID: "R-102", Category: CategoryDestructive, Severity: SeverityHigh,
+			AppliesTo: shell, MatchCmd: matchDeleteSubstitutedOperand,
+			Observe: DecisionFlag, Enforce: DecisionAsk,
+			Doc:    "recursive delete whose target is the output of a command substitution, which the guard cannot read",
+			Advice: "Delete an explicit path, or put the computed path in a variable you print first; confirm if the target is intended.",
+		},
+		{
 			ID: "R-103", Category: CategoryDestructive, Severity: SeverityHigh,
 			AppliesTo: shell, MatchCmd: matchMassDelete,
 			Observe: DecisionFlag, Enforce: DecisionAsk,
@@ -323,6 +347,21 @@ func matchDeleteUnresolved(ctx *MatchContext, cmd *Command) (bool, string) {
 		return true, why
 	}
 	return matchInlineDeleteTier(ctx, cmd, tierAsk)
+}
+
+// matchDeleteSubstitutedOperand is R-102's substituted-operand row (NF-2):
+// a recursive delete (deleteShape) with an argument that was nothing but a
+// command substitution (Command.lostArgs). A substitution inside an operand
+// word that leaves a literal part is not this row: the literal part is
+// judged as written (`rm -rf "$(pwd)/x"` reads `/x`, R-101). An option's
+// value counts too (`Remove-Item -Exclude $(x)` asks): the parse does not
+// tell an operand from a value here, which can only ask more.
+func matchDeleteSubstitutedOperand(_ *MatchContext, cmd *Command) (bool, string) {
+	recursive, ok := deleteShape(cmd)
+	if !ok || !recursive || len(cmd.lostArgs) == 0 {
+		return false, ""
+	}
+	return true, "a target is the output of a command substitution, so the guard cannot tell what it names"
 }
 
 // matchDeletePipelineItem is R-101's ASK row (T-525, D-338): a recursive

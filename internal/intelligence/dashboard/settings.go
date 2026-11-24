@@ -1599,7 +1599,7 @@ func (s *Server) handleBackfillStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, modeStatus{
 			Mode: "tasks", Flag: "--tasks",
-			Description:    "Re-derive task_items / task_transitions (session-level task/todo/plan tracking, docs/task-tracking.md) from todo_update / post_tool_batch action rows already in the DB. No adapter re-parse, no source-file walk. Idempotent - safe to re-run after enabling [tasks].enabled on a daemon with historical traffic.",
+			Description:    "Re-derive task_items / task_transitions (session-level task/todo/plan tracking) from todo_update / post_tool_batch action rows already in the DB. No adapter re-parse, no source-file walk. Idempotent - safe to re-run after enabling [tasks].enabled on a daemon with historical traffic.",
 			Candidates:     n,
 			CandidatesNote: "todo_update actions rows only - post_tool_batch candidates aren't cheaply countable without the same raw_tool_input scan the backfill itself does",
 		})
@@ -1620,7 +1620,7 @@ func (s *Server) handleBackfillStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, modeStatus{
 			Mode: "loc", Flag: "--loc",
-			Description:    "Count lines of code (added / modified / deleted, comments and blanks separated) for every historical edit_file / write_file action, from the tool input the row already holds (docs/loc-tracking.md). Writes counts and path hashes only, never content. Idempotent; not part of --all.",
+			Description:    "Count lines of code (added / modified / deleted, comments and blanks separated) for every historical edit_file / write_file action, from the tool input the row already holds. Writes counts and path hashes only, never content. Idempotent; not part of --all.",
 			Candidates:     n,
 			CandidatesNote: "edit_file / write_file actions without line counts yet",
 		})

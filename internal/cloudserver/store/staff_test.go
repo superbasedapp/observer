@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/availcompose"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/staffauth"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -391,14 +392,24 @@ func TestAvailabilityInputsAreLoggedWithTheirChange(t *testing.T) {
 	now := time.Now()
 	staffID, _ := registerTestStaff(t, s, staffauth.RoleOps, 20, now)
 
-	in, err := staffauth.ValidateAvailabilityInput("org_controls", "org-123", []byte(`{"ingest":"pause"}`))
+	const org = "33333333-3333-4333-8333-333333333333"
+	// A value the envelope would refuse is never stored (STAFF-8): here
+	// an org row asking for a platform-wide ingest pause.
+	bad, err := staffauth.ValidateAvailabilityInput("org_controls", org, []byte(`{"org":"*","ingest":{"mode":"pause"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAvailabilityInput(ctx, staffID, bad, "should be refused", now); !errors.Is(err, availcompose.ErrInvalidInput) {
+		t.Fatalf("invalid value: err = %v, want availcompose.ErrInvalidInput", err)
+	}
+	in, err := staffauth.ValidateAvailabilityInput("org_controls", org, []byte(`{"org":"`+org+`","ingest":{"mode":"pause"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAvailabilityInput(ctx, staffID, in, "incident 1", now); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	in2, _ := staffauth.ValidateAvailabilityInput("org_controls", "org-123", []byte(`{"ingest":"throttle","rate":10}`))
+	in2, _ := staffauth.ValidateAvailabilityInput("org_controls", org, []byte(`{"org":"`+org+`","ingest":{"mode":"throttle","rate_per_minute":10}}`))
 	if err := s.SetAvailabilityInput(ctx, staffID, in2, "incident 1, easing", now.Add(time.Minute)); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
@@ -409,10 +420,10 @@ func TestAvailabilityInputsAreLoggedWithTheirChange(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Author != staffauth.Actor(staffID) || rows[0].Reason != "incident 1, easing" {
 		t.Fatalf("inputs = %+v %v", rows, err)
 	}
-	if err := s.DeleteAvailabilityInput(ctx, staffID, staffauth.SectionOrgControls, "org-123", "incident over", now.Add(2*time.Minute)); err != nil {
+	if err := s.DeleteAvailabilityInput(ctx, staffID, staffauth.SectionOrgControls, org, "incident over", now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if err := s.DeleteAvailabilityInput(ctx, staffID, staffauth.SectionOrgControls, "org-123", "again", now); !errors.Is(err, store.ErrNotFound) {
+	if err := s.DeleteAvailabilityInput(ctx, staffID, staffauth.SectionOrgControls, org, "again", now); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("delete missing = %v", err)
 	}
 	var n int
@@ -429,7 +440,11 @@ func TestAvailabilityInputsAreLoggedWithTheirChange(t *testing.T) {
 		Value    map[string]any `json:"value"`
 		Previous map[string]any `json:"previous"`
 	}
-	if err := json.Unmarshal(detail, &d); err != nil || d.Previous["ingest"] != "pause" || d.Value["ingest"] != "throttle" {
+	mode := func(m map[string]any) any {
+		ing, _ := m["ingest"].(map[string]any)
+		return ing["mode"]
+	}
+	if err := json.Unmarshal(detail, &d); err != nil || mode(d.Previous) != "pause" || mode(d.Value) != "throttle" {
 		t.Fatalf("logged detail = %s (%v)", detail, err)
 	}
 	for verb, want := range map[string]int{"availability.set": 2, "availability.deleted": 1} {

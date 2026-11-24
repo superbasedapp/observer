@@ -27,8 +27,8 @@ import (
 func newMCPAuditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp-audit",
-		Short: "Read and prune the mcp_audit table (V7-12 retrieval tools' call log)",
-		Long: "Inspect the V7-14 audit log. Every V7-12 MCP call (get_file,\n" +
+		Short: "Read and prune the mcp_audit table (the MCP retrieval tools' call log)",
+		Long: "Inspect the MCP audit log. Every retrieval-tool call (get_file,\n" +
 			"get_symbols, get_relations, retrieve_stashed) writes one row when\n" +
 			"the audit writer is enabled - operators consult this surface to\n" +
 			"answer 'why was X denied?', 'which file is the agent re-reading?',\n" +

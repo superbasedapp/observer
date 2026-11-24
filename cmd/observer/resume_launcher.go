@@ -225,7 +225,7 @@ func registerResumeFlag(cmd *cobra.Command, tool string) *string {
 	resume := new(string)
 	if capab, _ := integration.For(tool); capab.Resume.Kind == integration.ResumeNative {
 		cmd.Flags().StringVar(resume, "resume", "",
-			"Resume a CLOSED session by its id: reattaches the tool's REAL prior conversation via its native resume mechanism - NOT a distilled fork. Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Resume a CLOSED session by its id: reattaches the tool's REAL prior conversation via its native resume mechanism - NOT a distilled fork. Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See https://superbased.app/docs/guides/terminals.")
 	}
 	return resume
 }

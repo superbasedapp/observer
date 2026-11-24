@@ -18,6 +18,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/update"
 )
@@ -131,6 +132,56 @@ type updateStatusReport struct {
 	// vendor artifact-verification key yet (W6). While it is true, an
 	// apply of an unsigned artifact is refused rather than downgraded.
 	VendorKeyPlaceholder bool `json:"vendor_key_placeholder"`
+	// HandoverRefusal / HandoverFix name the update-handover interlock's
+	// refusal the newest ledger row records (service.HandoverRefusal) and
+	// its fix; empty when the last apply was not refused for its supervisor.
+	HandoverRefusal string `json:"handover_refusal,omitempty"`
+	HandoverFix     string `json:"handover_fix,omitempty"`
+	// Backoff is the durable auto-apply backoff for the current target
+	// (FR-SEC-12); nil when none holds it.
+	Backoff *updateStatusBackoff `json:"backoff,omitempty"`
+}
+
+// updateStatusBackoff is the status line's view of update.ApplyBackoff.
+type updateStatusBackoff struct {
+	Target      string `json:"target"`
+	Failures    int    `json:"failures"`
+	ErrorClass  string `json:"error_class"`
+	NextAttempt string `json:"next_attempt"`
+}
+
+// applyHandoverStatus fills the hand-over and backoff lines from the stored
+// backoff record and the newest ledger rows (newest first). The backoff is
+// shown only for the current target; the refusal only while the newest row
+// carries one, which is also how a refusal an OLDER parent recorded from a
+// newer binary's self-check is found.
+func applyHandoverStatus(rep *updateStatusReport, target, backoffJSON string, events []store.UpdateEventRow) {
+	if b, err := update.DecodeApplyBackoff(backoffJSON); err == nil && b.Failures > 0 && update.SameVersion(b.Target, target) {
+		rep.Backoff = &updateStatusBackoff{
+			Target: b.Target, Failures: b.Failures, ErrorClass: string(b.ErrorClass),
+			NextAttempt: b.NextAttempt.Format(time.RFC3339),
+		}
+	}
+	if len(events) == 0 {
+		return
+	}
+	if r := service.HandoverRefusalIn(events[0].Detail); r != service.HandoverAllowed {
+		rep.HandoverRefusal = string(r)
+		rep.HandoverFix = r.Explain()
+	}
+}
+
+// loadHandoverStatus reads the backoff record and the newest ledger rows from
+// the node database; an unreadable database leaves both lines out.
+func loadHandoverStatus(ctx context.Context, rep *updateStatusReport) {
+	s, closeDB, err := openUpdateStore(ctx, "")
+	if err != nil {
+		return
+	}
+	defer closeDB()
+	js, _ := s.LoadUpdateApplyBackoff(ctx)
+	events, _ := s.LoadUpdateEvents(ctx, 1)
+	applyHandoverStatus(rep, rep.TargetVersion, js, events)
 }
 
 // newUpdateStatusCmd builds `observer update status`.
@@ -265,6 +316,9 @@ func buildUpdateStatus() (updateStatusReport, error) {
 		ExecPath:             execPath,
 		VendorKeyPlaceholder: update.VendorKeyIsPlaceholder(),
 	}
+	if source == "database" {
+		loadHandoverStatus(context.Background(), &rep)
+	}
 	return rep, nil
 }
 
@@ -299,6 +353,15 @@ func writeUpdateStatus(w io.Writer, rep updateStatusReport) {
 	_ = tw.Flush()
 	if rep.Advice != "" {
 		fmt.Fprintf(w, "\nThis node cannot update itself: %s\n", rep.Advice)
+	}
+	if rep.HandoverRefusal != "" {
+		fmt.Fprintf(w, "\nLast update: hand-over refused (%s); the node stayed on its previous binary.\n%s\n",
+			rep.HandoverRefusal, rep.HandoverFix)
+	}
+	if rep.Backoff != nil {
+		fmt.Fprintf(w, "\nauto-apply backoff: %s failed %d time(s) (%s); the next automatic attempt is at %s.\n",
+			rep.Backoff.Target, rep.Backoff.Failures, rep.Backoff.ErrorClass, rep.Backoff.NextAttempt)
+		fmt.Fprintln(w, "Run `observer update apply` to try it now; that clears the backoff.")
 	}
 	if rep.VendorKeyPlaceholder {
 		fmt.Fprintln(w, "\nNote: this build carries no vendor artifact-verification key yet, so an")

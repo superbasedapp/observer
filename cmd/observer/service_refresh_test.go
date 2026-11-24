@@ -25,6 +25,11 @@ type fakeServiceProbe struct {
 	routes    []string
 	routesErr error
 	ran       []string
+	// version / versionErr are `systemctl --version`'s answer.
+	version    string
+	versionErr error
+	// environ is the running daemon's /proc/<pid>/environ ("" = unreadable).
+	environ string
 }
 
 func (f *fakeServiceProbe) probe() *serviceProbe {
@@ -41,7 +46,14 @@ func (f *fakeServiceProbe) probe() *serviceProbe {
 		proxySockets: func(int) (bool, int, error) {
 			return f.listening, f.clients, f.sockErr
 		},
-		routes: func(string, int) ([]string, error) { return f.routes, f.routesErr },
+		routes:  func(string, int) ([]string, error) { return f.routes, f.routesErr },
+		version: func() (string, error) { return f.version, f.versionErr },
+		readEnv: func(int) (string, error) {
+			if f.environ == "" {
+				return "", errors.New("unreadable")
+			}
+			return f.environ, nil
+		},
 	}
 }
 
@@ -86,7 +98,7 @@ func TestApplyServiceRefresh(t *testing.T) {
 		{
 			name:    "upgrade, a proxy route is active: advise, never restart",
 			f:       fakeServiceProbe{active: true, pid: 7, exe: exe + " (deleted)", listening: true, routes: []string{"claude-code (/home/u/.claude/settings.json)"}},
-			wantOut: []string{"was NOT restarted", "a proxy route is active: claude-code", "observer service restart", "route off first", "daemon-restart-runbook"},
+			wantOut: []string{"was NOT restarted", "a proxy route is active: claude-code", "observer service restart", "takes the proxy routes off first"},
 		},
 		{
 			name:    "upgrade, an open proxy connection: advise",
@@ -119,6 +131,26 @@ func TestApplyServiceRefresh(t *testing.T) {
 			name:      "a running binary at another path, idle proxy: restart onto this one",
 			f:         fakeServiceProbe{active: true, pid: 7, exe: "/usr/lib/node_modules/@superbased/observer-linux-x64/bin/observer", listening: true},
 			restarted: true,
+		},
+		{
+			name:      "same binary started under a unit without the hand-over, idle proxy: restart (UPD-9 interlock)",
+			f:         fakeServiceProbe{active: true, pid: 7, exe: exe, listening: true, environ: "HOME=/home/u\x00PATH=/usr/bin\x00"},
+			r:         serviceRefresh{oldExecStart: newLine, handsOver: true},
+			restarted: true, wantOut: []string{"update hand-over"},
+			wantMissing: []string{"no restart needed"},
+		},
+		{
+			name:        "same binary started without the hand-over, a route active: advise, naming the hand-over",
+			f:           fakeServiceProbe{active: true, pid: 7, exe: exe, listening: true, routes: []string{"codex (x)"}, environ: "HOME=/home/u\x00"},
+			r:           serviceRefresh{oldExecStart: newLine, handsOver: true},
+			wantOut:     []string{"was NOT restarted", "update hand-over", "observer service restart"},
+			wantMissing: []string{"no restart needed"},
+		},
+		{
+			name:    "same binary already running with the hand-over: no restart",
+			f:       fakeServiceProbe{active: true, pid: 7, exe: exe, listening: true, environ: "HOME=/home/u\x00NOTIFY_SOCKET=/run/user/1000/systemd/notify\x00"},
+			r:       serviceRefresh{oldExecStart: newLine, handsOver: true},
+			wantOut: []string{"already running this binary (pid 7)"},
 		},
 		{
 			name: "stopped unit, install --now: enable + start",

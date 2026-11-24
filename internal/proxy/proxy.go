@@ -793,7 +793,7 @@ func (p *Proxy) maybeWarnCodexVariantModel(sid, model string) {
 		"proxy: codex-variant model paired with non-empty compress_types - "+
 			"the codex-variant family re-derives data on compressed tool_results, "+
 			"inflating cost; recommend `[compression.conversation] compress_types = []` "+
-			"or `observer start --recipe codex-variant`; see docs/codex-compression-recipe.md",
+			"or `observer start --recipe codex-variant`; see https://superbased.app/docs/setup/codex",
 		"model", model,
 		"session_id", sid,
 		"compress_types", strings.Join(p.compressTypes, ","),

@@ -2,7 +2,6 @@ package hook
 
 import (
 	"encoding/json"
-	"os"
 )
 
 // hook_shape.go - T-847: an Observer hook entry is "already set" only in the
@@ -12,10 +11,10 @@ import (
 // alone. A developer could keep the command and weaken what surrounds it (a
 // narrowed matcher so the gate only sees one tool, a tiny timeout so the host
 // gives up before the gate answers), and `observer start` then re-recorded
-// the weakened file in hook_checksums.json as the new baseline. Several
-// writers decode entries into typed structs that cannot even see an extra
-// field. This file is the one raw-JSON shape check those writers share: it
-// names the events whose Observer entry differs in shape, and each writer
+// the weakened file in hook_checksums.json as the new baseline. This file is
+// the one raw-JSON shape check the writers share (they keep every entry raw,
+// hookentries.go, so the check sees every field): it names the events whose
+// Observer entry differs in shape, and each writer
 // sends those events down its existing rewrite path (so the rewrite is a
 // reported add, and a repair when the event had been registered before).
 
@@ -151,20 +150,6 @@ func handlerShape(raw json.RawMessage, s entryShape) (ours, canonical bool) {
 		}
 	}
 	return true, true
-}
-
-// fileHooksRaw returns the top-level "hooks" member of the JSON file at path
-// (nil when absent or unreadable).
-func fileHooksRaw(path string) json.RawMessage {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var top map[string]json.RawMessage
-	if json.Unmarshal(raw, &top) != nil {
-		return nil
-	}
-	return top["hooks"]
 }
 
 // shapeRewrite records the T-847 shape rewrite of event on res.

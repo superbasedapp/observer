@@ -2574,9 +2574,7 @@ const ROUTING_RULES_PLACEHOLDER = `# No custom rules yet. Example - route read-o
 # name = "cheap-reads"
 # when.turn_kind = "read_only"
 # action.route_to_tier = "haiku-class"
-# action.reason = "overpowered_read"
-#
-# Recipes: docs/model-routing.md (recipe gallery)`;
+# action.reason = "overpowered_read"`;
 
 function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
   const policy = useApi<RoutingPolicyView>("/api/routing/policy");
@@ -2637,9 +2635,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
       <p className="m-0 mt-0.5 text-fg-3">
         Custom rows append AFTER the template's rules and are walked top-down, first match wins. Saving replaces ALL
         custom rules (an empty editor clears them); the save is lint-gated - a fragment that would fail the next
-        daemon start is refused with the file untouched. Worked examples:{" "}
-        <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">docs/model-routing.md</code> (recipe
-        gallery). Tier overrides, path classes, budgets, privacy rules, local upstreams and fallbacks have their own cards on this page; key pools hold API keys and stay in config.toml.
+        daemon start is refused with the file untouched. Tier overrides, path classes, budgets, privacy rules, local upstreams and fallbacks have their own cards on this page; key pools hold API keys and stay in config.toml.
       </p>
       {policy.error && <p className="m-0 mt-2 text-danger">{String(policy.error)}</p>}
       <Textarea

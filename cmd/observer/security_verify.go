@@ -131,10 +131,7 @@ runner can refuse the check: it is exempt from the component gate.
 
 With --org-policy (org mode) the policy, the change record keys and the
 records themselves come from the org's signed documents, which
-` + "`verify commits`" + ` and ` + "`verify fetch`" + ` prepare in separate jobs.
-
-See docs/security-verify.md for the required-workflow setup and when the check
-binds.`,
+` + "`verify commits`" + ` and ` + "`verify fetch`" + ` prepare in separate jobs.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true

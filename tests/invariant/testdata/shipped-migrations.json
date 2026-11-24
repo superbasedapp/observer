@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 3,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -25,9 +25,9 @@
     {
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
-      "head": 150,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "head": 153,
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -440,6 +440,18 @@
         {
           "file": "0150_connect_requests.sql",
           "blob": "63c303f398dd7c51e3a0d49976e31342c702dd4d"
+        },
+        {
+          "file": "0151_worker_sweep_expired_evidence.sql",
+          "blob": "b7a6de2f2c45ac6ddde0961f54e3e6e368538e25"
+        },
+        {
+          "file": "0152_definer_search_path_pg_temp.sql",
+          "blob": "5e4b00232212866bb97714671b43d9ddee2663a2"
+        },
+        {
+          "file": "0153_revoke_temp_from_public.sql",
+          "blob": "b02e350be7b8683bc393d3d6a133d18839101412"
         }
       ]
     },
@@ -447,8 +459,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -459,9 +471,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 255,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "head": 260,
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1362,15 +1374,27 @@
         {
           "file": "255_org_enrolment_connection.sql",
           "blob": "9e6949da2632b3bda0d530cad249d5bf2cbd4c3e"
+        },
+        {
+          "file": "256_api_turns_planea_legacy.sql",
+          "blob": "7a1fe602cf3785745b05df2d81d5fff289d49cec"
+        },
+        {
+          "file": "259_settings_proposals.sql",
+          "blob": "7a112b6872324ac754c78a24dc74629f58bcdb93"
+        },
+        {
+          "file": "260_api_turns_upstream_lane.sql",
+          "blob": "6544de59a9bfee3ef438dca79557dfb42c3833fc"
         }
       ]
     },
     {
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
-      "head": 479,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "head": 559,
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -2303,15 +2327,199 @@
         {
           "file": "0479_tenancy_policies.sql",
           "blob": "0fb594da951727f9cdb6f2e0938332a03bf4e63b"
+        },
+        {
+          "file": "0480_gateway_span_status_error.sql",
+          "blob": "f107798874934e9a6c82d0284411b252ffec3b5e"
+        },
+        {
+          "file": "0481_obs_trace_feed.sql",
+          "blob": "e1d1c2e2191aafac1156ab633d2c4e77402d08f8"
+        },
+        {
+          "file": "0482_obs_trace_identity_shared.sql",
+          "blob": "fa8e02bb02f7e86cb8ee11a265d16d0dba511882"
+        },
+        {
+          "file": "0483_obs_trace_identity.sql",
+          "blob": "f59b1d1d3a22f6fd2b7713471a549ef793717e49"
+        },
+        {
+          "file": "0484_obs_summaries_primary.sql",
+          "blob": "9b40e6278f7d819a0a13044cc73230ff170be4a2"
+        },
+        {
+          "file": "0485_obs_traces_identity_idx.sql",
+          "blob": "f531d59110b5e2a2ae3bb0621b505dddf31f9aa3"
+        },
+        {
+          "file": "0486_obs_traces_end_user_hash_idx.sql",
+          "blob": "84f14209137686f68aa85ea647ff00732b98c844"
+        },
+        {
+          "file": "0487_obs_alert_dimensions.sql",
+          "blob": "33156681c781429cf3c33b92ce8ce038b9ec677a"
+        },
+        {
+          "file": "0488_ingest_credential_org.sql",
+          "blob": "0fcf82589b560caee5927c5aa3a24828afe25c48"
+        },
+        {
+          "file": "0489_gateway_usage_monthly.sql",
+          "blob": "94510d6d009cff250c1159d076d4eb0e6a09240f"
+        },
+        {
+          "file": "0490_gateway_throttle_budget.sql",
+          "blob": "33dc96fa2c9ad3513a091ef89cbd4009a55a0e05"
+        },
+        {
+          "file": "0491_sdk_credential_scopes.sql",
+          "blob": "aefbdb9a7e5a21bf0b46314913511acceeac59c8"
+        },
+        {
+          "file": "0492_sdk_admission_verdicts.sql",
+          "blob": "ee2042257fa837a9c3a1f91cf2e4e79a49bddbc6"
+        },
+        {
+          "file": "0493_sdk_admission_verdicts_validate.sql",
+          "blob": "4a0bc31648aa3080da09eabb796cfdcf7ce11f3d"
+        },
+        {
+          "file": "0494_sdk_verdict_chain.sql",
+          "blob": "aa555b49d0f2e9028ebc3737a8c5d8af65bc4c7c"
+        },
+        {
+          "file": "0495_sdk_verdict_id_idx.sql",
+          "blob": "2756cd96eea2917415fa576340066819b69abe4f"
+        },
+        {
+          "file": "0496_sdk_verdict_chain_idx.sql",
+          "blob": "2e96c95810434beaf0698be68ae328112ca1af07"
+        },
+        {
+          "file": "0497_tenancy_policies.sql",
+          "blob": "be99932b42714c5a166fdc1cd048df76e0f28f42"
+        },
+        {
+          "file": "0500_trace_annotation_scores.sql",
+          "blob": "1b8c86039bd7784cae10a90098e18525a0b44255"
+        },
+        {
+          "file": "0501_trace_annotation_key_created_idx.sql",
+          "blob": "7b53c3b3f74e54b41bf7208be8742c72fb886d76"
+        },
+        {
+          "file": "0502_trace_annotation_run_idx.sql",
+          "blob": "c1583ee31562d0e38248f1308358501dc474783f"
+        },
+        {
+          "file": "0503_dataset_snapshots.sql",
+          "blob": "3c3ad33107c79886d804c1e57575f86673a137f2"
+        },
+        {
+          "file": "0504_eval_online_rules.sql",
+          "blob": "a398847a427ba4fa961fc01a234724ce43c5bb3f"
+        },
+        {
+          "file": "0505_review_queue.sql",
+          "blob": "0d0d713600f92e418feb4cb71a92ce7df95d7996"
+        },
+        {
+          "file": "0506_tenancy_policies.sql",
+          "blob": "dd57534c7a4903b10118aa835de9ccfc5806a1d8"
+        },
+        {
+          "file": "0507_trace_annotation_score_key_idx.sql",
+          "blob": "41d6f4f7e338279bdf7293278b7d2c42bb5747b3"
+        },
+        {
+          "file": "0508_trace_annotation_score_pkey.sql",
+          "blob": "57439e85d8df20c113410bdfb96ec6b2c19cc029"
+        },
+        {
+          "file": "0510_prompt_registry.sql",
+          "blob": "3c4a7190cb8689ff44671556fc5cbe07f39fd14c"
+        },
+        {
+          "file": "0511_tenancy_policies.sql",
+          "blob": "060e0161bd908d4bae4a14130d0a1d70e103bf66"
+        },
+        {
+          "file": "0512_budget_app_scopes.sql",
+          "blob": "78976bcf0a5bde032bf418a8ec3f39f6ed1cb856"
+        },
+        {
+          "file": "0516_obs_span_exact_cost.sql",
+          "blob": "35766c4f3d11e4c9178b518230015e12c67b32d4"
+        },
+        {
+          "file": "0517_gw_audit_trace_idx.sql",
+          "blob": "b45503a9256f11fe550e3a52d11fb950547908f7"
+        },
+        {
+          "file": "0518_obs_trace_repository.sql",
+          "blob": "26425a862e4311c17b564989b1962770f1604f53"
+        },
+        {
+          "file": "0519_prompt_rollout_approval.sql",
+          "blob": "a7f307a3101fca88e06c1eab941e63fcbbfd32f4"
+        },
+        {
+          "file": "0522_obs_saved_views_pagerduty.sql",
+          "blob": "aa9f6bcb9a9d601935b66416b97b32860753f3c5"
+        },
+        {
+          "file": "0525_review_assignment.sql",
+          "blob": "31c305f121f8c15ac2ca9295f9ce104ff0975a10"
+        },
+        {
+          "file": "0526_tenancy_policies.sql",
+          "blob": "ee524849124340bc7b871630842254ba5d898c30"
+        },
+        {
+          "file": "0529_obs_traces_pushed_idx.sql",
+          "blob": "9f4c76577e35bbb48cd0ee39c38a2679dda9006e"
+        },
+        {
+          "file": "0530_gw_audit_input_gross.sql",
+          "blob": "ccc95ba2f2848565e68c9b31e2f1ac26c1e5aae1"
+        },
+        {
+          "file": "0534_obs_alert_pagerduty_owed.sql",
+          "blob": "2dc2893a66f72f07018a3019a3febe2954d84b8f"
+        },
+        {
+          "file": "0535_obs_spans_gateway_request_idx.sql",
+          "blob": "49a2950f4b247eaabfb2e1dd5bfdb09acf4d8c50"
+        },
+        {
+          "file": "0538_obs_alert_event_channels.sql",
+          "blob": "d9caf8448e85aa8324ef34b341d5a87f3aaba92e"
+        },
+        {
+          "file": "0556_sdk_read_workspace.sql",
+          "blob": "b40c462f8da4dd9a9a31a6ee384eefd13867d35f"
+        },
+        {
+          "file": "0557_trace_annotation_score_idx.sql",
+          "blob": "94d1faab86315e10921acfa22cc7278e6b5c0e7c"
+        },
+        {
+          "file": "0558_org_eval_score_has_num.sql",
+          "blob": "28c772723a57c5f3043a779ba619adb19334b53e"
+        },
+        {
+          "file": "0559_gw_audit_input_gross_validate.sql",
+          "blob": "1f50b3dee531762f803cc445480a6767e402eaea"
         }
       ]
     },
     {
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
-      "head": 316,
-      "ref": "v1.41.0",
-      "commit": "76f68b480bb993df11a9c6b1b4ee1268fce8926b",
+      "head": 381,
+      "ref": "v1.42.1",
+      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -3460,6 +3668,130 @@
         {
           "file": "316_attach_grant_uses.sql",
           "blob": "1cb801f5eb275fd72ba723839f818f27ba2b0955"
+        },
+        {
+          "file": "317_gateway_span_status_error.sql",
+          "blob": "9580fd9eac09c560e2907a7ff1358246a6bd855c"
+        },
+        {
+          "file": "318_sdk_verdict_chain.sql",
+          "blob": "dc6c3c3120a41ec7973c77b45f313edfad3dd2b4"
+        },
+        {
+          "file": "319_obs_alert_dimensions.sql",
+          "blob": "38c2456e1868a37f6b698eac731460befd52d882"
+        },
+        {
+          "file": "320_obs_trace_identity.sql",
+          "blob": "bac96d9ad43fd2d1def01aae0a0e490594f22292"
+        },
+        {
+          "file": "321_obs_summaries_primary.sql",
+          "blob": "9f0a6a13e027caf6aa8e8c4d7457448fa7ab7ce4"
+        },
+        {
+          "file": "322_obs_traces_identity_idx.sql",
+          "blob": "c51d33fe4952622abe4684a6eff8f3df1ec4da3a"
+        },
+        {
+          "file": "323_obs_trace_feed.sql",
+          "blob": "a4f3b4feeb5532aa890615f45fa301a4428a7085"
+        },
+        {
+          "file": "324_obs_trace_identity_shared.sql",
+          "blob": "ea7b8d6776a572ea5ac51dad2fe9cb32d0623a8c"
+        },
+        {
+          "file": "325_gateway_usage_monthly.sql",
+          "blob": "6552e266bc4745fbda833b1fa40cc1dcfdb4d3a0"
+        },
+        {
+          "file": "328_sdk_credential_scopes.sql",
+          "blob": "706108b225c0a163cd149442553ac777f9d490f5"
+        },
+        {
+          "file": "329_sdk_admission_verdicts.sql",
+          "blob": "f8060041160774e8f57d2a158a5fe1c7ccc12eef"
+        },
+        {
+          "file": "330_trace_annotation_scores.sql",
+          "blob": "f266f4c106e433a36426a93c44351cb4ceb181b9"
+        },
+        {
+          "file": "331_dataset_snapshots.sql",
+          "blob": "47d2c74ba73ade77fa89f8b6f6f65f97665b6a24"
+        },
+        {
+          "file": "332_eval_online_rules.sql",
+          "blob": "b31b5606f26efed859f0700e62028aaab73b32a0"
+        },
+        {
+          "file": "333_review_queue.sql",
+          "blob": "c694fa4bff0ddbc9a48c408a2158d16dc41dfc57"
+        },
+        {
+          "file": "337_prompt_registry.sql",
+          "blob": "648450e94cc52922361705dfc9ddbb87b951763c"
+        },
+        {
+          "file": "338_budget_app_scopes.sql",
+          "blob": "6d5c8256f2cd85d0dc70e4418159ee3be4b98991"
+        },
+        {
+          "file": "341_obs_span_exact_cost.sql",
+          "blob": "1dfa3f332bce1cf813363fa81e34dd64a0284b42"
+        },
+        {
+          "file": "342_gw_audit_trace_idx.sql",
+          "blob": "426ba66d05c995b1617361344eb5cfcdc2561c19"
+        },
+        {
+          "file": "343_obs_trace_repository.sql",
+          "blob": "623a7001e464b67644eb913d6e01a8a27bde9162"
+        },
+        {
+          "file": "344_prompt_rollout_approval.sql",
+          "blob": "fcea2d7ccf006db20bf77b751ff73b26eda86c20"
+        },
+        {
+          "file": "346_obs_saved_views.sql",
+          "blob": "f15e880c03a51b6ebecebcb228f37aaf3e3d0635"
+        },
+        {
+          "file": "347_obs_alert_pagerduty.sql",
+          "blob": "1676640dca956f12cb762dd705fb797055d58c40"
+        },
+        {
+          "file": "349_review_assignment.sql",
+          "blob": "fd27fe2419a67421b5139e14fe3c70eb81329abb"
+        },
+        {
+          "file": "353_obs_traces_pushed_idx.sql",
+          "blob": "1d21ed94719ef67643e312f96bc3323f95d7bc86"
+        },
+        {
+          "file": "354_gw_audit_input_gross.sql",
+          "blob": "d7a1db124878124f6a9670975902d4a17dbb6d72"
+        },
+        {
+          "file": "358_obs_alert_pagerduty_owed.sql",
+          "blob": "4b68eb3744606978da1d330c6b7505815cea8b3a"
+        },
+        {
+          "file": "359_obs_spans_gateway_request_idx.sql",
+          "blob": "0d538cda101f218fc65bc8eeb18d7dc6862c60af"
+        },
+        {
+          "file": "362_obs_alert_event_channels.sql",
+          "blob": "729c4c20a1863a841692dc24c4938751d94b6a64"
+        },
+        {
+          "file": "380_sdk_read_workspace.sql",
+          "blob": "2cc79f1c61726c9a334119a861d1634bd59ed0ee"
+        },
+        {
+          "file": "381_org_eval_score_has_num.sql",
+          "blob": "23dd699a6ef4220869916f87f584cc1a00d7b9b9"
         }
       ]
     }

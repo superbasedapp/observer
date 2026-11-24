@@ -349,32 +349,27 @@ func (s *Scrubber) String(v string) string {
 // Fast path (cache-friendly): scrub with String. When nothing matched —
 // output byte-identical to input, the common case — return the input
 // slice unchanged so the proxy's prefix-cache byte stability is
-// preserved. When something matched but the result is still valid JSON,
-// return it. ONLY when String corrupted otherwise-valid JSON do we fall
-// back to a structure-aware pass (unmarshal → scrub each string value in
-// isolation via [Scrubber.JSONValue] → re-marshal), which can never break
-// JSON structure because json.Marshal re-escapes every string. Unlike
-// [Scrubber.RawJSON] this never truncates — the forward path must not
-// silently drop a large legitimate body. Non-JSON input falls through to
-// String's output (best effort; the proxy hard-guard is the final
+// preserved. When something matched, String's output is accepted only
+// when it has the SAME JSON SHAPE as the input (same delimiters, keys and
+// literals in the same order; only ordinary string values changed; kept
+// values byte-identical). "Still valid JSON" is not enough: a greedy
+// `\S+` row can swallow whole array items and leave valid JSON behind
+// (lane sr-openai-n2). Otherwise the body is scrubbed token by token and
+// only the changed tokens are spliced back into the original bytes:
+// member names go through String, string values follow the
+// [Scrubber.JSONValue] rules, and structure, key order and kept values are
+// never rewritten (forward.go). The one kept value is a string that is the
+// DIRECT value of a member named literally `encrypted_content`, which
+// String's own shield already covers.
+// Unlike [Scrubber.RawJSON] this never truncates — the forward path must
+// not silently drop a large legitimate body. Non-JSON input falls through
+// to String's output (best effort; the proxy hard-guard is the final
 // backstop).
+//
+// A body bound for the LLM provider that produced its reasoning or
+// thinking items uses [Scrubber.ScrubProviderRequest] instead.
 func (s *Scrubber) ScrubForward(raw []byte) []byte {
-	scrubbed := s.String(string(raw))
-	if scrubbed == string(raw) {
-		return raw
-	}
-	if json.Valid([]byte(scrubbed)) {
-		return []byte(scrubbed)
-	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return []byte(scrubbed)
-	}
-	out, err := json.Marshal(s.JSONValue(decoded))
-	if err != nil {
-		return []byte(scrubbed)
-	}
-	return out
+	return s.scrubForward(raw, false)
 }
 
 // fernetEncryptedContentRE matches a JSON string-valued

@@ -6,7 +6,7 @@
 # Route Codex's OpenAI traffic through Observer's proxy for accurate token
 # capture. This MUST live in the file: Codex 0.130+ drops the launcher's
 # `-c openai_base_url` override before the inner app-server makes the call
-# (docs/codex-shared-app-server-gotcha.md, V6-2).
+# (https://superbased.app/docs/setup/codex).
 openai_base_url = "http://127.0.0.1:8820/v1"
 
 # Enable Codex hooks so Observer captures session/permission/user-prompt rows.

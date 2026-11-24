@@ -193,6 +193,12 @@ const (
 	// EditReplace replaces Old with New in the current file (the first
 	// occurrence, or every one when All is set), as an Edit tool does.
 	EditReplace
+	// EditUnknown marks a write whose resulting content the boundary
+	// cannot see: an apply_patch rename (`*** Move to:`) lands the SOURCE
+	// file's content, plus the hunks, on the destination, and the patch
+	// does not carry that content (NEW-07). A content rule judges it as
+	// content that may set anything; it never replays.
+	EditUnknown
 )
 
 // ProposedEdit is one proposed change of a file write or edit, in the

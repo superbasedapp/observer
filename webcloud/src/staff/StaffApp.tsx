@@ -26,6 +26,7 @@ const Availability = lazy(() => import("./pages/Availability").then((m) => ({ de
 const Support = lazy(() => import("./pages/Support").then((m) => ({ default: m.Support })));
 const AuditLog = lazy(() => import("./pages/AuditLog").then((m) => ({ default: m.AuditLog })));
 const Optional = lazy(() => import("./pages/Optional").then((m) => ({ default: m.OptionalScreen })));
+const TeamAllowlist = lazy(() => import("./pages/TeamAllowlist").then((m) => ({ default: m.TeamAllowlist })));
 
 interface StaffNavItem {
   to: string;
@@ -84,7 +85,7 @@ export function StaffApp() {
               <Route path="/availability" element={<Availability />} />
               <Route path="/support" element={<Support />} />
               <Route path="/log" element={<AuditLog />} />
-              <Route path="/team-allowlist" element={<Optional feature="team_allowlist" title="Team allow-list" path="/api/team-allowlist" />} />
+              <Route path="/team-allowlist" element={<TeamAllowlist />} />
               <Route path="/deletions" element={<Optional feature="deletion_queue" title="Deletions" path="/api/deletions" />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

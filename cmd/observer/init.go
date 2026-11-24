@@ -637,7 +637,7 @@ func runStatuslineInit(out io.Writer, opts hook.Options, selected []string, unin
 	native := contains(selected, "claude-code")
 	windowsOnly := !native && contains(selected, "claude-code-windows")
 	if windowsOnly {
-		fmt.Fprintln(out, "statusline: claude-code was detected only on the Windows side of a cross-OS WSL setup - v1 scope is native-OS only, skipping (see docs/observer-statusline.md). Run `observer init --statusline` from the OS where Claude Code itself runs.")
+		fmt.Fprintln(out, "statusline: claude-code was detected only on the Windows side of a cross-OS WSL setup - the statusline is set up on the native OS only, skipping. Run `observer init --statusline` from the OS where Claude Code itself runs.")
 		return nil
 	}
 	if !native {
@@ -1036,38 +1036,12 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		if !opts.SkipMCP && mcpSupported(t) {
 			printMCPResult(&buf, t, mcpReg.Register(t), opts.DryRun)
 		}
-		if !opts.SkipProxy && routeSupported(t) && !hasProbeRouteWriter(t) {
-			// Dispatch on the route's capability KIND, not tool name
-			// (CLAUDE.md #3). proxyroute.Registrar holds the per-client
-			// writers; the registry says which kind each tool needs.
-			// routeSupported guarantees a non-nil Proxy.
-			//
-			// hasProbeRouteWriter excludes config-lane tools (kimi-code,
-			// crush, …): they share the codex/claude-code RouteKinds but are
-			// applied by the probe-route step below via their OWN writers.
-			// The main step's kind-switch only knows the codex/claude-code
-			// writers — running RegisterCodex() for kimi-code would write the
-			// wrong config file.
-			//
-			// The "-windows" virtual target (WindowsRouteTargets) resolves to
-			// its BASE adapter's capability KIND, then dispatches the cross-OS
-			// writer — mirroring how the hook step handles claude-code-windows.
-			base, isWindows := strings.CutSuffix(t, "-windows")
-			ic, _ := integration.For(base)
-			var write func() proxyroute.RegistrationResult
-			switch ic.Proxy.Kind {
-			case integration.RouteConfigFile:
-				write = routeReg.RegisterCodex
-				if isWindows {
-					write = routeReg.RegisterCodexWindows
-				}
-			case integration.RouteEnvSettings:
-				write = routeReg.RegisterClaudeCode
-				if isWindows {
-					write = routeReg.RegisterClaudeCodeWindows
-				}
-			}
-			if write != nil {
+		if !opts.SkipProxy && routeSupported(t) {
+			// routeWriterFor is the one dispatch both init loops share
+			// (CMD-02): the route KIND, the "-windows" cross-OS target, and
+			// the exclusion of tools whose own config-lane writer the
+			// probe-route step below applies.
+			if write, ok := routeWriterFor(routeReg, t); ok {
 				res := write()
 				printProxyRouteResult(&buf, t, res, opts.DryRun)
 				opts.Report.noteRoute(t, res)
@@ -1086,11 +1060,13 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		fmt.Fprintf(&buf, "%-12s note: %s\n", "cursor", diag.ClaudeReplayDoubleRunNote())
 	}
 
-	// Probe-route step: tools whose guarded, ADDITIVE config-lane writer
-	// exists but is NOT yet live-verified (registry ProxyProbe != nil; Proxy
-	// stays nil). They are NOT surfaced by selectTools (not hook/MCP clients),
-	// so the eligible set derives from the registry, detected by config-file
-	// presence at write time (ConfigMissing → benign skip). Only fired under
+	// Probe-route step: tools whose route their OWN guarded, ADDITIVE
+	// config-lane writer applies (registry ProxyProbe != nil). Most are not
+	// yet live-verified (Proxy stays nil); qwen-code and kimi-code are, but
+	// they share codex's route KIND, so routeWriterFor keeps the main step
+	// above off them. Several are not hook/MCP clients, so the eligible set
+	// derives from the registry rather than selectTools, detected by
+	// config-file presence at write time (ConfigMissing → benign skip). Only fired under
 	// an explicit `--all` "wire everything I have" (never on a tool-scoped
 	// init, which must respect the operator's scope) and honouring
 	// --skip-proxy-route. Interactive init offers these per-consent instead.
@@ -1283,7 +1259,7 @@ func printProxyRoutingHintFor(out io.Writer, port int, goos string) {
 		fmt.Fprintln(out, "  or persist via ~/.claude/settings.json:")
 	}
 	fmt.Fprintf(out, "      \"env\": { \"ANTHROPIC_BASE_URL\": %q }\n", url)
-	fmt.Fprintln(out, "  see docs/proxy-routing.md for verification + per-shell setup.")
+	fmt.Fprintln(out, "  see https://superbased.app/docs/setup/claude-code for verification and per-shell setup.")
 }
 
 // printCommunityFooter echoes a short "get involved" line at the tail of
@@ -1292,8 +1268,8 @@ func printProxyRoutingHintFor(out io.Writer, port int, goos string) {
 func printCommunityFooter(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "★ Observer is open source - a star helps others find it:")
-	fmt.Fprintln(out, "    https://github.com/marmutapp/superbased-observer")
-	fmt.Fprintln(out, "  issues + feedback: .../issues · contact@superbased.app")
+	fmt.Fprintln(out, "    https://github.com/superbasedapp/observer")
+	fmt.Fprintln(out, "  issues + feedback: https://github.com/superbasedapp/observer/issues · contact@superbased.app")
 }
 
 // printProxyRouteResult prints the outcome of a proxyroute registration
@@ -1990,8 +1966,9 @@ func probeRouteTools() []string {
 // inherently per-config-shape (and two share the RouteConfigFile kind —
 // kimi-code's config.toml vs qwen-code's settings.json — so a Kind switch
 // alone can't distinguish them), so this is a per-tool table (CLAUDE.md #5),
-// not a nested conditional. probeRouteWriter and hasProbeRouteWriter both read
-// it, so the eligible set has ONE owner. A new probe writer is one registry
+// not a nested conditional. probeRouteWriter reads it, so the eligible set has
+// ONE owner; routeWriterFor keeps the main step off these tools through the
+// same registry ProxyProbe. A new probe writer is one registry
 // ProxyProbe row + one row here + the writer itself.
 var probeRouteWriterBindings = map[string]func(*proxyroute.Registrar) func() proxyroute.RegistrationResult{
 	"kimi-code": func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterKimiCode },
@@ -2026,13 +2003,60 @@ func probeRouteWriter(reg *proxyroute.Registrar, tool string) (func() proxyroute
 	return bind(reg), true
 }
 
-// hasProbeRouteWriter reports whether tool is applied by the probe-route step
-// via its own config-lane writer (shared probeRouteWriterBindings table). The
-// main route step guards on this so it never runs its codex/claude-code
-// writers for a config-lane tool that shares those RouteKinds.
-func hasProbeRouteWriter(tool string) bool {
-	_, ok := probeRouteWriterBindings[tool]
-	return ok
+// verifiedRouteWriter is the pair of Registrar writers one persisted route
+// KIND resolves to: the native writer and the cross-OS "<tool>-windows"
+// writer.
+type verifiedRouteWriter struct {
+	native  func(*proxyroute.Registrar) func() proxyroute.RegistrationResult
+	windows func(*proxyroute.Registrar) func() proxyroute.RegistrationResult
+}
+
+// verifiedRouteWriters is the DATA table of the main route step: one row per
+// persisted route KIND it can write. Only the codex and claude-code writers
+// live here; every other tool sharing one of these kinds carries its own
+// guarded writer (registry ProxyProbe), which routeWriterFor excludes.
+var verifiedRouteWriters = map[integration.RouteKind]verifiedRouteWriter{
+	integration.RouteConfigFile: {
+		native:  func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterCodex },
+		windows: func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterCodexWindows },
+	},
+	integration.RouteEnvSettings: {
+		native:  func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterClaudeCode },
+		windows: func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterClaudeCodeWindows },
+	},
+}
+
+// routeWriterFor resolves the writer the main route step runs for tool, or
+// false when that step has no writer for it. It is the ONE dispatch the
+// batch loop (wireAIClients) and the interactive loop (runInteractiveInit,
+// for both its preview and its write registrar) share (CMD-02: the
+// interactive copy had lost the exclusion below and offered qwen-code and
+// kimi-code the codex writer, which created ~/.codex/config.toml).
+//
+// It dispatches on the registry row's SHAPE, never on the tool name
+// (CLAUDE.md #3): a "<tool>-windows" virtual target resolves to its BASE
+// row and takes the kind's cross-OS writer; a row with a ProxyProbe has its
+// own guarded config-lane writer, applied by the probe-route step through
+// probeRouteWriter, so the codex/claude-code writer its shared RouteKind
+// would select is never its writer; a row without a persisted kind in
+// verifiedRouteWriters has none here.
+func routeWriterFor(reg *proxyroute.Registrar, tool string) (func() proxyroute.RegistrationResult, bool) {
+	if reg == nil {
+		return nil, false
+	}
+	base, isWindows := strings.CutSuffix(tool, clientwire.WindowsSuffix)
+	c, ok := integration.For(base)
+	if !ok || c.Proxy == nil || c.ProxyProbe != nil {
+		return nil, false
+	}
+	w, ok := verifiedRouteWriters[c.Proxy.Kind]
+	if !ok {
+		return nil, false
+	}
+	if isWindows {
+		return w.windows(reg), true
+	}
+	return w.native(reg), true
 }
 
 // windowsTargetsOnly keeps the cross-OS "<tool>-windows" targets, sorted.

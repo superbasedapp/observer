@@ -104,8 +104,8 @@ func newClaudeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&claudePath, "claude-path", "", "Path to the claude binary (default: resolve `claude` on PATH)")
-	cmd.Flags().BoolVar(&verify, "verify", false, "Run pre-flight checks (proxy reachability + credentials.json + OAuth token) and exit. Does NOT launch claude. Exit 0 if every check passes, 1 if any fail. See docs/proxy-wrappers.md.")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as claude's first prompt (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().BoolVar(&verify, "verify", false, "Run pre-flight checks (proxy reachability + credentials.json + OAuth token) and exit. Does NOT launch claude. Exit 0 if every check passes, 1 if any fail. See https://superbased.app/docs/setup/claude-code.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it as claude's first prompt (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")
@@ -124,7 +124,7 @@ func newClaudeCmd() *cobra.Command {
 	// even if the capability is later ungrounded.
 	if capClaude, _ := integration.For("claude-code"); capClaude.Attach != nil {
 		cmd.Flags().BoolVar(&attach, "attach", false,
-			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching (SIGTERM/close) leaves the claude child running under the daemon, and Ctrl-C still reaches claude. Requires `observer start`. Attach is the DEFAULT for an interactive `observer claude` when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Attach mode: have the running observer daemon own this session's PTY so the dashboard can view and drive the SAME live session (session-attach). Your terminal stays interactive; detaching (SIGTERM/close) leaves the claude child running under the daemon, and Ctrl-C still reaches claude. Requires `observer start`. Attach is the DEFAULT for an interactive `observer claude` when the daemon is reachable ([terminal.attach].default_on); this flag FORCES it. See https://superbased.app/docs/guides/terminals.")
 		cmd.Flags().BoolVar(&noAttach, "no-attach", false,
 			"Opt out of attach for this launch: exec claude as a normal child of your shell (the bare launcher) even when attach would otherwise be the default. Use it to bypass the daemon-owned PTY for one run without changing [terminal.attach].default_on. Composes with --resume and --continue-from.")
 		cmd.Flags().BoolVar(&noProxy, "no-proxy", false,
@@ -138,7 +138,7 @@ func newClaudeCmd() *cobra.Command {
 	// combinable with --attach (the daemon owns the resumed PTY).
 	if capClaude, _ := integration.For("claude-code"); capClaude.Resume.Kind == integration.ResumeNative {
 		cmd.Flags().StringVar(&resume, "resume", "",
-			"Resume a CLOSED claude-code session by its id: launches `claude --resume <id>`, reattaching the tool's REAL prior conversation (signed thinking blocks and all) - NOT a distilled fork. Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See docs/plans/session-attach-design-2026-07-19.md.")
+			"Resume a CLOSED claude-code session by its id: launches `claude --resume <id>`, reattaching the tool's REAL prior conversation (signed thinking blocks and all) - NOT a distilled fork. Mutually exclusive with --continue-from/--carry/--from-message/--from-time. Combine with --attach to resume into a daemon-owned session the dashboard can join. See https://superbased.app/docs/guides/terminals.")
 	}
 	return cmd
 }

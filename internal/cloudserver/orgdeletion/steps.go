@@ -61,7 +61,7 @@ func OrgSteps() []StepRow {
 	return []StepRow{
 		{StepAnnounce, StepCoolingOff, "move the org to pending_deletion at a new generation and tell its host (set_state)"},
 		{StepCoolingOff, StepCancelBilling, "wait until purge_after; the owner may cancel until then"},
-		{StepCancelBilling, StepFence, "cancel the org's live subscription through the billing seam (no live subscription: nothing to do)"},
+		{StepCancelBilling, StepFence, "cancel the org's subscription through the billing seam while Paddle may still bill it, refunded or charged back included (canceled or none: nothing to do)"},
 		{StepFence, StepAwaitHost, "journal the org, then move it to purging, evict its runtimes, queue purged behind, disable its OIDC client"},
 		{StepAwaitHost, StepFinalize, "wait until the host acked purged: its fenced purge of every store completed"},
 		{StepFinalize, StepDone, "record the org purged, remove its memberships, journal done"},

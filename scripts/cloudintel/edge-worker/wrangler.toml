@@ -1,12 +1,24 @@
+# RETIRED: do not deploy this Worker.
+#
+# sbci-cloud-edge-staging and sbci-cloud-edge-prod fronted the Azure-era Cloud
+# Intelligence origins named below, which no longer exist. Their routes
+# (staging-cloud.superbased.app/* and cloud.superbased.app/*) were deleted
+# live. The prod route caused the L-106 outage (a 522) once the cloud record
+# was proxied, and was removed for L-107; the staging route went at L-111 B2
+# (docs/plans/managed-saas/07-lead-decisions-log.md). cloud.superbased.app is
+# served by OVH app-0 since about 21:40 UTC on 2026-11-14 (L-107).
+#
+# The route declarations were removed from this file on 2026-11-23 (L-152), so
+# a deploy from here cannot recreate them. The file is kept for history only;
+# see docs/infrastructure-inventory.md section 7.
+
 name = "sbci-cloud-edge-staging"
 main = "src/index.js"
 compatibility_date = "2026-09-02"
 
-# Hostname move (runbook s14.1 step 6, 2026-09-14): staging answers ONLY on
-# its own hostname; cloud.superbased.app/* belongs to [env.prod] below.
-routes = [
-  { pattern = "staging-cloud.superbased.app/*", zone_name = "superbased.app" },
-]
+# Hostname move (runbook s14.1 step 6, 2026-09-14): staging answered ONLY on
+# its own hostname. Its route (staging-cloud.superbased.app/*) is removed; see
+# the header.
 
 [vars]
 SBCI_ORIGIN_BASE_URL = "https://sbci-api.orangeforest-8b0ea924.eastus2.azurecontainerapps.io"
@@ -40,15 +52,11 @@ SBCI_PUBLIC_HOSTS = "staging-cloud.superbased.app"
 [env.prod]
 name = "sbci-cloud-edge-prod"
 # No workers.dev preview hostname for production: the only public path to the
-# prod origin is the routed hostname (s14.1 step 6).
+# prod origin was the routed hostname (s14.1 step 6).
 workers_dev = false
 
-# The ONE production host (runbook s14.1 step 6, moved 2026-09-14): this
-# route was held empty until the cutover so a prod deploy could not claim
-# the hostname while staging still served it.
-routes = [
-  { pattern = "cloud.superbased.app/*", zone_name = "superbased.app" },
-]
+# The ONE production host (runbook s14.1 step 6, moved 2026-09-14) was
+# cloud.superbased.app/*. That route is removed; see the header.
 
 [env.prod.vars]
 SBCI_ORIGIN_BASE_URL = "https://sbci-api.greenforest-656cc573.eastus2.azurecontainerapps.io"

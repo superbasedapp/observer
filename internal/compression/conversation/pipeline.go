@@ -465,7 +465,7 @@ func (p *Pipeline) runGoogle(ctx context.Context, provider string, body []byte, 
 	if len(events) == 0 {
 		scrubbed := body
 		if p.scrubber != nil {
-			scrubbed = p.scrubber.ScrubForward(body)
+			scrubbed = p.scrubber.ScrubProviderRequest(body)
 		}
 		return PipelineResult{
 			Body:            scrubbed,
@@ -573,7 +573,7 @@ func (p *Pipeline) runAnthropic(ctx context.Context, provider string, body []byt
 	if len(br.Stats.Events) == 0 && br.Stats.DroppedCount == 0 && !wantInject {
 		scrubbed := body
 		if p.scrubber != nil {
-			scrubbed = p.scrubber.ScrubForward(body)
+			scrubbed = p.scrubber.ScrubProviderRequest(body)
 		}
 		return PipelineResult{
 			Body:              scrubbed,
@@ -656,7 +656,7 @@ func (p *Pipeline) runOpenAI(ctx context.Context, provider string, body []byte, 
 		if len(br.Stats.Events) == 0 && br.Stats.DroppedCount == 0 {
 			scrubbed := body
 			if p.scrubber != nil {
-				scrubbed = p.scrubber.ScrubForward(body)
+				scrubbed = p.scrubber.ScrubProviderRequest(body)
 			}
 			return PipelineResult{
 				Body:              scrubbed,
@@ -725,7 +725,7 @@ func (p *Pipeline) runOpenAI(ctx context.Context, provider string, body []byte, 
 	if len(br.Stats.Events) == 0 && br.Stats.DroppedCount == 0 {
 		scrubbed := body
 		if p.scrubber != nil {
-			scrubbed = p.scrubber.ScrubForward(body)
+			scrubbed = p.scrubber.ScrubProviderRequest(body)
 		}
 		return PipelineResult{
 			Body:              scrubbed,
@@ -798,9 +798,16 @@ func (p *Pipeline) compressMessagesCacheAware(msgs []Message, originalBodyBytes 
 
 // finalize scrubs the serialized body and packs the PipelineResult so
 // both provider paths share the same exit shape.
+//
+// Every forward scrub in this pipeline is [scrub.Scrubber.ScrubProviderRequest],
+// not ScrubForward: the body goes back to the provider that produced its
+// reasoning / thinking items, and one changed byte inside them fails the
+// provider's verification (OpenAI "encrypted content could not be
+// verified", Anthropic thinking-block signatures, Gemini thought
+// signatures; lane sr-openai-n2).
 func (p *Pipeline) finalize(provider string, original, newBody []byte, br BudgetResult, prefixHash string) PipelineResult {
 	if p.scrubber != nil {
-		newBody = p.scrubber.ScrubForward(newBody)
+		newBody = p.scrubber.ScrubProviderRequest(newBody)
 	}
 	return PipelineResult{
 		Body:              newBody,

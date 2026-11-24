@@ -122,8 +122,8 @@ func PlanReclaim(in ReclaimInput) ReclaimPlan {
 	case in.DaemonLive:
 		plan.Decision = ReclaimDaemonLive
 		plan.Reason = "the observer daemon is running - a reclaim rewrites the database file and then replaces it, " +
-			"which a live daemon's open handles cannot survive. Stop it first " +
-			"(docs/daemon-restart-runbook.md: route OFF → stop → reclaim → relaunch → route ON)"
+			"which a live daemon's open handles cannot survive. Stop it first: " +
+			"`observer service stop` (takes the proxy routes off), reclaim, then `observer service start` (puts them back)"
 
 	case plan.ReclaimableBytes < MinReclaimBytes && !in.Force:
 		plan.Decision = ReclaimNothingToReclaim

@@ -354,8 +354,10 @@ func TestRateLimitRolePrivilegesAndFailureClosed(t *testing.T) {
 		if !secDef {
 			t.Errorf("%s is not SECURITY DEFINER (prosecdef=false)", sig)
 		}
-		if !containsConfig(config, "search_path=pg_catalog, public") {
-			t.Errorf("%s proconfig = %v, want a pinned search_path=pg_catalog, public", sig, config)
+		// pg_temp last since 0152 (CLOUD-DEFINER-TEMP-2): without it a caller's
+		// temp sbci_rate_limit_counters shadowed the real counters.
+		if !containsConfig(config, "search_path=pg_catalog, public, pg_temp") {
+			t.Errorf("%s proconfig = %v, want a pinned search_path=pg_catalog, public, pg_temp", sig, config)
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/entitlementwork"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/orgdeletion"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/seatbilling/paddleapi"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -190,6 +191,11 @@ type paddleServe struct {
 	secrets      paddleSecrets
 	portal       api.PaddlePortalAPI
 	pastDueGrace time.Duration
+	// deletionBilling cancels an account deletion's live subscriptions at
+	// Paddle before the deletion purges them (ORGDEL-7): the worker's
+	// org-deletion seam (deletionBilling, orgdeletion.go) over the same API
+	// client. nil without a key: such a deletion is then refused.
+	deletionBilling orgdeletion.Billing
 }
 
 // paddleServeConfigFromEnv reads serve's Paddle settings once (wave 17):
@@ -217,6 +223,7 @@ func paddleServeConfigFromEnv(pm map[string]store.PaddlePlan, externalBase strin
 	out := paddleServe{checkout: checkout, secrets: sec, pastDueGrace: grace}
 	if client != nil {
 		out.portal = client
+		out.deletionBilling = deletionBilling{api: client}
 	}
 	noTrial := len(pm) - len(checkout.Prices)
 	if checkout.TrialDays > 0 {
@@ -234,6 +241,7 @@ func paddleServeConfigFromEnv(pm map[string]store.PaddlePlan, externalBase strin
 		"environment", checkout.Environment, "prices", len(checkout.Prices), "no_trial_prices", noTrial,
 		"trial_days", checkout.TrialDays, "checkout_available", checkout.Available(),
 		"webhook_configured", sec.webhookSecret != "" || sec.webhookSecretPrevious != "",
-		"portal_sessions", out.portal != nil, "past_due_grace_days", int(grace/(24*time.Hour)))
+		"portal_sessions", out.portal != nil, "account_deletion_cancels_billing", out.deletionBilling != nil,
+		"past_due_grace_days", int(grace/(24*time.Hour)))
 	return out, nil
 }

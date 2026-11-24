@@ -206,26 +206,34 @@ func (s *Store) InsertAvailabilityDocument(ctx context.Context, doc platformcont
 		return fmt.Errorf("cloudserver/store.InsertAvailabilityDocument: %w", err)
 	}
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		if err := lockDocumentStreamTx(ctx, tx, platformcontract.KindAvailability, platformcontract.AvailabilityScope); err != nil {
-			return err
-		}
-		last, err := lastVersionTx(ctx, tx, platformcontract.KindAvailability, platformcontract.AvailabilityScope)
-		if err != nil {
-			return err
-		}
-		if err := platformcontract.CheckDocumentVersion(last, doc.Version); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx,
-			`INSERT INTO availability_docs (version, body, signature, key_id, issued_at, issued_by)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			doc.Version, doc.Body, doc.Signature, doc.KeyID, issuedAt.UTC(), issuedBy)
-		return err
+		return insertAvailabilityDocTx(ctx, tx, doc, issuedBy, issuedAt)
 	})
 	if err != nil {
 		return fmt.Errorf("cloudserver/store.InsertAvailabilityDocument: %w", err)
 	}
 	return nil
+}
+
+// insertAvailabilityDocTx writes one envelope under the availability
+// stream's lock, re-applying the monotonic version rule against the higher
+// of the stored maximum and the stream's version floor. The caller has run
+// checkStoredDocument.
+func insertAvailabilityDocTx(ctx context.Context, tx pgx.Tx, doc platformcontract.AvailabilityDocument, issuedBy string, issuedAt time.Time) error {
+	if err := lockDocumentStreamTx(ctx, tx, platformcontract.KindAvailability, platformcontract.AvailabilityScope); err != nil {
+		return err
+	}
+	last, err := lastVersionTx(ctx, tx, platformcontract.KindAvailability, platformcontract.AvailabilityScope)
+	if err != nil {
+		return err
+	}
+	if err := platformcontract.CheckDocumentVersion(last, doc.Version); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO availability_docs (version, body, signature, key_id, issued_at, issued_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		doc.Version, doc.Body, doc.Signature, doc.KeyID, issuedAt.UTC(), issuedBy)
+	return err
 }
 
 // LatestAvailabilityDocument returns the highest-version envelope, or

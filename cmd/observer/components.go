@@ -38,7 +38,7 @@ func newComponentsCmd() *cobra.Command {
 			"undoes what an inactive component wrote into other tools' config, and\n" +
 			"`purge` deletes its data. A prebuilt distro build (minimal, developer,\n" +
 			"managed) compiles in only its own set.\n" +
-			"The same data is in docs/components.md and at GET /api/components.",
+			"The dashboard serves the same data at GET /api/components.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -116,16 +117,17 @@ func newServiceCmd() *cobra.Command {
 			"    observer service start|stop|status|restart\n" +
 			"    observer service logs [-f]         journalctl for the unit\n" +
 			"    observer service uninstall         stop + disable + remove\n\n" +
-			"Note: `observer start` IS the proxy on :8820. Restarting the\n" +
-			"service while a live session routes through the proxy will drop\n" +
-			"that session - turn the route off first (see\n" +
-			"docs/daemon-restart-runbook.md).",
+			"Note: `observer start` IS the proxy on :8820. `observer service\n" +
+			"restart` and `stop` take the proxy routes that reach it off first,\n" +
+			"and `restart` and `start` put them back once the proxy answers, so\n" +
+			"a live session reaches its provider directly meanwhile. Without a\n" +
+			"service manager, `restart` has the daemon restart itself in place.",
 	}
 	cmd.AddCommand(
 		newServiceInstallCmd(),
 		newServiceUpgradeCmd(),
-		newServiceLifecycleCmd("start", "Start the observer service"),
-		newServiceLifecycleCmd("stop", "Stop the observer service"),
+		newServiceStartStopCmd("start"),
+		newServiceStartStopCmd("stop"),
 		newServiceRestartCmd(),
 		newServiceLifecycleCmd("status", "Show the observer service status"),
 		newServiceLogsCmd(),
@@ -179,8 +181,8 @@ func newServiceInstallCmd() *cobra.Command {
 			"configuration. Pass --now to enable + start immediately. On a\n" +
 			"unit that is already running an older process (an upgraded binary,\n" +
 			"new arguments), --now restarts it (systemctl try-restart) only when\n" +
-			"nothing routes through the proxy; otherwise it prints the safe order\n" +
-			"and leaves the running daemon alone (docs/daemon-restart-runbook.md).",
+			"nothing routes through the proxy; otherwise it leaves the running\n" +
+			"daemon alone and says to restart it with `observer service restart`.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServiceInstall(serviceInstallOptions{
 				scope:      resolveScope(system),
@@ -303,8 +305,16 @@ func runServiceInstall(opts serviceInstallOptions) error {
 		fmt.Fprintf(opts.stdout, "unit PATH = %s\n", pathEnv)
 	}
 
+	// The systemd version picks the unit's update-handover row (INFRA-01):
+	// ExitType=cgroup only where systemd understands it.
+	sdVersion := probe.systemdVersion()
+	fmt.Fprintln(opts.stdout, service.SupervisionSummary(sdVersion))
+
 	snap := componentSnapshotFor(opts.configPath)
-	unit := service.RenderUnit(service.UnitOptions{ExecPath: exe, Args: args, Scope: opts.scope, Path: pathEnv, Runs: serviceRuns(snap.Active)})
+	unit := service.RenderUnit(service.UnitOptions{
+		ExecPath: exe, Args: args, Scope: opts.scope, Path: pathEnv, Runs: serviceRuns(snap.Active),
+		SystemdVersion: sdVersion,
+	})
 
 	if mkErr := os.MkdirAll(filepath.Dir(unitPath), 0o755); mkErr != nil {
 		return fmt.Errorf("create unit dir: %w", mkErr)
@@ -341,6 +351,7 @@ func runServiceInstall(opts serviceInstallOptions) error {
 	refresh := serviceRefresh{
 		scope: opts.scope, exe: exe, oldExecStart: oldExecStart, newExecStart: service.ExecStartLine(unit),
 		startIfInactive: opts.now && !opts.upgrade, port: serviceProxyPort(opts.configPath, opts.port), w: opts.stdout,
+		handsOver: strings.Contains(unit, "NotifyAccess=main"),
 	}
 	if opts.now || opts.upgrade {
 		// A restart of a running daemon ends its live sandboxed runs: ask
@@ -398,7 +409,8 @@ func serviceRefreshMayRestart(r serviceRefresh, p serviceProbe) bool {
 	if pid <= 0 || lerr != nil {
 		return true
 	}
-	return runningExeDiffers(link, r.exe) || (r.oldExecStart != "" && r.oldExecStart != r.newExecStart)
+	return runningExeDiffers(link, r.exe) || (r.oldExecStart != "" && r.oldExecStart != r.newExecStart) ||
+		(r.handsOver && runningWithoutHandover(p, pid))
 }
 
 // reportInstalledNotStarted is `install` without --now: it starts nothing and
@@ -502,9 +514,9 @@ func newServiceUpgradeCmd() *cobra.Command {
 			"  - restarts the service (systemctl try-restart) when the daemon has no\n" +
 			"    proxy listener, or no proxy route is active and no connection to the\n" +
 			"    proxy is open;\n" +
-			"  - otherwise leaves it running and prints the safe order: the daemon IS\n" +
-			"    the proxy, so restart it when no AI session uses the proxy, with the\n" +
-			"    route off first (docs/daemon-restart-runbook.md).\n" +
+			"  - otherwise leaves it running and says to restart it with\n" +
+			"    `observer service restart`, which takes the proxy routes off first\n" +
+			"    and puts them back once the new daemon answers.\n" +
 			"A stopped service is left stopped. install.sh runs this on an upgrade.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServiceInstall(serviceInstallOptions{
@@ -548,13 +560,13 @@ func serviceRestartNote(proxyActive bool) string {
 		return "\nNote: the API proxy (capture.proxy) is not active on this machine, so the service\n" +
 			"runs the watcher and dashboard only and restarting it interrupts no AI tool session."
 	}
-	return "\nNote: the service IS the proxy on :8820. Before `observer service restart`\n" +
-		"while a session routes through the proxy, turn the route off first\n" +
-		"(see docs/daemon-restart-runbook.md)."
+	return "\nNote: the service IS the proxy on :8820. Restart it with `observer service restart`:\n" +
+		"it takes the proxy routes off first and puts them back once the new daemon answers,\n" +
+		"so a session routed through it reaches its provider directly meanwhile."
 }
 
-// newServiceLifecycleCmd builds the thin start/stop/restart/status
-// wrappers that just exec `systemctl [--user] <verb> observer.service`.
+// newServiceLifecycleCmd builds the thin status wrapper that just execs
+// `systemctl [--user] status observer.service` (launchctl print on macOS).
 func newServiceLifecycleCmd(verb, short string) *cobra.Command {
 	var system bool
 	cmd := &cobra.Command{
@@ -575,38 +587,111 @@ func newServiceLifecycleCmd(verb, short string) *cobra.Command {
 	return cmd
 }
 
-// newServiceRestartCmd is `observer service restart`: before systemctl
-// restarts the unit it asks the running daemon over loopback for its live
-// sandboxed runs and refuses naming them, unless --when-idle (wait, then
-// restart) or --end-sandboxed-runs (end them through the daemon, then
-// restart). A daemon that does not answer restarts as before, with a
-// warning (sandbox plan v2 section 5.5, SBX-UPD-1).
+// newServiceStartStopCmd builds `observer service start` and `stop`, which
+// keep the proxy routes safe (service_saferestart.go): stop takes the routes
+// that reach this proxy off before the daemon stops, start puts them back
+// once the new proxy answers.
+func newServiceStartStopCmd(verb string) *cobra.Command {
+	var (
+		system, keepRoutes bool
+		configPath         string
+		timeout            time.Duration
+	)
+	short, long := "Start the observer service (puts back the proxy routes a stop took off)",
+		"Starts the service and, when `observer service stop` (or an interrupted restart) took\n"+
+			"proxy routes off, puts exactly those back once the daemon's proxy answers. With no\n"+
+			"service manager it starts nothing, but puts those routes back when a daemon's proxy\n"+
+			"on that port already answers (the daemon also does this itself once it serves)."
+	if verb == "stop" {
+		short, long = "Stop the observer service (takes the proxy routes to it off first)",
+			"The daemon IS the proxy, so an AI tool routed through it gets ConnectionRefused once\n"+
+				"it stops. This takes off the proxy routes that reach it first (your AI tools then\n"+
+				"reach their providers directly) and stops the service; `observer service start`\n"+
+				"puts them back. Routes your organization wrote stay on. Refuses inside a session\n"+
+				"the daemon started, and on a machine whose organization maintains the routes\n"+
+				"(use --keep-routes there)."
+	}
+	cmd := &cobra.Command{
+		Use:   verb,
+		Short: short,
+		Long:  long,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if timeout <= 0 {
+				timeout = safeRestartDefaultTimeout
+			}
+			opts := safeRestartOptions{scope: resolveScope(system), configPath: configPath, keepRoutes: keepRoutes, timeout: timeout, out: cmd.OutOrStdout()}
+			if verb == "stop" {
+				return runSafeStop(cmd.Context(), opts, newSafeRestartEnv)
+			}
+			return runSafeStart(cmd.Context(), opts, newSafeRestartEnv)
+		},
+	}
+	cmd.Flags().BoolVar(&system, "system", false, "Target the system unit instead of the --user unit")
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml of the daemon (defaults to the installed unit's, else the default lookup)")
+	if verb == "stop" {
+		cmd.Flags().BoolVar(&keepRoutes, "keep-routes", false, "Leave the proxy routes on (an AI tool routed through the proxy fails until the daemon is back)")
+	} else {
+		cmd.Flags().DurationVar(&timeout, "timeout", safeRestartDefaultTimeout, "How long to wait for the proxy before the routes are put back")
+	}
+	return cmd
+}
+
+// newServiceRestartCmd is `observer service restart`, the safe restart
+// (SR-12, service_saferestart.go): route OFF, restart, route ON, as one
+// operation, through the service manager that runs the daemon or, when none
+// does, the daemon's own in-place restart. Before anything changes it asks
+// the running daemon for its live sandboxed runs and refuses naming them,
+// unless --when-idle (wait, then restart) or --end-sandboxed-runs (end them
+// through the daemon, then restart) (sandbox plan v2 section 5.5,
+// SBX-UPD-1).
 func newServiceRestartCmd() *cobra.Command {
 	var (
-		system, whenIdle, endRuns bool
-		configPath                string
+		system, whenIdle, endRuns, keepRoutes, dryRun bool
+		configPath                                    string
+		timeout                                       time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "restart",
-		Short: "Restart the observer service (drops active proxy sessions; asks first when sandboxed runs are live)",
+		Short: "Restart the Observer daemon safely: proxy routes off, restart, routes back on",
+		Long: "Restarts the daemon (proxy + watcher + dashboard) without cutting the AI tools\n" +
+			"routed through its proxy. The daemon IS the proxy, so this runs the safe order\n" +
+			"as one operation:\n" +
+			"  1. take off the proxy routes that reach this proxy (Claude Code, Codex and the\n" +
+			"     other tools Observer routes), so live sessions reach their providers directly;\n" +
+			"  2. restart: through systemd or launchd when they run the daemon, otherwise the\n" +
+			"     daemon restarts itself in place (same terminal, log and arguments);\n" +
+			"  3. wait until the new daemon's proxy answers, then put back exactly the routes\n" +
+			"     it took off (the file as it was, or the same route written again when the\n" +
+			"     file changed meanwhile).\n" +
+			"It refuses, changing nothing, when it runs inside a session the daemon started\n" +
+			"(a dashboard terminal), on a managed machine whose organization maintains the\n" +
+			"routes or where that cannot be read (use --keep-routes there), when the daemon's\n" +
+			"dashboard answers but its proxy does not answer on the port resolved for it, when\n" +
+			"another restart, stop or start is running, and when the daemon cannot be restarted\n" +
+			"(native Windows with no service manager). Routes your organization wrote stay on,\n" +
+			"and so does a route whose put-back could change a setting beside it.\n" +
+			"If it is interrupted, the routes still off are listed in ~/.observer/route-hold.json;\n" +
+			"the daemon puts them back itself once its proxy answers.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !systemdAvailable() {
-				return errNoSystemd
-			}
 			if whenIdle && endRuns {
-				return fmt.Errorf("--when-idle and --end-sandboxed-runs are two different answers; pass one")
+				return errSafeRestartFlags
 			}
-			if err := cliLiveRunCheck(cmd.Context(), cmd.OutOrStdout(), liveRunTriggerServiceRestart,
-				newDaemonLiveRunsClient(configPath), serviceLiveRunChoice(whenIdle, endRuns)); err != nil {
-				return err
+			if timeout <= 0 {
+				timeout = safeRestartDefaultTimeout
 			}
-			return serviceSystemctl(service.Systemctl(resolveScope(system), "restart", service.UnitName))
+			return runSafeRestart(cmd.Context(), safeRestartOptions{
+				scope: resolveScope(system), configPath: configPath, keepRoutes: keepRoutes, dryRun: dryRun,
+				timeout: timeout, liveRuns: serviceLiveRunChoice(whenIdle, endRuns), out: cmd.OutOrStdout(),
+			}, newSafeRestartEnv)
 		},
 	}
 	cmd.Flags().BoolVar(&system, "system", false, "Target the system unit instead of the --user unit")
 	cmd.Flags().BoolVar(&whenIdle, "when-idle", false, "Wait for the live sandboxed runs to finish, then restart")
 	cmd.Flags().BoolVar(&endRuns, "end-sandboxed-runs", false, "End the live sandboxed runs (a tool with its own resume continues afterwards), then restart")
-	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml naming the daemon's dashboard address (defaults to the daemon's own lookup)")
+	cmd.Flags().BoolVar(&keepRoutes, "keep-routes", false, "Leave the proxy routes on (a request an AI tool sends during the restart fails); the only way on a machine whose organization maintains the routes")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print how the daemon would be restarted and which routes would be taken off, and change nothing")
+	cmd.Flags().DurationVar(&timeout, "timeout", safeRestartDefaultTimeout, "How long to wait for the new daemon's proxy before giving up (the routes then stay off)")
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml of the daemon to restart (defaults to the installed unit's, else the default lookup)")
 	return cmd
 }
 
@@ -698,7 +783,7 @@ func scopeFlagSuffix(scope service.Scope) string {
 // the npm postinstall prints for it) and the service install second.
 func serviceUpgradeNoUnitMessage(unit, unitPath, scopeFlag string) string {
 	return fmt.Sprintf("no %s at %s, so there is no service to upgrade.\n"+
-		"  A daemon started with `observer start`: when no AI session uses the proxy, turn the proxy route off,\n"+
-		"    stop that process (Ctrl-C in its terminal, or kill its pid), then run `observer start` again (docs/daemon-restart-runbook.md).\n"+
+		"  A daemon started with `observer start`: run `observer service restart`; it has the daemon restart itself\n"+
+		"    in place with the proxy routes off, then puts them back (where it cannot, it says what to run instead).\n"+
 		"  To run it as a service instead: observer service install --now%s", unit, unitPath, scopeFlag)
 }

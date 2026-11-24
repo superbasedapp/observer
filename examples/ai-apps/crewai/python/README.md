@@ -21,8 +21,8 @@ token usage; they add nothing to the trace's tokens or cost.
 
 ## Install
 
-Python 3.10 to 3.13 (CrewAI's instrumentor does not support 3.14). The SDK is
-not on PyPI yet, so install it from this checkout. From the repository root:
+Python 3.10 to 3.13 (CrewAI's instrumentor does not support 3.14). The examples
+install the SDK from this checkout. From the repository root:
 
 ```bash
 python3.12 -m venv .venv

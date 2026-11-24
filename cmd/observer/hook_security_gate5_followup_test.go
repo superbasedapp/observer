@@ -45,6 +45,47 @@ func TestSecurityAltDialectEscapedWrite(t *testing.T) {
 	}
 }
 
+// TestSecurityLineDirsSubstitution (NF-2): a cd or pushd whose target is a
+// command substitution (`cd $(mktemp -d)`, quoted or not, which the parser
+// keeps as an empty word whose value it cannot know) is unresolved, never
+// the starting directory, so a line moving there is never read as staying
+// in the project, and nothing after it counts as written in a known place.
+func TestSecurityLineDirsSubstitution(t *testing.T) {
+	for _, tc := range []struct {
+		line          string
+		unresolved    bool
+		dirs, written int
+	}{
+		{"cd $(mktemp -d) && git commit -m x", true, 0, 0},
+		{`cd "$(mktemp -d)" && git commit -m x`, true, 0, 0},
+		{"cd `mktemp -d` && git commit -m x", true, 0, 0},
+		{"pushd $(mktemp -d) && git commit -m x", true, 0, 0},
+		{"cd sub && cd $(mktemp -d) && git commit -m x", true, 1, 0},
+		{"cd sub && git commit -m x", false, 1, 1},
+	} {
+		pe := &policy.Event{Kind: policy.KindShellExec, Target: tc.line, Cwd: "/repo", Dialect: policy.DialectPosix}
+		dirs, unresolved := securityLineDirs(pe, "/repo")
+		written := securityLineWrittenDirs(pe, "/repo")
+		if unresolved != tc.unresolved || len(dirs) != tc.dirs || len(written) != tc.written {
+			t.Errorf("%q: dirs %q unresolved %v written %q, want %d dirs unresolved %v %d written",
+				tc.line, dirs, unresolved, written, tc.dirs, tc.unresolved, tc.written)
+		}
+	}
+	n := newGate5Repos(t)
+	for _, tc := range []struct {
+		line   string
+		leaves bool
+	}{
+		{"cd $(mktemp -d) && git commit -m wip", true},
+		{`cd "$(mktemp -d)" && git commit -m wip`, true},
+		{"git commit -m wip", false},
+	} {
+		if got := securityLeavesRoot(shellCommit(tc.line, n.root, ""), n.root); got != tc.leaves {
+			t.Errorf("%q: leaves root %v, want %v", tc.line, got, tc.leaves)
+		}
+	}
+}
+
 // TestSecurityLineDirsNetwork (SEC-GATE5 follow-up): a cd, Set-Location or
 // pushd target on a UNC path or under a network or automount root is never
 // returned (so the hook never stats it) and reads unresolved, and a line

@@ -47,8 +47,10 @@ import (
 //     "restart `observer start` to finish", and nothing is restarted;
 //   - an edition without AI Apps refuses with the exact reinstall command.
 
-// appsDocsURL is where the CLI points for more (the getting-started page).
-const appsDocsURL = "https://superbased.app/docs/getting-started/ai-apps"
+// appsDocsURL is where the CLI points for more: the public SDK quickstart
+// for sending an app's traces to this machine (SR-31: the getting-started
+// path it named before was never published and answered 404).
+const appsDocsURL = "https://superbased.app/docs/sdk/quickstart-machine"
 
 // appsDaemonTimeout bounds a status or disable exchange with the daemon.
 // The enable waits for the receiver's bind (appsReceiverWait) plus margin.
@@ -542,8 +544,8 @@ func appsOnWriteConfig(cmd *cobra.Command, o appsOnOptions, local localAppsFacts
 	}
 	if mode == appsNoSeamDaemon {
 		fmt.Fprintln(out, "\nAI Apps is set to on, but the running daemon cannot start it while it runs.")
-		fmt.Fprintln(out, "Restart `observer start` to finish. The daemon is the proxy: turn the proxy route off first")
-		fmt.Fprintln(out, "if an AI session routes through it (docs/daemon-restart-runbook.md). Nothing was restarted.")
+		fmt.Fprintln(out, "Restart the daemon to finish: observer service restart (it takes the proxy routes off first")
+		fmt.Fprintln(out, "and puts them back, so an AI session routed through it is not cut). Nothing was restarted.")
 		return nil
 	}
 	// The receiver binds when the daemon starts; a port taken now would fail

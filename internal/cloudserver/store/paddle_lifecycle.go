@@ -365,7 +365,7 @@ func (s *Store) bindPendingTerminalTx(ctx context.Context, tx pgx.Tx, ev PaddleE
 		t := ev.CurrentPeriodEnd.UTC()
 		periodEnd = &t
 	}
-	if e := upsertSubscriptionTx(ctx, tx, account, orgID, ev, plan, p.Status, &canceledAt, periodEnd, last); e != nil {
+	if _, e := upsertSubscriptionTx(ctx, tx, account, orgID, ev, plan, p.Status, &canceledAt, periodEnd, last); e != nil {
 		return BillingIntake{}, fmt.Errorf("bind terminal subscription: %w", e)
 	}
 	if st, _ := resolveActivateStatus(ev, "", nil); st == "trialing" {

@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -72,3 +74,7 @@ func (*updateRuntime) SetReleaseListeners(func()) {}
 func newUpdateCmd() *cobra.Command {
 	return compiledOutVerb("update", "Self-update from the org server (not in this build)", "org.update")
 }
+
+// updateHandoverDoctorChecks adds no doctor row: there is no updater in this
+// build, so nothing hands over.
+func updateHandoverDoctorChecks(context.Context, config.Config, *sql.DB) []diag.Check { return nil }

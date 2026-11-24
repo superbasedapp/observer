@@ -3,7 +3,7 @@
 #
 # Pass this with --config so the demo never touches your real ~/.observer:
 #
-#   OLLAMA_API_KEY=x ./bin/observer.exe start \
+#   OLLAMA_API_KEY=x observer start \
 #     --config examples/copilot-harness/demo-node.config.toml
 #
 # (run from the repo root — db_path below is relative to the working dir).

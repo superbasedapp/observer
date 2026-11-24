@@ -1078,11 +1078,8 @@ func sinkCondition(ctx *policy.MatchContext, sink, desc string) (bool, string) {
 	case "git_push":
 		for i := range ctx.Cmds {
 			c := &ctx.Cmds[i]
-			if c.Base == "git" {
-				pos := c.Positionals()
-				if len(pos) > 0 && pos[0] == "push" {
-					return true, desc
-				}
+			if c.Base == "git" && gitSubcommandWord(c.Positionals()) == "push" {
+				return true, desc
 			}
 		}
 	case policy.SinkGitCommit:
@@ -1103,6 +1100,20 @@ func sinkCondition(ctx *policy.MatchContext, sink, desc string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+// gitSubcommandWord is a git unit's subcommand: its first positional word
+// that is not empty. An empty word is a word that was nothing but a command
+// substitution (`git $(x) push`), which the parser keeps as an empty word
+// whose value it cannot know (policy NF-2); it may be an option, so it does
+// not hide the subcommand.
+func gitSubcommandWord(pos []string) string {
+	for _, w := range pos {
+		if w != "" {
+			return w
+		}
+	}
+	return ""
 }
 
 // hostMatchesDomain reports whether the target's URL host equals dom

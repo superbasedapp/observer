@@ -31,11 +31,8 @@ your SDK calls already run.
 
 ## Install
 
-The package is not on npm yet. Until the first release, build it from a
-checkout and copy its `dist/` folder into your app:
-
 ```bash
-cd sdk/widget && npm ci && npm run build
+npm install @superbased/feedback-widget
 ```
 
 It releases with the superbased SDKs, on the same version.

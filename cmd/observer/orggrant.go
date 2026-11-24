@@ -305,6 +305,13 @@ func printGrantOffer(out io.Writer, offer *orgclient.GrantOffer) {
 		}
 		fmt.Fprintln(out, wrapIndented(orgenrol.DisclosureConfigWritesNote, "  ", "  "))
 	}
+	if d.ManagedSummary != "" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, wrapIndented(d.ManagedSummary, "", ""))
+		for _, line := range d.ManagedLines {
+			fmt.Fprintln(out, wrapIndented(line, "  - ", "     "))
+		}
+	}
 	fmt.Fprintln(out, "\nIt may NOT:")
 	for _, line := range d.MayNot {
 		fmt.Fprintln(out, wrapIndented(line, "  - ", "     "))

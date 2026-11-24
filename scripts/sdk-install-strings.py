@@ -28,9 +28,11 @@ rows carry a `published` flag, not text, so the apps need no row here:
   when the text rows are, and fails when an app's source hard-codes a
   catalog install line instead of reading the catalog;
 - `flip` also sets `published` on those rows;
-- `flip --sdk <id>` marks one row that no workflow publishes yet
+- `flip --sdk <id>` marks one row that no workflow publishes
   (`"release": "none"`, today Go and Java) as published, on the day its
-  package is out, and touches nothing else.
+  package is out, and rewrites the text rows tagged with that id (Row.sdk,
+  today Go's). A hand-released SDK with no text rows (Java) changes only its
+  catalog flag, so it can stay unpublished while the others flip.
 
 Standard library only.
 """
@@ -50,6 +52,11 @@ class Row(NamedTuple):
     pattern: str
     before: str
     after: str
+    # sdk is the catalog id of a hand-released SDK (a row with
+    # "release": "none", today Go) whose text this row rewrites when
+    # `flip --sdk <id>` runs. The empty default is a workflow-released row:
+    # `flip` rewrites it with the sdk-release workflow's packages.
+    sdk: str = ""
 
 
 ROWS: List[Row] = [
@@ -207,6 +214,58 @@ ROWS: List[Row] = [
     ),
     Row("website/pages-src/*.html", "The SDKs are not on PyPI or npm yet.", "The SDKs are on PyPI and npm."),
     Row("website/pages-src/*.html", "the SDKs are not on PyPI or npm yet.", "the SDKs are on PyPI and npm."),
+    # Go: a module tag on the public repository (sdk/go/v<x.y.z>), not a
+    # registry upload, so it is flipped by `flip --sdk go` on the day the tag
+    # is pushed (the v1.43.0 release run pushes it together with PyPI and
+    # npm, so its release commit runs both flips).
+    Row(
+        "docs/sdk/README.md",
+        "The Go module is not tagged yet either: point your module at `./sdk/go` of a\n"
+        "checkout with a `replace` directive ([Go](go.md)).",
+        "The Go module installs with `go get github.com/superbasedapp/observer/sdk/go`\n"
+        "([Go](go.md)).",
+        sdk="go",
+    ),
+    Row(
+        "docs/sdk/go.md",
+        "1.25 or newer. It is not tagged on the public repository yet; until the first\n"
+        "`sdk/go/v0.1.0` tag, point your module at a checkout:\n"
+        "\n"
+        "```bash\n"
+        "go mod edit -require=github.com/superbasedapp/observer/sdk/go@v0.0.0 \\\n"
+        "  -replace=github.com/superbasedapp/observer/sdk/go=<checkout>/sdk/go\n"
+        "go mod tidy\n"
+        "```",
+        "1.25 or newer:\n"
+        "\n"
+        "```bash\n"
+        "go get github.com/superbasedapp/observer/sdk/go\n"
+        "```",
+        sdk="go",
+    ),
+    Row(
+        "sdk/go/README.md",
+        "Go 1.25 or newer. It is not tagged on the public repository yet;\n"
+        "until the first `sdk/go/v0.1.0` tag, use a checkout:\n"
+        "\n"
+        "```bash\n"
+        "go mod edit -require=github.com/superbasedapp/observer/sdk/go@v0.0.0 \\\n"
+        "  -replace=github.com/superbasedapp/observer/sdk/go=<checkout>/sdk/go\n"
+        "go mod tidy\n"
+        "```",
+        "Go 1.25 or newer:\n"
+        "\n"
+        "```bash\n"
+        "go get github.com/superbasedapp/observer/sdk/go\n"
+        "```",
+        sdk="go",
+    ),
+    Row(
+        "examples/ai-apps/sdk-direct/go/go.mod",
+        "// The example tests the SDK beside it (the module is not tagged yet).",
+        "// The example tests the SDK beside it.",
+        sdk="go",
+    ),
 ]
 
 PRE, POST = "not published", "published"
@@ -338,13 +397,64 @@ def _where(i: int) -> str:
 
 
 def check(root: str) -> Dict[str, List[int]]:
-    """{state: [row indexes]} for every row. The catalog counts as one more
-    row, index len(ROWS)."""
+    """{state: [row indexes]} for every workflow-released row. The catalog
+    counts as one more row, index len(ROWS). Rows of a hand-released SDK
+    (Row.sdk) are checked by hand_state."""
     out: Dict[str, List[int]] = {}
     for i, row in enumerate(ROWS):
+        if row.sdk:
+            continue
         out.setdefault(row_state(root, row), []).append(i)
     out.setdefault(catalog_state(root), []).append(len(ROWS))
     return out
+
+
+def hand_ids() -> List[str]:
+    """The catalog ids that own text rows (Row.sdk), in table order."""
+    out: List[str] = []
+    for row in ROWS:
+        if row.sdk and row.sdk not in out:
+            out.append(row.sdk)
+    return out
+
+
+def hand_state(root: str, sdk_id: str) -> Dict[str, List[str]]:
+    """{state: [where]} for a hand-released SDK: its text rows and its
+    catalog flag must be wholly in one state."""
+    out: Dict[str, List[str]] = {}
+    for i, row in enumerate(ROWS):
+        if row.sdk == sdk_id:
+            out.setdefault(row_state(root, row), []).append(f"row {i}")
+    try:
+        rows = [r for r in load_catalog(root)["sdks"] if r["id"] == sdk_id]
+    except ValueError as exc:
+        out.setdefault(str(exc), []).append("the catalog")
+        return out
+    if not rows:
+        out.setdefault(f"{CATALOG}: no row {sdk_id!r}", []).append("the catalog")
+    elif rows[0]["release"] != RELEASED_BY_HAND:
+        out.setdefault(f"{CATALOG}: row {sdk_id!r} must have release {RELEASED_BY_HAND!r} to own text rows", []).append("the catalog")
+    else:
+        out.setdefault(POST if rows[0]["published"] else PRE, []).append("the catalog")
+    return out
+
+
+def _rewrite(root: str, sdk_id: str) -> List[str]:
+    """Rewrite the text rows owned by sdk_id ("" is the workflow rows) to
+    the released text. Returns the files written."""
+    written: List[str] = []
+    for row in ROWS:
+        if row.sdk != sdk_id:
+            continue
+        for path in _files(root, row.pattern):
+            text = _read(path)
+            if row.before not in text:
+                continue
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text.replace(row.before, row.after))
+            if path not in written:
+                written.append(path)
+    return written
 
 
 def flip(root: str) -> List[str]:
@@ -354,16 +464,7 @@ def flip(root: str) -> List[str]:
     states = check(root)
     if set(states) != {PRE}:
         raise ValueError("refusing to flip: " + "; ".join(f"{_where(i)}: {s}" for s, rows in states.items() if s != PRE for i in rows))
-    written: List[str] = []
-    for row in ROWS:
-        for path in _files(root, row.pattern):
-            text = _read(path)
-            if row.before not in text:
-                continue
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text.replace(row.before, row.after))
-            if path not in written:
-                written.append(path)
+    written = _rewrite(root, "")
     doc = load_catalog(root)
     for r in doc["sdks"]:
         if r["release"] == RELEASED_BY_WORKFLOW:
@@ -373,10 +474,11 @@ def flip(root: str) -> List[str]:
     return written
 
 
-def flip_sdk(root: str, sdk_id: str) -> str:
-    """Mark one catalog row that no workflow publishes as published.
-    Refuses (ValueError) an unknown id, an sdk-release row (`flip` owns
-    those) or a row already published. Returns the file written."""
+def flip_sdk(root: str, sdk_id: str) -> List[str]:
+    """Mark one catalog row that no workflow publishes as published and
+    rewrite the text rows it owns. Refuses (ValueError) an unknown id, an
+    sdk-release row (`flip` owns those), a row already published or text
+    that is not wholly pre-release. Returns the files written."""
     doc = load_catalog(root)
     rows = [r for r in doc["sdks"] if r["id"] == sdk_id]
     if not rows:
@@ -386,9 +488,14 @@ def flip_sdk(root: str, sdk_id: str) -> str:
         raise ValueError(f"row {sdk_id!r} is published by the {row['release']} workflow: run `flip` on its release day")
     if row["published"]:
         raise ValueError(f"row {sdk_id!r} is already published")
+    states = hand_state(root, sdk_id)
+    if states and set(states) != {PRE}:
+        raise ValueError(f"refusing to flip {sdk_id}: " + "; ".join(f"{', '.join(w)}: {st}" for st, w in states.items() if st != PRE))
+    written = _rewrite(root, sdk_id)
     row["published"] = True
     write_catalog(root, doc)
-    return os.path.join(root, CATALOG)
+    written.append(os.path.join(root, CATALOG))
+    return written
 
 
 def main(argv: List[str]) -> int:
@@ -401,11 +508,12 @@ def main(argv: List[str]) -> int:
         ap.error("--sdk goes with flip")
     if args.mode == "flip" and args.sdk:
         try:
-            path = flip_sdk(args.root, args.sdk)
+            written = flip_sdk(args.root, args.sdk)
         except ValueError as exc:
             print(f"sdk-install-strings: {exc}", file=sys.stderr)
             return 1
-        print("rewrote", os.path.relpath(path, args.root))
+        for p in written:
+            print("rewrote", os.path.relpath(p, args.root))
         print("now run `make website-build` and commit the result")
         return 0
     if args.mode == "flip":
@@ -419,11 +527,24 @@ def main(argv: List[str]) -> int:
         print("now run `make website-build` and commit the result")
         return 0
     states = check(args.root)
-    if len(states) != 1 or next(iter(states)) not in (PRE, POST):
-        for s, rows in states.items():
-            print(f"sdk-install-strings: {', '.join(_where(i) for i in rows)}: {s}", file=sys.stderr)
+    bad = len(states) != 1 or next(iter(states)) not in (PRE, POST)
+    summary: List[str] = []
+    if bad:
+        for st, rows in states.items():
+            print(f"sdk-install-strings: {', '.join(_where(i) for i in rows)}: {st}", file=sys.stderr)
+    else:
+        summary.append(f"every sdk-release install string says {next(iter(states))}")
+    for sid in hand_ids():
+        hs = hand_state(args.root, sid)
+        if len(hs) != 1 or next(iter(hs)) not in (PRE, POST):
+            bad = True
+            for st, where in hs.items():
+                print(f"sdk-install-strings: {sid}: {', '.join(where)}: {st}", file=sys.stderr)
+        else:
+            summary.append(f"{sid} says {next(iter(hs))}")
+    if bad:
         return 1
-    print(f"sdk-install-strings: every install string says {next(iter(states))}")
+    print("sdk-install-strings: " + "; ".join(summary))
     return 0
 
 

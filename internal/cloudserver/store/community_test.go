@@ -360,7 +360,8 @@ func TestCommunityBandsFunctionDeployedShape(t *testing.T) {
 		   FROM pg_proc WHERE proname='sbci_community_bands'`).Scan(&owner, &secdef, &cfg); err != nil {
 		t.Fatalf("introspect: %v", err)
 	}
-	if owner != "sbci_defs" || !secdef || cfg != "search_path=pg_catalog, public" {
+	// pg_temp last since 0152 (CLOUD-DEFINER-TEMP-2).
+	if owner != "sbci_defs" || !secdef || cfg != "search_path=pg_catalog, public, pg_temp" {
 		t.Errorf("aggregation fn shape wrong: owner=%q secdef=%v cfg=%q", owner, secdef, cfg)
 	}
 
@@ -655,7 +656,8 @@ func TestCommunityCohortSizeFunctionDeployedShape(t *testing.T) {
 		   FROM pg_proc WHERE proname='sbci_community_cohort_size'`).Scan(&owner, &secdef, &cfg); err != nil {
 		t.Fatalf("introspect: %v", err)
 	}
-	if owner != "sbci_defs" || !secdef || cfg != "search_path=pg_catalog, public" {
+	// pg_temp last since 0152 (CLOUD-DEFINER-TEMP-2).
+	if owner != "sbci_defs" || !secdef || cfg != "search_path=pg_catalog, public, pg_temp" {
 		t.Errorf("cohort_size fn shape wrong: owner=%q secdef=%v cfg=%q", owner, secdef, cfg)
 	}
 	sig := "sbci_community_cohort_size(text,text,int,text)"

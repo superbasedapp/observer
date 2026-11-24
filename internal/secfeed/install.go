@@ -344,11 +344,16 @@ var (
 )
 
 // positional returns the words that are neither flags nor a value flag's
-// value (a "--flag=value" word carries its own value).
+// value (a "--flag=value" word carries its own value). An empty word (a
+// substituted word, see readInstallArgs) is skipped like a flag, so `npm
+// $(x) config set registry ...` is still read.
 func positional(args []string, valueFlags map[string]bool) []string {
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		w := args[i]
+		if w == "" {
+			continue
+		}
 		if strings.HasPrefix(w, "-") {
 			if valueFlags[w] {
 				i++
@@ -370,12 +375,12 @@ func wordsAfter(args []string, verb string) []string {
 	return nil
 }
 
-// wordsAt reports whether the positional words (flags skipped) start with
-// want.
+// wordsAt reports whether the positional words (flags and empty words
+// skipped) start with want.
 func wordsAt(args []string, want ...string) bool {
 	var pos []string
 	for _, w := range args {
-		if !strings.HasPrefix(w, "-") {
+		if w != "" && !strings.HasPrefix(w, "-") {
 			pos = append(pos, w)
 		}
 		if len(pos) == len(want) {
@@ -500,7 +505,8 @@ var (
 
 // normalizeBase maps the interpreter forms to their row base: python -m
 // pip (with interpreter flags before -m), pip3.12 and python3.12 -m pip
-// all read as pip.
+// all read as pip. An empty word among the interpreter flags (a substituted
+// word, see readInstallArgs) is skipped like a flag.
 func normalizeBase(c *policy.Command) (string, []string) {
 	base, argv := c.Base, c.Argv
 	if pipBase.MatchString(base) {
@@ -511,6 +517,9 @@ func normalizeBase(c *policy.Command) (string, []string) {
 	}
 	for j := 1; j+1 < len(argv) && j < 6; j++ {
 		w := argv[j]
+		if w == "" {
+			continue
+		}
 		if w == "-m" {
 			if pipBase.MatchString(argv[j+1]) {
 				return "pip", append([]string{argv[j+1]}, argv[j+2:]...)
@@ -529,7 +538,10 @@ func normalizeBase(c *policy.Command) (string, []string) {
 // subcommand are skipped, value-taking ones with their value (pnpm
 // --filter web add x, npm --prefix app install x, cargo +nightly install
 // x). When a value flag's value is itself the subcommand word, the word is
-// read as the subcommand: an ambiguous unit is checked, never skipped.
+// read as the subcommand: an ambiguous unit is checked, never skipped. An
+// empty word before a subcommand (a substituted word, see readInstallArgs)
+// is skipped like a flag, so `npm $(x) install y` is still an install; a
+// "*" step takes it as its word (yarn workspace $(x) add y).
 func matchInstall(c *policy.Command) (installRow, []string, []string, bool) {
 	base, argv := normalizeBase(c)
 	if len(argv) == 0 {
@@ -548,6 +560,10 @@ func matchInstall(c *policy.Command) (installRow, []string, []string, bool) {
 			for j < len(rest) {
 				w := rest[j]
 				if row.eco == EcoCargo && strings.HasPrefix(w, "+") {
+					j++
+					continue
+				}
+				if w == "" && sub != "*" {
 					j++
 					continue
 				}
@@ -640,7 +656,13 @@ func attachedRegistryFlag(eco Ecosystem, name string) bool {
 	return false
 }
 
-// readInstallArgs reads a row's package words.
+// readInstallArgs reads a row's package words. An empty word is a word that
+// was nothing but a command substitution (`pip install $(cat reqs)`): the
+// guard's parser keeps it as an empty word whose value it cannot know
+// (policy NF-2). It is never a package, so it gets no spec (no index lookup,
+// no near-miss ask, no unpinned flag), but it holds its place: it is the
+// package of a first-only or create row (npx $(x) arg runs $(x), not arg)
+// and the skipped word of a skip row (pipx inject $(x) pkg).
 func readInstallArgs(row installRow, words []string) (specs []InstallSpec, custom, ignore bool) {
 	var st argState
 	positional := 0
@@ -670,6 +692,12 @@ func readInstallArgs(row installRow, words []string) (specs []InstallSpec, custo
 		if row.first && st.pkgFlag {
 			// npx --package=x cmd: cmd is a binary of x, not a package.
 			break
+		}
+		if w == "" {
+			if row.first || row.create {
+				break
+			}
+			continue
 		}
 		switch {
 		case row.create:

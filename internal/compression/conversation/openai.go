@@ -110,6 +110,72 @@ type openaiResponsesExtractedMessage struct {
 	// "use the original — no compression fired or compression didn't
 	// shrink". Read by [serializeOpenAIResponses] when rewriting the item.
 	compressedText string
+	// neverTouch is set for an item matched by [responsesNeverTouchItems]
+	// (or carrying encrypted_content): it is never rewritten, never
+	// dropped, and forwarded as its exact original bytes.
+	neverTouch bool
+	// keepsFollower is set for a never-touch item the provider verifies
+	// together with the item that follows it (a reasoning item and its
+	// output item).
+	keepsFollower bool
+}
+
+// responsesNeverTouchRow is one row of [responsesNeverTouchItems].
+type responsesNeverTouchRow struct {
+	// itemType is the Responses `input` item's `type`.
+	itemType string
+	// keepsFollower: the provider requires the item that follows this one
+	// (the output item of the same response) to stay right after it, so
+	// the follower is pinned too and no rolling-summary boundary may fall
+	// between them.
+	keepsFollower bool
+	why           string
+}
+
+// responsesNeverTouchItems is the table of OpenAI Responses API input item
+// types conversation compression must never touch: never rewritten, never
+// dropped by the budget pass, never split from the item the provider
+// verifies them with, and forwarded as the client's exact bytes. Beside
+// the table, ANY item carrying an `encrypted_content` field is treated the
+// same (a capability, so a new encrypted item type is covered before it
+// gets a row).
+//
+// This is a COMPRESSION exemption only, and only for top-level `input[]`
+// items. It is not a scrub exemption: the pipeline's forward scrub
+// (scrub.Scrubber.ScrubProviderRequest) still runs over these items and
+// keeps only their direct `encrypted_content` string byte-exact; a
+// reasoning summary is scrubbed like any other text.
+//
+// Grounding (lane sr-openai-n2, 2026-11-23): follow-up turns of a Codex
+// session failed with HTTP 400 "encrypted content could not be verified"
+// once the forward scrub corrupted a reasoning item's encrypted_content
+// (see internal/scrub/forward.go). The same items were also unpinned here,
+// so under budget pressure the drop pass could evict a reasoning item or
+// its following message and leave the other half orphaned.
+var responsesNeverTouchItems = []responsesNeverTouchRow{
+	{
+		itemType:      "reasoning",
+		keepsFollower: true,
+		why:           "carries the encrypted reasoning state (encrypted_content with store=false and include=[reasoning.encrypted_content]) the provider decrypts and verifies; it must stay with its following output item",
+	},
+	{
+		itemType: "compaction",
+		why:      "server-side compaction result: an opaque encrypted_content blob the provider verifies",
+	},
+}
+
+// responsesNeverTouch classifies one Responses input item against
+// [responsesNeverTouchItems] and the encrypted_content capability.
+func responsesNeverTouch(itemType string, obj map[string]json.RawMessage) (neverTouch, keepsFollower bool) {
+	for _, row := range responsesNeverTouchItems {
+		if row.itemType == itemType {
+			return true, row.keepsFollower
+		}
+	}
+	if _, ok := obj["encrypted_content"]; ok {
+		return true, false
+	}
+	return false, false
 }
 
 // openaiExtract parses a Chat Completions request body. Returns ok=false
@@ -287,6 +353,11 @@ func openaiResponsesExtract(body []byte) (envelope map[string]json.RawMessage, e
 		em.isToolResult = em.role == "tool" ||
 			em.itemType == "function_call_output" ||
 			strings.HasSuffix(em.itemType, "_output")
+		// Provider-verified items are never a compression target, even if
+		// a future shape also looked like a tool result.
+		if em.neverTouch, em.keepsFollower = responsesNeverTouch(em.itemType, obj); em.neverTouch {
+			em.isToolResult = false
+		}
 		extracted = append(extracted, em)
 	}
 	resolveOpenAIResponsesToolCalls(extracted)
@@ -611,14 +682,21 @@ func openaiResponsesToConversationMessages(extracted []openaiResponsesExtractedM
 		// ARE the answer; compressing them with JSON/code/logs replaces
 		// scalars with type sentinels and corrupts the response).
 		noCompress := em.isToolResult && isOpenAIMCPCall(em.toolName, mcpSet)
+		// A never-touch item (responsesNeverTouchItems) is pinned and
+		// opted out of per-type compression; the item right after one that
+		// keepsFollower is pinned too, so the provider never receives a
+		// reasoning item without its output item (or the reverse).
+		followsKeeper := i > 0 && extracted[i-1].keepsFollower
 		msg := Message{
-			Role:       normalizeOpenAIRole(em.role, em.isToolResult),
-			Text:       text,
-			ByteLen:    byteLen,
-			RawIndex:   i,
-			Raw:        em.raw,
-			Pinned:     isOpenAIResponsesToolCallItem(em.itemType) || isOpenAIResponsesToolDefinitionItem(em.itemType),
-			NoCompress: noCompress,
+			Role:     normalizeOpenAIRole(em.role, em.isToolResult),
+			Text:     text,
+			ByteLen:  byteLen,
+			RawIndex: i,
+			Raw:      em.raw,
+			Pinned: isOpenAIResponsesToolCallItem(em.itemType) || isOpenAIResponsesToolDefinitionItem(em.itemType) ||
+				em.neverTouch || followsKeeper,
+			KeepWithNext: em.keepsFollower,
+			NoCompress:   noCompress || em.neverTouch,
 		}
 		if isOpenAIResponsesToolCallItem(em.itemType) && em.itemID != "" {
 			msg.ToolUseIDs = []string{em.itemID}
@@ -751,7 +829,7 @@ func serializeOpenAIResponses(envelope map[string]json.RawMessage, original []op
 			continue
 		}
 		em := findOpenAIResponseByRaw(original, m.Raw)
-		if em == nil || !em.isToolResult {
+		if em == nil || em.neverTouch || !em.isToolResult {
 			input = append(input, m.Raw)
 			continue
 		}
@@ -776,7 +854,15 @@ func serializeOpenAIResponses(envelope map[string]json.RawMessage, original []op
 		}
 		input = append(input, rewritten)
 	}
-	envelope["input"], _ = json.Marshal(input)
+	// HTML escaping off: json.Marshal would rewrite `<`, `>` and `&` inside
+	// every untouched item (a reasoning summary, an assistant message), so
+	// the forwarded bytes of a never-touch item would no longer be the
+	// client's own.
+	inputBytes, err := marshalRawArray(input)
+	if err != nil {
+		return nil, fmt.Errorf("serializeOpenAIResponses: marshal input: %w", err)
+	}
+	envelope["input"] = inputBytes
 	return marshalEnvelope(envelope)
 }
 

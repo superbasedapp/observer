@@ -714,9 +714,14 @@ func MapOCSFDenial(d OCSFDenial, run RunEgress) (rule, key, row string) {
 
 // floorAddr reports whether a is in a range no rule ever allows (the SSRF
 // floor rows of sandboxnet's policy: this network, loopback, link-local,
-// multicast, the limited broadcast, unspecified and IPv4-compatible IPv6).
+// multicast, the limited broadcast, unspecified and IPv4-compatible IPv6),
+// or is a cloud metadata endpoint, which no allow-list lifts (sandboxnet's
+// cloud-metadata row; FR-SEC-6).
 func floorAddr(a netip.Addr) bool {
 	a = unNAT64(a)
+	if isMetadataAddr(a) {
+		return true
+	}
 	if a.Is4() {
 		return slices.ContainsFunc(netFloorV4, func(p netip.Prefix) bool { return p.Contains(a) })
 	}

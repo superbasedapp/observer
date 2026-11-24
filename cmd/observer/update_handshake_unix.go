@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"syscall"
 )
 
 // update_handshake_unix.go is the Unix transport for §3.7 step 7: an
@@ -96,4 +97,11 @@ func sendHandshakeMessage(msg string) error {
 		return fmt.Errorf("observer update: reporting the handshake: %w", err)
 	}
 	return nil
+}
+
+// terminateHandshakeChild asks a self-checked child to drain and exit
+// (SIGTERM, the signal its shutdown path handles), for a hand-over that ends
+// with the supervisor starting the new binary itself (launchd).
+func terminateHandshakeChild(p *os.Process) error {
+	return p.Signal(syscall.SIGTERM)
 }

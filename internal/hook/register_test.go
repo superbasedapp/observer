@@ -606,7 +606,7 @@ func TestRegisterClaudeCodeCrossBinaryPathRefresh(t *testing.T) {
 // binary refresh: when settings.json holds an observer-shaped hook
 // entry pointing at a DIFFERENT binary path (e.g. npm-bundled
 // observer in node_modules) and the user uninstalls from the
-// current binary, filterClaudeGroupsRaw MUST recognise the stale
+// current binary, removeObserverHandlers MUST recognise the stale
 // entry as ours via isObserverClaudeEntry and remove it — NOT
 // leave it orphaned because the byte-exact prefix-match misses.
 func TestUnregisterClaudeCodeRemovesCrossBinaryEntries(t *testing.T) {

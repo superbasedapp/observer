@@ -299,9 +299,10 @@ func TestDeletionPurgesExportArtifacts(t *testing.T) {
 
 // TestExportSweepFunctionDeployedShape pins the SECURITY DEFINER sweep primitive
 // (mirrors the W5 deployed-shape discipline): owned by sbci_defs, SECURITY
-// DEFINER, search_path pinned to public, and EXECUTE granted to the PRODUCTION
-// serve role (sbci_api) — the functional tests run as sbci_app, so without this
-// a missing sbci_api grant would pass the suite but fail the serve loop.
+// DEFINER, search_path pinned to pg_catalog, public, pg_temp (0152), and
+// EXECUTE granted to the PRODUCTION serve role (sbci_api) — the functional
+// tests run as sbci_app, so without this a missing sbci_api grant would pass
+// the suite but fail the serve loop.
 func TestExportSweepFunctionDeployedShape(t *testing.T) {
 	_, pool := newStore(t)
 	ctx := context.Background()
@@ -318,8 +319,9 @@ func TestExportSweepFunctionDeployedShape(t *testing.T) {
 	if !secdef {
 		t.Error("sweep fn is not SECURITY DEFINER")
 	}
-	if cfg != "search_path=public" {
-		t.Errorf("sweep fn proconfig = %q, want search_path=public", cfg)
+	// public.* names and pg_temp last since 0152 (CLOUD-DEFINER-TEMP-2).
+	if cfg != "search_path=pg_catalog, public, pg_temp" {
+		t.Errorf("sweep fn proconfig = %q, want search_path=pg_catalog, public, pg_temp", cfg)
 	}
 	var canExec bool
 	if err := pool.QueryRow(ctx,

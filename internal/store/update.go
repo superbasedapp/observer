@@ -137,6 +137,79 @@ SELECT channel, last_manifest_version, last_manifest_json, last_manifest_seen_at
 // key-value store; this file is the one writer of this key.
 const updatePreviousAppliedStepsKey = "update_previous_applied_steps"
 
+// updateApplyBackoffKey holds the durable per-target apply backoff
+// (FR-SEC-12): the JSON of update.ApplyBackoff, absent when none. It lives in
+// schema_meta, node-local like the update tables, so it needs no column and
+// no migration; this file is the one writer of this key.
+const updateApplyBackoffKey = "update_apply_backoff"
+
+// updateSupervisorRestartKey holds the record a launchd hand-over leaves
+// for the new binary's boots (update.SupervisorRestart as JSON): the target
+// and how many boots it has had. Same home and same single writer as the
+// backoff key above.
+const updateSupervisorRestartKey = "update_supervisor_restart"
+
+// LoadUpdateApplyBackoff returns the stored apply backoff record ("" when
+// none). The caller decodes it (update.DecodeApplyBackoff): this layer stores
+// the document and never interprets it.
+func (s *Store) LoadUpdateApplyBackoff(ctx context.Context) (string, error) {
+	js, err := s.loadUpdateMeta(ctx, updateApplyBackoffKey)
+	if err != nil {
+		return "", fmt.Errorf("store.LoadUpdateApplyBackoff: %w", err)
+	}
+	return js, nil
+}
+
+// SaveUpdateApplyBackoff stores the apply backoff record; "" deletes it. It
+// touches only its own key, so it never races the apply path's writes to
+// update_state.
+func (s *Store) SaveUpdateApplyBackoff(ctx context.Context, js string) error {
+	if err := s.saveUpdateMeta(ctx, updateApplyBackoffKey, js); err != nil {
+		return fmt.Errorf("store.SaveUpdateApplyBackoff: %w", err)
+	}
+	return nil
+}
+
+// LoadUpdateSupervisorRestart returns the launchd hand-over's boot record
+// ("" when none; decoded by update.DecodeSupervisorRestart).
+func (s *Store) LoadUpdateSupervisorRestart(ctx context.Context) (string, error) {
+	js, err := s.loadUpdateMeta(ctx, updateSupervisorRestartKey)
+	if err != nil {
+		return "", fmt.Errorf("store.LoadUpdateSupervisorRestart: %w", err)
+	}
+	return js, nil
+}
+
+// SaveUpdateSupervisorRestart stores the boot record; "" deletes it.
+func (s *Store) SaveUpdateSupervisorRestart(ctx context.Context, js string) error {
+	if err := s.saveUpdateMeta(ctx, updateSupervisorRestartKey, js); err != nil {
+		return fmt.Errorf("store.SaveUpdateSupervisorRestart: %w", err)
+	}
+	return nil
+}
+
+// loadUpdateMeta reads one of this file's schema_meta keys ("" when absent).
+func (s *Store) loadUpdateMeta(ctx context.Context, key string) (string, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return raw, err
+}
+
+// saveUpdateMeta writes one of this file's schema_meta keys; "" deletes it.
+func (s *Store) saveUpdateMeta(ctx context.Context, key, value string) error {
+	if strings.TrimSpace(value) == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM schema_meta WHERE key = ?`, key)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO schema_meta(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
 // loadPreviousAppliedSteps reads PreviousAppliedSteps; absent or unreadable
 // reads as 0, the value a node that never staged an apply has.
 func (s *Store) loadPreviousAppliedSteps(ctx context.Context) int {

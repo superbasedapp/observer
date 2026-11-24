@@ -134,11 +134,18 @@ type gitInvocation struct {
 }
 
 // parseGitInvocation reads git's own options, then the subcommand and its
-// arguments, from a git unit's argv.
+// arguments, from a git unit's argv. An empty word before the subcommand
+// is skipped: it is a word that was nothing but a command substitution
+// (NF-2 keeps it as an empty word; `git $(x) push`), which may be an
+// option, so it does not take the subcommand's place, as before NF-2 kept
+// it. A git write's place reads it as unknown (gitUnitPlaces).
 func parseGitInvocation(argv []string) gitInvocation {
 	var inv gitInvocation
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
+		if t == "" {
+			continue
+		}
 		if !strings.HasPrefix(t, "-") || t == "-" {
 			inv.sub = t
 			inv.args = argv[i+1:]
@@ -1042,6 +1049,9 @@ func matchGitAttributesWrite(ctx *MatchContext) (bool, string) {
 		if d, hit := newDriver(e.Old, e.New); hit {
 			return true, d + " (" + ev.Target + ")"
 		}
+	}
+	if hasUnseenEdit(ev.Edits) {
+		return true, "content the guard cannot see, written by a rename onto it (" + ev.Target + ")"
 	}
 	return false, ""
 }

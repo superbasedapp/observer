@@ -354,7 +354,7 @@ var hostedRouteText = map[integration.HostedRoute]func(r integration.HostedRoute
 		return "routable only through `" + r.Launcher + "`, not through this app"
 	},
 	integration.HostedRouteManual: func(integration.HostedRouteRow, bool) string {
-		return "manual - a base-URL setting exists but Observer has no writer; paste the proxy URL into its provider settings (docs/proxy-routing.md)"
+		return "manual - a base-URL setting exists but Observer has no writer; paste the proxy URL into its provider settings (https://superbased.app/docs/setup/overview)"
 	},
 	integration.HostedRouteUnproven: func(r integration.HostedRouteRow, _ bool) string {
 		return "not proven - a BYOK / base-URL path is not live-verified (" + string(r.Routability) + ")"

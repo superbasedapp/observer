@@ -1298,7 +1298,7 @@ func startMCPRelayRuntime(ctx context.Context, cfg config.Config, db *sql.DB, st
 		"credential_id", remote.CredentialID, "cred_gen", remote.CredGen,
 		"projected_clients", projectedClients(ctx, rt.records), "remote_entries_skipped", remoteSkip,
 		"pending_loss", loss.Count,
-		"restart_note", "the relay rides the daemon: route OFF -> stop -> relaunch -> route ON (docs/daemon-restart-runbook.md)")
+		"restart_note", "the relay rides the daemon: restart it with `observer service restart` (route OFF -> stop -> relaunch -> route ON)")
 	processMCPRelayRemote.Store(&remote)
 	return rt, nil
 }

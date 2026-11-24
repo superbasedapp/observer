@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
@@ -39,6 +41,7 @@ type staffPGHarness struct {
 	cust   http.Handler
 	staffH http.Handler
 	app    *store.Store
+	pool   *pgxpool.Pool
 }
 
 func newStaffPGHarness(t *testing.T) *staffPGHarness {
@@ -47,6 +50,13 @@ func newStaffPGHarness(t *testing.T) *staffPGHarness {
 }
 
 func newStaffPGHarnessWith(t *testing.T, verifier staffauth.Verifier) *staffPGHarness {
+	t.Helper()
+	return newStaffPGHarnessRL(t, verifier, &api.RateLimitConfig{})
+}
+
+// newStaffPGHarnessRL builds the harness with the staff handler's rate
+// limits (rl; the zero config disables them).
+func newStaffPGHarnessRL(t *testing.T, verifier staffauth.Verifier, rl *api.RateLimitConfig) *staffPGHarness {
 	t.Helper()
 	pool := cloudtestpg.NewDB(t)
 	app := store.New(pool)
@@ -69,12 +79,12 @@ func newStaffPGHarnessWith(t *testing.T, verifier staffauth.Verifier) *staffPGHa
 	}).Handler()
 	staff := api.New(api.Options{
 		Store:           staffStore,
-		RateLimit:       &api.RateLimitConfig{},
+		RateLimit:       rl,
 		RootRedirectURL: &empty,
 		StaffWebAuthn:   verifier,
 		StaffBaseURL:    staffPGOrigin,
 	}).StaffHandler()
-	return &staffPGHarness{t: t, cust: cust, staffH: staff, app: app}
+	return &staffPGHarness{t: t, cust: cust, staffH: staff, app: app, pool: pool}
 }
 
 func (h *staffPGHarness) do(method, path string, body any, cookies []*http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
@@ -195,6 +205,11 @@ var staffSessionRoutePaths = []struct{ method, path string }{
 	{"GET", "/staff/api/team-allowlist"},
 	{"POST", "/staff/api/team-allowlist"},
 	{"DELETE", "/staff/api/team-allowlist/00000000-0000-0000-0000-000000000000"},
+	{"GET", "/staff/api/availability/preview"},
+	{"POST", "/staff/api/availability/issue"},
+	{"POST", "/staff/api/availability/issue/00000000-0000-0000-0000-000000000000/cancel"},
+	{"GET", "/staff/api/orgs/00000000-0000-0000-0000-000000000000/components"},
+	{"PUT", "/staff/api/orgs/00000000-0000-0000-0000-000000000000/components/org.security"},
 }
 
 // customerRoutePaths samples the customer portal and device surfaces.
@@ -269,14 +284,15 @@ func TestStaffBootstrapAndAvailabilityWithPostgres(t *testing.T) {
 		t.Fatalf("reused enrolment code = %d %s, want 401", rec.Code, rec.Body)
 	}
 
-	put := h.do("PUT", "/staff/api/availability/org_controls/org-42",
-		map[string]any{"value": map[string]string{"ingest": "pause"}, "reason": "incident 42"},
+	const org42 = "42424242-4242-4242-8242-424242424242"
+	put := h.do("PUT", "/staff/api/availability/org_controls/"+org42,
+		map[string]any{"value": map[string]any{"org": org42, "ingest": map[string]string{"mode": "pause"}}, "reason": "incident 42"},
 		[]*http.Cookie{sess}, map[string]string{"X-SBCI-Staff-CSRF": csrf})
 	if put.Code != http.StatusOK {
 		t.Fatalf("PUT availability = %d %s", put.Code, put.Body)
 	}
 	list := h.do("GET", "/staff/api/availability", nil, []*http.Cookie{sess}, nil)
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"ingest":"pause"`) || !strings.Contains(list.Body.String(), staffauth.Actor(staffID)) {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"ingest":{"mode":"pause"}`) || !strings.Contains(list.Body.String(), staffauth.Actor(staffID)) {
 		t.Fatalf("GET availability = %d %s", list.Code, list.Body)
 	}
 	log := h.do("GET", "/staff/api/log?limit=50", nil, []*http.Cookie{sess}, nil)

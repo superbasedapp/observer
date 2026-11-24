@@ -38,3 +38,28 @@ func (c *Client) noteOrgName(ctx context.Context, resp *orgcontract.PushResponse
 		c.logger.Info("organization renamed", "from", enr.OrgName, "to", name, "org_id", enr.OrgID)
 	}
 }
+
+// noteOwnerManaged records whether the enrolment's organization is the
+// developer's own, as an accepted push restates it
+// (orgcontract.PushResponse.OwnerManaged; finding F12). A machine that
+// enrolled before the node stored the fact (agent migration 261) heals here,
+// and the daemon's next governance refresh picks the matching managed
+// defaults (govern.Grant.OwnerManaged).
+//
+// Best-effort like noteOrgName: an absent value (an older server, or a push
+// whose org-kind read failed) changes nothing, an unchanged one writes
+// nothing, and a store failure never fails an accepted push. The write is
+// bound to the enrolment's own org id (store.SetEnrolmentOwnerManaged).
+func (c *Client) noteOwnerManaged(ctx context.Context, resp *orgcontract.PushResponse, enr *store.Enrolment) {
+	if resp == nil || resp.OwnerManaged == nil || enr == nil || *resp.OwnerManaged == enr.OwnerManaged {
+		return
+	}
+	changed, err := c.store.SetEnrolmentOwnerManaged(ctx, enr.OrgID, *resp.OwnerManaged)
+	if err != nil {
+		c.logger.Warn("org push: recording whether the organization is your own failed", "err", err)
+		return
+	}
+	if changed {
+		c.logger.Info("organization ownership recorded", "owner_managed", *resp.OwnerManaged, "org_id", enr.OrgID)
+	}
+}

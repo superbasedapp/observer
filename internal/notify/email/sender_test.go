@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -228,9 +230,64 @@ func TestNotifierAppliesDefaultRecipients(t *testing.T) {
 	}
 }
 
+// TestNotifierWithoutDefaultRecipients: the copy sends a message with its own
+// recipients, drops one without (never falling back to the configured
+// default), and leaves the original notifier's fallback untouched.
+func TestNotifierWithoutDefaultRecipients(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		explicit bool
+		to       []string
+		want     []string // nil: nothing sent
+	}{
+		{name: "explicit copy, own recipients", explicit: true, to: []string{"a@x", "b@x"}, want: []string{"a@x", "b@x"}},
+		{name: "explicit copy, no recipients: dropped, no fallback", explicit: true},
+		{name: "original, no recipients: the default", explicit: false, want: []string{"default@x"}},
+		{name: "original, own recipients", explicit: false, to: []string{"a@x"}, want: []string{"a@x"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &countSender{}
+			var logs strings.Builder
+			n := NewNotifierWithSender(rec, []string{"default@x"}, slog.New(slog.NewTextHandler(&logs, nil)))
+			explicit := n.WithoutDefaultRecipients()
+			use := n
+			if c.explicit {
+				use = explicit
+			}
+			use.Send(context.Background(), Message{Subject: "s", Text: "x", To: c.to})
+			if c.want == nil {
+				if rec.calls != 0 {
+					t.Fatalf("sent %d message(s) to %v; want none", rec.calls, rec.last.To)
+				}
+				if !strings.Contains(logs.String(), "no recipients configured") {
+					t.Fatalf("the dropped message was not logged:\n%s", logs.String())
+				}
+				return
+			}
+			if rec.calls != 1 || !slices.Equal(rec.last.To, c.want) {
+				t.Fatalf("sent %d message(s) to %v; want one to %v", rec.calls, rec.last.To, c.want)
+			}
+		})
+	}
+	if (*Notifier)(nil).WithoutDefaultRecipients() != nil {
+		t.Fatal("a nil notifier's copy is not nil")
+	}
+}
+
 type recordSender struct{ last Message }
 
 func (r *recordSender) Send(_ context.Context, m Message) error { r.last = m; return nil }
+
+// countSender records the last message and how many were sent.
+type countSender struct {
+	calls int
+	last  Message
+}
+
+func (r *countSender) Send(_ context.Context, m Message) error { r.calls++; r.last = m; return nil }
 
 func atoiOr(t *testing.T, s string) int {
 	t.Helper()

@@ -135,7 +135,7 @@ func serverRows() []Component {
 			Title:  "AI Apps OTLP gateway",
 			About:  "OTLP gRPC and HTTP ingest for the AI apps and agents an organization builds, with classification and the span convention.",
 			Levels: l1Done,
-			Routes: []string{"/api/org/gateway"},
+			Routes: []string{"/api/org/gateway", "/api/agent/sdk-credential"},
 			Packages: []string{
 				"internal/orgserver/gateway", "internal/orgserver/gateway/convention",
 				"internal/orgserver/consumers/otlpapplier",
@@ -197,7 +197,7 @@ func serverRows() []Component {
 			DirectModules: []string{"cel.dev/cel-go", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/sdk", "go.opentelemetry.io/otel/trace", "golang.org/x/crypto", "github.com/google/uuid"},
 			Stability:     StabilityPreview,
 			Images:        img(ImageOff, ImageOut),
-			Note:          "Off by default and inert when off in every deployment shape (docs/agent-access.md). Without it (-tags sbo_omit_org_agentaccess) a node push is still accepted by member key: its MCP relay rows are dropped with a counted, logged reason, never a 400 (ruling D-504), and a tools.mcp_access policy publish is refused because its compiler is not in the image.",
+			Note:          "Off by default and inert when off in every deployment shape. Without it (-tags sbo_omit_org_agentaccess) a node push is still accepted by member key: its MCP relay rows are dropped with a counted, logged reason, never a 400 (ruling D-504), and a tools.mcp_access policy publish is refused because its compiler is not in the image.",
 		},
 		{
 			// The org-hosted OpenShell gateway (tracker F-019,

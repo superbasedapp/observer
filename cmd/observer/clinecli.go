@@ -64,7 +64,7 @@ func newClineCLICmd() *cobra.Command {
 			"until that verification.\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
 			"from that session and seeds it via cline's -i/--tui interactive\n" +
-			"flag (delivery=inject_prompt). See docs/session-handoff.md.\n\n" +
+			"flag (delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"No openai-compatible provider yet (e.g. right after a guided\n" +
 			"install, or another provider chosen): cline starts UNROUTED with\n" +
 			"its own onboarding / provider and the launcher says so. To route,\n" +
@@ -232,7 +232,7 @@ func newClineCLICmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&proxyURL, "proxy", "", "Override the observer proxy URL (default: http://127.0.0.1:<cfg.proxy.port>)")
 	cmd.Flags().StringVar(&binPath, "cline-path", "", "Path to the cline binary (default: resolve `cline` on PATH)")
-	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via cline's -i/--tui interactive flag (delivery=inject_prompt). See docs/session-handoff.md.")
+	cmd.Flags().StringVar(&continueFrom, "continue-from", "", "Session id to continue from: distill a handover from that session and seed it via cline's -i/--tui interactive flag (delivery=inject_prompt). See observer handoff --help.")
 	cmd.Flags().StringVar(&carry, "carry", "", "Carry mode for --continue-from: metadata|distilled|distilled_tail|full|full_cache (default from [handoff] config)")
 	cmd.Flags().IntVar(&fromMessage, "from-message", 0, "With --continue-from: fork after this 1-based transcript message (default: last message)")
 	cmd.Flags().StringVar(&fromTime, "from-time", "", "With --continue-from: fork after the last message at or before this RFC3339 time")

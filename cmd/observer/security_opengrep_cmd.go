@@ -367,7 +367,7 @@ func securityCodeSubcommands() []*cobra.Command {
 		Short: "Code rules run by a separately installed Opengrep (component security.scan.opengrep; opt-in)",
 		Long: "Runs Observer's own observer-code rule pack with a separately installed Opengrep\n" +
 			"(LGPL-2.1, never bundled), pinned and verified (v1.30.1 on linux amd64). Findings are\n" +
-			"flag only: no rule clears the precision bar (docs/code-rules-precision.md). Opt-in: add\n" +
+			"flag only: no rule clears the precision bar yet. Opt-in: add\n" +
 			"security.scan.opengrep under [components].",
 	}
 	cmd.AddCommand(newCodeStatusCmd(), newCodeScanCmd(), newCodeRulesCmd(), newCodeInstallCmd(), newCodeGuidedInstallCmd(), newCodeRefreshCmd())

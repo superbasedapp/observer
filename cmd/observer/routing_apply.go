@@ -85,7 +85,7 @@ func newRoutingApplyCmd() *cobra.Command {
 	cmd.Flags().IntVar(&days, "days", 30, "Evidence window")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Write the changes (default: dry-run diff only)")
 	cmd.Flags().BoolVar(&revert, "revert", false, "Restore the most recent observer backups (claude-code)")
-	cmd.Flags().BoolVar(&showEvidence, "show-evidence", false, "Show the §R7.2 basis under each change (sample sizes, error-delta ± CI95)")
+	cmd.Flags().BoolVar(&showEvidence, "show-evidence", false, "Show the evidence under each change (sample sizes, error-delta ± CI95)")
 	cmd.Flags().BoolVar(&history, "history", false, "Print the apply audit trail (every Channel A write + revert, both CLI and dashboard)")
 	return cmd
 }

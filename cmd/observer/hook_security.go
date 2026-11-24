@@ -825,7 +825,8 @@ func securityLeavesCheckout(pe *policy.Event, root, checkout string) bool {
 // securityLineDirs returns the directories a shell line changes to, in
 // order, each resolved against the one before (the first against the
 // event's working directory, else root), and whether a change could not be
-// resolved (a variable, `-`, no operand, popd); the walk stops there.
+// resolved (a variable, a command substitution, `-`, no operand, popd); the
+// walk stops there.
 //
 // A line with a second shell reading (policy.Event.AltDialect, as the
 // engine and policy.GitWriteLocations read it) is walked under both, and
@@ -903,7 +904,7 @@ func securityWrittenDirsOf(cmds []policy.Command, base string, dialect policy.Di
 		flush()
 		cur, written = "", false
 		args := c.Args()
-		if len(args) != 1 || args[0] == "-" || strings.ContainsAny(args[0], "$%`~") {
+		if len(args) != 1 || args[0] == "" || args[0] == "-" || strings.ContainsAny(args[0], "$%`~") {
 			return out
 		}
 		res := resolveShellDir(hostShellPathRules(), dialect, args[0], base)
@@ -952,7 +953,11 @@ func securityDialectOf(d policy.Dialect) policy.Dialect {
 
 // securityWalkDirs walks one reading's directory changes from base (see
 // securityLineDirs). A network target stops the walk, unresolved, before
-// anything stats it.
+// anything stats it. So does an empty operand (here and in
+// securityWrittenDirsOf): a word that was nothing but a command
+// substitution (`cd $(mktemp -d)`, `cd "$(x)"`), which the parser keeps as
+// an empty word whose value it cannot know (policy NF-2). It is never the
+// directory the walk is in.
 func securityWalkDirs(cmds []policy.Command, base string, dialect policy.Dialect) (dirs []string, unresolved, network bool) {
 	anchor := base
 	for _, c := range cmds {
@@ -960,7 +965,7 @@ func securityWalkDirs(cmds []policy.Command, base string, dialect policy.Dialect
 			continue
 		}
 		args := c.Args()
-		if len(args) != 1 || args[0] == "-" || strings.ContainsAny(args[0], "$%`~") {
+		if len(args) != 1 || args[0] == "" || args[0] == "-" || strings.ContainsAny(args[0], "$%`~") {
 			return dirs, true, false
 		}
 		// HOOK-MSYS-1: the operand resolves as the line's own shell does
