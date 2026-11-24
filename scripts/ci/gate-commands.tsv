@@ -233,9 +233,11 @@ drift:taxonomy	-	*.go,go.mod,go.sum,shared/lib/,web/src/lib/,web/package.json,pa
 #   git-index: the script starts with git rev-parse --show-toplevel.
 drift:readmes	-	docs/distribution/,npm/observer/README.md,npm/superbased/README.md,pypi/observer/README.md,scripts/verify-distribution-readmes.sh,Makefile.private	python3.12,git-index	20	make verify-distribution-readmes
 # website-accuracy: ci-private.yml's website-accuracy job, whose two steps
-#   live in scripts/ci/website-accuracy.sh (the job calls it too). It asks
-#   the public GitHub API (api.github.com, no token here) whether the
-#   canonical release is published, then runs
+#   live in scripts/ci/website-accuracy.sh (the job and release.sh preflight
+#   call it too). It asks the public GitHub API (api.github.com, no token
+#   here) whether the canonical release is published and, where the API
+#   cannot answer (a cloud worker's allowlist proxy answers it 403), the
+#   public repository's tags over git ls-remote on github.com, then runs
 #   website/tools/accuracy-check.mjs over the site and its canonical sources.
 website-accuracy	-	website/,CHANGELOG.md,CLAUDE.md,docs/mcp-tools.md,internal/intelligence/cost/pricing.go,npm/observer/,pypi/observer/README.md,vscode/README.md,vscode/package.json,vscode/walkthroughs/,scripts/ci/website-accuracy.sh	node	30	bash scripts/ci/website-accuracy.sh
 # model-pricing-pg: ci-private.yml's model-pricing-pg job (the model-pricing

@@ -1,6 +1,6 @@
 {
   "name": "superbased",
-  "version": "3.43.0",
+  "version": "3.43.1",
   "description": "superbased Observer under its short name: local-first AI coding agent observability. Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
   "keywords": [
     "ai",
@@ -47,7 +47,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@superbased/observer": "1.43.0"
+    "@superbased/observer": "1.43.1"
   },
   "scripts": {
     "test": "node bin/superbased.js --version"

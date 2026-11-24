@@ -4,6 +4,57 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.43.1] - 2026-11-24
+
+Patch release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). It fixes two things found when superbased's hosted service moved to
+1.43.0: the AI Apps gateway that 1.43.0 announced for hosted organizations could not start there,
+and a fleet alert mailed an organization every 30 minutes for as long as one node stayed silent.
+Nothing changes on a developer's machine. Like 1.37.x to 1.43.0 it needs macOS 13 Ventura or
+later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Upgrade notes
+
+- **Org servers run one database migration** (SQLite 382, PostgreSQL 0560). It adds
+  `obs_alert_rules.notified_findings`, the open findings a fleet rule's last notification covered.
+  It only adds a column, so 1.43.0 still runs on the migrated database.
+- **The built-in "Nodes out of contact" rule now reminds once a day.** A rule still at its shipped
+  30 minutes moves to one day once, on the next sweep; its on or off state is kept. A rule an
+  admin changed keeps its interval.
+- No node migration and no change to the node's push.
+
+### Fixed
+
+- **A fleet alert no longer repeats every interval while the same nodes stay silent.** A fleet
+  rule notifies at once when a node newly enters its state (a node goes silent, or a closed
+  finding opens again), and otherwise only when its interval elapses, as a reminder: the email
+  says "Alert reminder", the webhook carries `"reminder": true` and the audit entry `reminder=1`.
+  An admin-authored fleet rule keeps its own interval and gains the same new-node test. A rule
+  with no window no longer says "over the last 0 day(s)" in its email.
+- **A pooled org server's collector can serve the AI Apps gateway.** In 1.43.0 a pooled
+  `--role collector` with `[gateway]` enabled refused to start: only a process with the api role
+  could admit gateway traffic. The collector now builds its own read-only admission, each
+  organization's entitlement, platform pause and quotas, read from what the api process stores.
+  It re-reads the pause and entitlements every 30 seconds and an organization's quota state at
+  most every minute, and writes none of them. A pooled gateway with no admission still refuses to
+  start. The collector's gateway also sits behind the same tenant host router as the api's, so
+  an unknown host answers 404 and another organization's key is refused. `observer-org supports
+  pooled-gateway-collector-admission` answers yes on this release.
+
+### superbased's hosted service
+
+- **The AI Apps gateway goes live on each organization's own address.** 1.43.0 announced it, but
+  the hosted service ran 1.43.0 with the gateway off because it could not start (see Fixed). Once
+  the hosted service is on 1.43.1, `https://<your-org>.superbased.app/v1/traces` (and `/v1/logs`,
+  `/v1/metrics`, `/v1/sdk/`) accept data from the superbased SDKs and any OpenTelemetry exporter,
+  as the 1.43.0 notes describe.
+- **A failed server process no longer takes every hosted address down.** During the 1.43.0
+  update, one org process failing to start left the shared front proxy stopped for about 30
+  seconds, so every hosted address answered 521. The front proxy now starts whatever happens to
+  the processes behind it, and only the failed process's routes answer an error.
+
 ## [1.43.0] - 2026-11-24
 
 Minor release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

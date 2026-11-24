@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 3,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -25,9 +25,9 @@
     {
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
-      "head": 153,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 154,
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -452,6 +452,10 @@
         {
           "file": "0153_revoke_temp_from_public.sql",
           "blob": "b02e350be7b8683bc393d3d6a133d18839101412"
+        },
+        {
+          "file": "0154_availability_issue_and_delivery.sql",
+          "blob": "a98ad91d4bde837855264e2d1723fdc42b171cf6"
         }
       ]
     },
@@ -459,8 +463,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -471,9 +475,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 260,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 261,
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1386,6 +1390,10 @@
         {
           "file": "260_api_turns_upstream_lane.sql",
           "blob": "6544de59a9bfee3ef438dca79557dfb42c3833fc"
+        },
+        {
+          "file": "261_org_enrolment_owner_managed.sql",
+          "blob": "60354a6eb224dbad87010f2397a346d79e60450f"
         }
       ]
     },
@@ -1393,8 +1401,8 @@
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
       "head": 559,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -2518,8 +2526,8 @@
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
       "head": 381,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.0",
+      "commit": "139f6daa21e8ac6340bf8be711533a6731d1fc0e",
       "steps": [
         {
           "file": "001_initial.sql",

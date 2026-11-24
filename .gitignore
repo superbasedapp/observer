@@ -363,6 +363,7 @@ model-pricing/scripts/extract-cache/
 /scripts/ci/gate-host-checks.sh
 /scripts/ci/gate-host-checks.tsv
 /scripts/ci/website-accuracy.sh
+/tests/invariant/website_accuracy_test.go
 /scripts/ci/model-pricing-pg.sh
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
