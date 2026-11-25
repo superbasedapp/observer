@@ -38,6 +38,7 @@ var lineages = []LineageDef{
 	{Name: "cloud", Dir: "internal/cloudserver/db/migrations"},
 	{Name: "edge-wal", Dir: "internal/edge/wal/migrations"},
 	{Name: "node", Dir: "internal/db/migrations"},
+	{Name: "obs", Dir: "internal/obs/store/migrations"},
 	{Name: "org-pg", Dir: "internal/orgserver/db/pgmigrations"},
 	{Name: "org-sqlite", Dir: "internal/orgserver/db/migrations"},
 }
@@ -118,6 +119,15 @@ func BlobID(content []byte) string {
 // Parse decodes and validates a record. Unknown fields are refused so a typo
 // cannot silently drop a lineage's protection.
 func Parse(data []byte) (Record, error) {
+	return ParseAdding(data, nil)
+}
+
+// ParseAdding is Parse for a run that is about to record the lineages named
+// in adding: one of them may be absent from the record (a lineage added to
+// the table since the record was last written), every other check is
+// Parse's. It is for the recorder only; the checker and the invariant test
+// use Parse, so a record that still lacks a known lineage stays malformed.
+func ParseAdding(data []byte, adding []string) (Record, error) {
 	var r Record
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -127,7 +137,7 @@ func Parse(data []byte) (Record, error) {
 	if dec.More() {
 		return Record{}, errors.New("shipped.Parse: trailing data after the record")
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.validate(adding); err != nil {
 		return Record{}, err
 	}
 	return r, nil
@@ -138,6 +148,15 @@ func Parse(data []byte) (Record, error) {
 // head that is not the highest step, an empty ref or commit, and a step with
 // a bad name, a bad blob id or a number used twice.
 func (r Record) Validate() error {
+	return r.validate(nil)
+}
+
+// validate is Validate, excusing the absence of a lineage named in adding.
+func (r Record) validate(adding []string) error {
+	excused := map[string]bool{}
+	for _, name := range adding {
+		excused[name] = true
+	}
 	var errs []error
 	if r.Schema != SchemaVersion {
 		errs = append(errs, fmt.Errorf("schema is %d, want %d", r.Schema, SchemaVersion))
@@ -154,7 +173,7 @@ func (r Record) Validate() error {
 		}
 	}
 	for _, def := range lineages {
-		if !seen[def.Name] {
+		if !seen[def.Name] && !excused[def.Name] {
 			errs = append(errs, fmt.Errorf("lineage %q is missing", def.Name))
 		}
 	}

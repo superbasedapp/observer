@@ -18,6 +18,7 @@
 // re-export problem because both auth shapes already ride the standard
 // Authorization Bearer header that the proxy intercepts unmodified.
 // All we need is to point the base URL at the proxy.
+
 package main
 
 import (
@@ -73,8 +74,11 @@ func newCodexCmd() *cobra.Command {
 			"All arguments after the subcommand are forwarded to codex. Use\n" +
 			"`--` to separate observer flags from codex flags:\n" +
 			"    observer codex -- exec \"hello world\"\n\n" +
-			"Requires a running observer proxy. Start one with `observer start`\n" +
-			"or `observer proxy start` first.\n\n" +
+			"Routes through the observer proxy. When the daemon is not running\n" +
+			"the launcher starts it first (its service unit when one is installed,\n" +
+			"else `observer start` in the background, log in daemon.log beside\n" +
+			"the database), waits for its proxy, then launches routed. Pass\n" +
+			"--no-start (or set [launch].start_daemon = false) to skip that.\n\n" +
 			"Shared codex `app-server` processes (e.g., the VS Code Codex\n" +
 			"extension or Codex Desktop) can silently intercept `codex exec`\n" +
 			"calls via codex's global IPC pipe and bypass the proxy override.\n" +
@@ -419,6 +423,10 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 			"observer codex: note - a cross-mount codex config still routes to the observer proxy (%s) but will NOT be loaded by this launch (effective CODEX_HOME is %s); ignoring it for the routing decision. Remove it if it's stale.\n",
 			strings.Join(foreign, ", "), effectiveCodexHome())
 	}
+	// L-169: a routed launch that finds the daemon down starts it first and
+	// waits for its proxy (launchProxyUp, the seam every launcher shares);
+	// only a daemon that cannot come up reaches the proxy-down rows below.
+	proxyUp = launchRoutedProxyUp(ctx, "codex", opts.configPath, proxyURL, opts.noProxyRoute, opts.stderr)
 	switch fb := decideProxyFallback(proxyFallbackInputs{
 		noProxyRoute:    opts.noProxyRoute,
 		proxyReachable:  proxyUp,
@@ -428,9 +436,13 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 		// a persistent config route cannot be neutralized — it stays fail-closed.
 		// (Asymmetric with claude, which has `--settings`; stated explicitly.)
 		canNeutralizePersistent: false,
+		// The managed-node row (L-169 settles LPD-2 for every launcher): a
+		// daemon that could not come up on a machine whose organization owns
+		// the routes is a refusal, never a bypass of its controls.
+		orgRequiresRoute: launchDownOrgOwned(ctx, opts.configPath, opts.noProxyRoute, proxyUp),
 	}); fb.action {
 	case proxyFailClosed:
-		fmt.Fprintln(opts.stderr, codexProxyFailClosedMsg(fb.reason, proxyURL, configOffenders))
+		fmt.Fprintln(opts.stderr, codexFailClosedLine(fb.reason, proxyURL, configOffenders))
 		return exitErr(1)
 	case proxyNeutralize:
 		// Bypass the proxy: make codexLaunchArgs skip the `-c openai_base_url`
@@ -448,6 +460,16 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 	warnCodexProviderBypass(opts, activeProfile)
 
 	return runCodexChild(ctx, opts, proxyURL, preflight, cfg.Observer.DBPath)
+}
+
+// codexFailClosedLine is the refusal for a codex fail-closed verdict: the
+// organization line every launcher prints on a managed machine whose
+// organization owns the routes (L-169), else codexProxyFailClosedMsg.
+func codexFailClosedLine(reason proxyFallbackReason, proxyURL string, offenders []string) string {
+	if reason == reasonProxyDownOrgRoute {
+		return envProxyFailClosedMsg("codex", proxyURL, reason, envProxyDownFacts{}, runningAsDaemonChild())
+	}
+	return codexProxyFailClosedMsg(reason, proxyURL, offenders)
 }
 
 // warnCodexProviderBypass prints one notice when a routed launch's selected

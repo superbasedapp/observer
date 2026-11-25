@@ -47,7 +47,7 @@ type Client struct {
 	maxTokens int
 	// maxTokensSet is true when config set maxTokens (WithTuning); a
 	// reasoning-profile request then keeps it instead of raising it to
-	// reasoningMinReplyTokens.
+	// llmwire.ReasoningMinReplyTokens.
 	maxTokensSet bool
 	// profile and effort are the [observability.judge] request_profile and
 	// reasoning_effort keys (WithRequestProfile); resolved per call against
@@ -222,19 +222,15 @@ func (j Client) Complete(ctx context.Context, model, prompt string) (string, err
 // reasoning tokens unless config set one.
 func (j Client) buildRequest(model, prompt string) llmwire.Request {
 	shape := resolveShape(j.profile, j.effort, model)
-	req := llmwire.Request{
-		Model:           model,
-		System:          judgeSystemPrompt,
-		Messages:        []llmwire.Message{{Role: llmwire.RoleUser, Content: prompt}},
-		MaxTokens:       j.maxTokens,
-		MaxTokensParam:  shape.maxTokensParam,
-		ReasoningEffort: shape.effort,
-	}
-	if !shape.temperatureOff {
-		req.Temperature = new(float64)
-	}
-	if !j.maxTokensSet && req.MaxTokens < shape.minReplyTokens {
-		req.MaxTokens = shape.minReplyTokens
+	req := shape.Apply(llmwire.Request{
+		Model:       model,
+		System:      judgeSystemPrompt,
+		Messages:    []llmwire.Message{{Role: llmwire.RoleUser, Content: prompt}},
+		MaxTokens:   j.maxTokens,
+		Temperature: new(float64),
+	})
+	if !j.maxTokensSet {
+		req.MaxTokens = shape.RaiseReplyCap(req.MaxTokens)
 	}
 	// num_ctx is an Ollama-specific knob: only a local host understands it, and
 	// only a local host tolerates an unknown field (a hosted API would 400), so

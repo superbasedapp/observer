@@ -49,10 +49,6 @@ func validIssuedBy(v string) bool {
 // composed on its own.
 const IssuedBySystem = "system"
 
-// IssuedByStaff returns the issued_by value of a document a staff action
-// caused.
-func IssuedByStaff(staffID string) string { return "staff:" + staffID }
-
 // documentLockKey names the advisory lock that serialises one document
 // stream (an org's entitlements, or the one availability stream).
 func documentLockKey(kind platformcontract.DocumentKind, scope string) string {

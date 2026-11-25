@@ -11,8 +11,15 @@
 // The per-step records live in that same table under migration:<n> keys, so
 // no runner spends a lineage number on bookkeeping.
 //
-// The package owns no transaction and no migration body. A runner pins its
+// Plan and Apply own no transaction and no migration body. A runner pins its
 // connection, takes its own lock, calls Plan and Apply on that connection, and
 // supplies the callback that executes one step's SQL from its own embedded
 // lineage. The plan itself is decided by migplan.Decide.
+//
+// Run (with ReadEntries) is that whole sequence for a runner with no extra
+// needs: bootstrap schema_meta, pin a connection, BEGIN IMMEDIATE, Plan,
+// Apply, COMMIT, with the deferred ROLLBACK on a context that ignores
+// cancellation. The cold archive uses it; the node database (lock wait and
+// lock-free no-op fast path), the edge WAL and the org server keep their
+// own sequence.
 package sqliteledger

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelFilterOptions, withSelectedModel } from "./modelFilter.ts";
+import { modelFilterOptions, withSelectedModel } from "../../../shared/lib/modelFilterOptions.ts";
 
 test("drops unknown / placeholder ids, sorts by turns then id", () => {
   const got = modelFilterOptions([

@@ -494,10 +494,12 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 			// nothing to consent to.
 			fmt.Fprintf(out, "  route: skipped - %s\n", pre.SkipReason)
 		default:
-			fmt.Fprintln(out, "  proxy route (probe) - config-lane route through the local proxy; NOT yet")
-			fmt.Fprintln(out, "  live-verified for this tool, so it's opt-in.")
+			intro, question := probeRouteConsent(t)
+			for _, line := range intro {
+				fmt.Fprintln(out, line)
+			}
 			fmt.Fprintf(out, "  would write %s → %s\n", pre.ConfigPath, pre.BaseURL)
-			yes, err := p.ask(fmt.Sprintf("route %s through the observer proxy (unverified probe)?", t), false)
+			yes, err := p.ask(question, false)
 			if err != nil {
 				return err
 			}
@@ -616,4 +618,23 @@ func interactiveHookOptions(opts interactiveInitOptions, dryRun bool) hook.Optio
 		WSLTwinBinaryPath: registrationWSLTwinBinary(opts.BinaryPath),
 		ConfigPath:        registrationConfigArg(opts.ConfigPath, opts.HomeDir), HomeDir: opts.HomeDir,
 	}
+}
+
+// probeRouteConsent is the copy of the probe-route step's consent for tool.
+// It reads the registry row's SHAPE (CLAUDE.md #3): a row with a verified
+// route (Proxy != nil, e.g. qwen-code, kimi-code, crush) applied through its
+// own config-lane writer is live-verified and is not called an unverified
+// probe (CMD-02); a row with only a ProxyProbe still is. The consent stays
+// opt-in (default no) either way.
+func probeRouteConsent(tool string) (intro []string, question string) {
+	if c, ok := integration.For(tool); ok && c.Proxy != nil {
+		return []string{
+			"  proxy route - config-lane route through the local proxy, live-verified",
+			"  for this tool; opt-in.",
+		}, fmt.Sprintf("route %s through the observer proxy?", tool)
+	}
+	return []string{
+		"  proxy route (probe) - config-lane route through the local proxy; NOT yet",
+		"  live-verified for this tool, so it's opt-in.",
+	}, fmt.Sprintf("route %s through the observer proxy (unverified probe)?", tool)
 }

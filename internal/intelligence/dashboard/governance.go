@@ -14,6 +14,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/configschema"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // Admin-controlled Plane B, the node-dashboard enforcement point
@@ -92,6 +94,9 @@ const (
 	SectionAppScores    Section = "app-scores"
 	SectionAppPrompts   Section = "app-prompts"
 	SectionAppAlerts    Section = "app-alerts"
+	// SectionAppModelCalls is Your apps > Model calls (hosted AI gateway
+	// arc, lane L9): the machine's app lanes on the proxy.
+	SectionAppModelCalls Section = "app-model-calls"
 )
 
 // AllSections is the closed set, for the coverage test and for callers that
@@ -103,7 +108,7 @@ var AllSections = []Section{
 	SectionBenchmarks, SectionDiscovery, SectionPatterns, SectionPolicies, SectionAgentConfig,
 	SectionPrivacy, SectionTerminals, SectionRemote, SectionMessages, SectionRequests, SectionSettings, SectionYou,
 	SectionAppTraces, SectionAppSessions, SectionAppAnalytics, SectionAppEndUsers, SectionAppEvals, SectionAppScores,
-	SectionAppPrompts, SectionAppAlerts,
+	SectionAppPrompts, SectionAppAlerts, SectionAppModelCalls,
 }
 
 // configSectionPrefix is the one route whose SUB-resource is itself a
@@ -574,7 +579,44 @@ func (s *Server) handleGovernance(w http.ResponseWriter, r *http.Request) {
 		Pricing:         s.resolvePricingBlock(r.Context()),
 		Visibility:      s.dashboardVisibility(r.Context(), eff),
 		ConcealedRoutes: concealedRoutes(sections, eff),
+		Online:          s.governanceOnline(r.Context(), eff),
 	})
+}
+
+// governanceOnline is the `online` block: where this machine's organization
+// chooses what its dashboard shows, and each local page's equivalent on the
+// online dashboard (operator ruling 2, 2026-11-24: a hidden or read-only page
+// is never a dead end, and a link to a hidden page goes to its online
+// equivalent). Built from the enrolment row the node already holds
+// (settingslink.DashboardAddress: the recorded online address, else the org
+// server address), never a guessed host; nil on an unenrolled node.
+func (s *Server) governanceOnline(ctx context.Context, eff govern.Effective) *governanceOnline {
+	if s.opts.DB == nil {
+		return nil
+	}
+	enr, err := store.New(s.opts.DB).LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return nil
+	}
+	return buildGovernanceOnline(settingslink.DashboardAddress(enr.OnlineURL, enr.OrgServerURL), enr.OwnerManaged || eff.OwnerManaged)
+}
+
+// buildGovernanceOnline is governanceOnline's pure half, over the dashboard
+// address and whether the organization is the developer's own.
+func buildGovernanceOnline(addr string, owner bool) *governanceOnline {
+	out := &governanceOnline{Kind: onlineKindTeam, Pages: map[string]settingslink.OrgPageLink{}}
+	if owner {
+		out.Kind = onlineKindPersonal
+	}
+	if l, ok := settingslink.OrgFor(addr, settingslink.OrgDeveloperDashboards); ok {
+		out.Visibility = governanceOnlineLink{Href: l.Href, Label: l.Label}
+	}
+	for _, id := range settingslink.OrgPageIDs() {
+		if l, ok := settingslink.OrgPageFor(addr, id); ok {
+			out.Pages[id] = l
+		}
+	}
+	return out
 }
 
 // pageDefaultSupersedes lists the pages whose MANAGED-DEFAULT read-only
@@ -710,6 +752,37 @@ type governanceResponse struct {
 	// polls a hidden section's API. Omitted when nothing is concealed; an
 	// older SPA ignores it.
 	ConcealedRoutes []string `json:"concealed_routes,omitempty"`
+	// Online is where the organization chooses what this dashboard shows and
+	// each local page's online equivalent (governanceOnline). Omitted on an
+	// unenrolled node; an older SPA ignores it.
+	Online *governanceOnline `json:"online,omitempty"`
+}
+
+// The two values of governanceOnline.Kind.
+const (
+	onlineKindPersonal = "personal"
+	onlineKindTeam     = "team"
+)
+
+// governanceOnline is the `online` block of GET /api/governance.
+type governanceOnline struct {
+	// Kind is "personal" when the organization is the developer's own (a
+	// personal organization of one: they are its only admin), else "team".
+	Kind string `json:"kind"`
+	// Visibility is Settings > Developer dashboards on the online dashboard,
+	// where the pages and Settings sections this machine shows, hides or
+	// locks are chosen. Href is empty when the node knows no safe address
+	// (the surface then names the place in words).
+	Visibility governanceOnlineLink `json:"visibility"`
+	// Pages maps a local page id to its equivalent on the online dashboard
+	// (settingslink.OrgPageFor); a page with none is absent.
+	Pages map[string]settingslink.OrgPageLink `json:"pages,omitempty"`
+}
+
+// governanceOnlineLink is one place on the online dashboard.
+type governanceOnlineLink struct {
+	Href  string `json:"href,omitempty"`
+	Label string `json:"label"`
 }
 
 // governancePricing is what the Privacy page's governance card says about

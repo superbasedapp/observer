@@ -121,7 +121,7 @@ func TestVMRowListsThePlainShellForTheDashboard(t *testing.T) {
 	if a := rt.ProbeSandbox(context.Background()).Tools[termsvc.ShellTool]; !a.Available {
 		t.Fatalf("the probe's tool map: %+v", a)
 	}
-	plain := macTestRuntime(t, vmTestConfig(t, false, "bwrap"))
+	plain := testSandboxRuntime(t, vmTestConfig(t, false, "bwrap"))
 	if a, ok := plain.tools()[termsvc.ShellTool]; ok {
 		t.Fatalf("a runtime with no shell-hosting driver lists the shell: %+v", a)
 	}

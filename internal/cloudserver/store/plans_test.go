@@ -137,12 +137,10 @@ func TestMidCycleUpgradeRaisesConsultedCapImmediately(t *testing.T) {
 		t.Fatalf("after upgrade: daily %d/%d, want %d/%d (counter keeps counting, ceiling moves)",
 			snap.DailyUsed, snap.DailyCap, freeDaily+1, plusDaily)
 	}
-	// Ruling 2026-09-15 (W5 hosted contract): Plus is a real purchasable plan
-	// now, so the label was updated from the stale "entitlement simulation"
-	// copy (migration 0037) to the plain "Plus" — this assertion follows that
-	// ruling rather than the superseded R4 wording.
-	if snap.Plan != store.PlanPlusBeta || snap.PlanLabel != "Plus" {
-		t.Fatalf("plan surface = %q / %q, want plus_beta / \"Plus\"", snap.Plan, snap.PlanLabel)
+	// The label a customer sees is pinned on the current version in
+	// TestUsageSurfacesPlanLabel; v4 is migration history.
+	if snap.Plan != store.PlanPlusBeta {
+		t.Fatalf("plan surface = %q, want plus_beta", snap.Plan)
 	}
 }
 
@@ -454,10 +452,13 @@ func TestUsageWarnThresholds(t *testing.T) {
 }
 
 // TestUsageSurfacesPlanLabel pins that /v1/usage carries the plan label
-// verbatim. The label itself was the R4 "entitlement simulation" copy (never
-// read as a purchased subscription) until the 2026-09-15 ruling made Plus a
-// real purchasable plan (migration 0037 updates the seeded label to "Plus");
-// this test follows that ruling.
+// verbatim, and which label that is. The paid individual plan was the R4
+// "entitlement simulation" copy, then "Plus" (migration 0037, 2026-09-15);
+// since the 2026-11-24 ruling a customer sees "Personal Pro": the catalog's
+// label, which the plans generator writes over the row's (cloud 0156). The
+// count-capped v4 row is migration history: the generator relabels catalog
+// rows only, and no in-force assignment names v4 since 0079 moved its
+// holders to v5, so its caps are checked here and its label is not.
 func TestUsageSurfacesPlanLabel(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
@@ -478,14 +479,25 @@ func TestUsageSurfacesPlanLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Usage after upgrade: %v", err)
 	}
-	if snap.PlanLabel != "Plus" {
-		t.Fatalf("plus label = %q, want the exact 2026-09-15 copy \"Plus\"", snap.PlanLabel)
-	}
 	// Migration 0041's v3 row (D-299): monthly 15000, 5x free's 3000 (v2 was
 	// 120 on the Sol route, v1 500).
 	if snap.BudgetPool != "plus_beta" || snap.MonthlyCap != 15000 || snap.ConcurrencyCap != 4 {
 		t.Fatalf("plus surface = pool %q, monthly %d, concurrency %d; want plus_beta/15000/4",
 			snap.BudgetPool, snap.MonthlyCap, snap.ConcurrencyCap)
+	}
+
+	// The current version, what a purchase or a grant assigns.
+	cur := makeAccount(t, s)
+	if _, err := s.AssignPlan(ctx, cur, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+		t.Fatalf("AssignPlan(latest): %v", err)
+	}
+	snap, err = s.Usage(ctx, cur, store.FeatureSessionEnrichment, now)
+	if err != nil {
+		t.Fatalf("Usage on the current version: %v", err)
+	}
+	if snap.Plan != store.PlanPlusBeta || snap.PlanLabel != "Personal Pro" || snap.BudgetPool != "plus_beta" {
+		t.Fatalf("current plus surface = %q / %q / %q, want plus_beta / \"Personal Pro\" / plus_beta",
+			snap.Plan, snap.PlanLabel, snap.BudgetPool)
 	}
 }
 

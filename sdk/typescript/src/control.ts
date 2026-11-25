@@ -16,6 +16,8 @@
  */
 
 import { ONLINE_FIX, type Settings } from "./config.js";
+import { fetchBounded, startTimer, transportDetail } from "./http.js";
+import { notePlanRefusal, parsePlanRefusal, type PlanRefusalError } from "./planrefusal.js";
 import { runtime } from "./runtime.js";
 
 /** Header the SDK control API versions on (`sdkapi`). */
@@ -67,6 +69,8 @@ export interface ControlResponse {
   /** The error envelope's `error` code, or a client-side reason (`transport`, `timeout`, `bad_response`). */
   error: string;
   message: string;
+  /** The org's plan refusal (403 `plan_required`, or a 429 over the plan's allowance), when this answer is one. */
+  planRefusal?: PlanRefusalError;
 }
 
 export const controlStats = {
@@ -192,14 +196,8 @@ export async function call(
   controlStats.calls += 1;
   const url = t.base + (typeof path === "string" ? path : pathOn(t, path));
   const out: ControlResponse = { target: t.name, url, status: 0, ok: false, body: undefined, etag: "", error: "", message: "" };
-  const controller = new AbortController();
   const ms = opts.timeoutMs ?? runtime.settings?.apiTimeoutMs ?? 5000;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, ms);
-  timer.unref?.();
+  const timer = startTimer(ms, true);
   try {
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -212,25 +210,22 @@ export async function call(
       headers["Content-Type"] = "application/json";
       payload = JSON.stringify(opts.body);
     }
-    let resp: Response;
-    try {
-      // redirect "manual": a redirect is never followed (the key must not ride to a host it
-      // was not sent to; R-B26); a 3xx comes back as a refused response below.
-      resp = await fetch(url, { method, headers, body: payload, signal: controller.signal, redirect: "manual" });
-    } catch (err) {
-      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-      out.error = timedOut ? "timeout" : "transport";
-      out.message = timedOut ? `timed out after ${ms}ms` : (cause?.code ?? cause?.message ?? String(err));
+    // fetchBounded never follows a redirect (R-B26): a 3xx comes back as a refused response below.
+    const sent = await fetchBounded(url, { method, headers, body: payload }, timer);
+    if ("failed" in sent) {
+      out.error = timer.timedOut() ? "timeout" : "transport";
+      out.message = timer.timedOut() ? `timed out after ${ms}ms` : transportDetail(sent.failed);
       noteFailure(out);
       return out;
     }
+    const resp = sent.resp;
     out.status = resp.status;
     out.etag = resp.headers.get("etag") ?? "";
     let text = "";
     try {
       text = await resp.text();
     } catch (err) {
-      out.error = timedOut ? "timeout" : "transport";
+      out.error = timer.timedOut() ? "timeout" : "transport";
       out.message = String(err);
       noteFailure(out);
       return out;
@@ -255,6 +250,11 @@ export async function call(
       const b = (out.body ?? {}) as Record<string, unknown>;
       out.error = typeof b.error === "string" ? b.error : `http_${resp.status}`;
       out.message = typeof b.message === "string" ? b.message : "";
+      const refusal = parsePlanRefusal(resp.status, out.body ?? text, resp.headers);
+      if (refusal) {
+        out.planRefusal = refusal;
+        notePlanRefusal(refusal); // diagnostics(); the call reports it its own way
+      }
       if (!(opts.quiet404 && resp.status === 404)) noteFailure(out);
     }
     return out;
@@ -264,7 +264,7 @@ export async function call(
     noteFailure(out);
     return out;
   } finally {
-    clearTimeout(timer);
+    timer.clear();
   }
 }
 
@@ -278,7 +278,11 @@ export function newId(): string {
   });
 }
 
-/** Whether a failed response is worth one retry (transport, timeout, 429, 5xx). */
+/**
+ * Whether a failed response is worth one retry (transport, timeout, 429,
+ * 5xx). A 429 over the plan's allowance is not: it holds until the plan
+ * changes or the month turns.
+ */
 export function retryable(r: ControlResponse): boolean {
-  return !r.ok && (r.status === 0 || r.status === 429 || r.status >= 500);
+  return !r.ok && !r.planRefusal && (r.status === 0 || r.status === 429 || r.status >= 500);
 }

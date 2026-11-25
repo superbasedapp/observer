@@ -1,6 +1,8 @@
 // Shared test helpers: SDK/global reset and a scripted local HTTP stub.
 import http from "node:http";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { context, propagation, trace } from "@opentelemetry/api";
 
@@ -14,7 +16,12 @@ export async function reset() {
   context.disable();
   propagation.disable();
   for (const k of Object.keys(process.env)) if (SDK_ENV.test(k)) delete process.env[k];
+  // Never read a real SDK-held credential file of the person running the tests.
+  process.env.SUPERBASED_CREDENTIAL_FILE = NO_CREDENTIAL_FILE;
 }
+
+/** A credential-file path that never exists (reset() points SUPERBASED_CREDENTIAL_FILE here). */
+export const NO_CREDENTIAL_FILE = join(tmpdir(), `sbo-no-sdk-credential-${process.pid}`, "sdk-credential");
 
 export async function startStub() {
   const stub = {

@@ -13,10 +13,13 @@
  * into that list; destination.ts makes the choice.
  */
 
+import { DEFAULT_SERVICE_NAME, serviceNameLadder, type ProjectFacts, type ServiceNameSource } from "./project.js";
+
+export { DEFAULT_SERVICE_NAME } from "./project.js";
+
 export type Env = Record<string, string | undefined>;
 
 export const DEFAULT_ENDPOINT = "http://127.0.0.1:4318/v1/traces";
-export const DEFAULT_SERVICE_NAME = "custom-app";
 export const DEFAULT_MAX_CONTENT_CHARS = 8000;
 export const DEFAULT_EXPORT_TIMEOUT_MS = 5000;
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
@@ -58,8 +61,14 @@ export interface Settings {
   headers: Record<string, string>;
   /** SUPERBASED_API_KEY, sent as `Authorization: Bearer` to the gateway only. */
   apiKey: string;
-  /** SUPERBASED_SERVICE_NAME > OTEL_SERVICE_NAME > service.name in OTEL_RESOURCE_ATTRIBUTES. */
+  /**
+   * The option > SUPERBASED_SERVICE_NAME > OTEL_SERVICE_NAME > service.name in
+   * OTEL_RESOURCE_ATTRIBUTES > the project's package.json name > the entry
+   * script's folder > `custom-app` (project.ts).
+   */
   serviceName: string;
+  /** Which rung named the service: argument, env, project, entry_dir or default. */
+  serviceNameSource: ServiceNameSource;
   /** OTEL_RESOURCE_ATTRIBUTES. */
   resourceAttributes: Record<string, string>;
   /** SUPERBASED_TENANT. */
@@ -116,15 +125,15 @@ export interface Settings {
   promptCacheTtlMs: number;
   /** True when `endpoint` was set explicitly (option, SUPERBASED_OTLP_ENDPOINT or an OTEL_* variable). */
   endpointExplicit: boolean;
-  /** Where `apiKey` came from: `argument`, `env`, `file` (the machine's credential file) or "". */
-  credentialSource: "argument" | "env" | "file" | "";
+  /** Where `apiKey` came from: `argument`, `env`, `file` (the machine's credential file), `sdk_file` (the SDK-held file `setup` writes) or "". */
+  credentialSource: "argument" | "env" | "file" | "sdk_file" | "";
 }
 
 /** The subset a caller may pass to `init()`; unset fields come from env. */
 export type SettingsInput = Partial<
   Omit<
     Settings,
-    "endpointExplicit" | "endpointSource" | "onlineHeaders" | "destinationInvalid" | "samplingInvalid" | "parentBased" | "destination" | "advertisedEndpoint" | "credentialSource"
+    "endpointExplicit" | "endpointSource" | "onlineHeaders" | "destinationInvalid" | "samplingInvalid" | "parentBased" | "destination" | "advertisedEndpoint" | "credentialSource" | "serviceNameSource"
   >
 > & { destination?: string };
 
@@ -216,11 +225,9 @@ function resolveOnlineHeaders(explicit: Record<string, string> | undefined, env:
   return out;
 }
 
-export function resolveServiceName(explicit: string | undefined, env: Env): string {
-  if (explicit) return explicit;
-  const v = envStr(env, "SUPERBASED_SERVICE_NAME", "OTEL_SERVICE_NAME");
-  if (v) return v;
-  return (parseKvList(env.OTEL_RESOURCE_ATTRIBUTES)["service.name"] ?? "").trim() || DEFAULT_SERVICE_NAME;
+/** The service name from the option and env, then (when `project` is given) the project; see project.ts. */
+export function resolveServiceName(explicit: string | undefined, env: Env, project?: ProjectFacts | null): string {
+  return serviceNameLadder(explicit, env, project).name;
 }
 
 const SAMPLERS: Record<string, [number | undefined, boolean]> = {
@@ -306,8 +313,12 @@ const KNOWN: ReadonlyArray<string> = [
   "nodeUrl", "discover", "discoverTimeoutMs", "apiTimeoutMs", "promptCacheTtlMs",
 ];
 
-/** Build settings from explicit options (undefined = unset) over env. */
-export function resolveSettings(env: Env, explicit: SettingsInput = {}): Settings {
+/**
+ * Build settings from explicit options (undefined = unset) over env. With
+ * `project` (init() passes this process's), the service name may come from
+ * the project; without it, the ladder stops at the env and the default.
+ */
+export function resolveSettings(env: Env, explicit: SettingsInput = {}, project?: ProjectFacts | null): Settings {
   for (const k of Object.keys(explicit)) {
     if (!KNOWN.includes(k)) throw new TypeError(`unknown @superbased/sdk setting: ${k}`);
   }
@@ -316,13 +327,15 @@ export function resolveSettings(env: Env, explicit: SettingsInput = {}): Setting
   const dest = resolveDestinationChoice(explicit.destination, env);
   const [endpoint, endpointSource] = resolveEndpointWithSource(explicit.endpoint, env);
   const apiKey = pick(explicit.apiKey, envStr(env, "SUPERBASED_API_KEY"));
+  const service = serviceNameLadder(explicit.serviceName, env, project);
   return {
     endpoint,
     endpointSource,
     headers: resolveHeaders(explicit.headers, env),
     apiKey,
     credentialSource: !apiKey ? "" : explicit.apiKey ? "argument" : "env",
-    serviceName: resolveServiceName(explicit.serviceName, env),
+    serviceName: service.name,
+    serviceNameSource: service.source,
     resourceAttributes: { ...parseKvList(env.OTEL_RESOURCE_ATTRIBUTES), ...(explicit.resourceAttributes ?? {}) },
     tenant: pick(explicit.tenant, envStr(env, "SUPERBASED_TENANT")),
     user: pick(explicit.user, envStr(env, "SUPERBASED_USER")),
@@ -416,8 +429,9 @@ export function onlineUsable(s: Settings): boolean {
  * must not leak the superbased key there; review finding R-B26).
  */
 export function localCarriesKey(s: Settings, endpoint: string): boolean {
-  // The machine's file credential goes only to the gateway (contract destination.md section 6).
-  return !!s.apiKey && s.credentialSource !== "file" && (s.endpointSource === "argument" || s.endpointSource === "env") && !isLoopbackHost(endpoint);
+  // A key from a file (the machine's, or the SDK-held one) goes only to the
+  // gateway the file names (contract destination.md sections 6 and 6a).
+  return !!s.apiKey && s.credentialSource !== "file" && s.credentialSource !== "sdk_file" && (s.endpointSource === "argument" || s.endpointSource === "env") && !isLoopbackHost(endpoint);
 }
 
 /** Whether a URL's host is loopback. */

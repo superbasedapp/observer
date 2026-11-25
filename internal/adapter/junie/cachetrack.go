@@ -10,8 +10,10 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's running
-// block count. Matches the claudecode template's cap (same memory
-// budget, same OOM guard).
+// block count: the shared cacheobs default (same memory budget, same OOM
+// guard as every other Tier-2 producer). Prompt and thought text use the
+// shared cacheobs text form; Junie's terminal, file-change, MCP and
+// result blocks are its own.
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // accumulatePromptCache feeds a UserPromptEvent's verbatim (scrubbed)
@@ -20,16 +22,7 @@ const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 // once-only guard is needed here — unlike the block kinds below, which
 // the rebroadcast finding requires one.
 func accumulatePromptCache(acc *cacheobs.Accumulator, text string) {
-	canon, ok := marshalTextBlock(text)
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel:     "message", // R1: transcripts never expose tools/system
-		Kind:           "text",
-		CanonicalBytes: canon,
-		Role:           "user",
-	}})
+	acc.ObserveText(text, "user")
 }
 
 // accumulateThoughtCache feeds an AgentThoughtBlockUpdatedEvent's
@@ -42,7 +35,7 @@ func accumulateThoughtCache(acc *cacheobs.Accumulator, cacheDone map[string]bool
 	if key != "" && cacheDone[key] {
 		return
 	}
-	canon, ok := marshalTextBlock(text)
+	canon, ok := cacheobs.MarshalTextBlock(text)
 	if !ok {
 		return
 	}
@@ -187,25 +180,6 @@ func accumulateResultCache(acc *cacheobs.Accumulator, ae *agentEventRaw) {
 	}})
 }
 
-// marshalTextBlock produces the deterministic JSON canonical form of a
-// plain text block (a user prompt or an agent thought). Each payload is an
-// explicit STRUCT (never a map) so encoding/json's deterministic field
-// order preserves the R3 byte-stability invariant.
-func marshalTextBlock(text string) ([]byte, bool) {
-	if text == "" {
-		return nil, false
-	}
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "text", Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
-}
-
 // marshalTerminalBlock produces the canonical form of a Terminal block's
 // command + output + status.
 func marshalTerminalBlock(ae *agentEventRaw) ([]byte, bool) {
@@ -305,19 +279,16 @@ func emitCacheObservations(acc *cacheobs.Accumulator, path, sessionID string, li
 			CacheReadTokens:     m.CacheInputTokens,
 			CacheCreationTokens: m.CacheCreateTokens,
 		}
-		if cacheobs.IsZeroUsage(usage) {
-			continue
-		}
 		messageID := fmt.Sprintf("llm:%d:%d", lineStart, i)
-		obs := acc.Emit(path, sessionID, messageID, m.Model, ts, usage, false)
 		// §15.3 boundary: Junie never records which upstream provider
 		// served a given model (its LlmResponseMetadataEvent carries only
 		// a model string), so provider is always "" here and
-		// IsImplicitCacheProvider short-circuits to false — this call is
-		// a no-op today, kept only for consistency with every other
-		// Tier-2 producer's identical three-line overlay.
-		obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", m.Model)
-		out = append(out, obs)
+		// IsImplicitCacheProvider short-circuits to false — the overlay
+		// is a no-op today, kept only for consistency with every other
+		// Tier-2 producer.
+		if obs := acc.EmitTurn(path, sessionID, messageID, m.Model, "", ts, usage); obs != nil {
+			out = append(out, *obs)
+		}
 	}
 	return out
 }

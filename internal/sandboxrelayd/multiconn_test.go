@@ -252,14 +252,15 @@ func TestMultiConnRunSlotsAndIsolation(t *testing.T) {
 	for m.ran.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if n := m.ran.Load(); n != 2 {
-		t.Fatalf("%d executions started for a run with 2 slots", n)
-	}
+	// Every one of the five requests is settled once two run and three
+	// are refused: only then can the execution count no longer grow.
 	st, _ := m.daemon.Run("run-a")
 	deadline = time.Now().Add(3 * time.Second)
 	for st.Refused.Load() < 3 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if n := m.ran.Load(); n != 2 {
+		t.Fatalf("%d executions started for a run with 2 slots", n)
 	}
 	if st.Refused.Load() != 3 {
 		t.Fatalf("refused %d requests past the run's slots, want 3", st.Refused.Load())
@@ -364,20 +365,28 @@ func TestHeartbeatThroughTheHelper(t *testing.T) {
 	}
 }
 
-// slowWriter delays every write after the first `fast` ones.
+// slowWriter delays every write after the first `fast` ones. When dripping
+// is set, it is closed once the first delayed write went out.
 type slowWriter struct {
 	net.Conn
-	fast  int
-	delay time.Duration
-	n     int
+	fast     int
+	delay    time.Duration
+	n        int
+	dripping chan struct{}
+	once     sync.Once
 }
 
 func (w *slowWriter) Write(p []byte) (int, error) {
-	if w.n >= w.fast {
+	slow := w.n >= w.fast
+	if slow {
 		time.Sleep(w.delay)
 	}
 	w.n++
-	return w.Conn.Write(p)
+	n, err := w.Conn.Write(p)
+	if slow && w.dripping != nil {
+		w.once.Do(func() { close(w.dripping) })
+	}
+	return n, err
 }
 
 // TestSlowBodyHoldsNoSlot (P-032): a valid head followed by a body dripped
@@ -394,6 +403,7 @@ func TestSlowBodyHoldsNoSlot(t *testing.T) {
 	br := m.box(t)
 	start := time.Now()
 	dripDone := make(chan error, 1)
+	dripping := make(chan struct{})
 	go func() {
 		c, err := net.Dial("unix", filepath.Join(m.sock, RelaySocketName))
 		if err != nil {
@@ -403,7 +413,7 @@ func TestSlowBodyHoldsNoSlot(t *testing.T) {
 		defer func() { _ = c.Close() }()
 		p := params(sandboxrelay.PurposeBox, fastConn())
 		p.Limits.MaxPayload = 256
-		s, err := sandboxrelay.Dial(&slowWriter{Conn: c, fast: 2, delay: 100 * time.Millisecond}, p, br.RunID, br.BoxSecret)
+		s, err := sandboxrelay.Dial(&slowWriter{Conn: c, fast: 2, delay: 100 * time.Millisecond, dripping: dripping}, p, br.RunID, br.BoxSecret)
 		if err != nil {
 			dripDone <- err
 			return
@@ -416,8 +426,15 @@ func TestSlowBodyHoldsNoSlot(t *testing.T) {
 		_, err = s.Recv(sandboxrelay.StreamHook, sandboxrelay.MaxMessage)
 		dripDone <- err
 	}()
-	// While the body drips, the run's single slot is free.
-	time.Sleep(150 * time.Millisecond)
+	// While the body drips, the run's single slot is free. Wait until the
+	// first delayed frame went out (or the drip ended early).
+	select {
+	case <-dripping:
+	case err := <-dripDone:
+		dripDone <- err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drip never started")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if resp, err := BoxRoundTrip(ctx, m.sock, br, hookReq("beside the drip"), fastConn()); err != nil || string(resp.Stdout) != "beside the drip" {

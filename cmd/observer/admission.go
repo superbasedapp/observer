@@ -533,6 +533,7 @@ func newAdmissionStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "enabled:        %t\n", info.Enabled)
 			fmt.Fprintf(out, "criteria:       %d\n", info.CriteriaCount)
 			fmt.Fprintf(out, "judge hosting:  %s\n", info.JudgeHosting)
+			printAdmissionJudgeEffect(out, obsAdmissionJudgeInEffect(cfg))
 			if info.PolicyHash != "" {
 				fmt.Fprintf(out, "policy hash:    %s\n", info.PolicyHash[:min(12, len(info.PolicyHash))])
 			}

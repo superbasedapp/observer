@@ -61,11 +61,6 @@ const (
 	KindAvailability DocumentKind = "availability"
 )
 
-// KnownDocumentKinds lists every DocumentKind.
-func KnownDocumentKinds() []DocumentKind {
-	return []DocumentKind{KindEntitlements, KindAvailability}
-}
-
 // Valid reports whether k is a known kind.
 func (k DocumentKind) Valid() bool {
 	_, ok := documentKindRuleFor(k)

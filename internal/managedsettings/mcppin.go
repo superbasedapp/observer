@@ -53,40 +53,6 @@ func windowsPinNote(command string, args []string, indent string) string {
 		indent + "nodes.\n\n"
 }
 
-// tomlString renders s as a TOML basic string: `"` and `\` escaped, a
-// control character as \uXXXX (or its short escape), everything else
-// verbatim. For an ordinary value it matches Go's %q byte for byte.
-func tomlString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\b':
-			b.WriteString(`\b`)
-		case '\t':
-			b.WriteString(`\t`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\f':
-			b.WriteString(`\f`)
-		case '\r':
-			b.WriteString(`\r`)
-		default:
-			if r < 0x20 || r == 0x7f {
-				fmt.Fprintf(&b, `\u%04X`, r)
-				continue
-			}
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
 // launchLine renders a command and its args as one space-joined line for a
 // README, matching what the pin runs.
 func launchLine(command string, args []string) string {

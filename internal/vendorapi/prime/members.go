@@ -111,14 +111,7 @@ type membersDoc struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceTeamMembers}, a...)...)
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return strings.TrimSpace(*s)
+	return vendorapi.Drift(SurfaceTeamMembers, format, a...)
 }
 
 func parseTeamMembers(r vendorapi.Response) (vendorapi.Page, error) {
@@ -150,7 +143,7 @@ func parseTeamMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	ids := make([]string, 0, len(*doc.Data))
 	seen := map[string]bool{}
 	for i, m := range *doc.Data {
-		id := str(m.UserID)
+		id := vendorapi.TrimStr(m.UserID)
 		if id == "" || m.Role == nil || m.JoinedAt == nil {
 			return vendorapi.Page{}, drift("data[%d] misses userId, role or joinedAt", i)
 		}
@@ -167,11 +160,11 @@ func parseTeamMembers(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		ids = append(ids, id)
 		attrs := map[string]string{"role": *m.Role, "joined_at": joined.UTC().Format(time.RFC3339)}
-		if e := str(m.UserEmail); e != "" {
+		if e := vendorapi.TrimStr(m.UserEmail); e != "" {
 			attrs["email"] = e
 		}
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
-			Type: MemberType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: id}, DisplayName: str(m.UserName), Attrs: attrs,
+			Type: MemberType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: id}, DisplayName: vendorapi.TrimStr(m.UserName), Attrs: attrs,
 		})
 	}
 	if vendorapi.OffsetLoop(r.Cursor, ids) {

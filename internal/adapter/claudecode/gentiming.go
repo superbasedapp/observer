@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -157,7 +158,7 @@ func classifyRecord(line rawLine, inWindow bool) ccTimingLine {
 	tl := ccTimingLine{
 		UUID:      line.UUID,
 		Parent:    line.ParentUuid,
-		TS:        parseTimestamp(line.Timestamp),
+		TS:        parseutil.ParseRFC3339(line.Timestamp),
 		Sidechain: line.IsSidechain,
 		InWindow:  inWindow,
 	}
@@ -516,7 +517,7 @@ func applyGenTiming(path string, fromOffset int64, window []ccTimingLine, events
 			continue
 		}
 		root, remote := resolveRoot(lm.line.Cwd)
-		ev := tokenEventFromLine(path, lm.line, lm.msg, parseTimestamp(lm.line.Timestamp), root, remote)
+		ev := tokenEventFromLine(path, lm.line, lm.msg, parseutil.ParseRFC3339(lm.line.Timestamp), root, remote)
 		stampGen(&ev, sp.Ms)
 		// The row was inserted by an earlier parse: stamp it, never
 		// re-insert it (store.stampGenTiming).

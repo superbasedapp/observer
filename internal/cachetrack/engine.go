@@ -189,8 +189,8 @@ type ObserveBlock struct {
 	RawBytes []byte
 	// MarkerPresent indicates that this block carries an
 	// explicit cache_control marker (Tier-1 only). Tier-2
-	// leaves it false; the assumedBreakpoints model then
-	// drives breakpoint placement.
+	// leaves it false. (assumedBreakpoints holds the Tier-2
+	// breakpoint model, but the engine does not consume it yet.)
 	MarkerPresent bool
 	// TTL is the marker's TTL tier when MarkerPresent=true;
 	// otherwise unset.
@@ -236,8 +236,9 @@ type ObserveInput struct {
 	Blocks []ObserveBlock
 
 	// Breakpoints (Tier 1 only) names the explicit marker
-	// positions in Blocks. Tier-2 leaves this nil and the
-	// engine consults assumedBreakpoints. Each Breakpoint's
+	// positions in Blocks. Tier-2 leaves this nil. (The
+	// assumedBreakpoints model is reserved for Tier-2 and not
+	// consumed by the engine yet.) Each Breakpoint's
 	// BlockIndex references Blocks[i].
 	Breakpoints []ObserveBreakpoint
 
@@ -591,22 +592,6 @@ func (e *Engine) ObserveTurn(in ObserveInput) ObserveResult {
 	sess.lastTouch = in.Now
 
 	return out
-}
-
-// SessionEstimateEMA returns the per-session R6 calibration
-// scaling factor for (sessionID, model, scope). Returns a zero
-// value when no observations have been recorded for the tuple.
-// Read-only — for the doctor / forecaster surface.
-func (e *Engine) SessionEstimateEMA(sessionID, model, scope string) SessionEMA {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	s, ok := e.sessions[engineSessionKey{SessionID: sessionID, Model: model, Scope: scope}]
-	if !ok {
-		return SessionEMA{}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.model.EstimateEMA
 }
 
 // getOrCreateSession returns the per-session state, creating it

@@ -21,7 +21,7 @@ func TestCloudAutoSyncDefaultMatchesItsDocs(t *testing.T) {
 		re   *regexp.Regexp
 	}{
 		// The AutoSyncIntervalMinutes field comment in this package.
-		{"config.go", regexp.MustCompile(`\(CloudAutoSyncDefaultMinutes, (\d+)\)`)},
+		{"cloud.go", regexp.MustCompile(`\(CloudAutoSyncDefaultMinutes, (\d+)\)`)},
 		// The Settings -> Cloud Intelligence interval help.
 		{
 			filepath.Join("..", "..", "web", "src", "pages", "settings", "CloudIntelligenceSection.tsx"),

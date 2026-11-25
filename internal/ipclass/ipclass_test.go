@@ -43,6 +43,14 @@ func TestClassify(t *testing.T) {
 		{"64:ff9b::808:808", ClassPublic},      // NAT64-wrapped 8.8.8.8
 		{"2002:0a00:0001::", ClassPrivate},     // 6to4-wrapped 10.0.0.1
 		{"2002:a9fe:a9fe::", ClassForbidden},   // 6to4-wrapped metadata
+		// Teredo (2001::/32): classified as the client address in the low 32
+		// bits, every bit inverted (RFC 4380 section 4). Server 65.54.227.120.
+		{"2001:0:4136:e378:8000:63bf:80ff:fffe", ClassLoopback},  // Teredo-wrapped 127.0.0.1
+		{"2001:0:4136:e378:8000:63bf:5601:5601", ClassForbidden}, // Teredo-wrapped metadata
+		{"2001:0:4136:e378:8000:63bf:f5ff:fffe", ClassPrivate},   // Teredo-wrapped 10.0.0.1
+		{"2001:0:4136:e378:8000:63bf:9bbf:fffe", ClassPrivate},   // Teredo-wrapped 100.64.0.1 (CGNAT)
+		{"2001:0:4136:e378:8000:63bf:f7f7:f7f7", ClassPublic},    // Teredo-wrapped 8.8.8.8
+		{"2001:db8::1", ClassPublic},                             // 2001::/32 only: a neighbour is not Teredo
 	}
 	for _, tc := range cases {
 		ip := net.ParseIP(tc.ip)
@@ -93,6 +101,8 @@ func TestDetail(t *testing.T) {
 		{"::ffff:169.254.169.254", KindMetadata},
 		{"64:ff9b::a9fe:a9fe", KindMetadata},
 		{"2002:a9fe:a9fe::", KindMetadata},
+		{"2001:0:4136:e378:8000:63bf:5601:5601", KindMetadata}, // Teredo client 169.254.169.254
+		{"2001:0:4136:e378:8000:63bf:9b9b:9b37", KindMetadata}, // Teredo client 100.100.100.200
 		// Link-local that is not metadata.
 		{"169.254.0.1", KindLinkLocal},
 		{"fe80::1", KindLinkLocal},
@@ -108,7 +118,9 @@ func TestDetail(t *testing.T) {
 		{"172.16.5.5", KindPrivate},
 		{"192.168.1.1", KindPrivate},
 		{"::ffff:10.0.0.1", KindPrivate},
-		{"64:ff9b::a00:1", KindPrivate}, // NAT64-wrapped 10.0.0.1
+		{"64:ff9b::a00:1", KindPrivate},                        // NAT64-wrapped 10.0.0.1
+		{"2001:0:4136:e378:8000:63bf:3f57:fefe", KindPrivate},  // Teredo-wrapped 192.168.1.1
+		{"2001:0:4136:e378:8000:63bf:80ff:fffe", KindLoopback}, // Teredo-wrapped 127.0.0.1
 		// CGNAT (minus its metadata address, tested above).
 		{"100.64.0.1", KindCGNAT},
 		{"100.127.255.255", KindCGNAT},
@@ -121,7 +133,8 @@ func TestDetail(t *testing.T) {
 		// Public.
 		{"8.8.8.8", KindPublic},
 		{"2606:4700::1111", KindPublic},
-		{"64:ff9b::808:808", KindPublic}, // NAT64-wrapped 8.8.8.8
+		{"64:ff9b::808:808", KindPublic},                     // NAT64-wrapped 8.8.8.8
+		{"2001:0:4136:e378:8000:63bf:f7f7:f7f7", KindPublic}, // Teredo-wrapped 8.8.8.8
 	}
 	for _, tc := range cases {
 		ip := net.ParseIP(tc.ip)
@@ -171,6 +184,7 @@ func TestUnwrap(t *testing.T) {
 		{"64:ff9b::a01:203", "10.1.2.3"},
 		{"2002:a01:203::", "10.1.2.3"},
 		{"2002:a01:203:ffff::1", "10.1.2.3"},
+		{"2001:0:4136:e378:8000:63bf:f5fe:fdfc", "10.1.2.3"}, // Teredo: the client, de-obfuscated
 		{"::a01:203", "::a01:203"},
 		{"::1", "::1"},
 		{"fd00:ec2::254", "fd00:ec2::254"},

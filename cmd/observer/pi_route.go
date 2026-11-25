@@ -4,9 +4,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/credfile"
 )
 
 // piObserverModels is the observer provider's model list, in order: the
@@ -301,4 +304,40 @@ func piQualified(provider, model string) string {
 		return model
 	}
 	return provider + "/" + model
+}
+
+// piFileRoutesToProxy names pi's models.json when, as it stands before this
+// launch writes anything, a pi started WITHOUT the launcher's `--provider`
+// would still send its requests to the proxy's listener at proxyURL: the
+// settings.json defaultProvider names a models.json provider whose baseUrl
+// reaches that listener (an `observer` provider of the operator's own, or a
+// leftover session entry). Nil otherwise or on any read failure, and the
+// proxy-down gate then neutralizes. Only that one member is read.
+func piFileRoutesToProxy(agentDir, proxyURL string) []string {
+	if agentDir == "" {
+		return nil
+	}
+	def, _ := readPiDefaults(agentDir)
+	if def == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(agentDir, "models.json")) //nolint:gosec // pi's own models file
+	if err != nil {
+		return nil
+	}
+	return piFileRoutesToProxyIn(data, def, proxyURL)
+}
+
+// piFileRoutesToProxyIn is piFileRoutesToProxy over models.json's bytes and
+// the default provider's name. Pure.
+func piFileRoutesToProxyIn(models []byte, defaultProvider, proxyURL string) []string {
+	raw, ok, err := credfile.ObjectPath(models, []string{"providers", defaultProvider, "baseUrl"})
+	if err != nil || !ok {
+		return nil
+	}
+	var base string
+	if json.Unmarshal(raw, &base) != nil || !proxyListenerURL(base, proxyURL) {
+		return nil
+	}
+	return []string{fmt.Sprintf("pi's default provider %q (%s)", defaultProvider, piModelsDisplay)}
 }

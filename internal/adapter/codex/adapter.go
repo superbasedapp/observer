@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
+	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/codexpatch"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
@@ -906,58 +908,6 @@ type tokenUsage struct {
 // megabytes; treat it as an immutable constant everywhere else.
 var maxRecordBytes int64 = 64 * 1024 * 1024
 
-// readRecord reads one '\n'-terminated record from r under the maxBytes
-// memory-safety bound, growing its buffer only as far as the bound
-// (never loading a pathologically large line whole). It returns the
-// record bytes INCLUDING the terminating '\n' when one was present, the
-// total bytes consumed from the stream for the record (used to advance
-// the byte cursor even when the record is skipped), whether the record
-// exceeded maxBytes (in which case data is nil and its bytes have been
-// fully drained), and the terminating read error (io.EOF on the final
-// read). A clean end of stream yields consumed == 0 (and io.EOF).
-//
-// The err return is the terminator signal callers rely on: bufio's
-// ReadSlice reports a nil error the moment it locates '\n' and io.EOF
-// only when the stream ends before one is found. So a record returned
-// with consumed > 0 AND err == io.EOF is an UNTERMINATED trailing
-// fragment (codex has not finished writing it); one returned with
-// err == nil is '\n'-terminated and complete. Callers use this to defer
-// unterminated trailing records uniformly — see ParseSessionFile.
-//
-// This replaces bufio.Scanner across the codex parse paths so a record
-// larger than the old fixed token cap degrades to a per-record skip
-// instead of a whole-file failure, while preserving ParseSessionFile's
-// byte-cursor semantics: consumed is the exact terminator-inclusive
-// length, so NewOffset arithmetic is unchanged on '\n'-terminated files
-// (and is CRLF-correct, unlike the old +1 approximation).
-func readRecord(r *bufio.Reader, maxBytes int64) (data []byte, consumed int64, oversized bool, err error) {
-	var buf []byte
-	for {
-		frag, readErr := r.ReadSlice('\n')
-		consumed += int64(len(frag))
-		if !oversized {
-			if int64(len(buf))+int64(len(frag)) > maxBytes {
-				// The record crossed the bound: stop accumulating, drop
-				// what we have, and keep draining to the terminator so the
-				// cursor advances past the whole record.
-				oversized = true
-				buf = nil
-			} else {
-				// frag aliases r's internal buffer (valid only until the
-				// next read); append copies it out immediately.
-				buf = append(buf, frag...)
-			}
-		}
-		if errors.Is(readErr, bufio.ErrBufferFull) {
-			continue
-		}
-		if oversized {
-			return nil, consumed, true, readErr
-		}
-		return buf, consumed, false, readErr
-	}
-}
-
 // ParseSessionFile implements adapter.Adapter. It delegates to
 // parseSessionFile (the ~20-site internal parser, unchanged since it
 // still hardcodes models.ToolCodex throughout) and then retags every
@@ -1384,7 +1334,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, ctx.Err()
 		}
-		lineStr, consumed, oversized, readErr := readRecord(reader, maxRecordBytes)
+		lineStr, consumed, oversized, readErr := adapter.ReadRecord(reader, maxRecordBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, fmt.Errorf("codex.ParseSessionFile: read %s: %w", path, readErr)
@@ -1392,7 +1342,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 		if consumed == 0 {
 			break // clean end of stream
 		}
-		// UNIFIED TRAILING-RECORD DEFERRAL RULE. readRecord returns
+		// UNIFIED TRAILING-RECORD DEFERRAL RULE. adapter.ReadRecord returns
 		// io.EOF exactly when the record it just read carried NO '\n'
 		// terminator: bufio.Reader.ReadSlice reports a nil error the
 		// moment it locates the delimiter and io.EOF only when the stream
@@ -1480,7 +1430,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 		bytesRead = nextOffset
 		res.NewOffset = nextOffset
 
-		ts := parseTimestamp(line.Timestamp)
+		ts := parseutil.ParseRFC3339(line.Timestamp)
 		payloadType := payloadType(line.Payload)
 		// Generation timing (S10-SPEED): project every record for the span
 		// rule in gentiming.go.
@@ -4031,7 +3981,7 @@ func decodeOutput(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	trimmed := bytesTrimSpace(raw)
+	trimmed := transcriptutil.TrimJSONSpace(raw)
 	if len(trimmed) == 0 {
 		return ""
 	}
@@ -4276,40 +4226,6 @@ func errorIfFailed(success bool, output string) string {
 	return truncate(output, 2048)
 }
 
-func bytesTrimSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end {
-		c := b[start]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			start++
-			continue
-		}
-		break
-	}
-	for end > start {
-		c := b[end-1]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			end--
-			continue
-		}
-		break
-	}
-	return b[start:end]
-}
-
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	return time.Time{}
-}
-
 func sessionIDFromPath(path string) string {
 	base := filepath.Base(path)
 	base = strings.TrimSuffix(base, ".jsonl")
@@ -4440,7 +4356,7 @@ func (ps *prefixScan) advance(f *os.File, until int64) bool {
 	reader := bufio.NewReaderSize(f, 64*1024)
 	pre, bytesRead, lineNum, out, track := ps.pre, ps.bytesRead, ps.lineNum, ps.out, ps.track
 	for {
-		lineStr, consumed, oversized, err := readRecord(reader, maxRecordBytes)
+		lineStr, consumed, oversized, err := adapter.ReadRecord(reader, maxRecordBytes)
 		if err != nil && !errors.Is(err, io.EOF) {
 			// Best-effort prefetch: a mid-scan read error just stops the
 			// context reconstruction early. ok stays true — the main
@@ -4451,7 +4367,7 @@ func (ps *prefixScan) advance(f *os.File, until int64) bool {
 			break
 		}
 		// Same unified deferral rule as ParseSessionFile: an io.EOF from
-		// readRecord marks an unterminated final fragment (no '\n'). The
+		// adapter.ReadRecord marks an unterminated final fragment (no '\n'). The
 		// live parse defers it whole, so prefetch must NOT count or apply
 		// it either — line-number lockstep requires prefetch classify the
 		// exact same set of terminated records the parser does.
@@ -4537,7 +4453,7 @@ func (ps *prefixScan) advance(f *os.File, until int64) bool {
 				}
 				// Same gate + same decision as the live parse, state only.
 				if rl := parseModernRateLimits(line.Payload); rl != nil && (rl.Primary != nil || rl.Secondary != nil) {
-					codexRateLimitEmit(&pre.rateLimits, rl, parseTimestamp(line.Timestamp))
+					codexRateLimitEmit(&pre.rateLimits, rl, parseutil.ParseRFC3339(line.Timestamp))
 				}
 			}
 		case "session_configured", "session_start", "turn_context":

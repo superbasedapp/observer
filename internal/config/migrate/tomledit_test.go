@@ -17,8 +17,8 @@ func TestParseDottedKey(t *testing.T) {
 		{"single", []string{"single"}},
 	}
 	for _, c := range cases {
-		if got := parseDottedKey(c.in); !reflect.DeepEqual(got, c.want) {
-			t.Errorf("parseDottedKey(%q) = %v, want %v", c.in, got, c.want)
+		if got := SplitDottedKey(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("SplitDottedKey(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }

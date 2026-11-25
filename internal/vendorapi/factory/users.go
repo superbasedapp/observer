@@ -1,8 +1,6 @@
 package factory
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -148,69 +146,59 @@ var userMetrics = []userMetric{
 	{"assistant_messages", UnitCount, false, func(r userRow) *num { return r.AssistantMessages }},
 }
 
-func driftAt(s vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
-}
-
-func decodeStrict(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceUsers
 	if r.Status != 200 {
-		return vendorapi.Page{}, driftAt(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc usersDoc
-	if err := decodeStrict(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, driftAt(s, "body does not decode as the documented envelope")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented envelope")
 	}
 	if doc.Data == nil || doc.Meta == nil {
-		return vendorapi.Page{}, driftAt(s, "required field data or meta is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field data or meta is missing")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.Data)}
 	if doc.Meta.HasMore != nil && *doc.Meta.HasMore {
 		if doc.Meta.NextCursor == nil || !cursorRE.MatchString(*doc.Meta.NextCursor) {
-			return vendorapi.Page{}, driftAt(s, "meta.has_more is true without a usable next_cursor")
+			return vendorapi.Page{}, vendorapi.Drift(s, "meta.has_more is true without a usable next_cursor")
 		}
 		if r.Cursor != "" && *doc.Meta.NextCursor == r.Cursor {
-			return vendorapi.Page{}, driftAt(s, "meta.next_cursor repeats the cursor the page was asked with")
+			return vendorapi.Page{}, vendorapi.Drift(s, "meta.next_cursor repeats the cursor the page was asked with")
 		}
 		page.NextCursor = *doc.Meta.NextCursor
 	}
 	seen := map[string]bool{}
 	for i, row := range *doc.Data {
 		if row.UserID == nil || strings.TrimSpace(*row.UserID) == "" || row.Date == nil {
-			return vendorapi.Page{}, driftAt(s, "data[%d] misses user_id or date", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] misses user_id or date", i)
 		}
 		d, err := time.Parse(dateLayout, *row.Date)
 		if err != nil {
-			return vendorapi.Page{}, driftAt(s, "data[%d].date is not YYYY-MM-DD", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].date is not YYYY-MM-DD", i)
 		}
 		key := *row.UserID + "|" + *row.Date
 		if seen[key] {
-			return vendorapi.Page{}, driftAt(s, "data[%d] repeats a user and day", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] repeats a user and day", i)
 		}
 		seen[key] = true
 		// The documented user_email resolves to a member through the seam's
 		// identity resolution; a null email keeps the vendor user id, held.
 		kind, id := "user_id", strings.TrimSpace(*row.UserID)
-		if e := strings.TrimSpace(str(row.UserEmail)); e != "" {
+		if e := strings.TrimSpace(vendorapi.Str(row.UserEmail)); e != "" {
 			kind, id = "email", e
 		}
 		for _, m := range userMetrics {
 			n := m.get(row)
 			if n == nil {
 				if m.required {
-					return vendorapi.Page{}, driftAt(s, "data[%d] misses %s", i, m.metric)
+					return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] misses %s", i, m.metric)
 				}
 				continue
 			}
 			v, ok := vendorapi.DecimalMicros(string(*n), 0)
 			if !ok || v < 0 {
-				return vendorapi.Page{}, driftAt(s, "data[%d].%s is not a non-negative number", i, m.metric)
+				return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].%s is not a non-negative number", i, m.metric)
 			}
 			page.Facts = append(page.Facts, vendorapi.FactRow{
 				IntervalStart: d, IntervalEnd: d.Add(day), SourceTZ: "UTC", CoverageDomain: UsersDomain,
@@ -219,13 +207,6 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 	}
 	return page, nil
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // usersKnownPaths are the documented response paths (the corpus field ledger

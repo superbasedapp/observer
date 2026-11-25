@@ -187,10 +187,3 @@ func policyBundleSignedMessage(b PolicyBundle) []byte {
 func SignPolicyBundleEnvelope(priv ed25519.PrivateKey, b PolicyBundle) string {
 	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, policyBundleSignedMessage(b)))
 }
-
-// CheckPolicyBinding reports whether an envelope's binding (nil = unbound)
-// matches the binding the node expects. A nil binding passes here; whether an
-// unbound envelope is acceptable at all is the caller's downgrade decision.
-func CheckPolicyBinding(got *PolicyBinding, want PolicyBinding) bool {
-	return got == nil || *got == want
-}

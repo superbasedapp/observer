@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/procgroup"
 )
 
 // HarnessDriver drives one benchmark attempt's harness subprocess and returns
@@ -98,7 +100,7 @@ func (d codexDriver) Drive(ctx context.Context, req DriveRequest) (DriveResult, 
 	cmd.Dir = req.WorkspaceDir
 	cmd.Stdin = nil // < /dev/null — codex exec is non-interactive
 	cmd.Env = append(benchmarkTrustChildEnv(os.Environ(), req.TrustEnv), "CODEX_HOME="+req.HomeDir)
-	setProcGroup(cmd)
+	procgroup.Set(cmd)
 	// Kill the whole process group on ctx cancellation so a hung grandchild
 	// (app-server) can't outlive the cell (plan §3.2 step 2).
 	cmd.Cancel = func() error { return killProcGroup(cmd) }
@@ -267,7 +269,7 @@ func (d claudeCodeDriver) Drive(ctx context.Context, req DriveRequest) (DriveRes
 	cmd.Dir = req.WorkspaceDir
 	cmd.Stdin = nil // < /dev/null — print mode is non-interactive
 	cmd.Env = append(benchmarkTrustChildEnv(os.Environ(), req.TrustEnv), extraEnv...)
-	setProcGroup(cmd)
+	procgroup.Set(cmd)
 	// Kill the whole process group on ctx cancellation so a hung tool child
 	// can't outlive the cell (re-spike §6.1 / plan §3.2 step 2).
 	cmd.Cancel = func() error { return killProcGroup(cmd) }

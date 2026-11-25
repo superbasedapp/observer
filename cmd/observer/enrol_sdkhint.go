@@ -22,9 +22,11 @@ import (
 // "this organization does not offer SDK keys yet". The hint now names that
 // command only when the organization said, in its enrol response, that it
 // mints member keys (orgcontract.EnrollResponse.SDKKeys); when it said it
-// does not, the hint sends the member to an admin; when it did not say (an
-// older server, or `observer org status`, which has no enrol response), the
-// hint says both. It never decides from the server's host name.
+// does not, the hint sends the member to an admin and names what to do with
+// the key the admin issues (`observer sdk use-key`, or the app's environment;
+// lane sdk-use-key); when it did not say (an older server, or `observer org
+// status`, which has no enrol response), the hint says both. It never decides
+// from the server's host name.
 
 // sdkKeyHintFacts is what the hint reads.
 type sdkKeyHintFacts struct {
@@ -59,7 +61,9 @@ var sdkKeyHintRules = []sdkKeyHintRule{
 	}},
 	{name: "admin_only", when: func(f sdkKeyHintFacts) bool { return f.sdkKeys == orgcontract.SDKKeysAdminOnly }, lines: []string{
 		"AI Apps: this organization does not give members their own SDK keys yet. To send your apps' data to it,",
-		"  ask an admin for an SDK key (Machine identities, in the organization's dashboard settings).",
+		"  ask an admin for an SDK key and its gateway address (Machine identities, in the organization's dashboard settings),",
+		"  then run `observer sdk use-key --gateway-url <address>` and paste the key when asked (or use Settings > AI Apps >",
+		"  Use an SDK key from my admin), or give one app SUPERBASED_API_KEY, SUPERBASED_ORG_URL and SUPERBASED_DESTINATION=both.",
 	}},
 	{name: "not_on_plan", when: func(f sdkKeyHintFacts) bool { return f.sdkKeys == orgcontract.SDKKeysNotOnPlan }, lines: []string{
 		"AI Apps: this organization's plan does not include AI Apps, so no SDK keys are available to its members yet.",
@@ -67,7 +71,8 @@ var sdkKeyHintRules = []sdkKeyHintRule{
 	}},
 	{name: "unknown", when: func(sdkKeyHintFacts) bool { return true }, lines: []string{
 		"AI Apps: your SDK key is separate from this enrolment. If your organization gives members their own keys,",
-		"  `observer sdk sign-in` gets yours; if it says they are not offered, ask an admin for an SDK key.",
+		"  `observer sdk sign-in` gets yours; if it says they are not offered, ask an admin for an SDK key and",
+		"  install it with `observer sdk use-key --gateway-url <address>`.",
 	}},
 }
 

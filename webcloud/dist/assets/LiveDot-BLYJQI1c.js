@@ -1,0 +1,1 @@
+import{ab as e,a as r}from"./index-CQ_bvTMs.js";const n={sm:"h-1.5 w-1.5",md:"",lg:"h-2.5 w-2.5"};function d(s){return s&&n[s]||""}function c({tone:s="success",still:a,label:t,size:o="md",className:i}){return e.jsx("span",{className:r("sb-live-dot",d(o),i),"data-tone":s,"data-still":a||void 0,role:t?"status":void 0,"aria-label":t,"aria-hidden":t?void 0:!0})}export{c as L};

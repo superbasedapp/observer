@@ -346,6 +346,9 @@ type ReasoningConvergeBackfill struct {
 	ExcerptsDeleted       int `json:"excerpts_deleted"`
 	FailureContextDeleted int `json:"failure_context_deleted"`
 	ReferencesNulled      int `json:"references_nulled"`
+	// DerivedRowsDeleted counts the file_changes and task_transitions rows
+	// keyed to a deleted row, deleted with it.
+	DerivedRowsDeleted int `json:"derived_rows_deleted"`
 
 	PerTool []ReasoningConvergeToolStat `json:"per_tool"`
 }
@@ -463,6 +466,7 @@ func backfillReasoningConverge(ctx context.Context, db *sql.DB, apply, discardUn
 		res.ExcerptsDeleted = counts.excerpts
 		res.FailureContextDeleted = counts.failureContext
 		res.ReferencesNulled = counts.referencesNulled
+		res.DerivedRowsDeleted = counts.derivedDeleted
 	} else {
 		counts, err := countReasoningDependents(ctx, db, toDelete)
 		if err != nil {
@@ -471,6 +475,7 @@ func backfillReasoningConverge(ctx context.Context, db *sql.DB, apply, discardUn
 		res.ExcerptsDeleted = counts.excerpts
 		res.FailureContextDeleted = counts.failureContext
 		res.ReferencesNulled = counts.referencesNulled
+		res.DerivedRowsDeleted = counts.derivedDeleted
 	}
 
 	if out != nil {
@@ -584,6 +589,18 @@ type reasoningDependentCounts struct {
 	excerpts         int
 	failureContext   int
 	referencesNulled int
+	derivedDeleted   int
+}
+
+// reasoningDerivedRows are the rows derived from an action that go WITH it
+// (MISC2-02): lines-of-code counts and todo status changes. Neither table
+// has a foreign key to actions, so a bare action delete left them as
+// orphans; internal/store's component purge and internal/retention delete
+// them with their action, and so does this pass. Migration 079's shipped
+// protocol (reasoningNullRefs) predates both tables and is unchanged.
+var reasoningDerivedRows = []struct{ table, column string }{
+	{"file_changes", "action_id"},
+	{"task_transitions", "action_id"},
 }
 
 // reasoningNullRefs is migration 079's NULL-the-reference list, verbatim:
@@ -644,6 +661,13 @@ func countReasoningDependents(ctx context.Context, db *sql.DB, ids []int64) (rea
 				return c, fmt.Errorf("backfill reasoning-converge: count %s: %w", ref.table, err)
 			}
 			c.referencesNulled += n
+		}
+		for _, d := range reasoningDerivedRows {
+			if err := db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM `+d.table+` WHERE `+d.column+` IN (`+ph+`)`, args...).Scan(&n); err != nil {
+				return c, fmt.Errorf("backfill reasoning-converge: count %s: %w", d.table, err)
+			}
+			c.derivedDeleted += n
 		}
 	}
 	return c, nil
@@ -720,6 +744,19 @@ func applyReasoningConvergence(ctx context.Context, db *sql.DB, carries []reason
 			}
 		}
 
+		for _, d := range reasoningDerivedRows {
+			//nolint:gosec // G202: d.table / d.column come from the code-constant
+			// reasoningDerivedRows table; ids bind via args.
+			r, err := tx.ExecContext(ctx,
+				`DELETE FROM `+d.table+` WHERE `+d.column+` IN (`+ph+`)`, args...)
+			if err != nil {
+				return c, fmt.Errorf("backfill reasoning-converge: delete %s: %w", d.table, err)
+			}
+			if n, err := r.RowsAffected(); err == nil {
+				c.derivedDeleted += int(n)
+			}
+		}
+
 		//nolint:gosec // G202: ph is a generated `?` placeholder run; ids bind via args.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE id IN (`+ph+`)`, args...); err != nil {
 			return c, fmt.Errorf("backfill reasoning-converge: delete actions: %w", err)
@@ -757,8 +794,8 @@ func writeReasoningConvergeReport(out io.Writer, res ReasoningConvergeBackfill) 
 	fmt.Fprintf(out, "  retained - turn boundary reached before a successor: %d\n", res.RetainedTurnBoundary)
 	fmt.Fprintf(out, "  retained - no successor in the session: %d\n", res.RetainedNoSuccessor)
 	fmt.Fprintf(out, "  skipped - raw_tool_output diverges from target (never touched): %d\n", res.SkippedDivergent)
-	fmt.Fprintf(out, "  %s: %d action row(s), %d action_excerpts, %d failure_context, %d reference(s) NULLed\n",
-		delVerb, res.RowsDeleted, res.ExcerptsDeleted, res.FailureContextDeleted, res.ReferencesNulled)
+	fmt.Fprintf(out, "  %s: %d action row(s), %d action_excerpts, %d failure_context, %d file_changes/task_transitions, %d reference(s) NULLed\n",
+		delVerb, res.RowsDeleted, res.ExcerptsDeleted, res.FailureContextDeleted, res.DerivedRowsDeleted, res.ReferencesNulled)
 	if len(res.PerTool) > 0 {
 		fmt.Fprintf(out, "  per tool (examined / carried / preserved / unresolved / deleted):\n")
 		for _, t := range res.PerTool {

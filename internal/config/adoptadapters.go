@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/config/migrate"
 )
 
 // AdoptDefaultsRemediationCmd is the one command that fixes the
@@ -72,8 +75,9 @@ type AdoptResult struct {
 // posture.
 //
 // Implementation note: internal/config/migrate's tomledit.go document/
-// analyze machinery is intentionally NOT reused here. Its types and
-// helpers (document, meta, parseDocument, upsertScalar, …) are
+// analyze machinery is intentionally NOT reused here (only its exported
+// line and key helpers SplitLines, JoinLines, HeaderPath and
+// SplitDottedKey are). Its document type and upsertScalar are
 // unexported to that package, and — more fundamentally — upsertScalar
 // explicitly refuses to touch array values (scalarSafe rejects any rhs
 // starting with '[' or '{'), since it only ever moves a scalar
@@ -83,7 +87,7 @@ type AdoptResult struct {
 // this file carries its own small, self-contained, quote-aware line
 // scanner scoped to exactly this one key.
 func AdoptEnabledAdapters(tomlBody string, defaults []string) (newBody string, res AdoptResult, err error) {
-	lines, trailingNL := splitAdoptLines(tomlBody)
+	lines, trailingNL := migrate.SplitLines(tomlBody)
 
 	keyLine, eqPos, found := findEnabledAdaptersKey(lines)
 	if !found {
@@ -135,7 +139,7 @@ func AdoptEnabledAdapters(tomlBody string, defaults []string) (newBody string, r
 
 	newLines := appendToArray(lines, startLine, endLine, endCol, quoted)
 	res.Changed = true
-	return joinAdoptLines(newLines, trailingNL), res, nil
+	return migrate.JoinLines(newLines, trailingNL), res, nil
 }
 
 // AdoptEnabledAdaptersFile is the I/O boundary for `observer config
@@ -176,30 +180,6 @@ func AdoptEnabledAdaptersFile(path string, defaults []string) (AdoptResult, erro
 	return res, nil
 }
 
-// splitAdoptLines / joinAdoptLines mirror migrate's tomledit
-// parseDocument/render trailing-newline handling (kept in step so
-// round-tripping an unchanged file is byte-identical), duplicated
-// locally since those helpers are unexported to package migrate.
-func splitAdoptLines(text string) (lines []string, trailingNL bool) {
-	trailingNL = strings.HasSuffix(text, "\n")
-	body := text
-	if trailingNL {
-		body = body[:len(body)-1]
-	}
-	if body == "" && !trailingNL {
-		return nil, trailingNL
-	}
-	return strings.Split(body, "\n"), trailingNL
-}
-
-func joinAdoptLines(lines []string, trailingNL bool) string {
-	s := strings.Join(lines, "\n")
-	if trailingNL {
-		s += "\n"
-	}
-	return s
-}
-
 // findEnabledAdaptersKey scans lines tracking the current [table]
 // context and returns the line/column of the '=' on the
 // enabled_adapters key declared under [observer.watch] — either via an
@@ -215,9 +195,9 @@ func findEnabledAdaptersKey(lines []string) (lineIdx, eqPos int, found bool) {
 		case t == "" || strings.HasPrefix(t, "#"):
 			continue
 		case strings.HasPrefix(t, "[["):
-			curTable = adoptDottedKey(adoptHeaderInner(t, true))
+			curTable = migrate.HeaderPath(t, true)
 		case strings.HasPrefix(t, "["):
-			curTable = adoptDottedKey(adoptHeaderInner(t, false))
+			curTable = migrate.HeaderPath(t, false)
 		default:
 			eq := strings.IndexByte(raw, '=')
 			if eq < 0 {
@@ -227,7 +207,7 @@ func findEnabledAdaptersKey(lines []string) (lineIdx, eqPos int, found bool) {
 			if key == "" {
 				continue
 			}
-			segs := adoptDottedKey(key)
+			segs := migrate.SplitDottedKey(key)
 			if len(segs) == 0 {
 				continue
 			}
@@ -237,82 +217,12 @@ func findEnabledAdaptersKey(lines []string) (lineIdx, eqPos int, found bool) {
 			full := make([]string, 0, len(curTable)+len(segs)-1)
 			full = append(full, curTable...)
 			full = append(full, segs[:len(segs)-1]...)
-			if adoptPathEqual(full, []string{"observer", "watch"}) {
+			if slices.Equal(full, []string{"observer", "watch"}) {
 				return i, eq, true
 			}
 		}
 	}
 	return 0, 0, false
-}
-
-// adoptHeaderInner extracts the dotted path text from a [table] or
-// [[array.table]] header line (best-effort — same tolerance as
-// tomledit's parseHeaderPath: a miss only means the header isn't
-// recognised, never a wrong edit).
-func adoptHeaderInner(trimmed string, array bool) string {
-	open, closeTok := "[", "]"
-	if array {
-		open, closeTok = "[[", "]]"
-	}
-	inner := trimmed[len(open):]
-	if idx := strings.Index(inner, closeTok); idx >= 0 {
-		inner = inner[:idx]
-	}
-	return inner
-}
-
-// adoptDottedKey splits a dotted TOML key/table path on '.' outside
-// quotes, trimming quotes/space from each segment.
-func adoptDottedKey(s string) []string {
-	var segs []string
-	var b strings.Builder
-	inBasic, inLiteral := false, false
-	flush := func() {
-		seg := strings.TrimSpace(b.String())
-		seg = strings.Trim(seg, `"'`)
-		if seg != "" {
-			segs = append(segs, seg)
-		}
-		b.Reset()
-	}
-	for _, r := range s {
-		switch {
-		case inBasic:
-			if r == '"' {
-				inBasic = false
-			}
-			b.WriteRune(r)
-		case inLiteral:
-			if r == '\'' {
-				inLiteral = false
-			}
-			b.WriteRune(r)
-		case r == '"':
-			inBasic = true
-			b.WriteRune(r)
-		case r == '\'':
-			inLiteral = true
-			b.WriteRune(r)
-		case r == '.':
-			flush()
-		default:
-			b.WriteRune(r)
-		}
-	}
-	flush()
-	return segs
-}
-
-func adoptPathEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // locateArrayBounds scans forward from (keyLine, eqPos) for a literal

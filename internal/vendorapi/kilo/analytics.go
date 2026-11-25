@@ -175,31 +175,31 @@ func parseTimeseries(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	if d.Timeseries == nil || d.EffectiveGranularity == nil {
-		return vendorapi.Page{}, drift(s, "required field timeseries or effectiveGranularity is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field timeseries or effectiveGranularity is missing")
 	}
 	if *d.EffectiveGranularity != "day" {
-		return vendorapi.Page{}, drift(s, "effectiveGranularity %q is not the requested day", *d.EffectiveGranularity)
+		return vendorapi.Page{}, vendorapi.Drift(s, "effectiveGranularity %q is not the requested day", *d.EffectiveGranularity)
 	}
 	page := vendorapi.Page{SourceRecords: 1}
 	seen := map[int64]bool{}
 	for i, b := range *d.Timeseries {
 		if b.Datetime == nil || b.Value == nil {
-			return vendorapi.Page{}, drift(s, "timeseries[%d] misses datetime or value", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "timeseries[%d] misses datetime or value", i)
 		}
 		if b.Label != nil && *b.Label != "" {
-			return vendorapi.Page{}, drift(s, "timeseries[%d] carries a label (a split that was never asked for)", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "timeseries[%d] carries a label (a split that was never asked for)", i)
 		}
 		start, ok := bucketDay(*b.Datetime)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "timeseries[%d].datetime is not a UTC day", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "timeseries[%d].datetime is not a UTC day", i)
 		}
 		if seen[start.Unix()] {
-			return vendorapi.Page{}, drift(s, "timeseries[%d] repeats a day", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "timeseries[%d] repeats a day", i)
 		}
 		seen[start.Unix()] = true
 		v, ok := whole(b.Value)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "timeseries[%d].value is not a non-negative whole count", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "timeseries[%d].value is not a non-negative whole count", i)
 		}
 		page.Facts = append(page.Facts, vendorapi.FactRow{
 			IntervalStart: start, IntervalEnd: start.Add(day), SourceTZ: "UTC", CoverageDomain: Domain,

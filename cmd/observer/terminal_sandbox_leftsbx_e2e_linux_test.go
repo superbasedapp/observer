@@ -169,7 +169,7 @@ func TestLeftSBXOCIWorktreeSourceRefusedThroughTheFakeEngine(t *testing.T) {
 	cfg := ociTestConfig(t, true, "oci-runc")
 	cfg.Terminal.Sandbox.AllowWorktreeSource = true
 	cfg.Terminal.Sandbox.OCI.Socket = f.sock
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	if _, ok := rt.drivers[sandboxbackend.BackendOCIRunc]; !ok {
 		t.Fatalf("the oci driver is not active: %v", rt.inactiveDrivers)
 	}

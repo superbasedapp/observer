@@ -9,11 +9,12 @@ import (
 
 // surfaceattest.go judges proxy-route traffic per capture surface (surface-
 // gap arc Wave 0.3; docs/plans/surface-gap-wave-0-design-2026-10-25.md
-// section 5). AttestByTraffic answers once per tool and only "some" or
-// "none", so one proxied CLI session attests a tool whose desktop sessions
-// never touch the proxy. AttestSurfaces answers per (tool, surface kind,
-// surface host) session group, from session counts the caller's store query
-// supplies, through one ordered rule table.
+// section 5). The pre-arc per-tool AttestByTraffic (since deleted) answered
+// once per tool and only "some" or "none", so one proxied CLI session
+// attested a tool whose desktop sessions never touch the proxy.
+// AttestSurfaces answers per (tool, surface kind, surface host) session
+// group, from session counts the caller's store query supplies, through one
+// ordered rule table.
 
 // SurfaceTraffic is one observed session group. Both counts are SESSIONS,
 // never API turns: ProxiedSessions is the number of the group's sessions

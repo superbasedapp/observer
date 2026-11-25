@@ -45,6 +45,7 @@ var definerGrants = map[string][]string{
 	"sbci_org_slug_available(text)":                                         {"sbci_api", "sbci_app"},
 	"sbci_org_subscription(uuid)":                                           {"sbci_app", "sbci_worker"},
 	"sbci_org_subscription_v2(uuid)":                                        {"sbci_app", "sbci_worker"},
+	"sbci_personal_org_owner_subscription(uuid)":                            {"sbci_app", "sbci_worker"}, // 0155 (L-167): the worker reads a personal org owner's Plus subscription
 	"sbci_paddle_one_live_guard()":                                          nil,
 	"sbci_paddle_account_for_subscription(text)":                            {"sbci_api", "sbci_app"},
 	"sbci_portal_org_create_status(uuid)":                                   {"sbci_api", "sbci_app"},

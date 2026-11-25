@@ -82,7 +82,7 @@ func availableMXC() sandboxmxc.ProbeResult {
 // helper; a block that adds it does.
 func TestMXCDriverIsOptIn(t *testing.T) {
 	n := countMXCProbes(t, "windows", availableMXC())
-	legacy := ociTestRuntime(t, mxcTestConfig(t, false, "mxc-process", "bwrap"))
+	legacy := testSandboxRuntime(t, mxcTestConfig(t, false, "mxc-process", "bwrap"))
 	if _, ok := legacy.drivers[sandboxbackend.BackendMXCProcess]; ok || legacy.inactiveDrivers[sandboxbackend.BackendMXCProcess] != mxcComponent {
 		t.Fatalf("legacy drivers %v inactive %v", legacy.drivers, legacy.inactiveDrivers)
 	}
@@ -92,7 +92,7 @@ func TestMXCDriverIsOptIn(t *testing.T) {
 	if n.Load() != 0 {
 		t.Fatal("an unselected driver started the probe helper")
 	}
-	on := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	on := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	if _, ok := on.drivers[sandboxbackend.BackendMXCProcess]; !ok {
 		t.Fatal("a block that adds terminals.sandbox.mxc did not get the driver")
 	}
@@ -101,7 +101,7 @@ func TestMXCDriverIsOptIn(t *testing.T) {
 // TestMXCDriverInertWhenNotListed: selected but not listed, nothing runs.
 func TestMXCDriverInertWhenNotListed(t *testing.T) {
 	n := countMXCProbes(t, "windows", availableMXC())
-	rt := ociTestRuntime(t, mxcTestConfig(t, true))
+	rt := testSandboxRuntime(t, mxcTestConfig(t, true))
 	if p := rt.driverProbes(context.Background())[sandboxbackend.BackendMXCProcess]; p.Verdict != sandboxselect.VerdictDisabledByConfig {
 		t.Fatalf("probe %+v", p)
 	}
@@ -114,7 +114,7 @@ func TestMXCDriverInertWhenNotListed(t *testing.T) {
 // and no helper starts.
 func TestMXCDriverOffWindows(t *testing.T) {
 	n := countMXCProbes(t, "linux", availableMXC())
-	rt := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	rt := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	if p := rt.driverProbes(context.Background())[sandboxbackend.BackendMXCProcess]; p.Verdict != sandboxmxc.VerdictUnsupportedPlatform {
 		t.Fatalf("probe %+v", p)
 	}
@@ -128,7 +128,7 @@ func TestMXCDriverOffWindows(t *testing.T) {
 func TestMXCDriverRefusalsReachTheSelection(t *testing.T) {
 	for _, code := range []string{sandboxmxc.VerdictPSECBuildTooOld, sandboxmxc.VerdictPSECUnavailable, sandboxmxc.VerdictArtifactMissing, sandboxmxc.VerdictArtifactUnverified, sandboxmxc.VerdictBackendVersionUntested} {
 		countMXCProbes(t, "windows", sandboxmxc.ProbeResult{Verdict: sandboxmxc.Verdict{Code: code, Reason: "x"}})
-		rt := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+		rt := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 		p := rt.driverProbes(context.Background())[sandboxbackend.BackendMXCProcess]
 		if p.Verdict != code || p.Version != sandboxmxc.Pins.RequiredMin {
 			t.Errorf("%s: probe %+v", code, p)
@@ -1123,7 +1123,7 @@ func TestMXCPlanGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := mxcTestConfig(t, true, "mxc-process")
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	d := rt.drivers[sandboxbackend.BackendMXCProcess].(*mxcDriver)
 	plan, err := d.plan(termsvc.CreateResult{Run: termsvc.SandboxRun{ID: "run-g", Tool: "claude-code", Dir: ws}})
 	if err != nil {
@@ -1259,7 +1259,7 @@ func TestSandboxMXCPlanProviderDirectRefuseAll(t *testing.T) {
 	if err := os.MkdirAll(ws, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	rt := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	rt := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	rt.providerHosts = []string{"openrouter.ai"}
 	d := rt.drivers[sandboxbackend.BackendMXCProcess].(*mxcDriver)
 	created := termsvc.CreateResult{Run: termsvc.SandboxRun{ID: "run-pd", Tool: "claude-code", Dir: ws}}

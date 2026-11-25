@@ -41,9 +41,6 @@ const (
 	ScriptsPinned = "pinned"
 )
 
-// ScriptModes is the closed mode vocabulary, most restrictive first.
-func ScriptModes() []string { return []string{ScriptsNone, ScriptsPinned} }
-
 // The script pin sources.
 const (
 	// PinSourceBuiltin: a pin shipped in the install-source table, grounded

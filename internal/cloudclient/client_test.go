@@ -717,14 +717,14 @@ func TestUsageDecodesPlanFields(t *testing.T) {
 		t.Fatalf("Exchange: %v", err)
 	}
 
-	body = `{"plan":"plus","plan_label":"Plus","plan_version":3,"budget_pool":"plus",` +
+	body = `{"plan":"plus_beta","plan_label":"Personal Pro","plan_version":3,"budget_pool":"plus_beta",` +
 		`"daily_used":1,"daily_cap":50,"monthly_used":2,"monthly_cap":500,` +
 		`"digest_weekly":true,"results_retention_days":30,"digests_this_week":1}`
 	got, err := c.Usage(ctx)
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
-	if got.Plan != "plus" || got.PlanLabel != "Plus" || got.PlanVersion != 3 || got.BudgetPool != "plus" {
+	if got.Plan != "plus_beta" || got.PlanLabel != "Personal Pro" || got.PlanVersion != 3 || got.BudgetPool != "plus_beta" {
 		t.Fatalf("plan fields = %+v", got)
 	}
 	if got.DailyCap != 50 || got.MonthlyCap != 500 {

@@ -40,7 +40,7 @@ func parseSkillTime(s string) time.Time {
 	if t, err := time.Parse(skillTimeLayout, s); err == nil {
 		return t
 	}
-	return parseCommitTime(s)
+	return parseStoredTime(s)
 }
 
 // SkillSnapshotMember is one SKILL.md a hook snapshot saw.
@@ -130,7 +130,7 @@ INSERT OR IGNORE INTO session_skill_snapshots
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snap.SessionID, snap.Tool, snap.Event, snap.Source, snap.ToolUseID, snap.InvokedName,
 		formatSkillTime(snap.ObservedAt), snap.ProjectRoot, setHash,
-		boolToInt(snap.Complete), boolToInt(snap.HomeResolved)); err != nil {
+		boolInt(snap.Complete), boolInt(snap.HomeResolved)); err != nil {
 		return fmt.Errorf("store.InsertSkillSnapshot: snapshot: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -271,7 +271,7 @@ func parseEdgeHost(raw string) (string, error) {
 	if host == "" || strings.ContainsAny(host, "[]:") {
 		return "", errEdgeIdentity
 	}
-	canonical := normalizeHost(raw)
+	canonical := NormalizeHost(raw)
 	if canonical == "" || strings.ContainsAny(canonical, "[]:") {
 		return "", errEdgeIdentity
 	}

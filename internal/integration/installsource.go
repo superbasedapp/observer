@@ -43,9 +43,6 @@ const (
 // installerKinds is the closed set (TestInstallSourcesCoverage).
 var installerKinds = []InstallerKind{InstallerNPM, InstallerUV}
 
-// InstallerKinds returns the closed installer vocabulary.
-func InstallerKinds() []InstallerKind { return append([]InstallerKind(nil), installerKinds...) }
-
 // InstallSource is one tool's grounded in-box install source.
 type InstallSource struct {
 	// Tool is the registry tool id.

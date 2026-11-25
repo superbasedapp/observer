@@ -116,7 +116,7 @@ func buildHyper(_ vendorapi.Params, _ vendorapi.Window, cursor string) (vendorap
 
 func driftOf(s vs.SurfaceID) func(string, ...any) error {
 	return func(format string, a ...any) error {
-		return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
+		return vendorapi.Drift(s, format, a...)
 	}
 }
 

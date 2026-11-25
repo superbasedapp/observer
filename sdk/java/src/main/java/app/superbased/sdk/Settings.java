@@ -30,6 +30,8 @@ public final class Settings {
   final Map<String, String> headers;
   final String apiKey;
   final String serviceName;
+  /** Which rung named the service: argument, env, manifest (the main jar's Implementation-Title) or default. */
+  final String serviceNameSource;
   final Map<String, String> resourceAttributes;
   final String tenant;
   final String user;
@@ -58,6 +60,7 @@ public final class Settings {
       Map<String, String> headers,
       String apiKey,
       String serviceName,
+      String serviceNameSource,
       Map<String, String> resourceAttributes,
       String tenant,
       String user,
@@ -84,6 +87,7 @@ public final class Settings {
     this.headers = headers;
     this.apiKey = apiKey;
     this.serviceName = serviceName;
+    this.serviceNameSource = serviceNameSource;
     this.resourceAttributes = resourceAttributes;
     this.tenant = tenant;
     this.user = user;
@@ -116,6 +120,11 @@ public final class Settings {
 
   public String serviceName() {
     return serviceName;
+  }
+
+  /** Which rung named the service: argument, env, manifest (the main jar's Implementation-Title) or default. */
+  public String serviceNameSource() {
+    return serviceNameSource;
   }
 
   public String tenant() {
@@ -330,16 +339,9 @@ public final class Settings {
     }
   }
 
+  /** The service name the ladder gives for this process ({@link ServiceName}). */
   static String resolveServiceName(String explicit, Map<String, String> env) {
-    if (explicit != null && !explicit.isEmpty()) {
-      return explicit;
-    }
-    String v = envStr(env, "SUPERBASED_SERVICE_NAME", "OTEL_SERVICE_NAME");
-    if (!v.isEmpty()) {
-      return v;
-    }
-    String fromAttrs = Util.parseKvList(env.get("OTEL_RESOURCE_ATTRIBUTES")).getOrDefault("service.name", "").strip();
-    return fromAttrs.isEmpty() ? DEFAULT_SERVICE_NAME : fromAttrs;
+    return ServiceName.resolve(explicit, env).name;
   }
 
   static String resolveEndpoint(String explicit, Map<String, String> env) {
@@ -496,11 +498,13 @@ public final class Settings {
       shutdown = Duration.ZERO;
     }
     String nodeUrl = pick(o.nodeUrl, Util.first(envStr(env, "SUPERBASED_NODE_URL"), DEFAULT_NODE_URL));
+    ServiceName.Resolved service = ServiceName.resolve(o.serviceName, env);
     return new Settings(
         resolveEndpoint(o.endpoint, env),
         java.util.Collections.unmodifiableMap(hdrs),
         pick(o.apiKey, envStr(env, "SUPERBASED_API_KEY")),
-        resolveServiceName(o.serviceName, env),
+        service.name,
+        service.source,
         java.util.Collections.unmodifiableMap(new TreeMap<>(Util.parseKvList(env.get("OTEL_RESOURCE_ATTRIBUTES")))),
         pick(o.tenant, envStr(env, "SUPERBASED_TENANT")),
         pick(o.user, envStr(env, "SUPERBASED_USER")),

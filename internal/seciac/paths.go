@@ -64,15 +64,6 @@ func ClassOf(rel string) string {
 	return ""
 }
 
-// PathClassNames lists the classes in table order.
-func PathClassNames() []string {
-	out := make([]string, 0, len(pathClasses))
-	for _, c := range pathClasses {
-		out = append(out, c.Class)
-	}
-	return out
-}
-
 // IaCPaths keeps the paths of an agent's writes that are IaC files, in
 // order, without duplicates.
 func IaCPaths(rels []string) []string {

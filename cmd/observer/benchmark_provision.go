@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/benchmark"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/procgroup"
 )
 
 // benchmark_provision.go holds the REAL workspace + home preparers the CLI wires
@@ -61,7 +62,7 @@ func runProvisionCmd(ctx context.Context, dir string, timeoutSec int, name strin
 	defer cancel()
 	c := exec.CommandContext(runCtx, name, args...)
 	c.Dir = dir
-	setProcGroup(c)
+	procgroup.Set(c)
 	c.Cancel = func() error { return killProcGroup(c) }
 	if out, err := c.CombinedOutput(); err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
@@ -102,12 +103,12 @@ func (codexHomePrep) Prepare(_ context.Context, harness, homeDir, _ string) erro
 	return nil
 }
 
-// attemptHomePrep is the one homePreparer wired into the runner. It dispatches
-// on harness shape (a capability branch, not a business switch): codex copies
-// ~/.codex/auth.json into CODEX_HOME; claude-code writes a throwaway
-// CLAUDE_CONFIG_DIR whose settings.json registers the observer hook set pointed
-// at the benchmark daemon's --config (mirroring `observer init`, via
-// internal/hook) and copies the account's .credentials.json in. This is the
+// attemptHomePrep is the one homePreparer wired into the runner. It switches
+// on the harness name: codex copies ~/.codex/auth.json into CODEX_HOME;
+// claude-code writes a throwaway CLAUDE_CONFIG_DIR whose settings.json
+// registers the observer hook set pointed at the benchmark daemon's --config
+// (mirroring `observer init`, via internal/hook) and copies the account's
+// .credentials.json in. This is the
 // codex CODEX_HOME/auth.json lifecycle, one layer over (re-spike §6.2).
 type attemptHomePrep struct {
 	binaryPath string // os.Executable() — the hook command target

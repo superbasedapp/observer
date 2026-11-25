@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/defaultworkspace"
+	"github.com/marmutapp/superbased-observer/internal/filehash"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
@@ -83,7 +84,7 @@ func newSetupRig(t *testing.T, cfgText string) *setupRig {
 		records:          func(ctx context.Context) ([]store.ToolInstallRow, error) { return r.ledger.SandboxRecords(ctx) },
 		engineSocket:     func(config.Config) string { return r.socket },
 		statFile:         sandboxSetupStatFile,
-		fileDigest:       sandboxSetupFileSHA256,
+		fileDigest:       filehash.SHA256,
 		probeRow: func(context.Context, string, config.Config) (sandboxselect.Probe, bool) {
 			r.mu.Lock()
 			r.probes++

@@ -92,11 +92,24 @@ var t0 = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 
 func TestNoAccountsMeansNoEgress(t *testing.T) {
 	net := &fakeNet{forbid: true}
-	s, _, _ := newTestService(t, net, fakeLocal{}, t0)
+	_, st, keys, _ := newTestServiceDB(t, net, fakeLocal{}, t0)
+	// Run reads the clock for the first time right after its first tick
+	// (the history-prune check), and nothing else reads it before Run is
+	// cancelled, so the first read proves Run has ticked.
+	ticked := make(chan struct{})
+	var once sync.Once
+	s := New(Options{Store: st, Keys: keys, Net: net, Local: fakeLocal{}, Now: func() time.Time {
+		once.Do(func() { close(ticked) })
+		return t0
+	}})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-ticked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never completed its first tick")
+	}
 	cancel()
 	<-done
 	if res := s.RefreshAll(context.Background()); len(res) != 0 || len(net.calls) != 0 {

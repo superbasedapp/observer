@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/updatespec"
 )
 
 // SchemaV1 is the only content manifest schema.
@@ -493,14 +495,14 @@ func Validate(m Manifest) error {
 	}
 	revoked := map[string]bool{}
 	for _, r := range m.Revoked {
-		if !isHexSHA256(r.SHA256) {
+		if !updatespec.IsHexSHA256(r.SHA256) {
 			return bad("revocation sha256 must be 64 hex characters")
 		}
 		revoked[r.SHA256] = true
 	}
 	seen := map[string]bool{}
 	for i, e := range m.Entries {
-		if err := validBaseName(e.Name); err != nil {
+		if err := updatespec.ValidBaseName(e.Name); err != nil {
 			return bad("entry %d name: %v", i, err)
 		}
 		key := e.Name + "\x00" + e.OS + "\x00" + e.Arch
@@ -511,7 +513,7 @@ func Validate(m Manifest) error {
 		if e.SizeBytes <= 0 {
 			return bad("entry %q size_bytes must be positive", e.Name)
 		}
-		if !isHexSHA256(e.SHA256) {
+		if !updatespec.IsHexSHA256(e.SHA256) {
 			return bad("entry %q sha256 must be 64 hex characters", e.Name)
 		}
 		if revoked[e.SHA256] {
@@ -542,7 +544,7 @@ func validateDelta(m Manifest, e Entry) error {
 	if d.Base == "" || d.Base == e.Name {
 		return errors.New("base must name another entry")
 	}
-	if !isHexSHA256(d.BaseSHA256) {
+	if !updatespec.IsHexSHA256(d.BaseSHA256) {
 		return errors.New("base_sha256 must be 64 hex characters")
 	}
 	found := false
@@ -565,7 +567,7 @@ func validateDelta(m Manifest, e Entry) error {
 		return fmt.Errorf("%d dropped names (at most %d)", len(d.Drop), MaxDeltaDrop)
 	}
 	for i, name := range d.Drop {
-		if err := validBaseName(name); err != nil {
+		if err := updatespec.ValidBaseName(name); err != nil {
 			return fmt.Errorf("drop %d: %w", i, err)
 		}
 		if i > 0 && d.Drop[i-1] >= name {
@@ -808,7 +810,7 @@ func ruleEnvelope(p *pass) error {
 }
 
 func ruleHash(p *pass) error {
-	if !isHexSHA256(p.env.ManifestHash) || HashBytes(p.body) != p.env.ManifestHash {
+	if !updatespec.IsHexSHA256(p.env.ManifestHash) || HashBytes(p.body) != p.env.ManifestHash {
 		return errors.New("manifest hash does not match its bytes")
 	}
 	return nil

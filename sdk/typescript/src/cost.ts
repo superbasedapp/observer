@@ -27,6 +27,7 @@ import { K } from "./attrs.js";
 import { serviceName } from "./admit.js";
 import type { Env } from "./config.js";
 import { getCurrentAttributes } from "./context.js";
+import { getTraceparent } from "./propagation.js";
 import { apiTimeout, call, newId, targets, type ControlOptions } from "./control.js";
 import { destinationKnown, runtime } from "./runtime.js";
 
@@ -222,7 +223,7 @@ function setAppHeader(headers: Headers, name: string, value: string): void {
  * (an instrumentation's LLM span), so the span joins the gateway's exact
  * cost record. It also names the app's end user and service
  * (`X-Superbased-User`, `X-Superbased-Service`), which the gateway's app
- * budget caps reserve against: the per-request user (propagateAttributes /
+ * budget caps reserve against, and sends the active span's `traceparent`: the per-request user (propagateAttributes /
  * identify, else init's user) and the service name admit() sends. A header
  * the request already carries is kept. Pass it only to a client pointed at
  * the gateway: the end user is PII, and the gateway never forwards these
@@ -236,6 +237,11 @@ export function gatewayFetch(base?: FetchLike): FetchLike {
     if (!headers.has(GATEWAY_REQUEST_ID_HEADER)) headers.set(GATEWAY_REQUEST_ID_HEADER, `sdk-${newId()}`);
     setAppHeader(headers, GATEWAY_USER_HEADER, getCurrentAttributes().user || runtime.settings?.user || "");
     setAppHeader(headers, GATEWAY_SERVICE_HEADER, serviceName((typeof process !== "undefined" ? process.env : {}) as Env));
+    // The span active when the call is made, so the organization joins the call to it even without the request id.
+    if (!headers.has("traceparent")) {
+      const tp = getTraceparent();
+      if (tp) headers.set("traceparent", tp);
+    }
     const sent = headers.get(GATEWAY_REQUEST_ID_HEADER) ?? "";
     const resp = await f(input, { ...(init ?? {}), headers });
     const got = gatewayRequestId(resp) || sent;

@@ -1316,6 +1316,14 @@ func (u *updateRuntime) SetReleaseListeners(release func()) {
 	u.releaseListeners = release
 }
 
+// ListenersReleased reports whether an apply released this daemon's
+// listeners for its successor: the daemon's own route hold at the end of the
+// run then leaves the routes alone (the successor serves the port; L-168,
+// routehold_stop.go). Nil-safe.
+func (u *updateRuntime) ListenersReleased() bool {
+	return u != nil && u.released.Load()
+}
+
 // releaseListenersNow gives up the sockets, once.
 //
 // Once, because the release is irreversible: this process does not re-bind

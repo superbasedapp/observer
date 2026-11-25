@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/aiderdesk"
@@ -111,16 +110,6 @@ func hostMCPTargetFor(target string) (hostMCPTarget, bool) {
 		}
 	}
 	return hostMCPTarget{}, false
-}
-
-// HostMCPTargets lists the host MCP target ids, sorted.
-func HostMCPTargets() []string {
-	out := make([]string, 0, len(hostMCPTargets))
-	for _, t := range hostMCPTargets {
-		out = append(out, t.target)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // HostMCPLiveGate returns the live checks target waits on (empty when it is

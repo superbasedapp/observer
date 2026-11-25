@@ -280,8 +280,8 @@ type parseState struct {
 	// landed in a PRIOR parse window is not in this map — its later
 	// occurrence appends a new row, and the store's own
 	// ON CONFLICT(source_file, source_event_id) upsert merges it with the
-	// already-persisted one (see the package doc, "Why there is no
-	// pending.go").
+	// already-persisted one (see the package doc, "Why there is no tail
+	// deferral").
 	stepIdx map[string]int
 	// firstOffset is the fromOffset the parse started at; the
 	// session-start marker only fires when parsing from the very top of
@@ -445,33 +445,21 @@ func indexProjectDir(sessionPath, sessionID string) string {
 	return ""
 }
 
-// projectRoot resolves the header workspace root and memoizes the result.
-//
-// The translation is UNCONDITIONAL: crossmount.TranslateForeignPath maps a
-// foreign-OS root to its locally-visible equivalent, so a foreign path never
-// reaches git.Resolve — where filepath.Abs would treat it as relative and
-// CWD-prefix the observer's OWN .git onto every event.
+// projectRoot resolves the header workspace root and memoizes the result
+// (adapter.ResolveProjectRootCached: the foreign-path translation is
+// unconditional, so a foreign path never reaches git and the observer's
+// OWN .git is never stamped onto every event). The first resolution fills
+// the branch (only when no branch is known yet), remote and identity.
 func (st *parseState) projectRoot() string {
-	if st.cwd == "" {
-		return ""
+	root, id, fresh := adapter.ResolveProjectRootCached(st.rootCache, st.cwd)
+	if fresh {
+		if st.branch == "" {
+			st.branch = id.Branch
+		}
+		st.remote = id.Remote
+		st.identity = id
 	}
-	cwd := crossmount.TranslateForeignPath(st.cwd)
-	if root, ok := st.rootCache[cwd]; ok {
-		return root
-	}
-	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		st.rootCache[cwd] = cwd
-		return cwd
-	}
-	st.rootCache[cwd] = id.Root
-	if st.branch == "" {
-		st.branch = id.Branch
-	}
-	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
-	st.remote = id.Remote
-	st.identity = id
-	return id.Root
+	return root
 }
 
 // eventKey returns id when non-empty, otherwise the record's byte offset —

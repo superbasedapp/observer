@@ -12,6 +12,7 @@ import (
 	_ "modernc.org/sqlite" // pure-Go driver (no CGO), per CLAUDE.md
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -107,10 +108,7 @@ func openDesktopDB(path string) (*sql.DB, error) {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageDesktopMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, desktopMirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, desktopMirrorSpec, allHomesFunc())
 }
 
 // desktopMirrorSpec is the allow-list mirror of the Freebuff Desktop store (desktop-v2.db): every table this
@@ -121,22 +119,6 @@ var desktopMirrorSpec = mirrorbase.Spec{
 	Dir:    "freebuff-desktop-mirror",
 	File:   desktopDBName,
 	Tables: []string{"threads", "messages", "projects"},
-}
-
-// isForeignMountPath reports whether path lives under a crossmount-detected
-// non-native home (both bridge directions: /mnt/c on WSL2, \\wsl.localhost
-// on Windows).
-func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" || h.Path == "" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // allHomesFunc is the test seam over crossmount.AllHomes, mirroring the
@@ -158,7 +140,7 @@ func desktopWatermark(ctx context.Context, db *sql.DB) (int64, error) {
 		{"threads", "updated_at"},
 		{"messages", "ts"},
 	} {
-		if !tableExists(ctx, db, q.table) {
+		if !sqliteschema.TableExists(ctx, db, q.table) {
 			continue
 		}
 		var v sql.NullInt64
@@ -181,17 +163,17 @@ func desktopWatermark(ctx context.Context, db *sql.DB) (int64, error) {
 // was read, so it is re-covered once. SourceEventIDs are deterministic, so
 // re-emitting already-seen parts is a store-level no-op.
 func loadTouchedThreads(ctx context.Context, db *sql.DB, fromOffset int64) ([]desktopThread, error) {
-	if !tableExists(ctx, db, "threads") {
+	if !sqliteschema.TableExists(ctx, db, "threads") {
 		return nil, nil
 	}
-	joinProjects := tableExists(ctx, db, "projects")
+	joinProjects := sqliteschema.TableExists(ctx, db, "projects")
 	rootExpr, join := "''", ""
 	if joinProjects {
 		rootExpr = "COALESCE(p.root_path, '')"
 		join = " LEFT JOIN projects p ON p.id = t.project_id"
 	}
 	messageClause := ""
-	if tableExists(ctx, db, "messages") {
+	if sqliteschema.TableExists(ctx, db, "messages") {
 		messageClause = " OR EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND m.ts >= ?)"
 	}
 	turnExpr := "''"
@@ -229,7 +211,7 @@ func loadTouchedThreads(ctx context.Context, db *sql.DB, fromOffset int64) ([]de
 
 // loadDesktopMessages returns a thread's messages in seq order.
 func loadDesktopMessages(ctx context.Context, db *sql.DB, threadID string) ([]desktopMessage, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -251,15 +233,6 @@ func loadDesktopMessages(ctx context.Context, db *sql.DB, threadID string) ([]de
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// tableExists lets a foreign or older schema degrade gracefully instead of
-// erroring the whole parse.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
 }
 
 // projectPathFromSidecar reads `projectPath` out of the project.json that

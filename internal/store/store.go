@@ -545,7 +545,7 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		authVerStamp, // INSERT: authority_classifier_version (nil == UNKNOWN)
 		sess.Workspace,
 		workspaceHash,
-		boolToInt(sess.IsWorktree),
+		boolInt(sess.IsWorktree),
 		orgKeyStamp,           // INSERT: authority_org_key (nil == unknown)
 		dataauthority.Version, // ON CONFLICT: version carried on an 'org' result
 		dataauthority.Version, // ON CONFLICT: version carried on a personal upgrade (FD5)
@@ -1068,14 +1068,6 @@ func marshalUserAttachments(atts []models.UserAttachment) any {
 	return string(b)
 }
 
-// InsertActions writes a batch of actions using INSERT OR IGNORE — duplicate
-// (source_file, source_event_id) rows are silently skipped. Returns the
-// count of newly inserted rows. Runs in a single transaction.
-//
-// For each successfully inserted row, the corresponding actions[i].ID is
-// populated with the new rowid so callers can chain additional work
-// (e.g. freshness.UpsertFileState). Rows skipped via INSERT OR IGNORE retain
-// ID = 0.
 // capToolOutput is the store-side backstop for the 1 MiB
 // actions.raw_tool_output contract (models.ToolEvent.ToolOutput). Adapters
 // are meant to cap at emit time via internal/contentcap, but several tool
@@ -1090,6 +1082,14 @@ func capToolOutput(s string) string {
 	return contentcap.Cap(s, contentcap.DefaultMaxBytes)
 }
 
+// InsertActions writes a batch of actions using INSERT OR IGNORE — duplicate
+// (source_file, source_event_id) rows are silently skipped. Returns the
+// count of newly inserted rows. Runs in a single transaction.
+//
+// For each successfully inserted row, the corresponding actions[i].ID is
+// populated with the new rowid so callers can chain additional work
+// (e.g. freshness.UpsertFileState). Rows skipped via INSERT OR IGNORE retain
+// ID = 0.
 func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int, error) {
 	if len(actions) == 0 {
 		return 0, nil
@@ -1142,17 +1142,17 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 			if _, err := stmt.ExecContext(
 				ctx,
 				a.SessionID, a.ProjectID, timestamp(a.Timestamp), a.TurnIndex,
-				a.ActionType, boolToInt(a.IsNativeTool),
+				a.ActionType, boolInt(a.IsNativeTool),
 				a.Target, a.TargetHash,
-				boolToInt(a.Success), a.ErrorMessage, a.DurationMs,
+				boolInt(a.Success), a.ErrorMessage, a.DurationMs,
 				nullableString(a.ContentHash), nullableTimestamp(a.FileMtime),
 				nullableInt64(a.FileSizeBytes), nullableString(a.Freshness),
-				nullableInt64(a.PriorActionID), boolToInt(a.ChangeDetected),
+				nullableInt64(a.PriorActionID), boolInt(a.ChangeDetected),
 				nullableString(a.PrecedingReasoning),
 				nullableString(a.RawToolName), nullableString(a.RawToolInput),
 				nullableString(capToolOutput(a.RawToolOutput)),
 				a.Tool, a.SourceFile, sha256HexOrEmpty(a.SourceFile), a.SourceEventID,
-				boolToInt(a.IsSidechain), nullableString(a.MessageID),
+				boolInt(a.IsSidechain), nullableString(a.MessageID),
 				marshalActionMetadata(a.Metadata),
 				nullableString(a.OrgID), nullableString(a.UserEmail),
 				nullableInt64(a.ContentBytes),
@@ -1171,17 +1171,17 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 		res, err := stmt.ExecContext(
 			ctx,
 			a.SessionID, a.ProjectID, timestamp(a.Timestamp), a.TurnIndex,
-			a.ActionType, boolToInt(a.IsNativeTool),
+			a.ActionType, boolInt(a.IsNativeTool),
 			a.Target, a.TargetHash,
-			boolToInt(a.Success), a.ErrorMessage, a.DurationMs,
+			boolInt(a.Success), a.ErrorMessage, a.DurationMs,
 			nullableString(a.ContentHash), nullableTimestamp(a.FileMtime),
 			nullableInt64(a.FileSizeBytes), nullableString(a.Freshness),
-			nullableInt64(a.PriorActionID), boolToInt(a.ChangeDetected),
+			nullableInt64(a.PriorActionID), boolInt(a.ChangeDetected),
 			nullableString(a.PrecedingReasoning),
 			nullableString(a.RawToolName), nullableString(a.RawToolInput),
 			nullableString(capToolOutput(a.RawToolOutput)),
 			a.Tool, a.SourceFile, sha256HexOrEmpty(a.SourceFile), a.SourceEventID,
-			boolToInt(a.IsSidechain), nullableString(a.MessageID),
+			boolInt(a.IsSidechain), nullableString(a.MessageID),
 			marshalActionMetadata(a.Metadata),
 			nullableString(a.OrgID), nullableString(a.UserEmail),
 			nullableInt64(a.ContentBytes),
@@ -1301,7 +1301,7 @@ func (s *Store) updateActionOutcome(
 				ELSE raw_tool_output
 			END
 		 WHERE source_file = ? AND source_event_id = ?`,
-		boolToInt(successKnown), boolToInt(success),
+		boolInt(successKnown), boolInt(success),
 		errorMessage, errorMessage,
 		durationMs, durationMs,
 		toolOutput, toolOutput, toolOutput,
@@ -1408,7 +1408,7 @@ const hookUsageMatchSQL = `o.model = ?
 func hookUsageArgs(e models.TokenEvent) []any {
 	return []any{
 		e.Model, e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
-		e.CacheCreation1hTokens, e.ReasoningTokens, e.WebSearchRequests, boolToInt(e.Fast),
+		e.CacheCreation1hTokens, e.ReasoningTokens, e.WebSearchRequests, boolInt(e.Fast),
 	}
 }
 
@@ -1809,8 +1809,8 @@ func (s *Store) insertTokenEvents(ctx context.Context, events []models.TokenEven
 			nullableString(e.TurnID),
 			nullableString(e.OrgID),
 			nullableString(e.UserEmail),
-			boolToInt(e.Fast),
-			boolToInt(e.IsSidechain),
+			boolInt(e.Fast),
+			boolInt(e.IsSidechain),
 			genMsOrNull(e),
 			genBasisOrNull(e),
 			genTimingVOrNull(e),
@@ -3015,9 +3015,9 @@ func (s *Store) indexOutputs(
 		// 2026-05-08 dogfood — the model itself flagged "Many of the
 		// hits are recursive — prior search_past_outputs calls for
 		// the same/similar query that themselves got indexed." Same
-		// `isMCPToolName` predicate as the per-type compression skip
-		// in conversation/anthropic.go.
-		if isMCPToolName(e.RawToolName) {
+		// `mcp__` predicate (internal/tooltax, through models) as the
+		// per-type compression skip in conversation/anthropic.go.
+		if models.IsMCPToolName(e.RawToolName) {
 			continue
 		}
 		// a.ID != 0 only for a row InsertActions TRULY inserted in this
@@ -3028,16 +3028,6 @@ func (s *Store) indexOutputs(
 		}
 	}
 	return nil
-}
-
-// isMCPToolName reports whether a raw tool name is from an MCP server
-// (Anthropic's MCP convention prefixes such names with
-// `mcp__<server>__<tool>`). Duplicated from
-// conversation/anthropic.go::isMCPToolName because the store package
-// is downstream of conversation in the import graph and we keep the
-// helper inline rather than introduce a tiny shared dependency.
-func isMCPToolName(name string) bool {
-	return strings.HasPrefix(name, "mcp__")
 }
 
 // recordCommandOutcome maintains failure_context for a single run_command
@@ -3195,10 +3185,10 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 		timestamp(a.Timestamp),
 		a.TurnIndex,
 		a.ActionType,
-		boolToInt(a.IsNativeTool),
+		boolInt(a.IsNativeTool),
 		a.Target,
 		a.TargetHash,
-		boolToInt(a.Success),
+		boolInt(a.Success),
 		a.ErrorMessage,
 		a.DurationMs,
 		nullableString(a.ContentHash),
@@ -3206,7 +3196,7 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 		nullableInt64(a.FileSizeBytes),
 		nullableString(a.Freshness),
 		nullableInt64(a.PriorActionID),
-		boolToInt(a.ChangeDetected),
+		boolInt(a.ChangeDetected),
 		nullableString(a.PrecedingReasoning),
 		nullableString(a.RawToolName),
 		nullableString(a.RawToolInput),
@@ -3215,7 +3205,7 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 		a.SourceFile,
 		sha256HexOrEmpty(a.SourceFile),
 		a.SourceEventID,
-		boolToInt(a.IsSidechain),
+		boolInt(a.IsSidechain),
 		nullableString(a.MessageID),
 		marshalActionMetadata(a.Metadata),
 		nullableString(a.OrgID),
@@ -3355,7 +3345,7 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 		nullableString(t.ErrorMessage),
 		nullableString(t.OrgID),
 		nullableString(t.UserEmail),
-		boolToInt(t.Fast),
+		boolInt(t.Fast),
 		nullableString(t.Source),
 		nullableString(t.Route),
 		nullableInt64(t.RoutingGeneration),
@@ -3418,14 +3408,6 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 		}
 	}
 	return id, nil
-}
-
-// CountAPITurns returns the total number of rows in api_turns. Useful for
-// tests and the status command.
-func (s *Store) CountAPITurns(ctx context.Context) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_turns`).Scan(&n)
-	return n, err
 }
 
 // CountUniqueCompressions returns the number of distinct pre-compression
@@ -3679,48 +3661,6 @@ func (s *Store) LoadClaudecodeEffortMap(ctx context.Context, sessionID string) (
 		return nil, fmt.Errorf("store.LoadClaudecodeEffortMap: rows: %w", err)
 	}
 	return out, nil
-}
-
-func nullableTimestamp(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func nullableString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-func nullableInt64(v int64) any {
-	if v == 0 {
-		return nil
-	}
-	return v
-}
-
-func nullableInt(v int) any {
-	if v == 0 {
-		return nil
-	}
-	return v
-}
-
-func nullableFloat64(v float64) any {
-	if v == 0 {
-		return nil
-	}
-	return v
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func sha256Hex(s string) string {

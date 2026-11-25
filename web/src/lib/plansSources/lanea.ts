@@ -1,4 +1,4 @@
-// Words for the sources lane A adds (internal/planlimits/src_lanea.go).
+// Words for the sources internal/planlimits/src_apikey.go adds (built as lane A).
 // Pure data; plans.ts merges it. Keys of LANE_A are source ids; keys of
 // LANE_A_WORDS are new parameter keys and parameter choices.
 import type { SourceWords } from "./types.ts";

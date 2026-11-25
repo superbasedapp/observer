@@ -1112,6 +1112,6 @@ each deferred to a named successor:
   500 events per session in SQL (`ROW_NUMBER()`, most-recent-first);
   the `detail` column and the node-local anchor ids are never in the
   SELECT list.
-- `tests/invariant/privacy_test.go::TestSessionCacheEventsShipOnlyUnderRawContent`
+- `tests/invariant/privacy_share_tiers_test.go::TestSessionCacheEventsShipOnlyUnderRawContent`
   - the wire-surface pin for that seam (present under
   `full_content` / `admin_managed`, absent otherwise).

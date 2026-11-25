@@ -174,14 +174,14 @@ func Interactions() vendorapi.Driver {
 func parseInteractions(r vendorapi.Response) (vendorapi.Page, error) {
 	const s = SurfaceInteractions
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc interactionsDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented object")
 	}
 	if doc.Value == nil {
-		return vendorapi.Page{}, drift(s, "required field value is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field value is missing")
 	}
 	users, err := interactionUsers(r.Params)
 	if err != nil {
@@ -206,11 +206,11 @@ func parseInteractions(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, it := range *doc.Value {
 		if it.ID == nil || *it.ID == "" || it.CreatedDateTime == nil || it.InteractionType == nil {
-			return vendorapi.Page{}, drift(s, "value[%d] misses id, createdDateTime or interactionType", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d] misses id, createdDateTime or interactionType", i)
 		}
 		at, err := time.Parse(time.RFC3339Nano, *it.CreatedDateTime)
 		if err != nil {
-			return vendorapi.Page{}, drift(s, "value[%d].createdDateTime is not a date-time", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].createdDateTime is not a date-time", i)
 		}
 		role, ok := interactionRoles[*it.InteractionType]
 		if !ok {
@@ -218,7 +218,7 @@ func parseInteractions(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		id := user + ":" + *it.ID
 		if seen[id] {
-			return vendorapi.Page{}, drift(s, "value[%d] repeats an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d] repeats an id", i)
 		}
 		seen[id] = true
 		text := ""

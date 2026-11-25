@@ -74,77 +74,90 @@ func mustAPIStore(t *testing.T, pool *pgxpool.Pool) *store.Store {
 	return s
 }
 
-func newHarness(t *testing.T) *harness {
+// harnessSetup tunes newHarnessWith. Every field may be left zero.
+type harnessSetup struct {
+	// noJournal leaves both stores without a deletion journal.
+	noJournal bool
+	// stores edits the fixture store (app) and the server's sbci_api store
+	// before the server is built.
+	stores func(app, apiStore *store.Store)
+	// opts edits the server options before api.New. They arrive filled with
+	// the standard harness defaults, ExternalBaseURL included.
+	opts func(*api.Options)
+}
+
+// newHarnessWith is the one harness builder every httptest-served variant in
+// this package shares: a fresh database, a fixture store bound to sbci_app,
+// the server's store bound to sbci_api, deletion journals on both (unless
+// setup.noJournal), and the server on a pre-bound listener.
+//
+// httptest.NewServer's URL is only known AFTER the server starts, but api.New
+// needs ExternalBaseURL up front — every PoP proof the test client mints binds
+// its htu to that base, and the server reconstructs the same base to verify
+// it, so the two must agree exactly. Pre-bind a listener so the base URL is
+// known before the handler (and therefore the Server) is built, then hand
+// that listener to httptest.Server instead of letting it pick its own.
+//
+// The defaults disable rate limiting (all-zero config) so
+// functional tests are deterministic (the rate-limit behaviour has its own
+// harness), and wire a HEALTHY admission gate (verified attestation + present
+// credential) so the default harness represents a provider-enabled server;
+// the credential-absent / unhealthy postures (fail-closed) have their own
+// harnesses in admission_test.go.
+func newHarnessWith(t *testing.T, setup harnessSetup) *harness {
 	t.Helper()
 	pool := cloudtestpg.NewDB(t)
 	s := store.New(pool)
 	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-
-	// httptest.NewServer's URL is only known AFTER the server starts, but
-	// api.New needs ExternalBaseURL up front — every PoP proof the test
-	// client mints binds its htu to that base, and the server reconstructs
-	// the same base to verify it, so the two must agree exactly. Pre-bind a
-	// listener so the base URL is known before the handler (and therefore
-	// the Server) is built, then hand that listener to httptest.Server
-	// instead of letting it pick its own.
+	if !setup.noJournal {
+		s.SetDeletionJournal(mustJournal(t))
+		apiStore.SetDeletionJournal(mustJournal(t))
+	}
+	if setup.stores != nil {
+		setup.stores(s, apiStore)
+	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	base := "http://" + lis.Addr().String()
-
-	// Raise caps so allowance limits don't interfere with functional tests, and
-	// DISABLE rate limiting (all-zero config) so unrelated functional tests are
-	// deterministic — the rate-limit behaviour has its own harness below. Wire a
-	// HEALTHY admission gate (verified attestation + present credential) so the
-	// default harness represents a provider-enabled server and its post-admission
-	// flow tests still submit successfully; the credential-absent / unhealthy
-	// postures (fail-closed) have their own harnesses in admission_test.go.
-	handler := api.New(api.Options{
+	o := api.Options{
 		Store:           apiStore,
 		Queue:           jobs.NewPGQueue(apiStore),
 		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
+		ExternalBaseURL: "http://" + lis.Addr().String(),
 		RateLimit:       &api.RateLimitConfig{},
 		Attestor:        admAttestor{verified: true},
 		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-	}).Handler()
-
+	}
+	if setup.opts != nil {
+		setup.opts(&o)
+	}
+	handler := api.New(o).Handler()
 	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return &harness{srv: srv, store: s}
 }
 
+// withTestPaddlePrices wires the one-plan test price map on both stores. The
+// price map is per-Store state: the SERVER resolves prices through apiStore,
+// the fixtures (mintPaddleNonce) through app — both need it.
+func withTestPaddlePrices(app, apiStore *store.Store) {
+	priceMap := map[string]store.PaddlePlan{"pri_test_plus": {Name: "plus_beta", Version: 1}}
+	app.SetPaddlePriceMap(priceMap)
+	apiStore.SetPaddlePriceMap(priceMap)
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessWith(t, harnessSetup{})
+}
+
 // newHarnessRL builds a harness with an explicit rate-limit policy so the
 // per-IP/device/account caps can be exercised (dev-auth verifier).
 func newHarnessRL(t *testing.T, cfg api.RateLimitConfig) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &cfg,
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{opts: func(o *api.Options) { o.RateLimit = &cfg }})
 }
 
 // newHarnessPaddle builds a harness with the W9 Paddle webhook secret set (so
@@ -152,35 +165,10 @@ func newHarnessRL(t *testing.T, cfg api.RateLimitConfig) *harness {
 // wired on the store.
 func newHarnessPaddle(t *testing.T, secret string) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	// The price map is per-Store state: the SERVER resolves prices through
-	// apiStore, the fixtures (mintPaddleNonce) through s — both need it.
-	priceMap := map[string]store.PaddlePlan{"pri_test_plus": {Name: "plus_beta", Version: 1}}
-	s.SetPaddlePriceMap(priceMap)
-	apiStore.SetPaddlePriceMap(priceMap)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            identity.NewDevAuth(),
-		ExternalBaseURL:     base,
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PaddleWebhookSecret: secret,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{
+		stores: withTestPaddlePrices,
+		opts:   func(o *api.Options) { o.PaddleWebhookSecret = secret },
+	})
 }
 
 // testClient models a signed-in device.

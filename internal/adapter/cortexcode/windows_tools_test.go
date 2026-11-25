@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
@@ -127,8 +128,8 @@ func TestIsAbsAnyOS(t *testing.T) {
 		{"*.txt", false},
 	}
 	for _, tc := range cases {
-		if got := isAbsAnyOS(tc.in); got != tc.want {
-			t.Errorf("isAbsAnyOS(%q) = %v, want %v", tc.in, got, tc.want)
+		if got := parseutil.IsAbsAnyOS(tc.in); got != tc.want {
+			t.Errorf("parseutil.IsAbsAnyOS(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }

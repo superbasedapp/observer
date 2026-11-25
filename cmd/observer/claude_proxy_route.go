@@ -1151,7 +1151,10 @@ func emptyUnsetNoticeRedundant(attachDownNoticed bool, action claudeEmptyUnsetAc
 func runClaudeEmptyUnset(opts claudeLauncherOptions, bin, proxyURL string, route claudeRouteResolution, launchArgs []string, continueDir string, attachDownNoticed bool) error {
 	proxyUp := false
 	if !opts.noProxyRoute {
-		proxyUp = proxyReachable(proxyURL, 250*time.Millisecond)
+		// L-169: a daemon found down is started first (launchProxyUp).
+		proxyUp = launchProxyUp(context.Background(), launchAutostartRequest{
+			label: "claude", configPath: opts.configPath, proxyURL: proxyURL, wanted: true, stderr: opts.stderr,
+		})
 	}
 	scopeOutrankable := route.scope == claudeScopeUser ||
 		route.scope == claudeScopeProject ||

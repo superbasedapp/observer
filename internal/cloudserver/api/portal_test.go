@@ -3,16 +3,12 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -23,34 +19,11 @@ const devCookieName = "sbci_session"
 const csrfHeader = "X-SBCI-CSRF"
 
 // newHarnessVerifier builds a portal harness with an explicit broker verifier,
-// so the dev-auth-off (501) path can be exercised. Mirrors newHarness's
-// pre-bound-listener dance (ExternalBaseURL must be known before api.New).
+// so the dev-auth-off (501) path can be exercised (built on newHarnessWith).
 func newHarnessVerifier(t *testing.T, v identity.Verifier) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        v,
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{}, // disabled ⇒ deterministic
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-		// PortalSecureCookie defaults false ⇒ dev "sbci_session" cookie over http.
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	// PortalSecureCookie defaults false ⇒ dev "sbci_session" cookie over http.
+	return newHarnessWith(t, harnessSetup{opts: func(o *api.Options) { o.Verifier = v }})
 }
 
 // portalClient models a signed-in BROWSER: a cookie jar (the session cookie the

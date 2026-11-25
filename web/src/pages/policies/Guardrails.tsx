@@ -26,6 +26,7 @@ import { markRestartPending } from "@/lib/restartPending";
 import { useDaemonRestart } from "@/lib/useDaemonRestart";
 import { RestartOverlay } from "@/components/RestartOverlay";
 import { AdmissionOffNote, restartErrorText } from "./AdmissionOff";
+import { JudgeInEffect } from "./JudgeInEffect";
 import {
   type AdmissionCriterion,
   type AdmissionPolicy,
@@ -116,6 +117,7 @@ export function GuardrailsTab({ onApplied, admissionOff }: { onApplied?: () => v
           {restartErrorText(restartError)}
         </Callout>
       )}
+      <JudgeInEffect />
       <JudgeEditor configApi={configApi} saveAndRestart={saveAndRestart} />
       <BudgetEditor configApi={configApi} saveAndRestart={saveAndRestart} />
     </div>

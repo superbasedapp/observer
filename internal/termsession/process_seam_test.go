@@ -122,8 +122,18 @@ func TestOnProcessSeam(t *testing.T) {
 					return countKind(rec.snapshot(), ProcessExited) == tc.wantExited
 				})
 			}
-			// Give a stray edge a chance to show up before asserting counts.
-			time.Sleep(20 * time.Millisecond)
+			// Barrier before asserting counts: Shutdown terminates the
+			// session and waits for its lifecycle goroutines (waitExit fires
+			// the Exited edge), so any stray edge has been delivered by the
+			// time wg drains. Shutdown fires no edge of its own.
+			m.Shutdown()
+			idle := make(chan struct{})
+			go func() { m.wg.Wait(); close(idle) }()
+			select {
+			case <-idle:
+			case <-time.After(5 * time.Second):
+				t.Fatal("session goroutines did not finish after Shutdown")
+			}
 			evs := rec.snapshot()
 			if got := countKind(evs, ProcessSpawned); got != tc.wantSpawned {
 				t.Errorf("spawned edges = %d, want %d", got, tc.wantSpawned)

@@ -133,15 +133,11 @@ func CheckKey(dotted string, gov KeyGovernance) KeyCheck {
 	return c
 }
 
-// SecretShaped reports whether a value about to be written holds a string
-// that looks like a credential (the injected detector) or a string under a
-// credential-named map key. The posture (warn / refuse) is the caller's.
-func SecretShaped(v any, detect func(string) bool) bool {
-	return secretShaped(v, detect, true)
-}
-
-// SecretShapedLeaf is SecretShaped for a value of leaf l: a map whose keys
-// are ids (Leaf.KeysAreIDs) is judged by its values alone.
+// SecretShapedLeaf reports whether a value about to be written to leaf l
+// holds a string that looks like a credential (the injected detector) or a
+// string under a credential-named map key; a map whose keys are ids
+// (Leaf.KeysAreIDs) is judged by its values alone. The posture (warn /
+// refuse) is the caller's.
 func SecretShapedLeaf(l Leaf, v any, detect func(string) bool) bool {
 	return secretShaped(v, detect, !l.KeysAreIDs)
 }

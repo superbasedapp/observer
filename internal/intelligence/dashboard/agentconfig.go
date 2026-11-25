@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/agentconfigorg"
 	"github.com/marmutapp/superbased-observer/internal/agentconfigsvc"
+	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -396,37 +397,13 @@ func (s *Server) decodeAgentConfigBody(w http.ResponseWriter, r *http.Request, v
 	return true
 }
 
-// numbersToNative turns json.Number values (UseNumber) into int64 / float64
-// so an integer setting is written as an integer.
-func numbersToNative(v any) any {
-	switch x := v.(type) {
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return i
-		}
-		f, _ := x.Float64()
-		return f
-	case []any:
-		for i := range x {
-			x[i] = numbersToNative(x[i])
-		}
-		return x
-	case map[string]any:
-		for k := range x {
-			x[k] = numbersToNative(x[k])
-		}
-		return x
-	}
-	return v
-}
-
 func (s *Server) handleAgentConfigPreview(w http.ResponseWriter, r *http.Request) {
 	var req agentconfigsvc.SaveRequest
 	if !s.decodeAgentConfigBody(w, r, &req, &req.Project) {
 		return
 	}
 	for i := range req.Edits {
-		req.Edits[i].Value = numbersToNative(req.Edits[i].Value)
+		req.Edits[i].Value = cfgfmt.NativeNumbers(req.Edits[i].Value)
 	}
 	p, err := s.agentConfigService().Preview(r.Context(), req)
 	if err != nil {
@@ -445,7 +422,7 @@ func (s *Server) handleAgentConfigSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range req.Edits {
-		req.Edits[i].Value = numbersToNative(req.Edits[i].Value)
+		req.Edits[i].Value = cfgfmt.NativeNumbers(req.Edits[i].Value)
 	}
 	out, err := s.agentConfigService().Save(r.Context(), req)
 	if err != nil {
@@ -463,7 +440,7 @@ func (s *Server) handleAgentConfigCommonPreview(w http.ResponseWriter, r *http.R
 	if !s.decodeAgentConfigBody(w, r, &req, &req.Project) {
 		return
 	}
-	req.Value = numbersToNative(req.Value)
+	req.Value = cfgfmt.NativeNumbers(req.Value)
 	p, err := s.agentConfigService().CommonPreview(r.Context(), req)
 	if err != nil {
 		writeAgentConfigErr(w, err)
@@ -480,7 +457,7 @@ func (s *Server) handleAgentConfigCommonSave(w http.ResponseWriter, r *http.Requ
 	if !s.decodeAgentConfigBody(w, r, &req, &req.Project) {
 		return
 	}
-	req.Value = numbersToNative(req.Value)
+	req.Value = cfgfmt.NativeNumbers(req.Value)
 	if a := s.agentConfigAccess(r.Context()); a.ReadOnly {
 		writeJSONStatus(w, http.StatusConflict, map[string]string{"error": "not_editable", "message": a.Reason})
 		return

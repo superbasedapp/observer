@@ -208,22 +208,6 @@ func (s *Store) fetchAPITurnsSince(ctx context.Context, afterID int64, limit int
 	return out, nil
 }
 
-// parseStoredTime parses a stored RFC3339Nano timestamp string. It tolerates a
-// plain RFC3339 value and returns the zero time on an unparseable input (the
-// exporter then falls back to the publish time for the span).
-func parseStoredTime(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
-	}
-	return time.Time{}
-}
-
 // ProjectRootByID resolves a project_id to its root_path. Returns "" (no error)
 // when the id is unknown, so the exporter can attribute an unresolved turn
 // without an empty-string crash. Used by the OTel exporter's cached resolver.

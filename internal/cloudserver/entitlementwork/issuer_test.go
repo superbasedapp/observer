@@ -492,3 +492,67 @@ func TestIssuerAsksForFloorPlusOne(t *testing.T) {
 		})
 	}
 }
+
+// TestIssuerMovesPersonalOrgsToV2 is the L-166 move (2026-11-24): a personal
+// org that holds a document issued before the v2 personal plans is issued
+// v2 at the worker's next pass. The free org is on the floor (whose plan is
+// now personal_free v2); the Pro org's subscription row still names
+// personal_pro v1 (migrate-personal's re-key), which the catalog carries
+// forward. A second pass issues nothing.
+func TestIssuerMovesPersonalOrgsToV2(t *testing.T) {
+	t.Parallel()
+	const orgC = "cccccccc-0000-4000-8000-000000000003"
+	now := testNow
+	freeOrg := store.OrgEntitlementView{OrgID: orgB, Kind: store.OrgPersonal, Status: "active"}
+	proOrg := store.OrgEntitlementView{OrgID: orgC, Kind: store.OrgPersonal, Status: "active"}
+	st := newStore(freeOrg, proOrg)
+	sg := newMemSigner(entKey)
+
+	// Before L-166: each org holds its v1 document.
+	old := &planBox{}
+	old.set("personal_free", 1)
+	if o, err := newIssuer(t, st, sg, keySet(entKey), old, &now).Ensure(context.Background(), freeOrg); err != nil || o != entitlementwork.OutcomeIssued {
+		t.Fatalf("seed free v1 = %v, %v", o, err)
+	}
+	old.set("personal_pro", 1)
+	if o, err := newIssuer(t, st, sg, keySet(entKey), old, &now).Ensure(context.Background(), proOrg); err != nil || o != entitlementwork.OutcomeIssued {
+		t.Fatalf("seed pro v1 = %v, %v", o, err)
+	}
+
+	// After: the production plan source over the unchanged rows.
+	now = now.Add(time.Hour)
+	subs := &fakeSubs{subs: map[string]store.PaddleSubscription{}}
+	subs.set(orgC, sub("personal_pro", 1, "active"))
+	iss := newIssuer(t, st, sg, keySet(entKey), entitlementwork.SubscriptionPlans{Subs: subs, Now: func() time.Time { return now }}, &now)
+	stats, err := iss.IssueOnce(context.Background())
+	if err != nil || stats.Issued != 2 {
+		t.Fatalf("move pass = %+v, %v", stats, err)
+	}
+	for _, c := range []struct {
+		org         string
+		plan        string
+		events, gbs int64
+	}{
+		{orgB, "personal_free", entitlements.PersonalFreePlaneAEvents, entitlements.PersonalFreePlaneAGB},
+		{orgC, "personal_pro", entitlements.PersonalProPlaneAEvents, entitlements.PersonalProPlaneAGB},
+	} {
+		doc, _ := st.LatestEntitlementDocument(context.Background(), c.org)
+		got, err := entitlements.Verify(doc, entitlements.Binding{Org: c.org, Kind: entitlements.KindPersonal}, keySet(entKey), 0)
+		if err != nil {
+			t.Fatalf("%s: %v", c.org, err)
+		}
+		// The catalog carries v1 holders to the newest carried version (v2
+		// at L-166, v3 since the hosted AI gateway's v3 rows).
+		want, _ := entitlements.Current(c.plan, 1)
+		if got.Body.Plan.Name != c.plan || got.Body.Plan.Version != want.Plan.Version || want.Plan.Version < 2 {
+			t.Fatalf("%s: plan %+v, want %s v%d", c.org, got.Body.Plan, c.plan, want.Plan.Version)
+		}
+		e := entitlements.Evaluate(entitlements.KindPersonal, &got, now)
+		if !e.Has(entitlements.CapabilityPlaneAGateway) || e.Cap(entitlements.CapPlaneAEventsMonthly).N != c.events || e.Cap(entitlements.CapPlaneAGBMonthly).N != c.gbs {
+			t.Fatalf("%s: gateway %v caps %+v / %+v", c.org, e.Has(entitlements.CapabilityPlaneAGateway), e.Cap(entitlements.CapPlaneAEventsMonthly), e.Cap(entitlements.CapPlaneAGBMonthly))
+		}
+	}
+	if stats, err := iss.IssueOnce(context.Background()); err != nil || stats.Issued != 0 || stats.Current != 2 {
+		t.Fatalf("second pass = %+v, %v", stats, err)
+	}
+}

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from . import _control
 from ._context import get_current_trace_id
+from ._planrefusal import PlanRefusalError
 
 LOG = logging.getLogger("superbased_sdk")
 
@@ -48,13 +49,17 @@ class ScoreResult:
     accepted it. ``id`` is the stored score id (``sc_…``) the first accepting
     destination returned; ``client_id`` the idempotency id that was sent.
     ``destinations`` maps each destination name to ``{"ok", "status", "id",
-    "error"}``; ``errors`` lists every problem (validation or transport)."""
+    "error"}``; ``errors`` lists every problem (validation or transport).
+    ``plan_refusal`` is set when the org's plan refused the score (a
+    ``PlanRefusalError``: its message and ``upgrade_url`` say why and where
+    to fix it)."""
 
     ok: bool = False
     id: str = ""
     client_id: str = ""
     destinations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
+    plan_refusal: Optional[PlanRefusalError] = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -167,6 +172,7 @@ def post_scores(objs: List[Dict[str, Any]]) -> List[ScoreResult]:
             # Once, with the same ids: the id makes a repeat a no-op (contract
             # scores.md), so a blip never loses a score and never doubles one.
             resp = side.call("POST", "scores", body=body)
+        refusal = resp.plan_refusal()
         accepted: Dict[int, str] = {}
         rejected: Dict[int, str] = {}
         if isinstance(resp.body, dict):
@@ -184,6 +190,7 @@ def post_scores(objs: List[Dict[str, Any]]) -> List[ScoreResult]:
                 err = rejected.get(i) or resp.describe()
                 res.destinations[side.name] = {"ok": False, "status": resp.status, "id": "", "error": err}
                 res.errors.append(f"{side.name}: {err}")
+                res.plan_refusal = res.plan_refusal or refusal
     for res in results:
         res.ok = result_ok(res)
         if not res.ok:
@@ -192,8 +199,12 @@ def post_scores(objs: List[Dict[str, Any]]) -> List[ScoreResult]:
 
 
 def _retryable(resp: Any) -> bool:
-    """No answer, 429 or a 5xx: worth one more try (as the TypeScript SDK)."""
+    """No answer, 429 or a 5xx: worth one more try (as the TypeScript SDK).
+    A 429 over the plan's allowance is not: it holds until the plan changes
+    or the month turns."""
     status = getattr(resp, "status", 0)
+    if status == 429 and resp.plan_refusal() is not None:
+        return False
     return status == 0 or status == 429 or status >= 500
 
 

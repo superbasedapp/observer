@@ -240,17 +240,6 @@ func Messages(a Attrs, f Field, lists []IndexedList) string {
 	return ""
 }
 
-// IndexedMessages renders the first indexed list of lists present on a span
-// as a JSON array, "" when none is.
-func IndexedMessages(a Attrs, lists []IndexedList) string {
-	for _, l := range lists {
-		if s := collectIndexed(a, l); s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
 // maxIndexed bounds an indexed list's length (messages, parts, tool calls).
 const maxIndexed = 512
 

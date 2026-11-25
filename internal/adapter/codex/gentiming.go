@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -124,7 +125,7 @@ var cxEventMsgKind = map[string]codexTimingKind{
 
 // classifyCodexRecord projects one decoded record.
 func classifyCodexRecord(line rawLine, pType string) codexTimingLine {
-	tl := codexTimingLine{TS: parseTimestamp(line.Timestamp), TokIdx: -1}
+	tl := codexTimingLine{TS: parseutil.ParseRFC3339(line.Timestamp), TokIdx: -1}
 	switch line.Type {
 	case "response_item":
 		if pType == "message" {

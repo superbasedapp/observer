@@ -460,6 +460,45 @@ func (s *Store) OrgSubscription(ctx context.Context, orgID string) (PaddleSubscr
 	return out, nil
 }
 
+// PersonalOrgOwnerSubscription reads the account-scoped subscription (not
+// bound to any org) of personal org orgID's owner, the most relevant one
+// first (live before ended, then the newest), through the 0155 definer
+// sbci_personal_org_owner_subscription. ErrNotFound when orgID is not a
+// personal org or its owner has none. The entitlement worker issues the org
+// the personal plan the catalog pairs with it (operator ruling L-167: a
+// Personal Pro purchase, the plus_beta price, lands on the account's personal
+// org as personal_pro).
+func (s *Store) PersonalOrgOwnerSubscription(ctx context.Context, orgID string) (PaddleSubscription, error) {
+	if !validOrgID(orgID) {
+		return PaddleSubscription{}, ErrNotFound
+	}
+	var out PaddleSubscription
+	found := false
+	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		e := tx.QueryRow(ctx,
+			`SELECT paddle_subscription_id, plan_name, plan_version, status,
+			        current_period_end, canceled_at, trial_ends_at, past_due_since
+			   FROM sbci_personal_org_owner_subscription($1::uuid)`, orgID).
+			Scan(&out.SubscriptionID, &out.PlanName, &out.PlanVersion, &out.Status,
+				&out.CurrentPeriodEnd, &out.CanceledAt, &out.TrialEndsAt, &out.PastDueSince)
+		switch {
+		case errors.Is(e, pgx.ErrNoRows):
+			return nil
+		case e != nil:
+			return e
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return PaddleSubscription{}, fmt.Errorf("cloudserver/store.PersonalOrgOwnerSubscription: %w", err)
+	}
+	if !found {
+		return PaddleSubscription{}, ErrNotFound
+	}
+	return out, nil
+}
+
 // PortalOrgSubscription is the console's read of org orgID's most relevant
 // subscription, for a caller who is an org admin or owner, or its billing
 // owner (the 0098 definer sbci_portal_org_subscription_v2, 0091's rule plus

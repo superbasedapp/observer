@@ -3,7 +3,6 @@ package qwencode
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -314,20 +313,6 @@ func responseOutput(raw json.RawMessage) string {
 		}
 	}
 	return string(raw)
-}
-
-// parseTimestamp decodes qwen's RFC3339 millisecond timestamps. Returns
-// the zero time on an empty or unparseable value.
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.000Z"} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t.UTC()
-		}
-	}
-	return time.Time{}
 }
 
 // firstText returns the concatenated text parts of a message, trimmed.

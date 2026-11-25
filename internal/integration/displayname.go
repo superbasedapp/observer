@@ -81,10 +81,3 @@ func DisplayName(tool string) string {
 	}
 	return tool
 }
-
-// HasDisplayName reports whether tool has a known product name (so a caller
-// can tell a resolved name from the id echoed back).
-func HasDisplayName(tool string) bool {
-	_, ok := displayNames[tool]
-	return ok
-}

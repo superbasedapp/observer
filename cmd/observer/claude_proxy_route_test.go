@@ -57,7 +57,8 @@ func writeRecordingClaudeBin(t *testing.T) (bin, argsFile string) {
 	return writeShellStub(t, bin, script), argsFile
 }
 
-// recordedArgv reads back the argv writeRecordingClaudeBin captured.
+// recordedArgv reads back the argv a recording stub (writeRecordingClaudeBin,
+// writeRecordingCodexBin) captured, one argument per line.
 func recordedArgv(t *testing.T, argsFile string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(argsFile)

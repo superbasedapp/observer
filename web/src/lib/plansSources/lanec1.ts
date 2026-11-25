@@ -1,4 +1,4 @@
-// Words for the sources lane C1 adds (internal/planlimits/src_lanec1.go).
+// Words for the sources internal/planlimits/src_browser.go adds (built as lane C1).
 // Pure data; plans.ts merges it. Keys of LANE_C1 are source ids; keys of
 // LANE_C1_WORDS are new parameter keys and parameter choices.
 import type { SourceWords } from "./types.ts";

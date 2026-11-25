@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/codexpatch"
@@ -964,30 +965,13 @@ func wholeContentStats(in Input, path, content string) FileStats {
 	oldLines := make([]string, in.BeforeLines)
 	oldClasses := make([]LineClass, in.BeforeLines)
 	for i := range oldLines {
-		oldLines[i] = "\x00loc-before-image\x00" + itoa(i)
+		oldLines[i] = "\x00loc-before-image\x00" + strconv.Itoa(i)
 		oldClasses[i] = ClassUnknown
 	}
 	fs.Stats = Count(Diff(oldLines, newLines), oldClasses, newClasses, oldLines, newLines)
 	fs.Confidence = ConfidenceMedium.Min(newConf)
 	applyGeneratedHeader(&fs, content)
 	return fs
-}
-
-// itoa is a dependency-free small-integer formatter for the before-image
-// placeholder lines (strconv would be fine; this keeps the placeholder
-// construction obviously allocation-cheap and self-contained).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 // digestOf hashes normalized patch text into the hex digest the store

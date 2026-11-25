@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -176,27 +177,10 @@ func targetFromInput(input json.RawMessage) (value, key string) {
 // placeholder root are left alone; a relative path handed to
 // git.RelativePath would resolve against the observer's own cwd.
 func relativeTarget(target, key, root string) string {
-	if !pathTargetKeys[key] || root == "" || root == placeholderRoot || !isAbsAnyOS(target) {
+	if !pathTargetKeys[key] || root == "" || root == placeholderRoot || !parseutil.IsAbsAnyOS(target) {
 		return target
 	}
 	return git.RelativePath(root, crossmount.TranslateForeignPath(target))
-}
-
-// isAbsAnyOS reports whether p is absolute in EITHER path flavor: POSIX
-// `/...`, UNC `\\...`, or a Windows drive path `C:\...` / `C:/...`.
-// filepath.IsAbs answers only for the running OS.
-func isAbsAnyOS(p string) bool {
-	if p == "" {
-		return false
-	}
-	if p[0] == '/' || strings.HasPrefix(p, `\\`) {
-		return true
-	}
-	if len(p) < 3 || p[1] != ':' || (p[2] != '\\' && p[2] != '/') {
-		return false
-	}
-	c := p[0]
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // authoredBytes returns the byte length of the code the model authored in

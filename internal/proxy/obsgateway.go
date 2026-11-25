@@ -64,7 +64,7 @@ type ObsSink interface {
 type ObsContentExtractor func(reqBody, respBody []byte) (prompt, response string)
 
 // obsLaneCtxKey carries the /up/<id> upstream-lane routing id on the request
-// context (stamped in serve() right after stripUpstreamPrefix). Its presence
+// context (stamped in serve() right after resolveUpstreamPrefix). Its presence
 // is the PLANE BOUNDARY discriminator for the gateway rail: Plane A (general
 // observability of hosted apps) synthesizes traces ONLY for turns that
 // arrived via an explicit /up/<id> lane — the lane a co-resident hosted app
@@ -119,7 +119,12 @@ type ChatTurnFacts struct {
 	// populated whenever this sink is wired even if admission itself is
 	// disabled — see cmd/observer/obs_wire.go's AdmissionUserHeader lift.
 	// Empty when no identity header was sent/configured.
-	User     string
+	User string
+	// Service is the app's service name from X-Superbased-Service on the
+	// lane (applane.go; L7 gap 1): the synthesized trace carries it, so
+	// service-scoped app caps and the AI Apps service views see the call.
+	// Empty when the app sent none.
+	Service  string
 	Provider string
 	Model    string
 

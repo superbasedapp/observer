@@ -142,7 +142,8 @@ func claudeCodeEvents(name string) []string { return []string{"claude_code." + n
 var vendors = []Vendor{
 	{
 		// Claude Code: the original ccotel parser, moved onto the table with
-		// its behaviour pinned by internal/adapter/ccotel's tests.
+		// its behaviour pinned by the claude-code row tests (claudecode_test.go,
+		// formerly internal/adapter/ccotel's tests).
 		Tool: "claude-code", ServiceNames: []string{"claude-code"}, ClaimByEventName: true,
 		Provider: "anthropic", SourceTag: sourceCCOTel, Grain: GrainUser, NoSessionRows: true,
 		// Input is already NET (Anthropic usage), output already gross. No

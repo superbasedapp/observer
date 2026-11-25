@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/marmutapp/superbased-observer/internal/migplan"
 	"github.com/marmutapp/superbased-observer/internal/migplan/sqliteledger"
@@ -75,6 +76,41 @@ func wrapf(msg string, err error) error { return fmt.Errorf("%s: %w", msg, err) 
 
 func TestScenariosOnAMinimalRunner(t *testing.T) {
 	ledgertest.Scenarios(t, "minimal.runMigrations", minimalRunner)
+}
+
+// runPass drives Run, the package's complete pass, the way the cold archive
+// does.
+func runPass(ctx context.Context, db *sql.DB, source fs.FS, late []migplan.LateStep) error {
+	entries, err := sqliteledger.ReadEntries(source, "run.readEntries")
+	if err != nil {
+		return err
+	}
+	return sqliteledger.Run(ctx, db, source, entries, late, "run.runMigrations")
+}
+
+func TestScenariosOnRun(t *testing.T) {
+	ledgertest.Scenarios(t, "run.runMigrations", runPass)
+}
+
+func TestReadEntries(t *testing.T) {
+	src := fstest.MapFS{
+		"010_b.sql":   &fstest.MapFile{Data: []byte("SELECT 1;")},
+		"002_a.sql":   &fstest.MapFile{Data: []byte("SELECT 1;")},
+		"notes.md":    &fstest.MapFile{Data: []byte("x")},
+		"sub/1_x.sql": &fstest.MapFile{Data: []byte("x")},
+	}
+	got, err := sqliteledger.ReadEntries(src, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sqliteledger.Entry{{Version: 2, File: "002_a.sql"}, {Version: 10, File: "010_b.sql"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadEntries = %+v, want %+v", got, want)
+	}
+	src["x_bad.sql"] = &fstest.MapFile{Data: []byte("x")}
+	if _, err := sqliteledger.ReadEntries(src, "t"); err == nil || !strings.HasPrefix(err.Error(), `t: unparseable migration "x_bad.sql"`) {
+		t.Errorf("ReadEntries on a bad name: err = %v", err)
+	}
 }
 
 func TestReadLedger(t *testing.T) {

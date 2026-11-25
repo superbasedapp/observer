@@ -6,20 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-)
 
-func writeTree(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for p, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
+)
 
 // symlinkOrSkip makes a symlink, skipping the test on a host that refuses
 // (Windows without developer mode).
@@ -55,7 +44,7 @@ func readRoot(t *testing.T, src string) (Result, string, error) {
 
 func TestReadRootAllowListOnly(t *testing.T) {
 	src := t.TempDir()
-	writeTree(t, src, map[string]string{
+	fstree.WriteIn(t, src, map[string]string{
 		"usr/lib/os-release":                debianOSRelease,
 		"var/lib/dpkg/status":               dpkgStatus,
 		"var/lib/dpkg/status.d/tzdata":      "Package: tzdata\n",
@@ -81,8 +70,8 @@ func TestReadRootAllowListOnly(t *testing.T) {
 func TestReadRootNeverFollowsLinks(t *testing.T) {
 	src := t.TempDir()
 	outside := t.TempDir()
-	writeTree(t, outside, map[string]string{"rpmdb.sqlite": "host db", "status": dpkgStatus})
-	writeTree(t, src, map[string]string{"usr/lib/os-release": debianOSRelease})
+	fstree.WriteIn(t, outside, map[string]string{"rpmdb.sqlite": "host db", "status": dpkgStatus})
+	fstree.WriteIn(t, src, map[string]string{"usr/lib/os-release": debianOSRelease})
 	symlinkOrSkip(t, filepath.Join(outside, "rpmdb.sqlite"), filepath.Join(src, "var", "lib", "rpm", "rpmdb.sqlite"))
 	symlinkOrSkip(t, "../usr/lib/os-release", filepath.Join(src, "etc", "os-release"))
 	// A symlinked parent directory: never read through.

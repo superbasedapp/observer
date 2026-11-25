@@ -1,0 +1,213 @@
+{
+  "_doc": "POST <target.server_url>/api/agent/sdk-credential/grant on the tenant host (section 13.6; internal/orgserver/sdkcred, lane L4). request.body is what setup sends; key_grant is internal/sdkkeygrant/testdata/vectors.json valid[0] (signed by that file's TEST-ONLY key) and redeem_secret is the secret whose hash it carries, so a tenant test that pins the vector key verifies this exact request. responses are what the host answers: minted is sdkcred.GrantRedeemed, which embeds orgcontract.SDKCredentialMinted (the member mint's own body, one owner) and adds dashboard_url and, only when the month's ingest allowance is already used, plan_refusal (the ingest gateway's own 429 body: error, message, quota and the plan detail, from gateway/planrefusal and the meter's decision). Tenant errors are {error: <code>, message: <text>}; key_grant_refused adds reason (a closed vocabulary: internal/sdkkeygrant's Reason values, plus wrong_org, redeem_mismatch, not_a_member, member_inactive). A replaces_key_id that is not this member's key is ignored, never an error (the member mint's named-key rule). Every answer carries Cache-Control: no-store.",
+  "method": "POST",
+  "url": "https://u-k7x2.superbased.app/api/agent/sdk-credential/grant",
+  "request": {
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {
+      "key_grant": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "redeem_secret": "fake-redeem-secret-for-tests-only-000000000",
+      "machine_name": "studio-mac",
+      "replaces_key_id": ""
+    }
+  },
+  "request_rules": {
+    "key_grant": "the poll's key_grant, verbatim",
+    "redeem_secret": "the 43-character secret whose hash went to the create",
+    "machine_name": "as at the create; recorded with the key so the member can tell keys apart",
+    "replaces_key_id": "\"\" or the key_id of the SDK-held file this run replaces (setup --online --replace); revoked only when it is this member's key"
+  },
+  "responses": {
+    "minted": {
+      "status": 201,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "cred_id": "1f2e3d4c5b6a79880f1e2d3c4b5a6978",
+        "key_id": "00000000000000000000000000000001",
+        "credential": "00000000000000000000000000000001.FAKE-sdk-key-secret-for-contract-tests-only",
+        "org_id": "0b6f3d2a-6a51-4c1e-9d0f-6f1c2b7e8a90",
+        "workspace_id": "default",
+        "scopes": [
+          "admit",
+          "sdk:read",
+          "sdk:write"
+        ],
+        "signals": [
+          "logs",
+          "metrics",
+          "traces"
+        ],
+        "gateway_url": "https://u-k7x2.superbased.app",
+        "dashboard_url": "https://u-k7x2.superbased.app",
+        "minted_at": "2027-01-15T08:00:30Z",
+        "expires_at": "2027-04-15T08:00:30Z",
+        "capture_level": "full_redacted",
+        "replaced": 0
+      }
+    },
+    "minted_month_used": {
+      "status": 201,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "cred_id": "1f2e3d4c5b6a79880f1e2d3c4b5a6978",
+        "key_id": "00000000000000000000000000000001",
+        "credential": "00000000000000000000000000000001.FAKE-sdk-key-secret-for-contract-tests-only",
+        "org_id": "0b6f3d2a-6a51-4c1e-9d0f-6f1c2b7e8a90",
+        "workspace_id": "default",
+        "scopes": [
+          "admit",
+          "sdk:read",
+          "sdk:write"
+        ],
+        "signals": [
+          "logs",
+          "metrics",
+          "traces"
+        ],
+        "gateway_url": "https://u-k7x2.superbased.app",
+        "dashboard_url": "https://u-k7x2.superbased.app",
+        "minted_at": "2027-01-15T08:00:30Z",
+        "expires_at": "2027-04-15T08:00:30Z",
+        "capture_level": "full_redacted",
+        "replaced": 0,
+        "plan_refusal": {
+          "error": "planea_events_quota_exceeded",
+          "message": "This organization has used this month's AI Apps allowance of its plan (Personal Free): 100,000 events. Dashboards and queries keep working.",
+          "quota": {
+            "quota": "events_monthly",
+            "unit": "events",
+            "used": 100000,
+            "limit": 100000,
+            "resets_at": "2027-02-01T00:00:00Z"
+          },
+          "capability": "org.planea.gateway",
+          "plan": {
+            "name": "personal_free",
+            "version": 3,
+            "label": "Personal Free"
+          },
+          "allowance": {
+            "events_monthly": 100000,
+            "gb_monthly": 1
+          },
+          "upgrade_url": "https://cloud.superbased.app/portal/billing"
+        }
+      }
+    },
+    "plan_required": {
+      "status": 403,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "plan_required",
+        "message": "AI Apps ingest is not part of this organization's plan (Team). Business (10,000,000 events and 50 GB a month) includes more. Dashboards and queries keep working. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/5d4c3b2a.",
+        "capability": "org.planea.gateway",
+        "plan": {
+          "name": "team",
+          "version": 1,
+          "label": "Team"
+        },
+        "allowance": {
+          "events_monthly": 0,
+          "gb_monthly": 0
+        },
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/5d4c3b2a"
+      }
+    },
+    "not_a_member": {
+      "status": 403,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "key_grant_refused",
+        "message": "You are not a member of this team; ask an admin to invite you.",
+        "reason": "not_a_member"
+      }
+    },
+    "grant_refused": {
+      "status": 403,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "key_grant_refused",
+        "message": "This approval has expired; run setup again.",
+        "reason": "expired"
+      }
+    },
+    "not_accepted": {
+      "status": 403,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "key_grant_not_accepted",
+        "message": "This dashboard does not take SDK sign-in approvals."
+      }
+    },
+    "not_supported": {
+      "status": 404,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "not_supported",
+        "message": "This organization issues no member SDK keys; ask an admin for an app key."
+      }
+    },
+    "grant_used": {
+      "status": 410,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "error": "key_grant_used",
+        "message": "This approval was already used; run setup again."
+      }
+    },
+    "rate_limited": {
+      "status": 429,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Retry-After": "30"
+      },
+      "body": {
+        "error": "rate_limited",
+        "message": "too many requests"
+      }
+    }
+  },
+  "minted_fields": [
+    "cred_id",
+    "key_id",
+    "credential",
+    "org_id",
+    "workspace_id",
+    "scopes",
+    "signals",
+    "gateway_url",
+    "dashboard_url",
+    "minted_at",
+    "expires_at",
+    "capture_level",
+    "replaced"
+  ]
+}

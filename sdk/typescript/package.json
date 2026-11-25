@@ -1,6 +1,6 @@
 {
   "name": "@superbased/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "superbased SDK: send LLM-app and agent traces to superbased over OpenTelemetry (OTLP), with scores, experiments, prompts and auto-instrumentation.",
   "license": "Apache-2.0",
   "author": "superbased <contact@superbased.app>",
@@ -14,6 +14,9 @@
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
+  "bin": {
+    "superbased-sdk": "dist/setup/cli.js"
+  },
   "exports": {
     ".": {
       "import": {
@@ -24,6 +27,11 @@
         "types": "./dist/cjs/index.d.ts",
         "default": "./dist/cjs/index.js"
       }
+    },
+    "./register": {
+      "types": "./dist/esm/register.d.ts",
+      "import": "./dist/esm/register.js",
+      "default": "./dist/esm/register.js"
     },
     "./package.json": "./package.json"
   },
@@ -37,7 +45,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/sdk.test.mjs test/admit.test.mjs test/api.test.mjs test/destination.test.mjs test/control.test.mjs test/cost.test.mjs test/vocabulary.test.mjs test/behaviour.test.mjs test/instrument.test.mjs test/cjs.test.cjs",
+    "test": "npm run build && node --test test/sdk.test.mjs test/admit.test.mjs test/api.test.mjs test/destination.test.mjs test/control.test.mjs test/cost.test.mjs test/vocabulary.test.mjs test/behaviour.test.mjs test/planrefusal.test.mjs test/aigateway.test.mjs test/instrument.test.mjs test/auto.test.mjs test/project.test.mjs test/credfile.test.mjs test/firsttrace.test.mjs test/register.test.mjs test/contract030.test.mjs test/setup.test.mjs test/cjs.test.cjs",
     "test:install": "SUPERBASED_INSTALL_TEST=1 node --test test/install.test.mjs",
     "example": "npm run build && tsc -p examples/tsconfig.json && node examples/dist/quickstart.js",
     "prepare": "node scripts/prepare.mjs",
@@ -63,7 +71,8 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.223.2",
     "@opentelemetry/resources": "^2.12.1",
     "@opentelemetry/sdk-trace-base": "^2.12.1",
-    "@opentelemetry/sdk-trace-node": "^2.12.1"
+    "@opentelemetry/sdk-trace-node": "^2.12.1",
+    "import-in-the-middle": "^1.15.0"
   },
   "peerDependencies": {
     "@ai-sdk/otel": "^1.0.0",

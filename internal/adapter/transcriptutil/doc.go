@@ -7,4 +7,8 @@
 // messages); thinking/reasoning is dropped by the caller (it simply never
 // feeds the builder). Pure record-folding — no I/O, no SQL; adapters own
 // their storage walk and feed this one message at a time.
+//
+// It also owns DecodeContent and TrimJSONSpace, the decoding of an
+// Anthropic-shape message content field (a block array or a bare string)
+// that the claudecode, cline and cowork parsers share.
 package transcriptutil

@@ -79,20 +79,20 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, u := range *doc.Data {
 		if u.ID == nil || *u.ID == "" {
-			return vendorapi.Page{}, drift(SurfaceUsers, "data[%d].id is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "data[%d].id is missing", i)
 		}
 		if seen[*u.ID] {
-			return vendorapi.Page{}, drift(SurfaceUsers, "data[%d] repeats a user", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "data[%d] repeats a user", i)
 		}
 		seen[*u.ID] = true
 		added, ok1 := unixRFC3339(u.AddedAt)
 		lastUsed, ok2 := unixRFC3339(u.APIKeyLastUsedAt)
 		if !ok1 || !ok2 {
-			return vendorapi.Page{}, drift(SurfaceUsers, "data[%d] has a timestamp that is not Unix seconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "data[%d] has a timestamp that is not Unix seconds", i)
 		}
 		attrs := map[string]string{}
 		for k, v := range map[string]string{
-			"email": str(u.Email), "role": str(u.Role), "added_at": added, "key_last_used_at": lastUsed,
+			"email": vendorapi.Str(u.Email), "role": vendorapi.Str(u.Role), "added_at": added, "key_last_used_at": lastUsed,
 		} {
 			if v != "" {
 				attrs[k] = v
@@ -105,7 +105,7 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 			attrs["is_scim_managed"] = strconv.FormatBool(*u.IsSCIMManaged)
 		}
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
-			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.ID}, DisplayName: str(u.Name), Attrs: attrs,
+			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.ID}, DisplayName: vendorapi.Str(u.Name), Attrs: attrs,
 		})
 	}
 	return page, nil

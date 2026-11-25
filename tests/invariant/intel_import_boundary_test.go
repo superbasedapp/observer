@@ -119,22 +119,24 @@ func TestINV2_OrgSideDoesNotLinkPersonalCloud(t *testing.T) {
 	}
 }
 
-// intelPureShared are the two pure packages allowed on BOTH the personal and the
+// intelPureShared are the pure packages allowed on BOTH the personal and the
 // org side. Their DIRECT internal imports must stay within intelPureAllowedInternal
 // so importing them can never drag node or server I/O onto the org side.
 var intelPureShared = []string{
 	"./internal/cloudcontract/...",
 	"./internal/cloudevidence/...",
+	"./internal/cloudresult/...",
 }
 
 // intelPureAllowedInternal is the exact set of internal packages the pure shared
-// packages may DIRECTLY import — read from their current import sets: the two
-// pure packages themselves, plus internal/scrub and internal/dataauthority
+// packages may DIRECTLY import — read from their current import sets: the
+// pure shared packages themselves, plus internal/scrub and internal/dataauthority
 // (themselves pure). Anything else — store, orgserver, a network package — would
 // break "importable by both sides".
 var intelPureAllowedInternal = map[string]bool{
 	"internal/cloudcontract": true,
 	"internal/cloudevidence": true,
+	"internal/cloudresult":   true,
 	"internal/dataauthority": true,
 	"internal/scrub":         true,
 }

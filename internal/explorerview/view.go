@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -51,16 +50,6 @@ var filterKeys = map[string]struct{ contentGated bool }{
 	"trace_tag":   {contentGated: true},
 	"meta":        {contentGated: true},
 	"content":     {contentGated: true},
-}
-
-// FilterKeys lists the savable filter parameters, sorted.
-func FilterKeys() []string {
-	out := make([]string, 0, len(filterKeys))
-	for k := range filterKeys {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // columns is the closed set of optional trace-list columns a view may save.

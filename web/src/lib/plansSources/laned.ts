@@ -1,4 +1,4 @@
-// Words for the sources lane D adds (internal/planlimits/src_laned.go).
+// Words for the sources internal/planlimits/src_local_cli_admin.go adds (built as lane D).
 // Pure data; plans.ts merges it. Keys of LANE_D are source ids; keys of
 // LANE_D_WORDS are new parameter keys and parameter choices.
 import type { SourceWords } from "./types.ts";

@@ -19,14 +19,18 @@ import {
   hiddenNavIds,
   hiddenSettingsIds,
   hrefGate,
+  onlineEquivalentOf,
   readOnlyNavIds,
   orgDisplayLabel,
   readOnlySettingsIds,
   type DashboardVisibility,
+  type GovernanceOnline,
   type GovernancePosture,
   type HrefGateTables,
   type LinkGate,
 } from "./visibility";
+
+export type { GovernanceOnline } from "./visibility";
 
 export type GovernanceState =
   | "no_grant"
@@ -134,6 +138,12 @@ export type Governance = {
   // section's API is never fetched. Absent when nothing is concealed, and on
   // an older daemon.
   concealed_routes?: string[];
+  // online names where the organization chooses what this dashboard shows
+  // (Settings > Developer dashboards on its online dashboard) and each local
+  // page's online equivalent, so a hidden or read-only page is never a dead
+  // end (operator ruling 2, 2026-11-24; lib/managedNext.ts). Absent on an
+  // unenrolled node and on an older daemon.
+  online?: GovernanceOnline;
 };
 
 // GovernancePricingSource is the three-value enum the Privacy page's pricing
@@ -290,6 +300,19 @@ const HREF_GATE_TABLES: HrefGateTables = { navPaths: NAV_ITEMS, tabRoutes: NODE_
 export function useHrefGate(): (href: string) => LinkGate {
   const { gov, posture } = useGovernanceVisibility();
   return useCallback((href: string) => hrefGate(href, gov, posture, HREF_GATE_TABLES), [gov, posture]);
+}
+
+/**
+ * useOnlineEquivalent returns, for an in-app address, the online equivalent of
+ * the page it opens (lib/visibility.ts onlineEquivalentOf), or null: where a
+ * link to a page this machine hides goes instead (operator ruling 2,
+ * 2026-11-24). It reads the real posture (never the fail-closed one): an
+ * equivalent is only offered once the daemon answered.
+ */
+export function useOnlineEquivalent(): (href: string) => { href: string; label: string } | null {
+  const { data } = useGovernance();
+  const online = data?.online;
+  return useCallback((href: string) => onlineEquivalentOf(href, online, NAV_ITEMS), [online]);
 }
 
 // usePageTabs is a tabbed page's tab table on THIS machine: `tabs` without the

@@ -7,8 +7,8 @@ import (
 )
 
 // TestPackageImports_Bounded pins routeattest pure, recursively (CLAUDE.md
-// Module Boundaries rule 1, design section 3.3): I/O is injected via
-// TrafficSource and the config-lane file reads live in internal/proxyroute.
+// Module Boundaries rule 1, design section 3.3): traffic counts arrive as
+// plain values from the caller, which owns every read.
 func TestPackageImports_Bounded(t *testing.T) {
 	t.Parallel()
 	importpin.Check(t, importpin.Spec{

@@ -193,13 +193,6 @@ func micros(n *json.Number) (*int64, bool) {
 	return &v, true
 }
 
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
 // usageJoinValue is the digest of an event's composite key; n > 0 marks the
 // n-th repeat of the same composite inside one page.
 func usageJoinValue(identity, conversation string, at time.Time, model string, output int64, n int) string {
@@ -216,18 +209,18 @@ func usageJoinValue(identity, conversation string, at time.Time, model string, o
 
 func parseUsageEvents(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceUsageEvents, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "status %d is not the documented 200", r.Status)
 	}
 	var doc usageEventsDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceUsageEvents, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "body does not decode as the documented object")
 	}
 	if doc.UsageEvents == nil || doc.Pagination == nil || doc.Pagination.CurrentPage == nil || doc.Pagination.HasNextPage == nil {
-		return vendorapi.Page{}, drift(SurfaceUsageEvents, "required field usageEvents, pagination.currentPage or pagination.hasNextPage is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "required field usageEvents, pagination.currentPage or pagination.hasNextPage is missing")
 	}
 	current, err := doc.Pagination.CurrentPage.Int64()
 	if err != nil || current < 1 {
-		return vendorapi.Page{}, drift(SurfaceUsageEvents, "pagination.currentPage is not a page number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "pagination.currentPage is not a page number")
 	}
 	page := vendorapi.Page{}
 	if *doc.Pagination.HasNextPage {
@@ -237,19 +230,19 @@ func parseUsageEvents(r vendorapi.Response) (vendorapi.Page, error) {
 	for i, e := range *doc.UsageEvents {
 		at, ok := eventMillis(e.Timestamp)
 		if !ok || e.Model == nil || *e.Model == "" {
-			return vendorapi.Page{}, drift(SurfaceUsageEvents, "usageEvents[%d] misses timestamp or model", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "usageEvents[%d] misses timestamp or model", i)
 		}
 		u := vendorapi.UsageRow{
 			JoinKind: UsageJoinKind, JoinNamespace: UsageNamespace, At: at, Model: *e.Model,
-			SessionRef: str(e.ConversationID), Flags: map[string]string{},
+			SessionRef: vendorapi.Str(e.ConversationID), Flags: map[string]string{},
 		}
 		switch {
-		case str(e.UserEmail) != "":
+		case vendorapi.Str(e.UserEmail) != "":
 			u.IdentityKind, u.Identity = "email", vendorapi.FoldEmail(*e.UserEmail)
-		case str(e.ServiceAccountID) != "":
+		case vendorapi.Str(e.ServiceAccountID) != "":
 			u.IdentityKind, u.Identity = "account_id", *e.ServiceAccountID
 		default:
-			return vendorapi.Page{}, drift(SurfaceUsageEvents, "usageEvents[%d] names neither userEmail nor serviceAccountId", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "usageEvents[%d] names neither userEmail nor serviceAccountId", i)
 		}
 		if e.TokenUsage != nil {
 			var oks [4]bool
@@ -258,19 +251,19 @@ func parseUsageEvents(r vendorapi.Response) (vendorapi.Page, error) {
 			u.CacheWriteTokens, oks[2] = count(e.TokenUsage.CacheWriteTokens)
 			u.CacheReadTokens, oks[3] = count(e.TokenUsage.CacheReadTokens)
 			if !oks[0] || !oks[1] || !oks[2] || !oks[3] {
-				return vendorapi.Page{}, drift(SurfaceUsageEvents, "usageEvents[%d].tokenUsage has a count that is not a whole non-negative number", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "usageEvents[%d].tokenUsage has a count that is not a whole non-negative number", i)
 			}
 		}
 		charged, ok := micros(e.ChargedCents)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceUsageEvents, "usageEvents[%d].chargedCents is not a non-negative decimal", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "usageEvents[%d].chargedCents is not a non-negative decimal", i)
 		}
 		if charged != nil {
 			u.ChargedUnit, u.ChargedMicros = "cents", *charged
 		}
 		b := &vendorapi.UsageBilling{
-			Category: str(e.Kind), MaxMode: e.MaxMode, Chargeable: e.IsChargeable,
-			ServiceAccountName: str(e.ServiceAccountName), AutomationID: str(e.AutomationID),
+			Category: vendorapi.Str(e.Kind), MaxMode: e.MaxMode, Chargeable: e.IsChargeable,
+			ServiceAccountName: vendorapi.Str(e.ServiceAccountName), AutomationID: vendorapi.Str(e.AutomationID),
 		}
 		var oks [4]bool
 		b.RequestUnitsMicros, oks[0] = micros(e.RequestsCosts)
@@ -281,7 +274,7 @@ func parseUsageEvents(r vendorapi.Response) (vendorapi.Page, error) {
 			b.DiscountPercentMicros, oks[3] = micros(e.TokenUsage.DiscountPercentOff)
 		}
 		if !oks[0] || !oks[1] || !oks[2] || !oks[3] {
-			return vendorapi.Page{}, drift(SurfaceUsageEvents, "usageEvents[%d] has a billing amount that is not a non-negative decimal", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageEvents, "usageEvents[%d] has a billing amount that is not a non-negative decimal", i)
 		}
 		u.Billing = b
 		if e.IsHeadless != nil {
@@ -390,32 +383,32 @@ type dailyDoc struct {
 
 func parseDailyUsage(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceDailyUsage, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "status %d is not the documented 200", r.Status)
 	}
 	var doc dailyDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceDailyUsage, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "body does not decode as the documented object")
 	}
 	if doc.Data == nil {
-		return vendorapi.Page{}, drift(SurfaceDailyUsage, "required field data is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "required field data is missing")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.Data)}
 	seen := map[string]bool{}
 	for i, rec := range *doc.Data {
 		var day, email string
 		if err := scalarInto(rec["day"], &day); err != nil || day == "" {
-			return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].day is missing or not a string", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].day is missing or not a string", i)
 		}
 		start, err := time.Parse("2006-01-02", day)
 		if err != nil {
-			return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].day is not an ISO date", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].day is not an ISO date", i)
 		}
 		if err := scalarInto(rec["email"], &email); err != nil || email == "" {
-			return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].email is missing or not a string", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].email is missing or not a string", i)
 		}
 		email = vendorapi.FoldEmail(email)
 		if seen[email+"\x00"+day] {
-			return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d] repeats a user and day", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d] repeats a user and day", i)
 		}
 		seen[email+"\x00"+day] = true
 		for _, m := range dailyMetrics {
@@ -425,15 +418,15 @@ func parseDailyUsage(r vendorapi.Response) (vendorapi.Page, error) {
 			}
 			var n json.Number
 			if err := scalarInto(raw, &n); err != nil {
-				return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].%s is not a number", i, m.field)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].%s is not a number", i, m.field)
 			}
 			v, err := n.Int64()
 			if err != nil || v < 0 {
-				return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].%s is not a whole non-negative number", i, m.field)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].%s is not a whole non-negative number", i, m.field)
 			}
 			mv, ok := vendorapi.CountMicros(v)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceDailyUsage, "data[%d].%s overflows", i, m.field)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceDailyUsage, "data[%d].%s overflows", i, m.field)
 			}
 			page.Facts = append(page.Facts, vendorapi.FactRow{
 				IntervalStart: start.UTC(), IntervalEnd: start.UTC().Add(24 * time.Hour), SourceTZ: "UTC",
@@ -461,7 +454,7 @@ func scalarInto(raw json.RawMessage, into any) error {
 		if raw[0] == '"' {
 			return fmt.Errorf("a quoted number")
 		}
-		return decode(raw, v)
+		return vendorapi.DecodeNumbers(raw, v)
 	}
 	return fmt.Errorf("unsupported")
 }
@@ -544,26 +537,26 @@ func decimalText(n *json.Number) (string, bool) {
 
 func parseSpend(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceSpend, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "status %d is not the documented 200", r.Status)
 	}
 	var doc spendDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceSpend, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "body does not decode as the documented object")
 	}
 	if doc.TeamMemberSpend == nil || doc.TotalPages == nil || doc.SubscriptionCycleStart == nil {
-		return vendorapi.Page{}, drift(SurfaceSpend, "required field teamMemberSpend, totalPages or subscriptionCycleStart is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "required field teamMemberSpend, totalPages or subscriptionCycleStart is missing")
 	}
 	total, err := doc.TotalPages.Int64()
 	if err != nil || total < 0 {
-		return vendorapi.Page{}, drift(SurfaceSpend, "totalPages is not a page count")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "totalPages is not a page count")
 	}
 	cycle, err := doc.SubscriptionCycleStart.Int64()
 	if err != nil || cycle <= 0 {
-		return vendorapi.Page{}, drift(SurfaceSpend, "subscriptionCycleStart is not epoch milliseconds")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "subscriptionCycleStart is not epoch milliseconds")
 	}
 	current, err := pageCursor(SurfaceSpend, r.Cursor)
 	if err != nil {
-		return vendorapi.Page{}, drift(SurfaceSpend, "the request cursor is not a page number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "the request cursor is not a page number")
 	}
 	page := vendorapi.Page{}
 	if int64(current) < total {
@@ -571,19 +564,19 @@ func parseSpend(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	seen := map[string]bool{}
 	for i, m := range *doc.TeamMemberSpend {
-		email := vendorapi.FoldEmail(str(m.Email))
+		email := vendorapi.FoldEmail(vendorapi.Str(m.Email))
 		if email == "" {
-			return vendorapi.Page{}, drift(SurfaceSpend, "teamMemberSpend[%d].email is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "teamMemberSpend[%d].email is missing", i)
 		}
 		if seen[email] {
-			return vendorapi.Page{}, drift(SurfaceSpend, "teamMemberSpend[%d] repeats a member", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "teamMemberSpend[%d] repeats a member", i)
 		}
 		seen[email] = true
 		body := map[string]string{"cycle_start": time.UnixMilli(cycle).UTC().Format(time.RFC3339)}
-		if v := str(m.UserID); v != "" {
+		if v := vendorapi.Str(m.UserID); v != "" {
 			body["user_id"] = v
 		}
-		if v := str(m.Role); v != "" {
+		if v := vendorapi.Str(m.Role); v != "" {
 			body["role"] = v
 		}
 		for _, f := range []struct {
@@ -599,7 +592,7 @@ func parseSpend(r vendorapi.Response) (vendorapi.Page, error) {
 		} {
 			v, ok := decimalText(f.n)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceSpend, "teamMemberSpend[%d].%s is not a non-negative decimal", i, f.key)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceSpend, "teamMemberSpend[%d].%s is not a non-negative decimal", i, f.key)
 			}
 			if v != "" {
 				body[f.key] = v

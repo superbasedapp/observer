@@ -32,7 +32,8 @@ func captureJudge(t *testing.T, j func(base string) Client, model string) map[st
 // max_completion_tokens, no temperature and a reasoning effort (the model
 // family's default, or the configured override); a chat model, a routed id
 // with a provider prefix and an explicit chat profile keep max_tokens and
-// temperature 0. One row per reasoningFamilies row that changes the shape.
+// temperature 0. One row per llmwire reasoningFamilies row that changes the
+// shape (the table itself is pinned by llmwire's TestResolveShape).
 func TestJudgeRequestProfile(t *testing.T) {
 	cases := []struct {
 		name, profile, effort, model string

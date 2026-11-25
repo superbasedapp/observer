@@ -17,6 +17,7 @@
 // case). The launchers compute the inputs (config flags, capability grounding,
 // TTY-ness, incompatible-mode, and a lazily-invoked reachability closure) and
 // act on the verdict.
+
 package main
 
 import (

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
@@ -612,8 +613,8 @@ func TestIsAbsAnyOS(t *testing.T) {
 		"C:":            false,
 	}
 	for in, want := range cases {
-		if got := isAbsAnyOS(in); got != want {
-			t.Errorf("isAbsAnyOS(%q) = %v, want %v", in, got, want)
+		if got := parseutil.IsAbsAnyOS(in); got != want {
+			t.Errorf("parseutil.IsAbsAnyOS(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

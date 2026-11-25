@@ -31,10 +31,10 @@
 //
 // # Transport
 //
-// The endpoint itself is OS-specific and lives behind the Transport seam
-// (transport.go): an AF_UNIX socket in a 0700 directory under the operator's
-// ~/.observer/ on unix, a named pipe with a protected owner-only DACL on
-// Windows (audit DI-09;
+// The endpoint itself is OS-specific and lives behind the internal/localipc
+// transport (transport.go re-exports the few names callers use): an AF_UNIX
+// socket in a 0700 directory under the operator's ~/.observer/ on unix, a
+// named pipe with a protected owner-only DACL on Windows (audit DI-09;
 // docs/plans/dashboard-install-gap-remediation-research-2026-09-02.md §3.5).
 // Both are owner-only and neither is reachable off-box — the unix socket is
 // never bound to a network interface, and the Windows DACL denies the NETWORK

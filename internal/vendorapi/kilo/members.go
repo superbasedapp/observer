@@ -101,30 +101,30 @@ func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, m := range rows {
 		if m.Email == nil || m.Role == nil || m.Status == nil {
-			return vendorapi.Page{}, drift(s, "data[%d] misses email, role or status", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] misses email, role or status", i)
 		}
 		if !memberRoles[*m.Role] {
-			return vendorapi.Page{}, drift(s, "data[%d].role is not a documented value", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].role is not a documented value", i)
 		}
 		switch *m.Status {
 		case "invited":
 			if m.EmailStatus != nil && !inviteStatuses[*m.EmailStatus] {
-				return vendorapi.Page{}, drift(s, "data[%d].emailStatus is not a documented value", i)
+				return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].emailStatus is not a documented value", i)
 			}
 			continue
 		case "active":
 		default:
-			return vendorapi.Page{}, drift(s, "data[%d].status is not active or invited", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].status is not active or invited", i)
 		}
 		id := ""
 		if m.ID != nil {
 			id = strings.TrimSpace(*m.ID)
 		}
 		if id == "" || m.Name == nil {
-			return vendorapi.Page{}, drift(s, "data[%d] is an active member without id or name", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] is an active member without id or name", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(s, "data[%d] repeats a member", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] repeats a member", i)
 		}
 		seen[id] = true
 		attrs := map[string]string{"role": *m.Role, "status": "active"}

@@ -142,9 +142,6 @@ var validStatus = map[Status]bool{
 	StatusUninstallInterrupted: true,
 }
 
-// Valid reports whether s is in the closed vocabulary.
-func Valid(s Status) bool { return validStatus[s] }
-
 // ExitEvent maps a PTY exit code to its lifecycle event.
 func ExitEvent(code int) Event {
 	if code == 0 {

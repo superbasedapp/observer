@@ -73,21 +73,21 @@ func TestVMDriverIsOptIn(t *testing.T) {
 	if !ok || reg.component != vmComponent {
 		t.Fatalf("registration %+v", reg)
 	}
-	legacy := macTestRuntime(t, vmTestConfig(t, false, "cloud-hypervisor"))
+	legacy := testSandboxRuntime(t, vmTestConfig(t, false, "cloud-hypervisor"))
 	if _, active := legacy.drivers[sandboxbackend.BackendCloudHypervisor]; active {
 		t.Fatal("an install with no [components] block got the driver")
 	}
 	if p := legacy.driverProbes(context.Background())[sandboxbackend.BackendCloudHypervisor]; p.Verdict != verdictModuleInactive {
 		t.Fatalf("an unselected driver probes as %+v", p)
 	}
-	unlisted := macTestRuntime(t, vmTestConfig(t, true, "bwrap"))
+	unlisted := testSandboxRuntime(t, vmTestConfig(t, true, "bwrap"))
 	if p := unlisted.drivers[sandboxbackend.BackendCloudHypervisor].probe(context.Background()); p.Verdict != sandboxselect.VerdictDisabledByConfig {
 		t.Fatalf("an unlisted driver probes as %+v", p)
 	}
 	if builds.Load() != 0 || reads.Load() != 0 {
 		t.Fatalf("the probe ran (%d builds, %d reads) while inactive", builds.Load(), reads.Load())
 	}
-	listed := macTestRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
+	listed := testSandboxRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
 	d := listed.drivers[sandboxbackend.BackendCloudHypervisor].(*vmDriver)
 	if p := d.probe(context.Background()); p.Verdict != sandboxvm.VerdictAvailable || p.Version != "54" {
 		t.Fatalf("a listed driver probes as %+v", p)

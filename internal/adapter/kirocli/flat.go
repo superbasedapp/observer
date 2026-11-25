@@ -133,7 +133,7 @@ func (a *Adapter) parseFlatBundle(ctx context.Context, trigger string, fromOffse
 	// the embedded session_id is NOT allowed to override it (§4.5a — a
 	// re-keyed id orphans rows). In practice they are always equal.
 	state, turnByMsg := readFlatState(jsonPath)
-	projectRoot, gitBranch, gitRemote, projectIdentity := resolveProjectRoot(state.CWD)
+	projectRoot, gitBranch, gitRemote, projectIdentity := adapter.ResolveProjectRoot(state.CWD)
 	model := state.SessionState.RTSModelState.ModelInfo.ModelID
 
 	body, err := os.ReadFile(jsonlPath) //nolint:gosec // jsonlPath derives from a validated watch-root trigger

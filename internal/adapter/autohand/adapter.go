@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -240,23 +241,6 @@ func (a *Adapter) parseMetadataFile(_ context.Context, path string) (adapter.Par
 	return res, nil
 }
 
-// splitLinesKeepTerminator is bufio.ScanLines except the token retains its line
-// terminator, so the caller advances the byte cursor by exactly the bytes
-// consumed (CRLF included) and can tell a complete line from a half-written
-// trailing one.
-func splitLinesKeepTerminator(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		return i + 1, data[:i+1], nil
-	}
-	if atEOF {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
 // skipOverlongLine returns the offset just past the newline that terminates
 // the line starting at off, streaming through a small buffer so the line's
 // size never enters the heap. When the line has no terminator yet it returns
@@ -291,7 +275,7 @@ func readMessages(f *os.File, fromOffset int64) (msgs []message, newOffset int64
 	for {
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 0, 1024*1024), maxLineBytes)
-		sc.Split(splitLinesKeepTerminator)
+		sc.Split(parseutil.SplitLinesKeepTerminator)
 		partial := false
 		for sc.Scan() {
 			raw := sc.Bytes()

@@ -194,6 +194,11 @@ var rules = []rule{
 	{prefix: "proxy.gemini_upstream", exact: true, tier: TierSensitive},
 	{prefix: "proxy.upstreams", tier: TierSensitive},
 	{prefix: "proxy.auto_default_lane", exact: true, tier: TierSensitive, prominence: ProminenceAdvanced},
+	// The local app lane's hardening (hosted AI gateway plan L7): the model
+	// allow-list and the budget reservation police what an app on this
+	// machine may spend.
+	{prefix: "proxy.app_lanes", tier: TierSensitive, prominence: ProminenceAdvanced},
+	{prefix: "proxy.app_lanes.budget", exact: true, enum: []string{"", "enforce", "observe", "off"}},
 	{prefix: "proxy.org_route", tier: TierSensitive, prominence: ProminenceAdvanced},
 	{prefix: "proxy.org_route.mode", exact: true, enum: []string{"", "gateway"}},
 	{prefix: "proxy.force_chatgpt_http", exact: true, prominence: ProminenceAdvanced},

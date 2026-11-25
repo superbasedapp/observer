@@ -4,33 +4,18 @@ package scalibrchild
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/secscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 	"github.com/marmutapp/superbased-observer/internal/secscan/scalibrfacade"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
 
 // The crates.io canary record (time 0.1.42 lies inside RUSTSEC-2020-0071).
 const timeAdvisory = `{"id":"RUSTSEC-2020-0071","modified":"2024-01-01T00:00:00Z","aliases":["CVE-2020-26235"],
 "affected":[{"package":{"ecosystem":"crates.io","name":"time"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"0.2.23"}]}]}]}`
-
-func writeFiles(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for name, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
 
 // coverageOf runs the child over root and returns the run's coverage, as
 // the driver's shared result path computes it.
@@ -58,7 +43,7 @@ func TestRunUnreadDependencyFiles(t *testing.T) {
 	writeDB(t, db, "crates.io", map[string]string{"a.json": timeAdvisory})
 	epochs := map[string]string{"crates.io": "crates-epoch"}
 
-	resp, cov := coverageOf(t, writeFiles(t, map[string]string{"pubspec.lock": "packages: {}\n"}), db, epochs)
+	resp, cov := coverageOf(t, fstree.WritePrivate(t, map[string]string{"pubspec.lock": "packages: {}\n"}), db, epochs)
 	if cov.Outcome == secscan.OutcomeClean {
 		t.Fatalf("coverage %+v: a project of unread files is never clean", cov)
 	}
@@ -72,7 +57,7 @@ func TestRunUnreadDependencyFiles(t *testing.T) {
 		}
 	}
 
-	cargo := writeFiles(t, map[string]string{
+	cargo := fstree.WritePrivate(t, map[string]string{
 		"Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n",
 		"Cargo.lock": "version = 3\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.200\"\n" +
 			"source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",

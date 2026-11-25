@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
+import { SHARED_DEDUPE } from "../shared/styles/viteDedupe";
 
 // keepSourcemapsOutOfEmbed: webcloud/dist IS the go:embed dir (webcloud/
 // embed.go `//go:embed all:dist`, committed, served under /portal/ and
@@ -44,16 +45,7 @@ export default defineConfig({
     },
     // dedupe pins ONE instance of each shared dep so a hooks-bearing shared
     // component never gets a second React ("invalid hook call").
-    dedupe: [
-      "react",
-      "react-dom",
-      "react-router-dom",
-      "recharts",
-      "clsx",
-      "@floating-ui/react",
-      "framer-motion",
-      "lucide-react",
-    ],
+    dedupe: SHARED_DEDUPE,
   },
   server: {
     // shared/ is outside the Vite root; allow the dev server to read it.

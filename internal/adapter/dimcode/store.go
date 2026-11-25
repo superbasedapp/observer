@@ -12,6 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -109,10 +110,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // so the store's other tables never leave the vendor's file (T-927,
 // MIRROR-CRED-1; this adapter's private byte copy was RB1 sweep finding A2).
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the store: every table this
@@ -123,21 +121,6 @@ var mirrorSpec = mirrorbase.Spec{
 	Dir:    "dimcode-mirror",
 	File:   "dimcode.sqlite",
 	Tables: []string{"sessions", "messages", "session_relations", "session_states", "usage_ledger", "usage_run_stats"},
-}
-
-// isForeignMountPath reports whether path lives under a crossmount-detected
-// non-native home. Covers both bridge directions.
-func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // sessionRow is the sessions + session_states metadata one parse needs.
@@ -197,15 +180,6 @@ type relationRow struct {
 	Type   string
 }
 
-// tableExists reports whether a table is present in the store, so an older or
-// partial schema degrades gracefully instead of erroring.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
-}
-
 // columnExists reports whether table has the named column, so a store from a
 // build that predates a column degrades to an empty value instead of failing
 // the whole parse.
@@ -240,7 +214,7 @@ var watermarkSources = []struct{ table, column string }{
 func latestWatermark(ctx context.Context, db *sql.DB) (int64, error) {
 	var best int64
 	for _, src := range watermarkSources {
-		if !tableExists(ctx, db, src.table) {
+		if !sqliteschema.TableExists(ctx, db, src.table) {
 			continue
 		}
 		var v sql.NullString
@@ -273,22 +247,22 @@ func thresholdString(fromOffset int64) string {
 // ledger row or session-row update strictly newer than fromOffset, with the
 // currently-selected provider/model/settings joined from session_states.
 func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]sessionRow, error) {
-	if !tableExists(ctx, db, "sessions") {
+	if !sqliteschema.TableExists(ctx, db, "sessions") {
 		return nil, nil
 	}
 	conds := []string{"s.updatedAt > ?1"}
-	if tableExists(ctx, db, "messages") {
+	if sqliteschema.TableExists(ctx, db, "messages") {
 		conds = append(conds, `EXISTS (SELECT 1 FROM messages m WHERE m.sessionId = s.sessionId AND m.updatedAt > ?1)`)
 	}
-	if tableExists(ctx, db, "usage_run_stats") {
+	if sqliteschema.TableExists(ctx, db, "usage_run_stats") {
 		conds = append(conds, `EXISTS (SELECT 1 FROM usage_run_stats u WHERE u.sessionId = s.sessionId AND u.updatedAt > ?1)`)
 	}
-	if tableExists(ctx, db, "usage_ledger") {
+	if sqliteschema.TableExists(ctx, db, "usage_ledger") {
 		conds = append(conds, `EXISTS (SELECT 1 FROM usage_ledger l WHERE l.sessionId = s.sessionId AND l.createdAt > ?1)`)
 	}
 	sel := `COALESCE(s.sessionId,''), COALESCE(s.cwd,''), '', '', '', '', ''`
 	join := ""
-	if tableExists(ctx, db, "session_states") {
+	if sqliteschema.TableExists(ctx, db, "session_states") {
 		perm, mode := `''`, `''`
 		if columnExists(ctx, db, "session_states", "permissionSettings") {
 			perm = `COALESCE(t.permissionSettings,'')`
@@ -320,7 +294,7 @@ func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]s
 
 // loadMessages returns every message of a session in chronological order.
 func loadMessages(ctx context.Context, db *sql.DB, sessionID string) ([]messageRow, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -346,7 +320,7 @@ func loadMessages(ctx context.Context, db *sql.DB, sessionID string) ([]messageR
 
 // loadRuns returns a session's usage_run_stats rows, oldest first.
 func loadRuns(ctx context.Context, db *sql.DB, sessionID string) ([]runRow, error) {
-	if !tableExists(ctx, db, "usage_run_stats") {
+	if !sqliteschema.TableExists(ctx, db, "usage_run_stats") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -374,7 +348,7 @@ func loadRuns(ctx context.Context, db *sql.DB, sessionID string) ([]runRow, erro
 
 // loadLedger returns a session's usage_ledger rows, oldest first.
 func loadLedger(ctx context.Context, db *sql.DB, sessionID string) ([]ledgerRow, error) {
-	if !tableExists(ctx, db, "usage_ledger") {
+	if !sqliteschema.TableExists(ctx, db, "usage_ledger") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -402,7 +376,7 @@ func loadLedger(ctx context.Context, db *sql.DB, sessionID string) ([]ledgerRow,
 // row per spawned sub-agent or fork), so it is read whole on every parse and
 // the idempotent lineage upsert converges without dedicated watermark state.
 func loadRelations(ctx context.Context, db *sql.DB) ([]relationRow, error) {
-	if !tableExists(ctx, db, "session_relations") {
+	if !sqliteschema.TableExists(ctx, db, "session_relations") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `

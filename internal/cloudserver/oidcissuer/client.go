@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/tenantctx"
 )
 
 // ClientIDForOrg returns the client id of org orgID ("org:" + the id).
@@ -17,7 +19,7 @@ func ClientIDForOrg(orgID string) string { return ClientIDPrefix + orgID }
 // is not "org:" followed by a canonical UUID.
 func OrgFromClientID(clientID string) (string, bool) {
 	org, ok := strings.CutPrefix(clientID, ClientIDPrefix)
-	if !ok || !isCanonicalUUID(org) {
+	if !ok || !tenantctx.IsCanonicalUUID(org) {
 		return "", false
 	}
 	return org, true
@@ -36,7 +38,7 @@ func TenantRedirectURI(slug, tenantDomain string) (string, error) {
 
 // ClientForOrg builds the client row for org orgID served at slug.
 func ClientForOrg(orgID, slug, tenantDomain string) (Client, error) {
-	if !isCanonicalUUID(orgID) {
+	if !tenantctx.IsCanonicalUUID(orgID) {
 		return Client{}, fmt.Errorf("oidcissuer.ClientForOrg: org id %q is not a canonical UUID", orgID)
 	}
 	uri, err := TenantRedirectURI(slug, tenantDomain)

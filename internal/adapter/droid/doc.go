@@ -59,8 +59,9 @@
 // exists because store's action ON CONFLICT clause updates neither
 // `success` nor `error_message` — an optimistic row shipped between the
 // two records could never be corrected — so the pair MUST resolve in one
-// parse window. Bounded by maxDeferTailBytes + pendingResultGrace so an
-// interrupted call cannot stall ingestion; see pending.go.
+// parse window. Bounded by adapter.MaxDeferTailBytes +
+// adapter.PendingResultGrace so an interrupted call cannot stall
+// ingestion; see adapter.DeferUnpairedTail.
 //
 // A resumed parse (fromOffset > 0) first replays [0, fromOffset) with
 // emission suppressed to rebuild the running model id, the last

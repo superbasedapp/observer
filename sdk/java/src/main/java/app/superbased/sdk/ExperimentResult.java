@@ -20,6 +20,8 @@ public final class ExperimentResult {
   final List<String> skippedSides = new ArrayList<>();
   /** Results a destination did not accept. */
   int failedPosts;
+  /** The org's plan refusing a post or the finish (posting runs on several threads). */
+  volatile PlanRefusalException planRefusal;
 
   ExperimentResult(String name) {
     this.name = name;
@@ -66,6 +68,21 @@ public final class ExperimentResult {
 
   public int failedPosts() {
     return failedPosts;
+  }
+
+  /**
+   * Set when the org's plan refused a post or the finish (the reason is in
+   * {@link #errors()} too): its message and {@code upgradeUrl()} say why and
+   * where to fix it. Null otherwise.
+   */
+  public PlanRefusalException planRefusal() {
+    return planRefusal;
+  }
+
+  synchronized void notePlanRefusal(PlanRefusalException r) {
+    if (planRefusal == null && r != null) {
+      planRefusal = r;
+    }
   }
 
   private static boolean isCount(Object v) {

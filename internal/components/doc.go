@@ -9,13 +9,15 @@
 // resolver that every later phase builds on. No SQL, no HTTP, no fsnotify,
 // no os/exec (pinned by imports_test.go): consumers own the I/O.
 //
-// What P0 is and is not. The catalog DESCRIBES the product; it does not gate
-// anything yet. Nothing in this package switches a goroutine, a listener, a
-// route or a verb on or off. A plain `go build` remains the full product. The
-// L2 runtime gate (internal/componentstate) is lane MP-GATE, the L1 build-tag
-// wiring pairs are MP-L1A / MP-L1B. Levels.Implemented therefore records what
-// exists TODAY (L3 config toggles for most features, nothing compiled out),
-// while Levels.Target records where the plan takes each component.
+// What the catalog is and is not. The catalog DESCRIBES the product; nothing
+// in this package switches a goroutine, a listener, a route or a verb on or
+// off. The gates that do live elsewhere: build-tag wiring pairs (L1, an
+// `sbo_omit_*` tag compiles a component out; a plain `go build` remains the
+// full product), the runtime gate internal/componentstate (L2, resolved from
+// the [components] block and, on a managed node, governance), and config
+// toggles (L3). Levels.Implemented records which of those levels a
+// component's code delivers today (most node rows include L1), while
+// Levels.Target records where the plan takes each component.
 //
 // Truth is enforced by tests rather than care (plan section 3.2): the
 // invariant suite in tests/invariant/components_*_test.go checks the catalog

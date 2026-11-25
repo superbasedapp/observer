@@ -1,7 +1,8 @@
 // apiFailure: the ONE classification of a failed node API read into what a
 // panel renders (the node twin of web2/src/lib/apiFailure.ts). Pure (no
-// React, no imports), so the table below is unit-tested (apiFailure.test.ts)
-// and useApi hands every panel the same reading of a failure.
+// React; the one import is a relative shared .ts path), so the table below
+// is unit-tested (apiFailure.test.ts) and useApi hands every panel the same
+// reading of a failure.
 //
 // The distinction that matters: a denial (HTTP 403: a remote viewer reading a
 // local-only endpoint, a feature the org policy turned off) is NOT an error.
@@ -13,6 +14,8 @@
 // It reads the status off the thrown value structurally (ApiError carries a
 // numeric `status`) rather than importing ApiError, so this module stays
 // importable by the node test runner without the app's path aliases.
+
+import { permissionNamedIn } from "../../../shared/lib/apiFailureCore.ts";
 
 /** What a panel needs to know about a failed read. */
 export interface ApiFailure {
@@ -30,18 +33,9 @@ export interface ApiFailure {
   notInstalled: { component: string; state: string } | null;
 }
 
-// Permission keys are `<verb>:<noun>` (the same closed verb set the org
-// dashboard recognises). A node 403 usually names none; when an org-governed
-// gate does, the panel shows it.
-const PERMISSION_KEY = /\b(read|write|admin|decide|scope):[a-z][a-z0-9_]*\b/;
-
-/** permissionNamedIn returns the first permission key a sentence names, or
- *  null. Only ever applied to a 403's text: it reports what the server said. */
-export function permissionNamedIn(text: string | null | undefined): string | null {
-  if (!text) return null;
-  const m = PERMISSION_KEY.exec(text);
-  return m ? m[0] : null;
-}
+// permissionNamedIn (the permission key a 403 names, the closed verb set the
+// org dashboard recognises too) is shared with the org dashboard.
+export { permissionNamedIn };
 
 // STATUS_RULES: ordered status -> treatment table (walked top-down). A status
 // without a row is an ordinary error (denied=false), as it always was.

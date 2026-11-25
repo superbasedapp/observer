@@ -153,7 +153,7 @@ func (s *Store) InsertCacheSegments(ctx context.Context, segments []CacheSegment
 			nullableString(seg.BlockKind),
 			seg.PrefixHash,
 			nullableIntPtr(seg.TokenEstimate),
-			boolToInt(seg.IsBreakpoint),
+			boolInt(seg.IsBreakpoint),
 			nullableString(seg.TTLTier),
 			nullableString(seg.SourceRef),
 			timestamp(seg.CreatedAt),
@@ -652,34 +652,6 @@ func (s *Store) PruneCacheRows(ctx context.Context, retentionDays int) (int, err
 		return 0, fmt.Errorf("store.PruneCacheRows: commit: %w", err)
 	}
 	return removed, nil
-}
-
-// nullableInt64Ptr returns sql NULL when p is nil, the int64
-// value otherwise. Mirrors the nullableInt64 helper for the
-// pointer-typed columns the cache tables use.
-func nullableInt64Ptr(p *int64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-// nullableIntPtr returns sql NULL when p is nil, the int value
-// otherwise.
-func nullableIntPtr(p *int) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-// nullableFloat64Ptr returns sql NULL when p is nil, the
-// float64 value otherwise.
-func nullableFloat64Ptr(p *float64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 // PersistCacheObservation translates a cachetrack ObserveResult

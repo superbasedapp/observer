@@ -12,12 +12,16 @@
 // and the versioned wire boundary (BodyV1 + DecodeBody + CompileBody) that
 // turns a signed org resource's Body into a ready spec.
 //
-// Every subpackage is pure — no database/sql, net/http, fsnotify, or
+// Every family subpackage is pure — no database/sql, net/http, fsnotify, or
 // internal/obs — pinned by its own imports_test.go, so internal/orgserver
 // (compiling a published body before signing) and internal/orgclient
 // (compiling a fetched, verified body before installing it) can depend on
 // policyfam directly without pulling in internal/obs's evaluation engines,
-// judge client, or store.
+// judge client, or store. Three packages in this tree are not family
+// compilers and carry no such pin: nodefeatures/lkgsidecar is the node-local
+// I/O half that reads and writes the node.features last-known-good file (it
+// imports os), nodegov/rc11compat holds only a test fixture, and
+// nodegov/navtabsrc (with its gen command) generates nodegov's tab table.
 //
 // internal/obs/admission and internal/obs/egress import their matching
 // policyfam subpackage and RE-EXPORT every moved type/const/func via a

@@ -1092,3 +1092,19 @@ func TestDated_SummaryUndatedInstallIsGolden(t *testing.T) {
 	}
 	approx(t, sum.TotalCost, want, "undated golden rollup")
 }
+
+// DatedFor is a test-only accessor. It returns a copy of the dated rate
+// timeline registered for the exact key `model` (ascending by
+// EffectiveFrom), or nil. It does NOT run the resolution ladder — callers
+// that want "which timeline actually prices this SKU" should resolve first
+// via LookupWithSource.
+func (t *Table) DatedFor(model string) []DatedPricing {
+	if t == nil || len(t.dated) == 0 {
+		return nil
+	}
+	e, ok := t.dated[model]
+	if !ok {
+		return nil
+	}
+	return append([]DatedPricing(nil), e...)
+}

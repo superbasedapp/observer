@@ -209,23 +209,6 @@ func memberSpecFor(tool string, defaultProvider bool) (memberRouteSpec, bool) {
 	return memberRouteSpec{}, false
 }
 
-// MemberRouteTools lists the tools with a member-route writer, and
-// DefaultProviderTools those with a default-provider writer, in table order.
-func MemberRouteTools() []string { return memberTools(false) }
-
-// DefaultProviderTools lists the tools with a default-provider writer.
-func DefaultProviderTools() []string { return memberTools(true) }
-
-func memberTools(defaultProvider bool) []string {
-	var out []string
-	for _, s := range memberRouteSpecs {
-		if s.defaultProvider == defaultProvider {
-			out = append(out, s.tool)
-		}
-	}
-	return out
-}
-
 // RegisterMemberRoute runs tool's member-route writer (the registry row's
 // ProxyProbe binding). An unknown tool is an error.
 func (r *Registrar) RegisterMemberRoute(tool string) RegistrationResult {

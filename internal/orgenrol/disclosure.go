@@ -195,8 +195,8 @@ const (
 	DisclosureOwnerManaged = "This is your own personal dashboard: you are its only admin and its only developer, so the settings below are ones you choose there yourself. " +
 		"Accepting lets them apply on this machine the same way a team's do: a budget you set to Enforce can block requests here " +
 		"(once guard mode on this machine is enforce), and settings you pin cannot be changed here. " +
-		"Your AI apps pages, Egress, Routing and Policies stay visible on this machine because they are yours; " +
-		"the dashboard pages and Settings sections listed below start hidden or read-only, as they do on a team member's machine. " +
+		"Every dashboard page and Settings section stays visible on this machine because you are its admin; " +
+		"you can hide or lock any of them from your personal dashboard (Settings > Developer dashboards). " +
 		"Your personal dashboard still gets a summary only: full detail is sent only if you turn it on in this machine's config."
 	mayNotReadAnything = "read anything beyond the lines above. This machine is organization-managed, so the extraction lines DO apply: some of them raise your tool inputs, outputs, and command text. The Privacy page always shows what is shared."
 	mayNotReadCode     = "read your code, your files, or your command output"
@@ -252,21 +252,27 @@ func BuildDisclosure(f GrantFacts) Disclosure {
 
 // Managed-defaults sentences (ManagedSummary). One per audience; %s is the
 // count phrase from managedCount ("12 dashboard pages and 20 Settings
-// sections").
+// sections"). managedSummaryOwnerNone is the owner's sentence when nothing
+// starts restricted, which the operator ruling of 2026-11-24 makes the case
+// for every owner-managed machine (the owner is the administrator).
 const (
-	managedSummaryTeam  = "Accepting makes %s hidden or read-only on this machine by default (listed below); the organization can change that later, and the Privacy page always shows what applies."
-	managedSummaryOwner = "Accepting makes %s hidden or read-only on this machine by default (listed below), fewer than on a team member's machine because you are both the admin and the developer; the Privacy page always shows what applies."
+	managedSummaryTeam      = "Accepting makes %s hidden or read-only on this machine by default (listed below); the organization can change that later, and the Privacy page always shows what applies."
+	managedSummaryOwner     = "Accepting makes %s hidden or read-only on this machine by default (listed below), fewer than on a team member's machine because you are both the admin and the developer; the Privacy page always shows what applies."
+	managedSummaryOwnerNone = "Accepting hides or locks nothing on this machine by default because you are both the admin and the developer; you can hide or lock a page from your personal dashboard (Settings > Developer dashboards), and the Privacy page always shows what applies."
 )
 
-// managedSummary is the one sentence over the two managed-default lists, ""
-// when both are empty.
+// managedSummary is the one sentence over the two managed-default lists: for
+// a team audience "" when both are empty, for the owner the nothing-starts-
+// restricted sentence then.
 func managedSummary(ownerManaged bool, pages, settings int) string {
 	count := managedCount(pages, settings)
-	if count == "" {
-		return ""
-	}
-	if ownerManaged {
+	switch {
+	case ownerManaged && count == "":
+		return managedSummaryOwnerNone
+	case ownerManaged:
 		return fmt.Sprintf(managedSummaryOwner, count)
+	case count == "":
+		return ""
 	}
 	return fmt.Sprintf(managedSummaryTeam, count)
 }

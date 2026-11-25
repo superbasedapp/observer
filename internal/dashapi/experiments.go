@@ -109,7 +109,7 @@ func ComputeExperimentReport(ctx context.Context, db *sql.DB, engine costLookup,
 	rows.Close()
 
 	// Per-session rollups over the window, over the node's deduped spend
-	// substrate (loadSpendTurns: the one session dedup rule,
+	// substrate (LoadSpendTurns: the one session dedup rule,
 	// sessionmsg.DeriveVerdicts, applied by the cost engine) scoped to the
 	// arm population, so an arm's cost agrees with the Sessions list and the
 	// session detail header. The window's upper bound stays inclusive of the
@@ -186,7 +186,7 @@ func ComputeExperimentReport(ctx context.Context, db *sql.DB, engine costLookup,
 	// (attributed by session) so CompressionSavedBytes reports genuine,
 	// retrievable compression only, and surface the evicted volume
 	// additively. Same window as the combined CTE; lossy set drawn from
-	// the ONE classifier owner (lossyEvictionMechanismList).
+	// the ONE classifier owner (LossyEvictionMechanismList).
 	if lossy := LossyEvictionMechanismList(); len(lossy) > 0 {
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(lossy)), ",")
 		evArgs := make([]any, 0, len(lossy)+2)

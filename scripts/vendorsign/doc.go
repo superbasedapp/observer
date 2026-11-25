@@ -32,6 +32,7 @@
 //	vendorsign osvexport -key FILE -in DIR -state DIR -out DIR [-manifest-version N]
 //	vendorsign osvosexport -key FILE -in DIR -state DIR -out DIR [-manifest-version N]
 //	vendorsign osvshards -key FILE [-lang DIR] [-os DIR] -state DIR -objects DIR -out DIR
+//	vendorsign osvshardsweep -state DIR -objects DIR -uploaded FILE -pending FILE [-days 30] [-dry-run]
 //	vendorsign kev -key FILE -in FILE -state DIR -out DIR
 //	vendorsign epss -key FILE -in FILE -state DIR -out DIR [-osv DIR]...
 //	vendorsign secindex -kind security.malicious_packages -key FILE -osv-export DIR -state DIR -out DIR
@@ -54,6 +55,10 @@
 // RM-1; osvshards.go): content-addressed shards and index files in an
 // object store the publisher uploads to the public shard bucket, and the
 // signed security.osv_shards manifest naming each set's descriptor.
+// osvshardsweep decides which of the shard bucket's objects no manifest a
+// node may still use names (osvshardsweep.go), from the records osvshards
+// keeps of every manifest it signed, never from a bucket listing; the
+// publisher deletes them.
 // kev and epss publish the exploit-likelihood kinds security.kev and
 // security.epss (OS and CI scanning plan section 14.7; exploitkev.go,
 // exploitepss.go, the shared small-feed path feedsingle.go): the CISA KEV

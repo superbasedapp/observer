@@ -2,7 +2,6 @@ package agentconfigsvc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -268,10 +267,4 @@ func (s *Service) rollbackAll(done []written) string {
 	}
 	sort.Strings(failed)
 	return "could not restore " + strings.Join(failed, ", ") + "; the backup written beside each holds its previous content"
-}
-
-// IsSaveRefusal reports a refusal the caller should render with its
-// preview (blocked, stale, unconfirmed).
-func IsSaveRefusal(err error) bool {
-	return errors.Is(err, ErrBlocked) || errors.Is(err, ErrStale) || errors.Is(err, ErrConfirm)
 }

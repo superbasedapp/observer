@@ -38,12 +38,26 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, TypeVar, Union, overload
 
-from . import _config, _destination, _export, _pipeline, _vendor
+from . import _config, _destination, _export, _firsttrace, _pipeline, _planrefusal, _vendor
 from . import _keys
+from . import _instrument
 from ._instrument import instrument, uninstrument
 from ._cost import async_get_trace_cost, get_trace_cost
 from . import _gatewayid
 from ._gatewayid import GatewayAuth, async_gateway_event_hooks, gateway_event_hooks, gateway_headers, stamp_gateway_request_id
+from ._aigateway import (
+    GatewayBudget,
+    GatewayEndpoint,
+    GatewayNotConfigured,
+    GatewayRefusalError,
+    anthropic_client,
+    gateway_base_url,
+    gateway_endpoint,
+    gateway_key,
+    gateway_refusal,
+    openai_client,
+    parse_gateway_refusal,
+)
 from ._scores import ScoreResult, async_feedback, async_score, feedback, score
 from ._experiments import (
     Dataset,
@@ -78,6 +92,15 @@ from ._context import (
     propagate_attributes,
 )
 from ._config import Destination, Settings
+from ._planrefusal import (
+    Allowance,
+    AllowanceExceededError,
+    PlanInfo,
+    PlanRefusalError,
+    PlanRequiredError,
+    Quota,
+    parse_plan_refusal,
+)
 from ._admit import (
     BAD_RESPONSE,
     DEFAULT_ADMISSION_ENDPOINT,
@@ -91,7 +114,7 @@ from ._admit import (
     admit,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "init",
@@ -134,11 +157,29 @@ __all__ = [
     "gateway_event_hooks",
     "async_gateway_event_hooks",
     "GatewayAuth",
+    "gateway_base_url",
+    "gateway_endpoint",
+    "gateway_key",
+    "openai_client",
+    "anthropic_client",
+    "GatewayEndpoint",
+    "GatewayNotConfigured",
+    "GatewayRefusalError",
+    "GatewayBudget",
+    "parse_gateway_refusal",
+    "gateway_refusal",
     "Prompt",
     "PromptError",
     "PromptNotFound",
     "PromptFetchError",
     "PromptCompileError",
+    "PlanRefusalError",
+    "PlanRequiredError",
+    "AllowanceExceededError",
+    "PlanInfo",
+    "Allowance",
+    "Quota",
+    "parse_plan_refusal",
     "propagate_attributes",
     "identify",
     "AttributeScope",
@@ -208,7 +249,7 @@ _PROVIDER: Any = None  # the provider that holds the SDK's spans (ours or the ho
 _OWNS_PROVIDER = False
 _PROCESSOR: Optional[_export.SwitchableProcessor] = None
 _CONFIG_KEY: Any = None
-_MODE = ""  # "", "owned" or "attached"
+_MODE = ""  # "", "owned", "standalone" or "attached"
 # {library: "off" | "kept"}: model client libraries that trace themselves
 # (_vendor.py), as the last init() left them.
 _VENDOR_TRACING: Dict[str, str] = {}
@@ -267,6 +308,7 @@ def init(
     api_timeout: Optional[float] = None,
     prompt_cache_ttl: Optional[float] = None,
     gateway_request_id: Optional[bool] = None,
+    instrument: Any = None,
     exporter: Any = None,
     tracer_provider: Any = None,
 ) -> Settings:
@@ -282,7 +324,11 @@ def init(
       ``http://127.0.0.1:4318/v1/traces``. The ``online`` exporter always
       goes to ``org_url`` + ``/v1/traces``.
     - service_name: ``$SUPERBASED_SERVICE_NAME``, ``$OTEL_SERVICE_NAME``,
-      ``service.name`` in ``$OTEL_RESOURCE_ATTRIBUTES``, else ``custom-app``.
+      ``service.name`` in ``$OTEL_RESOURCE_ATTRIBUTES``, the project's own
+      name (``[project] name`` or ``[tool.poetry] name`` of the nearest
+      ``pyproject.toml`` above the entry script), the entry script's folder
+      (past ``src``, ``app``, ``dist``, ``build``, ``bin``, ``lib``), else
+      ``custom-app``; ``diagnostics()["service_name_source"]`` says which.
     - headers merge over ``$OTEL_EXPORTER_OTLP_HEADERS``. api_key
       (``$SUPERBASED_API_KEY``) is sent as ``Authorization: Bearer`` only to
       the org gateway (it replaces any ``Authorization`` header there, in any
@@ -322,6 +368,14 @@ def init(
       ``X-SBO-Request-Id``, set it as ``request_id`` on the span active during
       the call, so the org joins the gateway's exact cost to that span
       (httpx, httpx2 and requests; reads a response header, sends nothing).
+    - instrument (``$SUPERBASED_INSTRUMENT``): ``"auto"`` (default)
+      instruments every installed model library (``instrument()``'s
+      targets) when the SDK owns the tracer provider, a framework the app
+      has not imported yet on its first import; never ``openai-agents``
+      unless named, and nothing when the app registered its own provider.
+      ``"off"`` (also ``False``) instruments nothing; a list of target names
+      instruments exactly those. ``diagnostics()["instrument"]`` reports
+      each target.
     - exporter: a SpanExporter to use instead of OTLP/HTTP (tests, custom
       transport); a dict ``{"local": e1, "online": e2}`` gives each
       destination its own. tracer_provider: an SDK TracerProvider to attach to instead
@@ -371,6 +425,7 @@ def init(
         gateway_request_id=gateway_request_id,
         extra=tuple(extra),
     )
+    auto = _instrument.parse_setting(instrument, env)
     plan = _destination.resolve(
         settings,
         env,
@@ -386,6 +441,16 @@ def init(
         if bad:
             plan = dataclasses.replace(plan, warnings=plan.warnings + (bad,))
     _destination.log_once(plan)
+    # The first-trace line's bases (plan 3.8): the machine's own dashboard
+    # when it answered discovery, the organization's when known.
+    _firsttrace.configure(
+        env,
+        {
+            "local": plan.node_url if plan.machine_answered else "",
+            "online": plan.dashboard_url,
+        },
+        [d.name for d in plan.exporters],
+    )
     with _lock:
         # A model client library that traces itself (the Anthropic SDKs) would
         # record every call a second time on the provider registered below.
@@ -423,11 +488,19 @@ def init(
         hooks = (should_export, mask)
         if _PROCESSOR is not None and _PROCESSOR.delegate is not None and config_key == _CONFIG_KEY:
             _PROCESSOR.pipeline = _make_pipeline(settings, hooks, _OWNS_PROVIDER)
-            return settings  # idempotent: already exporting with exactly these settings
+            mode, provider_now = _MODE, _PROVIDER
+            idempotent = True  # already exporting with exactly these settings
+        else:
+            idempotent = False
+    if idempotent:
+        _instrument.auto_instrument(auto, mode, provider_now)
+        return settings
+    with _lock:
 
         # Pick the provider that will hold the spans.
         if _PROVIDER is None or (tracer_provider is not None and tracer_provider is not _PROVIDER):
             current = tracer_provider if tracer_provider is not None else trace.get_tracer_provider()
+            registered = False
             if _is_sdk_provider(current):
                 provider, owns = current, False
             else:
@@ -438,12 +511,14 @@ def init(
                 if tracer_provider is None and isinstance(current, trace.ProxyTracerProvider):
                     # Nothing registered yet: register ours so auto-instrumentation
                     # (OpenInference etc.) lands in the same pipeline. A host that
-                    # registered a non-SDK provider keeps it; ours stays private.
+                    # registered a non-SDK provider keeps it; ours stays private
+                    # (mode "standalone").
                     trace.set_tracer_provider(provider)
+                    registered = True
             processor = _export.SwitchableProcessor()
             provider.add_span_processor(processor)  # type: ignore[union-attr]
             _PROVIDER, _OWNS_PROVIDER, _PROCESSOR = provider, owns, processor
-            _MODE = "owned" if owns else "attached"
+            _MODE = "attached" if not owns else ("owned" if registered else "standalone")
         assert _PROCESSOR is not None
 
         delegate = _build_delegate(settings, plan, exporter)
@@ -459,7 +534,11 @@ def init(
             _export.shutdown_bounded(old, _SHUTDOWN_TIMEOUT)
         _CONFIG_KEY = config_key
         _TRACER = _PROVIDER.get_tracer(TRACER_NAME, __version__)
-        return settings
+        mode, provider_now = _MODE, _PROVIDER
+    # Outside the lock: a framework already imported is instrumented here,
+    # which imports its instrumentor.
+    _instrument.auto_instrument(auto, mode, provider_now)
+    return settings
 
 
 def _same_attr(a: Any, b: Any) -> bool:
@@ -496,8 +575,12 @@ def _build_delegate(settings: Settings, plan: "_destination.Plan", exporter: Any
         if inner is None:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-            inner = OTLPSpanExporter(endpoint=dest.endpoint, headers=dict(dest.headers) or None, timeout=dest.timeout)
-        procs.append(BatchSpanProcessor(_export.CountingExporter(inner, quiet=settings.quiet)))
+            # The session's response hook reads a plan refusal's body (the
+            # exporter does not keep it): diagnostics()["plan_refusal"].
+            inner = OTLPSpanExporter(
+                endpoint=dest.endpoint, headers=dict(dest.headers) or None, timeout=dest.timeout, session=_export.refusal_session()
+            )
+        procs.append(BatchSpanProcessor(_export.CountingExporter(inner, quiet=settings.quiet, name=dest.name)))
     if settings.quiet:
         _export.install_quiet_filter()
     if settings.console:
@@ -640,12 +723,30 @@ def settings() -> Optional[Settings]:
 
 def diagnostics() -> Dict[str, Any]:
     """A snapshot of the SDK's export health: ``mode`` ("owned": the SDK's own
-    provider; "attached": the host's provider; "": not initialised),
+    provider, registered as the global one; "standalone": the SDK's own
+    provider beside a non-SDK provider the host registered; "attached": the
+    host's provider; "": not initialised), ``instrument`` (init()'s setting:
+    ``auto``, ``off`` or the list of names) and ``instrumented`` (per target
+    ``instrumented``, ``pending`` (on its first import), ``already``,
+    ``skipped: auto_excluded``, ``skipped: host_provider``, ``skipped:
+    not_installed``, ``not-installed`` or ``error: ...``), ``service_name``
+    and ``service_name_source`` (``argument``, ``env``, ``manifest``,
+    ``entry_dir`` or ``default``), ``sdk_file`` (the SDK-held key file:
+    ``path``, ``state`` (``absent``, ``used``, ``unused``, ``refused``,
+    ``expired`` or ``not_read``) and ``reason``; never the key),
+    ``first_trace_link`` (the link once printed, else ""),
     ``initialized``, ``exported_spans``, ``failed_exports``, ``dropped_spans``,
     ``last_error`` and ``last_error_at`` (epoch seconds), and
     ``admission_degraded`` / ``admission_last_error`` /
     ``admission_last_error_at``: how many admit() calls got no decision and
     were admitted (or denied under fail_closed), and why the last one.
+    ``plan_refusal`` is the last time the organization's plan refused AI
+    Apps ingest (an export, or any other call to the gateway), as a dict
+    (``kind``, ``code``, ``status``, ``message``, ``upgrade_url``: where its
+    billing owner changes the plan, ``capability``, ``plan``, ``allowance``,
+    ``plans``, ``quota``, ``retry_after``), else None; ``plan_refusal_at``
+    is when (epoch seconds, 0 when never). Export never raises: this is
+    where a refused export shows, beside one warning line a minute.
     ``vendor_tracing`` says, per model client library that traces itself
     (``anthropic``), whether its own spans are ``off`` (init() turned them
     off: ``instrument([...])`` records the calls) or ``kept`` (the app set
@@ -658,10 +759,16 @@ def diagnostics() -> Dict[str, Any]:
 
     # admit() fails open, but the count and the last cause are here (E-39).
     out.update(_admit.snapshot())
+    out.update(_planrefusal.snapshot())
     proc = _PROCESSOR
     out["mode"] = _MODE
     out["initialized"] = bool(proc is not None and proc.delegate is not None)
     out["vendor_tracing"] = dict(_VENDOR_TRACING)
+    out["instrument"] = _instrument.setting_value()
+    out["instrumented"] = _instrument.report()
+    out["first_trace_link"] = _firsttrace.printed_link()
+    out["service_name"] = _SETTINGS.service_name if _SETTINGS is not None else ""
+    out["service_name_source"] = _SETTINGS.service_name_source if _SETTINGS is not None else ""
     if _PLAN is not None:
         out.update(_PLAN.summary())
     else:
@@ -1271,8 +1378,13 @@ def _reset_for_tests() -> None:
         from . import _admit
 
         _admit.STATS.reset()
+        _planrefusal.LAST.reset()
+        _firsttrace.STATE.reset()
+        with _export._LAST_ANSWER_LOCK:
+            _export._LAST_ANSWER.clear()
         _pipeline.COUNTERS.reset()
         _vendor._reset_for_tests()
+        _instrument._reset_for_tests()
         _VENDOR_TRACING.clear()
         _NET_INPUT_WARNED.clear()
         _SAMPLER.set(1.0, True)

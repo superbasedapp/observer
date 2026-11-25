@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from . import _http
+from . import _http, _planrefusal
 
 DEFAULT_ADMISSION_ENDPOINT = "http://127.0.0.1:8081/api/obs/admission/check"
 SDK_ADMIT_PATH = "/v1/sdk/admit"
@@ -76,6 +76,9 @@ class Verdict:
     ``client-transport``, ``client-http-error`` or ``client-bad-response``;
     ``http_status`` and ``error`` carry the detail. ``verdict_id`` is the
     server's id for the recorded verdict, when it returns one.
+    ``plan_refusal`` is set when the org's plan refused the check (a
+    ``PlanRefusalError``: its message and ``upgrade_url`` say why and where
+    to fix it); the verdict is degraded as for any other refusal.
     """
 
     __slots__ = (
@@ -92,6 +95,7 @@ class Verdict:
         "verdict_id",
         "http_status",
         "error",
+        "plan_refusal",
     )
 
     def __init__(self, data: Optional[Mapping[str, Any]] = None, **overrides: Any) -> None:
@@ -112,11 +116,14 @@ class Verdict:
         self.verdict_id: str = str(vid) if isinstance(vid, (str, int)) and not isinstance(vid, bool) else ""
         self.http_status: int = 0
         self.error: str = ""
+        self.plan_refusal: Optional[_planrefusal.PlanRefusalError] = None
         for k, v in overrides.items():
             setattr(self, k, v)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {k: getattr(self, k) for k in self.__slots__}
+        out = {k: getattr(self, k) for k in self.__slots__}
+        out["plan_refusal"] = self.plan_refusal.to_dict() if self.plan_refusal is not None else None
+        return out
 
     def __repr__(self) -> str:
         return (
@@ -126,7 +133,15 @@ class Verdict:
         )
 
 
-def _degraded(cause: str, *, fail_closed: bool, http_status: int = 0, error: str = "", started: float) -> Verdict:
+def _degraded(
+    cause: str,
+    *,
+    fail_closed: bool,
+    http_status: int = 0,
+    error: str = "",
+    started: float,
+    plan_refusal: Optional["_planrefusal.PlanRefusalError"] = None,
+) -> Verdict:
     return Verdict(
         None,
         allowed=not fail_closed,
@@ -136,6 +151,7 @@ def _degraded(cause: str, *, fail_closed: bool, http_status: int = 0, error: str
         http_status=http_status,
         error=error[:300],
         latency_ms=int((time.monotonic() - started) * 1000),
+        plan_refusal=plan_refusal,
     )
 
 
@@ -231,6 +247,11 @@ def note_degraded(v: Verdict, url: str) -> None:
         status = v.http_status if isinstance(v.http_status, int) else 0
         detail = f"HTTP {status}" if status else (v.error or v.degraded)
         fix = degraded_fix(v.degraded, status, url)
+        refusal = v.plan_refusal
+        if refusal is not None:
+            # The org's plan refused it: its own words and where to fix it.
+            fix = f"{' '.join(refusal.message.split())} (upgrade: {refusal.upgrade_url})"
+            _planrefusal.note(refusal)
         verdict = "denied (fail_closed)" if not v.allowed else "admitted (fail open)"
         where = f" from {_where(url)}" if url else ""
         msg = f"admit() got no decision{where} ({v.degraded}: {detail}); the message was {verdict}" + (f". Fix: {fix}" if fix else "")
@@ -534,6 +555,18 @@ def _admit(message: Any, *, started: float, **kw: Any) -> Verdict:
     return v
 
 
+def _refusal_of(exc: Any, deadline: float) -> Optional[_planrefusal.PlanRefusalError]:
+    """The org's plan refusal in an HTTP error answer, or None (a 403 or a
+    429 only; the body is read within the call's deadline)."""
+    if exc.code not in (403, 429):
+        return None
+    try:
+        raw = _http.read_bounded(exc, deadline, _http.ADMIT_BODY_CAP)
+    except Exception:  # noqa: BLE001 - reporting never breaks admit()
+        return None
+    return _planrefusal.parse_plan_refusal(exc.code, raw, dict(exc.headers or {}))
+
+
 def _post(url: str, origin: str, init_key: str, payload: bytes, kw: Mapping[str, Any], env: Mapping[str, str], fail_closed: bool, started: float) -> Verdict:
     """One admission request to ``url``; a failure is a counted degraded
     verdict. The caller stamps the span with the final verdict."""
@@ -560,8 +593,8 @@ def _post(url: str, origin: str, init_key: str, payload: bytes, kw: Mapping[str,
         hdrs.update({str(k): str(v) for k, v in kw["headers"].items()})
     req = urllib.request.Request(url, data=payload, headers=hdrs, method="POST")
 
-    def fail(cause: str, status: int = 0, error: str = "") -> Verdict:
-        v = _degraded(cause, fail_closed=fail_closed, http_status=status, error=error, started=started)
+    def fail(cause: str, status: int = 0, error: str = "", refusal: Optional[_planrefusal.PlanRefusalError] = None) -> Verdict:
+        v = _degraded(cause, fail_closed=fail_closed, http_status=status, error=error, started=started, plan_refusal=refusal)
         note_degraded(v, url)
         return v
 
@@ -574,9 +607,11 @@ def _post(url: str, origin: str, init_key: str, payload: bytes, kw: Mapping[str,
             _remember_timeout(url, _first_present(resp.headers.get, TIMEOUT_HEADERS))
             raw = _http.read_bounded(resp, deadline, _http.ADMIT_BODY_CAP)
     except urllib.error.HTTPError as exc:
+        refusal = _refusal_of(exc, deadline)
+        error = f"HTTP {exc.code}" + (f" {refusal.code}: {refusal.message}" if refusal is not None else "")
         if exc.code in (403, 404):
-            return fail(UNAVAILABLE, exc.code, f"HTTP {exc.code}")
-        return fail(HTTP_ERROR, exc.code, f"HTTP {exc.code}")
+            return fail(UNAVAILABLE, exc.code, error, refusal)
+        return fail(HTTP_ERROR, exc.code, error, refusal)
     except (socket.timeout, TimeoutError) as exc:
         return fail(TIMEOUT, error=str(exc) or "timed out")
     except urllib.error.URLError as exc:

@@ -2,18 +2,12 @@ package api_test
 
 import (
 	"context"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
 // device_orgs_test.go covers the lazy personal org's two triggers and the
@@ -29,30 +23,11 @@ import (
 // personal-plane switch set to plane.
 func newPlaneHarness(t *testing.T, plane string) orgsHarness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: "http://" + lis.Addr().String(),
-		RateLimit:       &api.RateLimitConfig{},
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-		TenantDomain:    orgsTenantDomain,
-		PersonalPlane:   plane,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return orgsHarness{harness: &harness{srv: srv, store: s}, pool: pool}
+	h := newHarnessWith(t, harnessSetup{opts: func(o *api.Options) {
+		o.TenantDomain = orgsTenantDomain
+		o.PersonalPlane = plane
+	}})
+	return orgsHarness{harness: h, pool: h.store.Pool()}
 }
 
 // listDeviceOrgs is GET /v1/orgs as c, validated the way the node does.

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 )
 
 // TestMCPPinLaunch_ClientByOS pins the MCP pin each generator writes, per
@@ -118,13 +120,13 @@ func TestTOMLString(t *testing.T) {
 		{"café", `"café"`},
 	}
 	for _, tc := range cases {
-		got := tomlString(tc.in)
+		got := cfgfmt.TOMLString(tc.in)
 		if got != tc.want {
-			t.Errorf("tomlString(%q) = %s, want %s", tc.in, got, tc.want)
+			t.Errorf("cfgfmt.TOMLString(%q) = %s, want %s", tc.in, got, tc.want)
 		}
 		var v struct{ S string }
 		if _, err := toml.Decode("S = "+got, &v); err != nil || v.S != tc.in {
-			t.Errorf("tomlString(%q) does not round-trip: %v (got %q)", tc.in, err, v.S)
+			t.Errorf("cfgfmt.TOMLString(%q) does not round-trip: %v (got %q)", tc.in, err, v.S)
 		}
 	}
 }

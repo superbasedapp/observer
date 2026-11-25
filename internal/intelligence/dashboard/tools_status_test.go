@@ -16,7 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/claudeplugin"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/hook"
-	"github.com/marmutapp/superbased-observer/internal/mcp"
+	"github.com/marmutapp/superbased-observer/internal/mcpregister"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -362,27 +362,27 @@ func TestProbeFromResultReportsPluginWiring(t *testing.T) {
 	t.Run("mcp", func(t *testing.T) {
 		cases := []struct {
 			name           string
-			res            mcp.RegistrationResult
+			res            mcpregister.RegistrationResult
 			wantRegistered bool
 			wantViaPlugin  bool
 			wantDetail     string
 		}{
 			{
 				name:           "skipped - wired via the plugin",
-				res:            mcp.RegistrationResult{Skipped: true, SkipReason: reason},
+				res:            mcpregister.RegistrationResult{Skipped: true, SkipReason: reason},
 				wantRegistered: true,
 				wantViaPlugin:  true,
 				wantDetail:     wantWiredDetail,
 			},
 			{
 				name:           "already set by init",
-				res:            mcp.RegistrationResult{AlreadySet: true},
+				res:            mcpregister.RegistrationResult{AlreadySet: true},
 				wantRegistered: true,
 				wantDetail:     "observer MCP server registered",
 			},
 			{
 				name:       "absent",
-				res:        mcp.RegistrationResult{},
+				res:        mcpregister.RegistrationResult{},
 				wantDetail: "not registered",
 			},
 		}

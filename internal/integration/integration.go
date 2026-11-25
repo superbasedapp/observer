@@ -355,6 +355,13 @@ type Capability struct {
 	// surface relation (invariant I2).
 	Enterprise EnterpriseAnswer
 	TokenTier  TokenTier
+	// LimitProvider is the upstream provider family the tool's rate-limit
+	// observations (limit_snapshots, the 5h/weekly limit gauge) are keyed
+	// by: LimitProviderOpenAI for the OpenAI-family tools. Zero value =
+	// LimitProviderAnthropic, the common proxied case. Read it through
+	// LimitProviderFor; the node gauge and the org session gauge share it
+	// via sessiongauge.ProviderForTool.
+	LimitProvider string
 	// ProxyOnlyCapture marks a row whose turns arrive ONLY through the
 	// node's own listeners (the proxy, and for custom-agent since PT-55 the
 	// OTLP receiver): there is no transcript or store to tail and no vendor
@@ -702,9 +709,10 @@ var registry = map[string]Capability{
 		},
 	},
 	"codex": {
-		Tool:       "codex",
-		PromptLane: PromptLaneHook,
-		Vocabulary: Vocabulary{InTaxonomy: true},
+		Tool:          "codex",
+		LimitProvider: LimitProviderOpenAI,
+		PromptLane:    PromptLaneHook,
+		Vocabulary:    Vocabulary{InTaxonomy: true},
 		// The config file the launcher writes is the route; the launcher also
 		// refuses to claim it when the invocation supplies its own config
 		// override, so an un-overridden launch reaches the Observer proxy.
@@ -1386,8 +1394,9 @@ var registry = map[string]Capability{
 		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	"copilot": {
-		Tool:       "copilot",
-		Vocabulary: Vocabulary{InTaxonomy: true},
+		Tool:          "copilot",
+		LimitProvider: LimitProviderOpenAI,
+		Vocabulary:    Vocabulary{InTaxonomy: true},
 		// VS Code extension → GitHub-hosted backend (native traffic exempt),
 		// but VS Code's custom-endpoint / BYOK model support MAY route — probe
 		// before flipping. Native hosted + inline completions stay exempt.
@@ -1407,8 +1416,9 @@ var registry = map[string]Capability{
 		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	"copilot-cli": {
-		Tool:       "copilot-cli",
-		Vocabulary: Vocabulary{InTaxonomy: true},
+		Tool:          "copilot-cli",
+		LimitProvider: LimitProviderOpenAI,
+		Vocabulary:    Vocabulary{InTaxonomy: true},
 		// Guard-fix lane B (live 2026-10-15, copilot 1.0.96): the
 		// userPromptSubmitted COMMAND hook blocks ({handled:true,
 		// responseContent} plus modifiedPrompt, zero model requests),
@@ -6723,6 +6733,26 @@ func ProviderOverridesFor(tool string) []ProviderOverride {
 		return nil
 	}
 	return append([]ProviderOverride(nil), c.Proxy.ProviderOverrides...)
+}
+
+// The LimitProvider vocabulary: the upstream provider families a tool's
+// rate-limit observations are keyed by.
+const (
+	// LimitProviderAnthropic is the default, the common proxied case; a row
+	// leaves LimitProvider empty for it.
+	LimitProviderAnthropic = "anthropic"
+	// LimitProviderOpenAI keys the OpenAI-family tools.
+	LimitProviderOpenAI = "openai"
+)
+
+// LimitProviderFor returns the provider family tool's rate-limit
+// observations are keyed by: the row's LimitProvider, else
+// LimitProviderAnthropic (also for a tool with no registry row).
+func LimitProviderFor(tool string) string {
+	if c, ok := registry[tool]; ok && c.LimitProvider != "" {
+		return c.LimitProvider
+	}
+	return LimitProviderAnthropic
 }
 
 // For returns the registered Capability for a tool. ok is false when the

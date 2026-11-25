@@ -22,7 +22,11 @@ def contract():
 
 
 def allowed(contract):
-    keys = set(contract["vocabulary"]) | set(contract["sdk_owned"]) | set(contract.get("pending_vocabulary", []))
+    keys = (
+        set(contract["vocabulary"])
+        | set(contract["sdk_owned"])
+        | set(contract.get("pending_vocabulary", []))
+    )
     prefixes = tuple(contract["vocabulary_prefixes"]) + tuple(contract.get("sdk_owned_prefixes", []))
     return keys, prefixes
 

@@ -6,6 +6,7 @@ import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList
 import { Pill } from "@shared/primitives/Pill";
 import type { OrgBillingView, PortalOrg, PortalSession } from "../../api";
 import { billingState } from "../../lib/orgsModel";
+import { PLAN_LABELS } from "../../lib/labels";
 import { billingTextFor, subscribeLabel } from "../../lib/personalModel";
 import { dateWithRelative, statusMeta } from "../billing/util";
 import { BillingPortalButton } from "../billing/BillingPortalButton";
@@ -69,7 +70,7 @@ export function OrgBillingCard({ billing, onCheckout, onPortal, kind = "team" }:
               </Pill>
             }
           />
-          <DefinitionRow label="Plan" value={sub.plan_name} />
+          <DefinitionRow label="Plan" value={planLabel(sub.plan_name)} />
           {sub.trial_ends_at && <DefinitionRow label="Trial ends" value={dateWithRelative(sub.trial_ends_at)} />}
           {sub.status === "past_due" && sub.past_due_since && (
             <DefinitionRow label="Payment due since" value={dateWithRelative(sub.past_due_since)} />
@@ -171,7 +172,10 @@ function planRank(name: string): number {
   return i < 0 ? PLAN_ORDER.length : i;
 }
 
-// planLabel is a catalog plan name as the card shows it.
+// planLabel is a catalog plan name as the card shows it: its PLAN_LABELS
+// name (a personal subscription names personal_pro, shown as "Personal
+// Pro"), else the name with its first letter capitalised.
 function planLabel(name: string): string {
+  if (PLAN_LABELS[name]) return PLAN_LABELS[name];
   return name ? name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, " ") : "the plan";
 }

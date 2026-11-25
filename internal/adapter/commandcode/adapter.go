@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -127,8 +128,8 @@ func matchesShape(path string) bool {
 // deliberately deferred rather than consumed, so the next parse re-reads
 // them whole: a partial trailing line (a record still being written),
 // and the record of a tool_use whose tool_result has not landed yet (see
-// pending.go — a cross-tick pair would otherwise persist a permanently
-// wrong outcome).
+// adapter.DeferUnpairedTail — a cross-tick pair would otherwise persist a
+// permanently wrong outcome).
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	f, err := os.Open(path) //nolint:gosec // path comes from the watcher's own watch roots
 	if err != nil {
@@ -140,7 +141,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		adapter:     a,
 		path:        path,
 		rootCache:   map[string]string{},
-		pendingCall: map[string]pendingMark{},
+		pendingCall: map[string]adapter.PendingMark{},
 		unknownTool: map[string]bool{},
 		firstOffset: fromOffset,
 		sessionID:   sessionIDFromPath(path),
@@ -213,7 +214,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
-	st.deferUnpairedTail(&res)
+	// Rewinds tool and token events only; cache observations stay.
+	adapter.DeferUnpairedTail(&res, st.path, st.pendingCall, false)
 	adapter.ApplyProjectIdentity(&res, st.identity)
 	return res, nil
 }
@@ -229,8 +231,8 @@ type parseState struct {
 	// pendingCall maps a tool_use id to the location of its ToolEvent in
 	// res.ToolEvents, so the later tool_result block can stamp
 	// success/output onto it. Whatever is still pending at EOF drives
-	// the tail deferral in pending.go.
-	pendingCall map[string]pendingMark
+	// the tail deferral (adapter.DeferUnpairedTail).
+	pendingCall map[string]adapter.PendingMark
 	// curLineStart / curToolLen / curTokenLen are the rewind coordinates
 	// of the record currently being handled, captured by the line loop
 	// before dispatch.
@@ -376,33 +378,20 @@ func (st *parseState) handle(rec *rawLine, lineStart int64, res *adapter.ParseRe
 	// Any other record type is informational and skipped silently.
 }
 
-// projectRoot resolves the header cwd and memoizes the result.
-//
-// The translation is UNCONDITIONAL: crossmount.TranslateForeignPath maps
-// a Windows `C:\...` cwd (which a WSL2 observer sees when reading a
-// Windows-side install over /mnt/c) to its `/mnt/c/...` equivalent, so a
-// drive-letter string never reaches git.Resolve — where filepath.Abs
-// would treat it as relative and CWD-prefix the observer's OWN .git onto
-// every event. Same shape as qwencode / qoder / kirocli.
+// projectRoot resolves the header cwd and memoizes the result
+// (adapter.ResolveProjectRootCached: the foreign-path translation is
+// unconditional, so a Windows `C:\...` cwd a WSL2 observer reads over
+// /mnt/c never reaches git as a relative path and the observer's OWN .git
+// is never stamped onto every event). The first resolution fills the
+// branch, remote and identity.
 func (st *parseState) projectRoot() string {
-	if st.cwd == "" {
-		return ""
+	root, id, fresh := adapter.ResolveProjectRootCached(st.rootCache, st.cwd)
+	if fresh {
+		st.branch = id.Branch
+		st.remote = id.Remote
+		st.identity = id
 	}
-	cwd := crossmount.TranslateForeignPath(st.cwd)
-	if root, ok := st.rootCache[cwd]; ok {
-		return root
-	}
-	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		st.rootCache[cwd] = cwd
-		return cwd
-	}
-	st.rootCache[cwd] = id.Root
-	st.branch = id.Branch
-	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
-	st.remote = id.Remote
-	st.identity = id
-	return id.Root
+	return root
 }
 
 // emitSessionStart records the transcript's session header as a
@@ -418,7 +407,7 @@ func (st *parseState) emitSessionStart(rec *rawLine, res *adapter.ParseResult) {
 		SourceEventID: "session_start:" + st.sessionID,
 		SessionID:     st.sessionID,
 		ProjectRoot:   root,
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTC(rec.Timestamp),
 		GitBranch:     st.branch,
 		GitRemote:     st.remote,
 		Tool:          models.ToolCommandCode,
@@ -437,7 +426,7 @@ func (st *parseState) emitMessage(rec *rawLine, lineStart int64, res *adapter.Pa
 		return
 	}
 	root := st.projectRoot()
-	ts := parseTimestamp(rec.Timestamp)
+	ts := parseutil.ParseRFC3339UTC(rec.Timestamp)
 	lineID := st.eventKey(rec, lineStart)
 	msgID := ""
 	if rec.Message.Meta != nil {
@@ -525,17 +514,17 @@ func (st *parseState) emitToolUse(rec *rawLine, block rawBlock, ec emitCtx, res 
 		PrecedingReasoning: ec.reasoning,
 		MessageID:          ec.msgID,
 		// Optimistic; corrected by the paired tool_result. When that
-		// block hasn't been written yet, deferUnpairedTail rewinds past
+		// block hasn't been written yet, adapter.DeferUnpairedTail rewinds past
 		// this record rather than shipping the optimistic value — the
 		// store cannot flip `success` on a later re-emit.
 		Success: true,
 	})
 	if block.ID != "" {
-		st.pendingCall[block.ID] = pendingMark{
-			idx:       idx,
-			lineStart: st.curLineStart,
-			toolLen:   st.curToolLen,
-			tokenLen:  st.curTokenLen,
+		st.pendingCall[block.ID] = adapter.PendingMark{
+			ToolIdx:   idx,
+			LineStart: st.curLineStart,
+			ToolLen:   st.curToolLen,
+			TokenLen:  st.curTokenLen,
 		}
 	}
 }
@@ -595,10 +584,10 @@ func (st *parseState) emitText(rec *rawLine, block rawBlock, ec emitCtx, res *ad
 // was already persisted optimistically successful).
 func (st *parseState) applyToolResult(block rawBlock, res *adapter.ParseResult) {
 	mark, ok := st.pendingCall[block.ToolUseID]
-	if !ok || mark.idx >= len(res.ToolEvents) {
+	if !ok || mark.ToolIdx >= len(res.ToolEvents) {
 		return
 	}
-	ev := &res.ToolEvents[mark.idx]
+	ev := &res.ToolEvents[mark.ToolIdx]
 	// is_error was absent/null on every observed success; only an
 	// explicit true marks the call failed.
 	isErr := block.IsError != nil && *block.IsError

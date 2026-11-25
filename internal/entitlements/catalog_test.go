@@ -56,7 +56,7 @@ func TestOneFloorPerKind(t *testing.T) {
 		if !ok {
 			t.Fatalf("Floor(%s) missing", k)
 		}
-		for _, n := range CapsFor(k) {
+		for _, n := range capsFor(k) {
 			if _, ok := f.Caps[n]; !ok {
 				t.Errorf("floor %s (%s) does not set cap %s", f.Plan.Name, k, n)
 			}
@@ -165,7 +165,7 @@ func TestNoCatalogPlanNarrowsItsFloor(t *testing.T) {
 				t.Errorf("%s drops floor capability %s", b.Plan.Name, id)
 			}
 		}
-		for _, n := range CapsFor(b.Kind) {
+		for _, n := range capsFor(b.Kind) {
 			f, w := floor.Cap(n), with.Cap(n)
 			if !w.Set || (f.Unlimited && !w.Unlimited) || (!w.Unlimited && w.N < f.N) {
 				t.Errorf("%s narrows cap %s: floor %+v, with %+v", b.Plan.Name, n, f, w)
@@ -262,6 +262,124 @@ func TestOwnIdPCatalogMapping(t *testing.T) {
 		}
 		if got := Evaluate(c.kind, doc, now).Has(CapabilityOwnIdP); got != c.want {
 			t.Errorf("Evaluate(%s, %q).Has(%s) = %v, want %v", c.kind, c.plan, CapabilityOwnIdP, got, c.want)
+		}
+	}
+}
+
+// TestCurrentCarriesForward: one case per carry rule. A version marked
+// carries replaces the one below it for every holder; the walk stops at a
+// version that is not marked (Business v2 and v3 move by their price, so a
+// Business v1 holder stays on v1); an unknown plan is not found.
+func TestCurrentCarriesForward(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		version int
+		want    int
+		ok      bool
+	}{
+		{"personal_pro", 1, 3, true},
+		{"personal_pro", 2, 3, true},
+		{"personal_pro", 3, 3, true},
+		{"personal_free", 1, 3, true},
+		{"personal_free", 2, 3, true},
+		{"team_lapsed", 1, 2, true},
+		{"business", 1, 1, true},
+		{"business", 2, 2, true},
+		{"business", 3, 3, true},
+		{"team", 1, 1, true},
+		{"personal_pro", 0, 3, true},
+		{"personal_pro", 9, 0, false},
+		{"nope", 1, 0, false},
+	}
+	for _, tc := range cases {
+		b, ok := Current(tc.name, tc.version)
+		if ok != tc.ok || (ok && b.Plan.Version != tc.want) {
+			t.Errorf("Current(%s, %d) = v%d, %v; want v%d, %v", tc.name, tc.version, b.Plan.Version, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestCarriedVersionsNeverNarrow: a version that carries its holders
+// forward is never less than the version it replaces (every capability
+// kept, every cap at least as high, same kind), so moving a holder is
+// never a downgrade.
+func TestCarriedVersionsNeverNarrow(t *testing.T) {
+	t.Parallel()
+	for _, d := range planDefs() {
+		if !d.carries {
+			continue
+		}
+		prev, ok := Plan(d.body.Plan.Name, d.body.Plan.Version-1)
+		if !ok {
+			t.Errorf("%s v%d carries, but there is no v%d", d.body.Plan.Name, d.body.Plan.Version, d.body.Plan.Version-1)
+			continue
+		}
+		next := d.body.Normalized()
+		if prev.Kind != next.Kind {
+			t.Errorf("%s v%d changes kind", next.Plan.Name, next.Plan.Version)
+		}
+		for _, id := range prev.Capabilities {
+			if !slices.Contains(next.Capabilities, id) {
+				t.Errorf("%s v%d drops %s", next.Plan.Name, next.Plan.Version, id)
+			}
+		}
+		for n, v := range prev.Caps {
+			w, ok := next.Caps[n]
+			if !ok || (v == Unlimited && w != Unlimited) || (w != Unlimited && w < v) {
+				t.Errorf("%s v%d narrows %s: %d -> %d", next.Plan.Name, next.Plan.Version, n, v, w)
+			}
+		}
+	}
+}
+
+// TestGrantingPlans names, per kind, the newest plans that sell the AI Apps
+// gateway: what a refusal offers, read from the catalog.
+func TestGrantingPlans(t *testing.T) {
+	t.Parallel()
+	names := func(k Kind) []string {
+		var out []string
+		for _, b := range GrantingPlans(k, CapabilityPlaneAGateway) {
+			out = append(out, fmt.Sprintf("%s:%d", b.Plan.Name, b.Plan.Version))
+		}
+		return out
+	}
+	cases := []struct {
+		kind Kind
+		want []string
+	}{
+		{KindPersonal, []string{"personal_free:3", "personal_pro:3"}},
+		{KindTeam, []string{"business:3"}},
+		{KindAccount, nil},
+	}
+	for _, tc := range cases {
+		if got := names(tc.kind); !slices.Equal(got, tc.want) {
+			t.Errorf("GrantingPlans(%s) = %v, want %v", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// TestAccountPairs pins L-167: the Plus account plan pairs with Personal Pro
+// (its newest version), every pair joins an account plan to a personal one,
+// and only the personal kind is reachable through a pair.
+func TestAccountPairs(t *testing.T) {
+	t.Parallel()
+	for _, p := range accountPairs() {
+		a, okA := Plan(p.account, 0)
+		b, okB := Plan(p.personal, 0)
+		if !okA || !okB || a.Kind != KindAccount || b.Kind != KindPersonal {
+			t.Errorf("pair %s -> %s: %v/%v kinds %s/%s", p.account, p.personal, okA, okB, a.Kind, b.Kind)
+		}
+	}
+	if b, ok := PairedPersonalPlan("plus_beta"); !ok || b.Plan.Name != "personal_pro" || b.Plan.Version != 3 {
+		t.Fatalf("PairedPersonalPlan(plus_beta) = %+v, %v", b.Plan, ok)
+	}
+	if _, ok := PairedPersonalPlan("free"); ok {
+		t.Fatal("the free account plan pairs with a personal plan")
+	}
+	for _, k := range Kinds() {
+		if got, want := AccountPlansPairInto(k), k == KindPersonal; got != want {
+			t.Errorf("AccountPlansPairInto(%s) = %v, want %v", k, got, want)
 		}
 	}
 }

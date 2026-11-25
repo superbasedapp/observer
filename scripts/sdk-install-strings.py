@@ -203,17 +203,11 @@ ROWS: List[Row] = [
         "# Install the superbased SDK from this checkout first (README step 2); it is\n# not on PyPI yet.",
         "# Install the superbased SDK from this checkout first (README step 2); the\n# examples test it.",
     ),
-    # The marketing pages (rendered by `make website-build`).
-    Row(
-        "website/pages-src/sdk.html",
-        'Neither package is on PyPI or npm yet. Until the first release, install from a checkout of the '
-        '<a href="https://github.com/superbasedapp/observer" rel="noopener" data-track="package_outbound" '
-        'data-track-channel="github" style="color:var(--accent); border-bottom:1px solid var(--accent);">public repository</a>: '
-        "<code>pip install ./sdk/python</code> or <code>npm install ./sdk/typescript</code>.",
-        "Install from PyPI or npm: <code>pip install superbased-sdk</code> or <code>npm install @superbased/sdk</code>.",
-    ),
-    Row("website/pages-src/*.html", "The SDKs are not on PyPI or npm yet.", "The SDKs are on PyPI and npm."),
-    Row("website/pages-src/*.html", "the SDKs are not on PyPI or npm yet.", "the SDKs are on PyPI and npm."),
+    # The marketing pages (rendered by `make website-build`) carry no text row:
+    # since the AI Apps website pass (2026-11-24, feat/website-plane-a) /sdk,
+    # /apps and the other pages name the SDKs and their install lines through
+    # the catalog's @@sdk.<...>@@ tokens, so `flip` changes them by flipping
+    # the catalog's `published` flags.
     # Go: a module tag on the public repository (sdk/go/v<x.y.z>), not a
     # registry upload, so it is flipped by `flip --sdk go` on the day the tag
     # is pushed (the v1.43.0 release run pushes it together with PyPI and

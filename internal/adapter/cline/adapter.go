@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -775,35 +776,16 @@ func resolveProjectFromCwd(cwd string) (string, string, string, git.Identity) {
 // content as a bare string (user-typed prompts) — we return a single text
 // block in that case.
 func decodeContent(raw json.RawMessage) []rawContentBlock {
-	if len(raw) == 0 {
-		return nil
-	}
-	trimmed := bytesTrimSpace(raw)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	switch trimmed[0] {
-	case '[':
-		var blocks []rawContentBlock
-		if err := json.Unmarshal(raw, &blocks); err != nil {
-			return nil
-		}
-		return blocks
-	case '"':
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil
-		}
-		return []rawContentBlock{{Type: "text", Text: s}}
-	}
-	return nil
+	return transcriptutil.DecodeContent(raw, func(text string) rawContentBlock {
+		return rawContentBlock{Type: "text", Text: text}
+	})
 }
 
 func decodeResultContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	trimmed := bytesTrimSpace(raw)
+	trimmed := transcriptutil.TrimJSONSpace(raw)
 	if len(trimmed) == 0 {
 		return ""
 	}
@@ -830,27 +812,6 @@ func decodeResultContent(raw json.RawMessage) string {
 		return b.String()
 	}
 	return ""
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end {
-		c := b[start]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			start++
-			continue
-		}
-		break
-	}
-	for end > start {
-		c := b[end-1]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			end--
-			continue
-		}
-		break
-	}
-	return b[start:end]
 }
 
 // sessionIDFromPath uses the task-directory name (a ULID-like string created

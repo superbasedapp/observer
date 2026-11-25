@@ -91,10 +91,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // so the store's other tables never leave the vendor's file (T-927,
 // MIRROR-CRED-1; this adapter's private byte copy was RB1 sweep finding A2).
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the store: every table this
@@ -111,16 +108,7 @@ var mirrorSpec = mirrorbase.Spec{
 // non-native home. Covers both bridge directions (/mnt/c on WSL2, and
 // \\wsl.localhost\ on Windows).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // maxCheckpointRowID returns the largest checkpoints.rowid in the store —

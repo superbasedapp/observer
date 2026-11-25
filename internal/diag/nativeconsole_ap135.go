@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -62,15 +61,8 @@ func checkCortexTeamsAt(_ config.Config, paths []string) Check {
 	if path == "" {
 		return Check{Name: name, Status: StatusOK, Message: "cortex code managed-settings not deployed - run `observer org emit-managed-settings --provider cortex-code` to generate it"}
 	}
-	var details []string
-	worst := StatusOK
-	note := func(s Status, msg string) {
-		details = append(details, msg)
-		if s > worst {
-			worst = s
-		}
-	}
-	noteSystemFile(path, note)
+	var d detailCheck
+	noteSystemFile(path, d.note)
 	var doc struct {
 		Version string `json:"version"`
 		Files   struct {
@@ -80,29 +72,23 @@ func checkCortexTeamsAt(_ config.Config, paths []string) Check {
 	b, err := os.ReadFile(path)
 	switch {
 	case err != nil:
-		note(StatusWarn, "cannot read "+path+": "+err.Error())
+		d.note(StatusWarn, "cannot read "+path+": "+err.Error())
 	case json.Unmarshal(b, &doc) != nil:
-		note(StatusWarn, path+" is not valid JSON - Cortex Code falls back to restricted mode")
+		d.note(StatusWarn, path+" is not valid JSON - Cortex Code falls back to restricted mode")
 	case doc.Version != "1.0":
-		note(StatusWarn, path+` lacks "version": "1.0" - Cortex Code falls back to restricted mode`)
+		d.note(StatusWarn, path+` lacks "version": "1.0" - Cortex Code falls back to restricted mode`)
 	default:
-		note(StatusOK, "managed-settings.json present and parseable ("+path+")")
+		d.note(StatusOK, "managed-settings.json present and parseable ("+path+")")
 	}
 	if doc.Files.MCPFile != "" {
 		if _, err := os.Stat(doc.Files.MCPFile); err != nil {
-			note(StatusWarn, "files.mcpFile "+doc.Files.MCPFile+" is missing - the Observer MCP pin will not load")
+			d.note(StatusWarn, "files.mcpFile "+doc.Files.MCPFile+" is missing - the Observer MCP pin will not load")
 		} else {
-			note(StatusOK, "files.mcpFile present ("+doc.Files.MCPFile+")")
+			d.note(StatusOK, "files.mcpFile present ("+doc.Files.MCPFile+")")
 		}
-		if _, err := exec.LookPath("npx"); err != nil {
-			note(StatusWarn, "npx not on PATH - the `npx -y @superbased/observer` MCP pin will not start")
-		}
+		d.noteNPX("", npxPinWillNotStart)
 	}
-	msg := "cortex code managed-settings deployed - all checks passed"
-	if worst != StatusOK {
-		msg = "cortex code managed-settings deployed - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return d.result(name, "cortex code managed-settings deployed - all checks passed", "cortex code managed-settings deployed - see warnings below")
 }
 
 func checkIBMBobTeams(cfg config.Config) Check {
@@ -126,32 +112,25 @@ func checkIBMBobTeamsAt(cfg config.Config, paths []string, home string) Check {
 	if path == "" {
 		return Check{Name: name, Status: StatusOK, Message: "ibm bob policy file not deployed - run `observer org emit-managed-settings --provider ibm-bob` to generate it"}
 	}
-	var details []string
-	worst := StatusOK
-	note := func(s Status, msg string) {
-		details = append(details, msg)
-		if s > worst {
-			worst = s
-		}
-	}
-	noteSystemFile(path, note)
+	var d detailCheck
+	noteSystemFile(path, d.note)
 	var rems []remedy.Remediation
 	b, err := os.ReadFile(path)
 	var policy map[string]json.RawMessage
 	switch {
 	case err != nil:
-		note(StatusWarn, "cannot read "+path+": "+err.Error())
+		d.note(StatusWarn, "cannot read "+path+": "+err.Error())
 	case json.Unmarshal(b, &policy) != nil:
-		note(StatusWarn, path+" is not a JSON object - Bob ignores it")
+		d.note(StatusWarn, path+" is not a JSON object - Bob ignores it")
 	}
 	if raw, ok := policy["OtelConfiguration"]; ok {
 		var encoded string
 		var otel map[string]any
 		switch {
 		case json.Unmarshal(raw, &encoded) != nil:
-			note(StatusWarn, "OtelConfiguration is not a string - Bob ignores a policy of the wrong type")
+			d.note(StatusWarn, "OtelConfiguration is not a string - Bob ignores a policy of the wrong type")
 		case json.Unmarshal([]byte(encoded), &otel) != nil:
-			note(StatusWarn, "OtelConfiguration is not a JSON object - Bob ignores it")
+			d.note(StatusWarn, "OtelConfiguration is not a JSON object - Bob ignores it")
 		default:
 			ep, _ := otel["OTEL_EXPORTER_OTLP_ENDPOINT"].(string)
 			if ep == "" {
@@ -160,32 +139,28 @@ func checkIBMBobTeamsAt(cfg config.Config, paths []string, home string) Check {
 			u, perr := url.Parse(ep)
 			switch {
 			case ep == "" || perr != nil || u.Host == "":
-				note(StatusWarn, "OtelConfiguration has no valid OTEL_EXPORTER_OTLP_ENDPOINT - Bob ignores the policy")
+				d.note(StatusWarn, "OtelConfiguration has no valid OTEL_EXPORTER_OTLP_ENDPOINT - Bob ignores the policy")
 			case !cfg.Ingest.OTel.Enabled:
-				note(StatusWarn, "OtelConfiguration points Bob at "+ep+" but [ingest.otel].enabled is false - the traces have no receiver")
-			case dialable(u.Host):
-				note(StatusOK, "OTLP receiver reachable at "+u.Host+" (Bob OtelConfiguration target)")
+				d.note(StatusWarn, "OtelConfiguration points Bob at "+ep+" but [ingest.otel].enabled is false - the traces have no receiver")
 			default:
-				note(StatusWarn, "OTLP receiver NOT reachable at "+u.Host+" - is `observer start` running with [ingest.otel].enabled?")
+				d.noteOTLPReceiver(u.Host, "Bob OtelConfiguration target")
 			}
 		}
 	} else if err == nil {
-		note(StatusOK, "policy file present without OtelConfiguration - Bob's OTLP export is not policy-managed")
+		d.note(StatusOK, "policy file present without OtelConfiguration - Bob's OTLP export is not policy-managed")
 	}
 	if err == nil && policy != nil {
 		pol := hook.ParseIBMBobPolicyDocument(path, b)
 		if pol.Untrusted == "" {
 			pol.Untrusted = systemFileUntrusted(path)
 		}
-		noteBobPolicyTelemetry(pol, note)
-		rems = noteBobPolicyHooks(pol, home, note)
-		noteBobPolicyGateway(pol, note)
+		noteBobPolicyTelemetry(pol, d.note)
+		rems = noteBobPolicyHooks(pol, home, d.note)
+		noteBobPolicyGateway(pol, d.note)
 	}
-	msg := "ibm bob policy deployed - all checks passed"
-	if worst != StatusOK {
-		msg = "ibm bob policy deployed - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details, Remediations: rems}
+	c := d.result(name, "ibm bob policy deployed - all checks passed", "ibm bob policy deployed - see warnings below")
+	c.Remediations = rems
+	return c
 }
 
 // firstExisting returns the first path that exists, or "".

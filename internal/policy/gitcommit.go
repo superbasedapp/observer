@@ -70,15 +70,13 @@ type PushTarget struct {
 // maxRemoteName bounds a remote name the target reads.
 const maxRemoteName = 128
 
-// PushTargetOf reads the target of a push write (GitWriteIsPush) off the
-// command alone: a push with no remote operand is unknown.
-func PushTargetOf(w GitWrite) PushTarget { return PushTargetFor(w, "") }
-
-// PushTargetFor is PushTargetOf with the project's default push remote
-// (lane sec-gate4 audit finding 5: the remote the daemon resolved and
-// signed for the checked-out branches, branch.<b>.pushRemote, then
-// remote.pushDefault, then branch.<b>.remote, "" when it could not): a
-// plain `git push` (no remote operand, no redirect) goes there.
+// PushTargetFor reads the target of a push write (GitWriteIsPush) off the
+// command, with the project's default push remote (lane sec-gate4 audit
+// finding 5: the remote the daemon resolved and signed for the checked-out
+// branches, branch.<b>.pushRemote, then remote.pushDefault, then
+// branch.<b>.remote, "" when it could not): a plain `git push` (no remote
+// operand, no redirect) goes there. With defaultRemote "" a push with no
+// remote operand is unknown.
 func PushTargetFor(w GitWrite, defaultRemote string) PushTarget {
 	if !GitWriteIsPush(w) || w.PushOpaque || w.PushRedirect || w.Dir != "" {
 		return PushTarget{}

@@ -885,9 +885,9 @@ func OBOStageOf(reason string) int {
 	return OBOStageFinal
 }
 
-// IsOBOWireReason reports whether an OBO table reason is a pure request-shape
+// isOBOWireReason reports whether an OBO table reason is a pure request-shape
 // refusal (decidable before any client authentication or verification).
-func IsOBOWireReason(reason string) bool {
+func isOBOWireReason(reason string) bool {
 	s, ok := oboStageOfReason[reason]
 	return ok && s == OBOStageWire
 }

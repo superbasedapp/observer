@@ -34,6 +34,10 @@ func TestControlCallRefusesAnUnverifiedServer(t *testing.T) {
 	}
 	defer func() { _ = ln.Close() }()
 	var got atomic.Int64
+	// handled fires once the server side has finished reading a connection
+	// (the client closed it, or the one-second read deadline passed), so the
+	// byte count below is final, not a sample taken too early.
+	handled := make(chan struct{}, 1)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -46,6 +50,10 @@ func TestControlCallRefusesAnUnverifiedServer(t *testing.T) {
 				_ = c.SetReadDeadline(time.Now().Add(time.Second))
 				n, _ := c.Read(buf)
 				got.Add(int64(n))
+				select {
+				case handled <- struct{}{}:
+				default:
+				}
 			}(c)
 		}
 	}()
@@ -57,7 +65,11 @@ func TestControlCallRefusesAnUnverifiedServer(t *testing.T) {
 	if !errors.Is(err, ErrServerUnverified) {
 		t.Fatalf("err = %v, want ErrServerUnverified", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-handled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never finished reading the client's connection")
+	}
 	if n := got.Load(); n != 0 {
 		t.Fatalf("the unverified server received %d bytes", n)
 	}

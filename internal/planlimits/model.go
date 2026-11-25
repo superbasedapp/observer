@@ -109,12 +109,6 @@ func AllUnits() []Unit {
 	}
 }
 
-// moneyUnits are the units that are an amount of money.
-var moneyUnits = map[Unit]bool{UnitUSDMicros: true, UnitCNYMicros: true, UnitEURMicros: true, UnitJPYMicros: true}
-
-// IsMoney reports whether u is an amount of money (integer micros).
-func IsMoney(u Unit) bool { return moneyUnits[u] }
-
 // Status codes of a snapshot or an account. Codes, never prose: the
 // dashboard and the CLI own the words.
 const (

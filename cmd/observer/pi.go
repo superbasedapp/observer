@@ -63,8 +63,9 @@ func newPiCmd() *cobra.Command {
 			"environment at runtime. Provide your key via OPENAI_API_KEY or pi's\n" +
 			"--api-key flag.\n\n" +
 			"All arguments after the subcommand are forwarded to pi. Use `--` to\n" +
-			"separate observer flags from pi flags. Requires a running observer\n" +
-			"proxy (`observer start`).",
+			"separate observer flags from pi flags. Routes through the observer\n" +
+			"proxy; a daemon that is not running is started first (--no-start\n" +
+			"skips that).",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -199,9 +200,14 @@ func newPiCmd() *cobra.Command {
 				forwarded, routed = route.args, route.routed
 			}
 			return runEnvLauncher(envLauncherSpec{
-				tool:       "pi",
-				bin:        bin,
-				args:       forwarded,
+				tool: "pi",
+				bin:  bin,
+				args: forwarded,
+				// Proxy down (lane launcher-proxy-down): the operator's own
+				// args without the provider selection, unless pi's own
+				// default provider still routes to the proxy.
+				routeArgs:  args,
+				fileRoutes: func() []string { return piFileRoutesToProxy(piAgentDir(), resolved) },
 				unrouted:   !routed, // the notice above already said why
 				configPath: configPath,
 				dir:        continueDir,

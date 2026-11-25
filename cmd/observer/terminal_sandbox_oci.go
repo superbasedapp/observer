@@ -736,7 +736,7 @@ func (d *ociDriver) compose(created termsvc.CreateResult, res sandboxoci.ProbeRe
 	}
 	var returnRefused string
 	if run.Copy && choice.source == workspace.SourceCloneRemote {
-		rr, rerr := ociCloneRemoteReturn(r.managedRoot, run)
+		rr, rerr := cloneRemoteReturn(r.managedRoot, run)
 		if rerr != nil {
 			returnRefused = "the box's commits will not be returned from this clone-remote copy: " + rerr.Error() + "; the copy is kept at " + run.Dir
 			choice.notices = append(choice.notices, returnRefused)

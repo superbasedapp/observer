@@ -25,11 +25,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/genout"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -281,7 +281,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("asstbackfillgen: %v", err)
 	}
-	if err := write(filepath.Join(*outDir, migrationName), data); err != nil {
+	if err := genout.WriteFile(filepath.Join(*outDir, migrationName), data); err != nil {
 		log.Fatalf("asstbackfillgen: %v", err)
 	}
 }
@@ -436,21 +436,6 @@ func checkSQLSafe(s string) error {
 		if r < 0x20 || r == 0x7f {
 			return fmt.Errorf("contains a control character (%U)", r)
 		}
-	}
-	return nil
-}
-
-// write puts the bytes at path, creating the parent directory when the
-// gate points it at a scratch location.
-func write(path string, data []byte) error {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	//nolint:gosec // G306: a committed, publicly-distributed source artifact; world-readable is intended.
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }

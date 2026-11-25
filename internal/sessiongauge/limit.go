@@ -143,13 +143,9 @@ func HumanizeAge(d time.Duration) string {
 
 // ProviderForTool maps a tool to the upstream provider its limit
 // observations are keyed by: the OpenAI-family tools, else anthropic (the
-// common proxied case). This is the mapping the node gauge has always used,
-// moved here so the node and the org share ONE copy of it.
+// common proxied case). The mapping is the integration registry's
+// LimitProvider column (integration.LimitProviderFor), so the node and the
+// org share ONE copy of it and a new adapter declares its family on its row.
 func ProviderForTool(tool string) string {
-	switch tool {
-	case "codex", "copilot", "copilot-cli":
-		return "openai"
-	default:
-		return "anthropic"
-	}
+	return integration.LimitProviderFor(tool)
 }

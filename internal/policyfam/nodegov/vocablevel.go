@@ -41,7 +41,7 @@ import (
 // add each new id to navSince / settingsSince at the new level, whenever
 // NavSectionIDs or SettingsSectionIDs grows. vocablevel_test.go fails when an
 // id is missing from both the first-level baseline and the since tables.
-const CurrentVocabLevel = 13
+const CurrentVocabLevel = 14
 
 // FirstTabVocabLevel is the level at which page TABS ("<page>/<tab>",
 // vocab.go) joined the nav vocabulary (per-tab visibility, T-132). Every tab
@@ -87,6 +87,9 @@ var (
 		"app-scores":    13,
 		"app-prompts":   13,
 		"app-alerts":    13,
+		// Your apps > Model calls (hosted AI gateway arc, lane L9, L-175):
+		// the machine's app lanes on the proxy. Level-13 builds lack it.
+		"app-model-calls": 14,
 	}
 	settingsSince = map[string]int{
 		"cloud": 2, // v1.33.0

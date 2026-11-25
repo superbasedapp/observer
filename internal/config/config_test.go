@@ -453,6 +453,55 @@ func TestValidateJudgeUseOrgRelayAmbiguousTransport(t *testing.T) {
 	})
 }
 
+// TestValidateJudgeUseOrgRelayCrossBlock pins the cross-block rule (hosted
+// AI gateway lane L6): use_org_relay on the SHARED [observability.judge]
+// block is OR'ed into the resolved admission judge and checked first, so an
+// endpoint the [observability.admission.judge] block names for itself would
+// be silently ignored - an error. The reverse direction is coherent (the
+// admission judge goes to the org, evals to the shared endpoint) and
+// validates, as does a relay on both blocks with no endpoint.
+func TestValidateJudgeUseOrgRelayCrossBlock(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		set     func(*Config)
+		wantErr bool
+	}{
+		{"shared relay + admission base_url", func(c *Config) {
+			c.Observability.Judge.UseOrgRelay = true
+			c.Observability.Admission.Judge.BaseURL = "http://127.0.0.1:11434/v1"
+		}, true},
+		{"shared relay + admission api_key_env", func(c *Config) {
+			c.Observability.Judge.UseOrgRelay = true
+			c.Observability.Admission.Judge.APIKeyEnv = "JUDGE_KEY"
+		}, true},
+		{"admission relay + shared base_url", func(c *Config) {
+			c.Observability.Admission.Judge.UseOrgRelay = true
+			c.Observability.Judge.BaseURL = "http://127.0.0.1:11434/v1"
+			c.Observability.Judge.APIKeyEnv = "EVAL_KEY"
+		}, false},
+		{"relay on both blocks, no endpoint", func(c *Config) {
+			c.Observability.Judge.UseOrgRelay = true
+			c.Observability.Admission.Judge.UseOrgRelay = true
+		}, false},
+		{"shared relay + admission model only", func(c *Config) {
+			c.Observability.Judge.UseOrgRelay = true
+			c.Observability.Admission.Judge.Model = "gpt-5-nano"
+		}, false},
+	}
+	for _, tc := range cases {
+		c := Default()
+		tc.set(&c)
+		err := Validate(c)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: Validate = %v, want error %v", tc.name, err, tc.wantErr)
+		}
+		if err != nil && !strings.Contains(err.Error(), "use_org_relay") {
+			t.Errorf("%s: error %q does not name the field", tc.name, err)
+		}
+	}
+}
+
 // TestValidateBrowserIngestTimeoutCap pins the finding-2 guard: the browser
 // ingest deadline bounds the daemon's end-to-end DB work (db.Open +
 // store.Ingest, started before db.Open), and it MUST stay below the native

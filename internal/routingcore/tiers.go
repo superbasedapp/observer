@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+
+	"github.com/marmutapp/superbased-observer/internal/modelfamily"
 )
 
 // TierSource categorises how a tier lookup resolved, mirroring the cost
@@ -106,7 +108,7 @@ func (t *TierTable) Lookup(model string) (Tier, TierSource) {
 	// Last-resort normalization, mirroring the cost engine: strip router
 	// prefixes and leading provider path segments
 	// (openrouter/anthropic/foo → foo) and retry exact + family once.
-	if norm := normalizeUnplacedModel(model); norm != "" {
+	if norm := modelfamily.StripRouterPrefix(model); norm != "" {
 		if tier, ok := t.exact[norm]; ok {
 			return tier, TierSourceFamily
 		}
@@ -227,7 +229,7 @@ func ShapeForModel(model string) ProviderShape {
 			return ShapeOpenAI
 		}
 	}
-	if norm := normalizeUnplacedModel(m); norm != "" {
+	if norm := modelfamily.StripRouterPrefix(m); norm != "" {
 		m = norm
 	}
 	for _, row := range shapePrefixes {
@@ -283,28 +285,6 @@ func tierFamilyKeys(exact map[string]Tier) []string {
 		}
 		return out[i] < out[j] // deterministic among equal lengths
 	})
-	return out
-}
-
-// normalizeUnplacedModel is the last-resort reducer, mirroring the cost
-// engine's normalizeUnpricedModel: strip router prefixes (capi:,
-// sweagent-capi:) and ALL leading provider path segments, returning a
-// candidate to retry once. "auto"/"" name no real model and stay a miss.
-// Returns "" when nothing was stripped.
-func normalizeUnplacedModel(model string) string {
-	out := model
-	switch {
-	case strings.HasPrefix(out, "capi:"):
-		out = strings.TrimPrefix(out, "capi:")
-	case strings.HasPrefix(out, "sweagent-capi:"):
-		out = strings.TrimPrefix(out, "sweagent-capi:")
-	}
-	if i := strings.LastIndex(out, "/"); i >= 0 {
-		out = out[i+1:]
-	}
-	if out == model || out == "" {
-		return ""
-	}
 	return out
 }
 

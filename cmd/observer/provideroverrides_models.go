@@ -22,6 +22,16 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
+// providerOverridesProxyUp reports whether the proxy the overrides would
+// point at answers. It is launchProxyUp, so a daemon found down is started
+// first (L-169) and the overrides go in before the routed launch, exactly as
+// when the daemon was up. A seam for tests.
+var providerOverridesProxyUp = func(ctx context.Context, configPath string, spec providerOverridesSpec, stderr io.Writer) bool {
+	return launchProxyUp(ctx, launchAutostartRequest{
+		label: spec.tool, configPath: configPath, proxyURL: spec.proxyRoot, wanted: true, stderr: stderr,
+	})
+}
+
 // launcherManagedNode reports whether this node holds a managed (org)
 // enrolment. A package variable so tests can stand in for the database.
 var launcherManagedNode = resolveLauncherManagedNode
@@ -194,8 +204,14 @@ func (r providerOverridesRoute) notice(tool string) string {
 // applyManagedProviderOverrides is the launchers' one entry point: on a
 // managed node it writes the covered overrides and prints the notice; it
 // returns the restore to defer (nil when nothing was written).
+//
+// Never toward a proxy that is not answering (lane launcher-proxy-down, the
+// rule route maintenance and the CLI-8 rewrite already follow): pointing
+// every built-in provider at a dead proxy lane would break the session the
+// proxy-down gate in runEnvLauncher is about to launch unrouted (or refuse,
+// on a node whose organization owns the routes).
 func applyManagedProviderOverrides(ctx context.Context, configPath string, spec providerOverridesSpec, stderr io.Writer) (func(), error) {
-	if len(spec.overrides) == 0 || !launcherManagedNode(ctx, configPath) {
+	if len(spec.overrides) == 0 || !launcherManagedNode(ctx, configPath) || !providerOverridesProxyUp(ctx, configPath, spec, stderr) {
 		return nil, nil
 	}
 	route, err := prepareProviderOverrides(spec)

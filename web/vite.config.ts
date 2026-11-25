@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
 import path from "node:path";
+import { SHARED_DEDUPE } from "../shared/styles/viteDedupe";
 import type { ClientRequest, IncomingMessage } from "node:http";
 
 const devApiTarget = process.env.VITE_API_PROXY || "http://localhost:8820";
@@ -89,17 +90,7 @@ export default defineConfig({
     // shared/ imports these; dedupe pins ONE instance so a hooks-bearing
     // shared component never gets a second React (the "invalid hook call"
     // trap) when its dep resolves from the root workspace node_modules.
-    dedupe: [
-      "react",
-      "react-dom",
-      "react-router-dom",
-      "recharts",
-      "clsx",
-      "@floating-ui/react",
-      "framer-motion",
-      "lucide-react",
-      "@tanstack/react-table",
-    ],
+    dedupe: SHARED_DEDUPE,
   },
   server: {
     port: 5174,

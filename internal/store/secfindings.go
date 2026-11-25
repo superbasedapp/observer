@@ -425,12 +425,6 @@ func appendSecEvent(ctx context.Context, q interface {
 	return nil
 }
 
-// AppendSecFindingEvent records one lifecycle event (finding id may be ""
-// for a project-level event such as a baseline set).
-func (s *Store) AppendSecFindingEvent(ctx context.Context, findingID, rootHash, kind, detail string, now time.Time) error {
-	return appendSecEvent(ctx, s.db, findingID, rootHash, kind, detail, now.UTC().Format(secTime))
-}
-
 // SetSecFindingStatus moves a finding to status (closing it when status is
 // not open) and records the event.
 func (s *Store) SetSecFindingStatus(ctx context.Context, id string, status secfinding.Status, exceptionID string, now time.Time) error {

@@ -122,14 +122,14 @@ func listBuilder(s vs.SurfaceID, suffix string) func(vendorapi.Params, vendorapi
 
 func driftOf(s vs.SurfaceID) func(string, ...any) error {
 	return func(format string, a ...any) error {
-		return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
+		return vendorapi.Drift(s, format, a...)
 	}
 }
 
 // nextToken applies the shared token rules: a present token is opaque and
 // never the one the page was asked with.
 func nextToken(s vs.SurfaceID, tok *string, asked string) (string, error) {
-	t := str(tok)
+	t := vendorapi.Str(tok)
 	if t == "" {
 		return "", nil
 	}
@@ -224,7 +224,7 @@ func parseGroups(r vendorapi.Response) (vendorapi.Page, error) {
 	page.NextCursor = tok
 	seen := map[string]bool{}
 	for i, g := range *doc.Groups {
-		id := str(g.ID)
+		id := vendorapi.Str(g.ID)
 		if id == "" || g.DisplayName == nil || g.Source == nil || g.IsManaged == nil {
 			return vendorapi.Page{}, drift("groups[%d] misses id, displayName, source or isManaged", i)
 		}
@@ -239,7 +239,7 @@ func parseGroups(r vendorapi.Response) (vendorapi.Page, error) {
 		attrs := map[string]string{
 			"source": *g.Source, "is_managed": strconv.FormatBool(*g.IsManaged), "member_count": members,
 		}
-		for k, v := range map[string]string{"external_id": str(g.ExternalID), "sync_type": str(g.SyncType)} {
+		for k, v := range map[string]string{"external_id": vendorapi.Str(g.ExternalID), "sync_type": vendorapi.Str(g.SyncType)} {
 			if v != "" {
 				attrs[k] = v
 			}
@@ -306,8 +306,8 @@ func parseBillingGroups(r vendorapi.Response) (vendorapi.Page, error) {
 	page.NextCursor = tok
 	period := map[string]string{}
 	if sp := doc.SelectedPeriod; sp != nil {
-		start, ok1 := isoTime(str(sp.PeriodStart))
-		end, ok2 := isoTime(str(sp.PeriodEnd))
+		start, ok1 := isoTime(vendorapi.Str(sp.PeriodStart))
+		end, ok2 := isoTime(vendorapi.Str(sp.PeriodEnd))
 		if !ok1 || !ok2 || end <= start {
 			return vendorapi.Page{}, drift("selectedPeriod is not a half-open ISO 8601 interval")
 		}
@@ -315,7 +315,7 @@ func parseBillingGroups(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	seen := map[string]bool{}
 	for i, g := range *doc.BillingGroups {
-		id := str(g.ID)
+		id := vendorapi.Str(g.ID)
 		if id == "" || g.Name == nil || g.IsUnassigned == nil || g.IsBlocked == nil {
 			return vendorapi.Page{}, drift("billingGroups[%d] misses id, name, isUnassigned or isBlocked", i)
 		}

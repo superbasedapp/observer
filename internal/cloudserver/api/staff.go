@@ -127,7 +127,7 @@ const DefaultStaffBaseURL = "https://" + DefaultStaffHost
 func (s *Server) initStaff(o Options) {
 	c := staffConfig{
 		verifier:   o.StaffWebAuthn,
-		host:       normalizeHost(o.StaffHost),
+		host:       NormalizeHost(o.StaffHost),
 		origin:     strings.TrimRight(strings.TrimSpace(o.StaffBaseURL), "/"),
 		sessionTTL: o.StaffSessionTTL,
 		idleTTL:    o.StaffSessionIdleTTL,

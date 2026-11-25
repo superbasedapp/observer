@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver used for the in-memory filter
+
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
 
 // stampVersion versions the mirror format. Bump it whenever the filter
@@ -109,6 +111,19 @@ func Stage(ctx context.Context, srcDB string, spec Spec) (string, error) {
 		return "", fmt.Errorf("mirrorbase.Stage: stamp: %w", err)
 	}
 	return dstDB, nil
+}
+
+// StageIfForeign returns srcDB unchanged when it does not lie under one
+// of the foreign-mount homes in homes (crossmount.UnderForeignHome), and
+// otherwise stages its filtered mirror with Stage and returns the
+// mirror's path. It is the one stage-if-foreign step the SQLite-backed
+// adapters share; each passes its own Spec and its own home list (its
+// allHomesFunc test seam over crossmount.AllHomes).
+func StageIfForeign(ctx context.Context, srcDB string, spec Spec, homes []crossmount.HomeRoot) (string, error) {
+	if !crossmount.UnderForeignHome(srcDB, homes) {
+		return srcDB, nil
+	}
+	return Stage(ctx, srcDB, spec)
 }
 
 // build writes the filtered mirror of srcDB to dstDB and returns the

@@ -1,25 +1,9 @@
-// Package budgetwarnfile is the on-disk read model of the node's budget
-// warnings (2026-10-02 budget-latency arc): ONE daemon-owned file,
-// budget-status.json, beside the database (the governance sidecar's
-// placement rule, so a WSL-daemon / Windows-tool hook bridge resolves the same
-// file), read by every out-of-process surface - the prompt hooks, the
-// statusline, `observer guard status` - without a database or a network call.
-//
-// Ownership (CLAUDE.md #4):
-//
-//   - budget-status.json has ONE writer, the daemon's budget-warning service
-//     (cmd/observer/budgetwarn_wire.go). Everything else only reads it.
-//   - budget-notices-shown.json has ONE writer class, the prompt hooks: it is
-//     the node-wide "this notice was already shown in-band" marker, so each
-//     crossing is announced in a prompt ONCE per budget period.
-//
-// stdlib only, because it is read on the hook path (the govern/sidecar
-// precedent).
 package budgetwarnfile
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -156,13 +140,13 @@ func Read(path string) (*File, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("budgetwarnfile.Read: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	var out File
 	dec := json.NewDecoder(&limitedReader{r: f, n: maxStatusBytes})
 	if err := dec.Decode(&out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("budgetwarnfile.Read: %w", err)
 	}
 	if out.Schema != Schema {
 		return nil, errors.New("budgetwarnfile: unsupported schema")
@@ -178,7 +162,7 @@ func Write(path string, file File) error {
 	file.Schema = Schema
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("budgetwarnfile.Write: %w", err)
 	}
 	return writeAtomic(path, data)
 }
@@ -234,7 +218,7 @@ func MarkShown(path string, ids ...string) error {
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
-		return err
+		return fmt.Errorf("budgetwarnfile.MarkShown: %w", err)
 	}
 	return writeAtomic(path, data)
 }
@@ -275,9 +259,12 @@ func TouchActivity(dbPath string) error {
 	}
 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("budgetwarnfile.TouchActivity: %w", err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("budgetwarnfile.TouchActivity: %w", err)
+	}
+	return nil
 }
 
 // ActivityFilename is the node-activity marker the hooks touch and the
@@ -296,27 +283,27 @@ func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".budgetwarn-*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("budgetwarnfile.writeAtomic: %w", err)
 	}
 	name := tmp.Name()
 	cleanup := func() { _ = os.Remove(name) }
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return err
+		return fmt.Errorf("budgetwarnfile.writeAtomic: %w", err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return err
+		return fmt.Errorf("budgetwarnfile.writeAtomic: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
-		return err
+		return fmt.Errorf("budgetwarnfile.writeAtomic: %w", err)
 	}
 	if err := os.Rename(name, path); err != nil {
 		cleanup()
-		return err
+		return fmt.Errorf("budgetwarnfile.writeAtomic: %w", err)
 	}
 	return nil
 }

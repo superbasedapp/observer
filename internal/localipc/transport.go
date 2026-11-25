@@ -68,7 +68,7 @@ const pipeNameHexLen = 16
 // ErrUnsupported is returned by a platform with no attach transport at all
 // (plan9, js/wasm …). It is NEVER returned by unix or Windows: both have a
 // real, owner-only transport.
-var ErrUnsupported = errors.New("attachsock: no attach transport on this platform")
+var ErrUnsupported = errors.New("localipc: no attach transport on this platform")
 
 // ErrSocketLiveDaemon is returned by a transport's Listen when the endpoint is
 // already being served by a live daemon. On unix that is detected by a HELD
@@ -76,7 +76,7 @@ var ErrUnsupported = errors.New("attachsock: no attach transport on this platfor
 // Windows the OS itself refuses a second FIRST_PIPE_INSTANCE create, which is
 // a STRONGER guard (no probe, no unlink, no steal window). We never take an
 // endpoint away from a running server.
-var ErrSocketLiveDaemon = errors.New("attachsock: attach socket already served by a live daemon")
+var ErrSocketLiveDaemon = errors.New("localipc: attach socket already served by a live daemon")
 
 // Transport is one OS's attach channel: how the endpoint is named, listened on
 // and dialed. Exactly one implementation is compiled in per platform.

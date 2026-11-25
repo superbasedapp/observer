@@ -212,10 +212,6 @@ var jetbrainsProductHosts = []string{
 	"jetbrains-rustrover", "jetbrains-datagrip", "jetbrains-dataspell", "jetbrains-android-studio",
 }
 
-// JetBrainsProductHosts returns the product host tokens the hook surface
-// rows are declared for, for the pin test.
-func JetBrainsProductHosts() []string { return append([]string(nil), jetbrainsProductHosts...) }
-
 // wave8HookSurfaces are the hook rows surface-gap lane w8-registry added:
 // the surfaces the 2026-10-27 macOS IDE round (MAC-5) and the Windows rounds
 // (LC15) grounded as running none of Observer's hooks, or whose hook load

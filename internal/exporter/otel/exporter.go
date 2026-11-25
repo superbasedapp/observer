@@ -140,7 +140,7 @@ func newExporter(cfg Config, src TurnSource, resolver ProjectResolver, logger *s
 
 // newResource builds the OTel resource carrying the service identity. It also
 // stamps sbo.emitted_by="observer" so Observer's own native-console OTLP
-// receiver (internal/ingest/otlp + internal/adapter/ccotel) can drop any
+// receiver (internal/ingest/otlp + internal/otlpvendor) can drop any
 // telemetry we emitted, preventing a round-trip when the emit endpoint and the
 // receiver share a collector (echo guard — native-console template §3.2).
 func newResource(serviceName string) *resource.Resource {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/marmutapp/superbased-observer/internal/applane"
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/ownagent"
@@ -345,6 +346,10 @@ type Options struct {
 	// the end-user identity from (org-hosted-app model). Empty ⇒ no per-end-
 	// user identity is threaded from the proxy path.
 	AdmissionUserHeader string
+	// AppLanes hardens the /up/<id> hosted-app lanes as the machine's local
+	// app lane (applane.go, hosted AI gateway plan L7). The zero value keeps
+	// the pre-L7 behavior except the request-id and service header reads.
+	AppLanes AppLaneOptions
 	// CostComputer is optional. When non-nil, the proxy populates
 	// APITurn.CostUSD before insertion using this computer. See
 	// [CostComputer].
@@ -577,6 +582,10 @@ type Proxy struct {
 	// the listener is bound to a loopback address; a deliberately exposed bind
 	// (and a bare Handler() used in-process) leaves it off.
 	requireLoopbackHost atomic.Bool
+	// listenExposed is set by Serve when the listener is bound beyond
+	// loopback (an all-interfaces bind included): app lanes are then refused
+	// unless client authentication is enforced (appLanesRefusedHere).
+	listenExposed atomic.Bool
 
 	anthropicURL *url.URL
 	openaiURL    *url.URL
@@ -629,6 +638,7 @@ type Proxy struct {
 	egressReporter      EgressReporter
 	egressBreaker       *egressBreaker
 	admissionUserHeader string
+	appLanes            AppLaneOptions // the local app lane (Options.AppLanes)
 	cost                CostComputer
 	obsLog              ObserverLogSink
 	sessions            SessionResolver
@@ -701,7 +711,7 @@ type Proxy struct {
 	// contention is low — one Load + one Store per session, lifetime
 	// of the daemon.
 	codexVariantWarned sync.Map
-	// unknownUpstreamWarned dedups the stripUpstreamPrefix warning for an
+	// unknownUpstreamWarned dedups the resolveUpstreamPrefix warning for an
 	// unknown `/up/<id>/` routing id. Keyed by the id (a small, config-shaped
 	// vocabulary — an operator's typo set, not user input at scale), value
 	// unused: one Warn per distinct id for the daemon's lifetime.
@@ -929,6 +939,7 @@ func New(opts Options) (*Proxy, error) {
 		gatewayAlerter:      opts.GatewayFleetAlerter,
 		egressBreaker:       newEgressBreaker(),
 		admissionUserHeader: opts.AdmissionUserHeader,
+		appLanes:            opts.AppLanes,
 		cost:                opts.CostComputer,
 		obsLog:              opts.ObserverLog,
 		sessions:            opts.SessionResolver,
@@ -1249,7 +1260,7 @@ func (p *Proxy) laneSnapshot() *laneTable {
 
 // upstreamsSnapshot returns the upstreams map half of the currently live
 // laneTable. Retained as a thin accessor for call sites that only need the
-// map (stripUpstreamPrefix, warnUnknownUpstreamOnce's configuredCount);
+// map (resolveUpstreamPrefix, warnUnknownUpstreamOnce's configuredCount);
 // call sites that also need the auto-default lane id call laneSnapshot
 // directly so both halves come from the SAME Load (see laneTable's doc
 // comment on why that matters). The returned map is never mutated after
@@ -1361,14 +1372,36 @@ func hostIsLoopback(host string) bool {
 // for tests.
 var proxyShutdownGrace = 5 * time.Second
 
+// ListenAndServe serves the proxy on addr until ctx is cancelled or the
+// listener fails. It warns when addr is not loopback, pre-warms the upstream
+// connection pool in the background, and on cancellation gives in-flight
+// requests proxyShutdownGrace to finish before closing their connections.
+// A cancelled ctx returns nil; a listener error is returned as is.
 func (p *Proxy) ListenAndServe(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return p.Serve(ctx, ln, addr)
+}
+
+// Serve serves the proxy on ln (bound by the caller, or the listening
+// socket a restarting daemon handed over, internal/listenhandover) until
+// ctx is cancelled or the listener fails, and closes ln on return. It is
+// ListenAndServe after the bind: the same loopback warning, pre-warm and
+// graceful stop. addr is the configured listen address ln serves, and the
+// loopback rules are judged on it exactly as ListenAndServe judges them.
+func (p *Proxy) Serve(ctx context.Context, ln net.Listener, addr string) error {
 	p.requireLoopbackHost.Store(hostIsLoopback(hostnameOnly(addr)))
-	if host := hostnameOnly(addr); host != "" && !hostIsLoopback(host) {
+	// An empty host (":8820") binds every interface: exposed too.
+	exposed := !hostIsLoopback(hostnameOnly(addr))
+	p.listenExposed.Store(exposed)
+	if exposed {
 		if p.ClientAuthEnforced() {
 			// OSH-R-009: a peer without the client token is refused.
-			p.logger.Warn("proxy bound to a non-loopback address - client authentication is enforced, so only clients holding the client token are served", "addr", addr)
+			p.logger.Warn("proxy bound to a non-loopback address - client authentication is enforced, so only clients holding the client token are served, the /up/<id> app lanes included", "addr", addr)
 		} else {
-			p.logger.Warn("proxy bound to a non-loopback address - the listener has no client auth ([proxy].require_client_auth is off or not enforced) and, when a routing key_pool is configured, will substitute the operator's own API keys on a 429; anything that can reach it can drive requests upstream", "addr", addr)
+			p.logger.Warn("proxy bound to a non-loopback address - the listener has no client auth ([proxy].require_client_auth is off or not enforced) and, when a routing key_pool is configured, will substitute the operator's own API keys on a 429; anything that can reach it can drive requests upstream. The /up/<id> app lanes are refused on this listener until client authentication is enforced", "addr", addr)
 		}
 	}
 	srv := &http.Server{
@@ -1377,7 +1410,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context, addr string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Serve(ln) }()
 	// V6-3 mitigation: pre-warm the http.Transport connection pool
 	// against configured upstream targets so the first real request
 	// doesn't pay the 500ms-1.5s TLS handshake cost that pushed
@@ -1443,7 +1476,7 @@ func serveHealthz(w http.ResponseWriter, r *http.Request) {
 // serve is the top-level request handler.
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// Unauthenticated liveness probe (W1.2) — intercepted before ANY other
-	// routing (including stripUpstreamPrefix) so it never collides with a
+	// routing (including resolveUpstreamPrefix) so it never collides with a
 	// /up/<id> lane and never depends on upstream/admission/compression
 	// state. Exact match only: a lane-prefixed variant is not a thing this
 	// path supports (see healthzPath's doc comment on why it can't collide).
@@ -1511,10 +1544,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 
 	// Phase C: explicit per-provider upstream selection. A routed tool whose
 	// traffic must reach a non-default host (e.g. hermes → OpenRouter) points
-	// its base URL at .../up/<id>/v1; stripUpstreamPrefix rewrites r.URL.Path
+	// its base URL at .../up/<id>/v1; resolveUpstreamPrefix rewrites r.URL.Path
 	// to drop the /up/<id> segment (so all downstream path/provider logic
-	// sees the canonical path) and returns the mapped upstream. Returns nil
-	// when there's no prefix → the fixed-upstream path below runs unchanged.
+	// sees the canonical path) and returns the mapped upstream. Its upstream
+	// is nil when there's no prefix → the fixed-upstream path below runs
+	// unchanged.
 	// A prefix naming a lane this node cannot route is REFUSED here, before
 	// any upstream request exists (Sol A5-02): the caller's credential is
 	// for that lane's provider, not for a fixed upstream.
@@ -1534,6 +1568,13 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// request runs exactly as fixed-upstream coding-agent traffic
 		// (Plane-B attribution, no hosted-app admission or obs synthesis).
 		upstreamLaneID = ""
+	}
+	if upstreamLaneID != "" && p.appLanesRefusedHere() {
+		// An app lane on an exposed listener with no client auth (decision
+		// 8, loopback only): refused before anything is forwarded,
+		// recorded or judged. Coding-agent lanes are unaffected.
+		writeAppLaneRefusal(w, providerForPath(r.URL.Path), http.StatusForbidden, appLaneCodeExposed, appLaneExposedMessage)
+		return
 	}
 	if upstreamLaneID != "" {
 		// Stamp the lane id on the request context: the gateway rail's
@@ -1561,7 +1602,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// An explicit upstream short-circuits this: that traffic carries the
 	// routed tool's own key, not a ChatGPT JWT. This must also exclude
 	// EVERY /up/ lane, named or virtual "auto" alike (upstreamLaneID != ""):
-	// stripUpstreamPrefix returns a nil explicitUpstream for the "auto"
+	// resolveUpstreamPrefix returns a nil explicitUpstream for the "auto"
 	// lane (its target isn't known until the body is read below), so
 	// explicitUpstream == nil alone can't tell a lane request apart from
 	// a genuine fixed-upstream one. Routed lane traffic always carries the
@@ -1709,12 +1750,13 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if isGzipEncoded(r.Header.Get("Content-Encoding")) {
 		// §3.5 posture: gzip request bodies are NOT decoded before
-		// admission/egress — reqShapeBody stays compressed, so admission
-		// and egress both no-op (fail-open). Enforce-mode deployments that
-		// must classify gzip traffic need a bounded gzip parity path first
-		// (docs §9 deferred); until then the app must not gzip requests to
-		// the proxy.
-		p.logger.Debug("proxy: gzip request body not decoded - admission/egress skip this request (§3.5)")
+		// admission/egress — reqShapeBody stays compressed. Egress never
+		// routes it; admission sees an unreadable body (finding H1,
+		// L-180): an enforcing policy refuses it and an observing one
+		// records the finding. A bounded gzip parity path is deferred
+		// (docs §9); until then the app must not gzip requests to the
+		// proxy.
+		p.logger.Debug("proxy: gzip request body not decoded - egress skips it; admission sees it as unreadable (§3.5)")
 	}
 	// bodyMutated tracks whether reqShapeBody diverged from the bytes
 	// the client sent (compression, post-compact injection, or guard
@@ -1727,6 +1769,16 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// dead). It is stamped onto the api_turn as the request_id fallback below
 	// (the upstream provider's own id still wins when present).
 	proxyRequestID := newRequestID()
+	// Local app lane (applane.go, L7 gap 4): an app's SDK names its call with
+	// X-SBO-Request-Id. On an /up/<id> lane a valid id is honoured, the call
+	// is recorded under it (stampTurn below, over the provider's own id) and
+	// echoed, so the SDK's span joins the api_turns row and the synthesized
+	// trace. Off a lane, or for an invalid value, nothing changes.
+	laneRequestID := appLaneRequestID(r, upstreamLaneID)
+	if laneRequestID != "" {
+		proxyRequestID = laneRequestID
+		w.Header().Set(applane.HeaderRequestID, laneRequestID)
+	}
 
 	// Resolve the pre-mutation top-level model cheaply (design §3.4), so the
 	// egress layer matches the model the request carried — before any
@@ -1736,7 +1788,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 
 	// Phase 2 (gateway config plane spec): the virtual "auto" lane routes
 	// by the top-level model's prefix (OpenRouter-style), which needs the
-	// request body — not available yet when stripUpstreamPrefix ran.
+	// request body — not available yet when resolveUpstreamPrefix ran.
 	// Resolve it now, reusing reqShapeBody/topModel (no double-read of the
 	// body). topModel itself is left untouched (admission below still sees
 	// the pre-rewrite model, matching the Channel-B router's precedent);
@@ -1768,6 +1820,16 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			bodyMutated = true
 		}
 		r = r.WithContext(context.WithValue(r.Context(), obsLaneCtxKey{}, upstreamLaneID))
+	}
+
+	// Local app lane model allow-list (applane.go, L7 gap 6): a lane with a
+	// [proxy.app_lanes] models list forwards only a listed model, checked on
+	// the RESOLVED lane and the model the request carried. A refusal is
+	// never forwarded and records no turn.
+	if lane := obsUpstreamLane(r); lane != "" && !p.appLaneModelAllowed(lane, topModel) {
+		p.logger.Info("proxy: app lane refused a model outside its allow-list", "lane", lane, "model", topModel)
+		writeAppLaneRefusal(w, provider, http.StatusForbidden, appLaneCodeModel, "Model not allowed on this app lane.")
+		return
 	}
 
 	// Optional pre-forward input-admission (admission spec §6.2 — the
@@ -1802,7 +1864,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	var admitRes AdmitResult
 	if obsUpstreamLane(r) != "" {
 		var admitBlock bool
-		admitRes, admitBlock = p.admit(r.Context(), provider, reqShapeBody, p.admissionUser(r), proxyRequestID, topModel)
+		admitRes, admitBlock = p.admit(r.Context(), provider, reqShapeBody, p.admissionUser(r), appLaneService(r), proxyRequestID, topModel)
 		defer func() { p.finalizeAdmission(admitRes.Finalize, resolvedRequestID) }()
 		if admitBlock {
 			writeAdmissionRefusal(w, provider, admitRes.Reason)
@@ -2109,12 +2171,60 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// OpenAI-compatible servers may reject the field; never on the Responses
 	// API, which reports usage natively). Fail-open: any parse surprise
 	// forwards the original body.
-	if provider == models.ProviderOpenAI && explicitUpstream == nil && upstreamLaneID == "" &&
-		strings.Contains(r.URL.Path, "/chat/completions") {
+	// On a local app lane (L7 gap 5, APPLANE-2) the same injection runs when
+	// the lane's upstream host is known to accept the field.
+	chatCompletions := strings.Contains(r.URL.Path, "/chat/completions")
+	defaultLaneUsage := explicitUpstream == nil && upstreamLaneID == "" && chatCompletions
+	appLaneUsage := obsUpstreamLane(r) != "" && p.appLaneIncludeUsage(upstream, chatCompletions)
+	if provider == models.ProviderOpenAI && (defaultLaneUsage || appLaneUsage) {
 		if mutated, ok := injectOpenAIIncludeUsage(reqShapeBody); ok {
 			reqShapeBody = mutated
 			bodyMutated = true
 			p.logger.Debug("proxy: injected stream_options.include_usage for accurate token capture")
+		}
+	}
+
+	// Local app lane budget reservation (applane.go, L7 gap 2): a hold at the
+	// call's worst case BEFORE it is forwarded, over the recorded app spend
+	// plus every call in flight, whether or not admission is on. A refusal
+	// is a 402 (403 for a model the cost engine cannot price under a USD
+	// cap) and is never forwarded. The hold closes exactly once on every
+	// exit path: released unless the response path below learns the call
+	// ran (settled at its actual, or kept at its worst case when no usage
+	// arrives).
+	laneClose := AppLaneClose{Outcome: AppLaneRelease}
+	if lane := obsUpstreamLane(r); lane != "" && p.appLanes.Gate != nil {
+		wcUSD, wcTokens, priced := p.appLaneWorstCase(topModel, reqShapeBody)
+		dec := p.appLanes.Gate.ReserveAppLane(r.Context(), AppLaneReserve{
+			Lane:            lane,
+			Provider:        provider,
+			Model:           topModel,
+			User:            p.admissionUser(r),
+			Service:         appLaneService(r),
+			RequestID:       proxyRequestID,
+			WorstCaseUSD:    wcUSD,
+			WorstCaseTokens: wcTokens,
+			Priced:          priced,
+		})
+		if dec.Refused {
+			status := http.StatusPaymentRequired
+			code := dec.Code
+			if code == "" {
+				code = appLaneCodeBudget
+			}
+			if code == "model_unpriced" {
+				status = http.StatusForbidden
+			}
+			reason := dec.Reason
+			if reason == "" {
+				reason = "Usage budget exceeded."
+			}
+			p.logger.Info("proxy: app lane reservation refused", "lane", lane, "code", code)
+			writeAppLaneRefusal(w, provider, status, code, reason)
+			return
+		}
+		if hold := dec.Hold; hold != nil {
+			defer func() { hold.CloseAppLane(laneClose) }()
 		}
 	}
 
@@ -2491,6 +2601,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	promptID := promptIDFromHeader(r.Header)
 	reqClass := requestClassFromHeader(r.Header)
 	stampTurn := func(t *models.APITurn) {
+		if laneRequestID != "" {
+			t.RequestID = laneRequestID
+		}
 		t.RequestID = resolveRequestID(t.RequestID)
 		stampRoute(t, gatewayRouted, routeGeneration)
 		t.PromptID = promptID
@@ -2499,6 +2612,16 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 
 	// Copy upstream headers and status to the client.
 	copyResponseHeaders(w.Header(), resp.Header)
+	if laneRequestID != "" {
+		// The echo wins over any id the upstream sent under the same name.
+		w.Header().Set(applane.HeaderRequestID, laneRequestID)
+	}
+	// The call reached the upstream: a 2xx answer keeps the lane hold at its
+	// worst case unless a turn below settles it; any other answer bills
+	// nothing and releases it.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		laneClose = AppLaneClose{Outcome: AppLaneUnknown}
+	}
 	// The node's soft-budget warning (activity.go), in the AI gateway's
 	// spelling. Stamped on every proxied response while a warn rung is
 	// reached; it never changes the status or the body.
@@ -2554,6 +2677,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			turn := buildErrorTurn(provider, reqShape, errBody, resp.Header, resp.StatusCode, start, sessionID)
 			stampTurn(&turn)
 			p.applyCost(&turn)
+			laneClose = appLaneCloseFor(turn, resp.StatusCode, p.obsSink != nil)
 			errTurnID := p.insertTurnDetached(r, turn, routerToken, "proxy: insert error api_turn (stream)")
 			p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, errBody)
 			captureNetwork(resp.StatusCode, captured, true, 0, turn.RequestID, "", nil, resp.Header)
@@ -2581,6 +2705,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		default:
 			applyCompressionMeta(&turn, compression)
 			p.applyCost(&turn)
+			laneClose = appLaneCloseFor(turn, resp.StatusCode, p.obsSink != nil)
 			apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn (stream)")
 			p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, captured)
 		}
@@ -2628,6 +2753,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			default:
 				applyCompressionMeta(&turn, compression)
 				p.applyCost(&turn)
+				laneClose = appLaneCloseFor(turn, resp.StatusCode, p.obsSink != nil)
 				apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn (sniffed SSE)")
 				p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, respBody)
 			}
@@ -2646,6 +2772,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		turn := buildErrorTurn(provider, reqShape, respBody, resp.Header, resp.StatusCode, start, sessionID)
 		stampTurn(&turn)
 		p.applyCost(&turn)
+		laneClose = appLaneCloseFor(turn, resp.StatusCode, p.obsSink != nil)
 		errTurnID := p.insertTurnDetached(r, turn, routerToken, "proxy: insert error api_turn")
 		p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, respBody)
 		captureNetwork(resp.StatusCode, respBody, false, 0, turn.RequestID, "", nil, resp.Header)
@@ -2663,6 +2790,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		applyCompressionMeta(&turn, compression)
 		p.applyCost(&turn)
+		laneClose = appLaneCloseFor(turn, resp.StatusCode, p.obsSink != nil)
 		apiTurnID = p.insertTurnAndCacheDetached(r, turn, reqShape, provider, routerToken, "proxy: insert api_turn")
 		p.synthesizeObsTrace(turn, apiTurnID, r, reqShapeBody, respBody)
 	}
@@ -2937,6 +3065,7 @@ func (p *Proxy) synthesizeObsTrace(turn models.APITurn, apiTurnID int64, r *http
 		RequestID:           turn.RequestID,
 		SessionID:           explicitHostedSessionID(r),
 		User:                p.admissionUser(r),
+		Service:             appLaneService(r),
 		Provider:            turn.Provider,
 		Model:               turn.Model,
 		Timestamp:           turn.Timestamp,
@@ -3546,7 +3675,7 @@ func (p *Proxy) requestClass(r *http.Request, provider string) RequestClass {
 //
 // The org-route override applies ONLY when upstreamLaneID == "" — an
 // explicitly named /up/<id> lane never falls through to org-route; the
-// caller already resolved it via stripUpstreamPrefix/explicitUpstream and
+// caller already resolved it via resolveUpstreamPrefix/explicitUpstream and
 // never reaches this function for that case. lanes must be a single
 // laneSnapshot() load from the caller so the mode/primary pair it reads
 // here can never straddle two routing generations (Sol S7).
@@ -3714,7 +3843,7 @@ func newOrgRouteState(mode, primary string, fallbacks []string, terminal string,
 // that couldn't be resolved to a live upstream, at most once per id for the
 // daemon's lifetime (bounded by unknownUpstreamWarnCap, which also caps the
 // dedup map itself so it can't grow without limit). Shared by the legacy
-// unknown-/up/<id> path in stripUpstreamPrefix and the auto lane's
+// unknown-/up/<id> path in resolveUpstreamPrefix and the auto lane's
 // unresolvable fallback in serve() (Phase 2 — no prefix match and no usable
 // auto_default_lane, or a configured default lane that vanished from a hot
 // SetUpstreams swap).
@@ -3726,29 +3855,6 @@ func (p *Proxy) warnUnknownUpstreamOnce(id, path string, configuredCount int) {
 		p.logger.Warn("proxy: unknown /up/ upstream id - not routed; the request is refused and never forwarded",
 			"id", id, "path", path, "configured", configuredCount)
 	}
-}
-
-// stripUpstreamPrefix detects a `/up/<id>/` routing prefix on r.URL.Path
-// (Phase C). When present AND <id> maps to a configured explicit upstream,
-// it rewrites r.URL.Path (and clears RawPath so net/http re-derives it) to
-// drop the `/up/<id>` segment and returns the mapped upstream. Returns nil
-// — leaving the request untouched — when no upstreams are configured, the
-// path has no prefix, or the id is unknown (fail-open: the caller then uses
-// the fixed-upstream selection). The stripped path keeps any version suffix
-// (e.g. `/v1/chat/completions`) so it joins onto the upstream's host root
-// exactly like the fixed upstreams.
-// It also returns the routing id itself so serve() can stamp it on the
-// request context (obsLaneCtxKey) — the gateway rail's Plane-A/Plane-B lane
-// discriminator. "" when no explicit upstream matched.
-//
-// The reserved id "auto" (Phase 2, gateway config plane spec) is a special
-// case: it's stripped like any known id, but its URL can't be resolved here
-// — routing depends on the request's top-level model, which needs the body
-// this function runs before. It returns (nil, autoLaneID) so serve() knows
-// to call resolveAutoLane once the body is buffered.
-func (p *Proxy) stripUpstreamPrefix(r *http.Request) (*url.URL, string) {
-	res := p.resolveUpstreamPrefix(r)
-	return res.up, res.id
 }
 
 // upstreamPrefix is resolveUpstreamPrefix's result.
@@ -3777,9 +3883,23 @@ type upstreamPrefix struct {
 // every malformed lane address, so they log once per daemon in total.
 const malformedLaneWarnKey = "(malformed /up/ address)"
 
-// resolveUpstreamPrefix is stripUpstreamPrefix plus whether the lane is a
-// coding-agent lane (Options.AgentUpstreams) rather than a hosted-app lane,
-// and whether the request named a lane this node cannot resolve.
+// resolveUpstreamPrefix detects a `/up/<id>/` routing prefix on r.URL.Path
+// (Phase C). When present AND <id> maps to a configured explicit upstream,
+// it rewrites r.URL.Path (and clears RawPath so net/http re-derives it) to
+// drop the `/up/<id>` segment and returns the mapped upstream. The stripped
+// path keeps any version suffix (e.g. `/v1/chat/completions`) so it joins
+// onto the upstream's host root exactly like the fixed upstreams. It also
+// returns the routing id itself so serve() can stamp it on the request
+// context (obsLaneCtxKey) — the gateway rail's Plane-A/Plane-B lane
+// discriminator ("" when no explicit upstream matched); whether the lane is
+// a coding-agent lane (Options.AgentUpstreams) rather than a hosted-app
+// lane; and whether the request named a lane this node cannot resolve.
+//
+// The reserved id "auto" (Phase 2, gateway config plane spec) is a special
+// case: it's stripped like any known id, but its URL can't be resolved here
+// — routing depends on the request's top-level model, which needs the body
+// this function runs before. It returns a nil up with id autoLaneID so
+// serve() knows to call resolveAutoLane once the body is buffered.
 //
 // FAIL CLOSED on an unresolvable lane (Sol A5-02, D-032). A `/up/<id>/`
 // prefix is the caller saying which provider it means; the credential it

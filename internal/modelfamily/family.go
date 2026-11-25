@@ -128,3 +128,27 @@ func matchesAll(s string, subs []string) bool {
 	}
 	return true
 }
+
+// StripRouterPrefix is the last-resort model-id reducer the pricing and
+// routing lookups retry once after every other match has missed. It strips a
+// router prefix (capi:, sweagent-capi:) and ALL leading provider path
+// segments (openrouter/anthropic/foo -> foo) that a family-prefix ladder
+// can't see past. It deliberately leaves the "auto" router sentinel and an
+// empty string alone: neither names a real model, so both stay a miss.
+// Returns "" when nothing was stripped.
+func StripRouterPrefix(model string) string {
+	out := model
+	switch {
+	case strings.HasPrefix(out, "capi:"):
+		out = strings.TrimPrefix(out, "capi:")
+	case strings.HasPrefix(out, "sweagent-capi:"):
+		out = strings.TrimPrefix(out, "sweagent-capi:")
+	}
+	if i := strings.LastIndex(out, "/"); i >= 0 {
+		out = out[i+1:] // drop ALL leading provider segments (a/b/c/model -> model)
+	}
+	if out == model || out == "" {
+		return ""
+	}
+	return out
+}

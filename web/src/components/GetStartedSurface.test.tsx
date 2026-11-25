@@ -6,7 +6,7 @@
 // receiver refusal, unavailable, first trace, glance), the Settings focus
 // control and the AI Apps switch.
 
-import { test } from "node:test";
+import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -17,6 +17,23 @@ import { APPS_SWITCH_RULES, AppsSwitchView, appsSwitchButtons, appsSwitchState }
 import { refreshAfterAppsChange } from "@/lib/useComponents";
 import { surfaceLayout } from "@/lib/getStarted";
 import type { FirstRunApps, FirstRunPlane } from "@/lib/firstRun";
+import { buildUrl } from "@/lib/api";
+import { apiCache } from "@/lib/useApi";
+
+// The trace links go through the visibility gate (GatedLink): answer the
+// governance read as an ungoverned machine's, so they render as links.
+before(() =>
+  apiCache.fetch(buildUrl("/api/governance"), async () => ({
+    active: false,
+    state: "no_grant",
+    version: 0,
+    notice: {},
+    hidden_sections: [],
+    read_only_sections: [],
+    hidden_settings: [],
+    read_only_settings: [],
+  })),
+);
 
 function render(node: React.ReactNode): string {
   return renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
@@ -145,13 +162,13 @@ test("consent on an enrolled machine names the organization", () => {
   assert.doesNotMatch(html, /Stays on this machine/);
 });
 
-test("waiting with coding history: the agent tab leads, prompt from live addresses", () => {
+test("waiting with coding history: the agent tab leads, the setup prompt names the live dashboard", () => {
   const a = apps({ on: true, receiver: { state: "listening", http_addr: "127.0.0.1:24318" } });
   const html = render(<AppsTrackBody {...body({ phase: "waiting", apps: a, codingHistory: true })} />);
   assert.match(html, /waiting for a trace/);
   assert.match(html, /data-testid="apps-agent-prompt"/);
-  assert.match(html, /http:\/\/127\.0\.0\.1:24318/);
-  assert.match(html, /http:\/\/127\.0\.0\.1:28081\/api\/obs\/traces/);
+  assert.match(html, /superbased-sdk setup/);
+  assert.match(html, /SUPERBASED_NODE_URL=http:\/\/127\.0\.0\.1:28081 set/);
   assert.doesNotMatch(html, /data-testid="apps-waiting-help"/, "no help before two minutes");
   assert.ok(html.indexOf("Let your coding agent do it") < html.indexOf("Do it yourself"));
 });

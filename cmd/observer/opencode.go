@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -56,8 +55,14 @@ func newOpencodeCmd() *cobra.Command {
 			"Caveat: an Azure-direct provider configured in OpenCode may\n" +
 			"bypass OPENAI_BASE_URL (observer then sees local activity but no\n" +
 			"proxy-level api_turns). Run `observer doctor opencode` to check.\n\n" +
-			"Requires a running observer proxy. Start one with `observer\n" +
-			"start` or `observer proxy start` first.",
+			"Routes through the observer proxy. When the daemon is not running\n" +
+			"the launcher starts it first and waits for its proxy (--no-start or\n" +
+			"[launch].start_daemon = false skip that). When it still does not\n" +
+			"answer, opencode launches WITHOUT proxy routing and the launcher\n" +
+			"says so; it refuses\n" +
+			"instead when your own OPENAI_BASE_URL or OPENCODE_CONFIG_CONTENT\n" +
+			"still points at the proxy, or when your organization owns this\n" +
+			"managed machine's routes.",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -217,11 +222,25 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 		baseURL string
 		preset  bool
 	)
-	if notice, out := proxyNotInBuildNotice("opencode"); out && !proxyReachable(proxyURL, 250*time.Millisecond) {
-		// A build without capture.proxy (lane MP-L1L, T-715, D-514): launch
-		// unrouted with the one reason, never at a dead port. preset keeps
-		// the run's telemetry unmarked as proxied.
-		fmt.Fprintln(opts.stderr, notice)
+	// Proxy-down fallback (lane launcher-proxy-down; D-514 for a build
+	// without capture.proxy): never point OpenCode at a dead port. The gate
+	// neutralizes (one notice, no OPENAI_BASE_URL / OPENCODE_CONFIG_CONTENT
+	// from the launcher, no proxied marker) or fails closed when a value the
+	// caller set still points at the proxy, or the organization owns this
+	// managed machine's routes. preset keeps the run's telemetry unmarked.
+	outcome, gateErr := envLauncherProxyGate(context.Background(), envProxyGateRequest{
+		label:      "opencode",
+		configPath: opts.configPath,
+		proxyURL:   proxyURL,
+		inject:     map[string]string{"OPENAI_BASE_URL": strings.TrimRight(proxyURL, "/") + "/v1"},
+		parentEnv:  childBase,
+		callerPins: func() []string { return opencodeContentPins(childBase, proxyURL) },
+		stderr:     opts.stderr,
+	})
+	if gateErr != nil {
+		return gateErr
+	}
+	if outcome == envProxyGateNeutralize {
 		env, preset = childBase, true
 	} else {
 		env, baseURL, preset = prepareOpencodeEnv(childBase, proxyURL)
@@ -244,25 +263,23 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 				"observer opencode: OPENCODE_CONFIG_CONTENT already set in env; OpenCode Zen models are not routed through the proxy.")
 		}
 
-		switch {
-		case opencodeContentShadowsRoute(env, proxyURL):
+		if opencodeContentShadowsRoute(env, proxyURL) {
 			// CLI-2: the caller's config content decides the openai
 			// provider's host; this launch proves no route and its
 			// telemetry is not marked proxied.
 			fmt.Fprintln(opts.stderr,
 				"observer opencode: not routed through the proxy: OPENCODE_CONFIG_CONTENT sets provider.openai.options.baseURL, which OpenCode reads over OPENAI_BASE_URL; point it at the proxy or remove it to route this launch")
 			preset = true
-		case !proxyReachable(proxyURL, 250*time.Millisecond):
-			fmt.Fprintf(opts.stderr,
-				"observer opencode: warning - proxy not reachable at %s (start it with `observer start`)\n", proxyURL)
-		default:
+		} else {
 			fmt.Fprintf(opts.stderr, "observer opencode: routing via %s\n", redactRouteURL(baseURL))
 		}
 	}
 	evidence := envBudgetLaunchEvidence("opencode", proxyURL,
 		map[string]string{"OPENAI_BASE_URL": strings.TrimRight(proxyURL, "/") + "/v1"},
 		env, opts.opencodeArgs)
-	if opencodeContentShadowsRoute(env, proxyURL) {
+	if outcome == envProxyGateNeutralize || opencodeContentShadowsRoute(env, proxyURL) {
+		// A neutralized launch carries no route of ours, whatever the caller's
+		// environment holds; the managed budget gate judges it as unrouted.
 		evidence = budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
 	}
 	evidence.Executable = bin
@@ -306,6 +323,34 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 			return exitErr(ee.ExitCode())
 		}
 		return fmt.Errorf("exec opencode: %w", rErr)
+	}
+	return nil
+}
+
+// opencodeContentPins returns ["OPENCODE_CONFIG_CONTENT"] when the caller
+// set it with any provider's options.baseURL reaching the proxy's listener
+// (OpenCode reads it over OPENAI_BASE_URL and over its config files, and the
+// launcher never replaces a caller's value), else nil. Only the provider
+// baseURL members are decoded.
+func opencodeContentPins(env []string, proxyURL string) []string {
+	raw, ok := lookupEnvValue(env, "OPENCODE_CONFIG_CONTENT")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var doc struct {
+		Provider map[string]struct {
+			Options struct {
+				BaseURL string `json:"baseURL"`
+			} `json:"options"`
+		} `json:"provider"`
+	}
+	if json.Unmarshal([]byte(raw), &doc) != nil {
+		return nil
+	}
+	for _, p := range doc.Provider {
+		if proxyListenerURL(p.Options.BaseURL, proxyURL) {
+			return []string{"OPENCODE_CONFIG_CONTENT"}
+		}
 	}
 	return nil
 }

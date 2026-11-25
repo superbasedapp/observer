@@ -67,10 +67,10 @@ type keyInfoDoc struct {
 // e-mail shaped like an address, else KeyKindNoUser, never a guess.
 func ParseKeyInfo(body []byte) (KeyOwner, error) {
 	var doc keyInfoDoc
-	if err := decode(body, &doc); err != nil {
-		return KeyOwner{}, drift(SurfaceCloudAgentMeta, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(body, &doc); err != nil {
+		return KeyOwner{}, vendorapi.Drift(SurfaceCloudAgentMeta, "body does not decode as the documented object")
 	}
-	o := KeyOwner{Kind: KeyKindNoUser, Email: strings.TrimSpace(str(doc.UserEmail))}
+	o := KeyOwner{Kind: KeyKindNoUser, Email: strings.TrimSpace(vendorapi.Str(doc.UserEmail))}
 	if doc.UserID != nil && *doc.UserID > 0 {
 		o.UserID = *doc.UserID
 	}
@@ -122,7 +122,7 @@ func buildCloudAgentMeta(_ vendorapi.Params, _ vendorapi.Window, cursor string) 
 
 func parseCloudAgentMeta(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentMeta, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentMeta, "status %d is not the documented 200", r.Status)
 	}
 	owner, err := ParseKeyInfo(r.Body)
 	if err != nil {

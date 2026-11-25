@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -38,16 +37,6 @@ const (
 // adminAuth is the documented Admin API auth: an Admin key as a bearer token.
 var adminAuth = vendorapi.AuthContract{Kind: vs.AuthBearer, Scheme: vendorapi.SchemeBearer, Header: "Authorization"}
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // cursorRE bounds an opaque next_page token or last_id before it is sent back.
 var cursorRE = regexp.MustCompile(`^[A-Za-z0-9_=+/.:-]{1,512}$`)
 
@@ -68,19 +57,19 @@ type bucket[R any] struct {
 // envelope checks the bucket page paging contract and returns the next cursor.
 func envelope[R any](surface vs.SurfaceID, r vendorapi.Response, doc *bucketPage[R]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented page")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented page")
 	}
 	if doc.Data == nil || doc.HasMore == nil {
-		return "", drift(surface, "required field data or has_more is missing")
+		return "", vendorapi.Drift(surface, "required field data or has_more is missing")
 	}
 	if !*doc.HasMore {
 		return "", nil
 	}
 	if doc.NextPage == nil || !cursorRE.MatchString(*doc.NextPage) {
-		return "", drift(surface, "has_more is true without a usable next_page")
+		return "", vendorapi.Drift(surface, "has_more is true without a usable next_page")
 	}
 	return *doc.NextPage, nil
 }
@@ -90,16 +79,16 @@ func envelope[R any](surface vs.SurfaceID, r vendorapi.Response, doc *bucketPage
 // value of that day and a later restatement replaces it.
 func bucketInterval[R any](surface vs.SurfaceID, i int, b bucket[R]) (time.Time, time.Time, error) {
 	if b.StartTime == nil || b.EndTime == nil {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] misses start_time or end_time", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] misses start_time or end_time", i)
 	}
 	s, err1 := b.StartTime.Int64()
 	e, err2 := b.EndTime.Int64()
 	if err1 != nil || err2 != nil {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] bounds are not Unix seconds", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] bounds are not Unix seconds", i)
 	}
 	start, end := time.Unix(s, 0).UTC(), time.Unix(e, 0).UTC()
 	if !start.Equal(start.Truncate(day)) || !end.After(start) || end.Sub(start) > day {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] is not a daily bucket", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] is not a daily bucket", i)
 	}
 	return start, start.Add(day), nil
 }
@@ -137,19 +126,19 @@ type listDoc[T any] struct {
 // listEnvelope checks a list page and returns its next cursor (last_id).
 func listEnvelope[T any](surface vs.SurfaceID, r vendorapi.Response, doc *listDoc[T]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented list")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented list")
 	}
 	if doc.Data == nil || doc.HasMore == nil {
-		return "", drift(surface, "required field data or has_more is missing")
+		return "", vendorapi.Drift(surface, "required field data or has_more is missing")
 	}
 	if !*doc.HasMore {
 		return "", nil
 	}
 	if doc.LastID == nil || !cursorRE.MatchString(*doc.LastID) {
-		return "", drift(surface, "has_more is true without a usable last_id")
+		return "", vendorapi.Drift(surface, "has_more is true without a usable last_id")
 	}
 	return *doc.LastID, nil
 }
@@ -176,13 +165,6 @@ func count(n *json.Number) (int64, bool) {
 		return 0, false
 	}
 	return vendorapi.CountMicros(v)
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // unixRFC3339 renders an optional Unix-second timestamp as RFC 3339.

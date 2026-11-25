@@ -105,6 +105,12 @@ gate-record	-	scripts/ci/gate-record.sh,scripts/ci/test-gate-record.sh	-	30	comm
 #   (nav.toml [roots] sdk) and expands @@name@@ tokens from the second. git-index: the
 #   scripts start with git rev-parse --show-toplevel.
 drift	-	docs/openapi/,internal/orgserver/,internal/orgclient/,internal/integration/,internal/guard/,tools/guardcoveragegen/,tools/adapterparitygen/,website/,web/,CHANGELOG.md,Makefile,Makefile.private,scripts/verify-website-build.sh,scripts/verify-docs-build.sh,scripts/w8-claim-inventory.sh,docs/sdk/,shared/lib/productNames.json	git-index	300	make verify-openapi verify-website-build verify-docs-build verify-w8-claims verify-adapter-parity-doc verify-guard-coverage-ts
+# drift:docs-index: the dated doc index step of ci-private.yml's adapter-parity-doc
+#   job (make verify-docs-index: docs/{plans,audits,handovers}/INDEX.md against a
+#   fresh render of tools/docsindexgen). Its own unit, not part of drift, so a
+#   change that touches only a dated doc runs this check alone. git-index: the
+#   generator lists the folders with git ls-files.
+drift:docs-index	-	docs/plans/,docs/audits/,docs/handovers/,tools/docsindexgen/,Makefile.private	git-index	15	make verify-docs-index
 # website-tests: ci-private.yml's website worker tests.
 website-tests	-	website/	node	60	node --test --test-reporter=spec website/tools/test/*.test.mjs
 # aggregate-collector: the hosted aggregate collector's Worker tests
@@ -163,10 +169,11 @@ sdk:e2e	-	sdk/,tests/sdke2e/,scripts/ci/sdk.sh,internal/obs/,internal/ingest/otl
 # planea-e2e:unit: the AI Apps live e2e runner's unit tests (review P-36): the
 #   runner's pure parts and its safety checks (no provider contacted in a dry
 #   run, the allow-listed child environment, DSN redaction, the host guard, the
-#   spend cap), no network, no daemon. planea-e2e:dry (the full dry run,
+#   spend cap), and the setup run's (setup_run.py, the SDK quickstart's live
+#   check), no network, no daemon. planea-e2e:dry (the full dry run,
 #   scripts/planea-e2e/run.sh --dry-run --destination all) joins when the gate's
 #   workers have PostgreSQL 16 for the throwaway org.
-planea-e2e:unit	-	scripts/planea-e2e/,examples/ai-apps/	python3.12	30	python3 -m unittest scripts/planea-e2e/test_e2e.py
+planea-e2e:unit	-	scripts/planea-e2e/,examples/ai-apps/	python3.12	30	python3 -m unittest scripts/planea-e2e/test_e2e.py && python3 -m unittest scripts/planea-e2e/test_setup_run.py
 
 # Jobs the gate stands in for so that GitHub runs only what needs GitHub
 # (docs/plans/ci-github-only-what-needs-github-2026-11-21.md, section 9.1;
@@ -233,9 +240,11 @@ drift:taxonomy	-	*.go,go.mod,go.sum,shared/lib/,web/src/lib/,web/package.json,pa
 #   git-index: the script starts with git rev-parse --show-toplevel.
 drift:readmes	-	docs/distribution/,npm/observer/README.md,npm/superbased/README.md,pypi/observer/README.md,scripts/verify-distribution-readmes.sh,Makefile.private	python3.12,git-index	20	make verify-distribution-readmes
 # website-accuracy: ci-private.yml's website-accuracy job, whose two steps
-#   live in scripts/ci/website-accuracy.sh (the job calls it too). It asks
-#   the public GitHub API (api.github.com, no token here) whether the
-#   canonical release is published, then runs
+#   live in scripts/ci/website-accuracy.sh (the job and release.sh preflight
+#   call it too). It asks the public GitHub API (api.github.com, no token
+#   here) whether the canonical release is published and, where the API
+#   cannot answer (a cloud worker's allowlist proxy answers it 403), the
+#   public repository's tags over git ls-remote on github.com, then runs
 #   website/tools/accuracy-check.mjs over the site and its canonical sources.
 website-accuracy	-	website/,CHANGELOG.md,CLAUDE.md,docs/mcp-tools.md,internal/intelligence/cost/pricing.go,npm/observer/,pypi/observer/README.md,vscode/README.md,vscode/package.json,vscode/walkthroughs/,scripts/ci/website-accuracy.sh	node	30	bash scripts/ci/website-accuracy.sh
 # model-pricing-pg: ci-private.yml's model-pricing-pg job (the model-pricing

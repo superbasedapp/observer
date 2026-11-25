@@ -4,6 +4,10 @@ import {
   FLOOR_NAV_IDS,
   FLOOR_SETTINGS_IDS,
   failClosedLists,
+  onlineEquivalentOf,
+  onlineHref,
+  onlineJumpsFor,
+  onlinePageFor,
   governancePosture,
   helpEntryHidden,
   hrefGate,
@@ -225,4 +229,62 @@ test("hrefGate: one row per link shape", () => {
 test("visibility re-exports the one org display-name helper", () => {
   assert.equal(orgDisplayLabel, ownerLabel);
   assert.equal(orgDisplayLabelSentence, ownerSentence);
+});
+
+// Operator ruling 2 (2026-11-24): a link to a hidden page goes to its online
+// equivalent, only at an address a link may open and only where the person may
+// open it.
+test("onlineHref keeps https and loopback http only", () => {
+  assert.equal(onlineHref("https://org.example/trajectories"), "https://org.example/trajectories");
+  assert.equal(onlineHref("http://127.0.0.1:8443/x"), "http://127.0.0.1:8443/x");
+  assert.equal(onlineHref("http://localhost:9000/"), "http://localhost:9000/");
+  assert.equal(onlineHref("http://org.example/x"), null);
+  assert.equal(onlineHref("https://u:p@org.example/"), null);
+  assert.equal(onlineHref("javascript:alert(1)"), null);
+  assert.equal(onlineHref("/trajectories"), null);
+  assert.equal(onlineHref(""), null);
+  assert.equal(onlineHref(undefined), null);
+});
+
+test("onlinePageFor: a personal dashboard opens every page, a team's only members' pages", () => {
+  const pages = {
+    "app-traces": { href: "https://o.example/trajectories", label: "AI apps > Explorer", members: true },
+    routing: { href: "https://o.example/routing", label: "Coding agents > Routing", members: false },
+    security: { label: "Coding agents > Security", members: true },
+  };
+  const personal = { kind: "personal" as const, visibility: { label: "Settings > Developer dashboards" }, pages };
+  const team = { ...personal, kind: "team" as const };
+  assert.deepEqual(onlinePageFor(personal, "routing"), { href: "https://o.example/routing", label: "Coding agents > Routing" });
+  assert.equal(onlinePageFor(team, "routing"), null);
+  assert.deepEqual(onlinePageFor(team, "app-traces"), { href: "https://o.example/trajectories", label: "AI apps > Explorer" });
+  assert.equal(onlinePageFor(team, "security"), null, "no address, no link");
+  assert.equal(onlinePageFor(team, "terminals"), null, "no equivalent");
+  assert.equal(onlinePageFor(null, "app-traces"), null);
+  const nav = [{ id: "app-traces", path: "/apps/traces" }];
+  assert.deepEqual(onlineEquivalentOf("/apps/traces?days=7", team, nav), { href: "https://o.example/trajectories", label: "AI apps > Explorer" });
+  assert.equal(onlineEquivalentOf("/nope", team, nav), null);
+});
+
+test("onlineJumpsFor offers only hidden pages with an equivalent the person may open", () => {
+  const nav = [
+    { id: "overview", path: "/" },
+    { id: "app-traces", path: "/apps/traces" },
+    { id: "routing", path: "/routing" },
+    { id: "terminals", path: "/terminals" },
+  ];
+  const team = {
+    kind: "team" as const,
+    visibility: { label: "Settings > Developer dashboards" },
+    pages: {
+      overview: { href: "https://o.example/", label: "Coding agents > Overview", members: true },
+      "app-traces": { href: "https://o.example/trajectories", label: "AI apps > Explorer", members: true },
+      routing: { href: "https://o.example/routing", label: "Coding agents > Routing", members: false },
+    },
+  };
+  const got = onlineJumpsFor(nav, ["app-traces", "routing", "terminals"], team).map((j) => [j.item.id, j.href]);
+  assert.deepEqual(got, [["app-traces", "https://o.example/trajectories"]]);
+  assert.deepEqual(onlineJumpsFor(nav, [], team), []);
+  assert.deepEqual(onlineJumpsFor(nav, ["app-traces"], undefined), []);
+  const personal = { ...team, kind: "personal" as const };
+  assert.deepEqual(onlineJumpsFor(nav, ["routing"], personal).map((j) => j.item.id), ["routing"]);
 });

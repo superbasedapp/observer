@@ -1,8 +1,6 @@
 package openhands
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -38,16 +36,6 @@ var (
 	idRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 )
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // page is the V1 search envelope: items (required) and next_page_id (null
 // on the last page).
 type page[T any] struct {
@@ -59,22 +47,22 @@ type page[T any] struct {
 // cursor ("" on the last page).
 func envelope[T any](surface vs.SurfaceID, r vendorapi.Response, doc *page[T]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented page")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented page")
 	}
 	if doc.Items == nil {
-		return "", drift(surface, "required field items is missing")
+		return "", vendorapi.Drift(surface, "required field items is missing")
 	}
 	if doc.NextPageID == nil || *doc.NextPageID == "" {
 		return "", nil
 	}
 	if !pageIDRE.MatchString(*doc.NextPageID) {
-		return "", drift(surface, "next_page_id is not an opaque page id")
+		return "", vendorapi.Drift(surface, "next_page_id is not an opaque page id")
 	}
 	if *doc.NextPageID == r.Cursor {
-		return "", drift(surface, "next_page_id repeats the page the request asked for")
+		return "", vendorapi.Drift(surface, "next_page_id repeats the page the request asked for")
 	}
 	return *doc.NextPageID, nil
 }
@@ -135,13 +123,6 @@ func capText(s string, max int) (string, bool) {
 		cut--
 	}
 	return s[:cut], true
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // num is a JSON number kept as its literal text; it refuses a quoted value

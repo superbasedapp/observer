@@ -503,3 +503,31 @@ func TestSignInKeepsTheWorkspaceCaptureLevel(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildDiscoveryAdvertisesAppLanes pins the destination advertisement of
+// the local app lanes (hosted AI gateway plan L7, S5): each lane's client
+// base URL, never its upstream; none while the proxy is off.
+func TestBuildDiscoveryAdvertisesAppLanes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Proxy.Enabled = true
+	cfg.Proxy.Port = 8820
+	cfg.Proxy.Upstreams = map[string]string{"openai": "https://api.openai.com", "anthropic": "https://api.anthropic.com"}
+	d := BuildDiscovery(cfg, Status{}, "http://127.0.0.1:8081")
+	if len(d.Local.AppLanes) != 2 {
+		t.Fatalf("lanes = %+v", d.Local.AppLanes)
+	}
+	got := map[string]DiscoveryAppLane{}
+	for _, l := range d.Local.AppLanes {
+		got[l.ID] = l
+	}
+	if got["openai"].ClientBaseURL != "http://127.0.0.1:8820/up/openai/v1" || got["openai"].Kind != "openai" {
+		t.Fatalf("openai lane = %+v", got["openai"])
+	}
+	if got["anthropic"].ClientBaseURL != "http://127.0.0.1:8820/up/anthropic" {
+		t.Fatalf("anthropic lane = %+v", got["anthropic"])
+	}
+	cfg.Proxy.Enabled = false
+	if d := BuildDiscovery(cfg, Status{}, "http://127.0.0.1:8081"); d.Local.AppLanes == nil || len(d.Local.AppLanes) != 0 {
+		t.Fatalf("proxy off: lanes = %#v, want an empty list", d.Local.AppLanes)
+	}
+}

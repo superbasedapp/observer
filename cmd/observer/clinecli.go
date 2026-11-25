@@ -78,7 +78,8 @@ func newClineCLICmd() *cobra.Command {
 			"All arguments after the subcommand are forwarded to cline. Use `--`\n" +
 			"to separate observer flags from cline flags. NEVER touches API keys\n" +
 			"- your provider credentials must already be in the environment.\n\n" +
-			"Requires a running observer proxy (`observer start`).",
+			"Routes through the observer proxy; a daemon that is not running is\n" +
+			"started first (--no-start skips that).",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -138,8 +139,32 @@ func newClineCLICmd() *cobra.Command {
 			// it must not depend on — or be blocked by — the provider file:
 			// `cline auth` and `cline doctor` are exactly how a missing or broken
 			// provider gets fixed.
-			selectProvider := true
-			if !argsLeadWithSubcommand(args, clineSubcommands) {
+			//
+			// Proxy-down fallback (lane launcher-proxy-down): when the
+			// provider file says this launch WOULD route, the gate runs
+			// before the baseUrl is written, so a launch the proxy cannot
+			// carry is neutralized (no baseUrl write, no -P) or refused when
+			// cline's own providers.json already routes its active provider
+			// to the dead port. Every other row keeps its own note. A utility
+			// subcommand makes no model call, so it has no route to judge and
+			// launches unrouted.
+			utility := argsLeadWithSubcommand(args, clineSubcommands)
+			selectProvider := !utility
+			if !utility && clineRouteWouldWrite(strings.TrimRight(resolved, "/")+"/v1", cfg.Proxy.OpenAIUpstream) {
+				outcome, gerr := envLauncherProxyGate(cmd.Context(), envProxyGateRequest{
+					label:      "cline-cli",
+					configPath: configPath,
+					proxyURL:   resolved,
+					parentEnv:  os.Environ(),
+					fileRoutes: func() []string { return clineFileRoutesToProxy(resolved) },
+					stderr:     cmd.ErrOrStderr(),
+				})
+				if gerr != nil {
+					return gerr
+				}
+				selectProvider = outcome == envProxyGateProceed
+			}
+			if selectProvider {
 				route, rerr := prepareClineRoute(strings.TrimRight(resolved, "/")+"/v1", cfg.Proxy.OpenAIUpstream, time.Now())
 				if rerr != nil {
 					return rerr
@@ -206,8 +231,10 @@ func newClineCLICmd() *cobra.Command {
 			// suppresses the "routing via" note, which would be false.
 			childArgs := args
 			var routeFile func() (string, bool)
-			if selectProvider {
+			if selectProvider || utility {
 				childArgs = append([]string{"-P", clineCompatProvider}, args...)
+			}
+			if selectProvider {
 				routeFile = readClineCompatBaseURL
 			}
 			return runEnvLauncher(envLauncherSpec{
@@ -223,9 +250,10 @@ func newClineCLICmd() *cobra.Command {
 				// T-208: the managed launch budget check reads the selected
 				// provider's persisted baseUrl back as launch evidence, and
 				// checks only the operator's own args for selectors.
-				routeFile: routeFile,
-				routeArgs: args,
-				stderr:    cmd.ErrOrStderr(),
+				routeFile:  routeFile,
+				routeArgs:  args,
+				fileRoutes: func() []string { return clineFileRoutesToProxy(resolved) },
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}
@@ -481,6 +509,62 @@ func readClineCompatBaseURLAt(path string) (string, bool) {
 		return "", false
 	}
 	return v, true
+}
+
+// clineRouteWouldWrite reports, read-only, whether prepareClineRoute would
+// take the routing row (point the openai-compatible entry at the proxy) for
+// the providers.json this launch's cline reads. Any read or parse failure
+// answers false, leaving prepareClineRoute to report it as before.
+func clineRouteWouldWrite(baseURL, openAIUpstream string) bool {
+	path, err := clineProvidersFile()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G703: reads the user's own local file with the user's own rights
+	if err != nil {
+		return false
+	}
+	state, err := readClineProvidersState(data, baseURL, openAIUpstream)
+	return err == nil && decideClineRoute(state) == clineRouteSetBaseURL
+}
+
+// clineFileRoutesToProxy names cline's providers.json when, as it stands, a
+// cline started WITHOUT the launcher's `-P` would still send its requests to
+// the proxy's listener at proxyURL: the openai-compatible entry's baseUrl
+// reaches that listener and that entry is cline's active provider
+// (lastUsedProvider, or none recorded). Nil otherwise or on any read failure:
+// the proxy-down gate then neutralizes. Member-only reads; no credential is
+// decoded.
+func clineFileRoutesToProxy(proxyURL string) []string {
+	path, err := clineProvidersFile()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G703: reads the user's own local file with the user's own rights
+	if err != nil {
+		return nil
+	}
+	return clineFileRoutesToProxyIn(data, proxyURL)
+}
+
+// clineFileRoutesToProxyIn is clineFileRoutesToProxy over the file's bytes.
+// Pure.
+func clineFileRoutesToProxyIn(data []byte, proxyURL string) []string {
+	raw, ok, err := credfile.ObjectPath(data, clineCompatBaseURL)
+	if err != nil || !ok {
+		return nil
+	}
+	var base string
+	if json.Unmarshal(raw, &base) != nil || !proxyListenerURL(base, proxyURL) {
+		return nil
+	}
+	if rawLast, ok, _ := credfile.ObjectPath(data, []string{"lastUsedProvider"}); ok {
+		var last string
+		if json.Unmarshal(rawLast, &last) == nil && strings.TrimSpace(last) != "" && last != clineCompatProvider {
+			return nil
+		}
+	}
+	return []string{clineProvidersDisplay + " (" + clineCompatProvider + " baseUrl)"}
 }
 
 // readClineProvidersState reads only the routing-relevant members of

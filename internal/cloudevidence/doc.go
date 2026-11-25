@@ -3,13 +3,16 @@
 // produces both the literal preview and the upload bytes (plan §6 CI-P1;
 // telemetry plan §6).
 //
-// It does no I/O. The caller (a later phase) maps store rows into the plain
-// input DTOs defined here; this package bounds the arrays, defaults paths to
+// It does no I/O. Its callers (the `observer cloud` commands in cmd/observer
+// and the org-server intel submit path) map store rows into the plain input
+// DTOs defined here; this package bounds the arrays, defaults paths to
 // extension/category, emits per-account-salted path hashes only under the
 // path-correlation grant, runs internal/scrub over every optional excerpt,
 // gates fields by consent purpose, refuses to build anything whose
-// data-authority classification is not eligible for personal enrichment, and
-// serializes deterministically so preview == upload.
+// data-authority classification is not eligible for the requested plane
+// (planegate.go: personal data for the personal plane, org data for the org
+// plane, unknown for neither), and serializes deterministically so
+// preview == upload.
 //
 // Purity discipline (plan §6 CI-P1 / CLAUDE.md §1): imports are limited to
 // internal/cloudcontract, internal/scrub, internal/dataauthority, and stdlib.

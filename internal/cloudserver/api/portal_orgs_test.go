@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -48,48 +43,31 @@ func newOrgsHarness(t *testing.T) orgsHarness {
 // options before it is built (nil: none).
 func newOrgsHarnessWith(t *testing.T, edit func(*api.Options)) orgsHarness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	prices := map[string]store.PaddlePlan{
-		orgsPricePlus: {Name: "plus_beta", Version: 1, Interval: "month"},
-		orgsPriceTeam: {Name: "team", Version: 1, Interval: "month", Display: "$12/seat"},
-	}
-	s.SetPaddlePriceMap(prices)
-	apiStore.SetPaddlePriceMap(prices)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	opts := api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            identity.NewDevAuth(),
-		ExternalBaseURL:     base,
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PaddleWebhookSecret: paddleSecret,
-		PaddleCheckout: api.PaddleCheckout{
-			Environment: "sandbox", ClientToken: "test_client_token",
-			Prices: []api.PaddlePriceEntry{
-				{PriceID: orgsPricePlus, PlanName: "plus_beta", PlanVersion: 1, Interval: "month"},
-				{PriceID: orgsPriceTeam, PlanName: "team", PlanVersion: 1, Interval: "month", Display: "$12/seat"},
-			},
+	h := newHarnessWith(t, harnessSetup{
+		stores: func(app, apiStore *store.Store) {
+			prices := map[string]store.PaddlePlan{
+				orgsPricePlus: {Name: "plus_beta", Version: 1, Interval: "month"},
+				orgsPriceTeam: {Name: "team", Version: 1, Interval: "month", Display: "$12/seat"},
+			}
+			app.SetPaddlePriceMap(prices)
+			apiStore.SetPaddlePriceMap(prices)
 		},
-		TenantDomain: orgsTenantDomain,
-	}
-	if edit != nil {
-		edit(&opts)
-	}
-	handler := api.New(opts).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return orgsHarness{harness: &harness{srv: srv, store: s}, pool: pool}
+		opts: func(o *api.Options) {
+			o.PaddleWebhookSecret = paddleSecret
+			o.PaddleCheckout = api.PaddleCheckout{
+				Environment: "sandbox", ClientToken: "test_client_token",
+				Prices: []api.PaddlePriceEntry{
+					{PriceID: orgsPricePlus, PlanName: "plus_beta", PlanVersion: 1, Interval: "month"},
+					{PriceID: orgsPriceTeam, PlanName: "team", PlanVersion: 1, Interval: "month", Display: "$12/seat"},
+				},
+			}
+			o.TenantDomain = orgsTenantDomain
+			if edit != nil {
+				edit(o)
+			}
+		},
+	})
+	return orgsHarness{harness: h, pool: h.store.Pool()}
 }
 
 // orgReq sends a JSON request as c, with the CSRF header csrf ("" for none)

@@ -321,6 +321,21 @@ func TestPrepareClineRouteBrokenFileIsVisibleRefusal(t *testing.T) {
 	}
 }
 
+// clineLauncherProxy is the --proxy URL clineLauncherRun passes: a closed
+// port by default; a routed-row test points it at a live listener.
+var clineLauncherProxy = "http://127.0.0.1:1"
+
+// useLiveClineProxy points clineLauncherRun at a live loopback listener for
+// one test, so the routed row routes (the proxy-down gate neutralizes a
+// launch whose proxy does not answer; lane launcher-proxy-down).
+func useLiveClineProxy(t *testing.T) string {
+	t.Helper()
+	prev := clineLauncherProxy
+	clineLauncherProxy = openLoopbackURL(t)
+	t.Cleanup(func() { clineLauncherProxy = prev })
+	return clineLauncherProxy
+}
+
 // clineLauncherRun executes `observer cline-cli` against a recording stub
 // with HOME pointed at a throwaway dir. It returns the child argv (nil when
 // the stub never ran), the launcher's own stderr, and the returned error.
@@ -349,7 +364,7 @@ func clineLauncherRun(t *testing.T, home string, args ...string) ([]string, stri
 	root.AddCommand(child)
 	base := []string{
 		"cline-cli", "--config", cfgPath, "--cline-path", stub,
-		"--no-attach", "--proxy", "http://127.0.0.1:1",
+		"--no-attach", "--proxy", clineLauncherProxy,
 	}
 	root.SetArgs(append(base, args...))
 	root.SetOut(output)
@@ -381,24 +396,13 @@ func TestClineLauncherFreshInstallStartsUnroutedOnboarding(t *testing.T) {
 }
 
 func TestClineLauncherExistingCompatEntryStartsRouted(t *testing.T) {
+	useLiveClineProxy(t)
 	home := t.TempDir()
 	path := filepath.Join(home, ".cline", "data", "settings", "providers.json")
 	writeClineProvidersFixture(t, path, `{"providers":{"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"sk-test-not-a-secret"},"updatedAt":"x","tokenSource":"manual"}}}`)
 	argv, stderr, err := clineLauncherRun(t, home)
 	if err != nil {
 		t.Fatalf("launch failed: %v\n%s", err, stderr)
-	}
-	if proxyNotInBuild() {
-		// D-514: a build without capture.proxy launches cline unrouted, names
-		// the build, and leaves the entry exactly as it was.
-		if len(argv) != 0 || !strings.Contains(stderr, "not in this build") {
-			t.Fatalf("child argv = %v, stderr = %q; want an unrouted launch naming the build", argv, stderr)
-		}
-		_, settings := clineCompatEntry(t, readClineProviders(t, path))
-		if settings["baseUrl"] != nil || settings["apiKey"] != "sk-test-not-a-secret" {
-			t.Errorf("settings = %v, want the original entry untouched", settings)
-		}
-		return
 	}
 	if want := []string{"-P", clineCompatProvider}; !equalArgs(argv, want) {
 		t.Fatalf("child argv = %v, want %v", argv, want)
@@ -408,6 +412,59 @@ func TestClineLauncherExistingCompatEntryStartsRouted(t *testing.T) {
 	_, settings := clineCompatEntry(t, readClineProviders(t, path))
 	if settings["baseUrl"] != nil || settings["apiKey"] != "sk-test-not-a-secret" {
 		t.Errorf("settings after exit = %v, want the original (no baseUrl) back", settings)
+	}
+}
+
+// TestClineLauncherRoutedRowProxyDown (lane launcher-proxy-down; D-514 for
+// a build without capture.proxy): the routing row with nothing answering on
+// the proxy port launches cline WITHOUT -P, never writes providers.json, and
+// says why in one line; the operator's own args go through untouched.
+func TestClineLauncherRoutedRowProxyDown(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cline", "data", "settings", "providers.json")
+	body := `{"providers":{"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"sk-test-not-a-secret"},"updatedAt":"x","tokenSource":"manual"}}}`
+	writeClineProvidersFixture(t, path, body)
+	argv, stderr, err := clineLauncherRun(t, home, "--", "--verbose")
+	if err != nil {
+		t.Fatalf("launch failed: %v\n%s", err, stderr)
+	}
+	if want := []string{"--verbose"}; !equalArgs(argv, want) {
+		t.Fatalf("child argv = %v, want %v (no -P toward a dead port)", argv, want)
+	}
+	if !strings.Contains(stderr, "without proxy routing") || strings.Contains(stderr, "routing via") {
+		t.Errorf("stderr must carry only the proxy-down notice:\n%s", stderr)
+	}
+	if proxyNotInBuild() && !strings.Contains(stderr, "not in this build") {
+		t.Errorf("a build without the proxy must name the build:\n%s", stderr)
+	}
+	if got, _ := os.ReadFile(path); string(got) != body {
+		t.Errorf("providers.json was rewritten toward a dead proxy:\n%s", got)
+	}
+}
+
+// TestClineLauncherPinnedToDeadProxyRefuses: cline's own providers.json
+// already points its active openai-compatible provider at the proxy, so
+// dropping -P would still send every request to the dead port; the launch
+// is refused with the fix, cline never starts and the file is untouched.
+func TestClineLauncherPinnedToDeadProxyRefuses(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cline", "data", "settings", "providers.json")
+	body := `{"lastUsedProvider":"openai-compatible","providers":{"openai-compatible":{"settings":{"provider":"openai-compatible","apiKey":"sk-test-not-a-secret","baseUrl":"http://127.0.0.1:1/v1"},"updatedAt":"x","tokenSource":"manual"}}}`
+	writeClineProvidersFixture(t, path, body)
+	argv, stderr, err := clineLauncherRun(t, home)
+	if err == nil || argv != nil {
+		t.Fatalf("err = %v, argv = %v; want a refusal before cline starts", err, argv)
+	}
+	for _, want := range []string{"refusing to launch", clineProvidersDisplay, "observer start"} {
+		if !strings.Contains(stderr, want) && !(want == "observer start" && proxyNotInBuild()) {
+			t.Errorf("refusal lacks %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "sk-test-not-a-secret") {
+		t.Error("the refusal leaks the provider key")
+	}
+	if got, _ := os.ReadFile(path); string(got) != body {
+		t.Errorf("providers.json was rewritten:\n%s", got)
 	}
 }
 

@@ -181,3 +181,78 @@ func TestRouteWriterFor_LabelsTheToolAsked(t *testing.T) {
 		t.Errorf("a dry-run dispatch wrote into HOME: %v (err=%v)", entries, err)
 	}
 }
+
+// TestProbeRouteConsent_CallsOnlyUnverifiedRowsUnverified pins the copy half
+// of CMD-02: the probe-route step's consent called every tool "NOT yet
+// live-verified", including qwen-code, kimi-code and crush, whose registry
+// rows carry a verified route (Proxy set). The copy now follows the row's
+// shape: "unverified" exactly when Proxy is nil.
+func TestProbeRouteConsent_CallsOnlyUnverifiedRowsUnverified(t *testing.T) {
+	sawVerified, sawUnverified := false, false
+	for _, tool := range probeRouteTools() {
+		c, ok := integration.For(tool)
+		if !ok {
+			t.Fatalf("probe-route tool %q has no registry row", tool)
+		}
+		intro, question := probeRouteConsent(tool)
+		text := strings.Join(intro, "\n") + "\n" + question
+		unverified := c.Proxy == nil
+		if unverified {
+			sawUnverified = true
+		} else {
+			sawVerified = true
+		}
+		if got := strings.Contains(text, "NOT yet") || strings.Contains(text, "unverified"); got != unverified {
+			t.Errorf("%s (Proxy set: %v): consent calls it unverified = %v:\n%s", tool, !unverified, got, text)
+		}
+		if !strings.Contains(question, "route "+tool+" ") {
+			t.Errorf("%s: question %q does not name the tool", tool, question)
+		}
+	}
+	if !sawVerified || !sawUnverified {
+		t.Fatalf("the registry no longer has both probe-route shapes (verified %v, unverified %v); the test proves less than it says", sawVerified, sawUnverified)
+	}
+}
+
+// TestRunInteractiveInit_VerifiedProbeRouteIsNotCalledUnverified runs the
+// interactive flow end to end for qwen-code with a settings.json its own
+// writer can route: the consent under its heading must not call the route an
+// unverified probe, and a yes writes qwen-code's own file.
+func TestRunInteractiveInit_VerifiedProbeRouteIsNotCalledUnverified(t *testing.T) {
+	requireComponents(t, "integration.hooks", "integration.mcp-server", "integration.proxy-route")
+	requireActiveAdapters(t, "qwen-code")
+	requireAdapter(t, "qwen-code")
+	home := t.TempDir()
+	settings := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"model":{"baseUrl":"https://api.openai.com/v1"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	in := &scriptedAnswers{out: &out, answer: func(string) string { return "y" }}
+	if err := runInteractiveInit(&out, in, interactiveInitOptions{
+		BinaryPath: filepath.Join(home, "observer"),
+		ProxyPort:  18820,
+		HomeDir:    home,
+	}); err != nil {
+		t.Fatalf("runInteractiveInit: %v\noutput:\n%s", err, out.String())
+	}
+	if !containsQuestion(in.questions, "route qwen-code through the observer proxy") {
+		t.Fatalf("qwen-code's route was never offered, so the test proves nothing:\n%s", out.String())
+	}
+	if containsQuestion(in.questions, "route qwen-code through the observer proxy (unverified") {
+		t.Errorf("qwen-code's verified route was offered as an unverified probe:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "NOT yet") {
+		t.Errorf("the flow calls a verified route NOT yet live-verified:\n%s", out.String())
+	}
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "18820") {
+		t.Errorf("a yes did not route qwen-code's own settings.json:\n%s", raw)
+	}
+}

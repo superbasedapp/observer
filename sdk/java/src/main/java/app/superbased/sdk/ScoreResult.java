@@ -20,6 +20,7 @@ public final class ScoreResult {
   /** name -> {ok, status, id, error}. */
   final Map<String, Map<String, Object>> destinations = new LinkedHashMap<>();
   final List<String> errors = new ArrayList<>();
+  PlanRefusalException planRefusal;
 
   ScoreResult() {}
 
@@ -47,6 +48,14 @@ public final class ScoreResult {
   /** Every problem (validation or transport). */
   public List<String> errors() {
     return Collections.unmodifiableList(errors);
+  }
+
+  /**
+   * Set when the org's plan refused the score: its message and
+   * {@code upgradeUrl()} say why and where to fix it. Null otherwise.
+   */
+  public PlanRefusalException planRefusal() {
+    return planRefusal;
   }
 
   void put(String side, boolean ok, int status, String id, String error) {

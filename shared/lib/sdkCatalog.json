@@ -1,5 +1,5 @@
 {
-  "_readme": "The ONE catalog of the superbased SDKs (review P-11, first-run plan revision 2 section 3.9, lane C0): one row per language with its package, install lines, published flag and init snippet. The apps read it through shared/lib/sdkCatalog.ts (web's AI Apps first-run card, web2's Settings > Apps & SDKs facts); the marketing page generator replaces @@sdk.<id>.<field>@@ and @@sdk.languages@@ tokens from it (website/docs-tools/pagegen/sdk.go); scripts/sdk-install-strings.py checks it and flips the published flags on the SDK release. A new language is one more row here and nothing else. `install_checkout` is shown while `published` is false, `install_published` once it is true. `release` names what publishes the row: \"sdk-release\" is .github/workflows/sdk-release.yml on an sdk-v<x.y.z> tag (sdk-install-strings.py flip sets these rows); \"none\" means no workflow publishes it yet and the flag is flipped by hand (sdk-install-strings.py flip --sdk <id>). The snippets send to this machine's receiver (127.0.0.1:4318), the SDKs' default.",
+  "_readme": "The ONE catalog of the superbased SDKs (review P-11, first-run plan revision 2 section 3.9, lane C0): one row per language with its package, install lines, published flag, init snippet and setup command. The apps read it through shared/lib/sdkCatalog.ts (web's AI Apps first-run card, web2's Settings > Apps & SDKs facts); the marketing page generator replaces @@sdk.<id>.<field>@@ and @@sdk.languages@@ tokens from it (website/docs-tools/pagegen/sdk.go); scripts/sdk-install-strings.py checks it and flips the published flags on the SDK release. A new language is one more row here and nothing else. `install_checkout` is shown while `published` is false, `install_published` once it is true. `release` names what publishes the row: \"sdk-release\" is .github/workflows/sdk-release.yml on an sdk-v<x.y.z> tag (sdk-install-strings.py flip sets these rows); \"none\" means no workflow publishes it yet and the flag is flipped by hand (sdk-install-strings.py flip --sdk <id>). The snippet is the one init line (AI Apps SDK quickstart plan 7): init() names the service after the project, instruments the installed model libraries and sends where setup chose (with nothing set up, to this machine). `setup` is the one-command quickstart (plan 3.5), on the Python and TypeScript rows only; Go and Java users run either with --key-only. The agent prompt is built from it (shared/lib/sdkPrompt.ts; the website partial pages-src/partials/prompt-sdk.html).",
   "sdks": [
     {
       "id": "python",
@@ -12,14 +12,9 @@
       "install_checkout": "pip install ./sdk/python  # from a checkout: not on PyPI yet",
       "install_published": "pip install superbased-sdk",
       "snippet": [
-        "import superbased_sdk as sb",
-        "",
-        "sb.init(service_name=\"my-app\")  # sends to this machine at 127.0.0.1:4318",
-        "",
-        "@sb.observe(\"answer\", kind=sb.AGENT)",
-        "def answer(question: str) -> str:",
-        "    ..."
-      ]
+        "import superbased_sdk; superbased_sdk.init()"
+      ],
+      "setup": "uvx superbased-sdk setup"
     },
     {
       "id": "typescript",
@@ -32,12 +27,10 @@
       "install_checkout": "npm install ./sdk/typescript  # from a checkout: not on npm yet",
       "install_published": "npm install @superbased/sdk",
       "snippet": [
-        "import { init, Kind, observe } from \"@superbased/sdk\";",
-        "",
-        "init({ serviceName: \"my-app\" }); // sends to this machine at 127.0.0.1:4318",
-        "",
-        "const answer = observe(async (q: string) => agent.run(q), { name: \"answer\", kind: Kind.AGENT });"
-      ]
+        "require(\"@superbased/sdk\").init(); // CommonJS: the first statement",
+        "// ES modules: run the app with --import @superbased/sdk/register instead"
+      ],
+      "setup": "npx @superbased/sdk setup"
     },
     {
       "id": "go",
@@ -52,12 +45,8 @@
       "snippet": [
         "import superbased \"github.com/superbasedapp/observer/sdk/go\"",
         "",
-        "superbased.Init(ctx, superbased.Options{ServiceName: \"my-app\"}) // sends to this machine at 127.0.0.1:4318",
-        "defer superbased.Shutdown(ctx)",
-        "",
-        "answer, err := superbased.Observe(ctx, \"answer\", superbased.KindAgent, func(ctx context.Context) (string, error) {",
-        "\treturn agent.Run(ctx, question)",
-        "})"
+        "superbased.Init(ctx, superbased.Options{})",
+        "defer superbased.Shutdown(ctx)"
       ]
     },
     {
@@ -68,14 +57,12 @@
       "docs": "/docs/sdk/java",
       "published": false,
       "release": "none",
-      "install_checkout": "mvn -q -f ./sdk/java install -DskipTests  # from a checkout: not on Maven Central yet; then depend on app.superbased:superbased-sdk:0.1.0",
-      "install_published": "implementation(\"app.superbased:superbased-sdk:0.1.0\")  // Gradle; Maven: the same coordinates",
+      "install_checkout": "mvn -q -f ./sdk/java install -DskipTests  # from a checkout: not on Maven Central yet; then depend on app.superbased:superbased-sdk:0.2.0",
+      "install_published": "implementation(\"app.superbased:superbased-sdk:0.2.0\")  // Gradle; Maven: the same coordinates",
       "snippet": [
         "import app.superbased.sdk.*;",
         "",
-        "Superbased.init(InitOptions.builder().serviceName(\"my-app\").build()); // sends to this machine at 127.0.0.1:4318",
-        "",
-        "String answer = Superbased.agentSpan(\"answer\").call(s -> agent.run(question));"
+        "Superbased.init();"
       ]
     }
   ]

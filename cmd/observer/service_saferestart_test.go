@@ -44,6 +44,11 @@ type fakeRestart struct {
 	// config with the proxy component off.
 	proxyPort, daemonPort int
 	noProxy               bool
+	// handover: the daemon says its in-place restart hands the proxy socket
+	// over; runningInvocation / unitInvocation are the digests of the
+	// command it runs and of the installed unit's (L-168 (ii)).
+	handover                          bool
+	runningInvocation, unitInvocation string
 	// configs is every config path the verb built an environment for.
 	configs []string
 	// actions
@@ -135,6 +140,13 @@ func (f *fakeRestart) env() safeRestartEnv {
 			return f.daemonPort, st.Answers && f.daemonPort > 0
 		},
 		proxyExpected: func() bool { return !f.noProxy },
+		daemonHandover: func(context.Context) (bool, string) {
+			if !f.status.Answers {
+				return false, ""
+			}
+			return f.handover, f.runningInvocation
+		},
+		unitInvocation: func(service.RestartManager, service.Scope) string { return f.unitInvocation },
 		registrar: func(port int, dry bool) (*proxyroute.Registrar, error) {
 			return proxyroute.NewRegistrar(proxyroute.RegisterOptions{ProxyPort: port, HomeDir: f.home, DryRun: dry})
 		},

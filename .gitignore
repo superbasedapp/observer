@@ -327,6 +327,9 @@ model-pricing/scripts/extract-cache/
 # The adapter parity doc generator: rewrites docs/adapter-parity.md
 # (private) and its test reads that doc.
 /tools/adapterparitygen/
+# The dated doc index generator: writes docs/{plans,audits,handovers}/INDEX.md
+# (private) and its drift test reads them.
+/tools/docsindexgen/
 # The shipped-migrations record generator: records private lineages from git.
 /tools/shippedmiggen/
 # The parallel test runner: maintainer tooling for the private CI selection.
@@ -363,6 +366,7 @@ model-pricing/scripts/extract-cache/
 /scripts/ci/gate-host-checks.sh
 /scripts/ci/gate-host-checks.tsv
 /scripts/ci/website-accuracy.sh
+/tests/invariant/website_accuracy_test.go
 /scripts/ci/model-pricing-pg.sh
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.

@@ -123,35 +123,35 @@ var products = []product{
 func parseConsumption(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceConsumptionDaily
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc consumptionDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented ConsumptionResponse")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented ConsumptionResponse")
 	}
 	if doc.ByDate == nil || doc.TotalACUs == nil {
-		return vendorapi.Page{}, drift(s, "required field consumption_by_date or total_acus is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field consumption_by_date or total_acus is missing")
 	}
 	if _, ok := acuMicros(doc.TotalACUs); !ok {
-		return vendorapi.Page{}, drift(s, "total_acus is not a non-negative amount")
+		return vendorapi.Page{}, vendorapi.Drift(s, "total_acus is not a non-negative amount")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.ByDate)}
 	seen := map[int64]bool{}
 	for i, d := range *doc.ByDate {
 		start, ok := unixSeconds(d.Date)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "consumption_by_date[%d].date is not a Unix time", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d].date is not a Unix time", i)
 		}
 		if seen[start.Unix()] {
-			return vendorapi.Page{}, drift(s, "consumption_by_date[%d] repeats a day", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d] repeats a day", i)
 		}
 		seen[start.Unix()] = true
 		total, ok := acuMicros(d.ACUs)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "consumption_by_date[%d].acus is not a non-negative amount", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d].acus is not a non-negative amount", i)
 		}
 		if d.ByProduct == nil {
-			return vendorapi.Page{}, drift(s, "consumption_by_date[%d].acus_by_product is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d].acus_by_product is missing", i)
 		}
 		fact := func(metric, feature string, v int64) vendorapi.FactRow {
 			return vendorapi.FactRow{
@@ -164,13 +164,13 @@ func parseConsumption(r vendorapi.Response) (vendorapi.Page, error) {
 			n := p.get(d)
 			if n == nil {
 				if p.required {
-					return vendorapi.Page{}, drift(s, "consumption_by_date[%d].acus_by_product.%s is missing", i, p.name)
+					return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d].acus_by_product.%s is missing", i, p.name)
 				}
 				continue
 			}
 			v, ok := acuMicros(n)
 			if !ok {
-				return vendorapi.Page{}, drift(s, "consumption_by_date[%d].acus_by_product.%s is not a non-negative amount", i, p.name)
+				return vendorapi.Page{}, vendorapi.Drift(s, "consumption_by_date[%d].acus_by_product.%s is not a non-negative amount", i, p.name)
 			}
 			page.Facts = append(page.Facts, fact(MetricACUs, p.name, v))
 		}

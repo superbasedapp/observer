@@ -1,0 +1,109 @@
+{
+  "_doc": "Test vectors for internal/sdkkeygrant (docs/plans/onboarding-v2-connect-flow.md section 13). The signing key is TEST ONLY: its seed is SHA-256 of seed_is_sha256_of. valid: Sign(key, claims) must equal token byte for byte, and Verify(token, keys=[public_key], now) must return the claims. refused: Verify must refuse with the reason want. redeem: redeem_hash = base64url-nopad(SHA-256(ASCII bytes of redeem_secret)). Regenerate: go test ./internal/sdkkeygrant -run TestVectors -update.",
+  "signing_domain": "sbo-sdk-key-grant-v1",
+  "token_prefix": "sbsk1.",
+  "seed_is_sha256_of": "sdkkeygrant test vector seed v1 (test only, never a platform key)",
+  "public_key": "vMRWwVEWjObEuLCODPSc01jsQtmeKlLhZZ6YnGPXDoc",
+  "kid": "lbuzL6yjIY7QORHrVOXxRQCWf7xQR3wctcY9NrQlyR8",
+  "redeem": [
+    {
+      "redeem_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "redeem_hash": "DwBzhbb51LfusnSGBa_hqYSgo7-j8BTQnip4TOnlzRo"
+    },
+    {
+      "redeem_secret": "fake-redeem-secret-for-tests-only-000000000",
+      "redeem_hash": "4gCLlovTgfGzwK4urGu0ushPtJ7SF1a3E6QVBfFb1Ks"
+    }
+  ],
+  "valid": [
+    {
+      "name": "personal dashboard",
+      "claims": {
+        "v": 1,
+        "kid": "lbuzL6yjIY7QORHrVOXxRQCWf7xQR3wctcY9NrQlyR8",
+        "org_id": "0b6f3d2a-6a51-4c1e-9d0f-6f1c2b7e8a90",
+        "slug": "u-k7x2",
+        "kind": "personal",
+        "account_id": "9a3e1c55-2f7b-4d8e-b1a0-3c4d5e6f7a8b",
+        "sub": "user_01JD7FAKESUBJECT",
+        "request_id": "6f1c8e2d-4b3a-4c5d-8e9f-0a1b2c3d4e5f",
+        "redeem_hash": "4gCLlovTgfGzwK4urGu0ushPtJ7SF1a3E6QVBfFb1Ks",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "jti": "VZsNXmyOgxI--W47xvCh6g"
+      },
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "now": 1800000060
+    },
+    {
+      "name": "team dashboard",
+      "claims": {
+        "v": 1,
+        "kid": "lbuzL6yjIY7QORHrVOXxRQCWf7xQR3wctcY9NrQlyR8",
+        "org_id": "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a",
+        "slug": "acme",
+        "kind": "team",
+        "account_id": "9a3e1c55-2f7b-4d8e-b1a0-3c4d5e6f7a8b",
+        "sub": "user_01JD7FAKETEAMMATE",
+        "request_id": "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b",
+        "redeem_hash": "4gCLlovTgfGzwK4urGu0ushPtJ7SF1a3E6QVBfFb1Ks",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "jti": "Al-AEAuVoRj_qteQmfpkkw"
+      },
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiNWQ0YzNiMmEtMWYwZS00ZDljLThiN2EtNmY1ZTRkM2MyYjFhIiwic2x1ZyI6ImFjbWUiLCJraW5kIjoidGVhbSIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVRFQU1NQVRFIiwicmVxdWVzdF9pZCI6IjFlMmQzYzRiLTVhNjktNDc4OC05YTBiLTFjMmQzZTRmNWE2YiIsInJlZGVlbV9oYXNoIjoiNGdDTGxvdlRnZkd6d0s0dXJHdTB1c2hQdEo3U0YxYTNFNlFWQmZGYjFLcyIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwNjAwLCJqdGkiOiJBbC1BRUF1Vm9Sal9xdGVRbWZwa2t3In0.C_eE1tdiec00TSP9voJT7ArZWMWb6nR2sSYbA2nPxqmGDK2GTACGgQhfS7zX2eaaR1a5deOzExXgjlK7iSNGAQ",
+      "now": 1800000060
+    }
+  ],
+  "refused": [
+    {
+      "name": "expired",
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "now": 1800000600,
+      "want": "expired"
+    },
+    {
+      "name": "issued in the future beyond the skew",
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "now": 1799999939,
+      "want": "skew"
+    },
+    {
+      "name": "no key pinned",
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "now": 1800000060,
+      "no_keys_pinned": true,
+      "want": "no_key"
+    },
+    {
+      "name": "signed under the attach grant's domain",
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.wjVGXN6N8b8RRBAAJX40IkAkxQLi1yLz-lKfsN0L3NCkysWpP1WpRRPJGV1o2gHwMrDLP7mP9ksNOHeTGrNoCA",
+      "now": 1800000060,
+      "want": "domain"
+    },
+    {
+      "name": "an attach grant's prefix",
+      "token": "sbag1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw",
+      "now": 1800000060,
+      "want": "domain"
+    },
+    {
+      "name": "signed under an unrelated domain",
+      "token": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.cHPwFU_KtzNGm6zsJAix6ySa3jj5pIvkGXAggwQKO0DrYAFgLaTjFL8jnU1LW5TFBiF9fzccdAerZyhywoJHBA",
+      "now": 1800000060,
+      "want": "signature"
+    },
+    {
+      "name": "claims version 2",
+      "token": "sbsk1.eyJ2IjoyLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.s_Y34jbceWVIRggbmOx4qNTK-lOEqOxJyZHhEmUkWDdJ4lph3GemODusANnVIZ5pTKrlbtOz14McrrxTaFDHDQ",
+      "now": 1800000060,
+      "want": "version"
+    },
+    {
+      "name": "not a grant",
+      "token": "sbsk1.not-a-grant",
+      "now": 1800000060,
+      "want": "shape"
+    }
+  ]
+}

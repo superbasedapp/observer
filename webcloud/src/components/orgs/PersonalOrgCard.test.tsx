@@ -106,7 +106,7 @@ test("the billing card for a personal org offers the personal plan, never the Te
       available: true,
       environment: "sandbox",
       client_token: "t",
-      prices: [{ price_id: "pri_p", plan_name: "plus", plan_version: 1, interval: "month", display: "$15/mo" }],
+      prices: [{ price_id: "pri_p", plan_name: "personal_pro", plan_version: 2, interval: "month", display: "$9/mo" }],
       trial_days: 0,
     },
     can_checkout: true,

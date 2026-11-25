@@ -1,8 +1,6 @@
 package xai
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -67,23 +65,6 @@ func team(s vs.SurfaceID, p vendorapi.Params) (string, error) {
 		return "", fmt.Errorf("%s: connection parameter %s is missing or not a team id", s, ParamTeam)
 	}
 	return t, nil
-}
-
-func drift(s vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // AuditEvents returns the driver of xai.mgmt.audit_events.
@@ -159,52 +140,52 @@ type auditDoc struct {
 func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceAuditEvents
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc auditDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented response")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented response")
 	}
 	if doc.Events == nil {
-		return vendorapi.Page{}, drift(s, "required field events is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field events is missing")
 	}
 	page := vendorapi.Page{}
-	if tok := str(doc.NextPageToken); tok != "" {
+	if tok := vendorapi.Str(doc.NextPageToken); tok != "" {
 		if !tokenRE.MatchString(tok) {
-			return vendorapi.Page{}, drift(s, "nextPageToken is not an opaque token")
+			return vendorapi.Page{}, vendorapi.Drift(s, "nextPageToken is not an opaque token")
 		}
 		if r.Cursor != "" && tok == r.Cursor {
-			return vendorapi.Page{}, drift(s, "nextPageToken repeats the token the page was asked with")
+			return vendorapi.Page{}, vendorapi.Drift(s, "nextPageToken repeats the token the page was asked with")
 		}
 		page.NextCursor = tok
 	}
 	seen := map[string]bool{}
 	for i, e := range *doc.Events {
-		id := str(e.EventID)
+		id := vendorapi.Str(e.EventID)
 		if id == "" {
-			return vendorapi.Page{}, drift(s, "events[%d].eventId is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "events[%d].eventId is missing", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(s, "events[%d] repeats an event", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "events[%d] repeats an event", i)
 		}
 		seen[id] = true
-		at, err := time.Parse(time.RFC3339Nano, str(e.EventTime))
+		at, err := time.Parse(time.RFC3339Nano, vendorapi.Str(e.EventTime))
 		if err != nil {
-			return vendorapi.Page{}, drift(s, "events[%d].eventTime is not RFC 3339", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "events[%d].eventTime is not RFC 3339", i)
 		}
 		ev := vendorapi.AuditEvent{Namespace: AuditNamespace, EventID: id, At: at.UTC(), Action: AuditAction, Detail: map[string]string{}}
 		if u := e.User; u != nil {
 			switch {
-			case strings.TrimSpace(str(u.Email)) != "":
-				ev.ActorKind, ev.ActorIdentity = "email", strings.TrimSpace(str(u.Email))
-			case str(u.UserID) != "":
-				ev.ActorKind, ev.ActorIdentity = ActorUser, str(u.UserID)
+			case strings.TrimSpace(vendorapi.Str(u.Email)) != "":
+				ev.ActorKind, ev.ActorIdentity = "email", strings.TrimSpace(vendorapi.Str(u.Email))
+			case vendorapi.Str(u.UserID) != "":
+				ev.ActorKind, ev.ActorIdentity = ActorUser, vendorapi.Str(u.UserID)
 			}
-			if v := str(u.UserID); v != "" {
+			if v := vendorapi.Str(u.UserID); v != "" {
 				ev.Detail["user_id"] = v
 			}
 		}
-		if d := strings.TrimSpace(str(e.Description)); d != "" {
+		if d := strings.TrimSpace(vendorapi.Str(e.Description)); d != "" {
 			ev.Detail["description"] = d
 		}
 		page.Audit = append(page.Audit, ev)
@@ -270,18 +251,18 @@ var centsRE = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})$`)
 func parseLimits(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceSpendingLimits
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc limitsDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented response")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented response")
 	}
 	if doc.SpendingLimits == nil {
-		return vendorapi.Page{}, drift(s, "required field spendingLimits is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field spendingLimits is missing")
 	}
 	t, err := team(s, r.Params)
 	if err != nil {
-		return vendorapi.Page{}, drift(s, "the response has no team to key the limit by")
+		return vendorapi.Page{}, vendorapi.Drift(s, "the response has no team to key the limit by")
 	}
 	sl := doc.SpendingLimits
 	attrs := map[string]string{"unit": UnitUSDCents, "period": "monthly", "billing": "postpaid"}
@@ -299,7 +280,7 @@ func parseLimits(r vendorapi.Response) (vendorapi.Page, error) {
 			continue
 		}
 		if c.v.Val == nil || !centsRE.MatchString(*c.v.Val) {
-			return vendorapi.Page{}, drift(s, "spendingLimits %s is not a whole number of cents", c.name)
+			return vendorapi.Page{}, vendorapi.Drift(s, "spendingLimits %s is not a whole number of cents", c.name)
 		}
 		attrs[c.name] = *c.v.Val
 	}

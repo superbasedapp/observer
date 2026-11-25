@@ -269,7 +269,7 @@ func (c *LocalActionsCache) FindMetadata(spec string) (*ActionMetadata, bool, er
 
 		// Unwrap type error when a single type error occurs to simplify the error message
 		var m string
-		// Patched for go.yaml.in/yaml/v4 v4.0.0-rc.4 (see PATCHES.md).
+		// Patched for go.yaml.in/yaml/v4 v4.0.0-rc.4 (see UPSTREAM).
 		var le *yaml.LoadErrors
 		if errors.As(err, &le) {
 			if len(le.Errors) == 1 {

@@ -1,0 +1,87 @@
+{
+  "claude-code/gen-timing-real": {
+    "observations": 62,
+    "blocks": 105,
+    "sha256": "2ebc18942254aa0845e878d51096651ed28930772019d826faf6d767d457015a"
+  },
+  "claude-code/synthetic-compaction": {
+    "observations": 3,
+    "blocks": 6,
+    "sha256": "167ebdc562ec73d7dbf26a1c516da0d9d2963da04d8e54257b9bf3a99fcadbb5"
+  },
+  "cline": {
+    "observations": 1,
+    "blocks": 3,
+    "sha256": "b8697aa6454790b801e6a1429398487deec41a27928d7f9dffbf54cb2945f228"
+  },
+  "cline-cli": {
+    "observations": 3,
+    "blocks": 10,
+    "sha256": "81b661480d6080656c6fcc476d4104cb6ddfcc6c6b1a7efd447e70f04a132b77"
+  },
+  "codebuddy": {
+    "observations": 4,
+    "blocks": 8,
+    "sha256": "59015be0f0657a5e84f7828073410a2ef48fdea8343fb37c185ce544779b00ad"
+  },
+  "command-code": {
+    "observations": 3,
+    "blocks": 9,
+    "sha256": "6ab86371741c6d3ec957b283ccc7280a38c9ae2aff19ef2459ae91b2f7db0cd3"
+  },
+  "cowork": {
+    "observations": 2,
+    "blocks": 5,
+    "sha256": "71d5ed271ed223f44c34feeab80711ed24c8fb35385637e43b9537cb7cd83003"
+  },
+  "deepagents": {
+    "observations": 19,
+    "blocks": 4,
+    "sha256": "3a6a9d617aec07fdb46ef8800ca5c7bacdabed98cc0ea80f71f10a6b0436801c"
+  },
+  "deepseek": {
+    "observations": 3,
+    "blocks": 8,
+    "sha256": "bb94783567d82f84f67a1a4018abe78a2df9e3e2f9abf74c47deacfb1264ee9b"
+  },
+  "dirac/linux": {
+    "observations": 6,
+    "blocks": 12,
+    "sha256": "5f99664909b6f552191e3eac067f7b427e1565f5459b015f788fc16629cb45e8"
+  },
+  "dirac/windows": {
+    "observations": 2,
+    "blocks": 0,
+    "sha256": "70889c7abaa893b76934aa45d13f04a7a96e4694b7c03f742aa0e20533bcbfea"
+  },
+  "junie": {
+    "observations": 22,
+    "blocks": 9,
+    "sha256": "3590fcaffb90c25ad55787b35818de1fc9a23def0772a83bf68cde227d71d641"
+  },
+  "kimchi": {
+    "observations": 8,
+    "blocks": 40,
+    "sha256": "7dca1f4753bd71b33c33af8cc2e0c061dd8fcd1df483ad55e9db53daa0a670b3"
+  },
+  "kiro-cli": {
+    "observations": 2,
+    "blocks": 4,
+    "sha256": "06b60dbda2f73195673ce25633318671c021d0f0c186981ed0b45549ec91d0aa"
+  },
+  "muse": {
+    "observations": 8,
+    "blocks": 16,
+    "sha256": "2175ca4d1d63762f0f31f93e55d62df4100201021634be608cfe38b4952aa20a"
+  },
+  "openclaw": {
+    "observations": 2,
+    "blocks": 5,
+    "sha256": "9e8c0dd81b2914d8976f925c1eeda93cf625304bf40f53fbcf83220110c0fb20"
+  },
+  "poolside": {
+    "observations": 7,
+    "blocks": 14,
+    "sha256": "ea55b315bb7173b5f6cce4c249d01ec0715aa9b144624928f8095577b2dc24f9"
+  }
+}

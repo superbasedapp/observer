@@ -20,8 +20,7 @@ final class CaseIndexes implements ArgumentsProvider {
   public Stream<? extends Arguments> provideArguments(ParameterDeclarations parameters, ExtensionContext context)
       throws Exception {
     String section = context.getRequiredTestMethod().getName();
-    Map<String, Object> all = SdkTestBase.loadContract("sdk-behaviour-cases.json");
-    Map<String, Object> sec = (Map<String, Object>) all.get(section);
+    Map<String, Object> sec = (Map<String, Object>) SdkTestBase.behaviourSections().get(section);
     if (sec == null) {
       throw new IllegalStateException("sdk-behaviour-cases.json has no section " + section);
     }

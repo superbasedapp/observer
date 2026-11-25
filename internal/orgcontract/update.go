@@ -33,7 +33,7 @@ package orgcontract
 // rollout, which is the fail-safe direction (docs/security.md UPD-4).
 //
 // The field set is pinned structurally by
-// tests/invariant/privacy_test.go::TestUpdatePostureRowWireShapeIsEnumOnly — a
+// tests/invariant/privacy_wire_shape_test.go::TestUpdatePostureRowWireShapeIsEnumOnly — a
 // new field fails there before it can ship.
 type UpdatePostureRow struct {
 	// Version is the running binary's main.version. Already sent as

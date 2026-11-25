@@ -90,20 +90,20 @@ func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 	page := vendorapi.Page{NextCursor: next}
 	seen := map[string]bool{}
 	for i, e := range *doc.Items {
-		id := str(e.ID)
+		id := vendorapi.Str(e.ID)
 		if id == "" {
-			return vendorapi.Page{}, drift(s, "items[%d].audit_log_id is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].audit_log_id is missing", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(s, "items[%d] repeats an event", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d] repeats an event", i)
 		}
 		seen[id] = true
 		at, ok := unixSeconds(e.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "items[%d].created_at is not a Unix time", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].created_at is not a Unix time", i)
 		}
 		if e.Action == nil {
-			return vendorapi.Page{}, drift(s, "items[%d].action is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].action is missing", i)
 		}
 		action := *e.Action
 		if !auditActions[action] {
@@ -111,21 +111,21 @@ func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		ev := vendorapi.AuditEvent{Namespace: AuditNamespace, EventID: id, At: at, Action: action, Detail: map[string]string{}}
 		switch {
-		case str(e.UserEmail) != "":
-			ev.ActorKind, ev.ActorIdentity = "email", str(e.UserEmail)
-		case str(e.ServiceUserID) != "":
-			ev.ActorKind, ev.ActorIdentity, ev.ActorIsAgent = ActorServiceUser, str(e.ServiceUserID), true
+		case vendorapi.Str(e.UserEmail) != "":
+			ev.ActorKind, ev.ActorIdentity = "email", vendorapi.Str(e.UserEmail)
+		case vendorapi.Str(e.ServiceUserID) != "":
+			ev.ActorKind, ev.ActorIdentity, ev.ActorIsAgent = ActorServiceUser, vendorapi.Str(e.ServiceUserID), true
 		}
-		if v := str(e.OrgID); v != "" {
+		if v := vendorapi.Str(e.OrgID); v != "" {
 			ev.Detail["org_id"] = v
 		}
-		if v := str(e.UserID); v != "" {
+		if v := vendorapi.Str(e.UserID); v != "" {
 			ev.Detail["user_id"] = v
 		}
-		if v := str(e.ServiceUserID); v != "" {
+		if v := vendorapi.Str(e.ServiceUserID); v != "" {
 			ev.Detail["service_user_id"] = v
 		}
-		if v := str(e.ServiceUserName); v != "" {
+		if v := vendorapi.Str(e.ServiceUserName); v != "" {
 			ev.Detail["service_user_name"] = v
 		}
 		page.Audit = append(page.Audit, ev)

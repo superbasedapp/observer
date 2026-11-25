@@ -727,7 +727,7 @@ function CloudPlanLine({ plan }: { plan: CloudPlanView | null }) {
       ? "unknown"
       : plan.digest_weekly
         ? "included"
-        : "Plus only";
+        : "Personal Pro only";
   const retention =
     plan.results_retention_days != null
       ? `${plan.results_retention_days} days`

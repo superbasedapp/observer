@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentsvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/filehash"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxkey"
@@ -136,7 +137,7 @@ func productionSandboxSetupHost(configPath string, ledger *toolInstallLedger) sa
 		engineSocket:        sandboxSetupEngineSocket,
 		dockerAccess:        sandboxSetupDockerAccess,
 		statFile:            sandboxSetupStatFile,
-		fileDigest:          sandboxSetupFileSHA256,
+		fileDigest:          filehash.SHA256,
 		records: func(ctx context.Context) ([]store.ToolInstallRow, error) {
 			return ledger.SandboxRecords(ctx)
 		},

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 )
 
 const haikuRoute = "session_enrichment.claude-haiku-5-5.v1"
@@ -41,7 +43,7 @@ func checkV4Catalogue(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 }
 
 func TestPopulatedMigration42To43MovesAssignmentsToV4(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv4_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv4_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -124,7 +126,7 @@ func TestPopulatedMigration42To43MovesAssignmentsToV4(t *testing.T) {
 // at now(), 0041 repoints them to v3 (same now()), and 0043 must repoint them
 // again to v4 in the same runner transaction.
 func TestPopulatedMigration38ToHeadInOneTransactionLandsOnV4(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv4jump_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv4jump_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 

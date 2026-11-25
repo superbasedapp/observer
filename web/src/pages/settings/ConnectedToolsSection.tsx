@@ -6,7 +6,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import clsx from "clsx";
 import { Summary } from "@/components/Summary";
 import { Button, ChartShell, ConfirmButton, Pill, Table, Tooltip } from "@/components/primitives";
@@ -116,9 +117,9 @@ export function ConnectedToolsSection({ icon }: { icon?: LucideIcon }) {
             <strong className="font-semibold text-fg-2">Set up</strong> walks
             hooks, MCP, and proxy routing per tool with a preview before every
             write. The route buttons also live on the{" "}
-            <Link to="/compression" className="text-accent hover:underline">
+            <GatedLink to="/compression" className="text-accent hover:underline" managed="Compression page">
               Compression page
-            </Link>
+            </GatedLink>
             ; CLI parity: <code className="font-mono text-fg-2">observer init</code>.
           </span>
         </div>

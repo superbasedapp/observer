@@ -71,14 +71,14 @@ func TestSeatbeltDriverIsOptIn(t *testing.T) {
 	if !ok || reg.component != seatbeltComponent {
 		t.Fatalf("seatbelt registration %+v", reg)
 	}
-	legacy := macTestRuntime(t, seatbeltTestConfig(t, false, "seatbelt"))
+	legacy := testSandboxRuntime(t, seatbeltTestConfig(t, false, "seatbelt"))
 	if _, active := legacy.drivers[sandboxbackend.BackendSeatbelt]; active || legacy.inactiveDrivers[sandboxbackend.BackendSeatbelt] != seatbeltComponent {
 		t.Fatalf("legacy drivers %v inactive %v", legacy.drivers, legacy.inactiveDrivers)
 	}
 	if p := legacy.driverProbes(context.Background())[sandboxbackend.BackendSeatbelt]; p.Verdict != verdictModuleInactive {
 		t.Fatalf("an unselected driver probes as %+v", p)
 	}
-	on := macTestRuntime(t, seatbeltTestConfig(t, true, "bwrap"))
+	on := testSandboxRuntime(t, seatbeltTestConfig(t, true, "bwrap"))
 	d, ok := on.drivers[sandboxbackend.BackendSeatbelt]
 	if !ok {
 		t.Fatal("a block that adds the Seatbelt driver did not get it")
@@ -90,7 +90,7 @@ func TestSeatbeltDriverIsOptIn(t *testing.T) {
 	if n.Load() != 0 {
 		t.Fatalf("the probe read the host %d times while inactive", n.Load())
 	}
-	listed := macTestRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))
+	listed := testSandboxRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))
 	if p := listed.drivers[sandboxbackend.BackendSeatbelt].probe(context.Background()); p.Verdict != sandboxsbpl.VerdictAvailable || p.Version != "26.0" {
 		t.Fatalf("a listed driver on a healthy host probes as %+v", p)
 	}
@@ -420,7 +420,7 @@ func TestSeatbeltSelfTestFlags(t *testing.T) {
 // TestSeatbeltLifecycleIsPTYOwned: the agent is the PTY's child, so resize,
 // signal and stop belong to the PTY; copy and checkpoint are not offered.
 func TestSeatbeltLifecycleIsPTYOwned(t *testing.T) {
-	d := &seatbeltDriver{r: macTestRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))}
+	d := &seatbeltDriver{r: testSandboxRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))}
 	ctx := context.Background()
 	run := termsvc.SandboxRun{ID: "x"}
 	r1, _ := d.Resize(ctx, run, 1, 1)
@@ -464,7 +464,7 @@ func TestSeatbeltComposeCarriesThePins(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rt := macTestRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))
+	rt := testSandboxRuntime(t, seatbeltTestConfig(t, true, "seatbelt"))
 	d, ok := rt.drivers[sandboxbackend.BackendSeatbelt].(*seatbeltDriver)
 	if !ok {
 		t.Fatal("no seatbelt driver")

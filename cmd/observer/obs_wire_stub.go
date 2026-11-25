@@ -478,3 +478,18 @@ const obsNotCompiledRemedy = "install the developer or full edition (scripts/ins
 func obsNotCompiledMessage() string {
 	return fmt.Sprintf("observability: [observability].enabled = true, but this %s build does not include AI Apps observability; nothing is served or stored for it", obsEditionLabel())
 }
+
+// obsAdmissionJudgeInEffect is the no-AI-Apps-admission build's judge in
+// effect: no machine judge can run in this build.
+func obsAdmissionJudgeInEffect(cfg config.Config) admissionJudgeEffect {
+	return admissionJudgeEffect{
+		Judge:          judgeKindNone,
+		Hosting:        "off",
+		Source:         "this build has no AI Apps admission",
+		Enrolled:       cfg.OrgClient.Enabled && cfg.OrgClient.OrgServerURL != "",
+		SDKDestination: cfg.Observability.SDK.Destination,
+		SDKJudge:       "decided by your organization when sent to it; this machine runs no admission check",
+		Summary:        "this build has no AI Apps admission: no check runs on this machine",
+		Warnings:       []string{},
+	}
+}

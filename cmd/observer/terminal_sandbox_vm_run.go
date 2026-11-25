@@ -650,43 +650,13 @@ func vmReturnFor(managedRoot string, run termsvc.SandboxRun, src workspace.Sourc
 		}
 		return &rr, ""
 	case workspace.SourceCloneRemote:
-		rr, err := vmCloneRemoteReturn(managedRoot, run)
+		rr, err := cloneRemoteReturn(managedRoot, run)
 		if err != nil {
 			return nil, "the box's commits will not be returned from this clone-remote copy: " + err.Error() + "; the copy is kept at " + run.Dir
 		}
 		return rr, ""
 	}
 	return nil, ""
-}
-
-// vmCloneRemoteReturn is a clone-remote run's return request (the oci-runc
-// driver's ociCloneRemoteReturn, which this driver cannot link when that
-// driver is omitted).
-func vmCloneRemoteReturn(managedRoot string, run termsvc.SandboxRun) (*workspace.ReturnRequest, error) {
-	repo, err := workspace.ReturnRepoPath(managedRoot, run.ID)
-	if err != nil {
-		return nil, err
-	}
-	rr := workspace.ReturnRequest{SourceRepo: repo, CopyDir: run.Dir, ManagedRoot: managedRoot, RunID: run.ID, Bare: true}
-	plan, err := workspace.PlanReturn(rr)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, err := runReturnGit(ctx, plan.CopyHead())
-	if err != nil {
-		return nil, fmt.Errorf("read the clone's HEAD: %w", err)
-	}
-	sha, err := workspace.ParseHead(out)
-	if err != nil {
-		return nil, err
-	}
-	rr.BaseCommit = sha
-	if _, err := workspace.PlanReturn(rr); err != nil {
-		return nil, err
-	}
-	return &rr, nil
 }
 
 // vmPlanConfigPath is the daemon's config path for the return step's scan

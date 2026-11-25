@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -116,7 +117,7 @@ func (t *transcriptFold) line(raw string) {
 	}
 	ts := parseUnixMillis(msg.Timestamp)
 	if ts.IsZero() {
-		ts = parseTimestamp(rec.Timestamp)
+		ts = parseutil.ParseRFC3339UTC(rec.Timestamp)
 	}
 	t.b.SetNextID(rec.ID)
 	switch msg.Role {

@@ -3,6 +3,7 @@ package budgetwarnfile
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,12 +92,12 @@ func ReadAdmission(path string) (*Admission, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("budgetwarnfile.ReadAdmission: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	var out Admission
 	if err := json.NewDecoder(&limitedReader{r: f, n: maxStatusBytes}).Decode(&out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("budgetwarnfile.ReadAdmission: %w", err)
 	}
 	if out.Schema != AdmissionSchema {
 		return nil, errors.New("budgetwarnfile: unsupported admission schema")
@@ -113,7 +114,7 @@ func WriteAdmission(path string, a Admission) error {
 	a.Schema = AdmissionSchema
 	data, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("budgetwarnfile.WriteAdmission: %w", err)
 	}
 	return writeAtomic(path, data)
 }

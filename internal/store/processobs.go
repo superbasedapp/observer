@@ -1802,13 +1802,6 @@ func marshalDetails(m map[string]any) string {
 	return string(b)
 }
 
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
 // parseMetricSamples decodes the stored ring. It TOLERATES rings written by
 // any earlier build: samples missing net_rx / net_tx / net_measured decode with
 // those fields zero/false, which reads as "network was not measured for this

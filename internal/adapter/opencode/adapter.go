@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -1187,7 +1188,7 @@ func (a *Adapter) loadSessionLineages(ctx context.Context, db *sql.DB) ([]models
 // the SQL error gets swallowed and the function returns an empty
 // slice rather than failing the whole parse pass.
 func (a *Adapter) loadTodoEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]projectGitInfo) ([]models.ToolEvent, error) {
-	if !tableExists(ctx, db, "todo") {
+	if !sqliteschema.TableExists(ctx, db, "todo") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -1372,7 +1373,7 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo
 	// every Windows-side Desktop session under observer's project.
 	// Translate to the WSL2 mount equivalent ("/mnt/c/programsx/...")
 	// so git.Resolve operates on the actual cross-mount path. Mirrors
-	// claudecode adapter.go:1055 and codex adapter.go:2494
+	// (*Adapter).resolveProjectRoot in claudecode and codex
 	// ([[feedback-foreign-path-git-resolve]]).
 	cwd = crossmount.TranslateForeignPath(cwd)
 	if info, ok := cache[cwd]; ok {
@@ -1466,10 +1467,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the OpenCode store (opencode.db): every table this
@@ -1494,18 +1492,7 @@ var allHomesFunc = crossmount.AllHomes
 // dispatches both native and foreign-mount homes into the same
 // adapter; only the foreign ones need the mirror.
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		// Accept both the OS-native separator and forward slash —
-		// /mnt/c uses forward slashes regardless of the foreign OS.
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // resolveDBPath maps a store's -wal or -shm sibling (any channel) to the
@@ -1571,19 +1558,6 @@ func defaultRoots() []string {
 		}
 	}
 	return roots
-}
-
-// tableExists returns true when the given table is present in the
-// SQLite database. Used by loadTodoEvents (and similar future
-// optional-table queries) to degrade gracefully on OpenCode schemas
-// that don't have every table.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
 }
 
 // effortMetadata returns an ActionMetadata pointer carrying the

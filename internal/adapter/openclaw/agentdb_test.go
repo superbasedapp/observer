@@ -356,7 +356,7 @@ func TestParseAgentDB_FallsBackToCreatedAt(t *testing.T) {
 	}
 }
 
-// TestParseAgentDB_ToleratesMissingTables pins the tableExists-tolerant
+// TestParseAgentDB_ToleratesMissingTables pins the TableExists-tolerant
 // posture: a store without transcript_events is not an error.
 func TestParseAgentDB_ToleratesMissingTables(t *testing.T) {
 	root := t.TempDir()

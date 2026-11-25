@@ -9,7 +9,9 @@ import (
 
 // LaunchdLabel is the launchd label of the per-user LaunchAgent that
 // supervises `observer start` on macOS. It matches the documentation-only
-// template in deploy/supervisor/app.superbased.observer.plist.
+// template in deploy/supervisor/app.superbased.observer.plist, and
+// internal/supervisor.LaunchdLabel, the same label that package matches
+// when it detects a running supervisor; the two must stay equal.
 const LaunchdLabel = "app.superbased.observer"
 
 // LaunchAgentPath is where the per-user agent lives (no admin needed).

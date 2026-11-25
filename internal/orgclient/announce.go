@@ -37,7 +37,7 @@ import (
 // ROUTING-SIG-1 row in docs/security.md.
 //
 // This adds NO network behaviour: it rides the push cycle the node
-// already runs (client.go PushLoop), on the connection it already
+// already runs (pushloop.go PushLoop), on the connection it already
 // makes, to the server it is already enrolled with. That is the whole
 // reason rail R3 is conformant with the product's zero-unsolicited-
 // egress claims (plan §0) — a new timer or a new host would not be.

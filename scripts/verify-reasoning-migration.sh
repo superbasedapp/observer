@@ -34,39 +34,15 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-COMMITTED_DIR="internal/db/migrations"
-ARTIFACT="079_reasoning_row_convergence.sql"
-
-if [ ! -d "internal/db/reasoninggen" ]; then
-    echo "verify-reasoning-migration: missing internal/db/reasoninggen" >&2
-    exit 1
-fi
-if [ ! -f "$COMMITTED_DIR/$ARTIFACT" ]; then
-    echo "verify-reasoning-migration: missing $COMMITTED_DIR/$ARTIFACT — run 'make reasoning-migration-build' and commit" >&2
-    exit 1
-fi
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./internal/db/reasoninggen -outdir "$tmpdir" \
-    || { echo "verify-reasoning-migration: reasoninggen failed" >&2; exit 1; }
-
-if [ ! -f "$tmpdir/$ARTIFACT" ]; then
-    echo "verify-reasoning-migration: reasoninggen did not emit $ARTIFACT" >&2
-    exit 1
-fi
-
-if ! diff -u "$COMMITTED_DIR/$ARTIFACT" "$tmpdir/$ARTIFACT" > "$tmpdir/.diff" 2>&1; then
-    echo "verify-reasoning-migration: $COMMITTED_DIR/$ARTIFACT drifted from a fresh reasoninggen run"
-    echo "----- diff: committed (-) vs rebuilt (+) -----"
-    cat "$tmpdir/.diff"
-    echo "-----"
-    echo "reasoning convergence migration drift detected; run 'make reasoning-migration-build' and commit" >&2
-    exit 1
-fi
-
-echo "reasoning convergence migration: $COMMITTED_DIR/$ARTIFACT in sync with the producer-shape table"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-reasoning-migration \
+    --tool reasoninggen \
+    --tool-dir internal/db/reasoninggen \
+    --make reasoning-migration-build \
+    --drift "reasoning convergence migration" \
+    --ok "reasoning convergence migration: internal/db/migrations/079_reasoning_row_convergence.sql in sync with the producer-shape table" \
+    --artifact internal/db/migrations/079_reasoning_row_convergence.sql \
+    -- go run ./internal/db/reasoninggen -outdir @TMP@

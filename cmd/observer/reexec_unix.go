@@ -17,12 +17,17 @@ func reexecSupported() bool { return true }
 // called by main() ONLY after graceful shutdown + every defer has run (DB
 // closed, PTY children reaped, listeners released), so the new image binds
 // cleanly. os.Executable() is the running binary (not a wrapper/shim); os.Args
-// + os.Environ() reconstruct the same `observer start` invocation. On success
-// it never returns (the image is replaced); it returns only on error.
+// + os.Environ() reconstruct the same `observer start` invocation, plus the
+// hand-over variables naming the proxy socket when the restart prepared one.
+// On success it never returns (the image is replaced); it returns only on
+// error.
 func execSelf() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(exe, os.Args, os.Environ()) //nolint:gosec // G702: re-execs this same binary with its own argv and env
+	// L-168 (ii): the proxy's listening socket, when the restart prepared
+	// it (proxy_handover.go), passes to the new image here.
+	env := processProxyHandover.execEnv(os.Environ(), os.Stderr)
+	return syscall.Exec(exe, os.Args, env) //nolint:gosec // G702: re-execs this same binary with its own argv and env
 }

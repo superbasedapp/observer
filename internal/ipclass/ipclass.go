@@ -115,12 +115,14 @@ func (k Kind) Private() bool {
 // private (reachable only with the explicit unlock).
 var cgnatBlock = &net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
 
-// nat64Prefix (RFC 6052 64:ff9b::/96) and sixToFourPrefix (RFC 3056 2002::/16)
-// EMBED an IPv4 address that none of the stdlib IPv4 predicates look at;
-// ipv4CompatPrefix is the deprecated RFC 4291 section 2.5.5.1 ::/96 form.
+// nat64Prefix (RFC 6052 64:ff9b::/96), sixToFourPrefix (RFC 3056 2002::/16)
+// and teredoPrefix (RFC 4380 2001::/32) EMBED an IPv4 address that none of
+// the stdlib IPv4 predicates look at; ipv4CompatPrefix is the deprecated
+// RFC 4291 section 2.5.5.1 ::/96 form.
 var (
 	nat64Prefix      = &net.IPNet{IP: net.ParseIP("64:ff9b::"), Mask: net.CIDRMask(96, 128)}
 	sixToFourPrefix  = &net.IPNet{IP: net.ParseIP("2002::"), Mask: net.CIDRMask(16, 128)}
+	teredoPrefix     = &net.IPNet{IP: net.ParseIP("2001::"), Mask: net.CIDRMask(32, 128)}
 	ipv4CompatPrefix = &net.IPNet{IP: net.ParseIP("::"), Mask: net.CIDRMask(96, 128)}
 )
 
@@ -160,8 +162,8 @@ func MetadataAddresses() []net.IP {
 }
 
 // Unwrap returns the IPv4 address an IPv4-mapped (::ffff:a.b.c.d), NAT64
-// (64:ff9b::/96) or 6to4 (2002::/16) address carries, and any other address
-// unchanged (IPv4 in its 4-byte form). It is the unwrap Classify and Detail
+// (64:ff9b::/96), 6to4 (2002::/16) or Teredo (2001::/32, the client address)
+// address carries, and any other address unchanged (IPv4 in its 4-byte form). It is the unwrap Classify and Detail
 // apply, so Detail(Unwrap(ip)) == Detail(ip) for every ip; a caller that
 // compares an address against IPv4 prefixes (an allow-list) unwraps with it.
 func Unwrap(ip net.IP) net.IP {
@@ -189,8 +191,15 @@ func isMetadata(ip net.IP) bool {
 }
 
 // embeddedIPv4 extracts the IPv4 address a transition-mechanism IPv6 address
-// carries (NAT64 low 32 bits; 6to4 bytes 2..5). ok is false for every other
-// form.
+// carries (NAT64 low 32 bits; 6to4 bytes 2..5; Teredo the client address, the
+// low 32 bits with every bit inverted as RFC 4380 section 4 obfuscates it).
+// ok is false for every other form.
+//
+// A Teredo address carries two IPv4 addresses: its Teredo server (bytes 4..7)
+// and the client's mapped address. The client is the peer the traffic is
+// delivered to, so it is the one classified (SEC-02); the server is contacted
+// only by a local Teredo client's qualification and bubble traffic on UDP
+// 3544.
 func embeddedIPv4(ip net.IP) (net.IP, bool) {
 	if len(ip) != net.IPv6len {
 		return nil, false
@@ -200,6 +209,8 @@ func embeddedIPv4(ip net.IP) (net.IP, bool) {
 		return net.IPv4(ip[12], ip[13], ip[14], ip[15]).To4(), true
 	case sixToFourPrefix.Contains(ip):
 		return net.IPv4(ip[2], ip[3], ip[4], ip[5]).To4(), true
+	case teredoPrefix.Contains(ip):
+		return net.IPv4(^ip[12], ^ip[13], ^ip[14], ^ip[15]).To4(), true
 	default:
 		return nil, false
 	}
@@ -216,8 +227,8 @@ func isULA(ip net.IP) bool {
 // 0.0.0.0/8 rule (which indexes ip[0]) reads the same address the stdlib
 // predicates do. The other IPv4-in-IPv6 forms are handled after the
 // unspecified/loopback rules so `::` and `::1` keep their own verdicts:
-// IPv4-compatible ::/96 is forbidden outright; NAT64 and 6to4 are unwrapped
-// and classified as the IPv4 they carry.
+// IPv4-compatible ::/96 is forbidden outright; NAT64, 6to4 and Teredo are
+// unwrapped and classified as the IPv4 they carry.
 func Classify(ip net.IP) Class {
 	if ip == nil {
 		return ClassForbidden

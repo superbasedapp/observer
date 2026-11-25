@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -160,31 +161,31 @@ func TestAccumulateCacheBlocksTier2_SkipsBlankKind(t *testing.T) {
 }
 
 // TestTier2Accumulator_CapDropsBlockHashes verifies the
-// MaxBlocksPerSession guard. Once cumulative blocks exceed the
-// cap, observeContent stops accumulating and emit produces
-// BlockHashes=nil — the spec §9 OOM guard.
+// MaxBlocksPerSession guard as the parse loop drives it: the
+// canonical blocks feed cacheobs.Accumulator, and once cumulative
+// blocks exceed the cap, Emit produces BlockHashes=nil — the spec §9
+// OOM guard.
 func TestTier2Accumulator_CapDropsBlockHashes(t *testing.T) {
 	t.Parallel()
-	acc := newTier2Accumulator(5)
+	acc := cacheobs.New(5)
 	for i := 0; i < 3; i++ {
-		acc.observeContent([]rawContentBlock{{Type: "text", Text: "a"}, {Type: "text", Text: "b"}}, "user")
+		acc.ObserveBlocks(accumulateCacheBlocksTier2([]rawContentBlock{{Type: "text", Text: "a"}, {Type: "text", Text: "b"}}, "user"))
 	}
-	// 3 × 2 = 6 blocks; cap=5 → capExceeded latches true.
-	if !acc.capExceeded {
-		t.Fatal("cap should be exceeded after 6 blocks at cap=5")
-	}
-	obs := acc.emit("path", "sA", "msg_1", "claude", t0Stub(), models.CacheUsage{}, false)
+	// 3 × 2 = 6 blocks; cap=5 → the cap latches.
+	obs := acc.Emit("path", "sA", "msg_1", "claude", t0Stub(), models.CacheUsage{}, false)
 	if obs.BlockHashes != nil {
 		t.Errorf("BlockHashes = %v, want nil after cap exceeded", obs.BlockHashes)
 	}
-
-	// observeCompaction resets the cap state.
-	acc.observeCompaction()
-	if acc.capExceeded {
-		t.Error("compaction should reset capExceeded")
+	// The cap stays latched until a compaction.
+	acc.ObserveBlocks(accumulateCacheBlocksTier2([]rawContentBlock{{Type: "text", Text: "late"}}, "user"))
+	if late := acc.Emit("path", "sA", "msg_1b", "claude", t0Stub(), models.CacheUsage{}, false); late.BlockHashes != nil {
+		t.Errorf("BlockHashes = %v, want nil while the cap is latched", late.BlockHashes)
 	}
-	acc.observeContent([]rawContentBlock{{Type: "text", Text: "fresh"}}, "user")
-	obs2 := acc.emit("path", "sA", "msg_2", "claude", t0Stub(), models.CacheUsage{}, false)
+
+	// ObserveCompaction resets the cap state.
+	acc.ObserveCompaction()
+	acc.ObserveBlocks(accumulateCacheBlocksTier2([]rawContentBlock{{Type: "text", Text: "fresh"}}, "user"))
+	obs2 := acc.Emit("path", "sA", "msg_2", "claude", t0Stub(), models.CacheUsage{}, false)
 	if len(obs2.BlockHashes) != 1 {
 		t.Errorf("post-compaction BlockHashes len = %d, want 1", len(obs2.BlockHashes))
 	}
@@ -197,15 +198,15 @@ func TestTier2Accumulator_CapDropsBlockHashes(t *testing.T) {
 // flag carries to the NEXT emit only, not subsequent ones.
 func TestTier2Accumulator_CompactionSeenFlagsNextEmit(t *testing.T) {
 	t.Parallel()
-	acc := newTier2Accumulator(MaxBlocksPerSession)
-	acc.observeCompaction()
-	acc.observeContent([]rawContentBlock{{Type: "text", Text: "x"}}, "user")
-	first := acc.emit("p", "sA", "m1", "claude", t0Stub(), models.CacheUsage{}, false)
+	acc := cacheobs.New(MaxBlocksPerSession)
+	acc.ObserveCompaction()
+	acc.ObserveBlocks(accumulateCacheBlocksTier2([]rawContentBlock{{Type: "text", Text: "x"}}, "user"))
+	first := acc.Emit("p", "sA", "m1", "claude", t0Stub(), models.CacheUsage{}, false)
 	if !first.CompactionSeen {
 		t.Error("first emit after compaction should flag CompactionSeen=true")
 	}
-	acc.observeContent([]rawContentBlock{{Type: "text", Text: "y"}}, "user")
-	second := acc.emit("p", "sA", "m2", "claude", t0Stub(), models.CacheUsage{}, false)
+	acc.ObserveBlocks(accumulateCacheBlocksTier2([]rawContentBlock{{Type: "text", Text: "y"}}, "user"))
+	second := acc.Emit("p", "sA", "m2", "claude", t0Stub(), models.CacheUsage{}, false)
 	if second.CompactionSeen {
 		t.Error("second emit should not still carry CompactionSeen=true")
 	}

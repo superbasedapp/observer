@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/updatespec"
 )
 
 // Target is everything a node.governance body must respect to compile on one
@@ -262,6 +264,9 @@ var capabilityEra = map[int]struct{ MaxSchema, KeyGen int }{
 	12: {3, 4},
 	// Level 13 (the Your apps pages, Plane A lane B5): same as level 12.
 	13: {3, 4},
+	// Level 14 (Your apps > Model calls, hosted AI gateway lane L9): same as
+	// level 13.
+	14: {3, 4},
 }
 
 // TargetForCapabilities resolves the Target a node advertises, and false when
@@ -337,96 +342,15 @@ func TargetForAgentVersion(version string) Target {
 	return oldestTarget
 }
 
-// compareRelease orders two versions by SemVer 2.0 precedence: the X.Y.Z core
-// numerically, then a version WITH a pre-release below the same core without
-// one, pre-release identifiers compared one by one (numeric ones numerically
-// and below alphanumeric ones, a shorter list below a longer one it
-// prefixes). Build metadata ("+...") is ignored. ok is false when either side
-// does not parse. It differs from update.CompareSemver ON PURPOSE: that one
-// treats "1.34.0-rc.11" as "1.34.0" (the dashboard's update nag), which here
-// would credit a release candidate with what only the release has.
+// compareRelease orders two versions by SemVer 2.0 precedence
+// (updatespec.ComparePrecedence, the one owner): the X.Y.Z core numerically,
+// then a version WITH a pre-release below the same core without one. ok is
+// false when either side does not parse. It differs from update.CompareSemver
+// ON PURPOSE: that one treats "1.34.0-rc.11" as "1.34.0" (the dashboard's
+// update nag), which here would credit a release candidate with what only the
+// release has.
 func compareRelease(a, b string) (int, bool) {
-	ca, pa, oka := parseRelease(a)
-	cb, pb, okb := parseRelease(b)
-	if !oka || !okb {
-		return 0, false
-	}
-	for i := range ca {
-		if c := cmpInt(ca[i], cb[i]); c != 0 {
-			return c, true
-		}
-	}
-	switch {
-	case len(pa) == 0 && len(pb) == 0:
-		return 0, true
-	case len(pa) == 0:
-		return 1, true
-	case len(pb) == 0:
-		return -1, true
-	}
-	for i := 0; i < len(pa) && i < len(pb); i++ {
-		if c := comparePreIdent(pa[i], pb[i]); c != 0 {
-			return c, true
-		}
-	}
-	return cmpInt(len(pa), len(pb)), true
-}
-
-// parseRelease splits "vX.Y.Z[-pre][+build]" into its numeric core and
-// pre-release identifiers. Parts of the core beyond the third are ignored, as
-// update.ParseSemver ignores them.
-func parseRelease(v string) (core [3]int, pre []string, ok bool) {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	if i := strings.IndexByte(v, '+'); i >= 0 {
-		v = v[:i]
-	}
-	coreStr, preStr, hasPre := strings.Cut(v, "-")
-	parts := strings.Split(coreStr, ".")
-	if len(parts) < 3 {
-		return core, nil, false
-	}
-	for i := 0; i < 3; i++ {
-		n, err := strconv.Atoi(parts[i])
-		if err != nil || n < 0 {
-			return core, nil, false
-		}
-		core[i] = n
-	}
-	if hasPre {
-		pre = strings.Split(preStr, ".")
-		for _, id := range pre {
-			if id == "" {
-				return core, nil, false
-			}
-		}
-	}
-	return core, pre, true
-}
-
-func comparePreIdent(a, b string) int {
-	na, errA := strconv.Atoi(a)
-	nb, errB := strconv.Atoi(b)
-	switch {
-	case errA == nil && errB == nil:
-		return cmpInt(na, nb)
-	case errA == nil:
-		return -1
-	case errB == nil:
-		return 1
-	default:
-		return strings.Compare(a, b)
-	}
-}
-
-func cmpInt(a, b int) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
+	return updatespec.ComparePrecedence(a, b)
 }
 
 // ---------------------------------------------------------------------------

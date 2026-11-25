@@ -550,9 +550,9 @@ test.describe("mobile terminal interaction", () => {
 
     mock.frames.length = 0;
     await touchDrag(page, from, -150); // finger UP
-    await page.waitForTimeout(400);
-    const sent = Buffer.concat(mock.frames).toString("latin1");
-    expect(/\x1b\[<65;\d+;\d+M/.test(sent), "finger up must be wheel-down").toBe(true);
+    await expect
+      .poll(() => Buffer.concat(mock.frames).toString("latin1"), { message: "finger up must be wheel-down" })
+      .toMatch(/\x1b\[<65;\d+;\d+M/);
   });
 
   // A read-only remote viewer must not gain a write channel through the back
@@ -649,7 +649,6 @@ test.describe("mobile terminal interaction", () => {
     if (!box) throw new Error("no .xterm-screen box");
     mock.frames.length = 0;
     await page.touchscreen.tap(box.x + 40, box.y + 40);
-    await page.waitForTimeout(400);
 
     // SGR mouse report: ESC [ < b ; col ; row M/m.
     await expect.poll(() => decode(mock.frames)).toMatch(/\x1b\[<\d+;\d+;\d+M/);

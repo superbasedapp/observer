@@ -119,7 +119,9 @@ async function check(target, spans, source, gaps = []) {
 
 async function run(fn) {
   const mem = new InMemorySpanExporter();
-  sb.init({ exporter: mem });
+  // These scenarios test the explicit instrument() call: init()'s own auto
+  // setting stays off so it does not instrument first (auto.test.mjs covers it).
+  sb.init({ exporter: mem, instrument: "off" });
   await fn();
   assert.equal(await sb.flush(5000), true);
   return mem.getFinishedSpans();
@@ -128,7 +130,7 @@ async function run(fn) {
 // --- API ------------------------------------------------------------------------
 
 test("instrument() reports per target, is idempotent, and refuses an unknown target", { skip: needs("openai", "@langchain/core") }, () => {
-  sb.init({ exporter: new InMemorySpanExporter() });
+  sb.init({ exporter: new InMemorySpanExporter(), instrument: "off" });
   assert.throws(() => sb.instrument(["opneai"]), TypeError);
   assert.deepEqual(sb.instrument(["openai", "langgraph"]), { openai: "instrumented", langchain: "instrumented" });
   assert.deepEqual(sb.instrument(["openai"]), { openai: "already" });

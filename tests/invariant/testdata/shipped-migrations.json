@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 3,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -25,9 +25,9 @@
     {
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
-      "head": 153,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 154,
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -452,6 +452,10 @@
         {
           "file": "0153_revoke_temp_from_public.sql",
           "blob": "b02e350be7b8683bc393d3d6a133d18839101412"
+        },
+        {
+          "file": "0154_availability_issue_and_delivery.sql",
+          "blob": "a98ad91d4bde837855264e2d1723fdc42b171cf6"
         }
       ]
     },
@@ -459,8 +463,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -471,9 +475,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 260,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 261,
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1386,15 +1390,128 @@
         {
           "file": "260_api_turns_upstream_lane.sql",
           "blob": "6544de59a9bfee3ef438dca79557dfb42c3833fc"
+        },
+        {
+          "file": "261_org_enrolment_owner_managed.sql",
+          "blob": "60354a6eb224dbad87010f2397a346d79e60450f"
+        }
+      ]
+    },
+    {
+      "name": "obs",
+      "dir": "internal/obs/store/migrations",
+      "head": 28,
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
+      "steps": [
+        {
+          "file": "0001_init.sql",
+          "blob": "ff0af425270c208432d4695871e1ff1641c7490e"
+        },
+        {
+          "file": "0002_eval.sql",
+          "blob": "82b32245fa9507f6ed62b756a3dce6b5d18a6a18"
+        },
+        {
+          "file": "0003_token_detail.sql",
+          "blob": "d3ff6f2f38443ef02153ec46cd337efed7c972b6"
+        },
+        {
+          "file": "0004_span_cost.sql",
+          "blob": "314742c37ffd1de6b779ac5642105fbbf184ccad"
+        },
+        {
+          "file": "0005_admission.sql",
+          "blob": "c9b9ebe881993668854aadc109fa414d8ada750f"
+        },
+        {
+          "file": "0006_alerts.sql",
+          "blob": "71233c8f652f83ea90f7263f41c8343997cae4ec"
+        },
+        {
+          "file": "0007_egress.sql",
+          "blob": "c708b6fb3de8e027331385ab218ddf25f6a670b2"
+        },
+        {
+          "file": "0008_egress_realized.sql",
+          "blob": "46ee997d685944b38492e1bc39e82d7260294399"
+        },
+        {
+          "file": "0009_gateway_rail_session_index.sql",
+          "blob": "947c772297c396498afbf7d1c0b06a7864b6a674"
+        },
+        {
+          "file": "0010_convention.sql",
+          "blob": "c1056aa94b247b04b3061722884cd69952fa816a"
+        },
+        {
+          "file": "0011_obs_spans_started_idx.sql",
+          "blob": "bddd19f981ab4a3144b79e0ce3a69bf8a467dfaa"
+        },
+        {
+          "file": "0012_genai_detail.sql",
+          "blob": "7a2705804a42e724b21a4d7077e23dc1102a48b6"
+        },
+        {
+          "file": "0013_trace_identity.sql",
+          "blob": "598de1ceb9833ec63a77b446f94eb5ede1acdf81"
+        },
+        {
+          "file": "0014_trace_identity_idx.sql",
+          "blob": "0bb1f167e60c70dc0f512d841cfc269ed49e58f0"
+        },
+        {
+          "file": "0015_eval_scores_feedback.sql",
+          "blob": "4f084686c394cb910e5c92cc5d3adededb24af1a"
+        },
+        {
+          "file": "0016_eval_sdk_runs.sql",
+          "blob": "c4beac4e9ede3eb451561e25418ef14fb27ded0d"
+        },
+        {
+          "file": "0017_prompts.sql",
+          "blob": "814cf18d5250db63b94e2f8740d9ddccf32044c3"
+        },
+        {
+          "file": "0019_prompt_rollout.sql",
+          "blob": "838e24963e177e67c87dda6196aa5d4d1bf44ff6"
+        },
+        {
+          "file": "0020_saved_views.sql",
+          "blob": "9a0e0c8aba7d095a46976670b09339a69e677fb8"
+        },
+        {
+          "file": "0021_alert_state.sql",
+          "blob": "8665bf56e37069e84171c6482c26a04216919569"
+        },
+        {
+          "file": "0022_review_queue.sql",
+          "blob": "de8d3cf6124aaad9a8c26545b4b53702c1b1c7ed"
+        },
+        {
+          "file": "0025_alert_resolve_owed.sql",
+          "blob": "940f7105a9a3a261f80213ef43824b77a87bb8c4"
+        },
+        {
+          "file": "0026_eval_run_client_id.sql",
+          "blob": "02562fe01803b3baecc47308b5a5d7075ed22a56"
+        },
+        {
+          "file": "0027_obs_spans_provider_response_idx.sql",
+          "blob": "c5aa9e7653cf4cf59d8b6d03f3f7261dbfce4e0b"
+        },
+        {
+          "file": "0028_trace_arrival_seq.sql",
+          "blob": "d5b7be1379747598ecc15b771c75e05706bbd8a7"
         }
       ]
     },
     {
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
-      "head": 559,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 560,
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -2511,15 +2628,19 @@
         {
           "file": "0559_gw_audit_input_gross_validate.sql",
           "blob": "1f50b3dee531762f803cc445480a6767e402eaea"
+        },
+        {
+          "file": "0560_obs_alert_notified_findings.sql",
+          "blob": "f4d320e1f4beba1a148486ef00059d04841b17b4"
         }
       ]
     },
     {
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
-      "head": 381,
-      "ref": "v1.42.1",
-      "commit": "5a7dac192f2c1ddc7024316e9852fccb74b4afd6",
+      "head": 382,
+      "ref": "v1.43.1",
+      "commit": "f0ffb9ba0f0dbe8c788ec0daa434d1f1f07e18a7",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -3792,6 +3913,10 @@
         {
           "file": "381_org_eval_score_has_num.sql",
           "blob": "23dd699a6ef4220869916f87f584cc1a00d7b9b9"
+        },
+        {
+          "file": "382_obs_alert_notified_findings.sql",
+          "blob": "a42873161f9a723c7e819955dba93ba8acd901e1"
         }
       ]
     }

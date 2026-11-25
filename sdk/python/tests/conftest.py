@@ -26,13 +26,26 @@ def _reset_global_provider():
 
 
 @pytest.fixture(autouse=True)
-def clean(monkeypatch):
+def clean(monkeypatch, tmp_path_factory):
     for k in list(os.environ):
         if k.startswith(("SUPERBASED_", "OTEL_", "OBSERVER_CAPTURE", "ANTHROPIC_OPEN_TELEMETRY")):
             monkeypatch.delenv(k, raising=False)
     # Never ask a real machine on :8081 from a unit test; the destination tests
     # turn discovery on against a stub.
     monkeypatch.setenv("SUPERBASED_DISCOVER", "0")
+    # init() instruments installed frameworks by itself (plan 3.1); unit tests
+    # that are not about it keep the old explicit-instrument() behaviour. The
+    # auto-instrument tests set it themselves.
+    monkeypatch.setenv("SUPERBASED_INSTRUMENT", "off")
+    # Never read the test host's own SDK-held key file (plan 3.4).
+    monkeypatch.setenv("SUPERBASED_CREDENTIAL_FILE", os.path.join(str(tmp_path_factory.mktemp("nocred")), "sdk-credential"))
+    # The service name's project rungs (plan 3.2) read the test runner's own
+    # project; unit tests see none (the service-name tests set their own).
+    from superbased_sdk import _config
+
+    monkeypatch.setattr(_config, "project_facts", lambda: _config.ProjectFacts())
+    # No first-trace link line from a test process (plan 3.8).
+    monkeypatch.setenv("SUPERBASED_FIRST_TRACE_LINK", "0")
     sb._reset_for_tests()
     _reset_global_provider()
     yield

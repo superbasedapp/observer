@@ -14,9 +14,14 @@ import (
 
 // Result summarizes one Run.
 type Result struct {
-	ActionsDeleted          int
-	ExcerptsDeleted         int
-	FailureContextDeleted   int
+	ActionsDeleted        int
+	ExcerptsDeleted       int
+	FailureContextDeleted int
+	// FileChangesDeleted and TaskTransitionsDeleted count the lines-of-code
+	// and todo-transition rows keyed to an aged action, deleted with it
+	// (MISC2-02).
+	FileChangesDeleted      int
+	TaskTransitionsDeleted  int
 	OrphanedSessionsDeleted int
 	LogEntriesDeleted       int
 	FileStateDeleted        int
@@ -605,6 +610,29 @@ func (p *Pruner) deleteActionsBatch(ctx context.Context, cutoff, where string, a
 	}
 	if n, err := fc.RowsAffected(); err == nil {
 		res.FailureContextDeleted += int(n)
+	}
+
+	// file_changes (lines of code) and task_transitions (todo status
+	// changes) rows keyed to an aged action go with it, in this transaction
+	// (MISC2-02). Neither table has a foreign key to actions, so nothing
+	// stopped them outliving the action as orphans; internal/store's
+	// component purge already deletes them with their action
+	// (purgeActionDependents), and this is the same rule. An editor-save
+	// file_changes row has no action_id and is not touched.
+	for _, c := range []struct {
+		table, prefix string
+		count         *int
+	}{
+		{"file_changes", `DELETE FROM file_changes WHERE action_id IN (`, &res.FileChangesDeleted},
+		{"task_transitions", `DELETE FROM task_transitions WHERE action_id IN (`, &res.TaskTransitionsDeleted},
+	} {
+		r, err := tx.ExecContext(ctx, c.prefix+in+`)`, idArgs...) //nolint:gosec // G202: in is generated placeholders only
+		if err != nil {
+			return 0, fmt.Errorf("retention: delete %s: %w", c.table, err)
+		}
+		if n, err := r.RowsAffected(); err == nil {
+			*c.count += int(n)
+		}
 	}
 
 	// file_state references actions(id) via last_action_id; null it out

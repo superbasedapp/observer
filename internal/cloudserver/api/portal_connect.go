@@ -23,6 +23,14 @@ import (
 // Every route sits behind portalAuth (session cookie, per-account limit, and
 // for a POST the exact Origin and the double-submit CSRF check). A request
 // some other account already resolved reads as not found.
+//
+// The same pages answer an AI Apps SDK setup's request for an SDK key
+// (purpose sdk_key; the SDK quickstart plan section 3.6; docs/security.md
+// SDKQS-1): the view names the purpose, the SDK and the project, every
+// choice carries the SDK key's disclosure and whether its plan includes AI
+// Apps (connect_sdkplan.go; a team without it is offered disabled, with the
+// plan refusal's message and link), there is no "Not now", and the approved
+// view's open_url is the chosen dashboard's AI apps page in waiting mode.
 
 // mountPortalConnect registers the console's connect routes.
 func (s *Server) mountPortalConnect(mux *http.ServeMux) {
@@ -43,6 +51,19 @@ type connectChoiceJSON struct {
 	ShareLevel  string                     `json:"share_level"`
 	Disclosure  connectflow.DisclosureText `json:"disclosure"`
 	Preselected bool                       `json:"preselected"`
+	// Available is false for a dashboard listed but not choosable: for an SDK
+	// key, a plan that does not include AI Apps (Refusal says why).
+	Available bool `json:"available"`
+	// Refusal is why an unavailable choice is disabled.
+	Refusal *connectRefusalJSON `json:"refusal,omitempty"`
+}
+
+// connectRefusalJSON is why a dashboard cannot be chosen: the plan refusal's
+// message, and where the billing owner changes the plan.
+type connectRefusalJSON struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	UpgradeURL string `json:"upgrade_url,omitempty"`
 }
 
 // connectNetworkJSON is the requester's approximate network.
@@ -55,25 +76,39 @@ type connectNetworkJSON struct {
 
 // connectRequestViewJSON is what the approval page shows.
 type connectRequestViewJSON struct {
-	RequestID       string             `json:"request_id"`
-	Status          string             `json:"status"`
-	UserCode        string             `json:"user_code,omitempty"`
-	MachineName     string             `json:"machine_name"`
-	OS              string             `json:"os"`
-	Arch            string             `json:"arch"`
-	ObserverVersion string             `json:"observer_version"`
-	CreatedAt       string             `json:"created_at"`
-	AgeSeconds      int64              `json:"age_seconds"`
-	ExpiresIn       int64              `json:"expires_in"`
-	Network         connectNetworkJSON `json:"network"`
+	RequestID string `json:"request_id"`
+	// Purpose is machine (observer connect) or sdk_key (an SDK setup asking
+	// for the member's own SDK key).
+	Purpose         string `json:"purpose"`
+	Status          string `json:"status"`
+	UserCode        string `json:"user_code,omitempty"`
+	MachineName     string `json:"machine_name"`
+	OS              string `json:"os"`
+	Arch            string `json:"arch"`
+	ObserverVersion string `json:"observer_version"`
+	// Client, ClientVersion and ProjectName say which SDK asks, for which
+	// project (sdk_key only).
+	Client        string             `json:"client,omitempty"`
+	ClientVersion string             `json:"client_version,omitempty"`
+	ProjectName   string             `json:"project_name,omitempty"`
+	CreatedAt     string             `json:"created_at"`
+	AgeSeconds    int64              `json:"age_seconds"`
+	ExpiresIn     int64              `json:"expires_in"`
+	Network       connectNetworkJSON `json:"network"`
 	// Choices are the dashboards the account may connect to (pending only),
 	// personal first.
 	Choices []connectChoiceJSON `json:"choices"`
 	// Target is the chosen dashboard once approved.
 	Target *connectTargetJSON `json:"target"`
 	// OpenURL opens the chosen dashboard (a button, never text), built by
-	// tenantLink.
+	// tenantLink. For an SDK key it is the dashboard's AI apps page in
+	// waiting mode (tenantPageAppsWaiting), where the browser goes after
+	// Approve.
 	OpenURL string `json:"open_url,omitempty"`
+	// TargetReady says whether the chosen dashboard is active (sdk_key only:
+	// a new account's personal dashboard is set up after the approval, and
+	// the page waits before it goes to open_url).
+	TargetReady *bool `json:"target_ready,omitempty"`
 	// OnlineURL is OpenURL under its first name, kept for one release so an
 	// older console bundle keeps working (additive wire).
 	//
@@ -102,20 +137,40 @@ func (s *Server) connectRequestForCaller(w http.ResponseWriter, r *http.Request,
 	return c, true
 }
 
-// connectOpenURL is the chosen dashboard's Open button target (tenantLink's
-// dashboard page), or "" with no target.
-func (s *Server) connectOpenURL(t *store.ConnectTarget) string {
+// connectOpenPages is the dashboard page an approved request's Open link
+// lands on, per answer: a machine opens the dashboard's home, an SDK key the
+// AI apps page waiting for the first trace.
+var connectOpenPages = []struct {
+	answer connectflow.Answer
+	page   tenantPage
+}{
+	{connectflow.AnswerSignIn, tenantPageDashboard},
+	{connectflow.AnswerKeyGrant, tenantPageAppsWaiting},
+}
+
+// connectOpenURL is the chosen dashboard's Open target for a request of
+// purpose p (tenantLink's page from connectOpenPages), or "" with no target.
+func (s *Server) connectOpenURL(p connectflow.Purpose, t *store.ConnectTarget) string {
 	if t == nil {
 		return ""
+	}
+	answer, _ := connectflow.AnswerFor(p)
+	for _, row := range connectOpenPages {
+		if row.answer == answer {
+			return s.tenantLink(t.Slug, row.page)
+		}
 	}
 	return s.tenantLink(t.Slug, tenantPageDashboard)
 }
 
-// connectChoices lists the dashboards the caller may connect a machine to:
-// the personal dashboard (created here if the account has none yet; it may
-// still be being set up) and every active team, the team whose slug is hint
-// preselected, else the personal dashboard.
-func (s *Server) connectChoices(r *http.Request, accountID, hint string) ([]connectChoiceJSON, error) {
+// connectChoices lists the dashboards the caller may connect a machine to
+// (or, for an SDK key, mint a key on): the personal dashboard (created here
+// if the account has none yet; it may still be being set up) and every
+// active team, the team whose slug is hint preselected, else the personal
+// dashboard. Each carries its purpose's disclosure; for an SDK key, a
+// dashboard whose plan does not include AI Apps is listed unavailable with
+// the plan refusal, and is never preselected.
+func (s *Server) connectChoices(r *http.Request, purpose connectflow.Purpose, accountID, hint string) ([]connectChoiceJSON, error) {
 	if _, _, err := s.store.EnsurePersonalOrg(r.Context(), accountID, s.tenantDomain); err != nil {
 		return nil, err
 	}
@@ -132,32 +187,51 @@ func (s *Server) connectChoices(r *http.Request, accountID, hint string) ([]conn
 		if !usable {
 			continue
 		}
-		level, ok := connectflow.ShareLevelFor(connectflow.DashboardKind(o.Kind))
+		d, ok := connectflow.DisclosureFor(purpose, connectflow.DashboardKind(o.Kind), o.DisplayName)
 		if !ok {
 			continue
 		}
-		d, _ := connectflow.Disclosure(level, o.DisplayName)
 		c := connectChoiceJSON{
 			OrgID: o.OrgID, Kind: string(o.Kind), DisplayName: o.DisplayName,
-			Status: string(o.Status), ShareLevel: string(level), Disclosure: d,
+			Status: string(o.Status), ShareLevel: string(d.Level), Disclosure: d, Available: true,
+		}
+		if answer, _ := connectflow.AnswerFor(purpose); answer == connectflow.AnswerKeyGrant {
+			v, err := s.sdkPlanFor(r.Context(), accountID, o)
+			if err != nil {
+				return nil, err
+			}
+			if v.Refused {
+				c.Available = false
+				c.Refusal = &connectRefusalJSON{Code: connectPlanRequiredCode, Message: v.Message, UpgradeURL: v.UpgradeURL}
+			}
 		}
 		if !personal {
 			c.Slug = o.Slug // a team's address is its name; a personal one is never shown
-			if hint != "" && o.Slug == hint {
+			if hint != "" && o.Slug == hint && c.Available {
 				c.Preselected, hinted = true, true
 			}
 		}
 		out = append(out, c)
 	}
 	if !hinted {
-		for i := range out {
-			if out[i].Kind == string(store.OrgPersonal) {
-				out[i].Preselected = true
-				break
-			}
-		}
+		preselectFirst(out, func(c connectChoiceJSON) bool { return c.Available && c.Kind == string(store.OrgPersonal) })
 	}
 	return out, nil
+}
+
+// connectPlanRequiredCode is the code of a choice, or an approval, refused
+// because the dashboard's plan does not include AI Apps (the host's own
+// refusal code for the same cause).
+const connectPlanRequiredCode = "plan_required"
+
+// preselectFirst marks the first choice that matches as preselected.
+func preselectFirst(choices []connectChoiceJSON, match func(connectChoiceJSON) bool) {
+	for i := range choices {
+		if match(choices[i]) {
+			choices[i].Preselected = true
+			return
+		}
+	}
 }
 
 // connectView builds the approval page's view of c for the caller.
@@ -166,20 +240,28 @@ func (s *Server) connectView(r *http.Request, accountID string, c store.ConnectR
 	status := connectflow.EffectiveStatus(c.Status, c.ExpiresAt, now)
 	ip, _ := edgeClientIP(r)
 	v := connectRequestViewJSON{
-		RequestID: c.RequestID, Status: string(status),
+		RequestID: c.RequestID, Purpose: string(c.Purpose), Status: string(status),
 		MachineName: c.MachineName, OS: c.OS, Arch: c.Arch, ObserverVersion: c.ObserverVersion,
+		Client: c.Client, ClientVersion: c.ClientVersion, ProjectName: c.ProjectName,
 		CreatedAt:  rfc3339(c.CreatedAt),
 		AgeSeconds: int64(now.Sub(c.CreatedAt) / time.Second),
 		Network:    connectNetworkJSON{Prefix: c.OriginNetwork, SameAsYou: connectflow.SameNetwork(c.OriginNetwork, ip)},
 		Choices:    []connectChoiceJSON{},
 		Target:     connectTarget(c.Target),
 	}
-	v.OpenURL = s.connectOpenURL(c.Target)
+	v.OpenURL = s.connectOpenURL(c.Purpose, c.Target)
 	v.OnlineURL = v.OpenURL
+	if answer, _ := connectflow.AnswerFor(c.Purpose); answer == connectflow.AnswerKeyGrant && c.Target != nil {
+		ready, err := s.connectTargetReady(r.Context(), c)
+		if err != nil {
+			return connectRequestViewJSON{}, err
+		}
+		v.TargetReady = &ready
+	}
 	if status == connectflow.StatusPending {
 		v.UserCode = c.UserCode
 		v.ExpiresIn = int64(c.ExpiresAt.Sub(now) / time.Second)
-		choices, err := s.connectChoices(r, accountID, c.TargetHint)
+		choices, err := s.connectChoices(r, c.Purpose, accountID, c.TargetHint)
 		if err != nil {
 			return connectRequestViewJSON{}, err
 		}
@@ -261,6 +343,7 @@ var connectResolveRules = []connectResolveRule{
 	{store.ErrConnectNotPending, http.StatusConflict, "not_pending", "this request was already answered or has expired"},
 	{store.ErrConnectTargetUnavailable, http.StatusConflict, "target_unavailable", "that dashboard cannot take a machine right now"},
 	{store.ErrConnectDisclosureStale, http.StatusConflict, "disclosure_changed", "what this dashboard shares has changed; reload the page"},
+	{store.ErrConnectAnswerNotAllowed, http.StatusBadRequest, "answer_not_allowed", "an SDK key needs a dashboard: choose one, or decline"},
 }
 
 // resolveConnect applies one browser answer and writes the request's new view.
@@ -307,7 +390,11 @@ func (s *Server) handlePortalConnectApprove(w http.ResponseWriter, r *http.Reque
 	if !readSmallJSON(w, r, &req) {
 		return
 	}
-	if _, ok := s.connectRequestForCaller(w, r, p.AccountID); !ok {
+	c, ok := s.connectRequestForCaller(w, r, p.AccountID)
+	if !ok {
+		return
+	}
+	if req.TargetOrgID != "" && !s.connectTargetPlanAllows(w, r, c, p.AccountID, req.TargetOrgID) {
 		return
 	}
 	in := store.ResolveConnectInput{
@@ -323,6 +410,41 @@ func (s *Server) handlePortalConnectApprove(w http.ResponseWriter, r *http.Reque
 		event = "connect_approved"
 	}
 	s.resolveConnect(w, r, in, event)
+}
+
+// connectTargetPlanAllows refuses an SDK key approval whose dashboard's plan
+// does not include AI Apps (409 plan_required with the plan refusal's
+// message), so no grant is ever signed for a key the host would refuse. It
+// reports whether the approval may go on; any other purpose, or a dashboard
+// that is not the caller's (the store refuses that), goes on.
+func (s *Server) connectTargetPlanAllows(w http.ResponseWriter, r *http.Request, c store.ConnectRequest, accountID, orgID string) bool {
+	if answer, _ := connectflow.AnswerFor(c.Purpose); answer != connectflow.AnswerKeyGrant {
+		return true
+	}
+	orgs, err := s.store.ListMyOrgs(r.Context(), accountID)
+	if err != nil {
+		s.log.Error("cloudserver/api: connect approve: list orgs", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "could not read your dashboards")
+		return false
+	}
+	for _, o := range orgs {
+		if o.OrgID != orgID {
+			continue
+		}
+		v, err := s.sdkPlanFor(r.Context(), accountID, o)
+		if err != nil {
+			s.log.Error("cloudserver/api: connect approve: read plan", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal", "could not read the dashboard's plan")
+			return false
+		}
+		if v.Refused {
+			s.audit(r.Context(), accountID, "connect_sdk_key_plan_refused")
+			writeErr(w, http.StatusConflict, connectPlanRequiredCode, v.Message)
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 // handlePortalConnectDecline is POST .../decline ("This is not my machine").
@@ -368,7 +490,7 @@ func (s *Server) handlePortalConnectMachines(w http.ResponseWriter, r *http.Requ
 	}
 	recent := make([]connectMachineJSON, 0, len(home.Recent))
 	for _, c := range home.Recent {
-		open := s.connectOpenURL(c.Target)
+		open := s.connectOpenURL(c.Purpose, c.Target)
 		recent = append(recent, connectMachineJSON{
 			RequestID: c.RequestID, MachineName: c.MachineName, OS: c.OS,
 			ApprovedAt: rfc3339(c.ResolvedAt), Target: connectTarget(c.Target),

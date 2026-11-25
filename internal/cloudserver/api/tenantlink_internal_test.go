@@ -3,6 +3,7 @@ package api
 import (
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/connectflow"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 	pc "github.com/marmutapp/superbased-observer/internal/platformcontract"
 )
@@ -74,15 +75,27 @@ func TestOrgJSONLinks(t *testing.T) {
 	}
 }
 
-// TestConnectOpenURL: the connect views open the chosen dashboard's home, and
+// TestConnectOpenURL: a machine's connect views open the chosen dashboard's
+// home, an SDK key's its AI apps page waiting for the first trace, and
 // nothing without a target.
 func TestConnectOpenURL(t *testing.T) {
 	t.Parallel()
 	s := &Server{tenantDomain: "superbased.app"}
-	if got := s.connectOpenURL(nil); got != "" {
-		t.Errorf("no target: %q, want empty", got)
+	cases := []struct {
+		name    string
+		purpose connectflow.Purpose
+		target  *store.ConnectTarget
+		want    string
+	}{
+		{"no target", connectflow.PurposeMachine, nil, ""},
+		{"no target, sdk key", connectflow.PurposeSDKKey, nil, ""},
+		{"machine", connectflow.PurposeMachine, &store.ConnectTarget{Slug: "u-9f"}, "https://u-9f.superbased.app/"},
+		{"older row (no purpose)", "", &store.ConnectTarget{Slug: "u-9f"}, "https://u-9f.superbased.app/"},
+		{"sdk key", connectflow.PurposeSDKKey, &store.ConnectTarget{Slug: "acme"}, "https://acme.superbased.app/trajectories?from=connect"},
 	}
-	if got, want := s.connectOpenURL(&store.ConnectTarget{Slug: "u-9f"}), "https://u-9f.superbased.app/"; got != want {
-		t.Errorf("target: %q, want %q", got, want)
+	for _, c := range cases {
+		if got := s.connectOpenURL(c.purpose, c.target); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
 	}
 }

@@ -135,18 +135,18 @@ func parseHarnessUsage(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	var doc harnessDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "body does not decode as the documented GetRunHarnessUsageResponse")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "body does not decode as the documented GetRunHarnessUsageResponse")
 	}
-	id := str(doc.RunID)
+	id := vendorapi.Str(doc.RunID)
 	if !idRE.MatchString(id) {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "required field run_id is missing or not an id")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "required field run_id is missing or not an id")
 	}
 	if want := r.Params[ParamRunID]; want != "" && want != id {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "run_id is not the run the request asked for")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "run_id is not the run the request asked for")
 	}
 	if doc.Available == nil {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "required field available is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "required field available is missing")
 	}
 	snap := vendorapi.VendorSnapshot{Class: HarnessUsageClass, Subject: id, Body: map[string]string{"available": strconv.FormatBool(*doc.Available)}}
 	out := vendorapi.Page{SourceRecords: 1}
@@ -155,25 +155,25 @@ func parseHarnessUsage(r vendorapi.Response) (vendorapi.Page, error) {
 		out.Snapshots = append(out.Snapshots, snap)
 		return out, nil
 	}
-	harness := str(u.Harness)
+	harness := vendorapi.Str(u.Harness)
 	bases, ok := harnessBases[harness]
 	if !ok {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "usage.harness is not a documented envelope")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "usage.harness is not a documented envelope")
 	}
 	at, ok := rfc3339(u.CapturedAt)
 	if !ok {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "usage.capturedAt is not an RFC 3339 timestamp")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "usage.capturedAt is not an RFC 3339 timestamp")
 	}
 	seq, present, ok := counter(u.CaptureSequence)
 	if !present || !ok {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "usage.captureSequence is not a sequence number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "usage.captureSequence is not a sequence number")
 	}
 	if u.Snapshot == nil || u.Snapshot.Coverage == nil || u.Snapshot.Payload == nil {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "usage.snapshot is missing its coverage or payload")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "usage.snapshot is missing its coverage or payload")
 	}
-	status := strings.ToLower(str(u.Snapshot.Coverage.TokenStatus))
+	status := strings.ToLower(vendorapi.Str(u.Snapshot.Coverage.TokenStatus))
 	if !tokenRE.MatchString(status) {
-		return vendorapi.Page{}, drift(SurfaceHarnessUsage, "usage.snapshot.coverage.tokenStatus is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceHarnessUsage, "usage.snapshot.coverage.tokenStatus is missing")
 	}
 	snap.Body["harness"], snap.Body["coverage_status"] = strings.ToLower(harness), status
 	snap.Body["captured_at"] = at.Format(time.RFC3339)
@@ -229,7 +229,7 @@ func harnessCounters(harness string, tu *tokenUsage, row *vendorapi.UsageRow) (i
 	} {
 		v, present, ok := counter(c.v)
 		if !ok {
-			return 0, drift(SurfaceHarnessUsage, "usage counter %s is not a whole non-negative count", c.name)
+			return 0, vendorapi.Drift(SurfaceHarnessUsage, "usage counter %s is not a whole non-negative count", c.name)
 		}
 		if !present {
 			if c.name != "reasoning" || harness == EnvelopeCodex {
@@ -254,7 +254,7 @@ func harnessCache1h(harness string, tu *tokenUsage, row *vendorapi.UsageRow) err
 	}
 	v, present, ok := counter(cc.Ephemeral1h)
 	if !ok {
-		return drift(SurfaceHarnessUsage, "usage counter cache_creation.ephemeral_1h_input_tokens is not a count")
+		return vendorapi.Drift(SurfaceHarnessUsage, "usage counter cache_creation.ephemeral_1h_input_tokens is not a count")
 	}
 	if present {
 		row.Flags[FlagCache1h] = strconv.FormatInt(v, 10)
@@ -270,7 +270,7 @@ func harnessModel(a *[]harnessAttribution) string {
 	}
 	models := map[string]bool{}
 	for _, e := range *a {
-		if m := str(e.Model); m != "" {
+		if m := vendorapi.Str(e.Model); m != "" {
 			models[m] = true
 		}
 	}

@@ -9,10 +9,27 @@
 // block cap, compaction-reset bookkeeping) plus the identical
 // "cachetrack:"+messageID idempotency-key convention and the
 // identical three-line §15.3 implicit-cache overlay. cacheobs
-// factors the adapter-independent parts of that logic — the
-// PART-SHAPE canonicalization (which JSON fields belong in the
-// chain, which are volatile and excluded) stays in each adapter's
-// own cachetrack.go, because that part is genuinely tool-specific.
+// owns that logic (Accumulator, SourceEventID,
+// ApplyImplicitCacheOverlay, EmitTurn) and the canonical block forms
+// more than one adapter shares:
+//
+//   - message.go: flattened message-level blocks (a text, a tool call
+//     with a string input or args, a tool result's text), with the
+//     Accumulator.Observe* helpers that stamp kind and role;
+//   - content.go: Anthropic-shape content-array blocks (text,
+//     thinking, tool_use, tool_result, image) and ContentBlocks, the
+//     ordered array walk.
+//
+// A canonical form specific to one adapter (claudecode's full content
+// block, junie's terminal and file-change blocks, kiro-cli's tool
+// blocks, cline-cli's tool_result with the tool name) stays in that
+// adapter's own cachetrack.go, because which JSON fields belong in the
+// chain is tool-specific. opencode and kilo-code CLI still carry two
+// copies of the OpenCode part canonicalizer: the bodies match, but each
+// decodes into its own part types and kilo-code's tool part type has an
+// extra metadata field, so a malformed part can be dropped by one and
+// kept by the other. The canonical bytes feed the engine's chain hash, so
+// TestTier2CanonicalBytesGolden pins every adapter's output end to end.
 //
 // Module boundary (CLAUDE.md "Module Boundaries & Anti-Spaghetti
 // Discipline" + spec §24.1): cacheobs is pure logic. It may import

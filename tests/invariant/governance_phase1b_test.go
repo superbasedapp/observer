@@ -154,7 +154,7 @@ func boolStr(b bool) string {
 // THIRD, non-governance-body path — set from a node's own managed enrolment
 // grant, never from a Phase-1b governance body, and covered by its own
 // dedicated invariant coverage (see the "enterprise_granted" subtest of
-// TestPushPayloadCarriesContentWhenOptedIn in privacy_test.go). What this
+// TestPushPayloadCarriesContentWhenOptedIn in privacy_content_test.go). What this
 // test pins is that shipsRawContent's ENTIRE
 // disjunct set is exactly {FullContent, AdminManaged, EnterpriseGranted} — no
 // more, no fewer — and that none of them, nor the file as a whole, ever

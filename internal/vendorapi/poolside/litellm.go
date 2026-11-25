@@ -198,7 +198,7 @@ type dailyDoc struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceLiteLLM}, a...)...)
+	return vendorapi.Drift(SurfaceLiteLLM, format, a...)
 }
 
 func parseLiteLLM(r vendorapi.Response) (vendorapi.Page, error) {

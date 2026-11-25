@@ -524,7 +524,8 @@ test("focus coexistence: clicking the terminal after opening the panel still typ
   const xterm = page.locator(".xterm").first();
   await expect(xterm).toBeVisible({ timeout: 10000 });
   await xterm.click({ position: { x: 16, y: 40 } });
-  await page.waitForTimeout(150);
+  // xterm takes keystrokes on its helper textarea once the click focuses it.
+  await expect(xterm.locator(".xterm-helper-textarea")).toBeFocused();
   await page.keyboard.type("echo hi");
 
   await expect.poll(() => rec.decode("p-type-9")).toContain("echo hi");

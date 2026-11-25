@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,7 +78,13 @@ func runRuleCases(t *testing.T, cases []destructiveCase, kind EventKind, actionT
 // TestDestructiveRules is the §5.1 conformance table.
 func TestDestructiveRules(t *testing.T) {
 	t.Parallel()
-	cases := []destructiveCase{
+	runRuleCases(t, destructiveRuleCases(), KindShellExec, "run_command")
+}
+
+// destructiveRuleCases are the §5.1 conformance rows. The rewrite-
+// invariance test (rules_destructive_invariance_test.go) replays every hit.
+func destructiveRuleCases() []destructiveCase {
+	return []destructiveCase{
 		// --- R-101: catastrophic recursive delete ---
 		{name: "R-101 hit: rm -rf root", cmd: "rm -rf /", wantRule: "R-101", wantEnforce: DecisionDeny},
 		{name: "R-101 hit: rm -fr home", cmd: "rm -fr ~", wantRule: "R-101", wantEnforce: DecisionDeny},
@@ -197,6 +204,11 @@ func TestDestructiveRules(t *testing.T) {
 		{name: "R-104 hit: reset --hard", cmd: "git reset --hard HEAD~1", wantRule: "R-104", wantEnforce: DecisionAsk},
 		{name: "R-104 hit: checkout --", cmd: "git checkout -- .", wantRule: "R-104", wantEnforce: DecisionAsk},
 		{name: "R-104 hit: clean -fd", cmd: "git clean -fd", wantRule: "R-104", wantEnforce: DecisionAsk},
+		// Long options and git's unambiguous prefixes (parse-options), found by
+		// the rewrite-invariance test (guard-deletes lane, 2026-11-24).
+		{name: "R-104 hit: clean --force", cmd: "git clean --force -d", wantRule: "R-104", wantEnforce: DecisionAsk},
+		{name: "R-104 hit: clean abbreviated --force", cmd: "git clean --f -d", wantRule: "R-104", wantEnforce: DecisionAsk},
+		{name: "R-104 hit: reset abbreviated --hard", cmd: "git reset --h HEAD~1", wantRule: "R-104", wantEnforce: DecisionAsk},
 		{name: "R-104 safe: clean dry run", cmd: "git clean -n"},
 		{name: "R-104 safe: clean -fdn dry", cmd: "git clean -fdn"},
 		{name: "R-104 near-miss: checkout branch", cmd: "git checkout main"},
@@ -208,6 +220,10 @@ func TestDestructiveRules(t *testing.T) {
 		{name: "R-110 hit: release glob", cmd: "git push --force origin release/1.0", wantRule: "R-110", wantEnforce: DecisionDeny},
 		{name: "R-110 hit: refspec dst", cmd: "git push -f origin HEAD:main", wantRule: "R-110", wantEnforce: DecisionDeny},
 		{name: "R-110 hit: no refspec conservative", cmd: "git push --force", wantRule: "R-110", wantEnforce: DecisionDeny},
+		// A "+" refspec forces that ref without any flag.
+		{name: "R-110 hit: plus refspec", cmd: "git push origin +main", wantRule: "R-110", wantEnforce: DecisionDeny},
+		{name: "R-110 hit: plus refspec dst", cmd: "git push origin +HEAD:main", wantRule: "R-110", wantEnforce: DecisionDeny},
+		{name: "R-110 near-miss: plus refspec feature branch", cmd: "git push origin +feature-x"},
 		{name: "R-110 safe: force-with-lease", cmd: "git push --force-with-lease origin main"},
 		{name: "R-110 near-miss: feature branch", cmd: "git push -f origin feature-x"},
 		{name: "R-110 near-miss: plain push", cmd: "git push origin main"},
@@ -216,6 +232,15 @@ func TestDestructiveRules(t *testing.T) {
 		{name: "R-111 hit: branch -D main", cmd: "git branch -D main", wantRule: "R-111", wantEnforce: DecisionAsk},
 		{name: "R-111 hit: push :ref", cmd: "git push origin :main", wantRule: "R-111", wantEnforce: DecisionAsk},
 		{name: "R-111 hit: push --delete", cmd: "git push --delete origin master", wantRule: "R-111", wantEnforce: DecisionAsk},
+		// -D is --delete --force, in any spelling.
+		{name: "R-111 hit: branch -d -f", cmd: "git branch -d -f main", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: branch -df", cmd: "git branch -df main", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: branch --delete --force", cmd: "git branch --delete --force main", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: branch abbreviated", cmd: "git branch --del --forc main", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: push -d", cmd: "git push -d origin main", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: push abbreviated --delete", cmd: "git push --dele origin master", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 hit: tag abbreviated --delete", cmd: "git tag --del release/1.0", wantRule: "R-111", wantEnforce: DecisionAsk},
+		{name: "R-111 near-miss: branch -f resets, not deletes", cmd: "git branch -f main HEAD~1"},
 		{name: "R-111 near-miss: feature branch", cmd: "git branch -D feature-x"},
 		{name: "R-111 near-miss: lowercase -d merged-only", cmd: "git branch -d main"},
 
@@ -254,6 +279,10 @@ func TestDestructiveRules(t *testing.T) {
 		{name: "R-141 hit: chmod -R 777", cmd: "chmod -R 777 /var/www", wantRule: "R-141", wantEnforce: DecisionAsk},
 		{name: "R-141 hit: chmod -R 0777 inside", cmd: "chmod -R 0777 .", wantRule: "R-141", wantEnforce: DecisionAsk},
 		{name: "R-141 hit: chown -R outside", cmd: "chown -R bob /etc/app", wantRule: "R-141", wantEnforce: DecisionAsk},
+		{name: "R-141 hit: chmod --recursive", cmd: "chmod --recursive 777 /var/www", wantRule: "R-141", wantEnforce: DecisionAsk},
+		{name: "R-141 hit: chmod abbreviated --recursive", cmd: "chmod --rec 777 /var/www", wantRule: "R-141", wantEnforce: DecisionAsk},
+		{name: "R-141 hit: chown abbreviated --recursive", cmd: "chown --recur bob /etc/app", wantRule: "R-141", wantEnforce: DecisionAsk},
+		{name: "R-141 near-miss: chown --reference is not recursive", cmd: "chown --reference=/etc/x bob /etc/app"},
 		{name: "R-141 near-miss: chmod -R 755", cmd: "chmod -R 755 ."},
 		{name: "R-141 near-miss: no recursion", cmd: "chmod 777 build/script.sh"},
 		{name: "R-141 near-miss: chown inside project", cmd: "chown -R bob ./src"},
@@ -267,7 +296,6 @@ func TestDestructiveRules(t *testing.T) {
 		{name: "R-142 near-miss: dd to file", cmd: "dd if=/dev/zero of=./disk.img bs=1M"},
 		{name: "R-142 near-miss: posix format script", cmd: "format --check ./src"},
 	}
-	runRuleCases(t, cases, KindShellExec, "run_command")
 }
 
 // TestR101BehindExecPrefixWrappers is NEW-02 (NEW-F-01, 2026-11-22): the
@@ -277,6 +305,11 @@ func TestDestructiveRules(t *testing.T) {
 // the wrapper and deleteShape matches only delete commands.
 func TestR101BehindExecPrefixWrappers(t *testing.T) {
 	t.Parallel()
+	runRuleCases(t, execPrefixWrapperCases(), KindShellExec, "run_command")
+}
+
+// execPrefixWrapperCases are TestR101BehindExecPrefixWrappers' rows.
+func execPrefixWrapperCases() []destructiveCase {
 	var cases []destructiveCase
 	for _, cmd := range []string{
 		"ionice -c3 rm -rf ~",
@@ -311,11 +344,10 @@ func TestR101BehindExecPrefixWrappers(t *testing.T) {
 		cases = append(cases, destructiveCase{name: "R-101 hit: " + cmd, cmd: cmd, wantRule: "R-101", wantEnforce: DecisionDeny})
 	}
 	// Near-misses: the same wrappers around a delete inside the project.
-	cases = append(cases,
+	return append(cases,
 		destructiveCase{name: "R-101 near-miss: ionice inside project", cmd: "ionice -c3 rm -rf ./build"},
 		destructiveCase{name: "R-101 near-miss: flock -c inside project", cmd: "flock /tmp/l -c 'rm -rf ./build'"},
 	)
-	runRuleCases(t, cases, KindShellExec, "run_command")
 }
 
 // TestR101ThroughSymlink pins Sol A2-04's second bypass: a delete whose
@@ -373,5 +405,222 @@ func TestR101ThroughSymlink(t *testing.T) {
 	}
 	if v := eng.Evaluate(Event{Kind: KindShellExec, Target: "rm -rf ./out/*", Cwd: "/home/u/proj", ProjectRoot: "/home/u/proj", Now: time.Now()}); v.RuleID == "R-101" {
 		t.Error("a lexical engine resolved a symlink it was never told about")
+	}
+}
+
+// deleteTableCases are the delete table's conformance rows (deletetable.go),
+// keyed by deleteRow.name. Every row has at least one hit, one near-miss and
+// one safe case (TestDeleteTableRowsCovered); a hit is named "hit: ...", a
+// near-miss "near-miss: ..." and an allow_paths exemption "safe: ...". The
+// rewrite-invariance test replays every hit.
+func deleteTableCases() map[string][]destructiveCase {
+	hit := func(cmd, rule string, d Decision) destructiveCase {
+		return destructiveCase{name: "hit: " + cmd, cmd: cmd, wantRule: rule, wantEnforce: d}
+	}
+	miss := func(cmd string) destructiveCase { return destructiveCase{name: "near-miss: " + cmd, cmd: cmd} }
+	safe := func(cmd string) destructiveCase { return destructiveCase{name: "safe: " + cmd, cmd: cmd} }
+	win := func(c destructiveCase, d Dialect) destructiveCase {
+		c.dialect, c.home, c.cwd, c.root = d, `C:\Users\u`, `C:\Users\u\proj`, `C:\Users\u\proj`
+		return c
+	}
+	const deny, ask = DecisionDeny, DecisionAsk
+	return map[string][]destructiveCase{
+		"rm": {
+			hit("rm -rf ~", "R-101", deny),
+			// GNU getopt_long takes any unambiguous prefix and permutes
+			// options after operands.
+			hit("rm --rec ~", "R-101", deny),
+			hit("rm --recursive=x ~", "R-101", deny),
+			hit("rm ~ -rf", "R-101", deny),
+			hit("rm -rf .git", "R-102", ask),
+			miss("rm --force ./build"),
+			miss("rm -f ~/x"), // not recursive: never R-101
+			safe("rm -rf /tmp/build"),
+		},
+		"Remove-Item": {
+			win(hit("Remove-Item -Recurse -Force ~", "R-101", deny), DialectPowerShell),
+			win(hit("rm -r -fo ~", "R-101", deny), DialectPowerShell),
+			win(miss(`Remove-Item .\build\x.txt`), DialectPowerShell),
+			win(safe(`Remove-Item -Recurse -Force ~\.cache\x`), DialectPowerShell),
+			win(safe(`Remove-Item -Path:~\.cache\x -Recurse`), DialectPowerShell),
+		},
+		"cmd rd / rmdir": {
+			win(hit(`rmdir /s /q C:\Users\u`, "R-101", deny), DialectCmd),
+			win(miss(`rd /s /q build`), DialectCmd),
+			win(miss(`rmdir C:\Users\u`), DialectCmd), // no /s: not recursive
+			win(safe(`rd /s /q C:\Users\u\.cache\x`), DialectCmd),
+		},
+		"rmdir": {
+			// POSIX rmdir removes only empty directories: a delete for the
+			// write rules (rmdir ~/.ssh is judged like rm ~/.ssh), never R-101
+			// or a mass deletion.
+			hit("rmdir ~/.ssh", "R-152", deny),
+			miss("rmdir ~"),
+			miss("find . -type d -empty | xargs rmdir"),
+			miss("find . -type d -empty -exec rmdir {} \\;"),
+			safe("rmdir /tmp/x"),
+		},
+		"cmd del / erase": {
+			win(hit(`erase /s /q C:\Users\u\*`, "R-101", deny), DialectCmd),
+			win(miss(`del build\x.obj`), DialectCmd),
+			miss("del -rf /"), // del is not a POSIX command
+			win(safe(`del /s /q C:\Users\u\.cache\x`), DialectCmd),
+		},
+		"unlink": {
+			// unlink removes one name and never recurses: judged like a
+			// non-recursive rm of the same operand.
+			hit("unlink ~/.bashrc", "R-154", deny),
+			hit("ls | xargs unlink", "R-103", ask),
+			miss("unlink ./build/x.o"),
+			miss("unlink ~"),
+			miss("unlink .git/config"), // a delete is not a git-internals write (R-114)
+			safe("unlink /tmp/x"),
+		},
+		"shred -u": {
+			hit("shred -u ~/.bashrc", "R-154", deny),
+			hit("shred -zu -n 3 ~/.bashrc", "R-154", deny),
+			hit("shred --rem ~/.bashrc", "R-154", deny),
+			hit("shred --remove=wipesync ~/.bashrc", "R-154", deny),
+			// shred overwrites in place: a write even without -u.
+			hit("shred ~/.bashrc", "R-154", deny),
+			hit("ls | xargs shred -u", "R-103", ask),
+			miss("shred -u ./secret.txt"),
+			miss("shred -n 3 ./x.bin"),
+			safe("shred -u /tmp/x"),
+		},
+		"rsync --delete": {
+			hit("rsync -a --delete src/ ~", "R-101", deny),
+			hit("rsync -av --delete-before src/ /etc/nginx/", "R-101", deny),
+			hit("rsync -a --delete-after src/ ~", "R-101", deny),
+			hit("rsync -a --delete-during src/ ~", "R-101", deny),
+			hit("rsync -a --delete-delay src/ ~", "R-101", deny),
+			hit("rsync -a --delete-excluded src/ ~", "R-101", deny),
+			hit("rsync -a --delete-missing-args src/ ~", "R-101", deny),
+			hit("rsync -a --del src/ ~", "R-101", deny),
+			hit("rsync -e ssh -a --delete src/ ~", "R-101", deny),
+			hit("rsync -a --delete src/ ~ --exclude foo", "R-101", deny),
+			hit("rsync -a --delete src/ ./", "R-102", ask),
+			hit("rsync -a --delete /tmp/e/ .git/", "R-102", ask),
+			miss("rsync -a --delete src/ ./build/"),
+			miss("rsync -a src/ ~/backup"), // no delete flag: a copy
+			miss("rsync -a --delete ~/src/"),
+			// The destination is the target, not the source it copies from.
+			safe("rsync -a --delete ~/src/ /tmp/out/"),
+		},
+		"rsync --remove-source-files": {
+			hit("rsync -a --remove-source-files ~/ /tmp/backup/", "R-101", deny),
+			hit("rsync -r --remove-source-files /etc/ /tmp/x/", "R-101", deny),
+			hit("rsync --remove-sent-files -a ~/ /tmp/backup/", "R-101", deny),
+			hit("rsync --remove-source-files ~/.bashrc /tmp/", "R-154", deny),
+			miss("rsync -a --remove-source-files ./out/ /tmp/x/"),
+			miss("rsync --remove-source-files ~/x /tmp/y"), // not recursive: never R-101
+			safe("rsync -a --remove-source-files /tmp/in/ ./out/"),
+		},
+		"tar --remove-files": {
+			hit("tar --remove-files -cf /tmp/x.tar ~", "R-101", deny),
+			hit("tar -czf /tmp/x.tgz --remove-files /etc", "R-101", deny),
+			hit("tar cf /tmp/x.tar --remove-files ~", "R-101", deny),
+			hit("tar --rem -cf /tmp/x.tar ~", "R-101", deny),
+			// Inputs are read under the -C in force.
+			hit("tar -C / --remove-files -cf /tmp/x.tar etc", "R-101", deny),
+			hit("tar --directory=/ --remove-files -cf /tmp/x.tar home/u", "R-101", deny),
+			hit("tar -C ~ --remove-files -cf /tmp/x.tar .ssh", "R-101", deny),
+			hit("tar --add-file=/etc --remove-files -cf /tmp/x.tar", "R-101", deny),
+			hit("tar --remove-files -cf /tmp/x.tar -T list.txt", "R-103", ask),
+			miss("tar --remove-files -czf ~/backup.tgz ./build"), // the archive is not an input
+			miss("tar -czf /tmp/x.tgz ~"),                        // no --remove-files
+			miss("tar -xf x.tar --remove-files"),                 // extract: nothing removed
+			miss("tar --remove-files --no-recursion -cf /tmp/x.tar ~"),
+			miss("tar -Cetc --remove-files -cf /tmp/x.tar ."), // ./etc, inside the project
+			safe("tar --remove-files -cf ./x.tar /tmp/build"),
+		},
+		"find -delete / -exec rm": {
+			hit("find ~ -delete", "R-101", deny),
+			hit("find / -name '*.tmp' -delete", "R-101", deny),
+			hit("find ~ -exec rm -rf {} +", "R-101", deny),
+			hit("find ~ -ok rm {} \\;", "R-101", deny),
+			hit("find ~ -okdir rm {} \\;", "R-101", deny),
+			hit("find ~ -execdir busybox rm {} \\;", "R-101", deny),
+			hit("find ~ -exec sudo rm {} +", "R-101", deny),
+			hit("find /etc -exec unlink {} \\;", "R-101", deny),
+			hit("find ~ -exec shred -u {} +", "R-101", deny),
+			hit("find -L ~ -delete", "R-101", deny),
+			hit("cd ~ && find -delete", "R-101", deny), // no start path: "."
+			hit("find .git -delete", "R-102", ask),
+			hit("find $(echo ~) -delete", "R-102", ask),
+			hit("find . -ok rm {} \\;", "R-103", ask),
+			hit("find . -name '*.log' -delete", "R-103", ask),
+			miss("find ~ -name '*.go'"),
+			miss("find ~ -exec cat {} \\;"),
+			safe("find /tmp/scratch -delete"),
+			safe("find /tmp/scratch -newer ./ref -delete"),
+		},
+	}
+}
+
+// TestDeleteTableRows is the delete table's conformance set.
+func TestDeleteTableRows(t *testing.T) {
+	t.Parallel()
+	for name, cases := range deleteTableCases() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			runRuleCases(t, cases, KindShellExec, "run_command")
+		})
+	}
+}
+
+// TestDeleteTableRowsCovered pins that every delete-table row has a hit, a
+// near-miss and a safe case, and that every case set names a real row.
+func TestDeleteTableRowsCovered(t *testing.T) {
+	t.Parallel()
+	cases := deleteTableCases()
+	rows := map[string]bool{}
+	for _, r := range deleteTable {
+		rows[r.name] = true
+		var hits, misses, safes int
+		for _, c := range cases[r.name] {
+			switch {
+			case strings.HasPrefix(c.name, "hit: ") && c.wantRule != "":
+				hits++
+			case strings.HasPrefix(c.name, "near-miss: ") && c.wantRule == "":
+				misses++
+			case strings.HasPrefix(c.name, "safe: ") && c.wantRule == "":
+				safes++
+			}
+		}
+		if hits == 0 || misses == 0 || safes == 0 {
+			t.Errorf("delete table row %q: %d hit, %d near-miss, %d safe cases; want at least one of each", r.name, hits, misses, safes)
+		}
+	}
+	for name := range cases {
+		if !rows[name] {
+			t.Errorf("deleteTableCases names %q, which is no delete table row", name)
+		}
+	}
+}
+
+// TestNonRecursiveDeletesJudgedLikeRm pins that a delete that cannot recurse
+// (unlink, shred -u, rmdir, rsync --remove-source-files without -r) gets
+// the verdict a non-recursive rm of the same operand gets, wherever that
+// operand sits.
+func TestNonRecursiveDeletesJudgedLikeRm(t *testing.T) {
+	t.Parallel()
+	eng, err := New(Config{Mode: ModeEnforce, Home: "/home/u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eval := func(cmd string) Verdict {
+		return eng.Evaluate(Event{
+			Kind: KindShellExec, Target: cmd, Cwd: "/home/u/proj", ProjectRoot: "/home/u/proj",
+			SessionID: "s1", Now: time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		})
+	}
+	for _, op := range []string{"~/.bashrc", "~/.ssh/id_ed25519", "/etc/passwd", "~/notes.txt", "./build/x.o", "/tmp/x", ".git/config", "~"} {
+		want := eval("rm " + op)
+		for _, cmd := range []string{"unlink " + op, "shred -u " + op, "shred --remove " + op, "rsync --remove-source-files " + op + " /tmp/out/"} {
+			if got := eval(cmd); got.RuleID != want.RuleID || got.Decision != want.Decision {
+				t.Errorf("%s = %s/%s, want %s/%s like `rm %s`", cmd, got.RuleID, got.Decision, want.RuleID, want.Decision, op)
+			}
+		}
 	}
 }

@@ -260,8 +260,8 @@ func Browser(id string, in BrowserInput) Status {
 	return st
 }
 
-// BrowserStates lists every state the browser table can produce.
-func BrowserStates() []State {
+// browserStates lists every state the browser table can produce.
+func browserStates() []State {
 	return statesOf(len(browserRules), func(i int) State { return browserRules[i].state })
 }
 
@@ -349,8 +349,8 @@ func Editor(id string, in EditorInput) Status {
 	return st
 }
 
-// EditorStates lists every state the editor table can produce.
-func EditorStates() []State {
+// editorStates lists every state the editor table can produce.
+func editorStates() []State {
 	return statesOf(len(editorRules), func(i int) State { return editorRules[i].state })
 }
 
@@ -466,8 +466,8 @@ func Shims(id string, hosts []ShimHost) Status {
 	return st
 }
 
-// ShimStates lists every state the shim table can produce.
-func ShimStates() []State {
+// shimStates lists every state the shim table can produce.
+func shimStates() []State {
 	return statesOf(len(shimRules), func(i int) State { return shimRules[i].state })
 }
 
@@ -555,8 +555,8 @@ func Helper(id string, in HelperInput) Status {
 	return st
 }
 
-// HelperStates lists every state the helper table can produce.
-func HelperStates() []State {
+// helperStates lists every state the helper table can produce.
+func helperStates() []State {
 	return statesOf(len(helperRules), func(i int) State { return helperRules[i].state })
 }
 

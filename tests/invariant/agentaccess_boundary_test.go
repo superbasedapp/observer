@@ -1,14 +1,13 @@
 package invariant
 
 import (
-	"go/parser"
-	"go/token"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
 // agentAccessBoundaries is the doc3 §2.2 reverse-import table: each row names
@@ -64,38 +63,22 @@ var agentAccessBoundaries = []struct {
 // row's tree. A tree that does not exist yet (internal/mcprelay before P4) is
 // vacuously clean and logged, so the row is in force the moment it lands.
 func TestAgentAccessImportBoundary(t *testing.T) {
-	fset := token.NewFileSet()
 	for _, row := range agentAccessBoundaries {
 		root := filepath.Join("..", "..", filepath.FromSlash(row.root))
 		if _, err := os.Stat(root); os.IsNotExist(err) {
 			t.Logf("%s does not exist yet - boundary row armed, vacuously clean", row.root)
 			continue
 		}
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			af, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-			if perr != nil {
-				t.Fatalf("parse %s: %v", path, perr)
-			}
-			for _, imp := range af.Imports {
-				p := strings.Trim(imp.Path.Value, `"`)
-				for _, bad := range row.forbidden {
-					full := modulePath + bad
-					if p == full || strings.HasPrefix(p, full+"/") {
-						t.Errorf("%s imports %q - %s", filepath.ToSlash(path), p, row.why)
-					}
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
+		forbidden := make([]string, 0, len(row.forbidden))
+		for _, bad := range row.forbidden {
+			forbidden = append(forbidden, modulePath+bad)
 		}
+		importpin.Check(t, importpin.Spec{
+			Dirs:           []string{root},
+			Recursive:      true,
+			ForbiddenTrees: forbidden,
+			Reason:         row.why,
+		})
 	}
 }
 

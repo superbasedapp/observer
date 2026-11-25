@@ -214,28 +214,33 @@ func decodeHuJSON(v hujson.Value) (any, error) {
 	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("cfgfmt: json decode: %w", err)
 	}
-	return normalizeJSON(out), nil
+	return NativeNumbers(out), nil
 }
 
-func normalizeJSON(v any) any {
+// NativeNumbers turns json.Number values (a decoder with UseNumber) into
+// int64 when the literal is an integer that fits, else float64, recursively
+// through []any and map[string]any, so a value compares and re-encodes the
+// way a vendor file holds it (an integer setting is written as an integer).
+// Slices and maps are rewritten in place and returned; any other value is
+// returned as is. It is the one owner of this walk: the JSON engine, the
+// managed-settings generator, the org agent-config catalogue and the
+// dashboard's agent-config handlers all use it.
+func NativeNumbers(v any) any {
 	switch x := v.(type) {
 	case json.Number:
-		s := x.String()
-		if !strings.ContainsAny(s, ".eE") {
-			if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-				return n
-			}
+		if i, err := x.Int64(); err == nil {
+			return i
 		}
 		f, _ := x.Float64()
 		return f
 	case []any:
 		for i := range x {
-			x[i] = normalizeJSON(x[i])
+			x[i] = NativeNumbers(x[i])
 		}
 		return x
 	case map[string]any:
 		for k := range x {
-			x[k] = normalizeJSON(x[k])
+			x[k] = NativeNumbers(x[k])
 		}
 		return x
 	}

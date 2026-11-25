@@ -139,8 +139,8 @@ func scanRemotes(rows *sql.Rows) ([]delivery.Remote, error) {
 			return nil, err
 		}
 		r.Provider = delivery.Provider(provider)
-		r.FetchHeadAt = parseCommitTime(fetchHead)
-		r.ObservedAt = parseCommitTime(observe)
+		r.FetchHeadAt = parseStoredTime(fetchHead)
+		r.ObservedAt = parseStoredTime(observe)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -249,7 +249,7 @@ func (s *Store) LoadDeliveryCommits(ctx context.Context, projectID int64, since 
 			continue // not AI-touched: the Ownership gates said no
 		}
 		c.ProjectID = projectID
-		c.CommittedAt = parseCommitTime(committed)
+		c.CommittedAt = parseStoredTime(committed)
 		c.Reachable = reachable != 0
 		c.IsMerge = isMerge != 0
 		c.ForeignAuthor = info.foreign
@@ -354,9 +354,9 @@ func scanLanding(sc interface{ Scan(...any) error }, extra ...any) (delivery.Lan
 	l.Confidence = delivery.Confidence(conf)
 	l.AbandonReason = delivery.AbandonReason(reason)
 	l.Source = delivery.EvidenceSource(source)
-	l.FirstPushedAt = parseCommitTime(firstPushed)
-	l.LandedAt = parseCommitTime(landedAt)
-	l.EvaluatedAt = parseCommitTime(evaluated)
+	l.FirstPushedAt = parseStoredTime(firstPushed)
+	l.LandedAt = parseStoredTime(landedAt)
+	l.EvaluatedAt = parseStoredTime(evaluated)
 	_ = json.Unmarshal([]byte(contr), &l.SessionIDs)
 	return l, nil
 }
@@ -412,7 +412,7 @@ func (s *Store) loadLandingsWithCommitTime(ctx context.Context, projectID int64,
 			return nil, fmt.Errorf("store.loadLandingsWithCommitTime: scan: %w", err)
 		}
 		w.Landing = l
-		w.CommittedAt = parseCommitTime(committed)
+		w.CommittedAt = parseStoredTime(committed)
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -477,7 +477,7 @@ func (s *Store) LoadSessionLandings(ctx context.Context, sessionID string) ([]Se
 		sl := byCommit[l.CommitID]
 		if sl == nil {
 			sl = &SessionLanding{
-				CommitID: l.CommitID, SHA: sha, Subject: subject, CommittedAt: parseCommitTime(committed),
+				CommitID: l.CommitID, SHA: sha, Subject: subject, CommittedAt: parseStoredTime(committed),
 				Reachable: reachable != 0, Owner: len(l.SessionIDs) > 0 && l.SessionIDs[0] == sessionID,
 			}
 			byCommit[l.CommitID] = sl
@@ -585,7 +585,7 @@ func (s *Store) ListProviderLinks(ctx context.Context) ([]delivery.ProviderLink,
 			return nil, fmt.Errorf("store.ListProviderLinks: scan: %w", err)
 		}
 		l.Provider = delivery.Provider(provider)
-		l.LastOKAt, l.NextRunAt, l.CreatedAt = parseCommitTime(okAt), parseCommitTime(next), parseCommitTime(created)
+		l.LastOKAt, l.NextRunAt, l.CreatedAt = parseStoredTime(okAt), parseStoredTime(next), parseStoredTime(created)
 		out = append(out, l)
 	}
 	if err := rows.Err(); err != nil {
@@ -792,8 +792,8 @@ func scanPR(sc interface{ Scan(...any) error }) (delivery.PullRequest, error) {
 	p.Readiness = delivery.Readiness(readiness)
 	p.MergeMethod = delivery.MergeMethod(method)
 	_ = json.Unmarshal([]byte(facets), &p.Facets)
-	p.CreatedAt, p.MergedAt, p.ClosedAt = parseCommitTime(created), parseCommitTime(merged), parseCommitTime(closed)
-	p.UpdatedAt, p.FetchedAt = parseCommitTime(updated), parseCommitTime(fetched)
+	p.CreatedAt, p.MergedAt, p.ClosedAt = parseStoredTime(created), parseStoredTime(merged), parseStoredTime(closed)
+	p.UpdatedAt, p.FetchedAt = parseStoredTime(updated), parseStoredTime(fetched)
 	return p, nil
 }
 
@@ -949,7 +949,7 @@ func (s *Store) ListDeliveryMirrors(ctx context.Context) ([]delivery.Mirror, err
 			&m.Status, &m.LastError, &refresh, &check, &created); err != nil {
 			return nil, fmt.Errorf("store.ListDeliveryMirrors: scan: %w", err)
 		}
-		m.LastRefreshAt, m.LastCheckAt, m.CreatedAt = parseCommitTime(refresh), parseCommitTime(check), parseCommitTime(created)
+		m.LastRefreshAt, m.LastCheckAt, m.CreatedAt = parseStoredTime(refresh), parseStoredTime(check), parseStoredTime(created)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -987,7 +987,7 @@ func (s *Store) GetDeliveryProjectSettings(ctx context.Context, projectID int64)
 		return ps, fmt.Errorf("store.GetDeliveryProjectSettings: %w", err)
 	}
 	ps.MirrorEnabled = enabled != 0
-	ps.UpdatedAt = parseCommitTime(updated)
+	ps.UpdatedAt = parseStoredTime(updated)
 	return ps, nil
 }
 
@@ -1034,7 +1034,7 @@ func (s *Store) ListDeliveryProjectSettings(ctx context.Context) ([]delivery.Pro
 			return nil, fmt.Errorf("store.ListDeliveryProjectSettings: scan: %w", err)
 		}
 		ps.MirrorEnabled = enabled != 0
-		ps.UpdatedAt = parseCommitTime(updated)
+		ps.UpdatedAt = parseStoredTime(updated)
 		out = append(out, ps)
 	}
 	if err := rows.Err(); err != nil {
@@ -1120,7 +1120,7 @@ func (s *Store) LoadBranchTips(ctx context.Context, projectID int64) ([]delivery
 		}
 		_ = json.Unmarshal([]byte(members), &t.MemberSHAs)
 		_ = json.Unmarshal([]byte(files), &t.Files)
-		t.ObservedAt = parseCommitTime(observed)
+		t.ObservedAt = parseStoredTime(observed)
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {

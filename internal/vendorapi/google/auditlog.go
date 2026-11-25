@@ -188,14 +188,7 @@ type entry struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceCodeAssistAudit}, a...)...)
-}
-
-func str(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return strings.TrimSpace(*p)
+	return vendorapi.Drift(SurfaceCodeAssistAudit, format, a...)
 }
 
 // logType maps the project's two audit log names to their type; any other
@@ -265,38 +258,38 @@ func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 }
 
 func auditEvent(project string, i int, e entry) (vendorapi.AuditEvent, error) {
-	id := str(e.InsertID)
+	id := vendorapi.TrimStr(e.InsertID)
 	if id == "" {
 		return vendorapi.AuditEvent{}, drift("entries[%d].insertId is missing", i)
 	}
-	ts := str(e.Timestamp)
+	ts := vendorapi.TrimStr(e.Timestamp)
 	at, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
 		return vendorapi.AuditEvent{}, drift("entries[%d].timestamp is not RFC 3339", i)
 	}
-	lt, ok := logType(project, str(e.LogName))
+	lt, ok := logType(project, vendorapi.TrimStr(e.LogName))
 	if !ok {
 		return vendorapi.AuditEvent{}, drift("entries[%d].logName is not one of the queried audit logs", i)
 	}
 	pp := e.ProtoPayload
-	if pp == nil || str(pp.Type) != auditLogType {
+	if pp == nil || vendorapi.TrimStr(pp.Type) != auditLogType {
 		return vendorapi.AuditEvent{}, drift("entries[%d].protoPayload is not an AuditLog", i)
 	}
-	if str(pp.ServiceName) != Service {
+	if vendorapi.TrimStr(pp.ServiceName) != Service {
 		return vendorapi.AuditEvent{}, drift("entries[%d].protoPayload.serviceName is not the queried service", i)
 	}
-	method := str(pp.MethodName)
+	method := vendorapi.TrimStr(pp.MethodName)
 	if method == "" {
 		return vendorapi.AuditEvent{}, drift("entries[%d].protoPayload.methodName is missing", i)
 	}
 	// insertId is unique per log and timestamp, so the event id joins them.
 	ev := vendorapi.AuditEvent{
 		Namespace: AuditNamespace, EventID: lt + "/" + at.UTC().Format(time.RFC3339Nano) + "/" + id, At: at.UTC(),
-		Action: MethodAction(method), Target: str(pp.ResourceName),
+		Action: MethodAction(method), Target: vendorapi.TrimStr(pp.ResourceName),
 		Detail: map[string]string{"log_type": lt, "service_name": Service},
 	}
 	if pp.AuthenticationInfo != nil {
-		if em := str(pp.AuthenticationInfo.PrincipalEmail); em != "" {
+		if em := vendorapi.TrimStr(pp.AuthenticationInfo.PrincipalEmail); em != "" {
 			ev.ActorKind, ev.ActorIdentity = "email", em
 			ev.ActorIsAgent = strings.HasSuffix(em, ".gserviceaccount.com")
 		}
@@ -305,7 +298,7 @@ func auditEvent(project string, i int, e entry) (vendorapi.AuditEvent, error) {
 		ev.Detail["status_code"] = string(*pp.Status.Code)
 	}
 	if e.Resource != nil {
-		if rt := str(e.Resource.Type); rt != "" {
+		if rt := vendorapi.TrimStr(e.Resource.Type); rt != "" {
 			ev.Detail["resource_type"] = rt
 		}
 	}

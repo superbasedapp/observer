@@ -300,3 +300,35 @@ func TestMerge(t *testing.T) {
 		})
 	}
 }
+
+// TestParseAddingExcusesOnlyTheNamedLineage pins the recorder's bootstrap
+// path for a lineage added to the table after the record was written
+// (INTEL-03, the obs lineage): ParseAdding accepts a record missing exactly
+// the lineages the run is recording, and Parse (the checker's and the
+// invariant test's reader) still refuses it.
+func TestParseAddingExcusesOnlyTheNamedLineage(t *testing.T) {
+	r := validRecord()
+	var kept []Lineage
+	for _, l := range r.Lineages {
+		if l.Name != "obs" {
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) != len(r.Lineages)-1 {
+		t.Fatalf("validRecord has no obs lineage to drop (%d lineages)", len(r.Lineages))
+	}
+	r.Lineages = kept
+	data, err := Encode(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(data); err == nil || !strings.Contains(err.Error(), `lineage "obs" is missing`) {
+		t.Fatalf("Parse of a record without obs = %v, want obs missing", err)
+	}
+	if _, err := ParseAdding(data, []string{"obs"}); err != nil {
+		t.Fatalf("ParseAdding(obs) = %v, want accepted", err)
+	}
+	if _, err := ParseAdding(data, []string{"cloud"}); err == nil || !strings.Contains(err.Error(), `lineage "obs" is missing`) {
+		t.Fatalf("ParseAdding(cloud) of a record without obs = %v, want obs still missing", err)
+	}
+}

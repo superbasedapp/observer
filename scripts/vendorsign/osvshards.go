@@ -60,7 +60,9 @@ import (
 // The object store is content-addressed and kept across runs: an unchanged
 // shard keeps its name and file, so the uploader sends only the paths of
 // objects.txt it has not uploaded before. After a publish the store is
-// pruned to exactly what objects.txt names.
+// pruned to exactly what objects.txt names. The bucket is not: the objects
+// a manifest stops naming stay there until osvshardsweep finds that no
+// manifest a node may still use names them.
 //
 // State (one directory, marked for this kind):
 //
@@ -69,6 +71,12 @@ import (
 //	                                          bits, epoch, content digest
 //	<state>/sets/<Set>.set.json               the last descriptor of each
 //	                                          set
+//	<state>/published/<version>.json          per manifest signed: its
+//	                                          version, the one before it,
+//	                                          issued_at, the envelope's
+//	                                          sha256 and every object path
+//	                                          it names (osvshardsweep.go's
+//	                                          input, which prunes them)
 //	<state>/work/                             one build's spill file
 //
 // A set whose input digest, bits and build format are unchanged and whose
@@ -343,8 +351,17 @@ func buildOSVShards(o osvShardsOptions) (osvShardsResult, error) {
 		return osvShardsResult{}, fmt.Errorf("vendorsign %s: the envelope is %d bytes, over the %d nodes accept", verb, len(envBytes), content.MaxEnvelopeBytes)
 	}
 
-	// objects.txt first (the uploader's input), then the kind's directory
-	// with the manifest last, then the state, then the prune.
+	// The published record first (osvshardsweep's input: every manifest
+	// that can reach the bucket has one, so no object a node may still use
+	// is ever swept), then objects.txt (the uploader's input), then the
+	// kind's directory with the manifest last, then the state, then the
+	// prune.
+	if err := writeShardPublishedRecord(o.State, shardPublishedRecord{
+		ManifestVersion: version, PreviousVersion: st.ManifestVersion, IssuedAt: stamp,
+		ManifestSHA256: content.HashBytes(envBytes), Objects: list,
+	}); err != nil {
+		return osvShardsResult{}, err
+	}
 	var lb bytes.Buffer
 	for _, p := range list {
 		lb.WriteString(p)

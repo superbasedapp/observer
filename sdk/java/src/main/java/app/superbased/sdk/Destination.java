@@ -70,7 +70,7 @@ final class Destination {
   /** The resolved destination. */
   static final class Plan {
     String destination = LOCAL;
-    String source = "default"; // argument | env | machine | inferred | default
+    String source = "default"; // argument | env | sdk_file | machine | inferred | default
     List<Target> exporters = List.of();
     String nodeUrl = Settings.DEFAULT_NODE_URL;
     String gatewayUrl = "";
@@ -81,9 +81,15 @@ final class Destination {
     List<String> warnings = List.of();
     List<String> notes = List.of();
     Boolean signedIn;
-    String credentialSource = "";
+    String credentialSource = ""; // argument | env | file | sdk_file | ""
     /** The online credential: never logged, never in diagnostics, never sent to the machine. */
     String key = "";
+    /** Diagnostics' sdk_file: path, state (absent, used, unused, refused, expired, not_read) and reason. */
+    Map<String, Object> sdkFile = Map.of("path", "", "state", SdkFile.NOT_READ, "reason", "");
+    /** The organization's dashboard base for links (the SDK-held file's, or discovery's for the machine's key). */
+    String onlineDashboard = "";
+    /** The machine's dashboard base, known only when the machine answered discovery. */
+    String localDashboard = "";
 
     Map<String, String> onlineHeaders() {
       return key.isEmpty() ? Map.of() : Map.of("Authorization", "Bearer " + key);
@@ -111,6 +117,7 @@ final class Destination {
       out.put("notes", new ArrayList<>(notes));
       out.put("signed_in", signedIn);
       out.put("credential_source", credentialSource);
+      out.put("sdk_file", new LinkedHashMap<>(sdkFile));
       return out;
     }
 
@@ -175,11 +182,14 @@ final class Destination {
 
   // --- credential file -----------------------------------------------------------------
 
-  /** (key, gateway, error) of a credential file. */
+  /** (key, gateway, error) of a credential file; {@code raw} is the bytes an owner-only read gave. */
   static final class Credential {
     final String key;
     final String gateway;
     final String error;
+    byte[] raw = new byte[0];
+    /** The refused rule (credential-file-cases.json reasons), "" for an I/O error or none. */
+    String reason = "";
 
     Credential(String key, String gateway, String error) {
       this.key = key;
@@ -202,18 +212,34 @@ final class Destination {
     if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows")) {
       return new Credential("", "", "credential files are not read on Windows; set SUPERBASED_API_KEY");
     }
-    Path p = Path.of(path);
+    Credential c = readOwnerOnly(Path.of(path));
+    if (!c.error.isEmpty()) {
+      return c;
+    }
+    SdkFile.Record r = SdkFile.parse(c.raw);
+    if (!r.problem.isEmpty()) {
+      return new Credential("", "", r.problem);
+    }
+    return new Credential(r.key, r.gateway, r.gatewayIssue);
+  }
+
+  /**
+   * At most 4097 bytes of {@code p} under contract section 6's unix rules: no
+   * symlink, a regular file, no group or other permission bits, owned by
+   * this user. The bytes are in {@code raw}; a refusal is {@code error}.
+   */
+  static Credential readOwnerOnly(Path p) {
     PosixFileAttributes st;
     try {
       st = Files.readAttributes(p, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
     } catch (IOException | UnsupportedOperationException e) {
-      return new Credential("", "", "cannot read the SDK credential file: " + e.getMessage());
+      return refused("cannot read the SDK credential file: " + e.getMessage(), "");
     }
     if (st.isSymbolicLink()) {
-      return new Credential("", "", "the SDK credential file is a symlink; refused");
+      return refused("the SDK credential file is a symlink; refused", SdkFile.R_SYMLINK);
     }
     if (!st.isRegularFile()) {
-      return new Credential("", "", "the SDK credential file is not a regular file; refused");
+      return refused("the SDK credential file is not a regular file; refused", SdkFile.R_NOT_REGULAR);
     }
     Set<PosixFilePermission> perms = st.permissions();
     for (PosixFilePermission bad :
@@ -225,56 +251,28 @@ final class Destination {
             PosixFilePermission.OTHERS_WRITE,
             PosixFilePermission.OTHERS_EXECUTE)) {
       if (perms.contains(bad)) {
-        return new Credential("", "", "the SDK credential file is readable by other users; refused (chmod 600)");
+        return refused("the SDK credential file is readable by other users; refused (chmod 600)", SdkFile.R_MODE);
       }
     }
     if (!ownedByProcessUser(p, st)) {
-      return new Credential("", "", "the SDK credential file is owned by another user; refused");
+      return refused("the SDK credential file is owned by another user; refused", SdkFile.R_OWNER);
     }
     byte[] raw;
     try (SeekableByteChannel ch = Files.newByteChannel(p, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
         InputStream in = Channels.newInputStream(ch)) {
-      raw = in.readNBytes(4097);
+      raw = in.readNBytes(SdkFile.LIMIT + 1);
     } catch (IOException e) {
-      return new Credential("", "", "cannot read the SDK credential file: " + e.getMessage());
+      return refused("cannot read the SDK credential file: " + e.getMessage(), "");
     }
-    String bad = "the SDK credential file is not one key line followed by name=value lines; refused";
-    if (raw.length > 4096) {
-      return new Credential("", "", bad);
-    }
-    for (byte b : raw) {
-      if (b < 0) {
-        return new Credential("", "", bad);
-      }
-    }
-    String text = new String(raw, StandardCharsets.US_ASCII);
-    if (text.endsWith("\n")) {
-      text = text.substring(0, text.length() - 1);
-    }
-    String[] lines = text.split("\n", -1);
-    String key = lines[0];
-    int dot = key.indexOf('.');
-    if (dot <= 0 || dot == key.length() - 1 || key.chars().anyMatch(Character::isWhitespace)) {
-      return new Credential("", "", bad);
-    }
-    String gateway = "";
-    for (int i = 1; i < lines.length; i++) {
-      int eq = lines[i].indexOf('=');
-      if (eq <= 0) {
-        return new Credential("", "", bad);
-      }
-      if (lines[i].substring(0, eq).equals(CREDENTIAL_GATEWAY_FIELD)) {
-        gateway = lines[i].substring(eq + 1).strip();
-      }
-    }
-    if (!gateway.isEmpty()) {
-      String problem = gatewayProblem(gateway);
-      if (!problem.isEmpty()) {
-        return new Credential(
-            key, "", "the SDK credential file names a gateway address that is not usable (" + problem + "); it is ignored");
-      }
-    }
-    return new Credential(key, Http.stripRight(gateway, '/'), "");
+    Credential out = new Credential("", "", "");
+    out.raw = raw;
+    return out;
+  }
+
+  private static Credential refused(String error, String reason) {
+    Credential c = new Credential("", "", error);
+    c.reason = reason;
+    return c;
   }
 
   /** The process's uid, or -1 when unknown. Tests replace it. */
@@ -440,6 +438,11 @@ final class Destination {
       dest = valid(env.getOrDefault("SUPERBASED_DESTINATION", ""), "SUPERBASED_DESTINATION", warnings);
       source = dest.isEmpty() ? "" : "env";
     }
+    SdkFile.PlanReader held = new SdkFile.PlanReader(env, java.time.Instant.now());
+    if (dest.isEmpty()) {
+      dest = held.destination(warnings);
+      source = dest.isEmpty() ? "" : SdkFile.SOURCE;
+    }
     String nodeUrl = Http.stripRight(s.nodeUrl, '/');
     if (nodeUrl.isEmpty()) {
       nodeUrl = Settings.DEFAULT_NODE_URL;
@@ -466,7 +469,11 @@ final class Destination {
     }
     Boolean signedIn = null;
     Map<String, Object> localInfo = Map.of();
+    boolean machineRecord = false;
+    String onlineDashboard = "";
+    String localDashboard = "";
     if (found != null) {
+      localDashboard = nodeUrl;
       signedIn = Boolean.TRUE.equals(found.get("signed_in"));
       localInfo = loopbackLocalInfo(found.get("local"), warnings);
       Map<String, Object> online = found.get("online") instanceof Map ? (Map<String, Object>) found.get("online") : Map.of();
@@ -488,9 +495,11 @@ final class Destination {
           && Boolean.TRUE.equals(online.get("credential_present"))
           && online.get("credential_file") instanceof String) {
         Credential c = readCredentialRecord((String) online.get("credential_file"));
+        machineRecord = !c.key.isEmpty();
         if (key.isEmpty() && !c.key.isEmpty()) {
           key = c.key;
           keySource = "file";
+          onlineDashboard = SdkFile.discoveredDashboard(online);
         }
         if (gateway.isEmpty()) {
           gateway = c.gateway;
@@ -508,6 +517,16 @@ final class Destination {
       dest = LOCAL;
       source = "default";
     }
+    if (ONLINE.equals(dest) || BOTH.equals(dest)) {
+      // Record 3, the SDK-held file, once the destination is known: it never
+      // makes the inferred rung (that is argument or env only).
+      SdkFile.Applied a = SdkFile.apply(held, machineRecord, "file".equals(keySource), key, keySource, gateway, onlineDashboard);
+      key = a.key;
+      keySource = a.keySource;
+      gateway = a.gateway;
+      onlineDashboard = a.dashboard;
+      warnings.addAll(a.warnings);
+    }
 
     boolean onlineReady = !gateway.isEmpty() && !key.isEmpty();
     String degraded = "";
@@ -519,7 +538,7 @@ final class Destination {
       if (key.isEmpty()) {
         missing.add("an SDK credential");
       }
-      String fix = "run `observer sdk sign-in`, or set SUPERBASED_ORG_URL and SUPERBASED_API_KEY";
+      String fix = held.degradedFix(source, keySource);
       degraded =
           ONLINE.equals(dest)
               ? "destination online is missing " + String.join(" and ", missing) + ": nothing is exported (" + fix + ")"
@@ -583,6 +602,9 @@ final class Destination {
     p.signedIn = signedIn;
     p.credentialSource = keySource;
     p.key = key;
+    p.sdkFile = held.info(keySource);
+    p.onlineDashboard = onlineDashboard;
+    p.localDashboard = localDashboard;
     return p;
   }
 
@@ -607,6 +629,13 @@ final class Destination {
         }
       }
       Util.LOG.log((Level) r[0], "superbased_sdk: " + r[1]);
+    }
+  }
+
+  /** Forget the discovery cache only (tests). */
+  static void resetCacheForTests() {
+    synchronized (CACHE) {
+      CACHE.clear();
     }
   }
 

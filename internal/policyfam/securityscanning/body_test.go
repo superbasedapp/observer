@@ -8,24 +8,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/postureop"
-	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
-
-func TestNoForbiddenImports(t *testing.T) {
-	importpin.Check(t, importpin.Spec{
-		ForbiddenTrees: []string{
-			"database/sql",
-			"net/http",
-			"os/exec",
-			"github.com/fsnotify/fsnotify",
-			"github.com/marmutapp/superbased-observer/internal/config",
-			"github.com/marmutapp/superbased-observer/internal/store",
-			"github.com/marmutapp/superbased-observer/internal/orgserver",
-			"github.com/marmutapp/superbased-observer/internal/componentstate",
-		},
-		Reason: "internal/policyfam/securityscanning must stay pure; the cmd layer supplies NodeFacts",
-	})
-}
 
 // TestEnumsReviewed: every enum value the decoder accepts has a place on its
 // axis (a value added without a direction review fails here).

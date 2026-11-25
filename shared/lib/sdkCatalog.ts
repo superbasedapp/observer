@@ -1,6 +1,7 @@
 // sdkCatalog.ts is the typed view of sdkCatalog.json, the ONE catalog of the
 // superbased SDKs (review P-11, first-run plan revision 2 section 3.9, lane
-// C0): language, package, install line, published flag and init snippet.
+// C0): language, package, install line, published flag, init snippet and the
+// one-command setup (AI Apps SDK quickstart plan 3.5, 7).
 // web's AI Apps first-run card and web2's Settings > Apps & SDKs read it
 // here; the marketing page generator (website/docs-tools/pagegen/sdk.go) and
 // scripts/sdk-install-strings.py read the same JSON file. A new language is
@@ -40,8 +41,12 @@ export interface SdkEntry {
   installCheckout: string;
   /** The registry install line. */
   installPublished: string;
-  /** A minimal init that sends to this machine, as one text. */
+  /** The one init line (with its comments), as one text. */
   code: string;
+  /** The one-command quickstart (`npx @superbased/sdk setup`), or "" for a
+   *  language with no setup of its own (Go, Java: they run either with
+   *  --key-only). */
+  setup: string;
 }
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
@@ -61,7 +66,8 @@ function oneLine(row: Record<string, unknown>, key: string, where: string): stri
 
 /** parseSdkCatalog validates a decoded sdkCatalog.json and returns its rows
  *  in file order. It throws on a missing or malformed field, a duplicate
- *  id, an unknown release, a multi-line install line, or an empty catalog. */
+ *  id, an unknown release, a multi-line install or setup line, or an empty
+ *  catalog. `setup` is optional. */
 export function parseSdkCatalog(data: unknown): SdkEntry[] {
   const sdks = (data as { sdks?: unknown } | null)?.sdks;
   if (!Array.isArray(sdks) || sdks.length === 0) throw new Error("sdkCatalog: \"sdks\" must be a non-empty list");
@@ -80,6 +86,8 @@ export function parseSdkCatalog(data: unknown): SdkEntry[] {
     const installCheckout = oneLine(row, "install_checkout", where);
     const installPublished = oneLine(row, "install_published", where);
     if (installCheckout === installPublished) throw new Error(`sdkCatalog: ${where}: the two install lines are the same`);
+    const setup = row.setup === undefined ? "" : oneLine(row, "setup", where);
+    if (setup !== setup.trim()) throw new Error(`sdkCatalog: ${where}: "setup" must be one trimmed line`);
     const snippet = row.snippet;
     if (!Array.isArray(snippet) || snippet.length === 0 || snippet.some((l) => typeof l !== "string")) {
       throw new Error(`sdkCatalog: ${where}: "snippet" must be a non-empty list of lines`);
@@ -96,6 +104,7 @@ export function parseSdkCatalog(data: unknown): SdkEntry[] {
       installCheckout,
       installPublished,
       code: (snippet as string[]).join("\n"),
+      setup,
     };
   });
 }

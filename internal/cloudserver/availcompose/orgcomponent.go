@@ -15,8 +15,11 @@ import (
 // component that an envelope may open to named orgs in pooled
 // (components.ReachPooledOffer) and that is not on the pooled launch floor,
 // so "off" is its default and "on for this org" is a named reach
-// (TestOrgComponentsAreNamedOffers).
-var orgComponentIDs = []string{"org.security"}
+// (TestOrgComponentsAreNamedOffers). org.aigateway is the hosted AI
+// gateway's beta switch (L-172, plan hosted-ai-gateway 3.14): staff name
+// the orgs it runs for; its general availability goes through component
+// reach, not this table.
+var orgComponentIDs = []string{"org.security", "org.aigateway"}
 
 // OrgComponent is one per-org component the console controls.
 type OrgComponent struct {

@@ -7,9 +7,9 @@
 // their machines; the node honours it until it expires, is used up, is
 // revoked, or the node has been unable to re-verify it for too long.
 //
-// This package owns every RULE of that lifecycle so the org (the approver
-// preview, the sweeper, the summary) and the node (the cache, the lookup, the
-// budget revert) cannot drift apart - the internal/sessionmsg one-owner lesson:
+// This package owns the RULES of that lifecycle so the org (the approver
+// preview, the sweeper, the summary) and the node (the cache, the lookup)
+// cannot drift apart - the internal/sessionmsg one-owner lesson:
 //
 //   - RequestTypes: the closed request-type table (approver key, where the
 //     grant lands, maximum duration). Adding a type is adding a row.
@@ -19,8 +19,9 @@
 //   - Match: which cached grant (if any) covers a guard query.
 //   - Status / Honoured: the server's and the node's view of whether a grant
 //     is in force at an instant.
-//   - BudgetOverlay / RevertExpiredOverlay: a budget increase folded into a
-//     cap, and the node's offline revert at expiry.
+//   - BudgetOverlay: a budget increase folded into a cap. The node's offline
+//     revert at expiry (§3.3) is orgcontract.BudgetPolicyCap.RevertExpiredGrant,
+//     which also clears the grant id and the base caps.
 //   - ShapeContext: the one place the request context block's content keys
 //     are kept or stripped.
 //

@@ -53,16 +53,16 @@ type SpendScope struct {
 	Tool, Project, Model string
 }
 
-// turnRowLister is the one cost-engine capability loadSpendTurns needs
+// turnRowLister is the one cost-engine capability LoadSpendTurns needs
 // (*cost.Engine implements it).
 type turnRowLister interface {
 	TurnRows(ctx context.Context, db *sql.DB, opts cost.Options) ([]cost.TurnRow, error)
 }
 
-// loadSpendTurns is spendTurns for a caller holding its own DB and engine
-// (ComputeExperimentReport, which the CLI also runs). A session-id scope is
-// chunked under the engine's bind-variable ceiling; a session lands in one
-// chunk only, so nothing is double-counted.
+// LoadSpendTurns is the dashboard's spendTurns for a caller holding its own
+// DB and engine (ComputeExperimentReport, which the CLI also runs). A
+// session-id scope is chunked under the engine's bind-variable ceiling; a
+// session lands in one chunk only, so nothing is double-counted.
 //
 // Summary-call rows (the observer's own rolling-summary Haiku calls) are
 // excluded: none of these surfaces ever counted them, and dedup parity must

@@ -136,10 +136,10 @@ function personalFlag(m: Mode): PersonalFlag {
 
 const PERSONAL_PRICE = {
   price_id: "pri_dev_mock_personal_monthly",
-  plan_name: "plus",
-  plan_version: 1,
+  plan_name: "personal_pro",
+  plan_version: 2,
   interval: "month",
-  display: "$15/mo",
+  display: "$9/mo",
 };
 
 // personal builds the account's personal org in a given state.

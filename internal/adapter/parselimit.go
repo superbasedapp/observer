@@ -1,7 +1,9 @@
 package adapter
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"io"
 )
 
@@ -53,6 +55,58 @@ func LimitTail(ctx context.Context, r io.Reader) io.Reader {
 		return io.LimitReader(r, n)
 	}
 	return r
+}
+
+// ReadRecord reads one '\n'-terminated record from r under the maxBytes
+// memory-safety bound, growing its buffer only as far as the bound (never
+// loading a pathologically large line whole). It is the one bounded line
+// reader behind the over-long-record rule (ADAPT-LZ-4; docs/adapters.md
+// rule 5), shared by the codex and gemini parsers.
+//
+// It returns the record bytes INCLUDING the terminating '\n' when one was
+// present, the total bytes consumed from the stream for the record (used
+// to advance the byte cursor even when the record is skipped), whether the
+// record exceeded maxBytes (in which case data is nil and its bytes have
+// been fully drained), and the terminating read error (io.EOF on the final
+// read). A clean end of stream yields consumed == 0 (and io.EOF).
+//
+// The err return is the terminator signal callers rely on: bufio's
+// ReadSlice reports a nil error the moment it locates '\n' and io.EOF only
+// when the stream ends before one is found. So a record returned with
+// consumed > 0 AND err == io.EOF is an UNTERMINATED trailing fragment (the
+// tool has not finished writing it); one returned with err == nil is
+// '\n'-terminated and complete. Callers defer unterminated trailing
+// records uniformly: only a terminated record may move the byte cursor.
+//
+// Compared with bufio.Scanner, a record larger than the bound degrades to
+// a per-record skip instead of a whole-file failure, and consumed is the
+// exact terminator-inclusive length, so cursor arithmetic is CRLF-correct.
+func ReadRecord(r *bufio.Reader, maxBytes int64) (data []byte, consumed int64, oversized bool, err error) {
+	var buf []byte
+	for {
+		frag, readErr := r.ReadSlice('\n')
+		consumed += int64(len(frag))
+		if !oversized {
+			if int64(len(buf))+int64(len(frag)) > maxBytes {
+				// The record crossed the bound: stop accumulating, drop
+				// what we have, and keep draining to the terminator so the
+				// cursor advances past the whole record.
+				oversized = true
+				buf = nil
+			} else {
+				// frag aliases r's internal buffer (valid only until the
+				// next read); append copies it out immediately.
+				buf = append(buf, frag...)
+			}
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if oversized {
+			return nil, consumed, true, readErr
+		}
+		return buf, consumed, false, readErr
+	}
 }
 
 // TailChunkable reports whether the watcher may read this file's oversize

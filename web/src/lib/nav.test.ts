@@ -37,11 +37,13 @@ test("navIcon resolves every nav item and nothing else", () => {
 
 // Every routed page's PageHeader takes its icon from the nav table (never a
 // hand-copied glyph), and every nav item's page does so: read as text because
-// the page modules are .tsx the node runner cannot import.
+// the page modules are .tsx the node runner cannot import. Pages in a folder
+// (pages/apps/ModelCalls.tsx) count too.
 test("every page header resolves its icon through navIcon", () => {
   const dir = new URL("../pages/", import.meta.url);
   const used = new Map<string, string>();
-  for (const f of readdirSync(dir).filter((n) => n.endsWith(".tsx"))) {
+  const pages = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((n) => n.endsWith(".tsx"));
+  for (const f of pages) {
     const src = readFileSync(new URL(f, dir), "utf8");
     const headers = src.match(/<PageHeader\b/g)?.length ?? 0;
     if (headers === 0) continue;

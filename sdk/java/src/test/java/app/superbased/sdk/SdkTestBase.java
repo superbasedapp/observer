@@ -50,6 +50,10 @@ abstract class SdkTestBase {
       }
     }
     Env.set("SUPERBASED_DISCOVER", "0");
+    // Never the developer's own SDK-held key file, and no project name from
+    // the test runner's jar.
+    Env.set(SdkFile.ENV_CREDENTIAL_FILE, Path.of(System.getProperty("java.io.tmpdir"), "superbased-test-no-sdk-credential-" + System.nanoTime()).toString());
+    ServiceName.project = () -> "";
     Util.LOG.addHandler(handler);
     Util.LOG.setUseParentHandlers(false);
   }
@@ -60,6 +64,8 @@ abstract class SdkTestBase {
     Util.LOG.setUseParentHandlers(true);
     Superbased.resetForTests();
     Env.resetForTests();
+    ServiceName.project = ServiceName::mainJarTitle;
+    SdkFile.reader = SdkFile.defaultReader();
   }
 
   static Path contractDir() {
@@ -71,6 +77,23 @@ abstract class SdkTestBase {
       p = "../contract";
     }
     return Path.of(p);
+  }
+
+  /** Every section of sdk-behaviour-cases.json (every top-level key that does not start with "_"). */
+  static Map<String, Object> behaviourSections() throws IOException {
+    Map<String, Object> all = loadContract("sdk-behaviour-cases.json");
+    Map<String, Object> out = new java.util.TreeMap<>();
+    for (Map.Entry<String, Object> e : all.entrySet()) {
+      if (!e.getKey().startsWith("_")) {
+        out.put(e.getKey(), e.getValue());
+      }
+    }
+    return out;
+  }
+
+  /** Whether an sdks list names Java (no list: every SDK). */
+  static boolean namesJava(Object sdks) {
+    return !(sdks instanceof List) || ((List<?>) sdks).contains("java");
   }
 
   @SuppressWarnings("unchecked")

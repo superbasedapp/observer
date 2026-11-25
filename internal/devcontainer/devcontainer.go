@@ -23,9 +23,6 @@ var ignoredFields = []string{
 	"portsAttributes", "otherPortsAttributes", "hostRequirements", "overrideCommand", "shutdownAction", "customizations",
 }
 
-// IgnoredFields returns the ignored field names (a copy).
-func IgnoredFields() []string { return append([]string(nil), ignoredFields...) }
-
 // File is what the reader takes from a devcontainer.json.
 type File struct {
 	// Image is the raw `image` value; nil when the file has none.

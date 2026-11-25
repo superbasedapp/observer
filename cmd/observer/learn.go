@@ -61,7 +61,8 @@ func newLearnCmd() *cobra.Command {
 				printLearnRules(cmd.OutOrStdout(), rules)
 			}
 
-			targets, err := resolveTargets(targetsRaw, outputDir, projectRoot)
+			targets, err := resolveRuleTargets(targetsRaw, outputDir, projectRoot,
+				learn.RenderMarkdown, learn.RenderCursorRules, " (want claude, agents, cursor, all)")
 			if err != nil {
 				return err
 			}
@@ -69,7 +70,7 @@ func newLearnCmd() *cobra.Command {
 				if len(rules) > 0 {
 					fmt.Fprintf(cmd.OutOrStdout(),
 						"\ndry-run: pass --apply to write %d rule(s) into %s\n",
-						len(rules), joinPaths(targets))
+						len(rules), joinTargetPaths(targets))
 				}
 				return nil
 			}
@@ -108,13 +109,20 @@ func newLearnCmd() *cobra.Command {
 	return cmd
 }
 
-// writeTarget pairs an output path with the renderer to use on it.
-type writeTarget struct {
+// ruleTarget pairs an output path with the renderer to use on it. R is what
+// the renderer takes: learn's rules or suggest's composed input.
+type ruleTarget[R any] struct {
 	path   string
-	render func([]learn.Rule, time.Time) string
+	render func(R, time.Time) string
 }
 
-func resolveTargets(raw, outputDir, projectRoot string) ([]writeTarget, error) {
+// resolveRuleTargets turns learn's and suggest's --target and --output-dir
+// into the instruction files to write: claude is CLAUDE.md, agents is
+// AGENTS.md (both rendered by markdown), cursor is .cursorrules (rendered by
+// cursor), and all is the three. The directory is --output-dir, else the
+// project root, else the working directory. An unknown target is an error
+// whose text ends with unknownHint.
+func resolveRuleTargets[R any](raw, outputDir, projectRoot string, markdown, cursor func(R, time.Time) string, unknownHint string) ([]ruleTarget[R], error) {
 	dir := outputDir
 	if dir == "" {
 		dir = projectRoot
@@ -131,26 +139,26 @@ func resolveTargets(raw, outputDir, projectRoot string) ([]writeTarget, error) {
 	if contains(parts, "all") {
 		parts = []string{"claude", "agents", "cursor"}
 	}
-	var out []writeTarget
+	var out []ruleTarget[R]
 	for _, p := range parts {
 		switch strings.ToLower(p) {
 		case "claude":
-			out = append(out, writeTarget{
+			out = append(out, ruleTarget[R]{
 				path:   filepath.Join(dir, "CLAUDE.md"),
-				render: learn.RenderMarkdown,
+				render: markdown,
 			})
 		case "agents":
-			out = append(out, writeTarget{
+			out = append(out, ruleTarget[R]{
 				path:   filepath.Join(dir, "AGENTS.md"),
-				render: learn.RenderMarkdown,
+				render: markdown,
 			})
 		case "cursor":
-			out = append(out, writeTarget{
+			out = append(out, ruleTarget[R]{
 				path:   filepath.Join(dir, ".cursorrules"),
-				render: learn.RenderCursorRules,
+				render: cursor,
 			})
 		default:
-			return nil, fmt.Errorf("unknown --target %q (want claude, agents, cursor, all)", p)
+			return nil, fmt.Errorf("unknown --target %q%s", p, unknownHint)
 		}
 	}
 	return out, nil
@@ -175,7 +183,8 @@ func contains(xs []string, s string) bool {
 	return false
 }
 
-func joinPaths(targets []writeTarget) string {
+// joinTargetPaths lists the targets' paths, comma separated.
+func joinTargetPaths[R any](targets []ruleTarget[R]) string {
 	out := make([]string, 0, len(targets))
 	for _, t := range targets {
 		out = append(out, t.path)

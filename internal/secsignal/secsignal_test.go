@@ -2,8 +2,6 @@ package secsignal
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -14,22 +12,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/secrank"
 	"github.com/marmutapp/superbased-observer/internal/secreach"
 	"github.com/marmutapp/superbased-observer/internal/secreachsvc"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
-
-func tree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for rel, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
 
 var records = map[string]string{
 	"GO-1": `{"id":"GO-1","aliases":["CVE-2021-44228","GHSA-jfh8-c2jp-5v3q"],"affected":[{"package":{"ecosystem":"Go","name":"golang.org/x/net"},"ecosystem_specific":{"imports":[{"path":"golang.org/x/net/html"}]}}]}`,
@@ -62,7 +46,7 @@ func fakeExploit(asked *[][]string) func(ids []string) secexploit.Exploit {
 }
 
 func TestCompute(t *testing.T) {
-	root := tree(t, map[string]string{
+	root := fstree.Write(t, map[string]string{
 		"go.mod":  "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/net v0.1.0\n",
 		"main.go": "package main\n\nimport _ \"golang.org/x/net/html\"\n",
 	})
@@ -142,7 +126,7 @@ func TestComputeWithoutData(t *testing.T) {
 // go.mod is never "not called" from the binary alone, and without
 // sightings neither is any other.
 func TestComputeSymbolChecks(t *testing.T) {
-	root := tree(t, map[string]string{
+	root := fstree.Write(t, map[string]string{
 		"go.mod":  "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/net v0.1.0\n",
 		"main.go": "package main\n\nimport _ \"golang.org/x/net/html\"\n",
 	})

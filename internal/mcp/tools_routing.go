@@ -17,23 +17,6 @@ import (
 // spawning sub-agents or switching models, and can read the routing
 // layer's state. Both are read-only — P0 routes nothing.
 
-// mcpRoutingPriceFn adapts the cost engine to routing's pricing seam
-// (same adaptation the CLI boundary performs).
-func mcpRoutingPriceFn(engine *cost.Engine) routingcore.PriceFn {
-	return func(model string, u routingcore.PromptUsage) (float64, bool) {
-		return engine.Compute(model, cost.TokenBundle{
-			Input:             u.Input,
-			Output:            u.Output,
-			CacheRead:         u.CacheRead,
-			CacheCreation:     u.CacheCreation,
-			CacheCreation1h:   u.CacheCreation1h,
-			Reasoning:         u.Reasoning,
-			WebSearchRequests: u.WebSearchRequests,
-			Fast:              u.Fast,
-		})
-	}
-}
-
 // -----------------------------------------------------------------------------
 // get_model_recommendation
 // -----------------------------------------------------------------------------
@@ -133,7 +116,7 @@ func (t *getModelRecommendationTool) Invoke(ctx context.Context, raw json.RawMes
 	if err != nil {
 		return nil, fmt.Errorf("load facts: %w", err)
 	}
-	facts.Price = mcpRoutingPriceFn(t.engine)
+	facts.Price = t.engine.RoutingPriceFn()
 	rep := modelvalue.Build(facts, modelvalue.Options{})
 
 	recs := buildRecommendations(rep, args.TurnKind)

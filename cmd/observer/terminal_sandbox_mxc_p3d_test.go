@@ -62,14 +62,14 @@ func TestMXCAgeRefusalStartsARefresh(t *testing.T) {
 	t.Cleanup(func() { sandboxContentRefreshFn = prev })
 
 	countMXCProbes(t, "windows", availableMXC())
-	rt := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	rt := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	_ = rt.driverProbes(context.Background())[sandboxbackend.BackendMXCProcess]
 	if len(asked) != 0 {
 		t.Fatalf("an available probe refreshed: %v", asked)
 	}
 
 	countMXCProbes(t, "windows", sandboxmxc.ProbeResult{Verdict: sandboxmxc.Verdict{Code: sandboxmxc.VerdictArtifactUnverified, Reason: "past its age floor"}, Rule: mxcSignedRuleID("age")})
-	rt = ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	rt = testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	_ = rt.driverProbes(context.Background())[sandboxbackend.BackendMXCProcess]
 	if len(asked) != 1 || !strings.HasPrefix(asked[0], string(content.SandboxNative)+"@") || strings.HasSuffix(asked[0], "@") {
 		t.Fatalf("refresh asked %v, want sandbox.native_files for the observer directory", asked)

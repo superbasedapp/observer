@@ -1,7 +1,6 @@
 package microsoft
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -105,16 +104,6 @@ func build(surface vs.SurfaceID, function string) func(vendorapi.Params, vendora
 	}
 }
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 var defaultPorts = map[string]string{"https": "443", "http": "80"}
 
 // origin canonicalises scheme://host:port with the default port explicit.
@@ -137,14 +126,14 @@ func nextCursor(surface vs.SurfaceID, r vendorapi.Response, link *string) (strin
 	}
 	u, err := url.Parse(*link)
 	if err != nil || u.User != nil || u.Host == "" || u.Fragment != "" {
-		return "", drift(surface, "@odata.nextLink is not an absolute URL")
+		return "", vendorapi.Drift(surface, "@odata.nextLink is not an absolute URL")
 	}
 	want, err := url.Parse(r.Origin)
 	if err != nil || origin(u) != origin(want) {
-		return "", drift(surface, "@odata.nextLink points at another origin")
+		return "", vendorapi.Drift(surface, "@odata.nextLink points at another origin")
 	}
 	if u.Path != r.Path {
-		return "", drift(surface, "@odata.nextLink points at another path")
+		return "", vendorapi.Drift(surface, "@odata.nextLink points at another path")
 	}
 	return u.Path + "?" + u.RawQuery, nil
 }
@@ -212,14 +201,14 @@ type userDetail struct {
 
 func parseUserDetail(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "status %d is not the documented 200", r.Status)
 	}
 	var doc userDetailDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "body does not decode as the documented object")
 	}
 	if doc.Value == nil {
-		return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "required field value is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "required field value is missing")
 	}
 	next, err := nextCursor(SurfaceUsageUserDetail, r, doc.NextLink)
 	if err != nil {
@@ -230,13 +219,13 @@ func parseUserDetail(r vendorapi.Response) (vendorapi.Page, error) {
 	for i, u := range *doc.Value {
 		upn := vendorapi.FoldEmail(strOf(u.UserPrincipalName))
 		if upn == "" || u.ReportRefreshDate == nil {
-			return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "value[%d] misses userPrincipalName or reportRefreshDate", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "value[%d] misses userPrincipalName or reportRefreshDate", i)
 		}
 		if _, ok := isoDate(*u.ReportRefreshDate); !ok {
-			return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "value[%d].reportRefreshDate is not a date", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "value[%d].reportRefreshDate is not a date", i)
 		}
 		if seen[upn] {
-			return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "value[%d] repeats a user", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "value[%d] repeats a user", i)
 		}
 		seen[upn] = true
 		body := map[string]string{"report_refresh_date": *u.ReportRefreshDate}
@@ -258,14 +247,14 @@ func parseUserDetail(r vendorapi.Response) (vendorapi.Page, error) {
 				continue
 			}
 			if _, ok := isoDate(*f.v); !ok {
-				return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "value[%d] %s is not a date", i, f.key)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "value[%d] %s is not a date", i, f.key)
 			}
 			body[f.key] = *f.v
 		}
 		if u.ByPeriod != nil && len(*u.ByPeriod) > 0 && (*u.ByPeriod)[0].ReportPeriod != nil {
 			n, err := (*u.ByPeriod)[0].ReportPeriod.Int64()
 			if err != nil || n <= 0 {
-				return vendorapi.Page{}, drift(SurfaceUsageUserDetail, "value[%d] reportPeriod is not a day count", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageUserDetail, "value[%d] reportPeriod is not a day count", i)
 			}
 			body["report_period"] = fmt.Sprint(n)
 		}
@@ -324,19 +313,19 @@ func countFacts(surface vs.SurfaceID, where string, obj map[string]json.RawMessa
 				continue
 			}
 			if len(raw) > 0 && raw[0] == '"' {
-				return nil, drift(surface, "%s.%s is a quoted number", where, a.prefix+m.suffix)
+				return nil, vendorapi.Drift(surface, "%s.%s is a quoted number", where, a.prefix+m.suffix)
 			}
 			var n json.Number
-			if err := decode(raw, &n); err != nil {
-				return nil, drift(surface, "%s.%s is not a number", where, a.prefix+m.suffix)
+			if err := vendorapi.DecodeNumbers(raw, &n); err != nil {
+				return nil, vendorapi.Drift(surface, "%s.%s is not a number", where, a.prefix+m.suffix)
 			}
 			v, err := n.Int64()
 			if err != nil || v < 0 {
-				return nil, drift(surface, "%s.%s is not a whole non-negative number", where, a.prefix+m.suffix)
+				return nil, vendorapi.Drift(surface, "%s.%s is not a whole non-negative number", where, a.prefix+m.suffix)
 			}
 			mv, ok := vendorapi.CountMicros(v)
 			if !ok {
-				return nil, drift(surface, "%s.%s overflows", where, a.prefix+m.suffix)
+				return nil, vendorapi.Drift(surface, "%s.%s overflows", where, a.prefix+m.suffix)
 			}
 			out = append(out, vendorapi.FactRow{
 				IntervalStart: start, IntervalEnd: end, SourceTZ: "UTC", CoverageDomain: CoverageDomain,
@@ -354,7 +343,7 @@ func whole(obj map[string]json.RawMessage, key string) (int64, bool) {
 		return 0, false
 	}
 	var n json.Number
-	if err := decode(raw, &n); err != nil {
+	if err := vendorapi.DecodeNumbers(raw, &n); err != nil {
 		return 0, false
 	}
 	v, err := n.Int64()
@@ -384,7 +373,7 @@ func objects(raw json.RawMessage) ([]map[string]json.RawMessage, bool) {
 	if len(raw) == 0 || raw[0] != '[' {
 		return nil, false
 	}
-	return out, decode(raw, &out) == nil
+	return out, vendorapi.DecodeNumbers(raw, &out) == nil
 }
 
 // UserCountSummary returns the driver of
@@ -416,14 +405,14 @@ func UserCountSummary() vendorapi.Driver {
 func parseSummary(r vendorapi.Response) (vendorapi.Page, error) {
 	const s = SurfaceUserCountSummary
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc countDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented object")
 	}
 	if doc.Value == nil {
-		return vendorapi.Page{}, drift(s, "required field value is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field value is missing")
 	}
 	next, err := nextCursor(s, r, doc.NextLink)
 	if err != nil {
@@ -433,21 +422,21 @@ func parseSummary(r vendorapi.Response) (vendorapi.Page, error) {
 	for i, v := range *doc.Value {
 		refresh, ok := dateMember(v, "reportRefreshDate")
 		if !ok {
-			return vendorapi.Page{}, drift(s, "value[%d].reportRefreshDate is missing or not a date", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].reportRefreshDate is missing or not a date", i)
 		}
 		products, ok := objects(v["adoptionByProduct"])
 		if !ok {
-			return vendorapi.Page{}, drift(s, "value[%d].adoptionByProduct is missing or not an array", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByProduct is missing or not an array", i)
 		}
 		end := refresh.Add(day)
 		periods := map[int64]bool{}
 		for j, p := range products {
 			n, ok := whole(p, "reportPeriod")
 			if !ok || n > 366 {
-				return vendorapi.Page{}, drift(s, "value[%d].adoptionByProduct[%d].reportPeriod is not a day count", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByProduct[%d].reportPeriod is not a day count", i, j)
 			}
 			if periods[n] {
-				return vendorapi.Page{}, drift(s, "value[%d].adoptionByProduct[%d] repeats a report period", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByProduct[%d] repeats a report period", i, j)
 			}
 			periods[n] = true
 			facts, err := countFacts(s, fmt.Sprintf("value[%d].adoptionByProduct[%d]", i, j), p, end.Add(-time.Duration(n)*day), end)
@@ -502,14 +491,14 @@ func UserCountTrend() vendorapi.Driver {
 func parseTrend(r vendorapi.Response) (vendorapi.Page, error) {
 	const s = SurfaceUserCountTrend
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc countDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(s, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented object")
 	}
 	if doc.Value == nil {
-		return vendorapi.Page{}, drift(s, "required field value is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field value is missing")
 	}
 	next, err := nextCursor(s, r, doc.NextLink)
 	if err != nil {
@@ -519,22 +508,22 @@ func parseTrend(r vendorapi.Response) (vendorapi.Page, error) {
 	days := map[time.Time]bool{}
 	for i, v := range *doc.Value {
 		if _, ok := dateMember(v, "reportRefreshDate"); !ok {
-			return vendorapi.Page{}, drift(s, "value[%d].reportRefreshDate is missing or not a date", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].reportRefreshDate is missing or not a date", i)
 		}
 		if _, ok := whole(v, "reportPeriod"); !ok {
-			return vendorapi.Page{}, drift(s, "value[%d].reportPeriod is not a day count", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].reportPeriod is not a day count", i)
 		}
 		dates, ok := objects(v["adoptionByDate"])
 		if !ok {
-			return vendorapi.Page{}, drift(s, "value[%d].adoptionByDate is missing or not an array", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByDate is missing or not an array", i)
 		}
 		for j, d := range dates {
 			at, ok := dateMember(d, "reportDate")
 			if !ok {
-				return vendorapi.Page{}, drift(s, "value[%d].adoptionByDate[%d].reportDate is missing or not a date", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByDate[%d].reportDate is missing or not a date", i, j)
 			}
 			if days[at] {
-				return vendorapi.Page{}, drift(s, "value[%d].adoptionByDate[%d] repeats a report date", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "value[%d].adoptionByDate[%d] repeats a report date", i, j)
 			}
 			days[at] = true
 			facts, err := countFacts(s, fmt.Sprintf("value[%d].adoptionByDate[%d]", i, j), d, at, at.Add(day))

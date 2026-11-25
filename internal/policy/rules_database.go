@@ -381,11 +381,20 @@ type optHit struct {
 // scanning. It is the one reading of a database CLI's flags, shared by the
 // operand scan and the value scans.
 func walkOptions(cmd *Command, sp optSpec) (hits []optHit, pos []string) {
+	hits, idx := walkOptionIndexes(cmd, sp)
+	for _, i := range idx {
+		pos = append(pos, cmd.Argv[i])
+	}
+	return hits, pos
+}
+
+// walkOptionIndexes is walkOptions with the operands as argv indexes.
+func walkOptionIndexes(cmd *Command, sp optSpec) (hits []optHit, pos []int) {
 	rest := false
 	for i := 1; i < len(cmd.Argv); i++ {
 		t := cmd.Argv[i]
 		if rest {
-			pos = append(pos, t)
+			pos = append(pos, i)
 			continue
 		}
 		if t == "--" {
@@ -393,7 +402,7 @@ func walkOptions(cmd *Command, sp optSpec) (hits []optHit, pos []string) {
 			continue
 		}
 		if !cmd.isFlagToken(t) {
-			pos = append(pos, t)
+			pos = append(pos, i)
 			continue
 		}
 		next := func(flag string) {

@@ -148,6 +148,12 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     Page: lazy(() => import("@/pages/AppAlerts").then((m) => ({ default: m.AppAlertsPage }))),
   },
   {
+    navId: "app-model-calls",
+    path: "apps/model-calls",
+    component: "capture.proxy",
+    Page: lazy(() => import("@/pages/apps/ModelCalls").then((m) => ({ default: m.ModelCallsPage }))),
+  },
+  {
     navId: "agent-config",
     path: "agent-config",
     component: "integration.agent-config",
@@ -274,6 +280,7 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
   "app-scores": "obs",
   "app-prompts": "obs",
   "app-alerts": "obs",
+  "app-model-calls": "capture.proxy",
   "agent-config": "integration.agent-config",
   tools: "core",
   compression: "proxy.compression",

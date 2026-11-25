@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,11 @@ import (
 //	                                              state (review E-72)
 //	POST   /api/sdk/credential                 L  sign in: mint the SDK key
 //	DELETE /api/sdk/credential                 L  sign out: revoke + remove
+//	                                              (an admin-issued key: remove)
+//	POST   /api/sdk/credential/key             L  install an SDK key an admin
+//	                                              issued (`observer sdk
+//	                                              use-key`; the key in the
+//	                                              body, never echoed)
 //	GET    /api/config/proposals               L  settings an agent asked for
 //	POST   /api/config/proposals/{id}/resolve  L  mark one approved/rejected
 //
@@ -55,7 +61,22 @@ func (s *Server) handleSDKDestination(w http.ResponseWriter, r *http.Request) {
 		st = s.opts.SDK.Status()
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, sdkcredsvc.BuildDiscovery(cfg, st, "http://"+r.Host))
+	writeJSON(w, sdkcredsvc.BuildDiscoveryWithOrg(cfg, st, "http://"+r.Host, s.sdkOrgDashboard(r.Context())))
+}
+
+// sdkOrgDashboard is what the enrolment row says about the organization's
+// own dashboard, for the discovery body's online.dashboard_url (SDK
+// quickstart plan 3.8). Not enrolled, or no database: the zero value, and
+// the field stays "".
+func (s *Server) sdkOrgDashboard(ctx context.Context) sdkcredsvc.OrgDashboard {
+	if s.opts.DB == nil {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	enr, err := store.New(s.opts.DB).LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	return sdkcredsvc.OrgDashboardFrom(enr.OrgID, enr.OnlineURL, enr.OrgServerURL)
 }
 
 // handleOTLPReceiver serves GET /api/sdk/receiver: what the daemon last
@@ -115,6 +136,53 @@ func (s *Server) handleSDKCredential(w http.ResponseWriter, r *http.Request) {
 		out["warning"] = err.Error()
 	}
 	writeJSON(w, out)
+}
+
+// sdkInstallKeyBodyLimit bounds the install body: a key is at most 512
+// bytes and an address a few hundred.
+const sdkInstallKeyBodyLimit = 4 << 10
+
+// handleSDKInstallKey serves POST /api/sdk/credential/key: the dashboard
+// form of `observer sdk use-key`. Owner-local (CapabilityLocal), confirm
+// token required (installing a key lets apps send data off this machine),
+// the key in the JSON body only (never a URL or a query), and never in the
+// answer, the audit row or a log: the answer is the key's status, which
+// carries no key. A refusal's message never quotes the key (sdkcredsvc's
+// errors name the broken rule only).
+func (s *Server) handleSDKInstallKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		// A key in a query string lands in browser history and access logs;
+		// refuse the request whatever it carries, and never read it.
+		writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "query_not_allowed", "message": "send the SDK key in the JSON body, never in the address"})
+		return
+	}
+	if !requireJSONConfirm(w, r) {
+		return
+	}
+	if s.opts.SDK.InstallKey == nil {
+		http.Error(w, "installing an SDK key is not available in this build", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		Key        string `json:"key"`
+		GatewayURL string `json:"gateway_url"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, sdkInstallKeyBodyLimit)).Decode(&body); err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "bad_request", "message": `the body must be {"key": "<key_id>.<secret>", "gateway_url": "https://..."}`})
+		return
+	}
+	st, err := s.opts.SDK.InstallKey(body.Key, body.GatewayURL)
+	body.Key = ""
+	if err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "install_failed", "message": err.Error()})
+		return
+	}
+	s.recordManageAudit(r, "sdk_use_key", "key_id="+st.KeyID+" gateway="+st.KeyGatewayURL)
+	writeJSON(w, map[string]any{"status": st})
 }
 
 // handleConfigProposals serves GET /api/config/proposals (?all=1 includes

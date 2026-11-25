@@ -20,13 +20,31 @@ export const FEATURE_LABELS: Record<string, string> = {
   session_enrichment: "Session enrichment",
 };
 
-// PLAN_LABELS covers the plan/budget-pool name vocabulary
-// (internal/cloudserver/store/plans.go PlanFree/PlanPlusBeta). Usage's
-// `budget_pool` field reuses the same names, so this map serves both.
+// PLAN_LABELS covers the plan names the portal reads off the API: the
+// account plans and budget pools (internal/cloudserver/store/plans.go
+// PlanFree/PlanPlusBeta; Usage's `budget_pool` reuses the same names) and the
+// org plans a subscription row can name (internal/entitlements/catalog.go: a
+// personal subscription re-keyed onto the personal org names personal_pro).
+// The paid individual plan is "Personal Pro" under both of its internal
+// names, plus_beta and personal_pro (operator ruling 2026-11-24: the only
+// name a customer sees for it).
 export const PLAN_LABELS: Record<string, string> = {
   free: "Free",
   plus_beta: "Personal Pro",
+  personal_free: "Personal Free",
+  personal_pro: "Personal Pro",
+  team: "Team",
+  business: "Business",
 };
+
+/** planDisplayName is the name a customer sees for a plan: the server's own
+ * label when it sent one (GET /v1/usage `plan_label`, the catalog's), else
+ * the plan token's PLAN_LABELS entry, else the token itself (labelFor's
+ * honesty rule). "" when there is neither. */
+export function planDisplayName(token: string | null | undefined, serverLabel?: string | null): string {
+  if (serverLabel) return serverLabel;
+  return token ? labelFor(PLAN_LABELS, token) : "";
+}
 
 // JOB_STATE_LABELS covers the enrichment-job state vocabulary
 // (internal/cloudserver/store/jobs.go, internal/cloudserver/store/results.go:

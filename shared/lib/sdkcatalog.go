@@ -24,6 +24,10 @@ type SDK struct {
 	InstallCheckout  string   `json:"install_checkout"`
 	InstallPublished string   `json:"install_published"`
 	Snippet          []string `json:"snippet"`
+	// Setup is the one-command quickstart (`uvx superbased-sdk setup`,
+	// AI Apps SDK quickstart plan 3.5), or "" for a language with no setup
+	// of its own (Go, Java). Optional, one trimmed line.
+	Setup string `json:"setup,omitempty"`
 }
 
 // Install is the install line to show now.
@@ -37,7 +41,8 @@ func (s SDK) Install() string {
 // Parse validates a catalog document with the rules sdkCatalog.ts applies:
 // at least one row; every row has an id (lowercase, unique), a label, a
 // package, a docs path starting with "/", both install lines, a release of
-// "sdk-release" or "none", and a non-empty snippet.
+// "sdk-release" or "none", and a non-empty snippet; a setup line, when set,
+// is one trimmed line.
 func Parse(b []byte) ([]SDK, error) {
 	var doc struct {
 		SDKs []SDK `json:"sdks"`
@@ -65,6 +70,8 @@ func Parse(b []byte) ([]SDK, error) {
 			return nil, fmt.Errorf("sdkcatalog.Parse: %s: release %q is not sdk-release or none", s.ID, s.Release)
 		case len(s.Snippet) == 0:
 			return nil, fmt.Errorf("sdkcatalog.Parse: %s: snippet is empty", s.ID)
+		case strings.Contains(s.Setup, "\n") || s.Setup != strings.TrimSpace(s.Setup):
+			return nil, fmt.Errorf("sdkcatalog.Parse: %s: setup must be one trimmed line", s.ID)
 		}
 		seen[s.ID] = true
 	}

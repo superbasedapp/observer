@@ -22,9 +22,14 @@ import (
 // GeneratePlans does.
 //
 // Rows are immutable (0012's trigger), so the generator inserts a missing
-// (name, version) and CHECKS an existing one: a row that differs from its
-// template is drift, refused, never rewritten. Versions below the catalog's
-// (free and plus_beta v1-v4) are migration history and stay as they are.
+// (name, version) and CHECKS an existing one: a row whose entitlement
+// columns differ from its template is drift, refused, never rewritten. The
+// one exception is label, the plan's display name: it is copy, not an
+// entitlement (nothing branches on it and an account-kind template is never
+// issued as a signed document), so the generator updates a label that
+// differs from the catalog's (cloud 0156 lets exactly that update through).
+// Versions below the catalog's (free and plus_beta v1-v4) are migration
+// history and stay as they are.
 
 // planGenWriterSetting is the transaction setting the 0084 trigger reads.
 const planGenWriterSetting = "sbci.plan_writer"
@@ -138,6 +143,9 @@ type PlanDrift struct {
 	// it); otherwise Diff names the columns that differ.
 	Missing bool
 	Diff    []string
+	// CopyOnly reports that every differing column is copy (the label):
+	// GeneratePlans updates it to the catalog's instead of refusing.
+	CopyOnly bool
 }
 
 func (d PlanDrift) String() string {
@@ -151,6 +159,9 @@ func (d PlanDrift) String() string {
 type PlanGenReport struct {
 	// Inserted are the (name vN) rows written.
 	Inserted []string
+	// Relabelled are the (name vN) rows whose label was updated to the
+	// catalog's (copy; cloud 0156).
+	Relabelled []string
 	// Unchanged are the rows that already matched their template.
 	Unchanged []string
 }
@@ -161,24 +172,46 @@ type TxBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-// planDiff names the generated columns where got differs from want.
-func planDiff(want, got Plan) []string {
-	var d []string
-	add := func(col string, w, g any) {
-		if w != g {
-			d = append(d, fmt.Sprintf("%s %v != catalog %v", col, g, w))
+// planField is one row of the comparison table: a generated column, how to
+// read it from a Plan, and whether it is copy (the generator keeps it equal
+// to the catalog) rather than an entitlement (a difference is drift).
+type planField struct {
+	column string
+	copy   bool
+	get    func(Plan) any
+}
+
+// planFields is the comparison table, one row per generated column but the
+// key (name, version).
+func planFields() []planField {
+	return []planField{
+		{column: "label", copy: true, get: func(p Plan) any { return p.Label }},
+		{column: "daily_cap", get: func(p Plan) any { return p.DailyCap }},
+		{column: "monthly_cap", get: func(p Plan) any { return p.MonthlyCap }},
+		{column: "concurrency_cap", get: func(p Plan) any { return p.ConcurrencyCap }},
+		{column: "budget_pool", get: func(p Plan) any { return p.BudgetPool }},
+		{column: "digest_weekly", get: func(p Plan) any { return p.DigestWeekly }},
+		{column: "results_retention_days", get: func(p Plan) any { return p.ResultsRetentionDays }},
+		{column: "route_id", get: func(p Plan) any { return p.RouteID }},
+		{column: "enrichment_tier", get: func(p Plan) any { return p.EnrichmentTier }},
+	}
+}
+
+// planDiff names the generated columns where got differs from want, and
+// reports whether every difference is in a copy column.
+func planDiff(want, got Plan) (diff []string, copyOnly bool) {
+	copyOnly = true
+	for _, f := range planFields() {
+		w, g := f.get(want), f.get(got)
+		if w == g {
+			continue
+		}
+		diff = append(diff, fmt.Sprintf("%s %v != catalog %v", f.column, g, w))
+		if !f.copy {
+			copyOnly = false
 		}
 	}
-	add("label", want.Label, got.Label)
-	add("daily_cap", want.DailyCap, got.DailyCap)
-	add("monthly_cap", want.MonthlyCap, got.MonthlyCap)
-	add("concurrency_cap", want.ConcurrencyCap, got.ConcurrencyCap)
-	add("budget_pool", want.BudgetPool, got.BudgetPool)
-	add("digest_weekly", want.DigestWeekly, got.DigestWeekly)
-	add("results_retention_days", want.ResultsRetentionDays, got.ResultsRetentionDays)
-	add("route_id", want.RouteID, got.RouteID)
-	add("enrichment_tier", want.EnrichmentTier, got.EnrichmentTier)
-	return d
+	return diff, copyOnly
 }
 
 // checkPlansTx compares every generated row with the table.
@@ -193,15 +226,16 @@ func checkPlansTx(ctx context.Context, tx pgx.Tx, plans []Plan) ([]PlanDrift, er
 		if err != nil {
 			return nil, err
 		}
-		if d := planDiff(want, got); len(d) > 0 {
-			out = append(out, PlanDrift{Name: want.Name, Version: want.Version, Diff: d})
+		if d, copyOnly := planDiff(want, got); len(d) > 0 {
+			out = append(out, PlanDrift{Name: want.Name, Version: want.Version, Diff: d, CopyOnly: copyOnly})
 		}
 	}
 	return out, nil
 }
 
 // CheckPlans reports, read-only, every catalog plan whose plans row is
-// missing or differs. Empty means the table holds the catalog.
+// missing or differs (a label-only difference included, CopyOnly set). Empty
+// means the table holds the catalog.
 func CheckPlans(ctx context.Context, db TxBeginner) ([]PlanDrift, error) {
 	plans, err := GeneratedPlans()
 	if err != nil {
@@ -216,10 +250,11 @@ func CheckPlans(ctx context.Context, db TxBeginner) ([]PlanDrift, error) {
 }
 
 // GeneratePlans writes the catalog's plans rows: it inserts every missing
-// (name, version) and checks every existing one, in one transaction. Any
-// drift fails the whole run and writes nothing. It runs as the migrating
-// login (the table's owner; the application roles hold SELECT only), from
-// `observer-cloud migrate`, after the migrations.
+// (name, version), updates the label of an existing one whose only
+// difference is its label (copy, cloud 0156), and checks every other, in one
+// transaction. Any other drift fails the whole run and writes nothing. It
+// runs as the migrating login (the table's owner; the application roles hold
+// SELECT only), from `observer-cloud migrate`, after the migrations.
 func GeneratePlans(ctx context.Context, db TxBeginner) (PlanGenReport, error) {
 	plans, err := GeneratedPlans()
 	if err != nil {
@@ -238,20 +273,34 @@ func GeneratePlans(ctx context.Context, db TxBeginner) (PlanGenReport, error) {
 		return PlanGenReport{}, fmt.Errorf("store.GeneratePlans: %w", err)
 	}
 	var rep PlanGenReport
-	missing := map[string]bool{}
+	missing, relabel := map[string]bool{}, map[string]bool{}
 	var probs []string
 	for _, d := range drift {
-		if d.Missing {
-			missing[fmt.Sprintf("%s v%d", d.Name, d.Version)] = true
-			continue
+		key := fmt.Sprintf("%s v%d", d.Name, d.Version)
+		switch {
+		case d.Missing:
+			missing[key] = true
+		case d.CopyOnly:
+			relabel[key] = true
+		default:
+			probs = append(probs, d.String())
 		}
-		probs = append(probs, d.String())
 	}
 	if len(probs) > 0 {
 		return PlanGenReport{}, fmt.Errorf("store.GeneratePlans: %s: %w", strings.Join(probs, "; "), ErrPlanDrift)
 	}
 	for _, p := range plans {
 		key := fmt.Sprintf("%s v%d", p.Name, p.Version)
+		if relabel[key] {
+			// The one UPDATE of plans: label only, which 0156's trigger lets
+			// through for the generator's transaction.
+			if _, err := tx.Exec(ctx, `UPDATE plans SET label = $3 WHERE name = $1 AND version = $2`,
+				p.Name, p.Version, p.Label); err != nil {
+				return PlanGenReport{}, fmt.Errorf("store.GeneratePlans: relabel %s: %w", key, err)
+			}
+			rep.Relabelled = append(rep.Relabelled, key)
+			continue
+		}
 		if !missing[key] {
 			rep.Unchanged = append(rep.Unchanged, key)
 			continue

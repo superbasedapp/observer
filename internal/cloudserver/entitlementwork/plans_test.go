@@ -76,7 +76,7 @@ func createdTeam(org string, created time.Time) store.OrgEntitlementView {
 // fall-through cases each row's match must not take.
 func TestPlanRules(t *testing.T) {
 	t.Parallel()
-	if got, want := entitlementwork.PlanRuleNames(), []string{"subscription", "org_grant", "launch", "floor"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := entitlementwork.PlanRuleNames(), []string{"subscription", "account_subscription", "org_grant", "launch", "floor"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("plan rules = %v, want %v (one case per row below)", got, want)
 	}
 	created := testNow.Add(-24 * time.Hour)
@@ -90,31 +90,33 @@ func TestPlanRules(t *testing.T) {
 		org   store.OrgEntitlementView
 		kind  entitlements.Kind
 		sub   *store.PaddleSubscription
+		owner *store.PaddleSubscription
 		grant *store.OrgPlanGrant
 		want  entitlementwork.Plan
 		rule  string
 	}{
 		// One per row.
 		{name: "subscription", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("business", 1, "active")), grant: grant("team", 1, nil), want: entitlementwork.Plan{Name: "business", Version: 1}, rule: "subscription"},
+		{name: "account_subscription", org: personal, kind: entitlements.KindPersonal, owner: ptr(sub("plus_beta", 5, "active")), grant: grant("personal_free", 2, nil), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "account_subscription"},
 		{name: "org_grant", org: createdTeam(orgA, created), kind: entitlements.KindTeam, grant: grant("business", 1, nil), want: entitlementwork.Plan{Name: "business", Version: 1}, rule: "org_grant"},
 		{name: "launch", org: createdTeam(orgA, created), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}, rule: "launch"},
-		{name: "floor", org: team(orgA, "provisioning"), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
+		{name: "floor", org: team(orgA, "provisioning"), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
 		// The grant (W15-D13).
 		{name: "grant outlives the launch window", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("team", 1, nil), want: entitlementwork.Plan{Name: "team", Version: 1}, rule: "org_grant"},
 		{name: "grant before the create is acked", org: team(orgA, "provisioning"), kind: entitlements.KindTeam, grant: grant("team", 1, nil), want: entitlementwork.Plan{Name: "team", Version: 1}, rule: "org_grant"},
 		{name: "bounded grant carries its end", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("team", 1, &grantEnd), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: grantEnd.Unix()}, rule: "org_grant"},
-		{name: "ended grant falls to the floor", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("business", 1, &ended), want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
+		{name: "ended grant falls to the floor", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("business", 1, &ended), want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
 		{name: "ended grant falls to launch", org: createdTeam(orgA, created), kind: entitlements.KindTeam, grant: grant("business", 1, &ended), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}, rule: "launch"},
-		{name: "revoke row grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: &store.OrgPlanGrant{Action: store.OrgPlanGrantActionRevoke}, want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
-		{name: "grant of another kind grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("personal_pro", 1, nil), want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
-		{name: "grant of version zero grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("business", 0, nil), want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
+		{name: "revoke row grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: &store.OrgPlanGrant{Action: store.OrgPlanGrantActionRevoke}, want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
+		{name: "grant of another kind grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("personal_pro", 1, nil), want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
+		{name: "grant of version zero grants nothing", org: lapsedTeam, kind: entitlements.KindTeam, grant: grant("business", 0, nil), want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
 		{name: "canceled subscription falls to the grant", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(sub("team", 1, "canceled")), grant: grant("business", 1, nil), want: entitlementwork.Plan{Name: "business", Version: 1}, rule: "org_grant"},
 		// Fall-through.
 		{name: "trialing subscription counts", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("team", 1, "trialing")), want: entitlementwork.Plan{Name: "team", Version: 1}},
 		{name: "past_due subscription counts", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("team", 1, "past_due")), want: entitlementwork.Plan{Name: "team", Version: 1}},
 		// W16-D5: the dunning grace.
 		{name: "past_due within grace carries its end", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(pastDue("team", testNow.Add(-13*24*time.Hour))), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: testNow.Add(24 * time.Hour).Unix()}, rule: "subscription"},
-		{name: "past_due past grace falls to the floor", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(pastDue("team", testNow.Add(-14*24*time.Hour))), want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}, rule: "floor"},
+		{name: "past_due past grace falls to the floor", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(pastDue("team", testNow.Add(-14*24*time.Hour))), want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
 		{name: "past_due past grace falls to the grant", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(pastDue("business", testNow.Add(-30*24*time.Hour))), grant: grant("team", 1, nil), want: entitlementwork.Plan{Name: "team", Version: 1}, rule: "org_grant"},
 		{name: "past_due past grace falls to launch", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(pastDue("business", testNow.Add(-15*24*time.Hour))), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}, rule: "launch"},
 		{name: "canceled subscription falls to launch", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("business", 1, "canceled")), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}},
@@ -122,10 +124,28 @@ func TestPlanRules(t *testing.T) {
 		{name: "plan of another kind grants nothing", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("personal_pro", 1, "active")), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}},
 		{name: "unknown plan grants nothing", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("enterprise_gold", 1, "active")), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}},
 		{name: "version zero grants nothing", org: createdTeam(orgA, created), kind: entitlements.KindTeam, sub: ptr(sub("business", 0, "active")), want: entitlementwork.Plan{Name: "team", Version: 1, NotAfter: launchEnd}},
-		{name: "launch window closed", org: createdTeam(orgA, testNow.Add(-entitlementwork.DefaultLaunchWindow)), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}},
-		{name: "create not acked: no launch yet", org: team(orgA, "provisioning"), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 1}},
-		{name: "personal org has no launch row", org: personal, kind: entitlements.KindPersonal, want: entitlementwork.Plan{Name: "personal_free", Version: 1}},
-		{name: "personal subscription", org: personal, kind: entitlements.KindPersonal, sub: ptr(sub("personal_pro", 1, "active")), want: entitlementwork.Plan{Name: "personal_pro", Version: 1}},
+		{name: "launch window closed", org: createdTeam(orgA, testNow.Add(-entitlementwork.DefaultLaunchWindow)), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}},
+		{name: "create not acked: no launch yet", org: team(orgA, "provisioning"), kind: entitlements.KindTeam, want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}},
+		{name: "personal org has no launch row", org: personal, kind: entitlements.KindPersonal, want: entitlementwork.Plan{Name: "personal_free", Version: 3}, rule: "floor"},
+		{name: "personal subscription", org: personal, kind: entitlements.KindPersonal, sub: ptr(sub("personal_pro", 2, "active")), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "subscription"},
+		// L-166: the move to the v2 personal plans. A Personal Pro v1
+		// subscription (the version migrate-personal re-keyed Plus
+		// subscriptions to) and a Personal Pro v1 grant are issued v2,
+		// with no write to the row; Business v1 is not carried (its
+		// holders move by the price mapping).
+		{name: "personal_pro v1 subscription is carried to v3", org: personal, kind: entitlements.KindPersonal, sub: ptr(sub("personal_pro", 1, "active")), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "subscription"},
+		{name: "personal_pro v1 grant is carried to v3", org: personal, kind: entitlements.KindPersonal, grant: grant("personal_pro", 1, nil), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "org_grant"},
+		{name: "personal_free v1 grant is carried to v3", org: personal, kind: entitlements.KindPersonal, grant: grant("personal_free", 1, nil), want: entitlementwork.Plan{Name: "personal_free", Version: 3}, rule: "org_grant"},
+		{name: "business v1 subscription is not carried", org: lapsedTeam, kind: entitlements.KindTeam, sub: ptr(sub("business", 1, "active")), want: entitlementwork.Plan{Name: "business", Version: 1}, rule: "subscription"},
+		// L-167: a Plus purchase (the account plan plus_beta) lands on the
+		// owner's personal org as Personal Pro at its newest version.
+		{name: "plus trial pairs too", org: personal, kind: entitlements.KindPersonal, owner: ptr(sub("plus_beta", 5, "trialing")), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "account_subscription"},
+		{name: "plus past_due within grace carries its end", org: personal, kind: entitlements.KindPersonal, owner: ptr(pastDue("plus_beta", testNow.Add(-13*24*time.Hour))), want: entitlementwork.Plan{Name: "personal_pro", Version: 3, NotAfter: testNow.Add(24 * time.Hour).Unix()}, rule: "account_subscription"},
+		{name: "plus past grace falls to the floor", org: personal, kind: entitlements.KindPersonal, owner: ptr(pastDue("plus_beta", testNow.Add(-15*24*time.Hour))), want: entitlementwork.Plan{Name: "personal_free", Version: 3}, rule: "floor"},
+		{name: "canceled plus falls to the floor", org: personal, kind: entitlements.KindPersonal, owner: ptr(sub("plus_beta", 5, "canceled")), want: entitlementwork.Plan{Name: "personal_free", Version: 3}, rule: "floor"},
+		{name: "an unpaired account plan pairs nothing", org: personal, kind: entitlements.KindPersonal, owner: ptr(sub("free", 5, "active")), want: entitlementwork.Plan{Name: "personal_free", Version: 3}, rule: "floor"},
+		{name: "the org's own row wins over the owner's", org: personal, kind: entitlements.KindPersonal, sub: ptr(sub("personal_pro", 1, "active")), owner: ptr(sub("plus_beta", 5, "canceled")), want: entitlementwork.Plan{Name: "personal_pro", Version: 3}, rule: "subscription"},
+		{name: "a team org never reads an owner", org: lapsedTeam, kind: entitlements.KindTeam, owner: ptr(sub("plus_beta", 5, "active")), want: entitlementwork.Plan{Name: "team_lapsed", Version: 2}, rule: "floor"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,7 +158,11 @@ func TestPlanRules(t *testing.T) {
 			if tc.grant != nil {
 				grants.grants[tc.org.OrgID] = *tc.grant
 			}
-			p := entitlementwork.SubscriptionPlans{Subs: subs, Grants: grants, Now: func() time.Time { return testNow }}
+			owners := fakeOwners{}
+			if tc.owner != nil {
+				owners[tc.org.OrgID] = *tc.owner
+			}
+			p := entitlementwork.SubscriptionPlans{Subs: subs, Grants: grants, Owners: owners, Now: func() time.Time { return testNow }}
 			got, err := p.PlanFor(context.Background(), tc.org, tc.kind)
 			if err != nil || got != tc.want {
 				t.Fatalf("PlanFor = %+v, %v; want %+v", got, err, tc.want)
@@ -153,6 +177,19 @@ func TestPlanRules(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// fakeOwners is the OwnerPlanReader fake (the real one is
+// store.PersonalOrgOwnerSubscription over cloud 0155's definer). A team org
+// reaching it is a test failure: the worker reads owners only for a kind an
+// account plan pairs into.
+type fakeOwners map[string]store.PaddleSubscription
+
+func (f fakeOwners) PersonalOrgOwnerSubscription(_ context.Context, org string) (store.PaddleSubscription, error) {
+	if s, ok := f[org]; ok {
+		return s, nil
+	}
+	return store.PaddleSubscription{}, fmt.Errorf("wrapped: %w", store.ErrNotFound)
+}
 
 // pastDue is a past_due subscription that entered dunning at since.
 func pastDue(plan string, since time.Time) store.PaddleSubscription {
@@ -349,7 +386,7 @@ func TestPastDueDunningWindow(t *testing.T) {
 		b.NotAfter = testNow.Add(-entered).Add(g).Unix()
 		return b
 	}
-	floor := entitlementwork.Plan{Name: "team_lapsed", Version: 1}
+	floor := entitlementwork.Plan{Name: "team_lapsed", Version: 2}
 	cases := []struct {
 		name  string
 		org   store.OrgEntitlementView

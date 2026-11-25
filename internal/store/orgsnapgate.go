@@ -97,7 +97,7 @@ import (
 // always could.
 //
 // A row larger than the WHOLE snapshot budget can never ship. It is reported
-// once (a warning and OrgSnapshotOversizedRows) and settled for the cycle, so
+// once (a warning and the gate's oversized-row tally) and settled for the cycle, so
 // it no longer blocks every row behind it or keeps the family open forever.
 //
 // The paging state lives here, in memory, like the rest of the gate: a restart
@@ -813,20 +813,6 @@ func (s *Store) CommitPushedSnapshots() {
 	s.commitAgentConfigDigest()
 	s.commitComponentPostureDigest()
 	s.commitAgentConfigInventory()
-}
-
-// OrgSnapshotGateStats returns the per-family skip / recompute tallies since
-// process start, for diagnostics and tests.
-func (s *Store) OrgSnapshotGateStats() (skipped, recomputed map[string]int64) {
-	return s.snap.counters()
-}
-
-// OrgSnapshotOversizedRows returns, per snapshot family, how many distinct
-// rows since process start were larger than the whole snapshot budget
-// ([org_client] max_push_bytes minus the envelope reserve) and so could not
-// ship. Each is also logged once as a warning.
-func (s *Store) OrgSnapshotOversizedRows() map[string]int64 {
-	return s.snap.oversizedCounts()
 }
 
 // snapProbeScalar runs a probe query that yields exactly ONE text column and

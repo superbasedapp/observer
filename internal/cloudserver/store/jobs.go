@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 )
 
 // Job terminal-reason constants (park/fail causes surfaced to the client).
@@ -43,18 +45,16 @@ const (
 // FeatureSessionEnrichment it needs no per-account entitlements row — its
 // entitlement is the resolved plan's digest_weekly flag alone (see
 // reserveDigestAllowanceTx).
-const FeatureProjectDigest = "project_digest"
+const FeatureProjectDigest = cloudcontract.FeatureProjectDigest
 
-// Result-kind discriminators (analysis_results.kind, migration 0037). Mirrored
-// as plain string constants (not imported) from cloudcontract's identical
-// values — the store package deliberately never imports cloudcontract
-// (CLAUDE.md #1), so the two sides agree on the literal only.
+// Result-kind discriminators (analysis_results.kind, migration 0037), named
+// here for the store's callers; cloudcontract owns the values.
 const (
 	// ResultKindSessionEnrichment is the default kind for every pre-existing
 	// and every ordinary enrichment result.
-	ResultKindSessionEnrichment = "session_enrichment"
+	ResultKindSessionEnrichment = cloudcontract.ResultKindSessionEnrichment
 	// ResultKindProjectDigest marks a weekly project-digest result row.
-	ResultKindProjectDigest = "project_digest"
+	ResultKindProjectDigest = cloudcontract.ResultKindProjectDigest
 )
 
 // SubmitJobInput is everything the API has resolved for one enrichment job. The
@@ -359,9 +359,8 @@ func terminateJobTx(ctx context.Context, tx pgx.Tx, accountID, jobID, state, rea
 }
 
 // cancelNonTerminalJobsTx cancels every queued/leased/running job for the account
-// on the caller's transaction and returns the count. It is the tx-capable form of
-// CancelQueuedJobs, used by CreateDeletionRequest so cancellation is part of the
-// single atomic deletion transaction (FE4).
+// on the caller's transaction and returns the count. CreateDeletionRequest uses
+// it so cancellation is part of the single atomic deletion transaction (FE4).
 func cancelNonTerminalJobsTx(ctx context.Context, tx pgx.Tx, accountID string, now time.Time) (int, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT id::text FROM analysis_jobs
@@ -406,39 +405,6 @@ func deleteEvidenceForJobTx(ctx context.Context, tx pgx.Tx, accountID, evidenceP
 		return e
 	}
 	return deleteEvidenceBlobTx(ctx, tx, accountID, blobRef)
-}
-
-// CancelQueuedJobs cancels every non-terminal job for the account (deletion
-// skeleton). Returns how many were canceled.
-func (s *Store) CancelQueuedJobs(ctx context.Context, accountID string, now time.Time) (int, error) {
-	var ids []string
-	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx,
-			`SELECT id::text FROM analysis_jobs
-			  WHERE account_id = $1::uuid AND state IN ('queued','leased','running')`,
-			accountID)
-		if e != nil {
-			return e
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			if e := rows.Scan(&id); e != nil {
-				return e
-			}
-			ids = append(ids, id)
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		return 0, err
-	}
-	for _, id := range ids {
-		if e := s.CancelJob(ctx, accountID, id, now); e != nil && !errors.Is(e, ErrNotFound) {
-			return 0, e
-		}
-	}
-	return len(ids), nil
 }
 
 // --- Project digest (W5) ---------------------------------------------------

@@ -13,8 +13,11 @@ adds entries without changing the exporter plumbing.
 from __future__ import annotations
 
 import os
+import re
+import sys
+import threading
 from dataclasses import dataclass, field, fields
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import unquote
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:4318/v1/traces"
@@ -111,15 +114,226 @@ def resolve_headers(explicit: Optional[Mapping[str, str]], env: Mapping[str, str
     return out
 
 
-def resolve_service_name(explicit: Optional[str], env: Mapping[str, str]) -> str:
-    """Explicit, ``SUPERBASED_SERVICE_NAME``, ``OTEL_SERVICE_NAME``,
-    ``service.name`` in ``OTEL_RESOURCE_ATTRIBUTES``, then ``custom-app``."""
-    if explicit:
-        return explicit
+# --- the service name (plan 3.2) ----------------------------------------------------
+
+# service_name_source values (diagnostics()["service_name_source"]).
+NAME_ARGUMENT = "argument"
+NAME_ENV = "env"
+NAME_MANIFEST = "manifest"
+NAME_ENTRY_DIR = "entry_dir"
+NAME_DEFAULT = "default"
+
+SERVICE_NAME_MAX = 64
+# Folders that name a layout, not a project: the entry folder walks up past them.
+GENERIC_DIRS = frozenset({"src", "app", "dist", "build", "bin", "lib"})
+MANIFEST_MAX_DIRS = 8  # directories searched upward for the manifest
+MANIFEST_MAX_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class ProjectFacts:
+    """What the project says about its own name: ``manifest_name`` (the
+    ``[project] name`` or ``[tool.poetry] name`` of the nearest
+    ``pyproject.toml`` above the entry script) and ``entry_dir`` (the entry
+    script's folder). Empty when unknown."""
+
+    manifest_name: str = ""
+    entry_dir: str = ""
+    home: str = ""  # the user's home folder: never searched above, never a name
+
+
+def normalize_service_name(raw: str) -> str:
+    """Lowercase, only ``[a-z0-9._-]`` (any other run becomes one ``-``),
+    trimmed of separators at the ends, at most 64 characters; "" when
+    nothing is left."""
+    v = re.sub(r"[^a-z0-9._-]+", "-", (raw or "").strip().lower())
+    v = re.sub(r"-{2,}", "-", v).strip("-._")
+    return v[:SERVICE_NAME_MAX].rstrip("-._")
+
+
+def _parts(path: str) -> List[str]:
+    return [p for p in re.split(r"[\\/]+", path or "") if p and not re.fullmatch(r"[A-Za-z]:", p)]
+
+
+def entry_dir_name(entry_dir: str, home: str = "") -> str:
+    """The entry folder's name, walking up past generic folders (``src``,
+    ``app``, ``dist``, ``build``, ``bin``, ``lib``); "" when none is left,
+    or when that folder is the user's home folder or the file-system root."""
+    parts = _parts(entry_dir)
+    while parts and parts[-1].lower() in GENERIC_DIRS:
+        parts.pop()
+    if not parts:
+        return ""
+    if home and [p.lower() for p in parts] == [p.lower() for p in _parts(home)]:
+        return ""
+    return parts[-1]
+
+
+def service_name_ladder(explicit: Optional[str], env: Mapping[str, str], project: Optional[ProjectFacts] = None) -> Tuple[str, str]:
+    """(name, source), first set wins: the argument; ``SUPERBASED_SERVICE_NAME``,
+    ``OTEL_SERVICE_NAME``, ``service.name`` in ``OTEL_RESOURCE_ATTRIBUTES``;
+    the project's manifest name; the entry script's folder name; then
+    ``custom-app``. The two project rungs are normalised; ``project`` None
+    reads the running process's project (``project_facts()``)."""
+    if explicit and str(explicit).strip():
+        return str(explicit).strip(), NAME_ARGUMENT
     val = _env_str(env, "SUPERBASED_SERVICE_NAME", "OTEL_SERVICE_NAME")
+    if not val:
+        val = parse_kv_list(env.get("OTEL_RESOURCE_ATTRIBUTES")).get("service.name", "").strip()
     if val:
-        return val
-    return parse_kv_list(env.get("OTEL_RESOURCE_ATTRIBUTES")).get("service.name", "").strip() or DEFAULT_SERVICE_NAME
+        return val, NAME_ENV
+    if project is None:
+        try:
+            project = project_facts()
+        except Exception:  # noqa: BLE001 - the project rungs never fail init()
+            project = ProjectFacts()
+    name = normalize_service_name(project.manifest_name)
+    if name:
+        return name, NAME_MANIFEST
+    name = normalize_service_name(entry_dir_name(project.entry_dir, project.home))
+    if name:
+        return name, NAME_ENTRY_DIR
+    return DEFAULT_SERVICE_NAME, NAME_DEFAULT
+
+
+def resolve_service_name(explicit: Optional[str], env: Mapping[str, str]) -> str:
+    """The service name (``service_name_ladder`` without its source)."""
+    return service_name_ladder(explicit, env)[0]
+
+
+_MANIFEST_TABLES = ("project", "tool.poetry")
+_TABLE_RE = re.compile(r"^\s*\[\s*([A-Za-z0-9_.\-\" ]+?)\s*\]\s*(?:#.*)?$")
+_NAME_RE = re.compile(r"""^\s*name\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$""")
+
+
+def manifest_name(text: str) -> str:
+    """The ``[project] name`` (else ``[tool.poetry] name``) of a
+    ``pyproject.toml``'s text: ``tomllib`` on 3.11+, a line reader on 3.9
+    and 3.10 (one-line basic or literal strings). "" when there is none or
+    the file does not parse."""
+    try:
+        import tomllib  # type: ignore[import-not-found,unused-ignore]
+    except ImportError:
+        return _manifest_name_lines(text)
+    try:
+        doc = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError, TypeError):
+        return ""
+
+    def table(v: Any) -> Dict[str, Any]:
+        return v if isinstance(v, dict) else {}
+
+    for t in (table(doc.get("project")), table(table(doc.get("tool")).get("poetry"))):
+        name = t.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return ""
+
+
+def _manifest_name_lines(text: str) -> str:
+    table = ""
+    found: Dict[str, str] = {}
+    for line in text.splitlines():
+        m = _TABLE_RE.match(line)
+        if m and not line.lstrip().startswith("[["):
+            table = m.group(1).replace('"', "").replace(" ", "")
+            continue
+        if table in _MANIFEST_TABLES and table not in found:
+            n = _NAME_RE.match(line)
+            if n:
+                found[table] = (n.group(1) if n.group(1) is not None else n.group(2)).strip()
+    for t in _MANIFEST_TABLES:
+        if found.get(t):
+            return found[t]
+    return ""
+
+
+def _read_small(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(MANIFEST_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > MANIFEST_MAX_BYTES:
+        return None
+    return raw.decode("utf-8", "replace")
+
+
+def _above(d: str, home: str) -> bool:
+    """``d`` is a proper ancestor of ``home``."""
+    if not home:
+        return False
+    a, h = os.path.normcase(d.rstrip("\\/")), os.path.normcase(home.rstrip("\\/"))
+    return a != h and (h + os.sep).startswith(a + os.sep if a else os.sep)
+
+
+def find_project(entry_dir: str, read: Callable[[str], Optional[str]] = _read_small, home: str = "") -> ProjectFacts:
+    """The manifest name of the nearest ``pyproject.toml`` at or above
+    ``entry_dir`` (one file per directory, at most 8 directories, never
+    above ``home``). The first manifest found ends the search, named or not."""
+    d = os.path.abspath(entry_dir) if entry_dir else ""
+    home = os.path.abspath(home) if home else ""
+    for _ in range(MANIFEST_MAX_DIRS):
+        if not d or _above(d, home):
+            break
+        text = read(os.path.join(d, "pyproject.toml"))
+        if text is not None:
+            return ProjectFacts(manifest_name(text), entry_dir, home)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return ProjectFacts("", entry_dir, home)
+
+
+def entry_directory(argv0: str, cwd: str, prefixes: Tuple[str, ...]) -> str:
+    """The app's entry folder: the entry script's folder, or the working
+    directory when there is no script (``-c``, an interactive shell) or the
+    script is an installed console script (``uvicorn``, ``gunicorn``,
+    ``pytest`` live under the interpreter's prefix)."""
+    if not argv0 or argv0 in ("-c", "-m", "-"):
+        return cwd
+    path = os.path.abspath(argv0)
+    if not os.path.isfile(path):
+        return cwd
+    for p in prefixes:
+        if p and (path == p or path.startswith(os.path.join(p, ""))):
+            return cwd
+    return os.path.dirname(path)
+
+
+_project_lock = threading.Lock()
+_project_cache: Dict[Tuple[str, str, str], ProjectFacts] = {}
+
+
+def _user_home() -> str:
+    try:
+        h = os.path.expanduser("~")
+    except Exception:  # noqa: BLE001
+        return ""
+    return "" if h == "~" else os.path.abspath(h)
+
+
+def project_facts() -> ProjectFacts:
+    """The running process's project facts, read once per entry script and
+    working directory. Never raises."""
+    argv0 = sys.argv[0] if sys.argv else ""
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = ""
+    home = _user_home()
+    key = (argv0, cwd, home)
+    with _project_lock:
+        hit = _project_cache.get(key)
+    if hit is not None:
+        return hit
+    prefixes = tuple(sorted({os.path.abspath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix) if p}))
+    entry = entry_directory(argv0, cwd, prefixes)
+    facts = find_project(entry, home=home) if entry else ProjectFacts(home=home)
+    with _project_lock:
+        _project_cache[key] = facts
+    return facts
 
 
 def resolve_export_timeout(explicit: Optional[float], env: Mapping[str, str], default: float) -> float:
@@ -217,7 +431,8 @@ class Settings:
     endpoint: str = DEFAULT_ENDPOINT  # SUPERBASED_OTLP_ENDPOINT > OTEL_EXPORTER_OTLP_TRACES_ENDPOINT > OTEL_EXPORTER_OTLP_ENDPOINT
     headers: Tuple[Tuple[str, str], ...] = field(default=(), repr=False)  # OTEL_EXPORTER_OTLP_HEADERS, ..._TRACES_HEADERS, SUPERBASED_OTLP_HEADERS
     api_key: str = field(default="", repr=False)  # SUPERBASED_API_KEY (sent as Authorization: Bearer)
-    service_name: str = DEFAULT_SERVICE_NAME  # SUPERBASED_SERVICE_NAME > OTEL_SERVICE_NAME > OTEL_RESOURCE_ATTRIBUTES
+    service_name: str = DEFAULT_SERVICE_NAME  # SUPERBASED_SERVICE_NAME > OTEL_SERVICE_NAME > OTEL_RESOURCE_ATTRIBUTES > the project
+    service_name_source: str = NAME_DEFAULT  # argument | env | manifest | entry_dir | default
     resource_attributes: Tuple[Tuple[str, str], ...] = ()  # OTEL_RESOURCE_ATTRIBUTES
     tenant: str = ""  # SUPERBASED_TENANT
     user: str = ""  # SUPERBASED_USER
@@ -272,11 +487,13 @@ class Settings:
         shut = explicit.get("shutdown_timeout")
         if shut is None:
             shut = _env_ms(env, "SUPERBASED_SHUTDOWN_TIMEOUT_MS")
+        svc, svc_source = service_name_ladder(explicit.get("service_name"), env)
         return cls(
             endpoint=resolve_endpoint(explicit.get("endpoint"), env),
             headers=tuple(sorted(hdrs.items())),
             api_key=pick("api_key", _env_str(env, "SUPERBASED_API_KEY")),
-            service_name=resolve_service_name(explicit.get("service_name"), env),
+            service_name=svc,
+            service_name_source=svc_source,
             resource_attributes=tuple(sorted(parse_kv_list(env.get("OTEL_RESOURCE_ATTRIBUTES")).items())),
             tenant=pick("tenant", _env_str(env, "SUPERBASED_TENANT")),
             user=pick("user", _env_str(env, "SUPERBASED_USER")),

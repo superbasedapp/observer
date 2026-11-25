@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/marmutapp/superbased-observer/internal/tenantctx"
 )
 
 // Claims is the id_token claim set, in the order it is serialized. It is the
@@ -65,7 +67,7 @@ type claimRule struct {
 // another issuer, another org's audience, a long life, or no jti.
 var claimRules = []claimRule{
 	{id: "iss-fixed", bad: func(c Claims, iss string, _ time.Time) bool { return iss == "" || c.Iss != iss }},
-	{id: "org-uuid", bad: func(c Claims, _ string, _ time.Time) bool { return !isCanonicalUUID(c.Org) }},
+	{id: "org-uuid", bad: func(c Claims, _ string, _ time.Time) bool { return !tenantctx.IsCanonicalUUID(c.Org) }},
 	{id: "aud-is-org-client", bad: func(c Claims, _ string, _ time.Time) bool { return c.Aud != ClientIDPrefix+c.Org }},
 	{id: "sub-present", bad: func(c Claims, _ string, _ time.Time) bool { return !boundedText(c.Sub, maxSubLen) }},
 	{id: "jti-present", bad: func(c Claims, _ string, _ time.Time) bool { return !validToken(c.Jti, minJTILen, maxJTILen) }},
@@ -214,26 +216,4 @@ func validToken(s string, min, max int) bool {
 func isUnreserved(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
 		c == '-' || c == '_' || c == '.' || c == '~'
-}
-
-// isCanonicalUUID reports whether s is a lowercase 8-4-4-4-12 hex UUID, the
-// form Postgres prints.
-func isCanonicalUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch i {
-		case 8, 13, 18, 23:
-			if c != '-' {
-				return false
-			}
-		default:
-			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-				return false
-			}
-		}
-	}
-	return true
 }

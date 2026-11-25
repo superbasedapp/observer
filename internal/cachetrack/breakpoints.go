@@ -25,8 +25,8 @@ import (
 // helper. Both paths consume the same JSON shape; only one of
 // them WRITES markers (the compression pipeline). Per Module
 // rules 1/2: this is the lift the spec §8 calls for, replacing
-// the cachetrack-side need to call findLastCacheBreakpoint
-// (which would miss the system markers).
+// a cachetrack-side scan of the messages array for the last
+// marker (which would miss the system markers).
 //
 // The function deliberately accepts already-extracted top-level
 // fields (raw.Tools / raw.System / raw.Messages) rather than the

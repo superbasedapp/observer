@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,8 +97,9 @@ func TestEgressEnforceMatrix(t *testing.T) {
 		}
 	})
 
-	// gzip request body: the proxy does not decode gzip (§3.5), so admission +
-	// egress skip and the request forwards UNROUTED to the default upstream.
+	// gzip request body: the proxy does not decode gzip (§3.5), so egress
+	// never routes it and the request forwards UNROUTED to the default
+	// upstream; admission sees the body as unreadable (finding H1, L-180).
 	t.Run("gzip request body skips egress", func(t *testing.T) {
 		var defaultHit, targetHit atomic.Bool
 		defaultUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -136,8 +138,8 @@ func TestEgressEnforceMatrix(t *testing.T) {
 		_, _ = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 
-		if adm.called {
-			t.Error("admitter consulted on a gzip body — it should be skipped (undecoded)")
+		if !adm.called || !slices.Equal(adm.gotUnaccounted, []string{"body:unparsed"}) {
+			t.Errorf("admitter called=%v unaccounted=%q; want the undecoded body reported as body:unparsed", adm.called, adm.gotUnaccounted)
 		}
 		if !defaultHit.Load() {
 			t.Error("gzip request did not forward to the default upstream")

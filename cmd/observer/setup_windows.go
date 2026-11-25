@@ -136,30 +136,44 @@ func deleteRunWindows() error {
 // launch path (gui_spawn_windows.go) plus CREATE_NO_WINDOW, and no job
 // object: the daemon must outlive the process that started it.
 func spawnDetachedWindows(argv []string, logPath string) error {
+	p, err := startDaemonDetached(argv, logPath, "", "observer setup launch")
+	if err != nil {
+		return err
+	}
+	return p.Release()
+}
+
+// startDaemonDetached starts argv (an `observer start` invocation) with no
+// console window and no shared process group, its output appended to
+// logPath under a header naming startedBy, and returns the process. dir is
+// its working directory ("" = this one). The one detached daemon start both
+// `observer setup launch` and a launcher's auto-start use (L-169).
+func startDaemonDetached(argv []string, logPath, dir, startedBy string) (*os.Process, error) {
 	if len(argv) == 0 {
-		return errors.New("empty argv")
+		return nil, errors.New("empty argv")
 	}
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // the daemon log beside the operator's own database
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = logf.Close() }()
 	null, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = null.Close() }()
-	fmt.Fprintf(logf, "\n--- %s started by observer setup launch ---\n", time.Now().Format(time.RFC3339))
-	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- argv[0] is this binary, the rest fixed
+	fmt.Fprintf(logf, "\n--- %s started by %s ---\n", time.Now().Format(time.RFC3339), startedBy)
+	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 -- argv[0] is an observer binary, the rest fixed
+	cmd.Dir = dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
-	return cmd.Process.Release()
+	return cmd.Process, nil
 }
 
 // stopPIDWindows ends a process and waits for it to exit so its binary can be

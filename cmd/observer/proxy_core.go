@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 
@@ -32,6 +33,10 @@ type daemonProxy interface {
 	CacheEngine() *cachetrack.Engine
 	Handler() http.Handler
 	ListenAndServe(ctx context.Context, addr string) error
+	// Serve serves on a listener the caller bound or adopted (the socket a
+	// restarting daemon handed over, proxy_handover.go); addr is the
+	// configured listen address.
+	Serve(ctx context.Context, ln net.Listener, addr string) error
 }
 
 // proxyWiring is everything buildProxy hands its caller (plan section 9 hot

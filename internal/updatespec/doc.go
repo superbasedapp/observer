@@ -2,7 +2,10 @@
 // release Channel names and the maintenance Window grammar of the [update]
 // config block, plus the node update State machine (State, Reason,
 // ErrorClass, legal transitions, the persisted NodeState) and the install
-// Method names.
+// Method names. It also owns the SemVer 2.0 precedence order every wire field
+// gate uses (ComparePrecedence, shared with the node.governance compiler) and
+// the release manifest's small field checks (HashBytes, ValidBaseName,
+// IsHexSHA256, shared with the signed content channel internal/update/content).
 //
 // It is split out of internal/update (the org.update feature: manifests,
 // verification, the apply planner) in modular packaging phase PB (rev F1) so

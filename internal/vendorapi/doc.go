@@ -14,6 +14,8 @@
 // only, never a value).
 //
 // Per-vendor drivers live in subpackages (internal/vendorapi/<vendor>, lane
-// F8 onward). This package imports only the pure catalog types and the
-// standard library; imports_test.go pins it.
+// F8 onward). They share this package's small parse helpers (helpers.go:
+// Drift, DecodeNumbers, Str, TrimStr) rather than re-declaring them. This
+// package imports only the pure catalog types and the standard library;
+// imports_test.go pins it.
 package vendorapi

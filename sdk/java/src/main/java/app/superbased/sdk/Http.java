@@ -126,6 +126,11 @@ final class Http {
       return o != null && o.get("error") instanceof String ? (String) o.get("error") : "";
     }
 
+    /** The org's plan refusal in this answer (a 403 {@code plan_required}, or a 429 over the plan's allowance), or null. */
+    PlanRefusalException planRefusal() {
+      return status == 403 || status == 429 ? PlanRefusalException.parse(status, body, headers) : null;
+    }
+
     String describe() {
       if (status == 0) {
         return error.isEmpty() ? "no response" : error;

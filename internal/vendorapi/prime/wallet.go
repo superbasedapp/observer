@@ -134,13 +134,13 @@ func parseWallet(r vendorapi.Response) (vendorapi.Page, error) {
 	if err := dec.Decode(&doc); err != nil {
 		return vendorapi.Page{}, walletDrift("body does not decode as the documented response")
 	}
-	if str(doc.WalletID) == "" || doc.Balance == nil || doc.Currency == nil || doc.Total == nil || doc.Recent == nil {
+	if vendorapi.TrimStr(doc.WalletID) == "" || doc.Balance == nil || doc.Currency == nil || doc.Total == nil || doc.Recent == nil {
 		return vendorapi.Page{}, walletDrift("required field wallet_id, balance_usd, currency, total_billings or recent_billings is missing")
 	}
 	if !strings.EqualFold(*doc.Currency, "usd") {
 		return vendorapi.Page{}, walletDrift("currency %q is not USD", *doc.Currency)
 	}
-	if t := r.Params[ParamTeam]; t != "" && str(doc.TeamID) != t {
+	if t := r.Params[ParamTeam]; t != "" && vendorapi.TrimStr(doc.TeamID) != t {
 		return vendorapi.Page{}, walletDrift("the wallet answers another team than the one asked")
 	}
 	if *doc.Total < 0 {

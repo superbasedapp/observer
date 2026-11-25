@@ -7,6 +7,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -309,10 +310,10 @@ func codexManagedConfig(opts CodexOptions, pkg string) string {
 		command, args := mcpPinLaunch(models.ToolCodex, pkg, opts.TargetOS)
 		quoted := make([]string, len(args))
 		for i, a := range args {
-			quoted[i] = tomlString(a)
+			quoted[i] = cfgfmt.TOMLString(a)
 		}
 		b.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", CodexMCPServerName))
-		b.WriteString(fmt.Sprintf("command = %s\n", tomlString(command)))
+		b.WriteString(fmt.Sprintf("command = %s\n", cfgfmt.TOMLString(command)))
 		b.WriteString(fmt.Sprintf("args = [%s]\n\n", strings.Join(quoted, ", ")))
 	}
 
@@ -379,9 +380,9 @@ func codexRequirements(opts CodexOptions, pkg string, hooks *codexHookLayout) st
 		b.WriteString(fmt.Sprintf("# [mcp_servers.%s.identity]\n", CodexMCPServerName))
 		matchers := make([]string, len(args))
 		for i, a := range args {
-			matchers[i] = fmt.Sprintf("{ match = \"exact\", value = %s }", tomlString(a))
+			matchers[i] = fmt.Sprintf("{ match = \"exact\", value = %s }", cfgfmt.TOMLString(a))
 		}
-		b.WriteString(fmt.Sprintf("# command = { executable = %s, args = [%s] }\n", tomlString(command), strings.Join(matchers, ", ")))
+		b.WriteString(fmt.Sprintf("# command = { executable = %s, args = [%s] }\n", cfgfmt.TOMLString(command), strings.Join(matchers, ", ")))
 	}
 
 	return b.String()
@@ -399,10 +400,10 @@ func codexEnforcedProviderTOML(b *strings.Builder, baseURL string) {
 	b.WriteString("# model_provider outranks a CLI -c model_provider, --oss, a profile and the\n")
 	b.WriteString("# user's config, so a user value no longer takes Codex off the proxy. This\n")
 	b.WriteString("# file also binds Open Interpreter, which reads it too.\n")
-	b.WriteString(fmt.Sprintf("model_provider = %s\n\n", tomlString(CodexObserverProviderName)))
+	b.WriteString(fmt.Sprintf("model_provider = %s\n\n", cfgfmt.TOMLString(CodexObserverProviderName)))
 	b.WriteString(fmt.Sprintf("[model_providers.%s]\n", CodexObserverProviderName))
-	b.WriteString(fmt.Sprintf("name = %s\n", tomlString(codexObserverProviderDisplay)))
-	b.WriteString(fmt.Sprintf("base_url = %s\n", tomlString(baseURL)))
+	b.WriteString(fmt.Sprintf("name = %s\n", cfgfmt.TOMLString(codexObserverProviderDisplay)))
+	b.WriteString(fmt.Sprintf("base_url = %s\n", cfgfmt.TOMLString(baseURL)))
 	b.WriteString("wire_api = \"responses\"\n")
 	b.WriteString("requires_openai_auth = true\n\n")
 }
@@ -416,15 +417,15 @@ func codexManagedHooksTOML(b *strings.Builder, h *codexHookLayout) {
 	b.WriteString("# Observer's hooks as MANAGED hooks. The script each command names is part of\n")
 	b.WriteString("# this artifact set: deploy it into the managed directory (see the README).\n")
 	b.WriteString("[hooks]\n")
-	b.WriteString(fmt.Sprintf("managed_dir = %s\n", tomlString(h.dir)))
-	b.WriteString(fmt.Sprintf("windows_managed_dir = %s\n\n", tomlString(h.winDir)))
+	b.WriteString(fmt.Sprintf("managed_dir = %s\n", cfgfmt.TOMLString(h.dir)))
+	b.WriteString(fmt.Sprintf("windows_managed_dir = %s\n\n", cfgfmt.TOMLString(h.winDir)))
 	for _, ev := range h.events {
 		b.WriteString(fmt.Sprintf("[[hooks.%s]]\n", ev))
 		b.WriteString("matcher = \"*\"\n\n")
 		b.WriteString(fmt.Sprintf("[[hooks.%s.hooks]]\n", ev))
 		b.WriteString("type = \"command\"\n")
-		b.WriteString(fmt.Sprintf("command = %s\n", tomlString(hookCommandPath(h.scriptPath)+" "+ev)))
-		b.WriteString(fmt.Sprintf("commandWindows = %s\n\n", tomlString(hookCommandPathWindows(h.winScriptPath)+" "+ev)))
+		b.WriteString(fmt.Sprintf("command = %s\n", cfgfmt.TOMLString(hookCommandPath(h.scriptPath)+" "+ev)))
+		b.WriteString(fmt.Sprintf("commandWindows = %s\n\n", cfgfmt.TOMLString(hookCommandPathWindows(h.winScriptPath)+" "+ev)))
 	}
 }
 

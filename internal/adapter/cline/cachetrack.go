@@ -1,7 +1,6 @@
 package cline
 
 import (
-	"encoding/json"
 	"strconv"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
@@ -9,8 +8,8 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's
-// running block count. Matches the claudecode template's cap
-// (same memory budget, same OOM guard).
+// running block count: the shared cacheobs default (same memory
+// budget, same OOM guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // buildCacheObservations walks the whole-file message array (the
@@ -19,10 +18,10 @@ const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 // (msg.Usage != nil or msg.Metrics != nil, mirroring
 // tokenEventFor's own gate). cline/roo-code content blocks are the
 // same Anthropic-shape schema as cline-cli's — text / thinking /
-// tool_use / tool_result / image — so the canonical marshaller
-// below mirrors clinecli's marshalCanonicalBlockTier2 byte-for-
-// byte, with an added "image" case since cline surfaces pasted
-// images cline-cli's fixture set never exercised.
+// tool_use / tool_result / image — so the canonical forms come
+// from cacheobs (content.go), shared with cline-cli and cowork,
+// with an "image" case since cline surfaces pasted images
+// cline-cli's fixture set never exercised.
 //
 // The file is re-read whole on every poll (not JSONL-appended), so
 // this is called once per ParseSessionFile invocation over the
@@ -50,11 +49,7 @@ func buildCacheObservations(msgs []rawMessage, path, sessionID string) []models.
 			CacheReadTokens:     ev.CacheReadTokens,
 			CacheCreationTokens: ev.CacheCreationTokens,
 		}
-		if cacheobs.IsZeroUsage(usage) {
-			continue
-		}
 		messageID := sessionID + ":" + strconv.Itoa(i)
-		obs := acc.Emit(path, sessionID, messageID, msg.resolvedModel(), parseMilliTimestamp(msg.Ts), usage, false)
 		// §15.3 boundary: cline's non-Anthropic providers (metrics-
 		// shape messages, providerId="cline") route through
 		// implicit-cache-shape gateways depending on the resolved
@@ -63,121 +58,45 @@ func buildCacheObservations(msgs []rawMessage, path, sessionID string) []models.
 		// applied uniformly — cachetrack.IsImplicitCacheProvider
 		// defaults to false (Anthropic-shape) for an unmatched/empty
 		// provider string, so this is a no-op for the common case.
-		obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", msg.resolvedModel())
-		out = append(out, obs)
+		// EmitTurn skips an all-zero usage (nil).
+		if obs := acc.EmitTurn(path, sessionID, messageID, msg.resolvedModel(), "", parseMilliTimestamp(msg.Ts), usage); obs != nil {
+			out = append(out, *obs)
+		}
 	}
 	return out
 }
 
 // accumulateCacheBlocksTier2 converts cline/roo-code's Anthropic-
-// shape content blocks into deterministic CacheBlockMeta entries.
-// Mirrors clinecli's marshaller (same wire schema); the "image"
-// case is cline-specific (cline-cli's fixtures never carried a
-// pasted image).
+// shape content blocks into deterministic CacheBlockMeta entries,
+// in array order (cacheobs.ContentBlocks).
 func accumulateCacheBlocksTier2(blocks []rawContentBlock, role string) []models.CacheBlockMeta {
-	if len(blocks) == 0 {
-		return nil
-	}
-	out := make([]models.CacheBlockMeta, 0, len(blocks))
-	for _, b := range blocks {
-		canon, kind, ok := marshalCanonicalBlockTier2(b)
-		if !ok {
-			continue
-		}
-		out = append(out, models.CacheBlockMeta{
-			LevelLabel:     "message", // R1: transcripts never expose tools/system
-			Kind:           kind,
-			CanonicalBytes: canon,
-			Role:           role,
-		})
-	}
-	return out
+	return cacheobs.ContentBlocks(blocks, role, marshalCanonicalBlockTier2)
 }
 
-// marshalCanonicalBlockTier2 produces the deterministic JSON
-// canonical form of one cline/roo-code content block. Returns
-// (canonical bytes, engine kind label, ok=false on unknown block
-// type). Each payload is an explicit STRUCT (never a map) so
-// encoding/json's deterministic field order preserves the R3
-// byte-stability invariant.
+// marshalCanonicalBlockTier2 maps one cline/roo-code content block
+// onto its cacheobs canonical form. Returns (canonical bytes, engine
+// kind label, ok=false on unknown block type).
 func marshalCanonicalBlockTier2(b rawContentBlock) (canon []byte, kind string, ok bool) {
 	switch b.Type {
 	case "text":
-		return marshalTextLikeBlock("text", b.Text)
+		return cacheobs.ContentText("text", b.Text)
 	case "thinking", "redacted_thinking":
 		txt := b.Thinking
 		if txt == "" && b.Type == "redacted_thinking" {
 			txt = "[redacted thinking]"
 		}
-		return marshalTextLikeBlock("thinking", txt)
+		return cacheobs.ContentText("thinking", txt)
 	case "tool_use":
-		return marshalToolUseBlock(b)
+		return cacheobs.ContentToolUse(b.ID, b.Name, b.Input)
 	case "tool_result":
-		return marshalToolResultBlock(b)
+		return cacheobs.ContentToolResult(b.ToolUseID, b.IsError, b.Content)
 	case "image":
 		// No text/binary payload folded into the chain — image
 		// bytes are never stored. The block's presence (and
 		// ordering) is what the chain needs to stay position-
 		// accurate against the source transcript.
-		payload := struct {
-			Type string `json:"type"`
-		}{Type: "image"}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, "", false
-		}
-		return buf, "text", true
+		return cacheobs.ContentImage()
 	default:
 		return nil, "", false
 	}
-}
-
-func marshalTextLikeBlock(kind, text string) (canon []byte, kindOut string, ok bool) {
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: kind, Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, kind, true
-}
-
-func marshalToolUseBlock(b rawContentBlock) (canon []byte, kind string, ok bool) {
-	payload := struct {
-		Type  string          `json:"type"`
-		ID    string          `json:"id,omitempty"`
-		Name  string          `json:"name,omitempty"`
-		Input json.RawMessage `json:"input,omitempty"`
-	}{
-		Type:  "tool_use",
-		ID:    b.ID,
-		Name:  b.Name,
-		Input: b.Input,
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, "tool_use", true
-}
-
-func marshalToolResultBlock(b rawContentBlock) (canon []byte, kind string, ok bool) {
-	payload := struct {
-		Type      string          `json:"type"`
-		ToolUseID string          `json:"tool_use_id,omitempty"`
-		IsError   bool            `json:"is_error,omitempty"`
-		Content   json.RawMessage `json:"content,omitempty"`
-	}{
-		Type:      "tool_result",
-		ToolUseID: b.ToolUseID,
-		IsError:   b.IsError,
-		Content:   b.Content,
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, "tool_result", true
 }

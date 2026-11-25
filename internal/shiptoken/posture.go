@@ -2,7 +2,6 @@ package shiptoken
 
 import (
 	"reflect"
-	"sort"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -150,18 +149,6 @@ func rowHasContent(row reflect.Value, fields []string) bool {
 		}
 	}
 	return false
-}
-
-// ContentFamilies returns the families the table checks, sorted (docs).
-func ContentFamilies() []string {
-	var out []string
-	for _, r := range contentRules {
-		if r.whole || len(r.fields) > 0 {
-			out = append(out, r.family)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // ContentAllowed reports whether a batch with the given raw-content counts

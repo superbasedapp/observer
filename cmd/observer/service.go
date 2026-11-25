@@ -561,8 +561,9 @@ func serviceRestartNote(proxyActive bool) string {
 			"runs the watcher and dashboard only and restarting it interrupts no AI tool session."
 	}
 	return "\nNote: the service IS the proxy on :8820. Restart it with `observer service restart`:\n" +
-		"it takes the proxy routes off first and puts them back once the new daemon answers,\n" +
-		"so a session routed through it reaches its provider directly meanwhile."
+		"the daemon restarts in place and hands its proxy socket to the new process, so the port\n" +
+		"keeps answering (where it cannot, the proxy routes come off first and go back after).\n" +
+		"`observer service stop` takes the routes off, and the next start puts them back."
 }
 
 // newServiceLifecycleCmd builds the thin status wrapper that just execs
@@ -652,10 +653,15 @@ func newServiceRestartCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "restart",
-		Short: "Restart the Observer daemon safely: proxy routes off, restart, routes back on",
+		Short: "Restart the Observer daemon safely: the proxy port keeps answering (or routes off, restart, routes on)",
 		Long: "Restarts the daemon (proxy + watcher + dashboard) without cutting the AI tools\n" +
-			"routed through its proxy. The daemon IS the proxy, so this runs the safe order\n" +
-			"as one operation:\n" +
+			"routed through its proxy. The daemon IS the proxy.\n" +
+			"When the running daemon offers it (unix, this release on), it restarts in place and\n" +
+			"hands its proxy's listening socket to the new process: a request an AI tool sends\n" +
+			"meanwhile waits for the new daemon instead of failing, and no route is taken off.\n" +
+			"Under systemd or launchd this is used only while the daemon runs exactly the\n" +
+			"installed unit's command (after `observer service upgrade` the manager restarts it).\n" +
+			"Otherwise it runs the safe order as one operation:\n" +
 			"  1. take off the proxy routes that reach this proxy (Claude Code, Codex and the\n" +
 			"     other tools Observer routes), so live sessions reach their providers directly;\n" +
 			"  2. restart: through systemd or launchd when they run the daemon, otherwise the\n" +

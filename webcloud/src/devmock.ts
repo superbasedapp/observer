@@ -299,16 +299,16 @@ function usageBody(m: Mode) {
 //
 // Paddle is the merchant of record. `plan` reuses the usage-snapshot shape
 // (usageBody-style) so the caps in force render regardless of tier. Following
-// the file's populated/empty convention: `populated` shows a subscribed Plus
-// account (exercises the rich subscription UI, incl. Paddle's hosted
-// management links), `empty` shows the free-tier state (has_subscription
+// the file's populated/empty convention: `populated` shows a subscribed
+// Personal Pro (plus_beta) account (exercises the rich subscription UI, incl.
+// Paddle's hosted management links), `empty` shows the free-tier state (has_subscription
 // false) with a purchasable checkout catalogue — the realistic default for
 // most accounts, and the shape that exercises the Upgrade flow.
 //
 // `checkout` is present in every branch (GET /portal/api/billing always
 // reports it, even for a subscribed account, since Paddle.js and the price
-// catalogue also back the plan-change path later): one sandbox $15/mo price
-// with a 7-day trial, matching the operator's Paddle configuration.
+// catalogue also back the plan-change path later): one sandbox $9/mo
+// Personal Pro price, matching the live Paddle price (no trial).
 //
 // Two more states are reachable via a `?billing=` query flag (independent of
 // the populated/empty/signedout/consent `mode()` above, since they are
@@ -345,10 +345,10 @@ const MOCK_CHECKOUT = {
   prices: [
     {
       price_id: "pri_dev_mock_plus_monthly",
-      plan_name: "Plus",
-      plan_version: 1,
+      plan_name: "plus_beta",
+      plan_version: 5,
       interval: "month",
-      display: "$15/mo",
+      display: "$9/mo",
     },
   ],
   trial_days: 7,
@@ -382,10 +382,10 @@ const FREE_PLAN = {
 // current_period_end even after the status flips to "canceled".
 const PLUS_PLAN = {
   feature: "session_enrichment",
-  plan: "plus",
-  plan_label: "Plus",
-  plan_version: 1,
-  budget_pool: "plus",
+  plan: "plus_beta",
+  plan_label: "Personal Pro",
+  plan_version: 5,
+  budget_pool: "plus_beta",
   plan_overridden: false,
   daily_used: 6,
   daily_cap: 25,
@@ -413,8 +413,8 @@ function billingBody(m: Mode) {
       subscription: {
         subscription_id: "sub_01hz9k3m4n5p6q7r8s9t0u1v2w",
         customer_id: "ctm_01hz9k3m4n5p6q7r8s9t0u1v2w",
-        plan_name: "Plus",
-        plan_version: 1,
+        plan_name: "plus_beta",
+        plan_version: 5,
         status: "canceled" as const,
         current_period_end: new Date(
           Date.now() + 5 * 24 * 3600_000,
@@ -439,8 +439,8 @@ function billingBody(m: Mode) {
     subscription: {
       subscription_id: "sub_01hz9k3m4n5p6q7r8s9t0u1v2w",
       customer_id: "ctm_01hz9k3m4n5p6q7r8s9t0u1v2w",
-      plan_name: "Plus",
-      plan_version: 1,
+      plan_name: "plus_beta",
+      plan_version: 5,
       status: "active" as const,
       current_period_end: "2026-09-30T00:00:00Z",
       management_urls: {

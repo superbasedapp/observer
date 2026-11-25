@@ -39,7 +39,7 @@ var fallbackKnownSources = []fallbackKnownSource{
 		_, cmd := cmdWrappers[b]
 		return posix || cmd
 	}},
-	{"delete command (judged by R-101 directly)", func(b string) bool { return fallbackTriggerBases[b] }},
+	{"delete command (judged by R-101 directly)", func(b string) bool { return fallbackKnownDeleteBases[b] }},
 	{"command a rule keys on", func(b string) bool { return ruleKeyedBases[b] }},
 	// R-142 keys on the whole mkfs family by prefix (mkfs.ext4, mkfs.vfat).
 	{"filesystem creation (mkfs*)", func(b string) bool { return strings.HasPrefix(b, "mkfs") }},
@@ -47,9 +47,16 @@ var fallbackKnownSources = []fallbackKnownSource{
 	{"non-executing command", func(b string) bool { return nonExecutingBases[b] }},
 }
 
-// fallbackTriggerBases are the delete commands R-101 and R-102 key on
-// (deleteShape), canonical names in every dialect.
-var fallbackTriggerBases = setOf("rm", "rmdir", "rd", "del", "erase", "remove-item")
+// fallbackTriggerBases are the delete commands R-101 and R-102 key on (the
+// delete table's bases, deletetable.go), canonical names in every dialect.
+var fallbackTriggerBases = deleteBases(nil)
+
+// fallbackKnownDeleteBases are the delete commands every word of which is
+// a path (deleteRow.everyWord: rm and its siblings, unlink), so nothing
+// after them is a command the fallback should re-judge. tar, shred, rsync
+// and find delete only under a flag and take other words (tar
+// --to-command), so they stay whatever the other sources say.
+var fallbackKnownDeleteBases = deleteBases(func(r *deleteRow) bool { return r.everyWord })
 
 // fallbackDeviceBases are the device commands R-142 keys on by name
 // (matchDiskDevice), with the mkfs family matched by prefix. cmd's

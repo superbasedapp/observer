@@ -61,7 +61,6 @@ test("turn on remote access → Pair a device reveals a QR", async ({ page }) =>
   // Dismiss the reveal, then prove "Pair a device" brings a FRESH one back
   // (this is the button that used to just scroll = "does nothing").
   await page.getByRole("button", { name: /^Done$/ }).click();
-  await page.waitForTimeout(300);
   await expect(
     page.getByRole("heading", { name: /Scan to pair this device/i }),
   ).toHaveCount(0);

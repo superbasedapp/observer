@@ -70,7 +70,12 @@ final class Control {
       if (headers != null) {
         h.putAll(headers);
       }
-      return Http.request(method, url(resource, query, parts), body, h, timeout);
+      Http.Response resp = Http.request(method, url(resource, query, parts), body, h, timeout);
+      PlanRefusalException refusal = resp.planRefusal();
+      if (refusal != null) {
+        PlanRefusalException.note(refusal, ""); // diagnostics(); the call reports it its own way
+      }
+      return resp;
     }
   }
 

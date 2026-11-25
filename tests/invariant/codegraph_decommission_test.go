@@ -36,26 +36,6 @@ var (
 // root (resolved from this test's working dir).
 var scanRoots = []string{"internal", "cmd"}
 
-// repoRoot walks up from the test's working directory until it finds the
-// go.mod, so the guard works regardless of where `go test` is invoked.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("repoRoot: go.mod not found above %s", dir)
-		}
-		dir = parent
-	}
-}
-
 // TestNoCodebaseMemoryMCPReference walks every .go file under the scan
 // roots and fails if the external binary name reappears (the GitHub
 // release download path that Phase 4 removed). This guard's own needle is

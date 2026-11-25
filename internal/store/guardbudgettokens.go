@@ -171,7 +171,7 @@ func buildGuardBudgetTokensSQL(managed bool) string {
 		         COALESCE(input_tokens,0) i, ` + spendverdict.ProxyOutputOf("api_turns") + ` o,
 		         input_tokens IS NULL OR output_tokens IS NULL incomplete,
 		         ` + badTimeExpr + ` bt
-		  FROM api_turns ` + guardBudgetUsageWhere(managed, "api_turns", spendverdict.CountedProxyRowOf("api_turns")) + `
+		  FROM api_turns ` + guardBudgetUsageWhere(managed, "api_turns", spendverdict.GuardCountedProxyRowOf("api_turns")) + `
 		  UNION ALL
 		  SELECT session_id sid, timestamp, ` + guardBudgetTimestampOrderSQL + ` ordered_at,
 		         COALESCE(input_tokens,0) i, COALESCE(output_tokens,0) o,

@@ -220,17 +220,8 @@ judge() { # judge NAME pass|fail DETAIL
 	[ "$2" = pass ] || FAIL=1
 	return 0
 }
-not_run() {
-	R["check.$1"]="not_run"
-	R["check.$1.detail"]="$2"
-	FAIL=1
-}
-refuse() {
-	R[refused]="$1"
-	echo "refused: $1" >&2
-	EXIT_CODE=2
-	exit 2
-}
+# shellcheck source=scripts/sandbox/live-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/live-lib.sh"
 
 # secret_file NAME creates an empty 0600 file in the private secrets dir and
 # prints its path. Fill it with printf (a shell builtin, so the value never

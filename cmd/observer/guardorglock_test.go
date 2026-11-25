@@ -286,21 +286,27 @@ func TestOrgLockFloorsEveryToolGateMechanism(t *testing.T) {
 // before a tool runs, so the floor and the fail-closed org layer reach them
 // only through the watcher's post-hoc verdicts. The list is logged for the
 // hand-back, and every one of them must still have an observe path (no row
-// may silently have neither).
+// may silently have neither): a wired hook binding of any kind, or a
+// declared capture source (TokenTier.Best, which is "" only when the row's
+// capture was never audited).
 func TestHookMechanismsWithoutAToolGate(t *testing.T) {
 	var noGate []string
 	for _, c := range integration.Capabilities() {
 		if c.Hook.Mechanism == integration.HookNone {
 			continue
 		}
-		gated := false
+		gated, wired := false, false
 		for _, b := range c.Hook.Bindings {
 			if b.Cap == integration.HookCapToolGate && b.Wired {
 				gated = true
 			}
+			wired = wired || b.Wired
 		}
 		if !gated {
 			noGate = append(noGate, c.Tool+" ("+string(c.Hook.Mechanism)+")")
+			if !wired && c.TokenTier.Best == "" {
+				t.Errorf("%s has a hook mechanism but no wired tool gate, no wired hook binding and no declared capture source: nothing observes its tool calls", c.Tool)
+			}
 		}
 	}
 	t.Logf("hook mechanisms with no wired tool gate (guard reaches them post-hoc only): %s", strings.Join(noGate, ", "))

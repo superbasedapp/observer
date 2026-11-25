@@ -1,0 +1,27 @@
+{
+  "_readme": "The model libraries the superbased SDK can auto-instrument, by SDK language. The website's install boxes render one chip per row (the @@sdk.<id>.libs@@ token of website/docs-tools/pagegen). target is the name passed to instrument([...]). Python rows name the pip extra of sdk/python/pyproject.toml ([project.optional-dependencies], without all and the test sets); TypeScript rows name the optional peer dependency of sdk/typescript/package.json. A pagegen test pins both lists to those two files, so a new instrumentor is added here in the same change. Go and Java have no instrumentors and no rows. note is a short condition shown as the chip's tooltip.",
+  "python": [
+    { "target": "openai", "extra": "openai" },
+    { "target": "anthropic", "extra": "anthropic" },
+    { "target": "gemini", "extra": "gemini" },
+    { "target": "bedrock", "extra": "bedrock" },
+    { "target": "langchain", "extra": "langchain" },
+    { "target": "langgraph", "extra": "langgraph" },
+    { "target": "llama-index", "extra": "llama-index" },
+    { "target": "openai-agents", "extra": "openai-agents" },
+    { "target": "pydantic-ai", "extra": "pydantic-ai" },
+    { "target": "crewai", "extra": "crewai", "note": "Python below 3.14" },
+    { "target": "mcp", "extra": "mcp" }
+  ],
+  "typescript": [
+    { "target": "openai", "package": "@arizeai/openinference-instrumentation-openai" },
+    { "target": "anthropic", "package": "@arizeai/openinference-instrumentation-anthropic" },
+    { "target": "gemini", "package": "@traceloop/instrumentation-google-generativeai", "note": "Node 22 or newer" },
+    { "target": "bedrock", "package": "@arizeai/openinference-instrumentation-bedrock" },
+    { "target": "langchain", "package": "@arizeai/openinference-instrumentation-langchain" },
+    { "target": "llama-index", "package": "@traceloop/instrumentation-llamaindex" },
+    { "target": "openai-agents", "package": "@arizeai/openinference-instrumentation-openai-agents" },
+    { "target": "vercel-ai", "package": "@ai-sdk/otel", "note": "Node 22 or newer" },
+    { "target": "mcp", "package": "@arizeai/openinference-instrumentation-mcp" }
+  ]
+}

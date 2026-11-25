@@ -252,10 +252,10 @@ func (s *Store) InsertHandoff(ctx context.Context, r HandoffRecord) (int64, erro
 		    project_root, hook_expires_at, short_id, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.SourceSessionID, r.SourceTool, r.TargetTool, r.CarryMode, r.ForkKind,
-		nullableInt(r.ForkMessageIndex), nullableStamp(r.ForkMessageTime), r.ForkAnchorHash,
+		nullableInt(r.ForkMessageIndex), nullableTimestamp(r.ForkMessageTime), r.ForkAnchorHash,
 		nullableInt(r.RequestedIndex), r.DocTokenEstimate, r.EstimateJSON,
 		r.Delivery, r.DeliveryRef, r.TargetSessionID,
-		nullableString(r.ProjectRoot), nullableStamp(r.HookExpiresAt),
+		nullableString(r.ProjectRoot), nullableTimestamp(r.HookExpiresAt),
 		nullableString(r.ShortID), timestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertHandoff: %w", err)
@@ -528,11 +528,4 @@ func (s *Store) PruneHandoffRows(ctx context.Context, retentionDays int) (int64,
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
-}
-
-func nullableStamp(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return t.UTC().Format(time.RFC3339Nano)
 }

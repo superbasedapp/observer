@@ -36,6 +36,8 @@ const SDK_OWNED = new Set([
   "sbo.admission.degraded",
   "sbo.experiment.run_id",
   "sbo.experiment.item_id",
+  // The setup hello span (sdk-api-surface.md section 17).
+  "sbo.setup.hello",
 ]);
 
 // The prompt stamp keys, all in the Go vocabulary now (review R-C34: the

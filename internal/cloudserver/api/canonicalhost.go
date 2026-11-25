@@ -36,11 +36,13 @@ type hostRule struct {
 	host   string
 }
 
-// normalizeHost reduces a Host header (or a configured host) to its comparable
+// NormalizeHost reduces a Host header (or a configured host) to its comparable
 // form: lowercased, port stripped, IPv6 brackets removed, trailing root dot
 // dropped. Comparing anything less normalized would make `App.Example:443` and
-// `app.example` spuriously different hosts.
-func normalizeHost(h string) string {
+// `app.example` spuriously different hosts. cmd/observer-cloud's startup
+// validation uses the same function, so what it checks is what the API
+// enforces.
+func NormalizeHost(h string) string {
 	h = strings.TrimSpace(h)
 	if h == "" {
 		return ""
@@ -106,7 +108,7 @@ func enforceHostRules(rules []hostRule, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := normalizeHost(r.Host)
+		got := NormalizeHost(r.Host)
 		for _, rule := range active {
 			if !rule.matches(r.URL.Path) {
 				continue

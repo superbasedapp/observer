@@ -1850,7 +1850,9 @@ export function approveDevice(thumbprint: string): Promise<{ expires_at: string 
 // docs/plans/onboarding-v2-connect-flow.md; portal_connect.go. A machine
 // running `observer connect` creates a request; this console shows it,
 // lets the signed-in person pick a dashboard and approve, and lists what
-// was connected.
+// was connected. The same request may instead come from an AI Apps SDK's
+// `setup` asking for the member's own SDK key (purpose "sdk_key"; the SDK
+// quickstart plan section 3.6).
 
 /** ShareLevel is how much a connected machine sends. */
 export type ShareLevel = "summary" | "full";
@@ -1865,6 +1867,14 @@ export interface ConnectDisclosure {
   disclosure_sha256: string;
 }
 
+/** ConnectRefusal is why a listed dashboard cannot be chosen: the plan
+ * refusal's message and where the billing owner changes the plan. */
+export interface ConnectRefusal {
+  code: string;
+  message: string;
+  upgrade_url?: string;
+}
+
 /** ConnectChoice is one dashboard the machine can connect to. */
 export interface ConnectChoice {
   org_id: string;
@@ -1876,6 +1886,11 @@ export interface ConnectChoice {
   share_level: ShareLevel;
   disclosure: ConnectDisclosure;
   preselected: boolean;
+  /** available is false for a dashboard listed but not choosable (an SDK
+   * key on a plan without AI Apps); refusal says why. An older server
+   * sends neither: read absent as available. */
+  available?: boolean;
+  refusal?: ConnectRefusal;
 }
 
 /** ConnectTarget is the dashboard an approved request connected to. */
@@ -1890,9 +1905,15 @@ export interface ConnectTarget {
 /** ConnectStatus is a request's state. */
 export type ConnectStatus = "pending" | "approved" | "declined" | "expired";
 
+/** ConnectPurpose is what a request is for: a machine (`observer connect`)
+ * or an SDK key (an AI Apps SDK's `setup`). */
+export type ConnectPurpose = "machine" | "sdk_key";
+
 /** ConnectRequestView is GET /portal/api/connect/requests/{id}. */
 export interface ConnectRequestView {
   request_id: string;
+  /** purpose is absent on an older server: read it as "machine". */
+  purpose?: ConnectPurpose;
   status: ConnectStatus;
   /** user_code is set while pending, to compare with the terminal. */
   user_code?: string;
@@ -1907,8 +1928,18 @@ export interface ConnectRequestView {
   choices: ConnectChoice[];
   target: ConnectTarget | null;
   /** open_url opens the chosen dashboard (a button, never text), built by
-   * the server (tenantlink.go). The older online_url is not read. */
+   * the server (tenantlink.go). The older online_url is not read. For an
+   * SDK key it is the dashboard's AI apps page, waiting for the first
+   * trace. */
   open_url?: string;
+  /** client, client_version and project_name name the SDK that asks and
+   * its project (sdk_key only). */
+  client?: string;
+  client_version?: string;
+  project_name?: string;
+  /** target_ready says whether the chosen dashboard is active yet (sdk_key
+   * only; a new personal dashboard is set up after the approval). */
+  target_ready?: boolean;
 }
 
 /** ConnectMachine is one recent approval on the account home. */

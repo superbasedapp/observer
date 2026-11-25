@@ -188,7 +188,7 @@ export const VOCAB_ICONS = {
     assistant_service_account_create: I.UserPlus, assistant_service_account_deactivate: I.UserX,
     assistant_ingest_credential_mint: I.Key, assistant_ingest_credential_rotate: I.RefreshCw,
     assistant_ingest_credential_revoke: I.Ban, archive_holds_replaced: I.Archive, resolve_projects: I.FolderGit2,
-    node_component_purges_changed: I.CalendarClock,
+    node_component_purges_changed: I.CalendarClock, retire_machine: I.Archive,
   },
   // alerts
   alertRuleKind: {

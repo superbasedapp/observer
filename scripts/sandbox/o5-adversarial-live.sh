@@ -175,25 +175,8 @@ judge() { # judge NAME pass|fail DETAIL
 	[ "$2" = pass ] || FAIL=1
 	return 0
 }
-not_run() {
-	R["check.$1"]="not_run"
-	R["check.$1.detail"]="$2"
-	FAIL=1
-}
-refuse() {
-	R[refused]="$1"
-	echo "refused: $1" >&2
-	EXIT_CODE=2
-	exit 2
-}
-install_id() {
-	[ -f "$INSTALL_ID_FILE" ] || return 0
-	tr -d '\n' <"$INSTALL_ID_FILE" 2>/dev/null || true
-}
-gw_short() { local id; id="$(install_id)"; printf '%s' "${id:0:12}"; }
-gw_name() { [ -n "$(gw_short)" ] && printf 'observer-%s' "$(gw_short)"; }
-gw_unit() { [ -n "$(gw_short)" ] && printf 'observer-openshell-gateway-%s.service' "$(gw_short)"; }
-gw_rtdir() { [ -n "$(gw_short)" ] && printf '%s/observer-openshell-%s' "${XDG_RUNTIME_DIR:-/nonexistent}" "$(gw_short)"; }
+# shellcheck source=scripts/sandbox/live-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/live-lib.sh"
 osh() {
 	command -v openshell >/dev/null || return 1
 	if [ "$MANAGED" = 1 ]; then

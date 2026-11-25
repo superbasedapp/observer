@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/promptturn"
 )
 
 // Admitter is the optional pre-forward input-admission gate (admission spec
@@ -67,6 +69,11 @@ type AdmitInput struct {
 	// Empty ⇒ the per-end-user budget gate is inert; the app-wide policy still
 	// applies.
 	User string
+	// Service is the app's service name the SDK sends on a local app lane
+	// (X-Superbased-Service, applane.go; L7 gap 1), so the org's
+	// service-scoped app caps bind on the proxy path. Empty off a lane or
+	// when the app sent none.
+	Service string
 	// Model is the pre-mutation top-level request model (topLevelModel),
 	// resolved before admit() so the egress layer (design §3.4) matches the
 	// model the request carried rather than any downstream Channel-B rewrite.
@@ -75,6 +82,13 @@ type AdmitInput struct {
 	// PromptTokensEst is a coarse incoming prompt-size band (body bytes / 4)
 	// for egress overload/degrade rules (§3.4 caveat).
 	PromptTokensEst int
+	// Unaccounted names, as content-free type labels, the user content in the
+	// judged turn that no extractor reads (promptturn.AdmissionView: an
+	// image, a PDF, a legacy prompt field, an undecoded body). The gate
+	// refuses such a request under an enforcing policy and records the
+	// shadow finding under an observing one (finding H1, L-180), whatever
+	// Text says.
+	Unaccounted []string
 }
 
 // AdmitRoute is the plain Plane-A egress route contract the gate returns for
@@ -191,56 +205,49 @@ type AdmitResult struct {
 // audit rows so they soft-join to the api_turns row. model is the pre-mutation
 // top-level model (topLevelModel), so the egress layer matches the model the
 // request actually carried rather than a downstream Channel-B rewrite.
-func (p *Proxy) admit(ctx context.Context, provider string, body []byte, userID, requestID, model string) (AdmitResult, bool) {
+func (p *Proxy) admit(ctx context.Context, provider string, body []byte, userID, service, requestID, model string) (AdmitResult, bool) {
 	if p.admitter == nil {
 		return AdmitResult{}, false
 	}
-	text := extractLastUserText(provider, body)
-	if text == "" {
-		// Nothing to judge: NO user message in the body carries text (an
-		// image/audio-only conversation, a request with no user turn), or
-		// an unparseable body (e.g. an undecoded gzip payload, §3.5):
-		// never gate. NOTE a tool-result-only turn does NOT land here:
-		// extractLastUserText walks back past a text-less user message to
-		// the newest one WITH text, so on a hosted app's tool loop this
-		// Plane A seam re-judges the prompt that started the loop on every
-		// request (the admission service's verdict cache absorbs the
-		// repeat). The Plane-B coding-agent judge deliberately does not
-		// reuse this extractor; it classifies through internal/promptturn,
-		// which reports such a turn as a continuation (P-228).
-		//
-		// G1 visibility fix (docs/audits/multimodal-tracking-audit-2026-08-26.md):
-		// this branch also covers an image/audio-only conversation (no user
-		// message with text at all), which the judge then silently never
-		// evaluates. Judging non-text content is a
-		// separate design arc (out of scope here — we must NOT synthesize
-		// marker text and feed it to the judge, that would fake coverage).
-		// What we CAN do cheaply and safely is tell an admin "there was
-		// non-text content here that nothing judged" apart from the
-		// routine "truly nothing to judge" case (no user content at all),
-		// by logging a distinct, greppable line — read-only, no Admitter
-		// call, so this cannot change gating behavior.
-		if types := nonTextBlockTypes(provider, body); len(types) > 0 {
-			p.logger.Info(
-				"proxy: admission skipped - non-text user content present, not judged",
-				"provider", provider,
-				"request_id", requestID,
-				"session_id", sessionIDForProvider(provider, body),
-				"non_text_block_types", types,
-			)
-		}
+	view := admissionView(provider, body)
+	if view.Empty() {
+		// No user content at all (a request with no user turn): nothing to
+		// judge, never gated. A tool-result-only turn does not land here:
+		// the view judges the prompt that opened the loop (the admission
+		// service's verdict cache absorbs the repeat). Content the view
+		// cannot read (an image, a document, an undecoded body) is not
+		// "nothing": it reaches the gate as Unaccounted (finding H1).
 		return AdmitResult{}, false
+	}
+	text := ""
+	if len(view.Units) > 0 {
+		text = view.Units[0]
 	}
 	res := p.admitter.Admit(ctx, AdmitInput{
 		Provider:        provider,
 		Text:            text,
 		SessionID:       sessionIDForProvider(provider, body),
 		User:            userID,
+		Service:         service,
 		RequestID:       requestID,
 		Model:           model,
 		PromptTokensEst: len(body) / 4,
+		Unaccounted:     view.Unaccounted,
 	})
+	if slices.Contains(view.Unaccounted, promptturn.UnaccountedUnparsed) {
+		// An undecoded body (gzip, §3.5) is never routed by egress: the
+		// proxy cannot splice what it cannot read. Its admission still ran.
+		res.Route = nil
+	}
 	return res, res.Block
+}
+
+// admissionView is the hosted-app admission view of a request body: the
+// shared rule (promptturn.AdmissionView, the one owner; the AI gateway's app
+// gate calls it too) over the provider lane's wire shape, reading the newest
+// user turn.
+func admissionView(provider string, body []byte) promptturn.Admission {
+	return promptturn.AdmissionView(promptturn.ShapeFor(provider, body), body, promptturn.AdmissionLastTurn)
 }
 
 // finalizeAdmission persists a deferred admission verdict through the seam,
@@ -361,273 +368,4 @@ func sessionIDForProvider(provider string, body []byte) string {
 		return extractOpenAISessionID(body)
 	}
 	return extractAnthropicSessionID(body)
-}
-
-// extractLastUserText returns the text of the newest user message that
-// CARRIES text in a provider request body: the "incoming user request"
-// Plane A admission gates. A user message with no text (a tool-result-only
-// turn, an image-only turn) is skipped and the walk continues to an earlier
-// user message, so a tool loop yields the prompt that started it. Empty only
-// when no user message has text, or the body is unparseable; admission
-// treats empty as nothing to judge. Anthropic + OpenAI (chat and Responses)
-// shapes are handled; other providers return "" (best-effort).
-func extractLastUserText(provider string, body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	if provider == models.ProviderOpenAI {
-		return lastUserTextOpenAI(body)
-	}
-	return lastUserTextAnthropic(body)
-}
-
-// lastUserTextAnthropic reads the last user message from a Messages API body.
-func lastUserTextAnthropic(body []byte) string {
-	var raw struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return ""
-	}
-	for i := len(raw.Messages) - 1; i >= 0; i-- {
-		if raw.Messages[i].Role != "user" {
-			continue
-		}
-		if t := decodeMessageText(raw.Messages[i].Content); t != "" {
-			return t
-		}
-	}
-	return ""
-}
-
-// lastUserTextOpenAI reads the last user message from a Chat Completions
-// (messages[]) body, falling back to the Responses API (input string or
-// input[] of role/content items).
-func lastUserTextOpenAI(body []byte) string {
-	var raw struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Input json.RawMessage `json:"input"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return ""
-	}
-	for i := len(raw.Messages) - 1; i >= 0; i-- {
-		if raw.Messages[i].Role != "user" {
-			continue
-		}
-		if t := decodeMessageText(raw.Messages[i].Content); t != "" {
-			return t
-		}
-	}
-	// Responses API: input is a string, or an array of {role, content} items.
-	in := bytes.TrimSpace(raw.Input)
-	if len(in) == 0 {
-		return ""
-	}
-	switch in[0] {
-	case '"':
-		var s string
-		if json.Unmarshal(in, &s) == nil {
-			return strings.TrimSpace(s)
-		}
-	case '[':
-		var items []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		}
-		if json.Unmarshal(in, &items) == nil {
-			for i := len(items) - 1; i >= 0; i-- {
-				if items[i].Role != "user" {
-					continue
-				}
-				if t := decodeMessageText(items[i].Content); t != "" {
-					return t
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// decodeMessageText renders a message content field to plain text. Content is
-// either a JSON string or an array of content blocks; any block carrying a
-// non-empty "text" field contributes (covers Anthropic text, OpenAI chat
-// text, and Responses API input_text). Non-text blocks (images, tool_result)
-// are skipped.
-func decodeMessageText(raw json.RawMessage) string {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 {
-		return ""
-	}
-	if raw[0] == '"' {
-		var s string
-		if json.Unmarshal(raw, &s) == nil {
-			return strings.TrimSpace(s)
-		}
-		return ""
-	}
-	if raw[0] != '[' {
-		return ""
-	}
-	var blocks []struct {
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &blocks) != nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, bl := range blocks {
-		if bl.Text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(bl.Text)
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// nonTextBlockTypes returns the distinct content-block "type" values present
-// in the LAST user message of a provider request body — companion to
-// extractLastUserText, used ONLY for the G1 admission-visibility log line
-// (docs/audits/multimodal-tracking-audit-2026-08-26.md): telling "an
-// image/audio-only turn the judge never saw" apart from "truly nothing here"
-// (protocol plumbing only) without ever invoking the judge. Best-effort and
-// read-only, matching extractLastUserText's own fail-open shape: an
-// unparseable or provider-unhandled body, or a message with no array-shaped
-// content, yields nil.
-func nonTextBlockTypes(provider string, body []byte) []string {
-	if len(body) == 0 {
-		return nil
-	}
-	if provider == models.ProviderOpenAI {
-		return nonTextBlockTypesOpenAI(body)
-	}
-	return nonTextBlockTypesAnthropic(body)
-}
-
-// nonTextBlockTypesAnthropic finds the last user-role message in a Messages
-// API body and reports its non-text block types. Unlike lastUserTextAnthropic
-// (which keeps walking backward past a user message that decoded to no text,
-// looking for one that did), this stops at the first — i.e. most recent — user
-// message: since the caller already knows overall text extraction came up
-// empty, the most recent turn is the one relevant to log.
-func nonTextBlockTypesAnthropic(body []byte) []string {
-	var raw struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil
-	}
-	for i := len(raw.Messages) - 1; i >= 0; i-- {
-		if raw.Messages[i].Role != "user" {
-			continue
-		}
-		return decodeMessageBlockTypes(raw.Messages[i].Content)
-	}
-	return nil
-}
-
-// nonTextBlockTypesOpenAI mirrors nonTextBlockTypesAnthropic for a Chat
-// Completions body, falling back to the Responses API input[] shape — the
-// same two shapes lastUserTextOpenAI handles.
-func nonTextBlockTypesOpenAI(body []byte) []string {
-	var raw struct {
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Input json.RawMessage `json:"input"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil
-	}
-	for i := len(raw.Messages) - 1; i >= 0; i-- {
-		if raw.Messages[i].Role != "user" {
-			continue
-		}
-		return decodeMessageBlockTypes(raw.Messages[i].Content)
-	}
-	in := bytes.TrimSpace(raw.Input)
-	if len(in) == 0 || in[0] != '[' {
-		return nil
-	}
-	var items []struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	}
-	if json.Unmarshal(in, &items) != nil {
-		return nil
-	}
-	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].Role != "user" {
-			continue
-		}
-		return decodeMessageBlockTypes(items[i].Content)
-	}
-	return nil
-}
-
-// decodeMessageBlockTypes returns the distinct "type" values of content
-// blocks in a message's content field that carry genuine non-text USER
-// content the judge never sees — image, image_url, input_image, input_audio,
-// audio, document, video, file, etc. — the non-text-detecting companion to
-// decodeMessageText.
-//
-// Two categories are deliberately excluded, both to avoid miscounting the
-// EXISTING "nothing to judge" case (protocol plumbing such as a tool
-// result, which carries no user content) as the NEW "non-text content
-// existed but was never judged" case this function exists to surface:
-//   - text-shaped types (text, input_text, output_text) — decodeMessageText
-//     already covers these; this function only runs when that came up empty
-//   - non-user-authored control/plumbing types (tool_use, tool_result,
-//     thinking, redacted_thinking, server_tool_use, web_search_tool_result,
-//     and similar *_tool_result variants) — these appear in "user"-role
-//     messages as protocol mechanics (a tool result re-injected, a replayed
-//     thinking block), not content a human/app sent for the judge to weigh
-//
-// A bare-string content field, or blocks carrying no "type", contribute
-// nothing — matching decodeMessageText's own best-effort shape: content this
-// function can't positively identify as non-text user content is invisible
-// here, not miscounted as such.
-func decodeMessageBlockTypes(raw json.RawMessage) []string {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || raw[0] != '[' {
-		return nil
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-	}
-	if json.Unmarshal(raw, &blocks) != nil {
-		return nil
-	}
-	seen := make(map[string]bool, len(blocks))
-	var types []string
-	for _, bl := range blocks {
-		switch bl.Type {
-		case "", "text", "input_text", "output_text",
-			"tool_use", "tool_result", "server_tool_use",
-			"thinking", "redacted_thinking":
-			continue
-		}
-		if strings.HasSuffix(bl.Type, "_tool_result") {
-			continue
-		}
-		if seen[bl.Type] {
-			continue
-		}
-		seen[bl.Type] = true
-		types = append(types, bl.Type)
-	}
-	return types
 }

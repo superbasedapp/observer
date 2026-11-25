@@ -12,7 +12,7 @@ are in `docs/plans/prime-agent-adapter-plan-2026-08-06.md`.
 | File | Lines | What it exercises |
 |---|---|---|
 | `session-flat.jsonl` | 24 | The full entry vocabulary — header, model changes, both `content` shapes, tool call/result pairing (success + failure), shell executions, compaction, RLM child-usage roll-up, a malformed line, and the bookkeeping entries that must be skipped silently. |
-| `session-unpaired-tail.jsonl` | 11 | A transcript whose last entry is a tool call with **no** `toolResult` yet — the cross-tick pairing case `pending.go` defers. Truncated from the first fixture, so the two share a byte-identical prefix. |
+| `session-unpaired-tail.jsonl` | 11 | A transcript whose last entry is a tool call with **no** `toolResult` yet — the cross-tick pairing case `adapter.DeferUnpairedTail` defers. Truncated from the first fixture, so the two share a byte-identical prefix. |
 
 Both files use LF line endings. The CRLF case is synthesised in
 `crlf_test.go` from `session-flat.jsonl` rather than committed, so the two

@@ -535,6 +535,14 @@ type Options struct {
 	// run first; an error wrapping ErrRestartUnsupported is answered 501
 	// (SBX-UPD audit finding 1).
 	RestartPreflight func() error
+	// RestartHandover, when non-nil, reports what this daemon's own restart
+	// does with its proxy port (L-168 (ii)): whether the in-place restart
+	// hands the proxy's listening socket to the new process image, and the
+	// digest of the command the daemon runs (service.InvocationDigest), which
+	// `observer service restart` compares with the installed unit's. The
+	// GET restart report adds listener_handover and invocation_digest; nil
+	// leaves the report as it was.
+	RestartHandover func() (handover bool, invocationDigest string)
 	// LiveSandboxRuns, when non-nil, makes the restart route ask before it
 	// ends a live sandboxed run (livesandbox.go, SBX-UPD-1). Nil keeps the
 	// route exactly as it was.
@@ -941,8 +949,13 @@ type SDKSeams struct {
 	// SignIn mints the member's SDK key on the org and stores it.
 	SignIn func(ctx context.Context) (sdkcredsvc.Status, error)
 	// SignOut revokes it on the org and removes the local copies; it
-	// returns how many keys the org revoked.
+	// returns how many keys the org revoked. An admin-issued key is removed
+	// and not revoked (sdkcredsvc.ErrAdminIssuedKeyKept in the error).
 	SignOut func(ctx context.Context) (int, error)
+	// InstallKey stores an SDK key an admin issued, with the gateway address
+	// it is sent to (`observer sdk use-key`; sdkcredsvc.InstallKey). No org
+	// call. Nil: not wired.
+	InstallKey func(compound, gatewayURL string) (sdkcredsvc.Status, error)
 	// Receiver reports what the daemon last recorded about its local OTLP
 	// receiver's bind (the record `observer doctor` row otlp.receiver
 	// reads); ok is false when nothing is recorded. Nil: not wired.

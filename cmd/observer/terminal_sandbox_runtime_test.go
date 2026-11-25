@@ -9,12 +9,13 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 )
 
-// The sandbox test runtime the OCI and MXC tests share (R-008: it lived in
+// The sandbox test runtime every driver's tests share (R-008: it lived in
 // the OCI test file, so `-tags sbo_omit_terminals_sandbox_oci` broke the
-// MXC tests).
+// MXC tests; the macOS and landlock tests kept their own copies until they
+// moved here too).
 
-// ociTestRuntime builds a runtime over cfg.
-func ociTestRuntime(t *testing.T, cfg config.Config) *sandboxRuntime {
+// testSandboxRuntime builds a runtime over cfg.
+func testSandboxRuntime(t *testing.T, cfg config.Config) *sandboxRuntime {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {

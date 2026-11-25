@@ -1,10 +1,15 @@
-// TEMPORARY DIAGNOSTIC OVERLAY — DO NOT COMMIT.
+// sttdebug: a development-only input-event trace overlay.
 //
 // Passively records the complete input-event pipeline for whatever
-// field is focused on the page, so we can diagnose why Wispr Flow
-// dictation (clipboard set -> Ctrl+V -> clipboard restore) delivers the
-// OLD clipboard into the xterm terminal but works in the dashboard's
-// Search box.
+// field is focused on the page. It is the tool that diagnosed the
+// 2026-07-23 dictation-paste bug (Wispr Flow's clipboard set -> Ctrl+V ->
+// clipboard restore delivered the OLD clipboard into the xterm terminal
+// but worked in the dashboard's Search box; docs/session-handoff.md "STT /
+// dictation into terminals"), kept so a regression in terminal paste can
+// be traced the same way.
+//
+// Dev builds only: main.tsx loads it behind `import.meta.env.DEV`, so
+// production bundles (and the embedded dashboard) do not contain it.
 //
 // Enable with `?sttdebug=1` in the URL, or
 // `localStorage.setItem("sbo_sttdebug", "1")`. No-op otherwise.

@@ -166,8 +166,8 @@ func readHeader(path string) header {
 //
 //   - a partial trailing line (droid still writing it), and
 //   - the record of a tool_use whose tool_result has not been written
-//     yet (see pending.go — a cross-tick pair would otherwise persist a
-//     permanently wrong outcome).
+//     yet (see adapter.DeferUnpairedTail — a cross-tick pair would
+//     otherwise persist a permanently wrong outcome).
 //
 // A resumed parse (fromOffset > 0) first REPLAYS the bytes before the
 // cursor with emission suppressed, rebuilding the cross-line state the
@@ -188,9 +188,9 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		path:        path,
 		sessionID:   hdr.sessionID,
 		firstOffset: fromOffset,
-		pendingTool: map[string]pendingMark{},
+		pendingTool: map[string]adapter.PendingMark{},
 	}
-	st.projectRoot, st.gitBranch, st.gitRemote, st.identity = resolveProjectRoot(hdr.cwd)
+	st.projectRoot, st.gitBranch, st.gitRemote, st.identity = adapter.ResolveProjectRoot(hdr.cwd)
 	if hasSidecar {
 		st.model = sc.resolvedModel()
 	}
@@ -216,7 +216,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		adapter.ApplyProjectIdentity(&res, st.identity)
 		return res, err
 	}
-	st.deferUnpairedTail(&res)
+	// Rewinds tool and token events only; cache observations stay.
+	adapter.DeferUnpairedTail(&res, st.path, st.pendingTool, false)
 
 	if hasSidecar {
 		ts := st.lastTS
@@ -358,27 +359,6 @@ func (st *parseState) replayRecord(rec *rawRecord) {
 	}
 }
 
-// resolveProjectRoot translates a foreign-OS cwd (a WSL2 observer reading
-// a Windows `C:\...` session, or a Windows observer reading
-// \\wsl.localhost) BEFORE git.Resolve. The translation is UNCONDITIONAL:
-// a drive-letter path reaching git.Resolve would be treated as relative
-// by filepath.Abs and get the observer's OWN cwd prefixed onto it
-// (feedback_foreign_path_git_resolve). Returns (projectRoot, gitBranch,
-// gitRemote); a blank cwd yields ("", "", "").
-func resolveProjectRoot(rawCWD string) (root, branch, remote string, id git.Identity) {
-	cwd := strings.TrimSpace(rawCWD)
-	if cwd == "" {
-		return "", "", "", git.Identity{}
-	}
-	cwd = crossmount.TranslateForeignPath(cwd)
-	identity, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		return cwd, "", "", git.Identity{}
-	}
-	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
-	return identity.Root, identity.Branch, identity.Remote, identity
-}
-
 // parseState carries the per-call bookkeeping the record handlers share.
 type parseState struct {
 	adapter     *Adapter
@@ -406,8 +386,8 @@ type parseState struct {
 	// pendingTool maps a tool_use id to the location of its ToolEvent in
 	// res.ToolEvents, so the later tool_result block can stamp
 	// success/output onto it. Whatever is still pending at EOF drives
-	// the tail deferral in pending.go.
-	pendingTool map[string]pendingMark
+	// the tail deferral (adapter.DeferUnpairedTail).
+	pendingTool map[string]adapter.PendingMark
 	// surfaceDesktop is set once this parse window observes a real
 	// user-typed message carrying userMessageSourceDesktop. See
 	// surface.go for the grounding and why there is no negative case.
@@ -563,16 +543,16 @@ func (st *parseState) emitToolUse(rec *rawRecord, blk *rawBlock, pos int, reason
 	ev.PrecedingReasoning = reasoning
 	ev.DurationMs = blk.DurationMs
 	// Optimistic; corrected by the paired tool_result block. When that
-	// block hasn't been written yet, deferUnpairedTail rewinds past this
+	// block hasn't been written yet, adapter.DeferUnpairedTail rewinds past this
 	// record rather than shipping the optimistic value — the store
 	// cannot flip `success` on a later re-emit.
 	res.ToolEvents = append(res.ToolEvents, ev)
 	if blk.ID != "" {
-		st.pendingTool[blk.ID] = pendingMark{
-			idx:       len(res.ToolEvents) - 1,
-			lineStart: st.curLineStart,
-			toolLen:   st.curToolLen,
-			tokenLen:  st.curTokenLen,
+		st.pendingTool[blk.ID] = adapter.PendingMark{
+			ToolIdx:   len(res.ToolEvents) - 1,
+			LineStart: st.curLineStart,
+			ToolLen:   st.curToolLen,
+			TokenLen:  st.curTokenLen,
 		}
 	}
 }
@@ -651,10 +631,10 @@ func (st *parseState) emitUserText(rec *rawRecord, visibility, text string, ts t
 // before the parse window) is silently ignored.
 func (st *parseState) applyToolResult(blk *rawBlock, res *adapter.ParseResult) {
 	mark, ok := st.pendingTool[blk.ToolUseID]
-	if !ok || mark.idx >= len(res.ToolEvents) {
+	if !ok || mark.ToolIdx >= len(res.ToolEvents) {
 		return
 	}
-	ev := &res.ToolEvents[mark.idx]
+	ev := &res.ToolEvents[mark.ToolIdx]
 	ev.Success = !blk.IsError
 	if out := resultText(blk.Content); out != "" {
 		scrubbed := st.adapter.scrubber.String(contentcap.Cap(out, contentcap.DefaultMaxBytes))

@@ -101,7 +101,7 @@ func SessionHistory() vendorapi.Driver {
 func buildSessionHistory(p vendorapi.Params, _ vendorapi.Window, cursor string) (vendorapi.Request, error) {
 	id := p[ParamSessionID]
 	if !ValidID(id) || cursor != "" {
-		return vendorapi.Request{}, drift(SurfaceSessionHistory, "a history read needs one session id and no cursor")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceSessionHistory, "a history read needs one session id and no cursor")
 	}
 	return vendorapi.Request{Method: "GET", Path: "/api/v1/session/" + id + "/history"}, nil
 }
@@ -159,17 +159,17 @@ func parseSessionHistory(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	sessionID := r.Params[ParamSessionID]
 	if !ValidID(sessionID) {
-		return vendorapi.Page{}, drift(SurfaceSessionHistory, "the response names no requested session")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "the response names no requested session")
 	}
 	var doc historyDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceSessionHistory, "body does not decode as the archive")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "body does not decode as the archive")
 	}
 	if doc.Version == nil || string(*doc.Version) != historyVersion {
-		return vendorapi.Page{}, drift(SurfaceSessionHistory, "version is not the archive version 1")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "version is not the archive version 1")
 	}
 	if doc.Messages == nil {
-		return vendorapi.Page{}, drift(SurfaceSessionHistory, "required field messages is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "required field messages is missing")
 	}
 	msgs := *doc.Messages
 	out := vendorapi.Page{SourceRecords: len(msgs)}
@@ -177,31 +177,31 @@ func parseSessionHistory(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	var newest time.Time
 	for i, m := range msgs {
-		role, ok := messageRoles[str(m.Role)]
+		role, ok := messageRoles[vendorapi.Str(m.Role)]
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].role is not user or assistant", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].role is not user or assistant", i)
 		}
 		itemID := "m" + strconv.Itoa(i)
 		if m.ID != nil {
 			if !plainID(*m.ID) {
-				return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].id is not a plain id", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].id is not a plain id", i)
 			}
 			itemID = *m.ID
 		}
 		if seen[itemID] {
-			return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d] repeats a message id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d] repeats a message id", i)
 		}
 		seen[itemID] = true
 		at, ok := msTime(m.Ts)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].ts is not epoch milliseconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].ts is not epoch milliseconds", i)
 		}
 		if at.After(newest) {
 			newest = at
 		}
 		blocks, text, err := contentBlocks(m.Content)
 		if err != nil {
-			return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].content is not text or blocks", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].content is not text or blocks", i)
 		}
 		if !at.IsZero() {
 			if text {
@@ -210,12 +210,12 @@ func parseSessionHistory(r vendorapi.Response) (vendorapi.Page, error) {
 				})
 			}
 			for j, b := range blocks {
-				if str(b.Type) != "tool_use" || role != "response" {
+				if vendorapi.Str(b.Type) != "tool_use" || role != "response" {
 					continue
 				}
-				name := str(b.Name)
+				name := vendorapi.Str(b.Name)
 				if name == "" || len(name) > vendorapi.MaxTargetLen {
-					return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].content[%d] is a tool call with no usable name", i, j)
+					return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].content[%d] is a tool call with no usable name", i, j)
 				}
 				callID := "b" + strconv.Itoa(j)
 				if b.ID != nil && plainID(*b.ID) {
@@ -229,7 +229,7 @@ func parseSessionHistory(r vendorapi.Response) (vendorapi.Page, error) {
 			}
 		}
 		if err := u.add(m, at); err != nil {
-			return vendorapi.Page{}, drift(SurfaceSessionHistory, "messages[%d].metrics: %v", i, err)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionHistory, "messages[%d].metrics: %v", i, err)
 		}
 	}
 	if len(out.Content) > vendorapi.MaxContentItems {
@@ -279,11 +279,11 @@ func (u *sessionUsage) add(m message, at time.Time) error {
 	}
 	if !at.IsZero() && !at.Before(u.at) {
 		u.at = at
-		if m.ModelInfo != nil && str(m.ModelInfo.ID) != "" && len(*m.ModelInfo.ID) <= vendorapi.MaxIDLen {
+		if m.ModelInfo != nil && vendorapi.Str(m.ModelInfo.ID) != "" && len(*m.ModelInfo.ID) <= vendorapi.MaxIDLen {
 			u.model = *m.ModelInfo.ID
 		}
 	}
-	if m.ModelInfo != nil && str(m.ModelInfo.ID) != "" {
+	if m.ModelInfo != nil && vendorapi.Str(m.ModelInfo.ID) != "" {
 		u.models[*m.ModelInfo.ID] = true
 	}
 	return nil
@@ -371,12 +371,12 @@ func contentBlocks(raw json.RawMessage) ([]block, bool, error) {
 		return nil, s != "", nil
 	}
 	var blocks []block
-	if err := decode(raw, &blocks); err != nil {
+	if err := vendorapi.DecodeNumbers(raw, &blocks); err != nil {
 		return nil, false, err
 	}
 	text := false
 	for _, b := range blocks {
-		if str(b.Type) == "" {
+		if vendorapi.Str(b.Type) == "" {
 			return nil, false, errNotContent
 		}
 		text = text || textBlocks[*b.Type]

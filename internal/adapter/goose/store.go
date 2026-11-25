@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -95,10 +96,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Goose store (sessions.db): every table this
@@ -115,22 +113,13 @@ var mirrorSpec = mirrorbase.Spec{
 // non-native home. Covers both bridge directions (/mnt/c on WSL2, and
 // \\wsl.localhost\ on Windows).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // maxMessageID returns the largest messages.id in the store — the
 // incremental watermark. A missing table (foreign/partial schema) yields 0.
 func maxMessageID(ctx context.Context, db *sql.DB) (int64, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return 0, nil
 	}
 	var v sql.NullInt64
@@ -144,7 +133,7 @@ func maxMessageID(ctx context.Context, db *sql.DB) (int64, error) {
 // with id > fromOffset, each with the metadata + accumulated token bundle
 // needed to emit its events and a session-level TokenEvent.
 func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]sessionRow, error) {
-	if !tableExists(ctx, db, "sessions") || !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "sessions") || !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -179,7 +168,7 @@ func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]s
 // loadMessages returns every message of a session in chronological (id
 // ASC) order.
 func loadMessages(ctx context.Context, db *sql.DB, sessionID string) ([]messageRow, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -201,13 +190,4 @@ func loadMessages(ctx context.Context, db *sql.DB, sessionID string) ([]messageR
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// tableExists reports whether a table is present in the store, so a foreign
-// or older schema degrades gracefully instead of erroring.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
 }

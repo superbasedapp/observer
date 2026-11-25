@@ -11,15 +11,24 @@ import (
 // openAICompatibleRequestFor maps the seam's request onto llmwire. The route's
 // Deployment is the provider's public model id; Endpoint is the base URL (the
 // part before /chat/completions). APIVersion is not used by this dialect.
+//
+// The request is sent in the model's shape from llmwire's shared
+// model-family table (shape.go): a GPT-5 or o-series deployment gets
+// max_completion_tokens and its family's reasoning effort (this lane sends no
+// temperature on any shape); every other model, gpt-oss-20b included, keeps
+// max_tokens, so the shipped route's body is unchanged. The reply cap is NOT
+// raised to the shape's minimum: MaxOutputTokens is the worst case the job's
+// spend reservation was made against, and a route's cap is chosen per model.
 func openAICompatibleRequestFor(req Request) llmwire.Request {
-	return llmwire.Request{
+	shape := llmwire.ResolveShape(llmwire.ProfileAuto, "", req.Deployment)
+	return shape.Apply(llmwire.Request{
 		Model:      req.Deployment,
 		System:     req.System,
 		Messages:   []llmwire.Message{{Role: llmwire.RoleUser, Content: req.User}},
 		MaxTokens:  req.MaxOutputTokens,
 		SchemaName: req.SchemaName,
 		Schema:     req.Schema,
-	}
+	})
 }
 
 // openAICompatibleResponseFor maps an llmwire reply onto the seam's response.

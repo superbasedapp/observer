@@ -17,6 +17,18 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	if rows[0].ID != "python" {
 		t.Fatalf("first row %q, want python", rows[0].ID)
 	}
+	// The setup field reaches the Go reader: Python and TypeScript have one
+	// (the SDK quickstart), Go and Java do not.
+	setup := map[string]string{}
+	for _, r := range rows {
+		setup[r.ID] = r.Setup
+	}
+	want := map[string]string{"python": "uvx superbased-sdk setup", "typescript": "npx @superbased/sdk setup", "go": "", "java": ""}
+	for id, w := range want {
+		if setup[id] != w {
+			t.Errorf("%s: Setup = %q, want %q", id, setup[id], w)
+		}
+	}
 	for _, r := range rows {
 		want := r.InstallCheckout
 		if r.Published {
@@ -75,6 +87,8 @@ func TestParseRefusals(t *testing.T) {
 		"no install":      `{"sdks":[` + strings.Replace(ok, `"install_checkout":"a"`, `"install_checkout":""`, 1) + `]}`,
 		"bad release":     `{"sdks":[` + strings.Replace(ok, `"release":"none"`, `"release":"x"`, 1) + `]}`,
 		"no snippet":      `{"sdks":[` + strings.Replace(ok, `"snippet":["s"]`, `"snippet":[]`, 1) + `]}`,
+		"two-line setup":  `{"sdks":[` + strings.Replace(ok, `"snippet"`, `"setup":"a\nb","snippet"`, 1) + `]}`,
+		"untrimmed setup": `{"sdks":[` + strings.Replace(ok, `"snippet"`, `"setup":" a setup","snippet"`, 1) + `]}`,
 		"not json":        `{`,
 	}
 	for name, doc := range cases {
@@ -84,5 +98,9 @@ func TestParseRefusals(t *testing.T) {
 	}
 	if _, err := Parse([]byte(`{"sdks":[` + ok + `]}`)); err != nil {
 		t.Fatalf("valid row refused: %v", err)
+	}
+	withSetup := strings.Replace(ok, `"snippet"`, `"setup":"x setup","snippet"`, 1)
+	if rows, err := Parse([]byte(`{"sdks":[` + withSetup + `]}`)); err != nil || rows[0].Setup != "x setup" {
+		t.Fatalf("a row with setup: %+v %v", rows, err)
 	}
 }

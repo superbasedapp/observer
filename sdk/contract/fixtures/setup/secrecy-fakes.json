@@ -1,0 +1,8 @@
+{
+  "_doc": "The secret values in this directory's fixtures. setup-cases.json section secrecy feeds them through every phase: no stdout or stderr line, --json line, log record, exception text or file other than the SDK-held file may contain any of them. All are fakes.",
+  "sdk_key": "00000000000000000000000000000001.FAKE-sdk-key-secret-for-contract-tests-only",
+  "sdk_key_secret": "FAKE-sdk-key-secret-for-contract-tests-only",
+  "device_code": "FAKE-device-code-for-contract-tests-only-01",
+  "redeem_secret": "fake-redeem-secret-for-tests-only-000000000",
+  "key_grant": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw"
+}

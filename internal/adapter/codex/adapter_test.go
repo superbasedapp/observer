@@ -3358,7 +3358,7 @@ func TestReplayedTokenLines_LineNumbersLockstepAcrossOversizeSkip(t *testing.T) 
 // yet been written by codex must be DEFERRED whole — never parsed and
 // never allowed to advance NewOffset past its start — even when the
 // fragment is syntactically valid JSON (and even on the oversized path).
-// readRecord returns io.EOF exactly for such an unterminated final
+// adapter.ReadRecord returns io.EOF exactly for such an unterminated final
 // record; a '\n'-terminated final record returns a nil error and ingests
 // normally. These tests pin all three at-EOF shapes plus the two-step
 // (write body, then append terminator) re-read.

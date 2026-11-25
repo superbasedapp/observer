@@ -16,6 +16,13 @@
 //     address the SDKs send it to (review E-04), so the loopback discovery
 //     answer never decides where the key goes.
 //
+// A member of an organization that issues no member keys (a hosted one,
+// SR-9) installs a key an admin issued instead: InstallKey (`observer sdk
+// use-key`, the dashboard's "Use an SDK key from my admin") stores it through
+// the same two hardened writes, marked admin-issued, with the gateway address
+// the member names. Sign-out removes an admin-issued key's local copies and
+// never asks the organization to revoke it (it is the admin's).
+//
 // The non-secret facts about the key (ids, scopes, gateway address) live in
 // a second 0600 record beside it, so the discovery route can describe the key
 // without reading it. Sign-out revokes the key this machine holds on the

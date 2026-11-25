@@ -47,7 +47,7 @@ type Manifest struct {
 	// program gets.
 	Companions []Companion `json:"companions,omitempty"`
 	// Env is a list of entries from the closed environment table
-	// (EnvChoices), never a free NAME=VALUE.
+	// (envChoices), never a free NAME=VALUE.
 	Env []string `json:"env,omitempty"`
 	// Cache is "none" or "per_driver" (an Observer-owned directory).
 	Cache Cache `json:"cache"`
@@ -106,7 +106,7 @@ type Companion struct {
 	// run: gosec built with Go 1.26 drops three rules against Go 1.27).
 	VersionArgv []string `json:"version_argv,omitempty"`
 	// VersionFormat names how the version is read from that answer, from
-	// the closed table VersionFormats ("" is a plain dotted version).
+	// the closed table versionFormats ("" is a plain dotted version).
 	VersionFormat string `json:"version_format,omitempty"`
 }
 
@@ -115,16 +115,6 @@ type Companion struct {
 var versionFormats = map[string]*regexp.Regexp{
 	// "go version go1.27.2 linux/amd64"
 	GoToolchainFormat: regexp.MustCompile(`\bgo(\d+\.\d+(?:\.\d+)?)\b`),
-}
-
-// VersionFormats returns the closed version format names.
-func VersionFormats() []string {
-	out := make([]string, 0, len(versionFormats))
-	for k := range versionFormats {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // SelfTest names a built-in fixture and the rules it must report.
@@ -219,14 +209,8 @@ var envChoices = []string{
 	"SEMGREP_SEND_METRICS=off",
 }
 
-// EnvChoices returns the closed environment table.
-func EnvChoices() []string { return append([]string(nil), envChoices...) }
-
 // exitMeanings are the meanings an exit-code row may name.
 var exitMeanings = []extrun.ExitMeaning{extrun.ExitResult, extrun.ExitClean, extrun.ExitFindings, extrun.ExitNoInput, extrun.ExitFailure}
-
-// ExitMeanings returns the closed exit meaning set.
-func ExitMeanings() []extrun.ExitMeaning { return append([]extrun.ExitMeaning(nil), exitMeanings...) }
 
 // categories are the finding categories a custom driver may emit: code,
 // infrastructure and CI findings, secrets and vulnerable dependencies. The

@@ -3,11 +3,19 @@ package proxy
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
+
+// stripUpstreamPrefix is a test shorthand for resolveUpstreamPrefix's
+// upstream and routing id (serve() reads the full result directly).
+func (p *Proxy) stripUpstreamPrefix(r *http.Request) (*url.URL, string) {
+	res := p.resolveUpstreamPrefix(r)
+	return res.up, res.id
+}
 
 // newTestProxyWithUpstreams builds a proxy with the standard two fixed
 // upstreams plus a map of explicit /up/<id>/ upstreams (Phase C).

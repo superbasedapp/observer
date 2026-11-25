@@ -48,9 +48,9 @@ func TestSDKKeyHintRules(t *testing.T) {
 		want, notWant []string
 	}{
 		{orgcontract.SDKKeysMember, []string{"separate", "run `observer sdk sign-in`", "Get my SDK key"}, []string{"admin"}},
-		{orgcontract.SDKKeysAdminOnly, []string{"does not give members", "ask an admin", "Machine identities"}, []string{"observer sdk sign-in"}},
+		{orgcontract.SDKKeysAdminOnly, []string{"does not give members", "ask an admin", "Machine identities", "observer sdk use-key --gateway-url <address>", "paste the key when asked", "Use an SDK key from my admin", "SUPERBASED_API_KEY", "SUPERBASED_ORG_URL", "SUPERBASED_DESTINATION=both"}, []string{"observer sdk sign-in"}},
 		{orgcontract.SDKKeysNotOnPlan, []string{"does not include AI Apps", "billing owner", "https://cloud.superbased.app/portal/"}, []string{"observer sdk sign-in", "ask an admin for an SDK key", "/billing"}},
-		{"", []string{"separate", "If your organization", "`observer sdk sign-in`", "ask an admin"}, []string{"run `observer sdk sign-in`"}},
+		{"", []string{"separate", "If your organization", "`observer sdk sign-in`", "ask an admin", "observer sdk use-key"}, []string{"run `observer sdk sign-in`"}},
 		{"some_future_value", []string{"If your organization"}, nil},
 	}
 	for _, w := range words {

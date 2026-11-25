@@ -258,7 +258,7 @@ func decodeDailyRow(s dailySpec, raw map[string]json.RawMessage) (dailyRow, erro
 
 func parseDaily(s dailySpec, r vendorapi.Response) (vendorapi.Page, error) {
 	drift := func(format string, a ...any) error {
-		return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s.surface}, a...)...)
+		return vendorapi.Drift(s.surface, format, a...)
 	}
 	if r.Status != 200 {
 		return vendorapi.Page{}, drift("status %d is not the documented 200", r.Status)

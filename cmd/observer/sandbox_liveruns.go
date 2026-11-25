@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -360,6 +361,10 @@ func daemonRestartFunc(configPath string, cancel context.CancelFunc) func() erro
 		go func() {
 			// Let the HTTP response flush before shutdown begins.
 			time.Sleep(300 * time.Millisecond)
+			// L-168 (ii): hand the proxy's listening socket to the new
+			// image, after waiting (bounded) for the proxied requests in
+			// flight, so the port keeps answering (proxy_handover.go).
+			prepareRestartHandover(context.Background(), processProxyHandover, updateDrainGate().InFlight, os.Stderr)
 			cancel()
 		}()
 		return nil

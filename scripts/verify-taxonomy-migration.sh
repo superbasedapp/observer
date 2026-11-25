@@ -30,39 +30,15 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-COMMITTED_DIR="internal/db/migrations"
-ARTIFACT="223_tooltax_action_type_backfill_3.sql"
-
-if [ ! -d "internal/db/taxbackfillgen" ]; then
-    echo "verify-taxonomy-migration: missing internal/db/taxbackfillgen" >&2
-    exit 1
-fi
-if [ ! -f "$COMMITTED_DIR/$ARTIFACT" ]; then
-    echo "verify-taxonomy-migration: missing $COMMITTED_DIR/$ARTIFACT — run 'make taxonomy-migration-build' and commit" >&2
-    exit 1
-fi
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./internal/db/taxbackfillgen -outdir "$tmpdir" \
-    || { echo "verify-taxonomy-migration: taxbackfillgen failed" >&2; exit 1; }
-
-if [ ! -f "$tmpdir/$ARTIFACT" ]; then
-    echo "verify-taxonomy-migration: taxbackfillgen did not emit $ARTIFACT" >&2
-    exit 1
-fi
-
-if ! diff -u "$COMMITTED_DIR/$ARTIFACT" "$tmpdir/$ARTIFACT" > "$tmpdir/.diff" 2>&1; then
-    echo "verify-taxonomy-migration: $COMMITTED_DIR/$ARTIFACT drifted from a fresh taxbackfillgen run"
-    echo "----- diff: committed (-) vs rebuilt (+) -----"
-    cat "$tmpdir/.diff"
-    echo "-----"
-    echo "taxonomy migration drift detected; run 'make taxonomy-migration-build' and commit" >&2
-    exit 1
-fi
-
-echo "taxonomy backfill migration: $COMMITTED_DIR/$ARTIFACT in sync with internal/tooltax"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-taxonomy-migration \
+    --tool taxbackfillgen \
+    --tool-dir internal/db/taxbackfillgen \
+    --make taxonomy-migration-build \
+    --drift "taxonomy migration" \
+    --ok "taxonomy backfill migration: internal/db/migrations/223_tooltax_action_type_backfill_3.sql in sync with internal/tooltax" \
+    --artifact internal/db/migrations/223_tooltax_action_type_backfill_3.sql \
+    -- go run ./internal/db/taxbackfillgen -outdir @TMP@

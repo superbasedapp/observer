@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -417,7 +418,7 @@ func (st *parseState) emitUserPrompt(rec *rawRecord, res *adapter.ParseResult) {
 			SourceEventID: "session_start:" + rec.SessionID,
 			SessionID:     rec.SessionID,
 			ProjectRoot:   root,
-			Timestamp:     parseTimestamp(rec.Timestamp),
+			Timestamp:     parseutil.ParseRFC3339UTCMillisZ(rec.Timestamp),
 			GitBranch:     st.lastBranch,
 			GitRemote:     remote,
 			Tool:          models.ToolQwenCode,
@@ -438,7 +439,7 @@ func (st *parseState) emitUserPrompt(rec *rawRecord, res *adapter.ParseResult) {
 		SourceEventID: "prompt:" + rec.UUID,
 		SessionID:     rec.SessionID,
 		ProjectRoot:   root,
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTCMillisZ(rec.Timestamp),
 		GitBranch:     st.lastBranch,
 		GitRemote:     remote,
 		Tool:          models.ToolQwenCode,
@@ -457,7 +458,7 @@ func (st *parseState) emitAssistant(rec *rawRecord, res *adapter.ParseResult) {
 		return
 	}
 	root, remote := st.projectRoot()
-	ts := parseTimestamp(rec.Timestamp)
+	ts := parseutil.ParseRFC3339UTCMillisZ(rec.Timestamp)
 	callIdx := 0
 	for _, part := range rec.Message.Parts {
 		switch {
@@ -659,7 +660,7 @@ func (st *parseState) emitTokenEvent(rec *rawRecord, ev *rawUIEvent, res *adapte
 		ProjectRoot:     root,
 		GitBranch:       st.lastBranch,
 		GitRemote:       remote,
-		Timestamp:       parseTimestamp(firstNonEmpty(ev.Timestamp, rec.Timestamp)),
+		Timestamp:       parseutil.ParseRFC3339UTCMillisZ(firstNonEmpty(ev.Timestamp, rec.Timestamp)),
 		Tool:            models.ToolQwenCode,
 		Model:           ev.Model,
 		InputTokens:     tp.inputNet,
@@ -711,7 +712,7 @@ func (st *parseState) emitAPIError(rec *rawRecord, ev *rawUIEvent, res *adapter.
 		SourceEventID: "api_error:" + rec.UUID,
 		SessionID:     rec.SessionID,
 		ProjectRoot:   root,
-		Timestamp:     parseTimestamp(firstNonEmpty(ev.Timestamp, rec.Timestamp)),
+		Timestamp:     parseutil.ParseRFC3339UTCMillisZ(firstNonEmpty(ev.Timestamp, rec.Timestamp)),
 		GitBranch:     st.lastBranch,
 		GitRemote:     remote,
 		Model:         ev.Model,
@@ -746,7 +747,7 @@ func (st *parseState) emitSlashCommand(rec *rawRecord, res *adapter.ParseResult)
 		SourceEventID: "slash:" + rec.UUID,
 		SessionID:     rec.SessionID,
 		ProjectRoot:   root,
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTCMillisZ(rec.Timestamp),
 		GitBranch:     st.lastBranch,
 		GitRemote:     remote,
 		Tool:          models.ToolQwenCode,

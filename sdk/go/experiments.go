@@ -27,10 +27,23 @@ const (
 var failWords = map[string]bool{"fail": true, "false": true, "no": true, "bad": true}
 
 // ExperimentError is an experiment that could not be set up (dataset, run
-// creation), or GetDataset finding no dataset.
-type ExperimentError struct{ Msg string }
+// creation), or GetDataset finding no dataset. When the org's plan refused
+// it, it wraps the *PlanRefusalError (errors.As finds it; errors.Is matches
+// ErrPlanRequired or ErrAllowanceExceeded).
+type ExperimentError struct {
+	Msg     string
+	refusal *PlanRefusalError
+}
 
 func (e *ExperimentError) Error() string { return "superbased: " + e.Msg }
+
+// Unwrap is the org's plan refusal behind the error, or nil.
+func (e *ExperimentError) Unwrap() error {
+	if e.refusal == nil {
+		return nil
+	}
+	return e.refusal
+}
 
 // sideSkipped is a destination that refused for want of a scope (403
 // insufficient_scope): the run treats it as skipped.
@@ -160,6 +173,9 @@ type ExperimentResult struct {
 	SkippedSides []string
 	// FailedPosts counts results a destination did not accept.
 	FailedPosts int
+	// PlanRefusal is set when the org's plan refused a post or the finish
+	// (the reason is in Errors too).
+	PlanRefusal *PlanRefusalError
 }
 
 var serverOrder = []string{DestinationOnline, DestinationLocal}
@@ -417,9 +433,9 @@ func scopeRefused(r *response) bool { return r.status == 403 && r.errorCode() ==
 func okBody(r *response, what, sideName string) (map[string]any, error) {
 	if !r.ok() {
 		if scopeRefused(r) {
-			return nil, &sideSkipped{ExperimentError{fmt.Sprintf("%s: skipped, %s refused: %s (an SDK key from sign-in has no sdk:eval scope; run experiments on the org with a CI credential that has it)", sideName, what, r.describe())}}
+			return nil, &sideSkipped{ExperimentError{Msg: fmt.Sprintf("%s: skipped, %s refused: %s (an SDK key from sign-in has no sdk:eval scope; run experiments on the org with a CI credential that has it)", sideName, what, r.describe())}}
 		}
-		return nil, &ExperimentError{fmt.Sprintf("%s: %s failed: %s", sideName, what, r.describe())}
+		return nil, &ExperimentError{Msg: fmt.Sprintf("%s: %s failed: %s", sideName, what, r.describe()), refusal: r.planRefusal()}
 	}
 	if m := r.obj(); m != nil {
 		return m, nil
@@ -452,12 +468,14 @@ func findDataset(ctx context.Context, sd side, ref string) (*Dataset, error) {
 }
 
 // GetDataset returns a dataset by name or id from the first destination that
-// has it (the gateway first under both); an *ExperimentError when none does.
+// has it (the gateway first under both); an *ExperimentError when none does
+// (wrapping the *PlanRefusalError when the org's plan refused the read).
 func GetDataset(ctx context.Context, nameOrID string) (*Dataset, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var errs []string
+	var refused *PlanRefusalError
 	targets := sides(nil)
 	if len(targets) == 0 {
 		errs = append(errs, unavailableReason(nil))
@@ -466,6 +484,10 @@ func GetDataset(ctx context.Context, nameOrID string) (*Dataset, error) {
 		d, err := findDataset(ctx, sd, nameOrID)
 		if err != nil {
 			errs = append(errs, strings.TrimPrefix(err.Error(), "superbased: "))
+			var pr *PlanRefusalError
+			if refused == nil && errors.As(err, &pr) {
+				refused = pr
+			}
 			continue
 		}
 		if d != nil {
@@ -476,7 +498,7 @@ func GetDataset(ctx context.Context, nameOrID string) (*Dataset, error) {
 	if len(errs) > 0 {
 		msg += ": " + strings.Join(errs, "; ")
 	}
-	return nil, &ExperimentError{msg}
+	return nil, &ExperimentError{Msg: msg, refusal: refused}
 }
 
 // literalItemID is the default id of a literal item: "item-" + the first 16
@@ -562,7 +584,7 @@ func uploadLiteral(ctx context.Context, sd side, datasetName string, items []Ite
 		}
 		id := jsonText(ds["id"])
 		if id == "" {
-			return "", 0, nil, &ExperimentError{"local: dataset create answered no id"}
+			return "", 0, nil, &ExperimentError{Msg: "local: dataset create answered no id"}
 		}
 		body, err = okBody(sd.call(ctx, "POST", "dataset_snapshot", map[string]any{"items": rows}, nil, nil, map[string]string{"id": id}), "dataset items", sd.name)
 		if err != nil {
@@ -587,7 +609,7 @@ func uploadLiteral(ctx context.Context, sd side, datasetName string, items []Ite
 		return "", 0, nil, err
 	}
 	if d == nil {
-		return "", 0, nil, &ExperimentError{fmt.Sprintf("online: dataset %q does not exist on the org (create it on the dashboard first)", datasetName)}
+		return "", 0, nil, &ExperimentError{Msg: fmt.Sprintf("online: dataset %q does not exist on the org (create it on the dashboard first)", datasetName)}
 	}
 	body, err := okBody(sd.call(ctx, "POST", "dataset_snapshot", map[string]any{"items": rows}, nil, nil, map[string]string{"id": d.ID}), "dataset snapshot", sd.name)
 	if err != nil {
@@ -736,7 +758,7 @@ func RunExperiment(ctx context.Context, o ExperimentOptions) (*ExperimentResult,
 	}
 	if ds != nil || ref != "" {
 		if len(targets) == 0 {
-			return nil, &ExperimentError{fmt.Sprintf("dataset %q: %s", ref, unavailableReason(nil))}
+			return nil, &ExperimentError{Msg: fmt.Sprintf("dataset %q: %s", ref, unavailableReason(nil))}
 		}
 		skipped := 0
 		for _, sd := range targets {
@@ -763,7 +785,7 @@ func RunExperiment(ctx context.Context, o ExperimentOptions) (*ExperimentResult,
 			}
 		}
 		if len(runs) == 0 && skipped == 0 {
-			return nil, &ExperimentError{fmt.Sprintf("dataset %q not found on any destination", ref)}
+			return nil, &ExperimentError{Msg: fmt.Sprintf("dataset %q not found on any destination", ref)}
 		}
 	} else {
 		lit := literalItems(o.Dataset)
@@ -809,7 +831,7 @@ func RunExperiment(ctx context.Context, o ExperimentOptions) (*ExperimentResult,
 				r.snapshotVersion = int(v)
 			}
 			if r.runID == "" {
-				err = &ExperimentError{r.sd.name + ": experiment create answered no id"}
+				err = &ExperimentError{Msg: r.sd.name + ": experiment create answered no id"}
 			}
 		}
 		if err == nil {
@@ -871,6 +893,9 @@ func RunExperiment(ctx context.Context, o ExperimentOptions) (*ExperimentResult,
 				if !resp.ok() {
 					res.FailedPosts += len(chunk)
 					res.Errors = append(res.Errors, fmt.Sprintf("%s: posting %d result(s) failed: %s", r.sd.name, len(chunk), resp.describe()))
+					if res.PlanRefusal == nil {
+						res.PlanRefusal = resp.planRefusal()
+					}
 				} else if m := resp.obj(); m != nil {
 					if rej, ok := m["rejected"].([]any); ok {
 						for _, x := range rej {
@@ -931,6 +956,9 @@ func RunExperiment(ctx context.Context, o ExperimentOptions) (*ExperimentResult,
 	for _, r := range runs {
 		if resp := r.sd.call(ctx, "POST", "experiment_finish", map[string]any{}, nil, nil, map[string]string{"id": r.runID}); !resp.ok() {
 			res.Errors = append(res.Errors, fmt.Sprintf("%s: finish failed: %s", r.sd.name, resp.describe()))
+			if res.PlanRefusal == nil {
+				res.PlanRefusal = resp.planRefusal()
+			}
 		}
 		got := r.sd.call(ctx, "GET", "experiment", nil, nil, nil, map[string]string{"id": r.runID})
 		if m := got.obj(); got.ok() && m != nil {

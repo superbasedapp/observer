@@ -154,28 +154,33 @@ func commonSubjectRules() []subjectRule {
 	}
 }
 
-// notCanonicalUUID reports whether s is anything but the 36-character,
-// lower-case, hyphenated form PostgreSQL prints a uuid in (uuid::text): the
-// only form sbci_current_account() accepts.
-func notCanonicalUUID(s string) bool {
+// IsCanonicalUUID reports whether s is the 36-character, lower-case,
+// hyphenated 8-4-4-4-12 hex form PostgreSQL prints a uuid in (uuid::text):
+// the only form sbci_current_account() accepts. It is the one owner of this
+// check; the cloud OIDC issuer uses it too.
+func IsCanonicalUUID(s string) bool {
 	if len(s) != 36 {
-		return true
+		return false
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch i {
 		case 8, 13, 18, 23:
 			if c != '-' {
-				return true
+				return false
 			}
 		default:
 			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-				return true
+				return false
 			}
 		}
 	}
-	return false
+	return true
 }
+
+// notCanonicalUUID is the subject-rule form of IsCanonicalUUID (a rule
+// reports the bad case).
+func notCanonicalUUID(s string) bool { return !IsCanonicalUUID(s) }
 
 // CheckSubject returns nil when subject may be carried in a token of kind k,
 // else an error matching ErrInvalidContext that names the refusing rule.

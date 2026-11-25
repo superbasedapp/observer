@@ -141,7 +141,7 @@ func TestComponentsDirectModules(t *testing.T) {
 				}
 			}
 		}
-		for _, msg := range uniqSorted(missing) {
+		for _, msg := range uniqueSorted(missing) {
 			t.Errorf("%s: undeclared module edge: %s", b, msg)
 		}
 		if testing.Short() {
@@ -293,18 +293,5 @@ func buildTagsInTree(t *testing.T, root string) map[string]bool {
 	if err != nil {
 		t.Fatalf("scan build tags: %v", err)
 	}
-	return out
-}
-
-func uniqSorted(xs []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, x := range xs {
-		if !seen[x] {
-			seen[x] = true
-			out = append(out, x)
-		}
-	}
-	sort.Strings(out)
 	return out
 }

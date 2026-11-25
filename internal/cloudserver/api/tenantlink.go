@@ -36,6 +36,12 @@ const (
 	// tenantPageInstall is the tenant dashboard's "Connect a machine" page
 	// (web2 /me/install), where the org detail's launch link lands.
 	tenantPageInstall tenantPage = "/me/install"
+	// tenantPageAppsWaiting is the dashboard's AI apps page (web2's Explorer,
+	// /trajectories, the AI apps landing) in waiting mode: where the browser
+	// goes after it approves an SDK setup's key request, so the first trace
+	// appears in the tab the person clicked in (the SDK quickstart plan
+	// section 3.6; web2's first-run panel reads from=connect).
+	tenantPageAppsWaiting tenantPage = "/trajectories?from=connect"
 )
 
 // tenantLink is https://<slug>.<tenant domain><page>, or "" when no tenant

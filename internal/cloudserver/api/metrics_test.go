@@ -2,9 +2,7 @@ package api_test
 
 import (
 	"bytes"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -13,10 +11,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudmetrics"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
 // metrics_test.go: the Paddle webhook end to end against a real store, with
@@ -44,35 +38,16 @@ func (c *stepClock) add(d time.Duration) {
 
 func newMetricsHarness(t *testing.T, clock *stepClock) (*harness, *cloudmetrics.Registry) {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	priceMap := map[string]store.PaddlePlan{"pri_test_plus": {Name: "plus_beta", Version: 1}}
-	s.SetPaddlePriceMap(priceMap)
-	apiStore.SetPaddlePriceMap(priceMap)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
 	reg := cloudmetrics.New(cloudmetrics.ProcessAPI)
-	handler := api.New(api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            identity.NewDevAuth(),
-		ExternalBaseURL:     "http://" + lis.Addr().String(),
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PaddleWebhookSecret: paddleSecret,
-		Now:                 clock.now,
-		Metrics:             reg,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}, reg
+	h := newHarnessWith(t, harnessSetup{
+		stores: withTestPaddlePrices,
+		opts: func(o *api.Options) {
+			o.PaddleWebhookSecret = paddleSecret
+			o.Now = clock.now
+			o.Metrics = reg
+		},
+	})
+	return h, reg
 }
 
 func unsignedPaddle(t *testing.T, base string) int {

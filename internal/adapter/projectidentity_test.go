@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/git"
@@ -79,5 +81,73 @@ func TestApplyProjectIdentityByRoot_EmptyMapNoOp(t *testing.T) {
 	ApplyProjectIdentityByRoot(res, nil)
 	if res.ToolEvents[0].Workspace != "keep-me" {
 		t.Errorf("empty ids map must be a no-op, got %q", res.ToolEvents[0].Workspace)
+	}
+}
+
+// fakeRepo writes a minimal git layout (HEAD on branch feature, an origin
+// remote) under a temp dir and returns its symlink-resolved root and a
+// subdirectory inside it.
+func fakeRepo(t *testing.T) (root, sub string) {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(dir, ".git")
+	sub = filepath.Join(dir, "pkg", "x")
+	for _, d := range []string{gitDir, sub} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		"HEAD":   "ref: refs/heads/feature\n",
+		"config": "[remote \"origin\"]\n\turl = https://github.com/acme/repo.git\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(gitDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, sub
+}
+
+func TestResolveProjectRoot(t *testing.T) {
+	if r, b, rem, id := ResolveProjectRoot("  \t "); r != "" || b != "" || rem != "" || id != (git.Identity{}) {
+		t.Errorf("blank cwd = (%q, %q, %q, %+v), want all empty", r, b, rem, id)
+	}
+	root, sub := fakeRepo(t)
+	r, b, rem, id := ResolveProjectRoot("  " + sub + "  ")
+	if r != root || b != "feature" || rem != "github.com/acme/repo" {
+		t.Errorf("repo cwd = (%q, %q, %q), want (%q, feature, github.com/acme/repo)", r, b, rem, root)
+	}
+	if id.Root != root || id.Branch != b || id.Remote != rem {
+		t.Errorf("identity %+v does not match the returned root/branch/remote", id)
+	}
+}
+
+func TestResolveProjectRootCached(t *testing.T) {
+	cache := map[string]string{}
+	if r, id, fresh := ResolveProjectRootCached(cache, ""); r != "" || fresh || id != (git.Identity{}) || len(cache) != 0 {
+		t.Errorf("blank cwd = (%q, %+v, %v), cache %v; want empty and uncached", r, id, fresh, cache)
+	}
+	root, sub := fakeRepo(t)
+	r, id, fresh := ResolveProjectRootCached(cache, sub)
+	if r != root || !fresh || id.Root != root || id.Branch != "feature" || id.Remote != "github.com/acme/repo" {
+		t.Errorf("first call = (%q, %+v, %v), want (%q, its identity, true)", r, id, fresh, root)
+	}
+	if len(cache) != 1 {
+		t.Errorf("cache = %v, want one entry", cache)
+	}
+	for _, v := range cache {
+		if v != root {
+			t.Errorf("cached root = %q, want %q", v, root)
+		}
+	}
+	// A cache hit returns the root but no identity, so callers copy the
+	// branch / remote / identity out exactly once.
+	r, id, fresh = ResolveProjectRootCached(cache, sub)
+	if r != root || fresh || id != (git.Identity{}) {
+		t.Errorf("cached call = (%q, %+v, %v), want (%q, zero, false)", r, id, fresh, root)
 	}
 }

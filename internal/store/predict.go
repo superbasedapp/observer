@@ -231,7 +231,7 @@ func turnSamples(rows []predictTurnRow) ([]time.Time, []predict.TurnSample) {
 			fresh = 0
 		}
 		samples = append(samples, predict.TurnSample{FreshInput: fresh, Output: r.output})
-		if t, ok := parseDBTime(r.ts); ok {
+		if t, ok := parseStoredTimeOK(r.ts); ok {
 			times = append(times, t)
 		}
 	}
@@ -249,7 +249,7 @@ func loadUserPromptTimes(ctx context.Context, db *sql.DB, sessionID string) ([]t
 	}
 	var out []time.Time
 	for _, p := range bySession[sessionID] {
-		if t, ok := parseDBTime(p.Timestamp); ok {
+		if t, ok := parseStoredTimeOK(p.Timestamp); ok {
 			out = append(out, t)
 		}
 	}
@@ -525,11 +525,11 @@ func (s *Store) InsertLimitSnapshot(ctx context.Context, snap models.LimitSnapsh
 		   req_limit, req_remaining, req_reset, tok_limit, tok_remaining, tok_reset,
 		   status, raw)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		snap.ScopeHash, snap.Provider, nullStr(snap.SessionID), snap.ObservedAt.Unix(),
-		nullF(snap.Window5hUtil), nullI(snap.Window5hReset), nullF(snap.Window7dUtil), nullI(snap.Window7dReset),
-		nullI(snap.ReqLimit), nullI(snap.ReqRemaining), nullI(snap.ReqReset),
-		nullI(snap.TokLimit), nullI(snap.TokRemaining), nullI(snap.TokReset),
-		nullStr(snap.Status), nullStr(snap.Raw),
+		snap.ScopeHash, snap.Provider, nullableString(snap.SessionID), snap.ObservedAt.Unix(),
+		nullableFloat64Ptr(snap.Window5hUtil), nullableInt64Ptr(snap.Window5hReset), nullableFloat64Ptr(snap.Window7dUtil), nullableInt64Ptr(snap.Window7dReset),
+		nullableInt64Ptr(snap.ReqLimit), nullableInt64Ptr(snap.ReqRemaining), nullableInt64Ptr(snap.ReqReset),
+		nullableInt64Ptr(snap.TokLimit), nullableInt64Ptr(snap.TokRemaining), nullableInt64Ptr(snap.TokReset),
+		nullableString(snap.Status), nullableString(snap.Raw),
 	)
 	if err != nil {
 		return fmt.Errorf("store.InsertLimitSnapshot: %w", err)
@@ -622,27 +622,6 @@ func (s *Store) LatestLimitSnapshotForTool(ctx context.Context, provider, tool s
 	return snap, true, nil
 }
 
-func nullStr(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-func nullF(p *float64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullI(p *int64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
 func fptr(n sql.NullFloat64) *float64 {
 	if !n.Valid {
 		return nil
@@ -657,16 +636,4 @@ func iptr(n sql.NullInt64) *int64 {
 	}
 	v := n.Int64
 	return &v
-}
-
-// parseDBTime parses the RFC3339(Nano) timestamps the store writes.
-// Returns ok=false on an unparseable value so the caller can skip it.
-func parseDBTime(s string) (time.Time, bool) {
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
 }

@@ -71,8 +71,8 @@ async function openTerminal(page: import("@playwright/test").Page) {
   const xterm = page.locator(".xterm").first();
   await expect(xterm).toBeVisible({ timeout: 10000 });
   await xterm.click();
-  // Let xterm settle its focus on the helper textarea.
-  await page.waitForTimeout(200);
+  // Wait for xterm to settle its focus on the helper textarea.
+  await expect(xterm.locator(".xterm-helper-textarea")).toBeFocused();
 }
 
 function decode(sent: Sent): string {

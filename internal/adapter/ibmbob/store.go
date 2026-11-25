@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -80,10 +81,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // so the store's other tables never leave the vendor's file (T-927,
 // MIRROR-CRED-1; this adapter's private byte copy was RB1 sweep finding A2).
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the store: every table this
@@ -100,16 +98,7 @@ var mirrorSpec = mirrorbase.Spec{
 // non-native home. Covers both bridge directions (/mnt/c on WSL2, and
 // \\wsl.localhost\ on Windows).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" || h.Path == "" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // taskRow is the tasks-table metadata this adapter needs.
@@ -148,7 +137,7 @@ type messageRow struct {
 // spend lands, so a row-id watermark would freeze mid-turn while this one
 // moves. A missing table (foreign/partial schema) yields 0.
 func maxTaskUpdatedAt(ctx context.Context, db *sql.DB) (int64, error) {
-	if !tableExists(ctx, db, "tasks") {
+	if !sqliteschema.TableExists(ctx, db, "tasks") {
 		return 0, nil
 	}
 	var v sql.NullInt64
@@ -165,7 +154,7 @@ func maxTaskUpdatedAt(ctx context.Context, db *sql.DB) (int64, error) {
 // Re-emitting an already-seen task is a no-op downstream under
 // (source_file, source_event_id) dedup.
 func loadTouchedTasks(ctx context.Context, db *sql.DB, fromOffset int64) ([]taskRow, error) {
-	if !tableExists(ctx, db, "tasks") {
+	if !sqliteschema.TableExists(ctx, db, "tasks") {
 		return nil, nil
 	}
 	cols := taskColumns(ctx, db)
@@ -203,7 +192,7 @@ func loadTouchedTasks(ctx context.Context, db *sql.DB, fromOffset int64) ([]task
 // created_at ASC (the save time, shared by a whole turn) then rowid ASC
 // (insertion order).
 func loadMessages(ctx context.Context, db *sql.DB, taskID string) ([]messageRow, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -225,15 +214,6 @@ func loadMessages(ctx context.Context, db *sql.DB, taskID string) ([]messageRow,
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// tableExists reports whether a table is present in the store, so a foreign
-// or older schema degrades gracefully instead of erroring.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
 }
 
 // taskColumns returns the set of column names present on the tasks table.

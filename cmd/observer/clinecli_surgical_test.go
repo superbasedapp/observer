@@ -105,9 +105,7 @@ func TestClineProvidersPathFollowsClineEnv(t *testing.T) {
 // routes through the provider file cline reads there (the old launcher found
 // no file under ~/.cline and started cline unrouted into onboarding).
 func TestClineLauncherHonoursClineDataDir(t *testing.T) {
-	if proxyNotInBuild() {
-		t.Skip("capture.proxy is not in this build")
-	}
+	useLiveClineProxy(t)
 	home := t.TempDir()
 	data := t.TempDir()
 	path := filepath.Join(data, "settings", "providers.json")

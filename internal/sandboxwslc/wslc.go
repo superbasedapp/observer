@@ -66,11 +66,6 @@ func Flags(help string) map[string]bool {
 
 var imageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$`)
 
-// ValidImage reports whether s is an image the row accepts: a name pinned
-// by its digest (name@sha256:<64 lowercase hex>). The settings editor checks
-// a typed value with it before saving.
-func ValidImage(s string) bool { return imageRE.MatchString(s) }
-
 type rule struct {
 	code  string
 	fails func(Facts) (bool, string)

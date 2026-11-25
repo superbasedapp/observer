@@ -163,12 +163,34 @@ func serverRows() []Component {
 				"internal/aigateway", "internal/aigateway/providerext", "internal/aigateway/gwhttp", "internal/aigateway/gwstore",
 				"internal/orgserver/gwadmin", "internal/orgserver/gwmembers", "internal/orgserver/gwreconcile",
 				"internal/orgserver/planebadmit", "internal/orgserver/gwcostjoin/gwaudit",
+				// The pooled AI gateway's listener (lane L2): imported only by
+				// tagged files, so an omit build already leaves it out; listed
+				// so the omit fence checks it (L-177).
+				"internal/orgserver/aigwpooled",
 			},
 			DirectModules: []string{"github.com/google/uuid"},
-			Surface:       Surface{Egress: []Egress{{Host: "<model provider APIs>", Purpose: "Forwards gateway requests", Gate: "config", Trigger: TriggerOptIn}}},
-			Stability:     StabilityPreview,
-			Images:        img(ImageOff, ImageOut),
-			Note:          "Compiled out by -tags sbo_omit_org_aigateway (lane MP-L1G). Without it the budget caps and the rate card are still projected into gw_budget_cap and gw_rate_card (a standalone observer-aigateway reads them), the assistant's gateway tools refuse with the state, and a break-glass approval fails loudly because there is no upstream registry to seal from.",
+			// The egress is the hosted provider allow-list (L-172, plan
+			// hosted-ai-gateway 3.4, decision 3): on a pooled server an
+			// upstream is one of these four kinds at its own host, and the
+			// local and custom kinds are refused (ledger HGW-5). A
+			// single-org server may also configure a custom or local
+			// upstream, the last row.
+			Surface: Surface{Egress: []Egress{
+				{Host: "api.openai.com", Purpose: "Forwards gateway requests to OpenAI (upstream kind openai_compatible)", Gate: "config; pooled: org.aigateway on for the org and an upstream its admin added", Trigger: TriggerOptIn},
+				{Host: "api.anthropic.com", Purpose: "Forwards gateway requests to Anthropic (upstream kind anthropic)", Gate: "config; pooled: org.aigateway on for the org and an upstream its admin added", Trigger: TriggerOptIn},
+				{Host: "openrouter.ai", Purpose: "Forwards gateway requests to OpenRouter (upstream kind openrouter)", Gate: "config; pooled: org.aigateway on for the org and an upstream its admin added", Trigger: TriggerOptIn},
+				{Host: "<resource>.openai.azure.com", Purpose: "Forwards gateway requests to Azure OpenAI (upstream kind azure_openai)", Gate: "config; pooled: org.aigateway on for the org and an upstream its admin added", Trigger: TriggerOptIn},
+				{Host: "<configured upstream>", Purpose: "Forwards gateway requests to a custom or local upstream (single-org servers only; refused on a pooled server)", Gate: "config", Trigger: TriggerOptIn},
+				// The app admission gate's judge (hosted AI gateway lane
+				// L6): the org's own provider tagged admission_judge, dialed
+				// through internal/orgserver/llmprovider. On a pooled server
+				// that client reaches public addresses only, and a loopback
+				// base URL or allow_private_network is refused at save.
+				{Host: "<org admission_judge provider>", Purpose: "Asks the org's own admission judge (its model provider tagged admission_judge) about an app key's request, under the org's published admission.input policy; a pooled server dials public addresses only", Gate: "config: a published admission.input policy with a judged criterion and a provider tagged admission_judge", Trigger: TriggerOptIn},
+			}},
+			Stability: StabilityPreview,
+			Images:    img(ImageOff, ImageOut),
+			Note:      "Compiled out by -tags sbo_omit_org_aigateway (lane MP-L1G). Without it the budget caps and the rate card are still projected into gw_budget_cap and gw_rate_card (a standalone observer-aigateway reads them), the assistant's gateway tools refuse with the state, and a break-glass approval fails loudly because there is no upstream registry to seal from.",
 		},
 		{
 			ID: "org.agentaccess", Class: ClassServer, Binary: BinaryOrg,

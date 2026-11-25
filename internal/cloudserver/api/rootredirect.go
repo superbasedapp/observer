@@ -1,4 +1,4 @@
-// Package api: rootredirect.go answers the bare "/" path and the four
+// rootredirect.go answers the bare "/" path and the four
 // policy/pricing paths a checkout-domain reviewer fetches by convention.
 //
 // THE BARE ROOT goes to the portal (operator ruling "Go to the portal",
@@ -20,6 +20,7 @@
 // at the same paths. marketingRedirectPaths is the table of those paths; each
 // 302s to the same path under the root-redirect base (SBCI_ROOT_REDIRECT_URL),
 // and disabling that base disables all four together.
+
 package api
 
 import (

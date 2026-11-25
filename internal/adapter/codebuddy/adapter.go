@@ -18,7 +18,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
-	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
@@ -397,29 +396,19 @@ func generationID(rec *rawLine) string {
 	return rec.ProviderData.MessageID
 }
 
-// projectRoot resolves the current cwd and memoizes the result. The
-// translation is UNCONDITIONAL: crossmount.TranslateForeignPath maps a
-// Windows `c:\…` cwd (which a WSL2 observer sees for a Windows-side
-// install) to its `/mnt/c/…` equivalent, so a drive-letter string never
-// reaches git.Resolve. Same shape as commandcode / qwencode.
+// projectRoot resolves the current cwd and memoizes the result
+// (adapter.ResolveProjectRootCached: the foreign-path translation is
+// unconditional, so a Windows `c:\…` cwd a WSL2 observer sees never
+// reaches git as a relative path). The first resolution fills the branch,
+// remote and identity, the same rule as commandcode.
 func (st *parseState) projectRoot() string {
-	if st.cwd == "" {
-		return ""
+	root, id, fresh := adapter.ResolveProjectRootCached(st.rootCache, st.cwd)
+	if fresh {
+		st.branch = id.Branch
+		st.remote = id.Remote
+		st.identity = id
 	}
-	cwd := crossmount.TranslateForeignPath(st.cwd)
-	if root, ok := st.rootCache[cwd]; ok {
-		return root
-	}
-	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		st.rootCache[cwd] = cwd
-		return cwd
-	}
-	st.rootCache[cwd] = id.Root
-	st.branch = id.Branch
-	st.remote = id.Remote
-	st.identity = id
-	return id.Root
+	return root
 }
 
 // base returns a ToolEvent pre-filled with the per-line common fields.

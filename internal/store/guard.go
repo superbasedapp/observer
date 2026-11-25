@@ -231,7 +231,7 @@ func (r *GuardEventRow) v1Fields() []string {
 		r.Severity,
 		r.Decision,
 		r.DegradedFrom,
-		strconv.Itoa(boolToInt(r.Enforced)),
+		strconv.Itoa(boolInt(r.Enforced)),
 		r.Source,
 		r.Reason,
 		r.TargetHash,
@@ -309,14 +309,6 @@ func guardChainHash(prev string, canonical []byte) string {
 	h.Write([]byte{0x1e})
 	h.Write(canonical)
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// nullableGrantID stores a grant id, NULL for "no grant".
-func nullableGrantID(id int64) any {
-	if id == 0 {
-		return nil
-	}
-	return id
 }
 
 // formatNullableID renders a nullable row-id anchor for the canonical
@@ -433,7 +425,7 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 			nullableString(ev.Severity),
 			nullableString(ev.Decision),
 			nullableString(ev.DegradedFrom),
-			boolToInt(ev.Enforced),
+			boolInt(ev.Enforced),
 			nullableString(ev.Source),
 			nullableString(ev.Reason),
 			nullableString(ev.TargetHash),
@@ -441,7 +433,7 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 			nullableString(ev.TaintOrigin),
 			ev.ChainPrev,
 			ev.ChainHash,
-			nullableGrantID(ev.GrantID),
+			nullableInt64(ev.GrantID),
 			ev.ChainV,
 			nullableInt64Ptr(ev.actionAnchor),
 			nullableString(ev.ProjectRootHash),
@@ -1093,10 +1085,13 @@ func (s *Store) GuardBudgetSpend(ctx context.Context, sessionID string, dayStart
 // stored sessionmsg dedup verdicts count, as (sid, ts, c = recorded cost).
 // api_turns.session_id is nullable (unattributed proxy turns) — COALESCE'd to
 // the empty string so those rows still group and count; they are outside every session and
-// always count. It binds nothing.
+// always count. A row an app spent through a local app lane (upstream_lane
+// set) never counts: that spend is the app's, reserved against its own app
+// caps, not the developer's (hosted AI gateway plan L7, gap 3). It binds
+// nothing.
 var spendUnionRecordedSQL = `
 	SELECT COALESCE(session_id, '') sid, timestamp ts, COALESCE(cost_usd, 0) c
-	  FROM api_turns WHERE ` + spendverdict.CountedProxyRowOf("api_turns") + `
+	  FROM api_turns WHERE ` + spendverdict.GuardCountedProxyRowOf("api_turns") + `
 	UNION ALL
 	SELECT session_id sid, timestamp ts, COALESCE(estimated_cost_usd, 0) c
 	  FROM token_usage WHERE ` + spendverdict.CountedTokenRow("token_usage")

@@ -318,7 +318,7 @@ func (m *cloudModel) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &o); err != nil {
 		return err
 	}
-	m.id = str(o.ID)
+	m.id = vendorapi.Str(o.ID)
 	return nil
 }
 
@@ -404,11 +404,11 @@ func seconds(n *count) (string, bool) { return credits(n) }
 // record in drift messages.
 func landCloudSession(surface vs.SurfaceID, s cloudSession, i int, page *vendorapi.Page) error {
 	d := driftOf(surface)
-	id := str(s.ID)
+	id := vendorapi.Str(s.ID)
 	if !cloudIDRE.MatchString(id) {
 		return d("session %d: id is missing or not an id", i)
 	}
-	status := str(s.Status)
+	status := vendorapi.Str(s.Status)
 	if !cloudTokenRE.MatchString(status) {
 		return d("session %d: status is missing or not a token", i)
 	}
@@ -467,18 +467,18 @@ func cloudSessionRefs(d func(string, ...any) error, s cloudSession, i int, body 
 		key string
 		v   *string
 	}{{"environment_id", s.EnvironmentID}, {"deployment_id", s.DeploymentID}} {
-		if v := str(f.v); v != "" {
+		if v := vendorapi.Str(f.v); v != "" {
 			if !cloudIDRE.MatchString(v) {
 				return d("session %d: %s is not an id", i, f.key)
 			}
 			body[f.key] = v
 		}
 	}
-	if v := str(s.Type); v != "" && cloudTokenRE.MatchString(v) {
+	if v := vendorapi.Str(s.Type); v != "" && cloudTokenRE.MatchString(v) {
 		body["type"] = v
 	}
 	if s.Agent != nil {
-		if v := str(s.Agent.ID); v != "" && cloudIDRE.MatchString(v) {
+		if v := vendorapi.Str(s.Agent.ID); v != "" && cloudIDRE.MatchString(v) {
 			body["agent_id"] = v
 		}
 		if s.Agent.Model != nil && s.Agent.Model.id != "" && len(s.Agent.Model.id) <= 128 {
@@ -496,19 +496,19 @@ func cloudSessionRepos(s cloudSession, body map[string]string) {
 	}
 	repos := 0
 	for _, r := range *s.Resources {
-		if !repoResourceTypes[str(r.Type)] {
+		if !repoResourceTypes[vendorapi.Str(r.Type)] {
 			continue
 		}
 		repos++
 		if repos > 1 {
 			continue
 		}
-		if u := cloudRepoURL(str(r.URL)); u != "" {
+		if u := cloudRepoURL(vendorapi.Str(r.URL)); u != "" {
 			body["repo_url"] = u
-			body["repo_type"] = str(r.Type)
+			body["repo_type"] = vendorapi.Str(r.Type)
 		}
-		if r.Checkout != nil && str(r.Checkout.Type) == "branch" {
-			if b := str(r.Checkout.Name); b != "" && len(b) <= 255 {
+		if r.Checkout != nil && vendorapi.Str(r.Checkout.Type) == "branch" {
+			if b := vendorapi.Str(r.Checkout.Name); b != "" && len(b) <= 255 {
 				body["repo_branch"] = b
 			}
 		}
@@ -633,10 +633,10 @@ func parseCloudSessions(r vendorapi.Response) (vendorapi.Page, error) {
 	page := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Data)}
 	seen := map[string]bool{}
 	for i, s := range *doc.Data {
-		if seen[str(s.ID)] {
+		if seen[vendorapi.Str(s.ID)] {
 			return vendorapi.Page{}, driftOf(SurfaceCloudSessions)("data[%d] repeats a session", i)
 		}
-		seen[str(s.ID)] = true
+		seen[vendorapi.Str(s.ID)] = true
 		if err := landCloudSession(SurfaceCloudSessions, s, i, &page); err != nil {
 			return vendorapi.Page{}, err
 		}
@@ -653,7 +653,7 @@ func parseCloudSession(r vendorapi.Response) (vendorapi.Page, error) {
 	if err := cloudDecode(r.Body, &s); err != nil {
 		return vendorapi.Page{}, d("body does not decode as the documented Session")
 	}
-	if want := r.Params[ParamSessionID]; want != "" && str(s.ID) != want {
+	if want := r.Params[ParamSessionID]; want != "" && vendorapi.Str(s.ID) != want {
 		return vendorapi.Page{}, d("the response is not the session the request asked for")
 	}
 	page := vendorapi.Page{SourceRecords: 1}
@@ -682,7 +682,7 @@ func parseCloudEnvironment(r vendorapi.Response) (vendorapi.Page, error) {
 	if err := cloudDecode(r.Body, &e); err != nil {
 		return vendorapi.Page{}, d("body does not decode as the documented Environment")
 	}
-	id := str(e.ID)
+	id := vendorapi.Str(e.ID)
 	if !cloudIDRE.MatchString(id) {
 		return vendorapi.Page{}, d("id is missing or not an id")
 	}
@@ -691,14 +691,14 @@ func parseCloudEnvironment(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	body := map[string]string{}
 	if e.Config != nil {
-		if v := str(e.Config.Type); v != "" {
+		if v := vendorapi.Str(e.Config.Type); v != "" {
 			if !cloudTokenRE.MatchString(v) {
 				return vendorapi.Page{}, d("config.type is not a token")
 			}
 			body["config_type"] = v
 		}
 	}
-	if v := str(e.Scope); v != "" && cloudTokenRE.MatchString(v) {
+	if v := vendorapi.Str(e.Scope); v != "" && cloudTokenRE.MatchString(v) {
 		body["scope"] = v
 	}
 	if e.ArchivedAt != nil {

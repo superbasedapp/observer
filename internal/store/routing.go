@@ -108,7 +108,7 @@ func (s *Store) InsertRouterDecisions(ctx context.Context, rows []RouterDecision
 			r.APITurnID, r.SessionID, timestamp(r.Timestamp), r.Mode, r.Channel,
 			r.OriginalModel, r.SelectedModel, r.TurnKind, r.PolicyName, r.PolicyHash,
 			string(codes), r.EstSavingsUSD, r.CacheForfeitUSD, r.EstimateVersion,
-			boolToInt(r.Applied), r.OutcomeBackref,
+			boolInt(r.Applied), r.OutcomeBackref,
 		); err != nil {
 			return fmt.Errorf("store.InsertRouterDecisions: insert: %w", err)
 		}

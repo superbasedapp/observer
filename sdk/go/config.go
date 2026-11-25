@@ -65,7 +65,9 @@ type Options struct {
 	// SUPERBASED_USER, SUPERBASED_SESSION_ID).
 	Tenant, User, SessionID string
 	// ServiceName (SUPERBASED_SERVICE_NAME, OTEL_SERVICE_NAME, service.name in
-	// OTEL_RESOURCE_ATTRIBUTES, else custom-app).
+	// OTEL_RESOURCE_ATTRIBUTES, else the last element of the main module's
+	// path from the build info, its /vN suffix dropped and normalised, else
+	// custom-app). Settings.ServiceNameSource says which.
 	ServiceName string
 	// Headers are added to every OTLP export (over SUPERBASED_OTLP_HEADERS).
 	Headers map[string]string
@@ -149,6 +151,7 @@ type Settings struct {
 	Headers           map[string]string `json:"-"`
 	APIKey            string            `json:"-"`
 	ServiceName       string
+	ServiceNameSource string // argument | env | manifest | default
 	ResourceAttrs     map[string]string
 	Tenant            string
 	User              string
@@ -269,17 +272,11 @@ func resolveEndpoint(explicit string, env envFunc) string {
 	return DefaultEndpoint
 }
 
+// resolveServiceName is the service name the ladder gives (servicename.go)
+// for this process.
 func resolveServiceName(explicit string, env envFunc) string {
-	if explicit != "" {
-		return explicit
-	}
-	if v := envStr(env, "SUPERBASED_SERVICE_NAME", "OTEL_SERVICE_NAME"); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(parseKVList(env.get("OTEL_RESOURCE_ATTRIBUTES"))["service.name"]); v != "" {
-		return v
-	}
-	return DefaultServiceName
+	name, _ := serviceNameLadder(explicit, env, moduleServiceName(mainModulePath()))
+	return name
 }
 
 type samplerRow struct {
@@ -410,7 +407,6 @@ func resolveSettings(env envFunc, o Options) (Settings, error) {
 		Endpoint:          resolveEndpoint(o.Endpoint, env),
 		Headers:           hdrs,
 		APIKey:            pick(o.APIKey, "SUPERBASED_API_KEY"),
-		ServiceName:       resolveServiceName(o.ServiceName, env),
 		ResourceAttrs:     parseKVList(env.get("OTEL_RESOURCE_ATTRIBUTES")),
 		Tenant:            pick(o.Tenant, "SUPERBASED_TENANT"),
 		User:              pick(o.User, "SUPERBASED_USER"),
@@ -434,6 +430,7 @@ func resolveSettings(env envFunc, o Options) (Settings, error) {
 		APITimeout:        DefaultAPITimeout,
 		PromptCacheTTL:    DefaultPromptCacheTTL,
 	}
+	s.ServiceName, s.ServiceNameSource = serviceNameLadder(o.ServiceName, env, moduleServiceName(mainModulePath()))
 	if s.NodeURL == "" {
 		s.NodeURL = DefaultNodeURL
 	}

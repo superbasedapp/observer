@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 )
 
 // TestPlaceTable is one case per row: the path the SPA routes and the name
@@ -145,6 +148,7 @@ func TestOrgPlaceTable(t *testing.T) {
 		label string
 	}{
 		{OrgSessionEnrichment, "https://org.example/intelligence?tab=session-enrichment", "Intelligence > Session enrichment"},
+		{OrgDeveloperDashboards, "https://org.example/settings?section=developer-dashboards", "Settings > Developer dashboards"},
 	}
 	if len(cases) != len(OrgPlaces()) {
 		t.Fatalf("org table has %d places, test covers %d: add a case for the new row", len(OrgPlaces()), len(cases))
@@ -235,4 +239,120 @@ func marshalPlain(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// TestDashboardAddress: the recorded online address wins when a button may
+// open it, else the org server address; nothing else is ever produced.
+func TestDashboardAddress(t *testing.T) {
+	cases := []struct{ online, server, want string }{
+		{"https://me.example.app", "https://org.example", "https://me.example.app"},
+		{"", "https://org.example", "https://org.example"},
+		{"http://me.example.app", "https://org.example", "https://org.example"},
+		{"https://u:p@me.example.app", "https://org.example", "https://org.example"},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		if got := DashboardAddress(tc.online, tc.server); got != tc.want {
+			t.Errorf("DashboardAddress(%q, %q) = %q, want %q", tc.online, tc.server, got, tc.want)
+		}
+	}
+}
+
+// TestOrgPageFor: one case per table row, plus a page with no equivalent and
+// an unsafe address (the name stays, the URL goes).
+func TestOrgPageFor(t *testing.T) {
+	cases := []struct {
+		nav, href, label string
+		members          bool
+	}{
+		{"overview", "https://org.example/", "Coding agents > Overview", true},
+		{"sessions", "https://org.example/sessions", "Coding agents > Sessions", false},
+		{"projects", "https://org.example/projects", "Coding agents > Projects", true},
+		{"security", "https://org.example/security", "Coding agents > Security", true},
+		{"cost", "https://org.example/cost", "Coding agents > Cost", true},
+		{"tools", "https://org.example/tools", "Coding agents > Tools", true},
+		{"routing", "https://org.example/routing", "Coding agents > Routing", false},
+		{"benchmarks", "https://org.example/benchmarks", "Coding agents > Benchmarks", true},
+		{"patterns", "https://org.example/patterns", "Coding agents > Patterns", false},
+		{"app-traces", "https://org.example/trajectories", "AI apps > Explorer", true},
+		{"app-sessions", "https://org.example/trajectories", "AI apps > Explorer", true},
+		{"app-analytics", "https://org.example/trajectories/analytics", "AI apps > Analytics", false},
+		{"app-end-users", "https://org.example/trajectories/end-users", "AI apps > End-user spend", false},
+		{"app-evals", "https://org.example/trajectories/evals", "AI apps > Eval health", false},
+		{"app-prompts", "https://org.example/trajectories/prompts", "AI apps > Prompts", false},
+		{"app-alerts", "https://org.example/trajectories/alerts", "AI apps > Alerts", false},
+		{"policies", "https://org.example/trajectories/policies", "AI apps > Policies", false},
+	}
+	if len(cases) != len(OrgPageIDs()) {
+		t.Fatalf("page table has %d rows, test covers %d: add a case for the new row", len(OrgPageIDs()), len(cases))
+	}
+	for _, tc := range cases {
+		l, ok := OrgPageFor("https://org.example/", tc.nav)
+		if !ok || l.Href != tc.href || l.Label != tc.label || l.Members != tc.members {
+			t.Errorf("OrgPageFor(%q) = %+v %v, want %q %q %v", tc.nav, l, ok, tc.href, tc.label, tc.members)
+		}
+	}
+	for _, id := range nodegov.UnhideableNavSectionIDs {
+		if _, ok := OrgPageFor("https://org.example", id); ok {
+			t.Errorf("floor page %q has an online equivalent row it can never need", id)
+		}
+	}
+	for _, id := range OrgPageIDs() {
+		if !slices.Contains(nodegov.NavSectionIDs, id) {
+			t.Errorf("row %q is not a local dashboard page", id)
+		}
+	}
+	if _, ok := OrgPageFor("https://org.example", "terminals"); ok {
+		t.Error("a page with no equivalent resolved")
+	}
+	if l, ok := OrgPageFor("http://org.example", "app-traces"); !ok || l.Href != "" || l.Label == "" {
+		t.Errorf("unsafe base kept a URL: %+v", l)
+	}
+}
+
+// TestOrgPagesFollowWeb2 reads web2's route table and nav and fails on a row
+// whose path web2 does not route, whose label's page name web2's nav does not
+// show for that path, or whose members flag disagrees with web2's guards (a
+// route with no guard and a nav item with no permission is a members page).
+func TestOrgPagesFollowWeb2(t *testing.T) {
+	routes, err := os.ReadFile(filepath.Join("..", "..", "web2", "src", "lib", "components.gen.ts"))
+	if err != nil {
+		t.Fatalf("read web2 routes: %v", err)
+	}
+	nav, err := os.ReadFile(filepath.Join("..", "..", "web2", "src", "lib", "navGroups.ts"))
+	if err != nil {
+		t.Fatalf("read web2 nav: %v", err)
+	}
+	guards := map[string]string{}
+	for _, m := range regexp.MustCompile(`path: "([^"]+)",\s*component: "[^"]+",\s*guard: ([^\n]+),`).FindAllStringSubmatch(string(routes), -1) {
+		guards[m[1]] = strings.TrimSpace(m[2])
+	}
+	type navItem struct {
+		label  string
+		gated  bool
+		listed bool
+	}
+	items := map[string]navItem{}
+	for _, m := range regexp.MustCompile(`\{ to: "([^"]+)", label: "([^"]+)"([^}]*)\}`).FindAllStringSubmatch(string(nav), -1) {
+		rest := m[3]
+		items[m[1]] = navItem{label: m[2], gated: strings.Contains(rest, "requires") || strings.Contains(rest, "adminOnly"), listed: true}
+	}
+	for _, r := range orgPages {
+		g, routed := guards[r.href]
+		if !routed {
+			t.Errorf("%s: web2 routes no %q", r.nav, r.href)
+			continue
+		}
+		it := items[r.href]
+		if !it.listed {
+			t.Errorf("%s: web2's nav shows no %q", r.nav, r.href)
+			continue
+		}
+		if _, page, _ := strings.Cut(r.label, " > "); page != it.label {
+			t.Errorf("%s: label %q, web2's nav calls %q %q", r.nav, r.label, r.href, it.label)
+		}
+		if members := g == "null" && !it.gated; members != r.members {
+			t.Errorf("%s: members %v, web2's guard %s and nav permission %v say %v", r.nav, r.members, g, it.gated, members)
+		}
+	}
 }

@@ -41,6 +41,8 @@ test("every section of the case file has a runner here", { skip }, () => {
     "set_usage_net_input",
     // lane D3 (ruling D29)
     "admit_org_off", "experiment_strict_gate", "get_dataset_missing",
+    // the SDK quickstart (sdk-api-surface.md sections 14 to 16): contract030.test.mjs
+    "auto_instrument", "service_name_default", "destination_sdk_file", "first_trace_link",
   ];
   assert.deepEqual(Object.keys(CASES).filter((k) => !k.startsWith("_")).sort(), [...runners].sort());
 });

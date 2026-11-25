@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -264,48 +265,50 @@ func TestProviderBlockNoFailOpenWindow(t *testing.T) {
 	t.Parallel()
 	anth := net.ParseIP("198.51.100.10")
 	b := NewProviderBlock(nil)
-	gate := make(chan struct{})
-	var calls sync.WaitGroup
 	var mu sync.Mutex
 	slow := true
-	resolve := func(ctx context.Context, host string) ([]net.IP, error) {
-		mu.Lock()
-		s := slow
-		mu.Unlock()
-		if s {
-			select {
-			case <-gate:
-			case <-ctx.Done():
-				return nil, ctx.Err()
+	// The two requests and the first refresh run in a synctest bubble, so
+	// synctest.Wait returns only once each of them is blocked: a request
+	// that answered without waiting for the refresh has answered by then.
+	synctest.Test(t, func(t *testing.T) {
+		gate := make(chan struct{})
+		// A failure below still opens the gate, so the bubble's goroutines
+		// end and the failure is reported, not a deadlock.
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		resolve := func(ctx context.Context, host string) ([]net.IP, error) {
+			mu.Lock()
+			s := slow
+			mu.Unlock()
+			if s {
+				select {
+				case <-gate:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			if host == "api.anthropic.com" {
+				return []net.IP{anth}, nil
+			}
+			return nil, errors.New("no such host")
+		}
+		results := make(chan string, 2)
+		for i := 0; i < 2; i++ {
+			go func() { results <- b.checkResolved([]net.IP{anth}, resolve) }()
+		}
+		synctest.Wait()
+		select {
+		case r := <-results:
+			t.Fatalf("a request answered %q before the first refresh finished", r)
+		default:
+		}
+		release()
+		for i := 0; i < 2; i++ {
+			if r := <-results; r != RuleModelProviderAddress {
+				t.Fatalf("a request during the first refresh answered %q", r)
 			}
 		}
-		if host == "api.anthropic.com" {
-			return []net.IP{anth}, nil
-		}
-		return nil, errors.New("no such host")
-	}
-	results := make(chan string, 2)
-	for i := 0; i < 2; i++ {
-		calls.Add(1)
-		go func() {
-			defer calls.Done()
-			results <- b.checkResolved([]net.IP{anth}, resolve)
-		}()
-	}
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case r := <-results:
-		t.Fatalf("a request answered %q before the first refresh finished", r)
-	default:
-	}
-	close(gate)
-	calls.Wait()
-	close(results)
-	for r := range results {
-		if r != RuleModelProviderAddress {
-			t.Fatalf("a request during the first refresh answered %q", r)
-		}
-	}
+	})
 	// With the set ready and every later lookup hanging until its timeout,
 	// a refusal still answers at once.
 	mu.Lock()
@@ -379,8 +382,8 @@ func TestProviderBlockPartialFirstRefreshFailsClosed(t *testing.T) {
 
 // TestProviderBlockWrappedAddresses pins that the provider block unwraps
 // with ipclass.Unwrap, the same unwrap the egress policy uses (SEC-02): an
-// IPv4-mapped, NAT64 or 6to4 spelling of a dedicated provider address is
-// refused like the address itself.
+// IPv4-mapped, NAT64, 6to4 or Teredo spelling of a dedicated provider
+// address is refused like the address itself.
 func TestProviderBlockWrappedAddresses(t *testing.T) {
 	t.Parallel()
 	b := NewProviderBlock(nil)
@@ -390,7 +393,7 @@ func TestProviderBlockWrappedAddresses(t *testing.T) {
 		}
 		return nil, errors.New("no such host")
 	}
-	for _, s := range []string{"198.51.100.10", "::ffff:198.51.100.10", "64:ff9b::c633:640a", "2002:c633:640a::"} {
+	for _, s := range []string{"198.51.100.10", "::ffff:198.51.100.10", "64:ff9b::c633:640a", "2002:c633:640a::", "2001:0:4136:e378:8000:63bf:39cc:9bf5"} {
 		if rule := b.checkResolved([]net.IP{net.ParseIP(s)}, resolve); rule != RuleModelProviderAddress {
 			t.Errorf("%s: rule %q, want %s", s, rule, RuleModelProviderAddress)
 		}

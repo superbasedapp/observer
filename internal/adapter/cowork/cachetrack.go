@@ -1,7 +1,6 @@
 package cowork
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
@@ -9,8 +8,8 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's
-// running block count. Matches the claudecode template's cap (same
-// memory budget, same OOM guard).
+// running block count: the shared cacheobs default (same memory
+// budget, same OOM guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // emitCacheObservationsTier2 builds one CacheTurnObservation per
@@ -69,127 +68,49 @@ func emitCacheObservationsTier2(
 			CacheCreationTokens:   cw,
 			CacheCreation1hTokens: cw1h,
 		}
-		if cacheobs.IsZeroUsage(usage) {
-			continue
-		}
 		messageID := "result:" + rec.UUID + ":" + model
-		obs := acc.Emit(path, sessionID, messageID, model, ts, usage, false)
 		// §15.3 boundary: cowork is Anthropic-first-party (the
 		// audit.jsonl usage shape is the Anthropic Messages API
 		// response verbatim, including the 5m/1h cache-creation
 		// tier split no gateway-fronted provider exposes) — the
 		// overlay is applied uniformly for consistency with every
-		// other Tier-2 producer, but ApplyImplicitCacheOverlay
-		// defaults to false (Anthropic-shape) for cowork's model
-		// strings, so this is a no-op in practice.
-		obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", model)
-		out = append(out, obs)
+		// other Tier-2 producer, but it defaults to false
+		// (Anthropic-shape) for cowork's model strings, so it is a
+		// no-op in practice. EmitTurn skips an all-zero usage (nil).
+		if obs := acc.EmitTurn(path, sessionID, messageID, model, "", ts, usage); obs != nil {
+			out = append(out, *obs)
+		}
 	}
 	return out
 }
 
 // accumulateCacheBlocksTier2 converts cowork's Anthropic-shape
-// content blocks into deterministic CacheBlockMeta entries. cowork's
-// rawContentBlock schema is the same text/thinking/tool_use/
-// tool_result/image shape cline and cline-cli already marshal; the
+// content blocks into deterministic CacheBlockMeta entries, in array
+// order (cacheobs.ContentBlocks). cowork's rawContentBlock schema is
+// the same text/thinking/tool_use/tool_result/image shape cline and
+// cline-cli marshal, through the same cacheobs canonical forms; the
 // "image" case carries no payload (image bytes are never stored) —
 // only the block's presence/ordering feeds the chain.
 func accumulateCacheBlocksTier2(blocks []rawContentBlock, role string) []models.CacheBlockMeta {
-	if len(blocks) == 0 {
-		return nil
-	}
-	out := make([]models.CacheBlockMeta, 0, len(blocks))
-	for _, b := range blocks {
-		canon, kind, ok := marshalCanonicalBlockTier2(b)
-		if !ok {
-			continue
-		}
-		out = append(out, models.CacheBlockMeta{
-			LevelLabel:     "message", // R1: transcripts never expose tools/system
-			Kind:           kind,
-			CanonicalBytes: canon,
-			Role:           role,
-		})
-	}
-	return out
+	return cacheobs.ContentBlocks(blocks, role, marshalCanonicalBlockTier2)
 }
 
-// marshalCanonicalBlockTier2 produces the deterministic JSON
-// canonical form of one cowork content block. Returns (canonical
-// bytes, engine kind label, ok=false on unknown block type). Each
-// payload is an explicit STRUCT (never a map) so encoding/json's
-// deterministic field order preserves the R3 byte-stability
-// invariant.
+// marshalCanonicalBlockTier2 maps one cowork content block onto its
+// cacheobs canonical form. Returns (canonical bytes, engine kind
+// label, ok=false on unknown block type).
 func marshalCanonicalBlockTier2(b rawContentBlock) (canon []byte, kind string, ok bool) {
 	switch b.Type {
 	case "text":
-		return marshalTextLikeBlockTier2("text", b.Text)
+		return cacheobs.ContentText("text", b.Text)
 	case "thinking":
-		return marshalTextLikeBlockTier2("thinking", b.Thinking)
+		return cacheobs.ContentText("thinking", b.Thinking)
 	case "tool_use":
-		return marshalToolUseBlockTier2(b)
+		return cacheobs.ContentToolUse(b.ID, b.Name, b.Input)
 	case "tool_result":
-		return marshalToolResultBlockTier2(b)
+		return cacheobs.ContentToolResult(b.ToolUseID, b.IsError, b.Content)
 	case "image":
-		payload := struct {
-			Type string `json:"type"`
-		}{Type: "image"}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, "", false
-		}
-		return buf, "text", true
+		return cacheobs.ContentImage()
 	default:
 		return nil, "", false
 	}
-}
-
-func marshalTextLikeBlockTier2(kind, text string) (canon []byte, kindOut string, ok bool) {
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: kind, Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, kind, true
-}
-
-func marshalToolUseBlockTier2(b rawContentBlock) (canon []byte, kind string, ok bool) {
-	payload := struct {
-		Type  string          `json:"type"`
-		ID    string          `json:"id,omitempty"`
-		Name  string          `json:"name,omitempty"`
-		Input json.RawMessage `json:"input,omitempty"`
-	}{
-		Type:  "tool_use",
-		ID:    b.ID,
-		Name:  b.Name,
-		Input: b.Input,
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, "tool_use", true
-}
-
-func marshalToolResultBlockTier2(b rawContentBlock) (canon []byte, kind string, ok bool) {
-	payload := struct {
-		Type      string          `json:"type"`
-		ToolUseID string          `json:"tool_use_id,omitempty"`
-		IsError   bool            `json:"is_error,omitempty"`
-		Content   json.RawMessage `json:"content,omitempty"`
-	}{
-		Type:      "tool_result",
-		ToolUseID: b.ToolUseID,
-		IsError:   b.IsError,
-		Content:   b.Content,
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", false
-	}
-	return buf, "tool_result", true
 }

@@ -111,14 +111,14 @@ func actorIdentity(a *auditActor) (string, string) {
 		u = a.APIKey.User
 	}
 	switch {
-	case u != nil && str(u.Email) != "":
-		return "email", vendorapi.FoldEmail(str(u.Email))
-	case u != nil && str(u.ID) != "":
-		return "user_id", str(u.ID)
-	case a.APIKey != nil && a.APIKey.ServiceAccount != nil && str(a.APIKey.ServiceAccount.ID) != "":
-		return "service_account_id", str(a.APIKey.ServiceAccount.ID)
-	case a.APIKey != nil && str(a.APIKey.ID) != "":
-		return "key_tracking_id", str(a.APIKey.ID)
+	case u != nil && vendorapi.Str(u.Email) != "":
+		return "email", vendorapi.FoldEmail(vendorapi.Str(u.Email))
+	case u != nil && vendorapi.Str(u.ID) != "":
+		return "user_id", vendorapi.Str(u.ID)
+	case a.APIKey != nil && a.APIKey.ServiceAccount != nil && vendorapi.Str(a.APIKey.ServiceAccount.ID) != "":
+		return "service_account_id", vendorapi.Str(a.APIKey.ServiceAccount.ID)
+	case a.APIKey != nil && vendorapi.Str(a.APIKey.ID) != "":
+		return "key_tracking_id", vendorapi.Str(a.APIKey.ID)
 	}
 	return "", ""
 }
@@ -133,20 +133,20 @@ func auditDetail(e auditEvent) map[string]string {
 		}
 	}
 	if a := e.Actor; a != nil {
-		set("actor_type", str(a.Type))
+		set("actor_type", vendorapi.Str(a.Type))
 		if a.Session != nil {
-			set("ip_address", str(a.Session.IPAddress))
+			set("ip_address", vendorapi.Str(a.Session.IPAddress))
 		}
 		if a.APIKey != nil {
-			set("key_type", str(a.APIKey.Type))
-			set("key_tracking_id", str(a.APIKey.ID))
+			set("key_type", vendorapi.Str(a.APIKey.Type))
+			set("key_tracking_id", vendorapi.Str(a.APIKey.ID))
 			if a.APIKey.ServiceAccount != nil {
-				set("service_account_id", str(a.APIKey.ServiceAccount.ID))
+				set("service_account_id", vendorapi.Str(a.APIKey.ServiceAccount.ID))
 			}
 		}
 	}
 	if e.Project != nil {
-		set("project_id", str(e.Project.ID))
+		set("project_id", vendorapi.Str(e.Project.ID))
 	}
 	return d
 }
@@ -163,7 +163,7 @@ func target(raw map[string]json.RawMessage, typ string) string {
 	if err := json.Unmarshal(b, &d); err != nil {
 		return ""
 	}
-	return str(d.ID)
+	return vendorapi.Str(d.ID)
 }
 
 func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
@@ -177,18 +177,18 @@ func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 	for i, raw := range *doc.Data {
 		var e auditEvent
 		var members map[string]json.RawMessage
-		if decode(raw, &e) != nil || json.Unmarshal(raw, &members) != nil {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "data[%d] is not an audit log object", i)
+		if vendorapi.DecodeNumbers(raw, &e) != nil || json.Unmarshal(raw, &members) != nil {
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "data[%d] is not an audit log object", i)
 		}
 		if e.ID == nil || *e.ID == "" || e.Type == nil || e.EffectiveAt == nil {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "data[%d] misses id, type or effective_at", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "data[%d] misses id, type or effective_at", i)
 		}
 		secs, err := e.EffectiveAt.Int64()
 		if err != nil || secs < 0 {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "data[%d].effective_at is not Unix seconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "data[%d].effective_at is not Unix seconds", i)
 		}
 		if seen[*e.ID] {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "data[%d] repeats an event id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "data[%d] repeats an event id", i)
 		}
 		seen[*e.ID] = true
 		action := strings.ToLower(strings.TrimSpace(*e.Type))

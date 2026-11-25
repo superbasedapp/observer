@@ -427,12 +427,3 @@ func NativeSandboxFor(tool string) (NativeSandbox, bool) {
 	n, ok := nativeSandboxes[tool]
 	return n, ok
 }
-
-// NativeSandboxTools lists the tools with a native sandbox row.
-func NativeSandboxTools() []string {
-	out := make([]string, 0, len(nativeSandboxes))
-	for t := range nativeSandboxes {
-		out = append(out, t)
-	}
-	return out
-}

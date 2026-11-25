@@ -231,7 +231,7 @@ func TestMiscSurface(t *testing.T) {
 	if s := newSwitchableSampler(); !strings.HasPrefix(s.Description(), "SuperbasedSampler") {
 		t.Fatal(s.Description())
 	}
-	if (&ExperimentError{"x"}).Error() != "superbased: x" {
+	if (&ExperimentError{Msg: "x"}).Error() != "superbased: x" {
 		t.Fatal("error text")
 	}
 }

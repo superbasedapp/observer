@@ -1,20 +1,8 @@
-// Package cloudtestpg is a Postgres test-support helper for the cloudserver
-// suites. It reads SBCI_TEST_PG_DSN (the admin DSN of a throwaway Postgres,
-// e.g. a local docker container) and hands each test its OWN freshly-migrated
-// database, dropped on cleanup, so RLS/lease/reservation tests are fully
-// isolated — including the global system rows (budget_pools, kill_switches).
-//
-// It is a normal package (not a _test.go file) so every cloudserver test
-// package can import it, but it imports "testing" and is referenced only from
-// tests, so it never enters a production binary.
 package cloudtestpg
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -22,18 +10,18 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/db"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
-// EnvVar is the environment variable naming the admin DSN of the test Postgres.
-const EnvVar = "SBCI_TEST_PG_DSN"
+// EnvVar is the environment variable naming the admin DSN of the test Postgres
+// (pgthrow owns the name and the rule).
+const EnvVar = pgthrow.EnvVar
 
-// RequiredEnvVar, set to "1", turns a missing DSN from a skip into a failure.
-// The ops gate's bootstrap sets it with the DSN for every live-PostgreSQL
-// unit, so a suite whose DSN did not arrive fails loudly instead of passing
-// by skipping (L-139: the cloud suites skipped on every gate until
-// 2026-11-17, and only GitHub's org-postgres run executed them).
-const RequiredEnvVar = "SBCI_TEST_PG_REQUIRED"
+// RequiredEnvVar, set to "1", turns a missing DSN from a skip into a failure
+// (see pgthrow.RequiredEnvVar).
+const RequiredEnvVar = pgthrow.RequiredEnvVar
 
 // migrateSerial is a fast, process-local gate that serializes migrations run by
 // this test binary's own parallel subtests before they reach the network lock —
@@ -60,27 +48,17 @@ var migrateSerial sync.Mutex
 const harnessMigrateLockKey int64 = 0x5B_C1_03_11 // "sbci-0311", one past the prod migrate key.
 
 // RequireDSN returns the admin DSN or SKIPS the test with a loud, explicit
-// message. Silent-pass is a known hazard (repo memory
-// feedback_cached_test_results_vacuous_gate) — a skipped Postgres suite must be
-// unmistakable in the output, never look like a pass.
+// message (pgthrow.RequireDSN).
 func RequireDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv(EnvVar)
-	if dsn == "" && os.Getenv(RequiredEnvVar) == "1" {
-		t.Fatalf("%s=1 but %s is empty: this run provides PostgreSQL, so the suite must not skip", RequiredEnvVar, EnvVar)
-	}
-	if dsn == "" {
-		t.Skipf("SKIP (no Postgres): set %s to run this suite, e.g. "+
-			"%s=postgres://postgres:sbci@127.0.0.1:15544/postgres?sslmode=disable "+
-			"(start one with: docker run -d --name sbci-test-pg -e POSTGRES_PASSWORD=sbci "+
-			"-p 127.0.0.1:15544:5432 postgres:16-alpine). This test did NOT run.",
-			EnvVar, EnvVar)
-	}
-	return dsn
+	return pgthrow.RequireDSN(t)
 }
 
 // NewDB creates a uniquely-named database on the admin DSN's cluster, migrates
-// it to head, and returns a pool bound to it. The database is dropped on test
+// it to head, generates the plans rows from the entitlements catalog (what
+// `observer-cloud migrate` does after the migrations, so a test reads the
+// plans a deployment serves: the catalog's labels, cloud 0156), and returns a
+// pool bound to it. The database is dropped on test
 // cleanup. Roles (sbci_app/sbci_defs) are cluster-global and created
 // idempotently by migration 0001, so parallel NewDB calls are safe.
 func NewDB(t *testing.T) *pgxpool.Pool {
@@ -92,17 +70,11 @@ func NewDB(t *testing.T) *pgxpool.Pool {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	dbName := "sbci_test_" + randToken()
+	dbName := "sbci_test_" + pgthrow.RandToken()
 
-	admin, err := pgx.Connect(ctx, adminDSN)
-	if err != nil {
-		t.Fatalf("cloudtestpg: connect admin: %v", err)
+	if err := pgthrow.CreateDatabase(ctx, adminDSN, dbName); err != nil {
+		t.Fatalf("cloudtestpg: %v", err)
 	}
-	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+dbName+`" TEMPLATE template0`); err != nil {
-		_ = admin.Close(ctx)
-		t.Fatalf("cloudtestpg: create database %s: %v", dbName, err)
-	}
-	_ = admin.Close(ctx)
 
 	cfg, err := pgxpool.ParseConfig(adminDSN)
 	if err != nil {
@@ -113,18 +85,23 @@ func NewDB(t *testing.T) *pgxpool.Pool {
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		dropDatabase(t, adminDSN, dbName)
+		pgthrow.DropDatabase(t, adminDSN, dbName)
 		t.Fatalf("cloudtestpg: open pool on %s: %v", dbName, err)
 	}
 	if err := migrateSerialized(ctx, adminDSN, pool); err != nil {
 		pool.Close()
-		dropDatabase(t, adminDSN, dbName)
+		pgthrow.DropDatabase(t, adminDSN, dbName)
 		t.Fatalf("cloudtestpg: migrate %s: %v", dbName, err)
+	}
+	if _, err := store.GeneratePlans(ctx, pool); err != nil {
+		pool.Close()
+		pgthrow.DropDatabase(t, adminDSN, dbName)
+		t.Fatalf("cloudtestpg: generate the plans rows on %s: %v", dbName, err)
 	}
 
 	t.Cleanup(func() {
 		pool.Close()
-		dropDatabase(t, adminDSN, dbName)
+		pgthrow.DropDatabase(t, adminDSN, dbName)
 	})
 	return pool
 }
@@ -153,25 +130,4 @@ func migrateSerialized(ctx context.Context, adminDSN string, pool *pgxpool.Pool)
 	}()
 
 	return db.Migrate(ctx, pool)
-}
-
-func dropDatabase(t *testing.T, adminDSN, dbName string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	admin, err := pgx.Connect(ctx, adminDSN)
-	if err != nil {
-		t.Logf("cloudtestpg: drop %s: connect admin: %v", dbName, err)
-		return
-	}
-	defer func() { _ = admin.Close(ctx) }()
-	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS "`+dbName+`" WITH (FORCE)`); err != nil {
-		t.Logf("cloudtestpg: drop database %s: %v", dbName, err)
-	}
-}
-
-func randToken() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

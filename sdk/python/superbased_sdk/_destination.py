@@ -18,7 +18,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from . import _http
+from . import _credfile, _http
 from ._config import DEFAULT_ENDPOINT, TRACES_PATH, Destination, Settings, parse_kv_list
 
 LOG = logging.getLogger("superbased_sdk")
@@ -43,7 +43,7 @@ class Plan:
     rest serves admit(), scores, prompts and experiments."""
 
     destination: str = LOCAL
-    source: str = "default"  # argument | env | machine | default
+    source: str = "default"  # argument | env | sdk_file | machine | inferred | default
     exporters: Tuple[Destination, ...] = ()
     node_url: str = DEFAULT_NODE_URL  # the machine's dashboard API (loopback)
     gateway_url: str = ""  # the org gateway base ("" when unknown)
@@ -56,7 +56,16 @@ class Plan:
     warnings: Tuple[str, ...] = ()
     notes: Tuple[str, ...] = ()  # informational (no machine answered discovery)
     signed_in: Optional[bool] = None  # from discovery; None when not asked
-    credential_source: str = ""  # argument | env | file | ""
+    machine_answered: bool = False  # this machine answered discovery
+    credential_source: str = ""  # argument | env | file | sdk_file | ""
+    # The organization's dashboard base, for links only (the SDK-held file's
+    # dashboard_url, or discovery's online.dashboard_url with the machine's
+    # key); "" when unknown. Never a place the key goes.
+    dashboard_url: str = ""
+    # The SDK-held key file (plan 3.4): its non-secret facts and whether this
+    # plan used it (``used``, ``unused``, ``refused``, ``absent`` or
+    # ``not_read``).
+    sdk_file: Tuple[Tuple[str, Any], ...] = ()
     # The online credential. Never logged, never in diagnostics, never sent to
     # the machine or to any host but gateway_url.
     _key: str = field(default="", repr=False, compare=False)
@@ -83,6 +92,8 @@ class Plan:
             "notes": list(self.notes),
             "signed_in": self.signed_in,
             "credential_source": self.credential_source,
+            "dashboard_url": self.dashboard_url,
+            "sdk_file": dict(self.sdk_file),
         }
 
 
@@ -263,9 +274,35 @@ def resolve(
         dest = _valid(env.get("SUPERBASED_DESTINATION", ""), "SUPERBASED_DESTINATION", warnings)
         source = "env" if dest else ""
 
+    # The SDK-held key file (plan 3.4), read at most once and only when a rung
+    # needs it: never under an explicit or env destination local.
+    held: List[_credfile.Record] = []
+
+    def sdk_record() -> _credfile.Record:
+        if not held:
+            p, problem = _credfile.default_path(env)
+            rec = _credfile.read(p, env=env) if p else _credfile.Record()
+            held.append(rec)
+            if rec.state == _credfile.REFUSED:
+                warnings.append(rec.error)
+            elif rec.state == _credfile.VALID:
+                warnings.extend(rec.warnings)
+                if _credfile.DESTINATION_FIELD not in rec.ignored and not rec.destination:
+                    warnings.append(f"the SDK-held key file {rec.path} names no destination; it only carries a key")
+        return held[0]
+
+    # Destination rung 3: the valid SDK-held file's destination (an expired
+    # key keeps the rung; its key is not used below, so online is degraded
+    # with the setup fix).
+    if not dest:
+        rec = sdk_record()
+        if rec.state == _credfile.VALID and rec.destination:
+            dest, source = rec.destination, "sdk_file"
+
     node_url = settings.node_url.rstrip("/") or DEFAULT_NODE_URL
     gateway = _first(settings.org_url)
     key, key_source = "", ""
+    dashboard = ""
     if settings.api_key:
         key, key_source = settings.api_key, ("argument" if explicit_api_key else "env")
 
@@ -302,6 +339,9 @@ def resolve(
             fkey, fgateway, ferr = read_credential_record(online["credential_file"])
             if not key and fkey:
                 key, key_source = fkey, "file"
+                board = online.get("dashboard_url")
+                if isinstance(board, str) and board and not _credfile.dashboard_problem(board):
+                    dashboard = board.rstrip("/")
             if not gateway:
                 gateway = fgateway
             if ferr:
@@ -314,11 +354,41 @@ def resolve(
     if not dest:
         dest, source = LOCAL, "default"
 
+    # Credential rung 3: the SDK-held file, a whole record (its key goes only
+    # to its own gateway address). The machine's record above wins (R10).
+    sdk_state = "not_read"
+    if dest in (ONLINE, BOTH):
+        rec = sdk_record()
+        sdk_state = {_credfile.ABSENT: "absent", _credfile.REFUSED: "refused"}.get(rec.state, "unused")
+        if rec.usable and rec.expired():
+            sdk_state = "expired"
+            warnings.append(_credfile.expiry_warning(rec))
+        elif rec.usable and not key:
+            if gateway and gateway.rstrip("/") != rec.gateway_url:
+                warnings.append(
+                    f"the SDK-held key file {rec.path} is for {rec.gateway_url}, not the organization address "
+                    f"the app named ({gateway.rstrip('/')}); its key is not used"
+                )
+            else:
+                key, key_source, gateway, dashboard = rec.key, "sdk_file", rec.gateway_url, rec.dashboard_url
+                sdk_state = "used"
+                expiring = _credfile.expiry_warning(rec)
+                if expiring:
+                    warnings.append(expiring)
+        elif rec.usable:
+            who = "this machine's Observer sign-in key" if key_source == "file" else "the key the app named"
+            warnings.append(f"the SDK-held key file {rec.path} is present but unused: {who} is used")
+    elif held:
+        rec = held[0]
+        sdk_state = {_credfile.ABSENT: "absent", _credfile.REFUSED: "refused"}.get(rec.state, "unused")
+    path_now = held[0].path if held else _credfile.default_path(env)[0]
+    sdk_facts = {"path": path_now, "state": sdk_state, "reason": held[0].reason if held else ""}
+
     online_ready = bool(gateway and key)
     degraded = ""
     if dest in (ONLINE, BOTH) and not online_ready:
         missing = " and ".join(m for m, ok in (("the gateway address", gateway), ("an SDK credential", key)) if not ok)
-        fix = "run `observer sdk sign-in`, or set SUPERBASED_ORG_URL and SUPERBASED_API_KEY"
+        fix = "run `uvx superbased-sdk setup` or `observer sdk sign-in`, or set SUPERBASED_ORG_URL and SUPERBASED_API_KEY"
         if dest == ONLINE:
             degraded = f"destination online is missing {missing}: nothing is exported ({fix})"
         else:
@@ -373,7 +443,10 @@ def resolve(
         warnings=tuple(warnings),
         notes=tuple(notes),
         signed_in=signed_in,
+        machine_answered=found is not None,
         credential_source=key_source,
+        dashboard_url=dashboard if key else "",
+        sdk_file=tuple(sorted(sdk_facts.items())),
         _key=key,
     )
 

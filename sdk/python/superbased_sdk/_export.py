@@ -11,11 +11,14 @@ processor, so spans are never exported twice or lost to an orphaned provider.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 from opentelemetry.sdk.trace.export import SpanExporter
+
+from . import _planrefusal
 
 LOG = logging.getLogger("superbased_sdk")
 
@@ -84,18 +87,106 @@ def install_quiet_filter() -> None:
             lg.addFilter(_FILTER)
 
 
+# A credential-provider session (the exporter loads it by entry point when
+# one of these is set) is the exporter's own; the SDK passes it no session.
+_CREDENTIAL_PROVIDER_ENV = (
+    "OTEL_PYTHON_EXPORTER_OTLP_HTTP_CREDENTIAL_PROVIDER",
+    "OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER",
+)
+
+
+def note_export_answer(status: int, body: Any, headers: Optional[Mapping[str, Any]]) -> bool:
+    """An OTLP export's HTTP answer: when the org's plan refused it (403
+    ``plan_required``, or a 429 over the plan's allowance), keep the refusal
+    for ``diagnostics()["plan_refusal"]`` and write one warning line (message
+    and upgrade URL) at most once a minute. True when it was one."""
+    refusal = _planrefusal.parse_plan_refusal(status, body, headers)
+    if refusal is None:
+        return False
+    _planrefusal.note(refusal, log_as="trace export")
+    return True
+
+
+# The last refused export answer's non-secret facts (status, error code,
+# message, upgrade_url, resets_at, at): setup's hello reads it to say why
+# its span was refused, a plan refusal or not (an organization's own cap
+# answers 429 with no upgrade_url, which is not a plan refusal).
+_LAST_ANSWER: Dict[str, Any] = {}
+_LAST_ANSWER_LOCK = threading.Lock()
+
+
+def _record_answer(status: int, raw: Any) -> None:
+    import json as _json
+
+    body: Any = None
+    try:
+        body = _json.loads(raw) if isinstance(raw, (bytes, str)) and raw else None
+    except ValueError:
+        body = None
+    b = body if isinstance(body, dict) else {}
+    q = b.get("quota")
+    quota: Dict[str, Any] = q if isinstance(q, dict) else {}
+    facts = {
+        "status": status,
+        "error": str(b.get("error") or ""),
+        "message": str(b.get("message") or ""),
+        "upgrade_url": str(b.get("upgrade_url") or ""),
+        "resets_at": str(quota.get("resets_at") or ""),
+        "at": time.time(),
+    }
+    with _LAST_ANSWER_LOCK:
+        _LAST_ANSWER.clear()
+        _LAST_ANSWER.update(facts)
+
+
+def last_answer() -> Dict[str, Any]:
+    """The last refused (401, 403 or 429) export answer's facts, or {}."""
+    with _LAST_ANSWER_LOCK:
+        return dict(_LAST_ANSWER)
+
+
+def _on_export_response(resp: Any, *args: Any, **kwargs: Any) -> None:
+    try:
+        if resp.status_code in (401, 403, 429):
+            _record_answer(resp.status_code, resp.content)
+        if resp.status_code in (403, 429):
+            note_export_answer(resp.status_code, resp.content, resp.headers)
+    except Exception:  # noqa: BLE001 - reading the answer never breaks export
+        pass
+    return None  # a requests hook that returns None keeps the response
+
+
+def refusal_session() -> Any:
+    """A ``requests.Session`` for the SDK's own OTLP/HTTP exporter whose
+    response hook reads a plan refusal (the exporter logs the status but not
+    the body that says why). None when ``requests`` is missing or a
+    credential-provider session is configured; the exporter then makes its
+    own session, as before."""
+    if any(os.environ.get(k) for k in _CREDENTIAL_PROVIDER_ENV):
+        return None
+    try:
+        import requests
+    except ImportError:
+        return None
+    session = requests.Session()
+    session.hooks["response"].append(_on_export_response)
+    return session
+
+
 class CountingExporter(SpanExporter):
     """Wraps a SpanExporter: never raises, counts failures and dropped spans,
     and (when quiet) keeps the wrapped exporter's warnings out of host logs."""
 
-    def __init__(self, inner: Any, *, quiet: bool = True) -> None:
+    def __init__(self, inner: Any, *, quiet: bool = True, name: str = "") -> None:
         self._inner = inner
         self._quiet = quiet
+        self._name = name  # the destination (local | online), for the first-trace line
 
     def export(self, spans: Sequence[Any]) -> Any:
         from opentelemetry.sdk.trace.export import SpanExportResult
 
         _tls.inside, _tls.quiet = True, self._quiet
+        started = time.time()
         try:
             result = self._inner.export(spans)
         except Exception as exc:  # noqa: BLE001 - an exporter must never raise into the processor
@@ -103,6 +194,7 @@ class CountingExporter(SpanExporter):
             result = SpanExportResult.FAILURE
         finally:
             _tls.inside = False
+        _first_trace(self._name, spans, result == SpanExportResult.SUCCESS, started)
         n = len(spans)
         if result == SpanExportResult.SUCCESS:
             with STATS.lock:
@@ -142,6 +234,22 @@ class CountingExporter(SpanExporter):
             return bool(fn(timeout_millis))
         except Exception:  # noqa: BLE001
             return False
+
+
+def _first_trace(name: str, spans: Sequence[Any], ok: bool, started: float) -> None:
+    """Hand the export's outcome to the first-trace line (plan 3.8): the
+    plan refusal this export got, when it got one."""
+    from . import _firsttrace
+
+    if not _firsttrace.STATE.on or _firsttrace.STATE.done or not name:
+        return
+    refusal = None
+    if not ok:
+        with _planrefusal.LAST.lock:
+            last, at = _planrefusal.LAST.refusal, _planrefusal.LAST.at
+        if last is not None and at >= started:
+            refusal = {"message": getattr(last, "message", ""), "upgrade_url": getattr(last, "upgrade_url", "")}
+    _firsttrace.on_export(name, spans, ok, refusal)
 
 
 def maybe_log_failures(now: Optional[float] = None) -> bool:

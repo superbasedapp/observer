@@ -32,7 +32,7 @@ type orgPlanJSON struct {
 	Version int    `json:"version"`
 	Label   string `json:"label"`
 	// Source is the plan rule that decided (entitlementwork.PlanRuleNames):
-	// subscription | org_grant | launch | floor.
+	// subscription | account_subscription | org_grant | launch | floor.
 	Source string `json:"source"`
 	// NotAfter is a launch plan's end, or an operator grant's end.
 	NotAfter string `json:"not_after,omitempty"`
@@ -49,6 +49,39 @@ type fixedOrgSubscription struct {
 
 func (f fixedOrgSubscription) OrgSubscription(context.Context, string) (store.PaddleSubscription, error) {
 	return f.sub, f.err
+}
+
+// fixedOwnerSubscription hands entitlementwork the personal org owner's
+// account-scoped subscription this request already read (or its error).
+type fixedOwnerSubscription struct {
+	sub store.PaddleSubscription
+	err error
+}
+
+func (f fixedOwnerSubscription) PersonalOrgOwnerSubscription(context.Context, string) (store.PaddleSubscription, error) {
+	return f.sub, f.err
+}
+
+// ownerSubscription reads, for an org the caller created whose kind an
+// account plan pairs into (a personal org: L-167, plus_beta buys Personal Pro),
+// the caller's own account-scoped subscription through RLS. The front door
+// holds no grant on cloud 0155's definer; for its own personal org the
+// caller's row is the same row. A row re-keyed onto an org is the org's own
+// subscription, read by PortalOrgSubscription, so it is not the owner's. nil
+// when nothing pairs.
+func (s *Server) ownerSubscription(r *http.Request, accountID string, o store.MyOrg, kind entitlements.Kind) (entitlementwork.OwnerPlanReader, error) {
+	if o.CreatedBy != accountID || !entitlements.AccountPlansPairInto(kind) {
+		return nil, nil
+	}
+	sub, err := s.store.AccountSubscription(r.Context(), accountID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return nil, err
+	case sub.OrgID != "":
+		err = store.ErrNotFound
+	}
+	return fixedOwnerSubscription{sub: sub, err: err}, nil
 }
 
 // fixedOrgGrant hands entitlementwork the operator grant this request
@@ -78,10 +111,15 @@ func (s *Server) orgPlan(r *http.Request, accountID string, o store.MyOrg, creat
 	if grantErr != nil && !errors.Is(grantErr, store.ErrNotFound) {
 		return nil, grantErr
 	}
+	owners, err := s.ownerSubscription(r, accountID, o, kind)
+	if err != nil {
+		return nil, err
+	}
 	view := store.OrgEntitlementView{OrgID: o.OrgID, Kind: o.Kind, Status: string(o.Status), CreatedOnHostAt: createdOnHost}
 	pl, rule, err := entitlementwork.SubscriptionPlans{
 		Subs:         fixedOrgSubscription{sub: sub, err: subErr},
 		Grants:       fixedOrgGrant{grant: grant, err: grantErr},
+		Owners:       owners,
 		Now:          s.now,
 		PastDueGrace: s.paddlePastDueGrace,
 	}.Resolve(r.Context(), view, kind)

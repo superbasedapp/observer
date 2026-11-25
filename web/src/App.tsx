@@ -53,16 +53,9 @@ import { useApiActivity } from "@/lib/useApi";
 import { useRouteRider } from "@shared/lib/routeRider";
 import { NAV_ITEMS } from "@/lib/nav";
 import { reportToCostSearch } from "@/lib/nodePageTabs";
-import {
-  governedOrgLabel,
-  isSectionHidden,
-  isSectionReadOnly,
-  useGovernance,
-  useGovernanceVisibility,
-  type Governance,
-} from "@/lib/governance";
+import { isSectionHidden, isSectionReadOnly, useGovernance, useGovernanceVisibility } from "@/lib/governance";
 import { FLOOR_NAV_IDS, type GovernancePosture } from "@/lib/visibility";
-import { ManagedNotice } from "@/components/ManagedNotice";
+import { ManagedNotice, ManagedReadOnlyBar } from "@/components/ManagedNotice";
 
 // HelpDrawer carries the 164-entry registry — defer until first
 // open so it doesn't bloat the shell chunk.
@@ -128,22 +121,6 @@ function PostureUnresolved({
           Try again
         </Button>
       </div>
-    </div>
-  );
-}
-
-// ManagedReadOnlyBar sits above a page this machine's organization locked
-// read-only: the page renders, and its writes are refused by the daemon
-// (409 governance_read_only). Saying so up front beats a button that fails.
-function ManagedReadOnlyBar({ gov }: { gov: Governance | null }) {
-  return (
-    <div
-      role="status"
-      data-testid="managed-read-only"
-      className="border-b border-line-1 bg-bg-1 px-4 py-2 text-[11.5px] text-fg-3 sm:px-6"
-    >
-      Read-only on this machine: {governedOrgLabel(gov)} manages this page. You can see
-      everything here, but changes are turned off.
     </div>
   );
 }
@@ -421,7 +398,7 @@ export default function App() {
                 button under the dock once scrolled to its end (T-803,
                 T-855). */}
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {routeReadOnly && <ManagedReadOnlyBar gov={gov.data} />}
+              {routeReadOnly && <ManagedReadOnlyBar gov={gov.data} navId={routeNavId} />}
               {routeUnresolved ? (
                 <PostureUnresolved posture={visibility.posture} onRetry={visibility.reload} />
               ) : routeHidden ? (

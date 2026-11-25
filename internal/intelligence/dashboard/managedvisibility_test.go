@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // postureProvider resolves a real posture through govern.Resolve: consent is
@@ -254,6 +255,85 @@ func TestSettingsSubsectionForRoute(t *testing.T) {
 		_, sub := sections[pattern].Split()
 		if got := settingsSubsectionFor(sub, tc.path); got != tc.want {
 			t.Errorf("%s (route %q) resolves to subsection %q, want %q", tc.path, pattern, got, tc.want)
+		}
+	}
+}
+
+// TestGovernanceOnlineBlock is operator ruling 2's daemon half: GET
+// /api/governance names where the organization chooses what this dashboard
+// shows, and each page's online equivalent, from the address the enrolment
+// already holds (the recorded online address first), with the personal
+// wording only for an organization that is the developer's own. Nothing is
+// served for an unenrolled node.
+func TestGovernanceOnlineBlock(t *testing.T) {
+	s := newRemoteTestServer(t, Options{
+		Governance: postureProvider(t, govern.ConsentManaged, nil, govern.AuthoritySettingsPin),
+	})
+	h := s.guardedHandler("127.0.0.1:8081")
+	get := func() map[string]json.RawMessage {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/governance"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/governance = %d %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if _, ok := get()["online"]; ok {
+		t.Fatal("an unenrolled node serves an online block")
+	}
+	ctx := context.Background()
+	st := store.New(s.opts.DB)
+	if err := st.WriteEnrolment(ctx, store.Enrolment{
+		OrgID: "org-1", OrgServerURL: "https://org.example", UserID: "u-1", Tenancy: "managed", OwnerManaged: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetEnrolmentConnection(ctx, "org-1", "Personal", "https://me.example.app/"); err != nil {
+		t.Fatal(err)
+	}
+	var online governanceOnline
+	if err := json.Unmarshal(get()["online"], &online); err != nil {
+		t.Fatalf("online block: %v", err)
+	}
+	if online.Kind != onlineKindPersonal ||
+		online.Visibility.Href != "https://me.example.app/settings?section=developer-dashboards" ||
+		online.Visibility.Label != "Settings > Developer dashboards" ||
+		online.Pages["app-traces"].Href != "https://me.example.app/trajectories" {
+		t.Fatalf("online block = %+v", online)
+	}
+}
+
+// TestBuildGovernanceOnline: one case per rule of the pure half (the kind
+// follows the owner fact; an address a button may not open keeps every
+// place's name and drops every URL; a page with no equivalent is absent).
+func TestBuildGovernanceOnline(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		addr      string
+		owner     bool
+		kind      string
+		visHref   string
+		traceHref string
+	}{
+		{"personal, safe address", "https://me.example.app", true, onlineKindPersonal, "https://me.example.app/settings?section=developer-dashboards", "https://me.example.app/trajectories"},
+		{"team, safe address", "https://org.example:8443/x", false, onlineKindTeam, "https://org.example:8443/settings?section=developer-dashboards", "https://org.example:8443/trajectories"},
+		{"team, unsafe address: names only", "http://org.example", false, onlineKindTeam, "", ""},
+		{"no address at all: names only", "", true, onlineKindPersonal, "", ""},
+	} {
+		got := buildGovernanceOnline(tc.addr, tc.owner)
+		if got.Kind != tc.kind || got.Visibility.Href != tc.visHref || got.Visibility.Label == "" {
+			t.Errorf("%s: kind %q visibility %+v", tc.name, got.Kind, got.Visibility)
+		}
+		if p, ok := got.Pages["app-traces"]; !ok || p.Href != tc.traceHref || p.Label != "AI apps > Explorer" || !p.Members {
+			t.Errorf("%s: app-traces %+v %v", tc.name, p, ok)
+		}
+		if _, ok := got.Pages["terminals"]; ok {
+			t.Errorf("%s: a page with no online equivalent is listed", tc.name)
 		}
 	}
 }

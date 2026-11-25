@@ -15,8 +15,9 @@ import (
 )
 
 // connect.go is the store seam of the Getting started v2 connect flow (cloud
-// 0150; docs/plans/onboarding-v2-connect-flow.md; docs/security.md
-// CONNECT-1): the only SQL over connect_requests, connect_poll_replay and
+// 0150, and 0159 for the SDK quickstart's sdk_key purpose;
+// docs/plans/onboarding-v2-connect-flow.md; docs/security.md CONNECT-1,
+// SDKQS-1): the only SQL over connect_requests, connect_poll_replay and
 // connect_consents. The decisions (field rules, status machine, delivery,
 // share level, disclosure) are internal/cloudserver/connectflow's; this file
 // stores them under row locks.
@@ -41,6 +42,15 @@ var (
 	// ErrConnectDisclosureStale: the disclosure the browser showed is not the
 	// one the server would show for that dashboard now.
 	ErrConnectDisclosureStale = errors.New("cloudserver/store: connect disclosure changed")
+	// ErrConnectAnswerNotAllowed: the request's purpose does not take that
+	// browser answer (an SDK key has no "Not now").
+	ErrConnectAnswerNotAllowed = errors.New("cloudserver/store: connect answer not allowed for this request")
+	// ErrConnectKeyGrantDelivered: the key grant was already handed over as
+	// often, or as late, as allowed.
+	ErrConnectKeyGrantDelivered = errors.New("cloudserver/store: connect key grant already delivered")
+	// ErrConnectKeyGrantWindowClosed: the delivery window closed before any
+	// key grant was handed over.
+	ErrConnectKeyGrantWindowClosed = errors.New("cloudserver/store: connect key grant window closed")
 )
 
 // connectCodeAttempts bounds how many fresh user codes a create tries when a
@@ -62,48 +72,69 @@ type ConnectTarget struct {
 // ConnectRequest is one connect_requests row. Status is the STORED status;
 // callers read connectflow.EffectiveStatus for the wire.
 type ConnectRequest struct {
-	RequestID       string
-	UserCode        string
-	PublicKey       []byte
+	RequestID string
+	UserCode  string
+	// Purpose is what the request is for (0159; every older row is a
+	// machine). It never changes after create.
+	Purpose connectflow.Purpose
+	// Auth is how its polls prove themselves (connectflow.AuthFor(Purpose)
+	// at create, stored).
+	Auth            connectflow.AuthKind
+	PublicKey       []byte // a machine's device key; nil for an SDK request
 	Thumbprint      string
 	MachineName     string
 	OS              string
 	Arch            string
-	ObserverVersion string
+	ObserverVersion string // "" for an SDK request
 	TargetHint      string
 	OriginNetwork   string
-	Status          connectflow.Status
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	ResolvedAt      time.Time
-	AccountID       string
-	Target          *ConnectTarget
-	ConsentID       string
-	Deliveries      int
+	// DeviceCodeHash is the hex SHA-256 of an SDK request's device code.
+	DeviceCodeHash string
+	// RedeemHash, Client, ClientVersion and ProjectName are an SDK request's
+	// create fields ("" for a machine).
+	RedeemHash    string
+	Client        string
+	ClientVersion string
+	ProjectName   string
+	Status        connectflow.Status
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+	ResolvedAt    time.Time
+	AccountID     string
+	Target        *ConnectTarget
+	ConsentID     string
+	// Deliveries counts the polls that received the request's answer (the
+	// sign-in, or the key grant).
+	Deliveries int
 }
 
 // connectColumns is the select list scanConnectRequest reads.
-const connectColumns = `request_id::text, coalesce(user_code, ''), device_public_key, device_thumbprint,
-	machine_name, os, arch, observer_version, target_hint, origin_network, status,
+const connectColumns = `request_id::text, coalesce(user_code, ''), device_public_key, coalesce(device_thumbprint, ''),
+	machine_name, os, arch, coalesce(observer_version, ''), target_hint, origin_network, status,
 	created_at, expires_at, resolved_at, coalesce(account_id::text, ''),
 	coalesce(target_org_id::text, ''), coalesce(target_slug, ''), coalesce(target_kind, ''),
-	coalesce(target_name, ''), coalesce(share_level, ''), coalesce(consent_id::text, ''), deliveries`
+	coalesce(target_name, ''), coalesce(share_level, ''), coalesce(consent_id::text, ''), deliveries,
+	purpose, auth_kind, coalesce(device_code_hash, ''), coalesce(redeem_hash, ''),
+	coalesce(client, ''), coalesce(client_version, ''), coalesce(project_name, '')`
 
 func scanConnectRequest(row pgx.Row) (ConnectRequest, error) {
 	var (
 		c                                 ConnectRequest
-		status                            string
+		status, purpose, auth             string
 		resolved                          *time.Time
 		orgID, slug, kind, name, shareLvl string
 	)
 	err := row.Scan(&c.RequestID, &c.UserCode, &c.PublicKey, &c.Thumbprint,
 		&c.MachineName, &c.OS, &c.Arch, &c.ObserverVersion, &c.TargetHint, &c.OriginNetwork, &status,
 		&c.CreatedAt, &c.ExpiresAt, &resolved, &c.AccountID,
-		&orgID, &slug, &kind, &name, &shareLvl, &c.ConsentID, &c.Deliveries)
+		&orgID, &slug, &kind, &name, &shareLvl, &c.ConsentID, &c.Deliveries,
+		&purpose, &auth, &c.DeviceCodeHash, &c.RedeemHash,
+		&c.Client, &c.ClientVersion, &c.ProjectName)
 	if err != nil {
 		return ConnectRequest{}, err
 	}
 	c.Status = connectflow.Status(status)
+	c.Purpose, c.Auth = connectflow.Purpose(purpose), connectflow.AuthKind(auth)
 	if resolved != nil {
 		c.ResolvedAt = resolved.UTC()
 	}
@@ -122,9 +153,21 @@ type CreateConnectInput struct {
 	Request connectflow.Create
 	// OriginNetwork is the requester's masked network (connectflow.NetworkPrefix).
 	OriginNetwork string
-	Now           time.Time
+	// DeviceCodeHash is the hash of the device code the create answers
+	// (connectflow.NewDeviceCode); required exactly when the purpose polls
+	// with a device code, and the raw code never reaches the store.
+	DeviceCodeHash string
+	Now            time.Time
 	// Random is the user-code entropy source; nil means crypto/rand.
 	Random io.Reader
+}
+
+// nullIfEmpty maps "" to SQL NULL (an optional column of the other purpose).
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // CreateConnectRequest stores a new pending request with a fresh user code,
@@ -136,6 +179,23 @@ func (s *Store) CreateConnectRequest(ctx context.Context, in CreateConnectInput)
 	rnd := in.Random
 	if rnd == nil {
 		rnd = rand.Reader
+	}
+	purpose := in.Request.Purpose
+	if purpose == "" {
+		purpose = connectflow.PurposeMachine
+	}
+	auth, ok := connectflow.AuthFor(purpose)
+	if !ok {
+		return ConnectRequest{}, fmt.Errorf("cloudserver/store.CreateConnectRequest: unknown purpose %q", purpose)
+	}
+	if (auth == connectflow.AuthDeviceCode) != (in.DeviceCodeHash != "") {
+		return ConnectRequest{}, errors.New("cloudserver/store.CreateConnectRequest: a device code hash is required exactly for a device-code request")
+	}
+	// A machine carries its device key and thumbprint; an SDK request has
+	// neither (both columns NULL, 0159's purpose CHECK).
+	var pubKey, thumb any
+	if len(in.Request.PublicKey) > 0 {
+		pubKey, thumb = []byte(in.Request.PublicKey), Thumbprint(in.Request.PublicKey)
 	}
 	var out ConnectRequest
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -150,13 +210,16 @@ func (s *Store) CreateConnectRequest(ctx context.Context, in CreateConnectInput)
 			c, err := scanConnectRequest(tx.QueryRow(ctx,
 				`INSERT INTO connect_requests
 				   (user_code, device_public_key, device_thumbprint, machine_name, os, arch,
-				    observer_version, target_hint, origin_network, created_at, expires_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				    observer_version, target_hint, origin_network, created_at, expires_at,
+				    purpose, auth_kind, device_code_hash, redeem_hash, client, client_version, project_name)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 				 ON CONFLICT (user_code) DO NOTHING
 				 RETURNING `+connectColumns,
-				code, []byte(in.Request.PublicKey), Thumbprint(in.Request.PublicKey),
-				in.Request.MachineName, in.Request.OS, in.Request.Arch, in.Request.ObserverVersion,
-				in.Request.TargetHint, in.OriginNetwork, now, now.Add(connectflow.RequestTTL)))
+				code, pubKey, thumb,
+				in.Request.MachineName, in.Request.OS, in.Request.Arch, nullIfEmpty(in.Request.ObserverVersion),
+				in.Request.TargetHint, in.OriginNetwork, now, now.Add(connectflow.RequestTTL),
+				string(purpose), string(auth), nullIfEmpty(in.DeviceCodeHash), nullIfEmpty(in.Request.RedeemHash),
+				nullIfEmpty(in.Request.Client), nullIfEmpty(in.Request.ClientVersion), nullIfEmpty(in.Request.ProjectName)))
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue // the code is taken by another live request
 			}
@@ -265,6 +328,11 @@ func (s *Store) DeliverConnectSignIn(ctx context.Context, requestID, label strin
 	cur, err := s.ConnectRequestByID(ctx, requestID)
 	if err != nil {
 		return ConnectRequest{}, nil, err
+	}
+	if answer, _ := connectflow.AnswerFor(cur.Purpose); answer != connectflow.AnswerSignIn {
+		// Never a cloud sign-in for a request whose answer is something else
+		// (an SDK key request: no cloud API token reaches an SDK).
+		return cur, nil, nil
 	}
 	if cur.Status != connectflow.StatusApproved || cur.AccountID == "" {
 		return cur, nil, nil
@@ -413,6 +481,9 @@ func (s *Store) ResolveConnectRequest(ctx context.Context, in ResolveConnectInpu
 		if !ok {
 			return ErrConnectNotPending
 		}
+		if !connectflow.Allows(c.Purpose, in.Event) {
+			return ErrConnectAnswerNotAllowed
+		}
 		var (
 			target    *ConnectTarget
 			consentID string
@@ -428,11 +499,13 @@ func (s *Store) ResolveConnectRequest(ctx context.Context, in ResolveConnectInpu
 			if !connectTargetAllowed(o) {
 				return ErrConnectTargetUnavailable
 			}
-			level, ok := connectflow.ShareLevelFor(connectflow.DashboardKind(o.Kind))
+			// The disclosure is the purpose's (a machine's share level, or
+			// the SDK key's), and its share level is the kind's.
+			d, ok := connectflow.DisclosureFor(c.Purpose, connectflow.DashboardKind(o.Kind), o.DisplayName)
 			if !ok {
 				return ErrConnectTargetUnavailable
 			}
-			d, _ := connectflow.Disclosure(level, o.DisplayName)
+			level := d.Level
 			if d.Version != in.DisclosureVersion || d.SHA256 != in.DisclosureSHA256 {
 				return ErrConnectDisclosureStale
 			}
@@ -445,7 +518,9 @@ func (s *Store) ResolveConnectRequest(ctx context.Context, in ResolveConnectInpu
 			}
 			target = &ConnectTarget{OrgID: o.OrgID, Slug: o.Slug, Kind: o.Kind, DisplayName: o.DisplayName, ShareLevel: level}
 		}
-		if to == connectflow.StatusApproved {
+		// A machine's approval doubles as its device approval; an SDK key
+		// request registers no device (its answer is a key grant).
+		if answer, _ := connectflow.AnswerFor(c.Purpose); to == connectflow.StatusApproved && answer == connectflow.AnswerSignIn {
 			passkey, e := accountHoldsPasskeyTx(ctx, tx, in.AccountID)
 			if e != nil {
 				return e
@@ -476,7 +551,8 @@ func (s *Store) ResolveConnectRequest(ctx context.Context, in ResolveConnectInpu
 	})
 	switch {
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrConnectNotPending),
-		errors.Is(err, ErrConnectTargetUnavailable), errors.Is(err, ErrConnectDisclosureStale):
+		errors.Is(err, ErrConnectTargetUnavailable), errors.Is(err, ErrConnectDisclosureStale),
+		errors.Is(err, ErrConnectAnswerNotAllowed):
 		return ConnectRequest{}, err
 	case err != nil:
 		return ConnectRequest{}, fmt.Errorf("cloudserver/store.ResolveConnectRequest: %w", err)
@@ -494,7 +570,8 @@ type ConnectHome struct {
 }
 
 // ConnectHomeState reads the account's signed-in machine count and its
-// approvals at or after since (at most connectflow.RecentLimit).
+// machine approvals at or after since (at most connectflow.RecentLimit). An
+// SDK key approval connects no machine, so it is not listed.
 func (s *Store) ConnectHomeState(ctx context.Context, accountID string, since time.Time) (ConnectHome, error) {
 	var out ConnectHome
 	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
@@ -506,6 +583,7 @@ func (s *Store) ConnectHomeState(ctx context.Context, accountID string, since ti
 		rows, e := tx.Query(ctx,
 			`SELECT `+connectColumns+` FROM connect_requests
 			  WHERE account_id = $1::uuid AND status = 'approved' AND resolved_at >= $2
+			    AND purpose = 'machine'
 			  ORDER BY resolved_at DESC LIMIT $3`,
 			accountID, since, connectflow.RecentLimit)
 		if e != nil {
@@ -525,4 +603,124 @@ func (s *Store) ConnectHomeState(ctx context.Context, accountID string, since ti
 		return ConnectHome{}, fmt.Errorf("cloudserver/store.ConnectHomeState: %w", err)
 	}
 	return out, nil
+}
+
+// KeyGrantDelivery is the outcome of one SDK key poll's delivery step.
+type KeyGrantDelivery struct {
+	// Request is the request as stored after the step.
+	Request ConnectRequest
+	// Decision is connectflow.KeyGrantDecision's outcome for this poll:
+	// KeyGrantDeliver means this poll was counted and must hand the grant
+	// over.
+	Decision connectflow.KeyGrantPoll
+}
+
+// DeliverConnectKeyGrant decides, under the request's row lock, whether this
+// poll of an approved SDK key request hands the key grant over
+// (connectflow.KeyGrantDecision), and counts the delivery when it does.
+// targetReady is the caller's reading of the chosen dashboard's state; a
+// dashboard that is not ready is waited for without using a delivery. A
+// request past its deliveries returns ErrConnectKeyGrantDelivered. The grant
+// itself is signed by the caller (the store never holds the key). A request
+// whose window closed before any delivery returns
+// ErrConnectKeyGrantWindowClosed.
+func (s *Store) DeliverConnectKeyGrant(ctx context.Context, requestID string, targetReady bool, now time.Time) (KeyGrantDelivery, error) {
+	now = nowOr(now)
+	cur, err := s.ConnectRequestByID(ctx, requestID)
+	if err != nil {
+		return KeyGrantDelivery{}, err
+	}
+	if answer, _ := connectflow.AnswerFor(cur.Purpose); answer != connectflow.AnswerKeyGrant ||
+		cur.Status != connectflow.StatusApproved || cur.AccountID == "" {
+		return KeyGrantDelivery{Request: cur, Decision: connectflow.KeyGrantNone}, nil
+	}
+	var out KeyGrantDelivery
+	err = s.WithAccount(ctx, cur.AccountID, func(ctx context.Context, tx pgx.Tx) error {
+		c, e := scanConnectRequest(tx.QueryRow(ctx,
+			`SELECT `+connectColumns+` FROM connect_requests
+			  WHERE request_id = $1::uuid AND account_id = $2::uuid FOR UPDATE`, requestID, cur.AccountID))
+		if errors.Is(e, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if e != nil {
+			return e
+		}
+		out.Request = c
+		out.Decision = connectflow.KeyGrantDecision(connectflow.KeyGrantFacts{
+			Status: c.Status, Deliveries: c.Deliveries, ApprovedAt: c.ResolvedAt,
+			TargetReady: targetReady && c.Target != nil, Now: now,
+		})
+		switch out.Decision {
+		case connectflow.KeyGrantExhausted:
+			return ErrConnectKeyGrantDelivered
+		case connectflow.KeyGrantWindowClosed:
+			return ErrConnectKeyGrantWindowClosed
+		case connectflow.KeyGrantDeliver:
+			if _, e := tx.Exec(ctx,
+				`UPDATE connect_requests SET deliveries = deliveries + 1 WHERE request_id = $1::uuid`, requestID); e != nil {
+				return fmt.Errorf("record delivery: %w", e)
+			}
+			out.Request.Deliveries++
+		}
+		return nil
+	})
+	if errors.Is(err, ErrConnectKeyGrantDelivered) || errors.Is(err, ErrConnectKeyGrantWindowClosed) || errors.Is(err, ErrNotFound) {
+		return out, err
+	}
+	if err != nil {
+		return KeyGrantDelivery{}, fmt.Errorf("cloudserver/store.DeliverConnectKeyGrant: %w", err)
+	}
+	return out, nil
+}
+
+// MyOrgEntitlementBody returns the version and body of the newest
+// entitlements document the cloud issued for orgID, read in accountID's own
+// context through the sbci_my_org_entitlements view (cloud 0159): only an
+// org the account is a member of answers. ErrNotFound when none was issued
+// yet, or the account is not a member. The SDK key approval page reads it to
+// say whether a dashboard's plan includes AI Apps (the front door holds no
+// grant on the documents themselves).
+func (s *Store) MyOrgEntitlementBody(ctx context.Context, accountID, orgID string) (int64, []byte, error) {
+	var (
+		version int64
+		body    []byte
+	)
+	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		e := tx.QueryRow(ctx,
+			`SELECT version, body FROM sbci_my_org_entitlements WHERE org_id = $1::uuid`, orgID).Scan(&version, &body)
+		if errors.Is(e, pgx.ErrNoRows) || isInvalidUUIDErr(e) {
+			return ErrNotFound
+		}
+		return e
+	})
+	if errors.Is(err, ErrNotFound) {
+		return 0, nil, ErrNotFound
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("cloudserver/store.MyOrgEntitlementBody: %w", err)
+	}
+	return version, body, nil
+}
+
+// ConnectTargetActive reports whether orgID is active, read in accountID's
+// own context (the approver's membership, getMyOrgTx): false when the org is
+// still being set up, is suspended or gone, or the account is no longer a
+// member. An SDK key poll hands its grant over only once this is true.
+func (s *Store) ConnectTargetActive(ctx context.Context, accountID, orgID string) (bool, error) {
+	var active bool
+	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		o, e := getMyOrgTx(ctx, tx, orgID)
+		if errors.Is(e, ErrNotFound) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		active = o.Status == platformcontract.StateActive
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("cloudserver/store.ConnectTargetActive: %w", err)
+	}
+	return active, nil
 }

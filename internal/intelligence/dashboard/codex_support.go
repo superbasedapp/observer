@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,4 +189,15 @@ func detectCodexAuthMode() string {
 		return "api_key"
 	}
 	return ""
+}
+
+func (s *Server) handleCodexSupport(w http.ResponseWriter, r *http.Request) {
+	days := intArg(r, "days", 0, 0, 36500)
+	project := r.URL.Query().Get("project")
+	snap, err := buildCodexSupportSnapshot(r.Context(), s.db(), days, project)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, snap)
 }

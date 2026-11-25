@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -187,7 +188,7 @@ type toolResult struct {
 // on their own; `reasoning` parts never mint a row of their own either —
 // they ride the next event as PrecedingReasoning (see threadState).
 func (a *Adapter) loadMessageEvents(ctx context.Context, db *sql.DB, sourceFile, projectRoot, gitRemote string, fromOffset int64) ([]models.ToolEvent, error) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return nil, nil
 	}
 	/* #nosec G202 -- messageModelExpr returns one of two compile-time literals */
@@ -475,7 +476,7 @@ func (a *Adapter) toolCallEvent(sourceFile, projectRoot, gitRemote string, m mes
 // provider-failover session reports the provider that finished the
 // turn).
 func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile, projectRoot, gitRemote string, fromOffset int64) ([]models.TokenEvent, error) {
-	if !tableExists(ctx, db, "sessions") {
+	if !sqliteschema.TableExists(ctx, db, "sessions") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -620,7 +621,7 @@ func sessionTokenCounts(prompt, completion int64, steps int) sessionUsage {
 // query error (e.g. a malformed parts blob) so an unreadable count never
 // promotes a snapshot to "total".
 func assistantStepCount(ctx context.Context, db *sql.DB, sessionID string) int {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return 0
 	}
 	var n int
@@ -643,7 +644,7 @@ func assistantStepCount(ctx context.Context, db *sql.DB, sessionID string) int {
 // messageModelExpr, so a Hyper turn routed by Prism reports the model
 // that actually served it.
 func newestAssistantModel(ctx context.Context, db *sql.DB, sessionID string) (model, provider string) {
-	if !tableExists(ctx, db, "messages") {
+	if !sqliteschema.TableExists(ctx, db, "messages") {
 		return "", ""
 	}
 	/* #nosec G202 -- messageModelExpr returns one of two compile-time literals */
@@ -763,7 +764,7 @@ func latestWatermark(ctx context.Context, path string) (int64, error) {
 
 	var latest int64
 	for _, tbl := range []string{"sessions", "messages"} {
-		if !tableExists(ctx, db, tbl) {
+		if !sqliteschema.TableExists(ctx, db, tbl) {
 			continue
 		}
 		var v int64
@@ -799,10 +800,7 @@ var allHomesFunc = crossmount.AllHomes
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Crush store (crush.db): every table this
@@ -819,16 +817,7 @@ var mirrorSpec = mirrorbase.Spec{
 // non-native home. Covers both bridge directions (/mnt/c on WSL2, and
 // \\wsl.localhost\ on Windows).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // resolveDBPath maps a -wal/-shm sibling event back to the main crush.db.
@@ -838,16 +827,6 @@ func resolveDBPath(path string) string {
 		return filepath.Join(filepath.Dir(path), "crush.db")
 	}
 	return path
-}
-
-// tableExists reports whether the named table is present.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
 }
 
 // columnExists reports whether table has the named column. False on any

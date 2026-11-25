@@ -268,27 +268,6 @@ func proxyDownAdviceExpect(daemonChild bool) (want, deny []string) {
 	}
 }
 
-// TestProxyUnreachableNoticeShape pins the one-line notice a simple base-URL
-// launcher prints: the tool, the URL it actually resolved, the consequence, and
-// the honest next step — one line, no second explanation.
-func TestProxyUnreachableNoticeShape(t *testing.T) {
-	got := proxyUnreachableNotice("hermes", "http://127.0.0.1:18898", true)
-	if strings.Count(got, "\n") != 0 {
-		t.Fatalf("notice spans multiple lines: %q", got)
-	}
-	adviceWant, adviceDeny := proxyDownAdviceExpect(true)
-	for _, want := range append([]string{"observer hermes:", "http://127.0.0.1:18898", "NOT captured"}, adviceWant...) {
-		if !strings.Contains(got, want) {
-			t.Fatalf("notice %q missing %q", got, want)
-		}
-	}
-	for _, deny := range adviceDeny {
-		if strings.Contains(got, deny) {
-			t.Fatalf("notice %q must not contain %q", got, deny)
-		}
-	}
-}
-
 // --- P2: one skipped route, one notice ---
 
 // TestCodexRouteSkipNoticeIsOnePerOutcome pins the codex notice table: each

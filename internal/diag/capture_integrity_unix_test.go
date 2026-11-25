@@ -50,7 +50,9 @@ func TestInspectCaptureIntegrityRefusesFIFOWithoutBlocking(t *testing.T) {
 				t.Skipf("mkfifo: %v", err)
 			}
 			done := make(chan CaptureIntegritySignals, 1)
-			go func() { done <- InspectCaptureIntegrity(home, "/current/observer") }()
+			go func() {
+				done <- InspectCaptureIntegrityWith(home, CaptureIntegrityOptions{BinaryPath: "/current/observer"})
+			}()
 			select {
 			case got := <-done:
 				found := false

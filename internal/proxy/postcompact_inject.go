@@ -79,10 +79,13 @@ func injectAnthropicSystemBlock(body []byte, content string) ([]byte, error) {
 
 // marshalEnvelope is the proxy-side cousin of
 // conversation.marshalEnvelope: deterministic key-ordered serialisation
-// of a map[string]json.RawMessage. We can't import the conversation
-// helper without an import cycle, so we duplicate the (small) function
-// here. Keep the two implementations in sync — the cross-turn
-// invariance predicate depends on byte-identical envelope ordering.
+// of a map[string]json.RawMessage. The proxy is linked into builds that
+// omit the proxy.compression component, whose packages
+// (internal/compression/conversation and its types subpackage) must then
+// stay out of the binary, so the proxy cannot import that helper; the
+// (small) function is duplicated here instead. Keep the two
+// implementations in sync — the cross-turn invariance predicate depends
+// on byte-identical envelope ordering.
 func marshalEnvelope(obj map[string]json.RawMessage) ([]byte, error) {
 	tmp := make(map[string]json.RawMessage, len(obj))
 	for k, v := range obj {

@@ -37,6 +37,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/service"
 	"github.com/marmutapp/superbased-observer/internal/shutdown"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/surfaceenrich"
@@ -949,7 +950,7 @@ func newStartCmd() *cobra.Command {
 				ngov.SetPageGrants(daemonPageGrants(store.New(database)))
 				nf.SetToolGrant(daemonToolGrant(store.New(database)))
 				nf.SetFeatureGrant(daemonFeatureGrant(store.New(database)))
-				launchMgr, launchStatus, policyStop := surfaces.launchMgr, surfaces.launchStatus, surfaces.policyStop
+				launchMgr := surfaces.launchMgr
 				assessTerminals, assessDBPath = sessionResolver(launchMgr), cfg.Observer.DBPath
 				if launchMgr != nil {
 					assessClose = launchMgr.Close
@@ -966,325 +967,134 @@ func newStartCmd() *cobra.Command {
 				// operator who never turned archival on pays nothing.
 				processArchive, closeArchive := openProcessArchiveReader(ctx, cfg)
 				defer closeArchive()
-				// Projects-page ROI + commit-alignment arc (docs/plans/
-				// projects-page-roi-and-commit-alignment-plan-2026-09-21.md
-				// §4 W3): the §3.6 "J" judge-tier seam is build-tag-split
-				// (projects_wire.go/projects_judge_wire.go).
-				projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
 				apps = newAppsRuntime(appsRuntimeOptions{
 					Ctx: ctx, ConfigPath: configPath, DB: database, Admission: admissionHandle,
 					Share: governanceShareProvider(cfg.OrgClient, ngov), Logger: slog.Default(),
 					BootOn: cfg.Observability.Enabled,
 				})
-				opts := dashapi.Options{
+				// The one construction both dashboard commands share
+				// (dashboard_options.go, CMD-01). The daemon adds only the
+				// fields below, each listed with its reason in
+				// daemonOnlyDashboardFields (dashboard_options_test.go).
+				opts := nodeDashboardOptions(nodeDashboardDeps{
+					Ctx: ctx, Cfg: cfg, ConfigPath: configPath, ResolvedConfigPath: resolvedConfigPath,
+					DB: database, Surfaces: surfaces, Remote: remoteCtrl, Governance: ngov,
 					ProcessArchive: processArchive,
-					Projects:       cfg.Projects,
-					// Plans & limits: the same service the "plans" loop below runs.
-					Plans: processPlans(cfg, database, slog.Default()),
-					// Cloud agents: the same service the "cloud-agents" loop runs.
+					// Plans & limits and Cloud agents: the same services the
+					// "plans" and "cloud-agents" loops below run.
+					Plans:       processPlans(cfg, database, slog.Default()),
 					CloudAgents: processCloudAgents(cfg, database, slog.Default()),
-					// Custom scanners (security_custom_cmd.go): nil unless the
-					// security.scan.custom component is active.
-					CustomScanners: customScannersForDashboard(cmd.Context(), comps, configPath, store.New(database)),
-					// CommitAlignmentAvailability (cloud_gradecommit.go) is the
-					// SAME function `observer cloud grade-commit` itself calls,
-					// so the dashboard and the CLI never disagree about why
-					// cloud grading is unavailable.
-					CloudGradeAvailability: CommitAlignmentAvailability,
-					JudgeGrade:             projectsJudgeGrade,
-					JudgeGradeReason:       projectsJudgeGradeReason,
-					JudgeGradePlace:        projectsJudgeGradePlace(&cfg, projectsJudgeGrade != nil),
-					// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
-					// commit scanner, nil when [projects].commit_scan is off.
-					CommitRescan: commitRescanWithDelivery(cfg, database),
-					// Package checks card (security_deps_dash.go): the install
-					// gate's state and the dashboard accept of its disclosure.
-					PackageChecks: packageChecksDash(resolvedConfigPath, database),
-					// Scanners card (security_scan_dash.go): the OSV database
-					// download's one-time accept (PT-19).
-					ScannerDB: scannerDBDash(resolvedConfigPath, database),
-					// SARIF upload (security_sarifimport.go): one file the
-					// developer picked, through the CLI's own import (lane SEC-P4).
-					SARIFImport: sarifImportDash(database),
-					// Code security "Scan now" (security_scan_now.go): one manual run of a
-					// selected scanner on one project, the same run its CLI verb starts.
-					SecurityScanNow: securityScanNowDash(resolvedConfigPath, database),
-					// DAST card (security_dast_dashboard.go) and Projects tab SBOM
-					// export (security_sbom_dashboard.go), security coverage gaps plan.
-					SecurityDAST:        securityDASTDash(resolvedConfigPath, database),
-					SecurityProjectSBOM: securityProjectSBOMDash(resolvedConfigPath),
-					// Code rules card (security_opengrep_dash.go): the guided
-					// install with its size consent (lane SEC-G2).
-					Opengrep: opengrepDash(resolvedConfigPath, database),
-					IaC:      iacDash(resolvedConfigPath, database),
-					// AI change records card (security_provenance_cmd.go, lane sec-f2a).
-					Provenance: provenanceDash(resolvedConfigPath, database),
-					// The one security opt-in rule (security_optin.go): the
-					// components state's security_selected (which Settings rows and
-					// the Explain button show), and the trust, git hooks and
-					// scanner routes.
-					SecuritySelected: securitySelected,
-					// The Components page's view with the modules' own rules
-					// (components_gate.go), so a removed sandbox root reads as off there
-					// as in `observer components status` (P-057).
-					ComponentStateView: componentStateView,
-					// The launch row's Observer-entry test (launch_trust_own.go), so
-					// the New Terminal trust chip leaves out what the launch leaves out.
-					RepoTrustOwn: repoTrustDashboardOwn,
-					// The launch row's conditional rows (trust_conditions.go), so the
-					// review lists N2's initializeCommand row as the launch reads it.
-					RepoTrustPaths: repoTrustDashboardPaths(resolvedConfigPath),
-					// Delivery (delivery_wire.go, D-689): the [delivery] tunables and the
-					// one process-wide delivery service the poll loop also runs.
-					Delivery:        cfg.Delivery,
-					DeliveryService: deliveryDashOption(cfg, database),
-					// Admin-controlled Plane B (spec §3.5): the ONE seam the
-					// dashboard has onto governance. nil on an ungoverned
-					// build; here it is the daemon's single install seam, so
-					// the route guard, the SPA and the P0-6 report can never
-					// disagree about what this node applies.
-					Governance: ngov.Effective,
-					// Org-parity W5.1: the same one-owner node.features
-					// handle the LKG loader and poller install into, above.
-					// nil-safe methods (see nodeFeaturesHandle.Allowed /
-					// TerminalAllowed) so an ungoverned/solo node's seams
-					// fail open exactly like Governance's nil convention.
-					FeatureGate:         nf.Allowed,
-					TerminalFeatureGate: nf.TerminalAllowed,
-					DB:                  database,
-					DBPath:              cfg.Observer.DBPath,
-					CostEngine:          acquireProcessCostEngine(ctx, cfg, database, slog.Default()),
-					// Production read caches: page loads fan several spend panels out at
-					// once and share one row read; watcher health is served SWR
-					// (optimization review 2026-09-27, findings N4/N5).
-					ReadCaches: true,
-					Predict:    cfg.Predict,
-					Scoring:    cfg.Intelligence.Scoring,
-					CacheWarm:  cfg.CacheWarm,
-					Tasks:      cfg.Tasks,
-					// LOC editor endpoint credential: generated on first
-					// start into [loc].editor_token_file, read back after.
-					// Never fatal — an unreadable file yields "" and the
-					// endpoint keeps its loopback-only posture.
-					LocEditorToken:         resolveLocEditorToken(locEditorTokenPath(cfg), slog.Default()),
-					LocEditorTokenRequired: cfg.Loc.EditorTokenRequired,
-					Dashboard:              cfg.Dashboard,
-					MonthlyBudgetUSD:       cfg.Intelligence.MonthlyBudgetUSD,
-					ConfigPath:             resolvedConfigPath,
-					RecognizesSessionFile:  recognizesSessionFile(),
-					CursorSemanticsFor:     cursorSemanticsFor(),
-					// `observer start` always runs the watcher beside the
-					// dashboard (ng.Go("watcher") below); the sidebar keys
-					// its watcher line to this, not to Claude setup (T-585).
-					WatcherRunning:  true,
-					CaptureProgress: captureProgress,
-					ToolCatalog:     toolCatalog(),
-					// Connected tools hooks probe: the options the
-					// auto-registration above wrote with (T-376).
-					HookRegistryOptions: hookProbeOptionsSeam(configPath),
-					// Connected tools per-tool "Run checks" (T-421 item 3): the
-					// same report builder `observer doctor <tool>` prints.
-					ToolDoctor: dashboardToolDoctor(configPath),
-					// Cloud account seam (cloudaccount_wire.go): local sign-in probe +
-					// `observer cloud login|logout` subprocess runner behind the Settings
-					// → Cloud Intelligence Sign-in button. Spawns the CLI; links nothing new.
-					CloudAccount:   newCloudAccountSeams(resolvedConfigPath),
-					ArenaAdmission: arenaBudgetAdmissionSeam(resolvedConfigPath),
-					ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
-					// OSH-R-005: may an Arena drive skip the harness's permission checks.
-					ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
-					ProxyPort:             effectiveProxyPort(cfg.Proxy.Port, port),
-					// OSH-R-009: the Setup route writers write the client
-					// token form when the node wants client auth.
-					ProxyClientToken: daemonProxyClientToken(cfg),
-					StashDir:         cfg.Compression.Conversation.Stash.Dir,
-					GuardEnabled:     cfg.Guard.Enabled,
-					GuardMode:        cfg.Guard.Mode,
-					GuardStrict:      cfg.Guard.Strict,
-					GuardHookFailure: guardHookFailureSeam(configPath),
-					GuardToolGates:   guardToolGatesSeam(configPath, surfaces.sandboxProber),
-					Version:          version,
-					// Session handoff (docs/session-handoff.md P2): the
-					// shared handoffsvc runner behind
-					// /api/session/<id>/handoff*.
-					BuildHandoff: handoffRunner(cfg, database),
-					// P2.5: config saves hot-reload the proxy's compression
-					// profile router — new sessions resolve against the
-					// updated [profiles] table / compression params without
-					// a restart. Nil when compression is off at boot (the
-					// master switch stays restart-gated).
-					OnConfigSaved: profilesReload,
-					// Plane A W2-7: SDK discovery and SDK key sign-in/out.
-					SDK: sdkDashboardSeams(cfg, store.New(database)),
-					// P6.7: demo mode — temp DB seeded from embedded
-					// fixtures; never touches the real observer.db.
-					DemoSeeder: demoSeeder(slog.Default()),
-					// R2.4: the live router's §R18.3 demotion set —
-					// in-memory state only this process can answer for.
-					// Nil when routing isn't wired; the status endpoint
-					// reports demotions_live accordingly.
-					RoutingDemotions: routingDemotions,
-					// D4: the generalized-observability subsystem registers
-					// its /api/obs/* trajectory endpoints here (the single
-					// host->obs seam; nil when disabled or under no_obs).
-					// admissionHandle (gap P0-7) shares the proxy's ONE live
-					// admission service with the dashboard policy/egress editors,
-					// so an edit hot-swaps the instance the proxy enforces.
-					// The obs routes ride the hot-enable gate (obs_wire_apps.go):
-					// every pattern is registered now, served once AI Apps is on.
-					ExtraRoutes: append(apps.gatedRoutes(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default())), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
-					// Embedded web-terminal launcher (docs/session-handoff.md
-					// launch section). Nil when [handoff].allow_dashboard_launch
-					// is false → endpoints 503, button hidden.
-					LaunchManager:  launchMgr,
-					TerminalStatus: launchStatus,
-					// Node-intervention policy-stop explanation
-					// (policystop.go). Nil unless the launch manager is also
-					// wired — a policy stop only ever concerns a dashboard-
-					// launched PTY run.
-					PolicyStop: policyStop,
-					// B9 sandboxed terminals: the availability probe behind
-					// GET /api/terminal/sandbox + the fail-closed launch
-					// validation. Nil unless [terminal.sandbox].enabled →
-					// endpoint reports disabled and a sandbox request 501s.
-					SandboxProber:      surfaces.sandboxProber,
-					LoopbackCallerGate: surfaces.loopbackCallerGate,
-					LaunchCaller:       surfaces.launchCaller,
-					PendingLaunches:    surfaces.pendingLaunches,
-					// The first-start install's version picker (lane LEFT-SBX):
-					// nil in a build without the container driver.
-					SandboxInstallVersions: sandboxInstallVersionsSeam(resolvedConfigPath),
-					// The Settings card's org forbid of sign-in seeding (lane
-					// BOXSIGNIN): the composed managed view, nil without the sandbox.
-					SandboxSignInForbidden: sandboxSignInForbiddenSeam(resolvedConfigPath),
-					// The strace switch's per-sandbox answer (lane ptrace): nil
-					// without the sandbox.
-					SandboxSeize: sandboxSeizeHostSeam(),
-					// The refusal advisor's host check (OpenShell lane N5): the
-					// gateway's own, nil without the sandbox.
-					SandboxEgressHostCheck: sandboxEgressHostCheckSeam(),
-					SandboxProviderHost:    sandboxProviderHostSeam(),
-					// Sandbox setup (sandbox installation lifecycle plan, P-249): nil in a
-					// build without the sandbox module, so the setup routes answer 501.
-					SandboxSetup: newSandboxSetup(sandboxSetupOptions{ConfigPath: resolvedConfigPath, Surface: "dashboard", Ledger: surfaces.toolInstalls, Logger: slog.Default(), Spawn: func(_ context.Context, argv []string, label string) (string, int, error) {
-						if surfaces.launchMgr == nil {
-							return "", -1, errors.New("the dashboard terminal is off ([handoff].allow_dashboard_launch)")
-						}
-						h, err := surfaces.launchMgr.CreateSetup(dashapi.SetupSpec{Argv: argv, Label: label})
-						return h, -1, err
-					}}),
-					// The New Terminal "project policy" line (lane sec-p2b): reads the
-					// project match record; shown only when the node holds a project delivery.
-					ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
-					// Tool-binary-resolution seams (tool-binary-resolution arc
-					// §5): pre-launch verdict + guided install. Plain funcs so
-					// the dashboard package never imports internal/toolresolve.
-					ToolPreflight:    toolPreflightSeam(resolvedConfigPath, allowToolInstallSeam(resolvedConfigPath)),
-					AllowToolInstall: allowToolInstallSeam(resolvedConfigPath),
-					ToolInstallHint:  toolInstallHintSeam(),
-					// Refuse a guided install whose grounded prerequisites
-					// (unzip, bzip2, ...) are missing, with the fix.
-					ToolInstallBlocked: toolInstallBlockedSeam(),
-					// The record of guided installs this dashboard ran + the
-					// matching uninstall (tool_installs, agent migration 149).
-					ToolInstalls: surfaces.toolInstalls,
-					// Command wrapping (backlog item 7): the one shim / start-up-file
-					// applier, behind the Settings -> Terminal card.
-					ShellWrap: newShellWrapService(resolvedConfigPath, dashResolveEnv),
-					// Windows-home init (T-421 item 4): `observer init
-					// --windows-*-home` behind Connected tools, WSL only.
-					WindowsHomes: newWindowsHomeService(resolvedConfigPath, cfg.Proxy.Port),
-					// Re-pricing stored costs (PRICE-REPRICE-1): the one plan/apply/
-					// revert service `observer reprice` also uses, behind the Settings card.
-					Reprice: newRepriceService(ctx, cfg, database, slog.Default(), ngov.Effective),
-					// After New Terminal install/launch: re-detect adapters
-					// and hot-add newly-existing session dirs into the live
-					// watcher (Muse/Prime-after-install capture gap).
-					RefreshWatchRoots: refreshWatchRootsSeam(w),
-					// New Terminal model picker (B5): recent-usage history
-					// over the daemon's own database, composed with the
-					// capability registry's Known examples by
-					// modelSuggestionsFor.
-					RecentModels: recentModelsSeam(database),
-					// Per-terminal project panel (Arc A): token→root resolver
-					// from termsvc. Nil when the launch manager is absent → 404.
-					ProjectRootResolver: projectRootResolver(launchMgr),
-					// Per-terminal session cockpit (Session Cockpit): token→run/
-					// session-link resolver from termsvc. Nil when the launch
-					// manager is absent → cockpit 404s.
-					SessionResolver: sessionResolver(launchMgr),
-					// The agent-run security assessments' relaxations read the guard's own
-					// lock and decision per rule and project (fail closed when unreadable).
-					RuleRelaxation:     dashboardRuleRelaxation(resolvedConfigPath, database),
-					SandboxGatewayPort: sandboxGatewayPortFunc(),
-					// Restart-from-dashboard (docs/plans/dashboard-daemon-
-					// restart-plan-2026-07-14.md): preflight the config, then
-					// cancel the root context so the daemon runs its NORMAL
-					// graceful shutdown (component drain + surfaces.close PTY reap
-					// + dbCleanup); main() re-execs after every defer completes.
-					// Refuses up front if the config wouldn't come back
-					// (never shut down into a brick) or on an OS without execve.
-					// The restart hook lives in sandbox_liveruns.go beside the
-					// live-run gate: a restart with a live sandboxed run asks
-					// (end them, or restart when they finish) instead of
-					// ending it (sandbox plan v2 section 5.5, SBX-UPD-1).
-					RestartFunc:      daemonRestartFunc(configPath, cancel),
-					RestartPreflight: daemonRestartPreflight(configPath),
-					LiveSandboxRuns:  startLiveRuns(configPath, cancel, surfaces.mgr, database),
-					// Remote-access substrate (plan §4). Nil unless [remote] is
-					// enabled AND a pairing secret is provisioned, so a
-					// non-loopback dashboard bind stays fail-closed. Built once
-					// and shared by the direct listener guard, the Phase-2
-					// tailnet backend, and CheckRemoteBind.
-					Remote:      remoteCtrl,
-					RemoteAudit: remoteAuditSink(database),
-					// In-place binary update (enterprise-update-management
-					// plan §3.7/§3.10). The seam runs the drain and the
-					// fork-exec-and-watch handshake IN THIS PROCESS, because
-					// they are only meaningful where the listeners live; the
-					// dashboard contributes a loopback-only route and nothing
-					// else. Nil when [update].enabled is false, which the
-					// handler reports as 501 rather than as a 404 the caller
-					// would misread as "old daemon".
-					UpdateApplyFunc: updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).ApplySeam(),
-					// W5 read side: the Settings -> Health update card and the
-					// update banner. StatusSeam is deliberately non-nil even
-					// when [update].enabled is false — it then reports
-					// Enabled:false, which the card renders as "off on this
-					// node" rather than as "up to date".
-					UpdateStatusFunc: updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).StatusSeam(),
-					// W5: the VS Code extension's self-report (ruling R6). The
-					// daemon cannot discover the extension's version on its
-					// own, so the extension tells it once per activation and
-					// the org board can show editor/daemon skew.
-					UpdateExtensionVersionFunc: updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).ExtensionVersionSeam(),
-					// Agent Access P10 (mcp_access_dashboard.go): GET
-					// /api/mcp-access/status for the Security page and the
-					// VS Code status item - the `observer mcp status` body
-					// plus coverage rows, effective state and connect URL.
-					MCPAccessStatus: mcpAccessStatusSeam(resolvedConfigPath, database),
-					// Lane adm-p2 (planeb_admission_dashboard.go): GET
-					// /api/guard/prompt/judge for the Security page's
-					// organization prompt judge card, the `observer guard
-					// status` facts.
-					PromptJudgeStatus: promptJudgeStatusSeam(resolvedConfigPath, database),
-					// Settings > Enrolment management (backlog item 6): enrol / consent /
-					// status / grant / push-now / leave through the CLI's own code
-					// paths. Wired even when not enrolled - that is how a node enrols
-					// from the UI. pushLoop tells the outcome whether a restart is
-					// needed before pushes start. The governance hook makes an enrol or
-					// leave show on /api/governance at once.
-					EnrolManager:       enrolManagerFor(resolvedConfigPath, orgClient != nil, ngov).withRetire(orgClient), // T-718: Leave retires the daemon's budget rail live
-					ConnectStatus:      connectStatusSeam(database),                                                       // plan 07 M8.4: the front door's one sentence
-					Components:         dashboardComponents(resolvedConfigPath, database),                                 // Settings > Components + route guard (MP-DASH)
-					SetupExtras:        dashboardSetupExtras(resolvedConfigPath),                                          // cli-parity L2: status line, start at login, browser capture setup
-					ComponentArtifacts: dashboardComponentArtifacts(resolvedConfigPath),                                   // artifact_states on /api/components (T-707)
-					BinaryInstall:      dashboardBinaryInstall,                                                            // binary_install on /api/components (U12)
-					// Settings > Cloud Intelligence (org plane): the same
-					// functions `observer intel` runs; a write invalidates
-					// the rail gate's live opt-in read.
-					OrgIntel: newOrgIntelDashboard(resolvedConfigPath, orgIntelLive.invalidate),
-				}
+					// Enrolment management is wired even when not enrolled - that
+					// is how a node enrols from the UI. pushLoop tells the outcome
+					// whether a restart is needed before pushes start; T-718:
+					// Leave retires the daemon's budget rail live.
+					EnrolManager: enrolManagerFor(resolvedConfigPath, orgClient != nil, ngov).withRetire(orgClient),
+					// A Settings > Cloud Intelligence write invalidates the rail
+					// gate's live opt-in read.
+					OrgIntelChanged: orgIntelLive.invalidate,
+				})
+				// Custom scanners (security_custom_cmd.go): nil unless the
+				// security.scan.custom component is active.
+				opts.CustomScanners = customScannersForDashboard(cmd.Context(), comps, configPath, store.New(database))
+				// Org-parity W5.1: the same one-owner node.features handle the
+				// LKG loader and poller install into, above. nil-safe methods
+				// (see nodeFeaturesHandle.Allowed / TerminalAllowed) so an
+				// ungoverned/solo node's seams fail open exactly like
+				// Governance's nil convention.
+				opts.FeatureGate = nf.Allowed
+				opts.TerminalFeatureGate = nf.TerminalAllowed
+				// `observer start` always runs the watcher beside the dashboard
+				// (ng.Go("watcher") below); the sidebar keys its watcher line to
+				// this, not to Claude setup (T-585).
+				opts.WatcherRunning = true
+				opts.CaptureProgress = captureProgress
+				opts.ProxyPort = effectiveProxyPort(cfg.Proxy.Port, port)
+				// OSH-R-009: the Setup route writers write the client token form
+				// when the node wants client auth.
+				opts.ProxyClientToken = daemonProxyClientToken(cfg)
+				// P2.5: config saves hot-reload the proxy's compression profile
+				// router - new sessions resolve against the updated [profiles]
+				// table / compression params without a restart. Nil when
+				// compression is off at boot (the master switch stays
+				// restart-gated).
+				opts.OnConfigSaved = profilesReload
+				// Plane A W2-7: SDK discovery and SDK key sign-in/out.
+				opts.SDK = sdkDashboardSeams(cfg, store.New(database))
+				// R2.4: the live router's §R18.3 demotion set - in-memory state
+				// only this process can answer for. Nil when routing isn't
+				// wired; the status endpoint reports demotions_live accordingly.
+				opts.RoutingDemotions = routingDemotions
+				// D4: the generalized-observability subsystem registers its
+				// /api/obs/* trajectory endpoints here (the single host->obs
+				// seam; nil when disabled or under no_obs). admissionHandle (gap
+				// P0-7) shares the proxy's ONE live admission service with the
+				// dashboard policy/egress editors, so an edit hot-swaps the
+				// instance the proxy enforces. The obs routes ride the
+				// hot-enable gate (obs_wire_apps.go): every pattern is
+				// registered now, served once AI Apps is on.
+				opts.ExtraRoutes = append(apps.gatedRoutes(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default())), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...)
+				// The first-start install's version picker (lane LEFT-SBX): nil in
+				// a build without the container driver.
+				opts.SandboxInstallVersions = sandboxInstallVersionsSeam(resolvedConfigPath)
+				// The Settings card's org forbid of sign-in seeding (lane
+				// BOXSIGNIN): the composed managed view, nil without the sandbox.
+				opts.SandboxSignInForbidden = sandboxSignInForbiddenSeam(resolvedConfigPath)
+				// The strace switch's per-sandbox answer (lane ptrace): nil
+				// without the sandbox.
+				opts.SandboxSeize = sandboxSeizeHostSeam()
+				// The refusal advisor's host check (OpenShell lane N5): the
+				// gateway's own, nil without the sandbox.
+				opts.SandboxEgressHostCheck = sandboxEgressHostCheckSeam()
+				opts.SandboxProviderHost = sandboxProviderHostSeam()
+				// After New Terminal install/launch: re-detect adapters and
+				// hot-add newly-existing session dirs into the live watcher
+				// (Muse/Prime-after-install capture gap).
+				opts.RefreshWatchRoots = refreshWatchRootsSeam(w)
+				// Restart-from-dashboard (docs/plans/dashboard-daemon-restart-
+				// plan-2026-07-14.md): preflight the config, then cancel the
+				// root context so the daemon runs its NORMAL graceful shutdown
+				// (component drain + surfaces.close PTY reap + dbCleanup); main()
+				// re-execs after every defer completes. Refuses up front if the
+				// config wouldn't come back (never shut down into a brick) or on
+				// an OS without execve. The restart hook lives in
+				// sandbox_liveruns.go beside the live-run gate: a restart with a
+				// live sandboxed run asks (end them, or restart when they
+				// finish) instead of ending it (sandbox plan v2 section 5.5,
+				// SBX-UPD-1).
+				opts.RestartFunc = daemonRestartFunc(configPath, cancel)
+				opts.RestartPreflight = daemonRestartPreflight(configPath)
+				// L-168 (ii): the restart report says whether the proxy socket is
+				// handed over (proxy_handover.go).
+				opts.RestartHandover = daemonHandoverReport
+				opts.LiveSandboxRuns = startLiveRuns(configPath, cancel, surfaces.mgr, database)
+				// In-place binary update (enterprise-update-management plan
+				// §3.7/§3.10). The seam runs the drain and the
+				// fork-exec-and-watch handshake IN THIS PROCESS, because they are
+				// only meaningful where the listeners live; the dashboard
+				// contributes a loopback-only route and nothing else. Nil when
+				// [update].enabled is false, which the handler reports as 501
+				// rather than as a 404 the caller would misread as "old daemon".
+				opts.UpdateApplyFunc = updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).ApplySeam()
+				// W5 read side: the Settings -> Health update card and the update
+				// banner. StatusSeam is deliberately non-nil even when
+				// [update].enabled is false - it then reports Enabled:false,
+				// which the card renders as "off on this node" rather than as
+				// "up to date".
+				opts.UpdateStatusFunc = updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).StatusSeam()
+				// W5: the VS Code extension's self-report (ruling R6). The daemon
+				// cannot discover the extension's version on its own, so the
+				// extension tells it once per activation and the org board can
+				// show editor/daemon skew.
+				opts.UpdateExtensionVersionFunc = updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).ExtensionVersionSeam()
+				// Agent Access P10 (mcp_access_dashboard.go): GET
+				// /api/mcp-access/status for the Security page and the VS Code
+				// status item - the `observer mcp status` body plus coverage
+				// rows, effective state and connect URL.
+				opts.MCPAccessStatus = mcpAccessStatusSeam(resolvedConfigPath, database)
+				// Lane adm-p2 (planeb_admission_dashboard.go): GET
+				// /api/guard/prompt/judge for the Security page's organization
+				// prompt judge card, the `observer guard status` facts.
+				opts.PromptJudgeStatus = promptJudgeStatusSeam(resolvedConfigPath, database)
 				// Assign the concrete client only when present so Options.OrgClient
 				// stays a nil interface (not a non-nil interface holding a nil
 				// pointer) on a solo-local install — the enrolment handlers key
@@ -1544,11 +1354,25 @@ func newStartCmd() *cobra.Command {
 				return nil
 			})
 			ng.Go("proxy", func() error {
-				if err := p.ListenAndServe(listenerCtx, addr); err != nil && !errors.Is(err, context.Canceled) {
+				// L-168 (ii): adopt the listening socket a restarting
+				// daemon handed over when it serves addr, else bind; the
+				// listener is recorded so this daemon's own in-place
+				// restart can hand it on (proxy_handover.go).
+				ln, err := processProxyHandover.listen(addr, inheritedProxyListener, cmd.OutOrStdout())
+				if err != nil {
+					return fmt.Errorf("proxy: %w", err)
+				}
+				if err := p.Serve(listenerCtx, ln, addr); err != nil && !errors.Is(err, context.Canceled) {
 					return fmt.Errorf("proxy: %w", err)
 				}
 				return nil
 			})
+			if !loopAllowed(comps, "proxy") {
+				// No proxy runs in this image: a handed-over socket would
+				// queue connections nobody accepts, so it is closed and a
+				// client fails at once instead of waiting.
+				inheritedProxyListener.Close()
+			}
 			// A sandboxed run's projected transcripts (lane SBX-P3C, G27).
 			setSandboxProjectionWatcher(w.AddProjectionRoot)
 			ng.Go("watcher", func() error {
@@ -1873,6 +1697,29 @@ func newStartCmd() *cobra.Command {
 				putBack := newRouteHoldPutBack(holdPort, cmd.OutOrStdout(), cmd.ErrOrStderr())
 				ng.Go("route-hold-putback", func() error {
 					putBack.run(gctx)
+					return nil
+				})
+				// L-168 (i): a deliberate stop takes the routes to this
+				// proxy off at the end of the run (Ctrl-C, a service
+				// manager's or a plain SIGTERM, a console close), journaled
+				// for the put-back above in the next daemon; a restart that
+				// hands its socket over, an update hand-over and a failure
+				// leave them (internal/service.DecideStopRoutes,
+				// routehold_stop.go).
+				lockLoaded, guardLock := lockErr == nil, cfgForLock.Guard.Lock
+				stopHold := newRouteHoldOnStop(holdPort,
+					func() service.StopEvent {
+						return daemonStopEvent(ctx.Err() != nil, restartRequested.Load(),
+							processProxyHandover.handingOver(), currentUpdateRuntime().ListenersReleased())
+					},
+					func() service.RouteOwner {
+						return daemonRouteOwner(guardLock, lockLoaded, func(c context.Context) govern.RoutePostureVerdict {
+							return ngov.Effective(c).RoutePosture()
+						})
+					},
+					cmd.OutOrStdout(), cmd.ErrOrStderr())
+				ng.Go("route-stop-hold", func() error {
+					stopHold.waitAndRun(gctx)
 					return nil
 				})
 			}

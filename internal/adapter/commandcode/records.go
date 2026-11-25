@@ -3,7 +3,6 @@ package commandcode
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -381,21 +380,6 @@ func toolResultText(raw json.RawMessage) string {
 		return ""
 	}
 	return string(raw)
-}
-
-// parseTimestamp decodes Command Code's RFC3339 millisecond timestamps
-// (literal `Z`, UTC). Returns the zero time on an empty or unparseable
-// value.
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t.UTC()
-		}
-	}
-	return time.Time{}
 }
 
 // truncate caps a preview string to n bytes.

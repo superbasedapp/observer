@@ -38,7 +38,7 @@ class BehaviourCasesTest extends SdkTestBase {
 
   static Map<String, Object> section(String name) {
     try {
-      return (Map<String, Object>) loadContract("sdk-behaviour-cases.json").get(name);
+      return (Map<String, Object>) behaviourSections().get(name);
     } catch (java.io.IOException e) {
       throw new IllegalStateException(e);
     }
@@ -101,10 +101,11 @@ class BehaviourCasesTest extends SdkTestBase {
 
   @Test
   void every_section_has_a_runner() throws Exception {
+    // A section whose sdks does not name java needs no Java runner.
     Set<String> sections = new TreeSet<>();
-    for (String k : loadContract("sdk-behaviour-cases.json").keySet()) {
-      if (!k.startsWith("_")) {
-        sections.add(k);
+    for (Map.Entry<String, Object> e : behaviourSections().entrySet()) {
+      if (namesJava(map(e.getValue()).get("sdks"))) {
+        sections.add(e.getKey());
       }
     }
     Set<String> runners = new TreeSet<>();
@@ -900,5 +901,166 @@ class BehaviourCasesTest extends SdkTestBase {
         assertThrows(ExperimentException.class, () -> Superbased.getDataset(name));
       }
     }
+  }
+
+  // --- the SDK quickstart (sdk-api-surface.md sections 15 and 16, destination.md section 6a) ---
+
+  /** Whether case {@code c} of section {@code sec} names Java (the case's sdks narrows the section's). */
+  static boolean caseNamesJava(String sec, Map<String, Object> c) {
+    Object sdks = c.containsKey("sdks") ? c.get("sdks") : section(sec).get("sdks");
+    return namesJava(sdks);
+  }
+
+  @ParameterizedTest
+  @ArgumentsSource(CaseIndexes.class)
+  void service_name_default(int i) {
+    Map<String, Object> c = caseOf("service_name_default", i);
+    org.junit.jupiter.api.Assumptions.assumeTrue(caseNamesJava("service_name_default", c), "not a Java case");
+    Object title = map(c.get("project")).get("implementation_title");
+    ServiceName.project = () -> title == null ? "" : (String) title;
+    Map<String, String> env = strMap(c.get("env"));
+    String arg = (String) map(c.get("args")).get("service_name");
+    Settings s = Settings.resolve(env, InitOptions.builder().serviceName(arg).build());
+    Map<String, Object> want = map(c.get("want"));
+    assertEquals(want.get("service_name"), s.serviceName(), (String) c.get("name"));
+    assertEquals(want.get("source"), s.serviceNameSource(), (String) c.get("name"));
+  }
+
+  static final String CASE_SDK_FILE_KEY = "00000000000000000000000000000002.fake-sdk-file-secret";
+  static final String CASE_MACHINE_FILE_KEY = "00000000000000000000000000000003.fake-machine-secret";
+
+  static java.nio.file.Path writeOwnerOnly(java.nio.file.Path f, String text, String perms) throws java.io.IOException {
+    java.nio.file.Files.writeString(f, text, StandardCharsets.US_ASCII);
+    java.nio.file.Files.setPosixFilePermissions(f, java.nio.file.attribute.PosixFilePermissions.fromString(perms));
+    return f;
+  }
+
+  @ParameterizedTest
+  @ArgumentsSource(CaseIndexes.class)
+  void destination_sdk_file(int i) throws Exception {
+    Map<String, Object> c = caseOf("destination_sdk_file", i);
+    String name = (String) c.get("name");
+    java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("sbsdkfile");
+    java.nio.file.Path file = dir.resolve("sdk-credential");
+    Map<String, Object> sf = (Map<String, Object>) c.get("sdk_file");
+    if (sf != null) {
+      String state = (String) sf.get("state");
+      org.junit.jupiter.api.Assumptions.assumeFalse("refused".equals(state) && SdkFile.windows(), "the unix read rules decide refused");
+      StringBuilder b = new StringBuilder(CASE_SDK_FILE_KEY).append("\ngateway_url=https://u-k7x2.superbased.app\n");
+      if (sf.get("destination") != null) {
+        b.append("destination=").append(sf.get("destination")).append('\n');
+      }
+      java.time.Instant exp = "expired".equals(state) ? java.time.Instant.now().minusSeconds(3600) : java.time.Instant.now().plus(Duration.ofDays(365));
+      b.append("expires_at=").append(exp.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)).append('\n');
+      writeOwnerOnly(file, b.toString(), "refused".equals(state) ? "rw-r--r--" : "rw-------");
+    }
+    Map<String, String> env = new HashMap<>();
+    env.put("SUPERBASED_DISCOVER", "1");
+    env.put("SUPERBASED_NODE_URL", "http://127.0.0.1:9");
+    env.put(SdkFile.ENV_CREDENTIAL_FILE, file.toString());
+    env.put("LOCALAPPDATA", dir.toString());
+    env.putAll(strMap(c.get("env")));
+    Map<String, Object> m = (Map<String, Object>) c.get("machine");
+    Map<String, Object> answer = null;
+    if (m != null) {
+      Map<String, Object> online = new LinkedHashMap<>();
+      if (Boolean.TRUE.equals(m.get("credential_present"))) {
+        java.nio.file.Path mf = writeOwnerOnly(dir.resolve("machine-credential"), CASE_MACHINE_FILE_KEY + "\ngateway_url=https://gw.machine.example\n", "rw-------");
+        online.put("credential_present", true);
+        online.put("credential_file", mf.toString());
+      }
+      answer = new LinkedHashMap<>();
+      answer.put("api_version", 1L);
+      answer.put("destination", m.get("destination"));
+      answer.put("signed_in", m.get("signed_in"));
+      answer.put("local", Map.of("enabled", m.get("local_enabled")));
+      answer.put("online", online);
+      answer.put("warnings", List.of());
+    }
+    Map<String, Object> body = answer;
+    Destination.Discoverer orig = Destination.discoverer;
+    Destination.discoverer = n -> body == null ? new Destination.Discovered(null, "no machine (test)") : new Destination.Discovered(body, "");
+    try {
+      Destination.resetCacheForTests();
+      Map<String, Object> args = map(c.get("args"));
+      String argDest = (String) args.get("destination");
+      Settings s = Settings.resolve(env, InitOptions.builder().destination(argDest).build());
+      Destination.Plan p = Destination.resolve(s, env, argDest, null, null, false);
+      Map<String, Object> want = map(c.get("want"));
+      String got = p.destination + "|" + p.source + "|" + p.credentialSource + "|" + p.sdkFile.get("state");
+      String exp = want.get("destination") + "|" + want.get("source") + "|" + want.get("credential_source") + "|" + want.get("sdk_file");
+      assertEquals(exp, got, name + "; warnings " + p.warnings);
+      if (want.get("warning_contains") != null) {
+        assertTrue(String.join("\n", p.warnings).contains((String) want.get("warning_contains")), name + ": " + p.warnings);
+      }
+      assertEquals(Boolean.TRUE.equals(want.get("degraded")), !p.degraded.isEmpty(), name + ": " + p.degraded);
+      if (Boolean.TRUE.equals(want.get("degraded")) && sf != null) {
+        assertTrue(p.degraded.contains("setup"), name + ": " + p.degraded);
+      }
+      for (String w : p.warnings) {
+        assertFalse(w.contains("fake-sdk-file-secret") || w.contains("fake-machine-secret"), name + ": a warning carries a key");
+      }
+    } finally {
+      Destination.discoverer = orig;
+    }
+  }
+
+  @ParameterizedTest
+  @ArgumentsSource(CaseIndexes.class)
+  void first_trace_link(int i) throws Exception {
+    Map<String, Object> c = caseOf("first_trace_link", i);
+    String name = (String) c.get("name");
+    Destination.Plan p = new Destination.Plan();
+    p.destination = (String) c.get("destination");
+    p.localDashboard = (String) c.get("node_url");
+    if ("online".equals(p.destination) || "both".equals(p.destination)) {
+      p.onlineReady = true;
+      Object record = c.get("record");
+      if ("sdk_file".equals(record) || "machine".equals(record)) {
+        p.onlineDashboard = c.get("dashboard_url") == null ? "" : (String) c.get("dashboard_url");
+      }
+    }
+    Map<String, String> env = strMap(c.get("env"));
+    boolean tty = Boolean.TRUE.equals(c.get("tty"));
+    FirstTrace.Tracker tr = new FirstTrace.Tracker();
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+    java.io.PrintStream ps = new java.io.PrintStream(buf, true, StandardCharsets.UTF_8);
+    FirstTrace.Bases bases = FirstTrace.Bases.of(p);
+    for (Object o : (List<Object>) c.get("exports")) {
+      Map<String, Object> x = map(o);
+      String id = (String) x.get("trace_id");
+      if (x.get("local") != null) {
+        tr.note(bases, "local", id, "ok".equals(x.get("local")), null, () -> FirstTrace.allowed(tty, env), ps);
+      }
+      if (x.get("online") != null) {
+        String outcome = (String) x.get("online");
+        PlanRefusalException refusal = null;
+        if (!"ok".equals(outcome) && !"failed".equals(outcome)) {
+          refusal = planRefusalCase(outcome);
+        }
+        tr.note(bases, "online", id, "ok".equals(outcome), refusal, () -> FirstTrace.allowed(tty, env), ps);
+      }
+    }
+    List<String> lines = new ArrayList<>();
+    for (String l : buf.toString(StandardCharsets.UTF_8).split("\n")) {
+      if (l.startsWith("superbased: ")) {
+        lines.add(l);
+      }
+    }
+    assertEquals(map(c.get("want")).get("lines"), lines, name);
+  }
+
+  static PlanRefusalException planRefusalCase(String name) throws java.io.IOException {
+    for (Object o : (List<Object>) loadContract("plan-refusal-cases.json").get("cases")) {
+      Map<String, Object> rc = map(o);
+      if (name.equals(rc.get("name"))) {
+        PlanRefusalException r = PlanRefusalException.parse(((Number) rc.get("status")).intValue(), rc.get("body"), strMap(rc.get("headers")));
+        if (r == null) {
+          throw new IllegalStateException("plan-refusal case " + name + " is not a refusal");
+        }
+        return r;
+      }
+    }
+    throw new IllegalStateException("no plan-refusal case " + name);
   }
 }

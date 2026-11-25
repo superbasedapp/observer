@@ -13,7 +13,7 @@ var LossyEvictionMechanisms = map[string]bool{
 	"drop": true,
 }
 
-// lossyEvictionMechanismList returns the lossy-eviction mechanisms as a
+// LossyEvictionMechanismList returns the lossy-eviction mechanisms as a
 // deterministically-ordered slice so SQL callers can build an IN(...)
 // set from the SAME classifier table (lossyEvictionMechanisms) that
 // mechanismIsLossy consults. Keeping the SQL set derived from this one

@@ -97,7 +97,7 @@ func (s *Store) latestRateLimitRow(ctx context.Context, query string, args ...an
 		// Malformed body: not an error, just no usable window.
 		return RateLimitWindows{}, false, nil
 	}
-	if t, ok := parseDBTime(ts); ok {
+	if t, ok := parseStoredTimeOK(ts); ok {
 		w.ObservedAt = t
 	}
 	return w, true, nil

@@ -19,13 +19,16 @@ import "strings"
 // "agent-config" with adapter config P4/P5, "messages" with admin and
 // developer messaging, T-854, and "code-security" with the security pillar's
 // Code security page; the eight "app-*" Your apps pages joined with Plane A
-// lane B5, 2026-11-19; Egress and Policies moved into that group in the SPA
-// but keep their place here, since this list is a set).
+// lane B5, 2026-11-19, and "app-model-calls", the machine's app lanes on the
+// proxy, with the hosted AI gateway arc, lane L9, 2026-11-25; Egress and
+// Policies moved into that group in the SPA but keep their place here, since
+// this list is a set).
 var NavSectionIDs = []string{
 	"overview", "live", "sessions", "actions", "projects", "security", "code-security", "egress", "search",
 	"cost", "plans", "analysis", "tools",
 	"compression", "cache", "suggestions", "routing", "benchmarks", "discovery", "patterns",
 	"app-traces", "app-sessions", "app-analytics", "app-end-users", "app-evals", "app-scores", "app-prompts", "app-alerts",
+	"app-model-calls",
 	"you", "policies", "agent-config", "privacy", "terminals", "remote", "messages", "requests", "settings",
 }
 

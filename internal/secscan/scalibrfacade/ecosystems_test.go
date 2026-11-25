@@ -16,6 +16,7 @@ import (
 	"github.com/google/osv-scalibr/semantic"
 
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
 
 // ecosystems_test.go pins the rows the 2026-11-06 coverage review added
@@ -175,7 +176,7 @@ func TestProjectAssetsKeepsOnlyRestored(t *testing.T) {
 // the walk stops there, a reference's own VersionOverride wins over it, and
 // a project with no central file anywhere keeps an unpinned reference.
 func TestCentralVersionsLookup(t *testing.T) {
-	root := writeTree(t, map[string]string{
+	root := fstree.WritePrivate(t, map[string]string{
 		"Directory.Packages.props":           `<Project><ItemGroup><PackageVersion Include="A" Version="1.0.0" /><PackageVersion Include="B" Version="5.0.0" /></ItemGroup></Project>`,
 		"inner/Directory.Packages.props":     `<Project><ItemGroup><PackageVersion Include="a" Version="2.0.0" /></ItemGroup></Project>`,
 		"inner/p/P.csproj":                   `<Project><ItemGroup><PackageReference Include="A" /><PackageReference Include="B" /><PackageReference Include="C" VersionOverride="[3.0.0]" /></ItemGroup></Project>`,
@@ -267,7 +268,7 @@ func TestEveryMatchedEcosystemRoundTrips(t *testing.T) {
 // ecosystem's canary here, or a broken parser would only show as a failed
 // self-test on a live node.
 func TestCanaryFilesParse(t *testing.T) {
-	root := writeTree(t, depscan.CanaryFiles())
+	root := fstree.WritePrivate(t, depscan.CanaryFiles())
 	inv := extractTree(t, root)
 	for _, s := range inv.Statuses {
 		if !s.OK {
@@ -352,7 +353,7 @@ func TestMatchNewEcosystemsLocally(t *testing.T) {
 // turns that into a failed match of that ecosystem, never a crashed scan
 // child.
 func TestMatchUnorderableVersionFailsOneEcosystem(t *testing.T) {
-	inv := extractTree(t, writeTree(t, map[string]string{
+	inv := extractTree(t, fstree.WritePrivate(t, map[string]string{
 		"renv.lock": `{"Packages":{"glue":{"Package":"glue","Version":"1.8.x","Source":"Repository","Repository":"CRAN"}}}`,
 	}))
 	if len(inv.Packages) != 1 || inv.Packages[0].Version != "1.8.x" {

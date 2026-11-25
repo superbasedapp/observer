@@ -45,6 +45,15 @@ class Response:
             return str(self.body["error"])
         return ""
 
+    def plan_refusal(self) -> Any:
+        """The org's plan refusal in this answer (a ``PlanRefusalError``:
+        403 ``plan_required`` or a 429 over the plan's allowance), or None."""
+        if self.status not in (403, 429):
+            return None
+        from ._planrefusal import parse_plan_refusal
+
+        return parse_plan_refusal(self.status, self.body if isinstance(self.body, dict) else self.raw, self.headers)
+
     def describe(self) -> str:
         if self.status == 0:
             return self.error or "no response"

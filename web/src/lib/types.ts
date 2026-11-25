@@ -1,6 +1,10 @@
 import type { DoctorRemediation } from "./remediation";
 import type { RequestClassSplitWire } from "./requestClassSplit";
 import type { ContextGaugeWire } from "./sessionContextGauge";
+// One definition, in the shared design system (shared/lib/types.ts):
+// re-exported below where each used to be declared, and imported here for
+// the declarations in this file that name them.
+import type { CompressionMechStats, Reliability } from "@shared/lib/types";
 // TypeScript shapes for the Go dashboard's /api/* responses.
 // Field names mirror the Go JSON tags exactly so renaming on the
 // backend doesn't silently break the frontend.
@@ -216,21 +220,7 @@ export type ActionsTimeseries = BucketMeta & {
 
 // ---------- /api/tools ----------
 
-export type ToolRow = {
-  tool: string;
-  action_count: number;
-  failure_count: number;
-  success_rate: number;
-  session_count: number;
-  first_seen: string;
-  last_seen: string;
-};
-
-export type ToolsResponse = {
-  days: number;
-  since: string;
-  tools: ToolRow[];
-};
+export type { ToolRow, ToolsResponse } from "@shared/lib/types";
 
 // ---------- /api/projects ----------
 // docs/plans/projects-page-roi-and-commit-alignment-plan-2026-09-21.md §3.4.
@@ -294,7 +284,7 @@ export type ProjectRow = {
   last_seen?: string;
   /**
    * REQUIRED (2026-09-22 rework finding #15): the Go wire always emits
-   * `id` (dashboard.go's projectRow struct has no omitempty on it) — an
+   * `id` (projects.go's projectRow struct has no omitempty on it) — an
    * optional type here let `/api/project/${row.id}` compile against
    * `undefined` and fail only at request time. A project row without a
    * real id is a server-side contract violation, not a case this type
@@ -305,7 +295,7 @@ export type ProjectRow = {
    * null/absent = no priced-turn activity for this project in the 30d
    * window (render "-"); a present 0 = every turn in the window priced,
    * genuinely to $0.00 (a known-free model — render "$0.00"). See
-   * dashboard.go's projectRow.SpendUSD30d doc comment (finding #13).
+   * projects.go's projectRow.SpendUSD30d doc comment (finding #13).
    */
   spend_usd_30d?: number | null;
   /** Turns in the 30d window with no recorded cost and no pricing entry; absent when zero. */
@@ -1025,12 +1015,7 @@ export type CompressionStats = {
   cost_saved_usd_est: number;
 };
 
-export type Reliability =
-  | "accurate"
-  | "approximate"
-  | "unreliable"
-  | "unknown"
-  | "";
+export type { Reliability };
 
 export type CostRow = {
   key: string;
@@ -1601,36 +1586,11 @@ export type AnalysisRoutingSuggestions = {
 
 // ---------- /api/analysis/cost-by-hour ----------
 
-export type HourBucket = {
-  hour: number;
-  cost_usd: number;
-  turn_count: number;
-};
-
-export type AnalysisCostByHour = {
-  days: number;
-  // The viewer zone the hours are in (the `tz` sent; UTC on fallback).
-  timezone: string;
-  buckets: HourBucket[];
-};
+export type { AnalysisCostByHour, HourBucket } from "@shared/lib/types";
 
 // ---------- /api/analysis/cost-by-dow-hour ----------
 
-// 2D bucket: day-of-week (0=Sun..6=Sat per Go's time.Weekday()) ×
-// hour-of-day (0..23). Cost summed over the window. Frontend renders
-// this as a 7×24 heatmap on the Analysis page's "When you spend".
-export type DowHourCell = {
-  dow: number;
-  hour: number;
-  cost_usd: number;
-  turn_count: number;
-};
-
-export type AnalysisCostByDowHour = {
-  days: number;
-  timezone: string;
-  cells: DowHourCell[];
-};
+export type { AnalysisCostByDowHour, DowHourCell } from "@shared/lib/types";
 
 // ---------- /api/analysis/cache-savings-trend ----------
 
@@ -3008,7 +2968,8 @@ export type MessageAttachment = {
 };
 
 // NOTE: envelope key is `messages` (not `rows`) — different from
-// /api/sessions and /api/actions. Confirmed in dashboard.go:1357.
+// /api/sessions and /api/actions. Confirmed in handleSessionMessages
+// (internal/intelligence/dashboard/session_messages.go).
 export type SessionMessages = {
   account_summary?: { accounts: ToolAccountEvidence[]; observed: number; unknown: number; conflicts: number };
   session_id: string;
@@ -3304,17 +3265,7 @@ export type CompressionEventsResponse = {
 
 // ---------- /api/compression/timeseries ----------
 
-export type CompressionMechStats = {
-  count: number;
-  original_bytes: number;
-  compressed_bytes: number;
-  saved_bytes: number;
-  saved_usd_est: number;
-  // lossy marks an eviction mechanism (e.g. `drop`): saved_bytes /
-  // saved_usd_est are 0 and evicted_bytes carries the removed volume.
-  lossy: boolean;
-  evicted_bytes: number;
-};
+export type { CompressionMechStats };
 
 export type CompressionTimeseriesPoint = {
   bucket: string;

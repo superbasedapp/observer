@@ -1,0 +1,1 @@
+import{dm as i,ab as o,az as n,d7 as r}from"./index-CQ_bvTMs.js";function l({org:s}){var a;const t=i(s);return o.jsx(n,{variant:t.tone,icon:((a=s.provisioning)==null?void 0:a.stage)==="waitlisted"?r:void 0,children:t.label})}export{l as O};

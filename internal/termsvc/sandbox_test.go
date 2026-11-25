@@ -28,8 +28,8 @@ func (f *fakeSandboxer) Prepare(_ context.Context, req PrepareRequest) (PrepareR
 }
 
 // mkdirT makes (and returns) an existing directory under base — a helper for
-// tests that need canonicalDir/ValidateManagedWorkspace to see a real,
-// stat-able directory.
+// tests that need the termcore validators (ValidateManagedWorkspace) to see a
+// real, stat-able directory.
 func mkdirT(t *testing.T, base string, parts ...string) string {
 	t.Helper()
 	p := filepath.Join(append([]string{base}, parts...)...)
@@ -162,10 +162,12 @@ func TestLaunchFreshSandboxManagedWorkspaceSuccess(t *testing.T) {
 		t.Fatal("Sandboxed = false, want true")
 	}
 	// The Launcher's Dir is the PREPARED workspace, canonicalized — not the
-	// original project root.
-	wantDir, cerr := canonicalDir(preparedDir)
+	// original project root. The expected canonical form comes from
+	// termcore's own canonicalization: ValidateProjectRoot returns it for a
+	// directory that is its own allowed root.
+	wantDir, cerr := ValidateProjectRoot(preparedDir, []string{preparedDir})
 	if cerr != nil {
-		t.Fatalf("canonicalDir: %v", cerr)
+		t.Fatalf("canonicalize prepared workspace: %v", cerr)
 	}
 	if l.lastReq.Dir != wantDir {
 		t.Fatalf("Dir = %q, want %q (prepared workspace)", l.lastReq.Dir, wantDir)

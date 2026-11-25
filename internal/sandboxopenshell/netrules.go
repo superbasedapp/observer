@@ -323,16 +323,6 @@ func netAliasOverlap(entry string) (netAlias, bool) {
 	return netAlias{}, false
 }
 
-// NetAliasNames returns the host-alias floor's names, in table order (the
-// driver's tests and the live script read them).
-func NetAliasNames() []string {
-	out := make([]string, len(netAliases))
-	for i, a := range netAliases {
-		out[i] = a.name
-	}
-	return out
-}
-
 // netProviderOverlap reports the provider an entry reaches: an exact entry
 // that is a provider host or below one (sandboxnet blocks a provider's
 // subdomains too) or in a provider family, or a wildcard whose names

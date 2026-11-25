@@ -149,8 +149,14 @@ final class Scores {
     return out;
   }
 
-  /** No answer, 429 or a 5xx: worth one more try. */
+  /**
+   * No answer, 429 or a 5xx: worth one more try. A 429 over the plan's
+   * allowance is not: it holds until the plan changes or the month turns.
+   */
   static boolean retryable(Http.Response r) {
+    if (r.status == 429 && r.planRefusal() != null) {
+      return false;
+    }
     return r.status == 0 || r.status == 429 || r.status >= 500;
   }
 
@@ -176,6 +182,7 @@ final class Scores {
         // Once, with the same ids: the id makes a repeat a no-op.
         resp = side.call("POST", "scores", body, null, null, null);
       }
+      PlanRefusalException refusal = resp.planRefusal();
       Map<Integer, String> accepted = new LinkedHashMap<>();
       Map<Integer, String> rejected = new LinkedHashMap<>();
       Map<String, Object> rb = resp.object();
@@ -211,6 +218,9 @@ final class Scores {
           String err = rejected.containsKey(i) ? rejected.get(i) : resp.describe();
           r.put(side.name, false, resp.status, "", err);
           r.errors.add(side.name + ": " + err);
+          if (r.planRefusal == null) {
+            r.planRefusal = refusal;
+          }
         }
       }
     }

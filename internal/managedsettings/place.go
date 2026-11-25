@@ -276,29 +276,7 @@ func decodeValue(raw json.RawMessage) (any, error) {
 	if v == nil {
 		return nil, fmt.Errorf("null value")
 	}
-	return nativeNumbers(v), nil
-}
-
-func nativeNumbers(v any) any {
-	switch x := v.(type) {
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return i
-		}
-		f, _ := x.Float64()
-		return f
-	case []any:
-		for i := range x {
-			x[i] = nativeNumbers(x[i])
-		}
-		return x
-	case map[string]any:
-		for k := range x {
-			x[k] = nativeNumbers(x[k])
-		}
-		return x
-	}
-	return v
+	return cfgfmt.NativeNumbers(v), nil
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

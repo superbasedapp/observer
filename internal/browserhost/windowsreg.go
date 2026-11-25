@@ -198,10 +198,6 @@ func WindowsBrowsersInstalled(windowsHome string) []Browser {
 	return out
 }
 
-// BrowserName returns a browser's human-readable label (for CLI output),
-// keeping the struct's fields unexported.
-func (b Browser) BrowserName() string { return b.Name }
-
 // BrowserID returns a browser's stable id (for CLI output).
 func (b Browser) BrowserID() string { return b.ID }
 

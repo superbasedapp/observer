@@ -146,30 +146,6 @@ func bucketOf(k Kind) kindBucket {
 	}
 }
 
-// BucketLabel returns a stable string label for the bucket a Kind
-// folds into ("hit" / "write" / "skipped" / "unknown"). Used by
-// diagnostics + the cache-health CLI's G2 surface so callers don't
-// re-derive bucketOf in their own helpers (the previous external
-// liveBucket/bucketLabel mirrors silently drifted from bucketOf
-// if a new Kind landed without re-syncing — closing that drift was
-// the §15.3 (c) G2-anchor groundwork).
-//
-// §15.3 implicit-cache kinds return "skipped" — they're skipped
-// from the Anthropic §10 gate by design. Use [IsImplicitCacheKind]
-// to test for the implicit-cache subset directly.
-func BucketLabel(k Kind) string {
-	switch bucketOf(k) {
-	case bucketHit:
-		return "hit"
-	case bucketWrite:
-		return "write"
-	case bucketSkipped:
-		return "skipped"
-	default:
-		return "unknown"
-	}
-}
-
 // BucketMismatch reports whether predicted and observed fold into
 // different non-skipped buckets — the engine's REAL §10
 // bucket-mispredict signal (mirrors ReconcilePrediction's internal

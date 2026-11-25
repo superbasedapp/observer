@@ -186,7 +186,7 @@ func TestSeatbeltHomeBlinded(t *testing.T) {
 // backend_version_untested (S2b runs after S4).
 func TestMacDriversModuleInactiveOnMacOS(t *testing.T) {
 	for _, id := range []string{sandboxbackend.BackendSeatbelt, sandboxbackend.BackendAppleContainer} {
-		rt := macTestRuntime(t, seatbeltTestConfig(t, false, id))
+		rt := testSandboxRuntime(t, seatbeltTestConfig(t, false, id))
 		probes := rt.driverProbes(context.Background())
 		for _, backend := range []string{"", id} {
 			in := sandboxselect.Input{

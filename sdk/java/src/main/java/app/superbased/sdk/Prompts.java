@@ -353,6 +353,7 @@ final class Prompts {
     }
     List<String> errors = new ArrayList<>();
     boolean nf = true;
+    PlanRefusalException refused = null;
     List<Control.Side> targets = Control.sides();
     if (targets.isEmpty()) {
       errors.add(Control.unavailableReason());
@@ -399,6 +400,9 @@ final class Prompts {
         continue;
       }
       nf = false;
+      if (refused == null) {
+        refused = resp.planRefusal();
+      }
       errors.add(side.name + ": " + resp.describe());
     }
     if (opts.fallback != null) {
@@ -408,7 +412,8 @@ final class Prompts {
     if (nf) {
       throw new PromptException.NotFound("prompt '" + name + "' (" + selector + ") not found: " + detail);
     }
-    throw new PromptException.FetchFailed("prompt '" + name + "' (" + selector + ") could not be fetched: " + detail);
+    // When the org's plan refused it, the refusal is the cause (and planRefusal()).
+    throw new PromptException.FetchFailed("prompt '" + name + "' (" + selector + ") could not be fetched: " + detail, refused);
   }
 
   @SuppressWarnings("unchecked")

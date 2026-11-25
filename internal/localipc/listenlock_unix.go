@@ -14,7 +14,7 @@ import (
 // maps it to ErrSocketLiveDaemon. It lives beside its only producer (the flock
 // is unix-only; the Windows transport gets its live-daemon guard from
 // FILE_FLAG_FIRST_PIPE_INSTANCE instead).
-var errLockHeld = errors.New("attachsock: attach listen lock is held by another process")
+var errLockHeld = errors.New("localipc: attach listen lock is held by another process")
 
 // listenLock is a HELD advisory (flock) lock on the attach dir's lock file. It
 // stays open for the LISTENER's lifetime (A3-5): ListenSocket wraps the

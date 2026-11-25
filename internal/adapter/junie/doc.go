@@ -261,10 +261,10 @@
 // session, actively misleading (which task ended?). TaskState is now
 // skipped entirely — there is no dispatch case for it.
 //
-// # Why there is no pending.go
+// # Why there is no tail deferral
 //
 // Muse's parser defers an unpaired tail record across parse calls via a
-// byte-offset rewind (pending.go), because a Muse tool-call record only
+// byte-offset rewind (adapter.DeferUnpairedTail), because a Muse tool-call record only
 // becomes actionable once its LATER result record arrives, and the two
 // can straddle a poll boundary.
 //

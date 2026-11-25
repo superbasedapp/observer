@@ -75,9 +75,11 @@ function writeDismissed(): void {
 
 export { useObsRoutesUp } from "@/lib/useObsRoutesUp";
 
-/** SdkSnippet shows the install line and a minimal init per language. The
- *  init names the daemon's live receiver address (U-04): the caller's
- *  `receiver` when it has one, else the receiver's own report. */
+/** SdkSnippet shows, per language, the one setup command first (when the
+ *  language has one, from the SDK catalog), then the install line and the
+ *  one init line for doing it by hand. A snippet that names the default
+ *  receiver gets the daemon's live address (U-04): the caller's `receiver`
+ *  when it has one, else the receiver's own report. */
 export function SdkSnippet({ receiver }: { receiver?: string }) {
   const [lang, setLang] = useState<(typeof SDK_SNIPPETS)[number]["id"]>("python");
   const reported = useApi<OTLPReceiverState>(receiver ? null : "/api/sdk/receiver");
@@ -91,6 +93,21 @@ export function SdkSnippet({ receiver }: { receiver?: string }) {
         value={lang}
         onChange={setLang}
       />
+      {s.setup && (
+        <>
+          <div className="flex items-center gap-2 font-mono text-[12px] text-fg-1" data-testid="apps-sdk-setup">
+            <span className="text-fg-3">$</span>
+            <span className="min-w-0 truncate">{s.setup}</span>
+            <CopyOnClick value={s.setup} ariaLabel="Copy the setup command" className="text-[11px] text-accent">
+              copy
+            </CopyOnClick>
+          </div>
+          <p className="text-[11px] text-fg-3">
+            In your app&apos;s folder: it installs the SDK, asks once to turn this on, sends a first trace and prints the
+            line to add. Or by hand:
+          </p>
+        </>
+      )}
       <div className="flex items-center gap-2 font-mono text-[12px] text-fg-1">
         <span className="text-fg-3">$</span>
         <span className="min-w-0 truncate">{s.install}</span>

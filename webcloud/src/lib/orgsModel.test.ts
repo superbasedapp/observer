@@ -9,7 +9,6 @@ import {
   PROVISIONING_STAGE,
   billingState,
   createFormView,
-  machineLinks,
   orgStatusView,
   slugShapeProblem,
   stageView,
@@ -139,16 +138,6 @@ test("billing state: one case per rule", () => {
     assert.equal(billingState(v), want, name);
     assert.ok(BILLING_TEXT[billingState(v)], name);
   }
-});
-
-test("machines: one server-built link per active team, nothing read from a tenant", () => {
-  const links = machineLinks([
-    team({ org_id: "a", display_name: "A", host: "a.superbased.app", machines_page_url: "https://a.superbased.app/me/profile" }),
-    team({ org_id: "b", display_name: "B", status: "provisioning", machines_page_url: "https://b.superbased.app/me/profile" }),
-    team({ org_id: "c", display_name: "C" }),
-    team({ org_id: "d", display_name: "D", slug: "d", status: "suspended", machines_page_url: "https://d.superbased.app/me/profile" }),
-  ]);
-  assert.deepEqual(links, [{ orgId: "a", orgName: "A", host: "a.superbased.app", url: "https://a.superbased.app/me/profile" }]);
 });
 
 test("team cap: under, at and barred, and unknown lets the server decide", () => {

@@ -95,6 +95,11 @@ var pages = []page{
 	{"app-scores", "apps/scores", "AppScores", "AppScoresPage", "obs"},
 	{"app-prompts", "apps/prompts", "AppPrompts", "AppPromptsPage", "obs"},
 	{"app-alerts", "apps/alerts", "AppAlerts", "AppAlertsPage", "obs"},
+	// Your apps > Model calls (hosted AI gateway arc, lane L9): the
+	// machine's app lanes on the proxy (/api/apps/lanes, seam S5). It reads
+	// no /api/obs route, so the proxy owns it, not obs. Its nav id joined the
+	// node governance vocabulary at level 14 (L-175, option (a)).
+	{"app-model-calls", "apps/model-calls", "apps/ModelCalls", "ModelCallsPage", "capture.proxy"},
 	{"agent-config", "agent-config", "AgentConfig", "AgentConfigPage", "integration.agent-config"},
 	{"tools", "tools", "Tools", "ToolsPage", "core"},
 	{"compression", "compression", "Compression", "CompressionPage", "proxy.compression"},

@@ -81,21 +81,21 @@ func TestAppleDriverIsOptIn(t *testing.T) {
 	if !ok || reg.component != appleComponent {
 		t.Fatalf("registration %+v", reg)
 	}
-	legacy := macTestRuntime(t, appleTestConfig(t, false, "apple-container"))
+	legacy := testSandboxRuntime(t, appleTestConfig(t, false, "apple-container"))
 	if _, active := legacy.drivers[sandboxbackend.BackendAppleContainer]; active {
 		t.Fatal("an install with no [components] block got the driver")
 	}
 	if p := legacy.driverProbes(context.Background())[sandboxbackend.BackendAppleContainer]; p.Verdict != verdictModuleInactive {
 		t.Fatalf("an unselected driver probes as %+v", p)
 	}
-	unlisted := macTestRuntime(t, appleTestConfig(t, true, "bwrap"))
+	unlisted := testSandboxRuntime(t, appleTestConfig(t, true, "bwrap"))
 	if p := unlisted.drivers[sandboxbackend.BackendAppleContainer].probe(context.Background()); p.Verdict != sandboxselect.VerdictDisabledByConfig {
 		t.Fatalf("an unlisted driver probes as %+v", p)
 	}
 	if probes.Load() != 0 || sweeps.Load() != 0 {
 		t.Fatalf("probes %d sweeps %d while inactive", probes.Load(), sweeps.Load())
 	}
-	listed := macTestRuntime(t, appleTestConfig(t, true, "apple-container"))
+	listed := testSandboxRuntime(t, appleTestConfig(t, true, "apple-container"))
 	listed.inDaemon = true
 	d := listed.drivers[sandboxbackend.BackendAppleContainer].(*appleDriver)
 	if p := d.probe(context.Background()); p.Verdict != sandboxapple.VerdictAvailable || p.Version != "0.5.0" {
@@ -447,7 +447,7 @@ func TestAppleComposePinsThroughTheLaunch(t *testing.T) {
 	cfg := appleTestConfig(t, true, "apple-container")
 	cfg.Terminal.Sandbox.ExtraRWBinds = []string{org}
 	cfg.Terminal.Sandbox.ExtraROBinds = []string{vendor}
-	rt := macTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	rt.orgRWBinds = []string{org}
 	d, ok := rt.drivers[sandboxbackend.BackendAppleContainer].(*appleDriver)
 	if !ok {

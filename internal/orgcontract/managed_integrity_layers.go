@@ -81,9 +81,6 @@ var configLayerRiskCodes = map[string]bool{
 // HookDisabledTools vocabulary.
 func ValidConfigLayerTool(tool string) bool { return configLayerTools[tool] }
 
-// ConfigLayerTools returns the closed tool vocabulary, sorted.
-func ConfigLayerTools() []string { return sortedSet(configLayerTools) }
-
 // ConfigLayerRiskCodes returns the closed finding vocabulary, sorted.
 func ConfigLayerRiskCodes() []string { return sortedSet(configLayerRiskCodes) }
 

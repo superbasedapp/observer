@@ -50,20 +50,20 @@ var runners = map[string]func(*testing.T){
 	"admit_org_off":               runAdmitOrgOff,
 	"experiment_strict_gate":      runExperimentStrictGate,
 	"get_dataset_missing":         runGetDatasetMissing,
+	// The SDK quickstart (sdk-api-surface.md sections 15 and 16,
+	// destination.md section 6a).
+	"service_name_default": runServiceNameDefault,
+	"destination_sdk_file": runDestinationSDKFile,
+	"first_trace_link":     runFirstTraceLink,
 }
 
+// TestEverySectionHasARunner fails when a section that names Go (or names
+// no SDKs) has no Go runner, or a runner has no section.
 func TestEverySectionHasARunner(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(contractDir(), "sdk-behaviour-cases.json"))
-	if err != nil {
-		t.Skipf("sdk/contract is not present: %v", err)
-	}
-	var all map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &all); err != nil {
-		t.Fatal(err)
-	}
+	all := behaviourSections(t)
 	var missing, extra []string
-	for k := range all {
-		if !strings.HasPrefix(k, "_") && runners[k] == nil {
+	for k, raw := range all {
+		if sectionNamesGo(raw) && runners[k] == nil {
 			missing = append(missing, k)
 		}
 	}

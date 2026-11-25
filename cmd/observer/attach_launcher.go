@@ -108,7 +108,7 @@ func launcherAttach(ctx context.Context, spec launcherAttachSpec) (launcherAttac
 		incompatible:  spec.incompatible,
 		daemonChild:   runningAsDaemonChild(),
 		daemonSpawned: oobChannelSpawnedByDaemon(),
-		reachable:     func() bool { return attachSocketReachable(cfg.Observer.DBPath) },
+		reachable:     func() bool { return attachReachableOrStart(ctx, spec, cfg.Observer.DBPath, proxyURL) },
 		inSandbox:     os.Getenv(sandboxEnvMarker) == "1",
 	}
 	decision := decideAttach(in)
@@ -130,6 +130,12 @@ func launcherAttach(ctx context.Context, spec launcherAttachSpec) (launcherAttac
 	}
 	if !decision.attach() {
 		return outcome, nil // handled=false → the launcher's bare path runs
+	}
+
+	// An explicit --attach with the daemon down starts it the same way
+	// (L-169); runAttachSession reports a socket that still does not answer.
+	if decision.verdict == verdictForcedAttach && grounded {
+		attachReachableOrStart(ctx, spec, cfg.Observer.DBPath, proxyURL)
 	}
 
 	// From here the attach path OWNS the launch (handled=true): any error is the

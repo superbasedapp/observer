@@ -50,13 +50,11 @@ func (s *Server) handleToolsLaunch(w http.ResponseWriter, r *http.Request) {
 
 	// Routed tools get a plain launch (the tool's own config reaches
 	// the proxy; native OAuth refresh stays in charge — D13); unrouted
-	// tools get the observer wrapper.
+	// tools get the observer wrapper. Routed is the routeSetups probe, the
+	// same one the Connected tools status reports.
 	routed := false
-	switch req.Tool {
-	case "claude-code":
-		routed = s.claudeSetupSnapshot().RoutedToObserver
-	case "codex":
-		routed = s.codexSetupSnapshot().Status == "routed_to_observer"
+	if rs, ok := routeSetups[req.Tool]; ok {
+		routed = rs.probe(s).Registered
 	}
 
 	spec, err := launch.Plan(launch.Request{Tool: req.Tool, Routed: routed}, launchDetect())

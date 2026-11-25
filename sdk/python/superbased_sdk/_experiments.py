@@ -12,7 +12,8 @@ else by input).
 
 Unlike the tracing calls, an experiment is an explicit batch job: a dataset
 that cannot be found or a run that cannot be created raises
-``ExperimentError``; ``fail_under`` raises ``ExperimentGateFailed`` (a
+``ExperimentError`` (when the org's plan refused it, one that is also a
+``PlanRefusalError`` with the ``upgrade_url``); ``fail_under`` raises ``ExperimentGateFailed`` (a
 ``SystemExit``, so a CI script exits non-zero). One refusal is not an error:
 a destination that answers 403 ``insufficient_scope`` (the org, to a member
 key without ``sdk:eval``) is skipped with an entry in ``errors``, and the run
@@ -36,12 +37,13 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type, Union
 
 from opentelemetry import context as otel_context
 
 from . import _control
 from . import _keys as K
+from ._planrefusal import AllowanceExceededError, PlanRefusalError, PlanRequiredError
 from ._scores import ScoreError, _retryable, build_score
 
 LOG = logging.getLogger("superbased_sdk")
@@ -53,6 +55,20 @@ _FAIL_WORDS = {"fail", "false", "no", "bad"}
 
 class ExperimentError(RuntimeError):
     """The experiment could not be set up (dataset, run creation)."""
+
+
+class ExperimentPlanRequiredError(PlanRequiredError, ExperimentError):
+    """An ExperimentError because the org's plan does not include AI Apps
+    (403 ``plan_required``): both a ``PlanRequiredError`` and an
+    ``ExperimentError``."""
+
+
+class ExperimentAllowanceExceededError(AllowanceExceededError, ExperimentError):
+    """An ExperimentError over the plan's monthly AI Apps allowance (429):
+    both an ``AllowanceExceededError`` and an ``ExperimentError``."""
+
+
+_PLAN_ERRORS: Dict[str, Type[PlanRefusalError]] = {PlanRequiredError.kind: ExperimentPlanRequiredError, AllowanceExceededError.kind: ExperimentAllowanceExceededError}
 
 
 class ExperimentGateFailed(SystemExit):
@@ -143,6 +159,9 @@ class ExperimentResult:
     # Results a destination did not accept (a failed post counts each result
     # it carried; a rejected result counts once).
     failed_posts: int = 0
+    # The org's plan refused a post or the finish (a PlanRefusalError with
+    # its upgrade_url); the reason is in ``errors`` too.
+    plan_refusal: Optional[PlanRefusalError] = None
 
     @property
     def scored(self) -> int:
@@ -319,7 +338,13 @@ def _ok(resp: Any, what: str, side: str) -> Any:
                 f"{side}: skipped, {what} refused: {resp.describe()} "
                 "(an SDK key from sign-in has no sdk:eval scope; run experiments on the org with a CI credential that has it)"
             )
-        raise ExperimentError(f"{side}: {what} failed: {resp.describe()}")
+        msg = f"{side}: {what} failed: {resp.describe()}"
+        refusal = resp.plan_refusal()
+        if refusal is not None:
+            # The org's plan refused it: a PlanRefusalError that is also the
+            # ExperimentError raised here (existing except clauses hold).
+            raise refusal.rebased(_PLAN_ERRORS, msg)
+        raise ExperimentError(msg)
     return resp.body if isinstance(resp.body, dict) else {}
 
 
@@ -338,8 +363,11 @@ def _find_dataset(side: _control.Side, ref: str) -> Optional[Dataset]:
 
 def get_dataset(name_or_id: str) -> Dataset:
     """A dataset by name or id on the first destination that has it (the
-    gateway first under ``both``). Raises ExperimentError when none does."""
+    gateway first under ``both``). Raises ExperimentError when none does
+    (when the org's plan refused the read, one that is also a
+    PlanRefusalError, with the ``upgrade_url``)."""
     errors = []
+    refused: Optional[PlanRefusalError] = None
     targets = _control.sides()
     if not targets:
         errors.append(_control.unavailable_reason())
@@ -348,10 +376,15 @@ def get_dataset(name_or_id: str) -> Dataset:
             d = _find_dataset(side, name_or_id)
         except ExperimentError as exc:
             errors.append(str(exc))
+            if isinstance(exc, PlanRefusalError):
+                refused = refused or exc
             continue
         if d is not None:
             return d
-    raise ExperimentError(f"dataset {name_or_id!r} not found" + (": " + "; ".join(errors) if errors else ""))
+    msg = f"dataset {name_or_id!r} not found" + (": " + "; ".join(errors) if errors else "")
+    if refused is not None:
+        raise refused.rebased(_PLAN_ERRORS, msg)
+    raise ExperimentError(msg)
 
 
 def _canonical(v: Any) -> str:
@@ -594,6 +627,7 @@ def run_experiment(
                     with lock:
                         result.failed_posts += len(chunk)
                         result.errors.append(f"{r.side.name}: posting {len(chunk)} result(s) failed: {resp.describe()}")
+                        result.plan_refusal = result.plan_refusal or resp.plan_refusal()
                 elif isinstance(resp.body, dict):
                     for rej in resp.body.get("rejected") or ():
                         if isinstance(rej, dict):
@@ -629,6 +663,7 @@ def run_experiment(
         resp = r.side.call("POST", "experiment_finish", body={}, id=r.run_id)
         if not resp.ok:
             result.errors.append(f"{r.side.name}: finish failed: {resp.describe()}")
+            result.plan_refusal = result.plan_refusal or resp.plan_refusal()
         got = r.side.call("GET", "experiment", id=r.run_id)
         if got.ok and isinstance(got.body, dict):
             result.server[r.side.name] = got.body

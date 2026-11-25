@@ -104,7 +104,7 @@ type apiProjectSpendBySession struct {
 type apiProjectDetailSpend struct {
 	TotalUSD float64 `json:"total_usd"`
 	// UnpricedTurns counts turns in the window with no recorded cost and
-	// no pricing entry for their model (loadProjectSpend); omitted when
+	// no pricing entry for their model (LoadProjectSpend); omitted when
 	// zero. The page names it so a low total is never mistaken for a
 	// priced one.
 	UnpricedTurns int                        `json:"unpriced_turns,omitempty"`
@@ -177,6 +177,8 @@ type APIProjectDetail struct {
 	Truncated  bool                  `json:"truncated,omitempty"`
 }
 
+// FmtProjectTime renders a project-page timestamp as RFC3339Nano UTC, or ""
+// for the zero time.
 func FmtProjectTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -194,6 +196,9 @@ type commitAgg struct {
 	AIComment int
 }
 
+// AggregateByCommit rolls a Linkage up per commit id: the distinct AI-touched
+// files that reached the commit and the AI code and comment lines carried
+// with them. Superseded files and files that reached no commit are skipped.
 func AggregateByCommit(linkage projectroi.Linkage) map[int64]*commitAgg {
 	out := make(map[int64]*commitAgg)
 	for _, chain := range linkage.Chains {
@@ -214,7 +219,7 @@ func AggregateByCommit(linkage projectroi.Linkage) map[int64]*commitAgg {
 	return out
 }
 
-// bucketCost sums turn cost by an arbitrary key (tool or model),
+// BucketCost sums turn cost by an arbitrary key (tool or model),
 // descending by cost - the most informative ordering first, same
 // convention as taskreport.LoadTaskRollup's ByTool.
 func BucketCost(turns []projectroi.Turn, keyFn func(projectroi.Turn) string) []APIProjectCostBucketRow {
@@ -250,6 +255,8 @@ func BucketCost(turns []projectroi.Turn, keyFn func(projectroi.Turn) string) []A
 	return rows
 }
 
+// BucketCostByDay sums turn cost per UTC day, oldest day first, with each
+// day's unpriced-turn count.
 func BucketCostByDay(turns []projectroi.Turn) []apiProjectSpendByDay {
 	m := make(map[string]float64)
 	unpriced := make(map[string]int)

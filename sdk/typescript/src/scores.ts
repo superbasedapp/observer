@@ -22,6 +22,7 @@
  */
 
 import { apiTimeout, call, noTargetReason, retryable, targets, track, type ControlOptions, type Route } from "./control.js";
+import type { PlanRefusalError } from "./planrefusal.js";
 import { getCurrentTraceId } from "./spans.js";
 import { destinationKnown } from "./runtime.js";
 
@@ -81,6 +82,8 @@ export interface ScoreResult {
   destinations: Record<string, ScoreDestinationResult>;
   /** Every problem: validation (`<code>: <message>`) or per destination (`<name>: <error>`). */
   errors: string[];
+  /** Set when the org's plan refused the score (its `message` and `upgradeUrl` say why and where to fix it). */
+  planRefusal?: PlanRefusalError;
 }
 
 /** A score the rules refuse (contract scores.md section 1; the code is the contract's). */
@@ -219,13 +222,14 @@ function send(body: Record<string, unknown>, res: ScoreResult, o: BuildOptions):
       const ans = readAnswer(r.body);
       const ok = r.ok && ans.accepted.has(0) && !ans.rejected.has(0);
       const error = ok ? "" : ans.rejected.get(0) || `${r.status ? `HTTP ${r.status} ` : ""}${r.error}${r.message ? `: ${r.message}` : ""}`;
-      return { name: t.name, out: { ok, status: r.status, id: ok ? (ans.accepted.get(0) ?? "") : "", error } };
+      return { name: t.name, out: { ok, status: r.status, id: ok ? (ans.accepted.get(0) ?? "") : "", error }, refusal: ok ? undefined : r.planRefusal };
     }),
   ).then((rows) => {
-    for (const { name: n, out } of rows) {
+    for (const { name: n, out, refusal } of rows) {
       res.destinations[n] = out;
       if (out.ok) res.id = res.id || out.id;
       else res.errors.push(`${n}: ${out.error}`);
+      if (refusal) res.planRefusal ??= refusal;
     }
     res.ok = rows.length > 0 && rows.every((r) => r.out.ok);
     if (!res.ok) logFailure(res);

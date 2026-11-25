@@ -6,7 +6,7 @@
 // wordings (request age, operating system, network). No React, no fetch:
 // the pages read these and connectModel.test.ts pins them.
 
-import type { ConnectHome, ConnectRequestView, PortalOrg } from "../api.ts";
+import type { ConnectChoice, ConnectHome, ConnectPurpose, ConnectRequestView, PortalOrg } from "../api.ts";
 import {
   DASHBOARD_ROLES,
   LOCAL_DASHBOARD_URL,
@@ -151,6 +151,8 @@ const OS_LABEL: Readonly<Record<string, string>> = {
   darwin: "macOS",
   linux: "Linux",
   windows: "Windows",
+  // Node's process.platform and Python's sys.platform (an SDK's setup).
+  win32: "Windows",
   freebsd: "FreeBSD",
 };
 
@@ -299,6 +301,131 @@ const PERSONAL_CHOICE_NAME: Readonly<Record<ChoicePosition, string>> = {
 export function choiceLabel(c: { kind: "personal" | "team"; display_name: string }, at: ChoicePosition = "label"): string {
   return c.kind === "personal" ? PERSONAL_CHOICE_NAME[at] : c.display_name;
 }
+
+// ---------------------------------------------------------------------------
+// An SDK key request (the AI Apps SDK quickstart, purpose "sdk_key")
+// ---------------------------------------------------------------------------
+
+/** connectPurpose reads a view's purpose; an older server sends none, which
+ * is a machine. */
+export function connectPurpose(v: Pick<ConnectRequestView, "purpose">): ConnectPurpose {
+  return v.purpose ?? "machine";
+}
+
+/** PurposeText is everything the approval page words differently per
+ * purpose. */
+export interface PurposeText {
+  /** The page title while the request waits. */
+  title: string;
+  /** The one line under the title. */
+  intro: string;
+  /** The chooser's legend. */
+  legend: string;
+  /** The approve button. */
+  approve: string;
+  /** Whether "Not now" is offered (a machine signs in without a
+   * dashboard; an SDK key needs one). */
+  notNow: boolean;
+  /** The quiet decline link. */
+  decline: string;
+}
+
+/** PURPOSE_TEXT is one row per purpose. */
+export const PURPOSE_TEXT: Readonly<Record<ConnectPurpose, PurposeText>> = {
+  machine: {
+    title: "Connect this machine?",
+    intro: "A machine running Observer asked to sign in to your account. Check it is yours.",
+    legend: "Connect it to",
+    approve: "Connect",
+    notNow: true,
+    decline: "This is not my machine",
+  },
+  sdk_key: {
+    title: "Give this app an SDK key?",
+    intro: "Setup for an AI Apps SDK asked for an SDK key so an app can send its traces. Check it is yours: the code should match what setup printed.",
+    legend: "Make the key for",
+    approve: "Approve",
+    notNow: false,
+    decline: "This is not my request",
+  },
+};
+
+/** SDK_CLIENT_LABEL names the SDK packages whose setup may ask. */
+const SDK_CLIENT_LABEL: Readonly<Record<string, string>> = {
+  "superbased-sdk-python": "Python SDK",
+  "superbased-sdk-typescript": "TypeScript SDK",
+};
+
+/** sdkClientLabel names the SDK that asks, with its version. */
+export function sdkClientLabel(client: string | undefined, version: string | undefined): string {
+  const name = (client && SDK_CLIENT_LABEL[client]) || client || "SDK";
+  return version ? `${name} ${version}` : name;
+}
+
+/** choiceAvailable reads whether a dashboard may be chosen (an older server
+ * sends no flag: every listed dashboard is). */
+export function choiceAvailable(c: Pick<ConnectChoice, "available">): boolean {
+  return c.available !== false;
+}
+
+/** pickChoice is the dashboard the page has selected: the one the person
+ * picked if it may be chosen, else the server's preselected one, else the
+ * first that may be chosen; undefined when none may. */
+export function pickChoice(choices: readonly ConnectChoice[], picked: string | null): ConnectChoice | undefined {
+  const ok = choices.filter(choiceAvailable);
+  return ok.find((c) => c.org_id === picked) ?? ok.find((c) => c.preselected) ?? ok[0];
+}
+
+/** SdkKeyAfter is what the page does once an SDK key request is approved:
+ * go to the dashboard's AI apps page, wait for a dashboard still being set
+ * up, or nothing (not approved, or no usable address). */
+export type SdkKeyAfter = { state: "go"; href: string } | { state: "wait" } | { state: "none" };
+
+interface SdkKeyAfterRule {
+  state: "go" | "wait" | "none";
+  match: (v: Pick<ConnectRequestView, "status" | "target" | "target_ready">, href: string | null) => boolean;
+}
+
+// Walked top-down, first match wins.
+const SDK_KEY_AFTER_RULES: SdkKeyAfterRule[] = [
+  { state: "none", match: (v) => v.status !== "approved" || !v.target },
+  { state: "wait", match: (v) => v.target_ready === false },
+  { state: "go", match: (_v, href) => href !== null },
+  { state: "none", match: () => true },
+];
+
+/** sdkKeyAfter walks SDK_KEY_AFTER_RULES. The address is the server's
+ * open_url, kept only when it is https with no credentials. */
+export function sdkKeyAfter(v: Pick<ConnectRequestView, "status" | "target" | "target_ready" | "open_url">): SdkKeyAfter {
+  const href = httpsOnly(v.open_url);
+  for (const r of SDK_KEY_AFTER_RULES) {
+    if (!r.match(v, href)) continue;
+    if (r.state === "go" && href) return { state: "go", href };
+    return r.state === "wait" ? { state: "wait" } : { state: "none" };
+  }
+  return { state: "none" };
+}
+
+/** SDK_KEY_PAGE_TEXT is the title and line of each finished state of an SDK
+ * key request. */
+export const SDK_KEY_PAGE_TEXT: Readonly<Record<"approved" | "waiting" | "declined" | "expired", { title: string; line: string }>> = {
+  approved: {
+    title: "SDK key approved",
+    line: "Setup on that computer receives the key by itself and sends a first trace. Taking you to the dashboard's AI apps page to watch it arrive.",
+  },
+  waiting: {
+    title: "Setting up your dashboard",
+    line: "Your dashboard is being set up. This page moves on by itself, and setup on that computer waits too.",
+  },
+  declined: {
+    title: "Request declined",
+    line: "No key was made. Setup on that computer stops.",
+  },
+  expired: {
+    title: "This request expired",
+    line: "Run setup on that computer again to get a new one.",
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Signing in and coming back

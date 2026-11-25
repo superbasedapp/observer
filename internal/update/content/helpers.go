@@ -1,48 +1,20 @@
 package content
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/updatespec"
 )
 
-// The small helpers this package shares in spirit with internal/update's
-// release manifest (the same spellings), kept here because internal/update
-// belongs to the org.update component and a core package may not import it.
+// The small helpers this package shares with internal/update's release
+// manifest. The file-name and hash checks live in internal/updatespec, the
+// neutral core package both use, because internal/update belongs to the
+// org.update component and a core package may not import it.
 
-// HashBytes returns the lowercase hex sha256 of b.
+// HashBytes returns the lowercase hex sha256 of b (updatespec.HashBytes).
 func HashBytes(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
-
-// validBaseName rejects anything that is not a plain file name.
-func validBaseName(name string) error {
-	if name == "" {
-		return errors.New("empty")
-	}
-	if strings.ContainsAny(name, "/\\") {
-		return fmt.Errorf("%q contains a path separator", name)
-	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("%q is a path element", name)
-	}
-	if strings.HasPrefix(name, "-") {
-		return fmt.Errorf("%q starts with a dash", name)
-	}
-	return nil
-}
-
-// isHexSHA256 reports whether s is exactly 64 hex characters.
-func isHexSHA256(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	_, err := hex.DecodeString(s)
-	return err == nil
+	return updatespec.HashBytes(b)
 }
 
 // parseRFC3339 parses a required RFC3339 timestamp.

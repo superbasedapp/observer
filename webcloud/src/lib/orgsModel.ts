@@ -388,26 +388,3 @@ export const BILLING_TEXT: Readonly<Record<BillingState, string>> = {
   owner_only: "Only the team's billing owner can change the subscription.",
   not_billable: "This team cannot take a subscription right now.",
 };
-
-// ---------------------------------------------------------------------------
-// Each team's machines, on the team's own dashboard (C2.front-door-4 B)
-// ---------------------------------------------------------------------------
-
-/** MachineLink is one team whose machines page the console links to. */
-export interface MachineLink {
-  orgId: string;
-  orgName: string;
-  /** host is shown beside the link (server-built, like url). */
-  host: string;
-  url: string;
-}
-
-/** machineLinks picks the teams to link: active orgs whose list row carried
- * a machines page URL (the server built it; an org without one is skipped).
- * The console reads no tenant itself, so there is no cross-org total: each
- * team's dashboard is the one place its machines are listed. */
-export function machineLinks(orgs: PortalOrg[]): MachineLink[] {
-  return orgs
-    .filter((o) => o.status === "active" && !!o.machines_page_url)
-    .map((o) => ({ orgId: o.org_id, orgName: o.display_name, host: o.host ?? o.slug, url: o.machines_page_url as string }));
-}

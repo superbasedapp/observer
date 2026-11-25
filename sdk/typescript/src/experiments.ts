@@ -35,6 +35,7 @@ import { context, trace } from "@opentelemetry/api";
 
 import { K } from "./attrs.js";
 import { apiTimeout, call, newId, noTargetReason, retryable, targets, type ControlOptions, type ControlResponse, type Target, type TargetName } from "./control.js";
+import type { PlanRefusalError } from "./planrefusal.js";
 import { contentText, destinationKnown, runtime, truncateContent } from "./runtime.js";
 import { getCurrentTraceId, Kind, setInput, setOutput, withSpan } from "./spans.js";
 
@@ -148,15 +149,24 @@ export interface ExperimentResult {
   skippedSides: TargetName[];
   /** Results a destination did not accept (a failed post or a rejected row; one per result per side). */
   failedPosts: number;
+  /** Set when the org's plan refused a post or the finish (its `message` and `upgradeUrl` say why and where to fix it). */
+  planRefusal?: PlanRefusalError;
   /** The totals each side returned (`GET .../experiments/{id}`). */
   server: Partial<Record<TargetName, Record<string, unknown>>>;
 }
 
-/** The experiment could not be set up (dataset, run creation). */
+/**
+ * The experiment could not be set up (dataset, run creation). `planRefusal`
+ * (also the `cause`) is set when the org's plan refused it: its `message`
+ * and `upgradeUrl` say why and where to fix it.
+ */
 export class ExperimentError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly planRefusal?: PlanRefusalError;
+
+  constructor(message: string, planRefusal?: PlanRefusalError) {
+    super(message, planRefusal ? { cause: planRefusal } : undefined);
     this.name = "ExperimentError";
+    if (planRefusal) this.planRefusal = planRefusal;
   }
 }
 
@@ -230,7 +240,11 @@ function describe(r: ControlResponse): string {
 const enc = encodeURIComponent;
 
 /** Find a dataset by name or id on one target. */
-async function findDataset(t: Target, nameOrId: string, opts: ControlOptions): Promise<{ id: string; name: string; error: string; skipped?: boolean }> {
+async function findDataset(
+  t: Target,
+  nameOrId: string,
+  opts: ControlOptions,
+): Promise<{ id: string; name: string; error: string; skipped?: boolean; planRefusal?: PlanRefusalError }> {
   const timeoutMs = apiTimeout(opts);
   const list = await call(t, "GET", { online: `/datasets?name=${enc(nameOrId)}`, local: "/api/obs/eval/datasets" }, { timeoutMs, quiet404: true });
   if (scopeRefused(list)) return { id: "", name: "", error: skipReason(t.name, "dataset list", list), skipped: true };
@@ -244,7 +258,7 @@ async function findDataset(t: Target, nameOrId: string, opts: ControlOptions): P
     const d = obj(obj(one.body).dataset ?? one.body);
     if (idOf(d.id)) return { id: idOf(d.id), name: String(d.name ?? nameOrId), error: "" };
   }
-  return { id: "", name: "", error: list.ok ? `${t.name}: no dataset named ${JSON.stringify(nameOrId)}` : describe(list) };
+  return { id: "", name: "", error: list.ok ? `${t.name}: no dataset named ${JSON.stringify(nameOrId)}` : describe(list), planRefusal: list.planRefusal ?? one.planRefusal };
 }
 
 function parseItem(x: Record<string, unknown>): { item: DatasetItem; hasContent: boolean } {
@@ -316,7 +330,7 @@ async function readItems(
   version: number,
   opts: ControlOptions,
   runId = "",
-): Promise<{ items: DatasetItem[]; raw: Array<Record<string, unknown>>; skipped: number; error: string; scopeRefused?: ControlResponse }> {
+): Promise<{ items: DatasetItem[]; raw: Array<Record<string, unknown>>; skipped: number; error: string; scopeRefused?: ControlResponse; planRefusal?: PlanRefusalError }> {
   const items: DatasetItem[] = [];
   const rawItems: Array<Record<string, unknown>> = [];
   let skipped = 0;
@@ -333,7 +347,7 @@ async function readItems(
       },
       { timeoutMs: apiTimeout(opts) },
     );
-    if (!r.ok) return { items, raw: rawItems, skipped, error: describe(r), scopeRefused: scopeRefused(r) ? r : undefined };
+    if (!r.ok) return { items, raw: rawItems, skipped, error: describe(r), scopeRefused: scopeRefused(r) ? r : undefined, planRefusal: r.planRefusal };
     const body = obj(r.body);
     for (const raw of (Array.isArray(body.items) ? body.items : []) as unknown[]) {
       const { item, hasContent } = parseItem(obj(raw));
@@ -358,6 +372,7 @@ async function readItems(
  */
 export async function getDataset(nameOrId: string, opts: ControlOptions & { version?: number } = {}): Promise<Dataset & { errors: string[] }> {
   const errors: string[] = [];
+  let refused: PlanRefusalError | undefined;
   await destinationKnown();
   const ts = targets("read", opts);
   if (!ts.length) errors.push(noTargetReason());
@@ -365,6 +380,7 @@ export async function getDataset(nameOrId: string, opts: ControlOptions & { vers
     const ds = await findDataset(t, nameOrId, opts);
     if (!ds.id) {
       errors.push(ds.error);
+      refused ??= ds.planRefusal;
       continue;
     }
     let version = opts.version ?? 0;
@@ -377,12 +393,13 @@ export async function getDataset(nameOrId: string, opts: ControlOptions & { vers
     const r = await readItems(t, ds.id, version, opts);
     if (r.error) {
       errors.push(r.error);
+      refused ??= r.planRefusal;
       continue;
     }
     return { id: ds.id, name: ds.name, version, items: r.items, skippedNoContent: r.skipped, target: t.name, errors };
   }
   const why = errors.filter((e) => e);
-  throw new ExperimentError(`dataset ${JSON.stringify(nameOrId)} not found${why.length ? `: ${why.join("; ")}` : ""}`);
+  throw new ExperimentError(`dataset ${JSON.stringify(nameOrId)} not found${why.length ? `: ${why.join("; ")}` : ""}`, refused);
 }
 
 function evaluatorMeta(e: Evaluator, i: number): { name: string; version: string; run: (a: EvaluatorArgs) => EvalOut | Promise<EvalOut> } {
@@ -450,18 +467,19 @@ async function uploadLiteral(t: Target, datasetName: string, items: Array<Record
   if (t.name === "local") {
     const made = await call(t, "POST", routes().datasets, { body: { name: datasetName }, timeoutMs });
     if (scopeRefused(made)) throw new SideSkipped(skipReason(t.name, "dataset create", made));
-    if (!made.ok) throw new ExperimentError(`local: dataset create: ${describe(made)}`);
+    if (!made.ok) throw new ExperimentError(`local: dataset create: ${describe(made)}`, made.planRefusal);
     id = idOf(obj(obj(made.body).dataset ?? made.body).id);
     if (!id) throw new ExperimentError("local: dataset create answered no id");
   } else {
     const found = await findDataset(t, datasetName, { timeoutMs });
     if (found.skipped) throw new SideSkipped(found.error);
+    if (!found.id && found.planRefusal) throw new ExperimentError(`online: dataset list: ${found.error}`, found.planRefusal);
     if (!found.id) throw new ExperimentError(`online: dataset ${JSON.stringify(datasetName)} does not exist on the org (create it on the dashboard first)`);
     id = found.id;
   }
   const r = await call(t, "POST", routes(id).snapshot, { body: { items }, timeoutMs });
   if (scopeRefused(r)) throw new SideSkipped(skipReason(t.name, "dataset snapshot", r));
-  if (!r.ok) throw new ExperimentError(`${t.name}: dataset snapshot: ${describe(r)}`);
+  if (!r.ok) throw new ExperimentError(`${t.name}: dataset snapshot: ${describe(r)}`, r.planRefusal);
   const raw = obj(r.body).item_ids;
   const pinned = t.name === "local" && Array.isArray(raw) ? raw.filter((x) => typeof x === "string" || typeof x === "number").map(String) : [];
   return [id, Number(obj(r.body).version ?? obj(r.body).snapshot_version) || 0, pinned];
@@ -531,15 +549,20 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
     const ref = typeof ds === "string" ? ds : ds.id;
     if (!sides.length) throw new ExperimentError(`dataset ${JSON.stringify(ref)}: ${noTargetReason()}`);
     let skipped = 0;
+    let refused: PlanRefusalError | undefined;
     for (const t of sides) {
       const found = typeof ds !== "string" && ds.target && ds.target !== t.name && ds.name ? await findDataset(t, ds.name, opts) : await findDataset(t, ref, opts);
+      refused ??= found.planRefusal;
       if (found.skipped) {
         result.errors.push(found.error);
         result.skippedSides.push(t.name);
         skipped += 1;
       } else if (found.id) runs.push({ target: t, datasetId: found.id, version: opts.snapshotVersion ?? opts.datasetVersion ?? 0, id: "", itemIds: new Map(), pinned: [] });
     }
-    if (!runs.length && !skipped) throw new ExperimentError(`dataset ${JSON.stringify(ref)} not found on any destination`);
+    if (!runs.length && !skipped) {
+      const why = refused ? `: ${refused.code}: ${refused.message}` : "";
+      throw new ExperimentError(`dataset ${JSON.stringify(ref)} not found on any destination${why}`, refused);
+    }
   }
 
   // 2. A run on each side, and its snapshot's items. A side that refuses
@@ -560,7 +583,7 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
       result.skippedSides.push(r.target.name);
       continue;
     }
-    if (!created.ok) throw new ExperimentError(`${r.target.name}: experiment create: ${describe(created)}`);
+    if (!created.ok) throw new ExperimentError(`${r.target.name}: experiment create: ${describe(created)}`, created.planRefusal);
     const body = obj(created.body);
     r.id = idOf(body.id);
     if (!r.id) throw new ExperimentError(`${r.target.name}: experiment create answered no id`);
@@ -571,7 +594,7 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
       result.skippedSides.push(r.target.name);
       continue;
     }
-    if (read.error) throw new ExperimentError(`${r.target.name}: dataset items: ${read.error}`);
+    if (read.error) throw new ExperimentError(`${r.target.name}: dataset items: ${read.error}`, read.planRefusal);
     result.runs[r.target.name] = r.id;
     const n = started.length;
     started.push(r);
@@ -666,6 +689,7 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
       if (why) {
         ir.postError = ir.postError ? `${ir.postError}; ${r.target.name}: ${why}` : `${r.target.name}: ${why}`;
         result.failedPosts += 1;
+        result.planRefusal ??= resp.planRefusal;
       }
     }
     return ir;
@@ -691,8 +715,10 @@ export async function runExperiment(opts: ExperimentOptions): Promise<Experiment
   let finished = 0;
   for (const r of runs) {
     const fin = await call(r.target, "POST", routes(r.id).finish, { body: {}, timeoutMs });
-    if (!fin.ok && fin.status !== 409) result.errors.push(`${r.target.name}: finish: ${describe(fin)}`);
-    else finished += 1;
+    if (!fin.ok && fin.status !== 409) {
+      result.errors.push(`${r.target.name}: finish: ${describe(fin)}`);
+      result.planRefusal ??= fin.planRefusal;
+    } else finished += 1;
     const got = await call(r.target, "GET", routes(r.id).run, { timeoutMs });
     if (got.ok) result.server[r.target.name] = obj(got.body);
   }

@@ -73,23 +73,23 @@ func parseCosts(r vendorapi.Response) (vendorapi.Page, error) {
 			return vendorapi.Page{}, err
 		}
 		if b.Results == nil {
-			return vendorapi.Page{}, drift(SurfaceCosts, "data[%d].results is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCosts, "data[%d].results is missing", i)
 		}
 		seen := map[string]bool{}
 		for j, res := range *b.Results {
 			if res.Amount == nil || res.Amount.Value == nil || res.Amount.Currency == nil {
-				return vendorapi.Page{}, drift(SurfaceCosts, "data[%d].results[%d] misses amount.value or amount.currency", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCosts, "data[%d].results[%d] misses amount.value or amount.currency", i, j)
 			}
 			if !strings.EqualFold(*res.Amount.Currency, "usd") {
-				return vendorapi.Page{}, drift(SurfaceCosts, "data[%d].results[%d] currency is not USD", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCosts, "data[%d].results[%d] currency is not USD", i, j)
 			}
 			micros, ok := vendorapi.DecimalMicros(res.Amount.Value.String(), 0)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceCosts, "data[%d].results[%d] amount.value is not a decimal", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCosts, "data[%d].results[%d] amount.value is not a decimal", i, j)
 			}
-			line := str(res.LineItem)
+			line := vendorapi.Str(res.LineItem)
 			if seen[line] {
-				return vendorapi.Page{}, drift(SurfaceCosts, "data[%d].results[%d] repeats a line item", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCosts, "data[%d].results[%d] repeats a line item", i, j)
 			}
 			seen[line] = true
 			page.Facts = append(page.Facts, vendorapi.FactRow{

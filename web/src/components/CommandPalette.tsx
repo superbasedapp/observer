@@ -6,8 +6,8 @@ import { NAV_ITEMS } from "@/lib/nav";
 import { useMessagesSummary } from "@/lib/useMessagesSummary";
 import { showMessagesNav } from "@/lib/adminMessages";
 import { NODE_TAB_ROUTES, nodeTabJumps } from "@/lib/pageTabRoutes";
-import { useGovernanceVisibility } from "@/lib/governance";
-import { hiddenNavIds, withoutHiddenPaths } from "@/lib/visibility";
+import { useGovernance, useGovernanceVisibility } from "@/lib/governance";
+import { hiddenNavIds, onlineJumpsFor, withoutHiddenPaths } from "@/lib/visibility";
 import { useInactiveNavIds } from "@/lib/useComponents";
 import { useAppsNavHidden } from "@/lib/useObsRoutesUp";
 import { hiddenTabIds, withoutHiddenTabPaths } from "@/lib/tabVisibility";
@@ -42,6 +42,10 @@ type JumpItem = {
   /** A page-tab jump: listed only once the viewer types, so the bare
    *  palette stays one row per page. */
   tab?: boolean;
+  /** A page this machine hides, offered on the online dashboard instead
+   *  (operator ruling 2, 2026-11-24): the address it opens in a new tab and
+   *  that place's name. */
+  external?: { href: string; label: string };
   // The page's own nav glyph (lib/nav.ts is the one owner), so every Jump
   // row reads like its sidebar entry instead of one generic page icon.
   icon: LucideIcon;
@@ -170,6 +174,9 @@ export function CommandPalette({
     [gov.gov, inactiveNav, messagesShown, appsHidden],
   );
   const hiddenTabs = hiddenTabIds(gov.gov);
+  // The real posture's online block (absent until the daemon answered), for
+  // the hidden pages the online dashboard can show instead.
+  const online = useGovernance().data?.online;
 
   const items = useMemo<Item[]>(() => {
     const q = query.trim().toLowerCase();
@@ -198,6 +205,17 @@ export function CommandPalette({
       path: n.path,
       icon: n.icon,
     }));
+    for (const j of onlineJumpsFor(NAV_ITEMS, hiddenNavIds(gov.gov), online)) {
+      pages.push({
+        kind: "page",
+        key: `online:${j.item.path}`,
+        label: `${j.item.label} (online)`,
+        hint: `Open ${j.label} on the online dashboard`,
+        path: j.item.path,
+        icon: j.item.icon,
+        external: { href: j.href, label: j.label },
+      });
+    }
     const sessRows: SessionItem[] = (sessions ?? []).map((r) => ({
       kind: "session",
       key: `sess:${r.id}`,
@@ -243,7 +261,7 @@ export function CommandPalette({
       ...sessRows.filter(matchSess),
       ...actRows.filter(matchAct),
     ];
-  }, [query, sessions, actions, startTour, hiddenPages, hiddenTabs]);
+  }, [query, sessions, actions, startTour, hiddenPages, hiddenTabs, gov.gov, online]);
 
   function activate(it: Item) {
     if (it.kind === "command") {
@@ -251,7 +269,8 @@ export function CommandPalette({
       onClose();
       return;
     }
-    if (it.kind === "page") navigate(it.path);
+    if (it.kind === "page" && it.external) window.open(it.external.href, "_blank", "noopener,noreferrer");
+    else if (it.kind === "page") navigate(it.path);
     else if (it.kind === "session") {
       // Push the session id into Sessions filter via globalQuery and
       // jump to Sessions. The id prefix-search will isolate the row;
@@ -324,7 +343,7 @@ function renderRow(item: Item): ReactNode {
         <Icon icon={item.icon} size="xs" className="shrink-0 text-fg-3" />
         <span className="text-[12px] font-semibold">{item.label}</span>
         <span className="ml-auto font-mono text-[10.5px] text-fg-3">
-          {item.path}
+          {item.external ? item.external.label : item.path}
         </span>
       </>
     );

@@ -15,7 +15,8 @@ import java.util.Map;
  * sets it to one of {@link Admit#UNAVAILABLE}, {@link Admit#TIMEOUT},
  * {@link Admit#TRANSPORT}, {@link Admit#HTTP_ERROR},
  * {@link Admit#BAD_RESPONSE} or {@link Admit#ADMISSION_OFF};
- * {@link #httpStatus()} and {@link #error()} carry the detail.
+ * {@link #httpStatus()} and {@link #error()} carry the detail;
+ * {@link #planRefusal()} is set when the org's plan refused the check.
  */
 public final class Verdict {
   boolean allowed;
@@ -31,6 +32,7 @@ public final class Verdict {
   String verdictId = "";
   int httpStatus;
   String error = "";
+  PlanRefusalException planRefusal;
 
   Verdict() {}
 
@@ -125,6 +127,15 @@ public final class Verdict {
     return error;
   }
 
+  /**
+   * Set when the org's plan refused the check (the verdict is degraded as
+   * for any other refusal): its message and {@code upgradeUrl()} say why and
+   * where to fix it. Null otherwise.
+   */
+  public PlanRefusalException planRefusal() {
+    return planRefusal;
+  }
+
   /** Every field by its wire name. */
   public Map<String, Object> toMap() {
     Map<String, Object> m = new LinkedHashMap<>();
@@ -141,6 +152,7 @@ public final class Verdict {
     m.put("verdict_id", verdictId);
     m.put("http_status", httpStatus);
     m.put("error", error);
+    m.put("plan_refusal", planRefusal == null ? null : planRefusal.toMap());
     return m;
   }
 

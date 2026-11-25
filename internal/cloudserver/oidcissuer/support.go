@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/tenantctx"
 )
 
 // support.go is the issuer's support path (managed-SaaS plan 07 M7a.2; plan
@@ -52,7 +54,7 @@ func SupportSubject(staffID string) string { return SupportSubPrefix + staffID }
 // ValidSupportSubject reports whether s is SupportSubPrefix followed by a
 // canonical lowercase UUID.
 func ValidSupportSubject(s string) bool {
-	return strings.HasPrefix(s, SupportSubPrefix) && isCanonicalUUID(strings.TrimPrefix(s, SupportSubPrefix))
+	return strings.HasPrefix(s, SupportSubPrefix) && tenantctx.IsCanonicalUUID(strings.TrimPrefix(s, SupportSubPrefix))
 }
 
 // StaffSession is what the staff process knows about the signed-in staff
@@ -154,7 +156,7 @@ type staffRule struct {
 }
 
 var staffSessionRules = []staffRule{
-	{id: "staff-id", bad: func(s StaffSession) bool { return !isCanonicalUUID(s.StaffID) }},
+	{id: "staff-id", bad: func(s StaffSession) bool { return !tenantctx.IsCanonicalUUID(s.StaffID) }},
 	// A staff session exists only through a WebAuthn assertion, so its time
 	// is always known; a zero one is a wiring fault, refused.
 	{id: "staff-asserted", bad: func(s StaffSession) bool { return s.AssertedAt.IsZero() }},
@@ -256,7 +258,7 @@ func (i *Issuer) supportToken(ctx context.Context, code CodeRecord, now time.Tim
 	if i.support == nil {
 		return TokenResponse{}, unavailable("support-not-configured")
 	}
-	if !isCanonicalUUID(code.StaffID) || code.AuthTime.IsZero() {
+	if !tenantctx.IsCanonicalUUID(code.StaffID) || code.AuthTime.IsZero() {
 		return TokenResponse{}, &Error{Code: ErrCodeInvalidGrant, Description: "the authorization code is invalid", Status: 400, RuleID: "support-code-shape"}
 	}
 	t, err := i.support.SupportTarget(ctx, code.StaffID, code.OrgID)

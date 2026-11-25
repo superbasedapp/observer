@@ -176,7 +176,7 @@
 // operator may sit on an approval prompt for minutes). Unlike an adapter
 // whose tool_use → tool_result correlation is only reconstructable from
 // data seen DURING the tool_use's own parse window (which must then defer
-// unpaired tails at EOF — see internal/adapter/muse/pending.go), Poolside's
+// unpaired tails at EOF — see adapter.DeferUnpairedTail), Poolside's
 // `tool_call.approval` and `tool_call.result` both restate the ORIGINAL
 // call id verbatim. That means this adapter can always reconstruct the
 // owning row's (SourceFile, SourceEventID) key from the outcome record

@@ -195,9 +195,12 @@ func TestComponentsStatusFollowsTheDriverOptIn(t *testing.T) {
 // TestDashboardsWireTheComponentView (P-057 follow-up, lane SBX-P3B): both
 // dashboards (`observer start` and `observer dashboard`) hand the Components
 // page the same view `observer components status` prints, so the page follows
-// the sandbox root removal instead of building its own view from core.
+// the sandbox root removal instead of building its own view from core. Both
+// take their options from nodeDashboardOptions (CMD-01;
+// TestDashboardCommandsShareOneOptionsBuilder pins that), so the wiring is
+// read there.
 func TestDashboardsWireTheComponentView(t *testing.T) {
-	for _, f := range []string{"start.go", "dashboard.go"} {
+	for _, f := range []string{"dashboard_options.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

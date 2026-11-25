@@ -120,7 +120,7 @@ func spendTurnsOf(rows spendverdict.SessionRows) []SpendTurn {
 	out := make([]SpendTurn, 0, len(all))
 	for _, k := range all {
 		t := k.t
-		if at, ok := parseDBTime(k.ts); ok {
+		if at, ok := parseStoredTimeOK(k.ts); ok {
 			t.Ts = at
 		}
 		out = append(out, t)

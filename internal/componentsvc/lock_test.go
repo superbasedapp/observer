@@ -3,10 +3,12 @@ package componentsvc
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -116,12 +118,31 @@ func TestApplyWaitsForAPurgeHoldingTheRealLock(t *testing.T) {
 	var order []string
 	rec := func(x string) { mu.Lock(); order = append(order, x); mu.Unlock() }
 	done := make(chan error, 1)
+	// The production lock, wrapped to say when Apply reaches it: the purge
+	// takes the lock first (call 1), so call 2 is Apply's, made while the
+	// purge still holds it.
+	applyAtLock := make(chan struct{})
+	var lockCalls atomic.Int32
+	s.opts.Lock = func(path string) (func(), error) {
+		if lockCalls.Add(1) == 2 {
+			close(applyAtLock)
+		}
+		return hook.LockSettingsFile(path)
+	}
 	rs.during = func() {
 		go func() {
 			_, err := s.Apply(ctx, Change{Add: []string{"adapter.zed"}}, ApplyOptions{SkipTeardown: true})
 			rec("apply")
 			done <- err
 		}()
+		// Only once Apply is known to be at the lock does the window below
+		// test anything: a lock that let it through would record "apply"
+		// before the purge does.
+		select {
+		case <-applyAtLock:
+		case <-time.After(10 * time.Second):
+			t.Error("Apply never reached the config lock")
+		}
 		time.Sleep(300 * time.Millisecond)
 		rec("purge")
 	}

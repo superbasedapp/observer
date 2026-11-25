@@ -2,7 +2,6 @@ package messagesummary
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 )
@@ -26,9 +25,27 @@ type Pricing struct {
 	CacheCreation1h float64
 }
 
-// DBRecorder writes one row per summary call into the summary_calls
-// table (migration 016). cost_usd is computed at insert time using
-// the [PricingLookup] so the dashboard's cost-net surface can sum
+// CallRow is one priced summary call, ready for the summary_calls table
+// (migration 016).
+type CallRow struct {
+	SessionID           string
+	At                  time.Time
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	CostUSD             float64
+}
+
+// CallRowWriter persists one CallRow. cmd/observer injects the store's
+// summary_calls seam (store.InsertSummaryCall), so this package holds no
+// database handle and writes no SQL.
+type CallRowWriter func(ctx context.Context, row CallRow) error
+
+// DBRecorder records one row per summary call into the summary_calls
+// table through its [CallRowWriter]. cost_usd is computed at record time
+// using the [PricingLookup] so the dashboard's cost-net surface can sum
 // the column directly without re-pricing per query.
 //
 // Best-effort: errors propagate to the caller (the
@@ -36,33 +53,30 @@ type Pricing struct {
 // closed handle on shutdown doesn't fail summarisation. Tests verify
 // the row IS written when the DB is healthy.
 type DBRecorder struct {
-	db      *sql.DB
+	write   CallRowWriter
 	pricing PricingLookup
 }
 
-// NewDBRecorder wraps db + pricing.
-func NewDBRecorder(db *sql.DB, pricing PricingLookup) *DBRecorder {
-	return &DBRecorder{db: db, pricing: pricing}
+// NewDBRecorder wraps write + pricing. A nil write makes Record a no-op.
+func NewDBRecorder(write CallRowWriter, pricing PricingLookup) *DBRecorder {
+	return &DBRecorder{write: write, pricing: pricing}
 }
 
 // Record implements [CallRecorder].
 func (r *DBRecorder) Record(ctx context.Context, call SummaryCall) error {
-	if r == nil || r.db == nil {
+	if r == nil || r.write == nil {
 		return nil
 	}
-	cost := computeSummaryCost(call, r.pricing)
-	var sessionID any
-	if call.SessionID != "" {
-		sessionID = call.SessionID
-	}
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO summary_calls
-		   (session_id, timestamp, model, input_tokens, output_tokens,
-		    cache_read_tokens, cache_creation_tokens, cost_usd)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, time.Now().UTC().Format(time.RFC3339Nano),
-		call.Model, call.InputTokens, call.OutputTokens,
-		call.CacheReadTokens, call.CacheCreationTokens, cost)
+	err := r.write(ctx, CallRow{
+		SessionID:           call.SessionID,
+		At:                  time.Now(),
+		Model:               call.Model,
+		InputTokens:         call.InputTokens,
+		OutputTokens:        call.OutputTokens,
+		CacheReadTokens:     call.CacheReadTokens,
+		CacheCreationTokens: call.CacheCreationTokens,
+		CostUSD:             computeSummaryCost(call, r.pricing),
+	})
 	if err != nil {
 		return fmt.Errorf("messagesummary.DBRecorder.Record: %w", err)
 	}

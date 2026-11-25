@@ -765,7 +765,7 @@ func TestParseMissingFile(t *testing.T) {
 	}
 }
 
-// --- cross-tick tool_use → tool_result pairing (pending.go) ------------
+// --- cross-tick tool_use → tool_result pairing (adapter.DeferUnpairedTail)
 
 // appendLine appends one more JSONL record to a staged transcript, the
 // way droid does while a session runs.
@@ -848,7 +848,7 @@ func TestToolResultLandsOnNextPollTick(t *testing.T) {
 // than stalling the cursor forever.
 func TestUnpairedToolUseFlushedWhenTranscriptGoesStale(t *testing.T) {
 	a, path := writeTranscript(t, []string{synthStart, synthToolUse}, true)
-	old := time.Now().Add(-2 * pendingResultGrace)
+	old := time.Now().Add(-2 * adapter.PendingResultGrace)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +877,7 @@ func TestUnpairedToolUseFlushedWhenTranscriptGoesStale(t *testing.T) {
 func TestUnpairedToolUseFlushedWhenTailGrows(t *testing.T) {
 	filler := synthPrompt("m9", strings.Repeat("x", 4096))
 	lines := []string{synthStart, synthToolUse}
-	for i := 0; i*len(filler) <= maxDeferTailBytes; i++ {
+	for i := 0; i*len(filler) <= adapter.MaxDeferTailBytes; i++ {
 		lines = append(lines, filler)
 	}
 	a, path := writeTranscript(t, lines, true)

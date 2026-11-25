@@ -250,20 +250,6 @@ func floatPtr(v sql.NullFloat64) *float64 {
 	return &f
 }
 
-func nullableFloat(p *float64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullableRun(run int64) any {
-	if run == 0 {
-		return nil
-	}
-	return run
-}
-
 // ScanRepriceRows streams every candidate row under f to fn, table by table
 // in id order, with provenance already resolved into reprice.Row flags. It
 // holds one read cursor per table and never writes; fn must not write to the
@@ -618,7 +604,7 @@ func (s *Store) applyRepriceBatch(ctx context.Context, runID int64, batch []repr
 		if err != nil {
 			return fmt.Errorf("read %s %d: %w", d.Table, d.ID, err)
 		}
-		res, err := tx.ExecContext(ctx, tgt.apply, *d.New, runID, d.ID, nullableFloat(d.Old))
+		res, err := tx.ExecContext(ctx, tgt.apply, *d.New, runID, d.ID, nullableFloat64Ptr(d.Old))
 		if err != nil {
 			return fmt.Errorf("update %s %d: %w", d.Table, d.ID, err)
 		}
@@ -632,7 +618,7 @@ func (s *Store) applyRepriceBatch(ctx context.Context, runID int64, batch []repr
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO reprice_changes (run_id, tbl, row_id, old_cost, new_cost, prev_run) VALUES (?, ?, ?, ?, ?, ?)`,
-			runID, d.Table, d.ID, nullableFloat(d.Old), *d.New, prev); err != nil {
+			runID, d.Table, d.ID, nullableFloat64Ptr(d.Old), *d.New, prev); err != nil {
 			return fmt.Errorf("log %s %d: %w", d.Table, d.ID, err)
 		}
 		local.wrote(d.Table, d.Model, d.Old, d.New)
@@ -724,7 +710,7 @@ func (s *Store) claimRepriceRun(ctx context.Context, kind string, meta RepriceRu
 		    pricing_source, pricing_version, scanned, reverts_run, status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		kind, now.Format(time.RFC3339Nano), meta.Actor, meta.Since, meta.Until, meta.Model,
-		meta.RuleVersion, meta.PricingSource, meta.PricingVersion, meta.Scanned, nullableRun(revertsRun),
+		meta.RuleVersion, meta.PricingSource, meta.PricingVersion, meta.Scanned, nullableInt64(revertsRun),
 		RepriceStatusRunning)
 	if err != nil {
 		return 0, fmt.Errorf("insert run: %w", err)
@@ -1004,9 +990,9 @@ func (s *Store) revertRepriceBatch(ctx context.Context, runID, revID int64, batc
 			local.skipped[string(d.Reason)]++
 			continue
 		}
-		restore := nullableFloat(d.Restore)
-		mk := nullableRun(d.Run)
-		res, err := tx.ExecContext(ctx, tgt.restore, restore, mk, mk, c.ID, nullableFloat(cr.Cost), nullableRun(cr.Run))
+		restore := nullableFloat64Ptr(d.Restore)
+		mk := nullableInt64(d.Run)
+		res, err := tx.ExecContext(ctx, tgt.restore, restore, mk, mk, c.ID, nullableFloat64Ptr(cr.Cost), nullableInt64(cr.Run))
 		if err != nil {
 			return fmt.Errorf("restore %s %d: %w", c.Table, c.ID, err)
 		}
@@ -1016,7 +1002,7 @@ func (s *Store) revertRepriceBatch(ctx context.Context, runID, revID int64, batc
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO reprice_changes (run_id, tbl, row_id, old_cost, new_cost, prev_run) VALUES (?, ?, ?, ?, ?, ?)`,
-			revID, c.Table, c.ID, nullableFloat(cr.Cost), restore, nullableRun(cr.Run)); err != nil {
+			revID, c.Table, c.ID, nullableFloat64Ptr(cr.Cost), restore, nullableInt64(cr.Run)); err != nil {
 			return fmt.Errorf("log %s %d: %w", c.Table, c.ID, err)
 		}
 		// A revert changes a cost back; its "filled" count stays 0 (it never

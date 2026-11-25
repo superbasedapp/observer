@@ -4,11 +4,10 @@ package scalibrchild
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
 
 const (
@@ -25,23 +24,8 @@ const (
 "affected":[{"package":{"ecosystem":"Debian:12","name":"nothing"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}]}`
 )
 
-func writeImageRoot(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for p, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
-
 func TestRunOSImage(t *testing.T) {
-	root := writeImageRoot(t, map[string]string{"etc/os-release": debian12Release, "var/lib/dpkg/status": debian12Status})
+	root := fstree.Write(t, map[string]string{"etc/os-release": debian12Release, "var/lib/dpkg/status": debian12Status})
 	good := t.TempDir()
 	writeDB(t, good, "Debian", map[string]string{"a.json": dsa5514, "k.json": kernelRecord})
 	stale := t.TempDir()
@@ -115,7 +99,7 @@ func TestRunOSImageRefusals(t *testing.T) {
 	}
 	// A root with no package database: no ecosystem, so "no_packages".
 	resp := Run(context.Background(), depscan.ChildRequest{
-		Version: depscan.ProtocolVersion, Kind: depscan.KindOSImage, Root: writeImageRoot(t, map[string]string{"etc/os-release": debian12Release}),
+		Version: depscan.ProtocolVersion, Kind: depscan.KindOSImage, Root: fstree.Write(t, map[string]string{"etc/os-release": debian12Release}),
 		OS: &depscan.OSImageRequest{Ecosystem: "Debian:12", Base: "Debian", Epoch: "e"}, DBDir: t.TempDir(),
 	}, nil)
 	if resp.Error != "" || len(resp.Ecosystems) != 0 || len(resp.Packages) != 0 {

@@ -15,11 +15,32 @@ func TestDecideRestartRows(t *testing.T) {
 		rule      string
 		hold      bool
 		startOnly bool
+		handover  bool
 	}{
 		{
 			name:      "a dashboard terminal runs the command",
 			in:        RestartInputs{Manager: ManagerSystemd, UnitActive: true, ProxyServing: true, DaemonChild: true},
 			mechanism: RestartRefuse, rule: "daemon launched this shell",
+		},
+		{
+			name:      "a dashboard terminal runs the command, even with a hand-over",
+			in:        RestartInputs{Manager: ManagerNone, DashboardAnswers: true, ProxyServing: true, InPlaceSupported: true, ListenerHandover: true, DaemonChild: true},
+			mechanism: RestartRefuse, rule: "daemon launched this shell",
+		},
+		{
+			name:      "the daemon hands its proxy over in place under systemd",
+			in:        RestartInputs{Manager: ManagerSystemd, UnitInstalled: true, UnitActive: true, DashboardAnswers: true, ProxyServing: true, InPlaceSupported: true, ListenerHandover: true, ProxyExpected: true},
+			mechanism: RestartInPlace, rule: "running, hands its proxy over in place", handover: true,
+		},
+		{
+			name:      "a hand-over needs no organization answer (it takes no route off)",
+			in:        RestartInputs{Manager: ManagerNone, DashboardAnswers: true, ProxyServing: true, InPlaceSupported: true, ListenerHandover: true, OrgMaintainsRoutes: true, OrgUnknown: true},
+			mechanism: RestartInPlace, rule: "running, hands its proxy over in place", handover: true,
+		},
+		{
+			name:      "a hand-over on an OS without execve is no hand-over",
+			in:        RestartInputs{Manager: ManagerNone, DashboardAnswers: true, ProxyServing: true, ListenerHandover: true},
+			mechanism: RestartRefuse, rule: "running, cannot restart in place",
 		},
 		{
 			name:      "the daemon-child marker with no daemon is no refusal",
@@ -110,8 +131,11 @@ func TestDecideRestartRows(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			p := DecideRestart(c.in)
-			if p.Mechanism != c.mechanism || p.Rule != c.rule || p.HoldRoutes != c.hold || p.StartOnly != c.startOnly {
-				t.Fatalf("DecideRestart = %+v, want mechanism %s rule %q hold %v startOnly %v", p, c.mechanism, c.rule, c.hold, c.startOnly)
+			if p.Mechanism != c.mechanism || p.Rule != c.rule || p.HoldRoutes != c.hold || p.StartOnly != c.startOnly || p.Handover != c.handover {
+				t.Fatalf("DecideRestart = %+v, want mechanism %s rule %q hold %v startOnly %v handover %v", p, c.mechanism, c.rule, c.hold, c.startOnly, c.handover)
+			}
+			if p.Handover && p.HoldRoutes {
+				t.Fatal("a hand-over never takes a route off")
 			}
 			if p.Reason == "" {
 				t.Fatal("every plan carries its reason")
@@ -125,7 +149,8 @@ func TestDecideRestartRows(t *testing.T) {
 func TestEveryRestartRuleIsCovered(t *testing.T) {
 	covered := map[string]bool{
 		"daemon launched this shell": true, "organization maintains routes": true, "systemd runs it": true,
-		"organization route posture unreadable": true, "proxy not at the resolved port": true,
+		"running, hands its proxy over in place": true,
+		"organization route posture unreadable":  true, "proxy not at the resolved port": true,
 		"launchd runs it": true, "running, restarts in place": true, "running, cannot restart in place": true,
 		"proxy without a dashboard": true, "systemd unit stopped": true, "launchd agent stopped": true, "nothing running": true,
 	}

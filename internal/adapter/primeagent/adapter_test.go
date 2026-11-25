@@ -15,8 +15,8 @@ import (
 // fixture copies a testdata transcript into a session-shaped path under a
 // temp watch root and returns (adapter, path). Copying is what makes the
 // tail-deferral bounds deterministic: the copy's mtime is `now`, so
-// pendingResultGrace is unambiguously satisfied regardless of when the
-// repo was checked out.
+// adapter.PendingResultGrace is unambiguously satisfied regardless of when
+// the repo was checked out.
 func fixture(t *testing.T, name string) (*Adapter, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), ".prime", "agent", "sessions")
@@ -520,7 +520,7 @@ func TestPartialTrailingLineIsDeferred(t *testing.T) {
 	}
 }
 
-// TestUnpairedToolCallTailIsDeferred pins pending.go. store's action
+// TestUnpairedToolCallTailIsDeferred pins adapter.DeferUnpairedTail. store's action
 // ON CONFLICT clause can never flip `success`, so a call whose result
 // lands in the NEXT tick must not be persisted optimistically in this
 // one.
@@ -552,7 +552,7 @@ func TestUnpairedToolCallTailIsDeferred(t *testing.T) {
 
 	// Once the file is stale past the grace, the tail flushes rather than
 	// deferring forever.
-	old := time.Now().Add(-2 * pendingResultGrace)
+	old := time.Now().Add(-2 * adapter.PendingResultGrace)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}

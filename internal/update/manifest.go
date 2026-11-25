@@ -2,8 +2,6 @@ package update
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/marmutapp/superbased-observer/internal/updatespec"
 )
 
 // SchemaV1 is the only manifest schema this agent understands. The
@@ -235,10 +235,10 @@ func CanonicalJSON(m Manifest) ([]byte, error) {
 }
 
 // HashBytes returns the lowercase hex sha256 of b. It is the one hash
-// spelling this package uses, for manifests and for artifacts alike.
+// spelling this package uses, for manifests and for artifacts alike; the
+// owner is updatespec.HashBytes, which the content channel shares.
 func HashBytes(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return updatespec.HashBytes(b)
 }
 
 // DecodeManifest parses manifest bytes within MaxManifestBytes and
@@ -371,16 +371,16 @@ func validateArtifact(a Artifact) error {
 	if !KnownArchiveType(a.ArchiveType) {
 		return fmt.Errorf("%w: unknown archive_type %q", ErrInvalidManifest, a.ArchiveType)
 	}
-	if err := validBaseName(a.Filename); err != nil {
+	if err := updatespec.ValidBaseName(a.Filename); err != nil {
 		return fmt.Errorf("%w: filename: %w", ErrInvalidManifest, err)
 	}
 	if a.SizeBytes <= 0 {
 		return fmt.Errorf("%w: size_bytes must be positive", ErrInvalidManifest)
 	}
-	if !isHexSHA256(a.SHA256) {
+	if !updatespec.IsHexSHA256(a.SHA256) {
 		return fmt.Errorf("%w: sha256 must be 64 hex characters", ErrInvalidManifest)
 	}
-	if !isHexSHA256(a.MemberSHA256) {
+	if !updatespec.IsHexSHA256(a.MemberSHA256) {
 		return fmt.Errorf("%w: member_sha256 must be 64 hex characters", ErrInvalidManifest)
 	}
 	if err := validMemberName(a.Member); err != nil {
@@ -424,7 +424,7 @@ func validateDistroFields(m Manifest) error {
 		}
 		return nil
 	}
-	if !isHexSHA256(m.ReleaseIndexSHA256) {
+	if !updatespec.IsHexSHA256(m.ReleaseIndexSHA256) {
 		return fmt.Errorf("%w: release_index_sha256 must be 64 hex characters", ErrInvalidManifest)
 	}
 	if m.DistroEpoch < 0 {
@@ -434,7 +434,7 @@ func validateDistroFields(m Manifest) error {
 		if strings.TrimSpace(a.Distro) == "" || !ArtifactDistro(a.Distro) {
 			return fmt.Errorf("%w: %s: distro %q is neither a prebuilt node distro nor a custom distro id", ErrInvalidManifest, a.Filename, a.Distro)
 		}
-		if !isHexSHA256(a.ComponentsDigest) {
+		if !updatespec.IsHexSHA256(a.ComponentsDigest) {
 			return fmt.Errorf("%w: %s: components_digest must be 64 hex characters", ErrInvalidManifest, a.Filename)
 		}
 	}
@@ -467,26 +467,6 @@ func KnownSigType(t string) bool {
 	return t == SigTypeEd25519
 }
 
-// validBaseName rejects anything that is not a plain file name: an
-// empty string, a path separator, a "." / ".." element, or a leading
-// dash (which would read as a flag if the name ever reached a command
-// line).
-func validBaseName(name string) error {
-	if name == "" {
-		return errors.New("empty")
-	}
-	if strings.ContainsAny(name, "/\\") {
-		return fmt.Errorf("%q contains a path separator", name)
-	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("%q is a path element", name)
-	}
-	if strings.HasPrefix(name, "-") {
-		return fmt.Errorf("%q starts with a dash", name)
-	}
-	return nil
-}
-
 // validMemberName rejects an archive member name that is absolute,
 // escapes the extraction root, or is otherwise not a plain relative
 // path. Nested members are permitted ("bin/observer"); traversal is not.
@@ -504,16 +484,6 @@ func validMemberName(name string) error {
 		return fmt.Errorf("%q is a directory", name)
 	}
 	return nil
-}
-
-// isHexSHA256 reports whether s is exactly 64 lowercase-or-uppercase
-// hex characters.
-func isHexSHA256(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	_, err := hex.DecodeString(s)
-	return err == nil
 }
 
 // parseRFC3339 parses a required RFC3339 timestamp.

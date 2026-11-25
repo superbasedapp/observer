@@ -10,9 +10,9 @@ import (
 )
 
 // ErrFull is the NEUTRAL capacity-exceeded sentinel the conformance suite
-// asserts against. A store's native full error (edge wal.ErrWALFull, gateway
-// ErrWALFull) is mapped onto this by the factory's adapter closure so the neutral
-// package need not import the edge or gateway packages.
+// asserts against. A store's native full error (edge wal.ErrWALFull) is mapped
+// onto this by the factory's adapter closure so the neutral package need not
+// import the edge package.
 var ErrFull = errors.New("waltest: WAL depth cap reached")
 
 // Record is the neutral projection of a drained WAL row the conformance suite
@@ -30,7 +30,7 @@ type Record struct {
 // CommonConfig is the pinned tuning the factory receives. The suite chooses
 // small values so capacity/quarantine arms need only a handful of operations,
 // and derives its clock advances from BackoffMax so it is robust to either a flat
-// (edge) or exponential (gateway) backoff schedule.
+// (edge) or an exponential backoff schedule.
 type CommonConfig struct {
 	MaxDepth    int
 	MaxAttempts int

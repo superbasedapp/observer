@@ -1076,15 +1076,19 @@ func matchGitAttributesShell(ctx *MatchContext, cmd *Command) (bool, string) {
 	return false, ""
 }
 
-// shWriteNotDelete is shPathMatch for writes that are not deletes.
+// shWriteNotDelete is shPathMatch for writes that are not deletes: a word
+// the unit only removes (the delete table's targets; every word of rm and
+// its siblings, as before the table) is not a write here, while a target
+// the command also fills (rsync --delete's destination) still is.
 func shWriteNotDelete(pats []pathPattern) MatchCmdFn {
-	inner := shPathMatch(pats, true)
-	return func(ctx *MatchContext, cmd *Command) (bool, string) {
-		if _, isDelete := deleteShape(cmd); isDelete {
-			return false, ""
+	return shPathMatchClassified(func(ctx *MatchContext, p string) (string, bool) {
+		return homePathPatternMatch(ctx, p, pats)
+	}, true, func(cmd *Command, tok string) bool {
+		if d := deletionOf(cmd); d.removes(tok) && !d.alsoWritten(tok) {
+			return false
 		}
-		return inner(ctx, cmd)
-	}
+		return classifyWrite(cmd, tok)
+	})
 }
 
 // gitHookRules returns the R-112, R-113 and R-114 rows (appended to the

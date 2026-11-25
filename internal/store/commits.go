@@ -326,8 +326,8 @@ func (s *Store) LoadProjectCommits(ctx context.Context, projectID int64, since, 
 			&r.Subject, &isMerge, &reachable, &r.FilesCount, &r.Added, &r.Deleted); err != nil {
 			return nil, fmt.Errorf("store.LoadProjectCommits: scan: %w", err)
 		}
-		r.AuthoredAt = parseCommitTime(authoredAt)
-		r.CommittedAt = parseCommitTime(committedAt)
+		r.AuthoredAt = parseStoredTime(authoredAt)
+		r.CommittedAt = parseStoredTime(committedAt)
 		r.IsMerge = isMerge != 0
 		r.Reachable = reachable != 0
 		if parentsJSON != "" {
@@ -372,7 +372,7 @@ func (s *Store) LoadCommitFiles(ctx context.Context, projectID int64, since, unt
 		if err := rows.Scan(&r.CommitID, &r.SHA, &committedAt, &r.RelPath, &r.PathHash, &r.Status, &r.Added, &r.Deleted, &binary); err != nil {
 			return nil, fmt.Errorf("store.LoadCommitFiles: scan: %w", err)
 		}
-		r.CommittedAt = parseCommitTime(committedAt)
+		r.CommittedAt = parseStoredTime(committedAt)
 		r.Binary = binary != 0
 		out = append(out, r)
 	}
@@ -403,9 +403,9 @@ func (s *Store) CommitScanState(ctx context.Context, projectID int64) (ScanState
 	if err != nil {
 		return ScanState{}, false, fmt.Errorf("store.CommitScanState: %w", err)
 	}
-	st.LastCommittedAt = parseCommitTime(lastCommittedAt)
-	st.LastScanAt = parseCommitTime(lastScanAt)
-	st.LastSuccessAt = parseCommitTime(lastSuccessAt)
+	st.LastCommittedAt = parseStoredTime(lastCommittedAt)
+	st.LastScanAt = parseStoredTime(lastScanAt)
+	st.LastSuccessAt = parseStoredTime(lastSuccessAt)
 	st.HistoryPending = pending != 0
 	return st, true, nil
 }
@@ -603,20 +603,10 @@ func commitCaptureStateFor(kind, lastError string, consecutiveFailures int, hist
 	return "ok"
 }
 
-// parseCommitTime parses a stored RFC3339Nano stamp; an empty or
-// unparseable value yields the zero time (mirrors cloudParseTime).
-func parseCommitTime(v string) time.Time {
-	if v == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t
-	}
-	return time.Time{}
-}
+// parseCommitTime is parseStoredTime (sqlval.go) under the name the
+// cloud-lane files (cloudsessionlinks.go) still call; new code calls
+// parseStoredTime.
+func parseCommitTime(v string) time.Time { return parseStoredTime(v) }
 
 // ProjectsWithCommitsSince lists every project holding at least one stored
 // commit committed at or after since, ascending by id - the candidate set the

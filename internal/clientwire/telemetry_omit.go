@@ -14,9 +14,6 @@ import "fmt"
 // TelemetrySupported is false: OTLP ingest is not in this build.
 func TelemetrySupported(string) bool { return false }
 
-// TelemetryWired is false: this build cannot read the wiring it never writes.
-func TelemetryWired(string, TelemetryOptions) bool { return false }
-
 // removeTelemetry refuses: the exporter-config writer is not in this build.
 func removeTelemetry(tool string, opts TelemetryOptions) TelemetryResult {
 	return TelemetryResult{Tool: tool, DryRun: opts.DryRun, Error: fmt.Errorf("clientwire: OTLP ingest (ingest.otlp) is not in this build, so %s's exporter wiring cannot be removed here", tool)}

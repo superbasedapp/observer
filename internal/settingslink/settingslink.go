@@ -154,13 +154,20 @@ const (
 	// OrgSessionEnrichment is Intelligence > Session enrichment (the org's
 	// AI summaries: on or off, its terms, developer actions).
 	OrgSessionEnrichment OrgPlace = "org_session_enrichment"
+	// OrgDeveloperDashboards is Settings > Developer dashboards: where an
+	// organization's admins (on a personal organization, its owner) choose
+	// which pages and Settings sections a developer's local dashboard
+	// shows, hides or locks.
+	OrgDeveloperDashboards OrgPlace = "org_developer_dashboards"
 )
 
 // orgPlaces is the team dashboard's table. Paths follow web2's routing
 // (web2/src/lib/components.gen.ts routes, ?tab=<id> from
-// web2/src/lib/configureTabs.ts).
+// web2/src/lib/configureTabs.ts, ?section=<id> from
+// web2/src/lib/settingsSections.ts).
 var orgPlaces = []row{
 	{Place(OrgSessionEnrichment), "/intelligence?tab=session-enrichment", "Intelligence > Session enrichment"},
+	{Place(OrgDeveloperDashboards), "/settings?section=developer-dashboards", "Settings > Developer dashboards"},
 }
 
 // OrgPlaces lists every team-dashboard place id, in table order.
@@ -292,4 +299,89 @@ func Needs(code, message string, p Place) Body {
 // component on, with the Components link focused on it and the CLI command.
 func NeedsComponent(code, message, id string) Body {
 	return Body{Error: code, Message: message, Fields: Component(id).Fields().WithCommand(ComponentCommand(id))}
+}
+
+// DashboardAddress is where the organization's own dashboard is for an
+// enrolment: the online address `observer connect` recorded (a hosted
+// organization's own host) when a button may open it, else the org server
+// address the node pushes to. It never guesses a host: both inputs are what
+// the node already holds.
+func DashboardAddress(onlineURL, serverURL string) string {
+	if OrgDashboardBase(onlineURL) != "" {
+		return onlineURL
+	}
+	return serverURL
+}
+
+// orgPageRow is one local dashboard page's equivalent in the team dashboard:
+// the node nav id (web/src/lib/nav.ts), the web2 path, its name as web2's
+// nav shows it, and whether any signed-in member may open it (web2's route
+// carries no permission guard and its nav item no permission). A page with no
+// clear equivalent has no row.
+type orgPageRow struct {
+	nav     string
+	href    string
+	label   string
+	members bool
+}
+
+// orgPages is the table, in the node's nav order. Paths and labels follow
+// web2/src/lib/components.gen.ts and web2/src/lib/navGroups.ts;
+// TestOrgPagesFollowWeb2 reads both and fails on a path web2 does not route,
+// a label its nav does not show, or a members flag its guards contradict.
+var orgPages = []orgPageRow{
+	{"overview", "/", "Coding agents > Overview", true},
+	{"sessions", "/sessions", "Coding agents > Sessions", false},
+	{"projects", "/projects", "Coding agents > Projects", true},
+	{"security", "/security", "Coding agents > Security", true},
+	{"cost", "/cost", "Coding agents > Cost", true},
+	{"tools", "/tools", "Coding agents > Tools", true},
+	{"routing", "/routing", "Coding agents > Routing", false},
+	{"benchmarks", "/benchmarks", "Coding agents > Benchmarks", true},
+	{"patterns", "/patterns", "Coding agents > Patterns", false},
+	{"app-traces", "/trajectories", "AI apps > Explorer", true},
+	{"app-sessions", "/trajectories", "AI apps > Explorer", true},
+	{"app-analytics", "/trajectories/analytics", "AI apps > Analytics", false},
+	{"app-end-users", "/trajectories/end-users", "AI apps > End-user spend", false},
+	{"app-evals", "/trajectories/evals", "AI apps > Eval health", false},
+	{"app-prompts", "/trajectories/prompts", "AI apps > Prompts", false},
+	{"app-alerts", "/trajectories/alerts", "AI apps > Alerts", false},
+	{"policies", "/trajectories/policies", "AI apps > Policies", false},
+}
+
+// OrgPageLink is a local page's equivalent in the team dashboard: its
+// absolute URL when the node knows a safe address ("" otherwise), its plain
+// name, and whether any signed-in member may open it (otherwise only an admin
+// whose role includes it).
+type OrgPageLink struct {
+	Href    string `json:"href,omitempty"`
+	Label   string `json:"label"`
+	Members bool   `json:"members"`
+}
+
+// OrgPageFor returns the team-dashboard equivalent of the local page navID on
+// the org server at serverURL, and false for a page with none. The URL follows
+// OrgFor's rule: set only for a safe address.
+func OrgPageFor(serverURL, navID string) (OrgPageLink, bool) {
+	for _, r := range orgPages {
+		if r.nav != navID {
+			continue
+		}
+		l := OrgPageLink{Label: r.label, Members: r.members}
+		if base := OrgDashboardBase(serverURL); base != "" {
+			l.Href = base + r.href
+		}
+		return l, true
+	}
+	return OrgPageLink{}, false
+}
+
+// OrgPageIDs lists the local pages that have a team-dashboard equivalent, in
+// table order.
+func OrgPageIDs() []string {
+	out := make([]string, 0, len(orgPages))
+	for _, r := range orgPages {
+		out = append(out, r.nav)
+	}
+	return out
 }

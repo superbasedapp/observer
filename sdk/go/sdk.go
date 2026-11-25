@@ -21,7 +21,7 @@ import (
 )
 
 // Version is this SDK's version (lockstep with the Python and TypeScript SDKs).
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 const (
 	tracerName = "superbased_sdk"
@@ -221,7 +221,7 @@ func buildDelegate(ctx context.Context, s Settings, p *plan, opts Options) sdktr
 		if inner == nil {
 			continue
 		}
-		procs = append(procs, sdktrace.NewBatchSpanProcessor(&countingExporter{inner: inner, quiet: s.Quiet}, sdktrace.WithExportTimeout(t.timeout)))
+		procs = append(procs, sdktrace.NewBatchSpanProcessor(&countingExporter{inner: inner, quiet: s.Quiet, dest: t.name}, sdktrace.WithExportTimeout(t.timeout)))
 	}
 	if s.Console {
 		procs = append(procs, sdktrace.NewSimpleSpanProcessor(&consoleExporter{w: stderr}))
@@ -358,7 +358,26 @@ type Diagnostics struct {
 	Warnings               []string          `json:"warnings"`
 	Notes                  []string          `json:"notes"`
 	SignedIn               *bool             `json:"signed_in"`
-	CredentialSource       string            `json:"credential_source"`
+	// CredentialSource is where the online credential came from: argument,
+	// env, file (the machine's sign-in file), sdk_file (the SDK-held file
+	// setup writes) or "".
+	CredentialSource string `json:"credential_source"`
+	// SDKFile is the SDK-held credential file setup writes: its path,
+	// state and the refused rule (never the key).
+	SDKFile SDKFileInfo `json:"sdk_file"`
+	// FirstTraceLink is the first-trace link once it was written, else "".
+	FirstTraceLink string `json:"first_trace_link"`
+	// ServiceName is the service name Init resolved; ServiceNameSource the
+	// rung that gave it: argument, env, manifest (the main module's path) or
+	// default.
+	ServiceName       string `json:"service_name"`
+	ServiceNameSource string `json:"service_name_source"`
+	// PlanRefusal is the last time the organization's plan refused AI Apps
+	// ingest (an export, or any other call to the gateway), nil when never;
+	// PlanRefusalAt is when. Export never fails a caller: a refused export
+	// shows here, beside one warning line a minute.
+	PlanRefusal   *PlanRefusalError `json:"plan_refusal"`
+	PlanRefusalAt time.Time         `json:"plan_refusal_at"`
 }
 
 // GetDiagnostics returns a snapshot of the SDK's export health.
@@ -376,6 +395,7 @@ func GetDiagnostics() Diagnostics {
 	admitStats.mu.Lock()
 	d.AdmissionDegraded, d.AdmissionLastError, d.AdmissionLastErrorAt = admitStats.degraded, admitStats.lastError, admitStats.lastErrorAt
 	admitStats.mu.Unlock()
+	d.PlanRefusal, d.PlanRefusalAt = planRefusalSnapshot()
 	mu.Lock()
 	d.Mode = mode
 	d.Initialized = processor != nil && processor.current() != nil
@@ -384,6 +404,9 @@ func GetDiagnostics() Diagnostics {
 		d.VendorTracing[k] = v
 	}
 	mu.Unlock()
+	if st := CurrentSettings(); st != nil {
+		d.ServiceName, d.ServiceNameSource = st.ServiceName, st.ServiceNameSource
+	}
 	d.Destinations = []DestinationInfo{}
 	d.Warnings, d.Notes = []string{}, []string{}
 	if p := activePlan(); p != nil {
@@ -395,7 +418,9 @@ func GetDiagnostics() Diagnostics {
 		d.Warnings = append(d.Warnings, p.warnings...)
 		d.Notes = append(d.Notes, p.notes...)
 		d.SignedIn, d.CredentialSource = p.signedIn, p.credentialFrom
+		d.SDKFile = p.sdkFile
 	}
+	d.FirstTraceLink = firstTrace.printed()
 	return d
 }
 
@@ -978,9 +1003,11 @@ func resetForTests() {
 	stats.reset()
 	pipeCounters.reset()
 	admitStats.reset()
+	resetPlanRefusal()
 	resetAdvertised()
 	resetVendorForTests()
 	netInputWarned.Store(false)
+	firstTrace.reset()
 	sampler.set(1, true)
 	serviceSeen.Store(nil)
 }

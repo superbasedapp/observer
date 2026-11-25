@@ -99,13 +99,13 @@ func buildRunsList(_ vendorapi.Params, w vendorapi.Window, cursor string) (vendo
 	switch {
 	case w.From.IsZero() && w.To.IsZero():
 	case w.From.IsZero() || !w.To.After(w.From):
-		return vendorapi.Request{}, drift(SurfaceRunsList, "a window needs both bounds, From before To")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceRunsList, "a window needs both bounds, From before To")
 	default:
 		q["updated_after"] = []string{w.From.UTC().Format(time.RFC3339)}
 	}
 	if cursor != "" {
 		if !cursorRE.MatchString(cursor) {
-			return vendorapi.Request{}, drift(SurfaceRunsList, "cursor is not an opaque page cursor")
+			return vendorapi.Request{}, vendorapi.Drift(SurfaceRunsList, "cursor is not an opaque page cursor")
 		}
 		q["cursor"] = []string{cursor}
 	}
@@ -183,23 +183,23 @@ func parseRunsList(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	var doc listDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceRunsList, "body does not decode as the documented ListRunsResponse")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceRunsList, "body does not decode as the documented ListRunsResponse")
 	}
 	if doc.Runs == nil {
-		return vendorapi.Page{}, drift(SurfaceRunsList, "required field runs is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceRunsList, "required field runs is missing")
 	}
 	if doc.PageInfo == nil || doc.PageInfo.HasNextPage == nil {
-		return vendorapi.Page{}, drift(SurfaceRunsList, "required field page_info.has_next_page is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceRunsList, "required field page_info.has_next_page is missing")
 	}
 	out := vendorapi.Page{SourceRecords: len(*doc.Runs)}
 	if *doc.PageInfo.HasNextPage {
-		next := str(doc.PageInfo.NextCursor)
+		next := vendorapi.Str(doc.PageInfo.NextCursor)
 		switch {
 		case !cursorRE.MatchString(next):
-			return vendorapi.Page{}, drift(SurfaceRunsList, "has_next_page is true without a usable next_cursor")
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceRunsList, "has_next_page is true without a usable next_cursor")
 		case next == r.Cursor:
-			return vendorapi.Page{}, drift(SurfaceRunsList, "next_cursor repeats the page the request asked for")
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceRunsList, "next_cursor repeats the page the request asked for")
 		}
 		out.NextCursor = next
 	}
@@ -217,22 +217,22 @@ func parseRunDetail(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	var rn run
-	if err := decode(r.Body, &rn); err != nil {
-		return vendorapi.Page{}, drift(SurfaceRunDetail, "body does not decode as the documented RunItem")
+	if err := vendorapi.DecodeNumbers(r.Body, &rn); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceRunDetail, "body does not decode as the documented RunItem")
 	}
 	out := vendorapi.Page{SourceRecords: 1}
 	if err := mapRun(SurfaceRunDetail, 0, rn, map[string]bool{}, &out); err != nil {
 		return vendorapi.Page{}, err
 	}
 	if want := r.Params[ParamRunID]; want != "" && out.Snapshots[0].Subject != want {
-		return vendorapi.Page{}, drift(SurfaceRunDetail, "run_id is not the run the request asked for")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceRunDetail, "run_id is not the run the request asked for")
 	}
 	return out, nil
 }
 
 // putID sets an optional id-shaped body value, refusing a malformed one.
 func putID(body map[string]string, key string, v *string) bool {
-	s := str(v)
+	s := vendorapi.Str(v)
 	if s == "" {
 		return true
 	}
@@ -245,28 +245,28 @@ func putID(body map[string]string, key string, v *string) bool {
 
 // mapRun lands one RunItem: its snapshot and its usage rows.
 func mapRun(surface vs.SurfaceID, i int, rn run, seen map[string]bool, out *vendorapi.Page) error {
-	id := str(rn.RunID)
+	id := vendorapi.Str(rn.RunID)
 	if !idRE.MatchString(id) {
-		return drift(surface, "runs[%d].run_id is missing or not an id", i)
+		return vendorapi.Drift(surface, "runs[%d].run_id is missing or not an id", i)
 	}
 	if seen[id] {
-		return drift(surface, "runs[%d] repeats a run", i)
+		return vendorapi.Drift(surface, "runs[%d] repeats a run", i)
 	}
 	seen[id] = true
-	if !tokenRE.MatchString(str(rn.State)) {
-		return drift(surface, "runs[%d].state is missing or not a state", i)
+	if !tokenRE.MatchString(vendorapi.Str(rn.State)) {
+		return vendorapi.Drift(surface, "runs[%d].state is missing or not a state", i)
 	}
 	created, ok := rfc3339(rn.CreatedAt)
 	if !ok {
-		return drift(surface, "runs[%d].created_at is not an RFC 3339 timestamp", i)
+		return vendorapi.Drift(surface, "runs[%d].created_at is not an RFC 3339 timestamp", i)
 	}
 	updated, ok := rfc3339(rn.UpdatedAt)
 	if !ok {
-		return drift(surface, "runs[%d].updated_at is not an RFC 3339 timestamp", i)
+		return vendorapi.Drift(surface, "runs[%d].updated_at is not an RFC 3339 timestamp", i)
 	}
 	body := map[string]string{
 		"created_at": created.Format(time.RFC3339), "updated_at": updated.Format(time.RFC3339),
-		"state": strings.ToLower(str(rn.State)),
+		"state": strings.ToLower(vendorapi.Str(rn.State)),
 	}
 	for _, f := range []struct {
 		key string
@@ -277,7 +277,7 @@ func mapRun(surface vs.SurfaceID, i int, rn run, seen map[string]bool, out *vend
 		}
 		t, ok := rfc3339(f.v)
 		if !ok {
-			return drift(surface, "runs[%d].%s is not an RFC 3339 timestamp", i, f.key)
+			return vendorapi.Drift(surface, "runs[%d].%s is not an RFC 3339 timestamp", i, f.key)
 		}
 		body[f.key] = t.Format(time.RFC3339)
 	}
@@ -304,10 +304,10 @@ func mapRun(surface vs.SurfaceID, i int, rn run, seen map[string]bool, out *vend
 	if ac := rn.AgentConfig; ac != nil {
 		model := ac.ModelID
 		if h := ac.Harness; h != nil {
-			if t := str(h.Type); t != "" {
+			if t := vendorapi.Str(h.Type); t != "" {
 				harness, harnessSource = t, HarnessStated
 			}
-			if str(h.ModelID) != "" && harness != HarnessOz {
+			if vendorapi.Str(h.ModelID) != "" && harness != HarnessOz {
 				// A third-party harness's model is harness.model_id; the
 				// top-level model_id targets the built-in harness.
 				model = h.ModelID
@@ -319,12 +319,12 @@ func mapRun(surface vs.SurfaceID, i int, rn run, seen map[string]bool, out *vend
 		}{{"model_id", model}, {"environment_id", ac.EnvironmentID}, {"worker_host", ac.WorkerHost}}...)
 	}
 	if !tokenRE.MatchString(harness) {
-		return drift(surface, "runs[%d].agent_config.harness.type is not a harness id", i)
+		return vendorapi.Drift(surface, "runs[%d].agent_config.harness.type is not a harness id", i)
 	}
 	body["harness"], body["harness_source"] = strings.ToLower(harness), harnessSource
 	for _, f := range ids {
 		if !putID(body, f.key, f.v) {
-			return drift(surface, "runs[%d].%s is not an id-shaped value", i, f.key)
+			return vendorapi.Drift(surface, "runs[%d].%s is not an id-shaped value", i, f.key)
 		}
 	}
 	if body["execution_location"] != "" {
@@ -333,19 +333,19 @@ func mapRun(surface vs.SurfaceID, i int, rn run, seen map[string]bool, out *vend
 	if rn.Artifacts != nil {
 		prs := 0
 		for _, a := range *rn.Artifacts {
-			if str(a.ArtifactType) != "PULL_REQUEST" || a.Data == nil {
+			if vendorapi.Str(a.ArtifactType) != "PULL_REQUEST" || a.Data == nil {
 				continue
 			}
 			prs++
 			if prs > 1 {
 				continue
 			}
-			u, cut := capText(str(a.Data.URL), vendorapi.MaxAttrValue)
+			u, cut := capText(vendorapi.Str(a.Data.URL), vendorapi.MaxAttrValue)
 			if u == "" || cut || !strings.HasPrefix(u, "https://") {
-				return drift(surface, "runs[%d] has a pull request artifact without an https url", i)
+				return vendorapi.Drift(surface, "runs[%d] has a pull request artifact without an https url", i)
 			}
 			body["pr_url"] = u
-			if b, cut := capText(str(a.Data.Branch), vendorapi.MaxIDLen); b != "" && !cut {
+			if b, cut := capText(vendorapi.Str(a.Data.Branch), vendorapi.MaxIDLen); b != "" && !cut {
 				body["pr_branch"] = b
 			}
 		}
@@ -387,7 +387,7 @@ func usageRows(surface vs.SurfaceID, i int, id string, at time.Time, body map[st
 		for k, name := range []string{"inference", "compute", "platform"} {
 			v, present, ok := amount(u.parts[k])
 			if !ok {
-				return drift(surface, "runs[%d].request_usage.%s cost is not a non-negative amount", i, name)
+				return vendorapi.Drift(surface, "runs[%d].request_usage.%s cost is not a non-negative amount", i, name)
 			}
 			if !present {
 				continue

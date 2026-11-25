@@ -30,30 +30,37 @@ const maxAttachGrantKeyFile = 4096
 // seed is an error, so a broken mount refuses to start instead of silently
 // handing out no grants.
 func loadAttachGrantKey(path string) (ed25519.PrivateKey, error) {
+	return loadGrantSeedFile(envAttachGrantKeyFile, path)
+}
+
+// loadGrantSeedFile reads a platform grant key's seed file named by the
+// setting env (the attach grant's, or the SDK key grant's: one loader, the
+// same rules). An empty path is "no key".
+func loadGrantSeedFile(env, path string) (ed25519.PrivateKey, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, nil
 	}
 	fi, err := os.Stat(path) //nolint:gosec // operator-named secret file
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", envAttachGrantKeyFile, err)
+		return nil, fmt.Errorf("%s: %w", env, err)
 	}
 	if !fi.Mode().IsRegular() || fi.Size() > maxAttachGrantKeyFile {
-		return nil, fmt.Errorf("%s: %s is not a small regular file", envAttachGrantKeyFile, path)
+		return nil, fmt.Errorf("%s: %s is not a small regular file", env, path)
 	}
 	raw, err := os.ReadFile(path) //nolint:gosec // operator-named secret file
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", envAttachGrantKeyFile, err)
+		return nil, fmt.Errorf("%s: %w", env, err)
 	}
-	return parseAttachGrantSeed(string(raw))
+	return parseGrantSeed(env, string(raw))
 }
 
-// parseAttachGrantSeed decodes a hex Ed25519 seed (surrounding whitespace
-// ignored).
-func parseAttachGrantSeed(text string) (ed25519.PrivateKey, error) {
+// parseGrantSeed decodes a hex Ed25519 seed (surrounding whitespace
+// ignored); env names the setting in the error.
+func parseGrantSeed(env, text string) (ed25519.PrivateKey, error) {
 	seed, err := hex.DecodeString(strings.TrimSpace(text))
 	if err != nil || len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("%s: the file is not a hex Ed25519 seed (64 hex characters)", envAttachGrantKeyFile)
+		return nil, fmt.Errorf("%s: the file is not a hex Ed25519 seed (64 hex characters)", env)
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
 }

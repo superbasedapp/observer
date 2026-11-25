@@ -104,10 +104,6 @@ func runAttachSession(_ context.Context, in attachLaunch) error {
 	return errors.New(msg)
 }
 
-// sandboxDoctorChecks adds nothing: the Components section of doctor
-// already says the module is not in this build.
-func sandboxDoctorChecks(context.Context, config.Config) []diag.Check { return nil }
-
 // sandboxDoctorSection adds nothing and reports no sandbox: the module is
 // not in this build.
 func sandboxDoctorSection(context.Context, config.Config, string) ([]diag.Check, bool) {

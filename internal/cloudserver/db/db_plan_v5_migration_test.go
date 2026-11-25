@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 )
 
 const gptOSS20bRoute = "session_enrichment.gpt-oss-20b.v1"
@@ -84,7 +86,7 @@ func checkV5Catalogue(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 }
 
 func TestPopulatedMigration78To79MovesAssignmentsToV5(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv5_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv5_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -192,7 +194,7 @@ func TestPopulatedMigration78To79MovesAssignmentsToV5(t *testing.T) {
 // at now(), 0041 and 0043 repoint them, and 0079 must repoint them once more
 // to v5 within the same runner pass.
 func TestPopulatedMigration38ToHeadInOneTransactionLandsOnV5(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv5jump_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv5jump_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 

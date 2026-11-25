@@ -100,8 +100,8 @@ func destructiveRules() []Rule {
 			ID: "R-103", Category: CategoryDestructive, Severity: SeverityHigh,
 			AppliesTo: shell, MatchCmd: matchMassDelete,
 			Observe: DecisionFlag, Enforce: DecisionAsk,
-			SafePat: []SafeFn{safeUnitPathsAllowlisted},
-			Doc:     "mass-deletion chain (find -delete / xargs rm)",
+			SafePat: []SafeFn{safeMassDeleteAllowlisted},
+			Doc:     "mass-deletion chain (find -delete / -exec rm, xargs rm, tar --remove-files on a file list)",
 			Advice:  "Prefer an explicit file list, or scope the find expression and re-run.",
 		},
 		{
@@ -254,7 +254,13 @@ func safeUnitPathsAllowlisted(ctx *MatchContext, cmd *Command) bool {
 	if cmd == nil {
 		return false
 	}
-	cand := unitPathTokens(cmd)
+	return pathsAllowlisted(ctx, cmd, unitPathTokens(cmd))
+}
+
+// pathsAllowlisted is safeUnitPathsAllowlisted's judgement of a given set
+// of path candidates: none is not safe, and each must resolve under
+// allow_paths from every directory the unit can run in.
+func pathsAllowlisted(ctx *MatchContext, cmd *Command, cand []string) bool {
 	if len(cand) == 0 {
 		return false
 	}
@@ -293,31 +299,9 @@ func safeForceWithLease(_ *MatchContext, cmd *Command) bool {
 
 // --- delete-shape analysis (R-101/R-102) ------------------------------
 
-// deleteShape recognizes filesystem-delete commands across dialects
-// and reports whether the invocation is recursive. ok is false for
-// non-delete bases.
-func deleteShape(cmd *Command) (recursive, ok bool) {
-	switch cmd.Base {
-	case "rm":
-		return cmd.HasShortFlag('r', 'R') || cmd.HasLongFlag("--recursive"), true
-	case "remove-item":
-		// PowerShell: -Recurse prefix-matched at ≥1 ("-r") — no
-		// other Remove-Item parameter starts with r.
-		return psHasParam(cmd, "recurse", 1), true
-	case "rd", "rmdir":
-		if cmd.Dialect == DialectCmd {
-			return cmdHasFlag(cmd, "s"), true
-		}
-		return false, true // POSIX rmdir only removes empty dirs
-	case "del", "erase":
-		if cmd.Dialect == DialectCmd {
-			return cmdHasFlag(cmd, "s"), true
-		}
-		return false, false
-	default:
-		return false, false
-	}
-}
+// Which commands delete, under which flag, recursively or not, and which of
+// their operands they remove is the delete table (deletetable.go). The
+// rules below judge its recursive targets.
 
 // matchDeleteCatastrophic implements R-101: recursive delete whose
 // target is a filesystem root, the home directory, a root-depth
@@ -350,15 +334,15 @@ func matchDeleteUnresolved(ctx *MatchContext, cmd *Command) (bool, string) {
 }
 
 // matchDeleteSubstitutedOperand is R-102's substituted-operand row (NF-2):
-// a recursive delete (deleteShape) with an argument that was nothing but a
-// command substitution (Command.lostArgs). A substitution inside an operand
-// word that leaves a literal part is not this row: the literal part is
-// judged as written (`rm -rf "$(pwd)/x"` reads `/x`, R-101). An option's
-// value counts too (`Remove-Item -Exclude $(x)` asks): the parse does not
-// tell an operand from a value here, which can only ask more.
+// a recursive delete (deletionOf) one of whose recursive targets is a word
+// that was nothing but a command substitution (Command.lostArgs). A
+// substitution inside an operand word that leaves a literal part is not this
+// row: the literal part is judged as written (`rm -rf "$(pwd)/x"` reads `/x`,
+// R-101). An option's value counts where the command's targets keep option
+// values (`Remove-Item -Exclude $(x)` asks): the parse does not tell an
+// operand from a value there, which can only ask more.
 func matchDeleteSubstitutedOperand(_ *MatchContext, cmd *Command) (bool, string) {
-	recursive, ok := deleteShape(cmd)
-	if !ok || !recursive || len(cmd.lostArgs) == 0 {
+	if len(cmd.lostArgs) == 0 || !deletionOf(cmd).lostTarget() {
 		return false, ""
 	}
 	return true, "a target is the output of a command substitution, so the guard cannot tell what it names"
@@ -371,18 +355,18 @@ func matchDeletePipelineItem(ctx *MatchContext, cmd *Command) (bool, string) {
 	return matchShellDeleteTier(ctx, cmd, tierItem)
 }
 
-// matchShellDeleteTier reports the first shell delete operand whose
-// classification from some anchor is exactly tier.
+// matchShellDeleteTier reports the first recursive delete target
+// (deletionOf) whose classification from some anchor is exactly tier.
 func matchShellDeleteTier(ctx *MatchContext, cmd *Command, tier deleteTier) (bool, string) {
-	recursive, ok := deleteShape(cmd)
-	if !ok || !recursive {
+	targets := deletionOf(cmd).recursiveTargets()
+	if len(targets) == 0 {
 		return false, ""
 	}
 	anchors := unitAnchors(ctx, cmd)
 	allow := !plainOnly(anchors)
-	for _, op := range cmd.positionalOperands() {
+	for _, op := range targets {
 		for _, a := range anchors {
-			if t, why := dangerousDeleteTarget(ctx, op, cmd.Dialect, a, allow); t == tier {
+			if t, why := dangerousDeleteTarget(ctx, op.operand, cmd.Dialect, a, allow); t == tier {
 				return true, anchorReason(a, why)
 			}
 		}
@@ -737,6 +721,12 @@ func rootDepthUnderHome(p string, homes []string) bool {
 // A unit that can run anywhere but the event's own directory (an earlier
 // `cd`, a same-command link, a chdir wrapper) is never exempt here: the
 // matcher then judges every anchor and applies allow_paths per anchor.
+//
+// The paths that must be allowlisted are the unit's recursive delete
+// targets (deletionOf) and its redirect targets: for rm and its siblings
+// that is every path operand, as before the delete table; for rsync it is
+// the destination, not the source it copies from (`rsync -a --delete ~/src/
+// /tmp/out/` is a delete under /tmp).
 func safeDeleteAllowlisted(ctx *MatchContext, cmd *Command) bool {
 	if cmd == nil {
 		return false
@@ -745,26 +735,33 @@ func safeDeleteAllowlisted(ctx *MatchContext, cmd *Command) bool {
 	if !plainOnly(anchors) {
 		return false
 	}
-	for _, op := range cmd.positionalOperands() {
+	targets := deletionOf(cmd).recursiveTargets()
+	cand := make([]string, 0, len(targets)+len(cmd.RedirectTargets))
+	for _, op := range targets {
 		raw := op.text
 		if strings.TrimSpace(raw) == "" || strings.HasPrefix(raw, "-") {
 			continue
 		}
-		if _, cand := deleteTargetPathsAt(ctx, raw, anchors[0]); catastrophicDeleteTarget(ctx, op, cmd.Dialect, cand, anchors[0]) != "" {
+		if _, c := deleteTargetPathsAt(ctx, raw, anchors[0]); catastrophicDeleteTarget(ctx, op.operand, cmd.Dialect, c, anchors[0]) != "" {
 			return false
 		}
+		if looksPathish(raw) {
+			cand = append(cand, raw)
+		}
 	}
-	return safeUnitPathsAllowlisted(ctx, cmd)
+	return pathsAllowlisted(ctx, cmd, append(cand, cmd.RedirectTargets...))
 }
 
 // matchDeleteVCS implements R-102: recursive delete inside the
 // project that targets the .git directory or the project root
 // itself. (The spec's ">N entries" half needs filesystem counting —
 // I/O this pure package cannot do; deferred with a doc note, see
-// PROGRESS.)
+// PROGRESS.) A tree walk that starts at the project root (`find .
+// -name '*.log' -delete`) removes what its expression selects, not the
+// root, so the project-root arm leaves it to R-103's mass-deletion ask.
 func matchDeleteVCS(ctx *MatchContext, cmd *Command) (bool, string) {
-	recursive, ok := deleteShape(cmd)
-	if !ok || !recursive {
+	targets := deletionOf(cmd).recursiveTargets()
+	if len(targets) == 0 {
 		return false, ""
 	}
 	pr := deleteProjectRoot(ctx.Event)
@@ -772,7 +769,11 @@ func matchDeleteVCS(ctx *MatchContext, cmd *Command) (bool, string) {
 		return false, ""
 	}
 	anchors := unitAnchors(ctx, cmd)
-	for _, t := range cmd.Positionals() {
+	for _, op := range targets {
+		t := op.text
+		if t == "" {
+			continue
+		}
 		for _, a := range anchors {
 			if a.unknown || a.opaque {
 				continue // R-101 owns a delete it cannot place
@@ -787,7 +788,7 @@ func matchDeleteVCS(ctx *MatchContext, cmd *Command) (bool, string) {
 			if hasComponent(rp, ".git") {
 				return true, "target " + t + " includes the .git directory"
 			}
-			if pathsEqual(rp, pr) {
+			if pathsEqual(rp, pr) && !op.walk {
 				return true, "target " + t + " is the project root itself"
 			}
 		}
@@ -795,28 +796,48 @@ func matchDeleteVCS(ctx *MatchContext, cmd *Command) (bool, string) {
 	return false, ""
 }
 
-// matchMassDelete implements R-103: `find ... -delete`, `find -exec
-// rm`, and xargs-fed rm chains.
-func matchMassDelete(_ *MatchContext, cmd *Command) (bool, string) {
-	if cmd.Base == "find" {
-		if cmd.HasLongFlag("-delete") {
-			return true, "find -delete mass deletion"
-		}
-		for i := 1; i < len(cmd.Argv)-1; i++ {
-			a := cmd.Argv[i]
-			if (a == "-exec" || a == "-execdir") && canonicalBase(cmd.Argv[i+1], cmd.Dialect) == "rm" {
-				return true, "find -exec rm mass deletion"
-			}
-		}
-		return false, ""
+// safeMassDeleteAllowlisted is R-103's safe pattern: the paths the unit
+// deletes from (the delete table's targets: find's start paths, rm's
+// operands) and its redirect targets all resolve under allow_paths, as
+// safeUnitPathsAllowlisted judges them. A unit whose inputs come from a
+// file list (tar -T) is never safe: what it removes is not on the line. A
+// unit with no target named (`xargs rm -f`) is not safe either.
+func safeMassDeleteAllowlisted(ctx *MatchContext, cmd *Command) bool {
+	d := deletionOf(cmd)
+	if d.fromList() {
+		return false
 	}
-	if cmd.Base == "rm" && hasWrapper(cmd, "xargs") {
-		return true, "rm fed by xargs"
+	var cand []string
+	for _, op := range d.targets() {
+		if looksPathish(op.text) {
+			cand = append(cand, op.text)
+		}
+	}
+	return pathsAllowlisted(ctx, cmd, append(cand, cmd.RedirectTargets...))
+}
+
+// matchMassDelete implements R-103: a delete of a set the guard cannot
+// list (deleteRow.mass: `find ... -delete`, `find -exec rm` / `-ok rm` and
+// their siblings, `tar --remove-files -T list`), and any delete fed by
+// xargs. Where the set sits is R-101's: a walk from the home directory or
+// a root is denied there, so this ask is what is left inside the project.
+func matchMassDelete(_ *MatchContext, cmd *Command) (bool, string) {
+	if why := deletionOf(cmd).massReason(); why != "" {
+		return true, why
 	}
 	return false, ""
 }
 
 // --- git rules (R-104/R-110/R-111) ------------------------------------
+
+// gitLong reports a git long option spelled in full or by a prefix of at
+// least minLen bytes: git's parse-options takes any unambiguous prefix
+// (`git reset --h` is `--hard`), so each rule passes the shortest prefix
+// that names only its option in that subcommand (guard-deletes lane,
+// 2026-11-24, found by the rewrite-invariance test).
+func gitLong(cmd *Command, full string, minLen int) bool {
+	return hasGNULong(cmd, full, minLen)
+}
 
 // matchGitDiscard implements R-104: work-discarding git forms.
 func matchGitDiscard(_ *MatchContext, cmd *Command) (bool, string) {
@@ -825,7 +846,7 @@ func matchGitDiscard(_ *MatchContext, cmd *Command) (bool, string) {
 	}
 	switch cmd.Sub() {
 	case "reset":
-		if cmd.HasLongFlag("--hard") {
+		if gitLong(cmd, "--hard", len("--h")) {
 			return true, "git reset --hard discards uncommitted changes"
 		}
 	case "checkout":
@@ -835,7 +856,7 @@ func matchGitDiscard(_ *MatchContext, cmd *Command) (bool, string) {
 			}
 		}
 	case "clean":
-		if cmd.HasShortFlag('f') || cmd.HasLongFlag("--force") {
+		if cmd.HasShortFlag('f') || gitLong(cmd, "--force", len("--f")) {
 			return true, "git clean -f deletes untracked files"
 		}
 	}
@@ -861,19 +882,25 @@ func protectedBranch(ctx *MatchContext, name string) bool {
 // matchForcePush implements R-110. With no refspec on the command
 // line the current branch is unknown to a pure evaluator, so the rule
 // hits conservatively (documented; the safe pattern and near-miss
-// behavior are pinned by tests).
+// behavior are pinned by tests). A refspec with a leading "+" forces
+// that one ref without any flag (`git push origin +main`). --force has no
+// abbreviation: every prefix of it also names --force-with-lease.
 func matchForcePush(ctx *MatchContext, cmd *Command) (bool, string) {
 	if cmd.Base != "git" || cmd.Sub() != "push" {
 		return false, ""
 	}
-	if !cmd.HasShortFlag('f') && !cmd.HasLongFlag("--force") {
-		return false, ""
-	}
 	pos := cmd.Positionals() // ["push", remote?, refspecs...]
-	if len(pos) < 3 {
+	flag := cmd.HasShortFlag('f') || cmd.HasLongFlag("--force")
+	if flag && len(pos) < 3 {
 		return true, "force push with no refspec (target branch unknown, assumed protected)"
 	}
+	if len(pos) < 3 {
+		return false, ""
+	}
 	for _, ref := range pos[2:] {
+		if !flag && !strings.HasPrefix(ref, "+") {
+			continue
+		}
 		if b := refDst(ref); protectedBranch(ctx, b) {
 			return true, "force push to protected branch " + b
 		}
@@ -881,9 +908,11 @@ func matchForcePush(ctx *MatchContext, cmd *Command) (bool, string) {
 	return false, ""
 }
 
-// matchProtectedDeletion implements R-111: branch -D / tag -d /
-// push --delete (and ":ref" push refspecs) against protected
-// patterns.
+// matchProtectedDeletion implements R-111: branch -D (and its long and
+// split spellings, `-d -f`, `--delete --force`) / tag -d / push --delete
+// (and ":ref" push refspecs) against protected patterns. Long options are
+// read by their shortest unambiguous prefix (gitLong): branch --force
+// shares "--for" with --format.
 func matchProtectedDeletion(ctx *MatchContext, cmd *Command) (bool, string) {
 	if cmd.Base != "git" {
 		return false, ""
@@ -891,7 +920,9 @@ func matchProtectedDeletion(ctx *MatchContext, cmd *Command) (bool, string) {
 	pos := cmd.Positionals()
 	switch cmd.Sub() {
 	case "branch":
-		if cmd.HasShortFlag('D') || (cmd.HasLongFlag("--delete") && cmd.HasLongFlag("--force")) {
+		del := cmd.HasShortFlag('d') || gitLong(cmd, "--delete", len("--d"))
+		force := cmd.HasShortFlag('f') || gitLong(cmd, "--force", len("--forc"))
+		if cmd.HasShortFlag('D') || (del && force) {
 			for _, b := range pos[1:] {
 				if protectedBranch(ctx, b) {
 					return true, "deleting protected branch " + b
@@ -899,7 +930,7 @@ func matchProtectedDeletion(ctx *MatchContext, cmd *Command) (bool, string) {
 			}
 		}
 	case "tag":
-		if cmd.HasShortFlag('d') || cmd.HasLongFlag("--delete") {
+		if cmd.HasShortFlag('d') || gitLong(cmd, "--delete", len("--d")) {
 			for _, t := range pos[1:] {
 				if protectedBranch(ctx, t) {
 					return true, "deleting protected tag " + t
@@ -908,7 +939,7 @@ func matchProtectedDeletion(ctx *MatchContext, cmd *Command) (bool, string) {
 		}
 	case "push":
 		for _, ref := range pos[1:] {
-			deleting := cmd.HasLongFlag("--delete") || strings.HasPrefix(ref, ":")
+			deleting := cmd.HasShortFlag('d') || gitLong(cmd, "--delete", len("--de")) || strings.HasPrefix(ref, ":")
 			if !deleting {
 				continue
 			}
@@ -1151,9 +1182,10 @@ func matchPackagePublish(_ *MatchContext, cmd *Command) (bool, string) {
 var reMode777 = regexp.MustCompile(`^0?[0-7]?777$`)
 
 // matchBulkPermChange implements R-141: chmod -R 777 anywhere, and
-// chown -R with a target outside the project root.
+// chown -R with a target outside the project root. --recursive is read by
+// any prefix from "--rec" (getopt_long; "--re" is also --reference).
 func matchBulkPermChange(ctx *MatchContext, cmd *Command) (bool, string) {
-	recursive := cmd.HasShortFlag('R') || cmd.HasLongFlag("--recursive")
+	recursive := cmd.HasShortFlag('R') || hasGNULong(cmd, "--recursive", len("--rec"))
 	if !recursive {
 		return false, ""
 	}

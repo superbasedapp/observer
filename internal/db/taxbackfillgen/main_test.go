@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/genout"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
@@ -360,7 +361,7 @@ func TestHeaderIsPresentAndSelfDescribing(t *testing.T) {
 // script uses.
 func TestWriteCreatesParentDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "dir", migrationName)
-	if err := write(path, []byte("-- x\n")); err != nil {
+	if err := genout.WriteFile(path, []byte("-- x\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {

@@ -3,6 +3,7 @@ package shutdown
 import (
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
@@ -96,30 +97,39 @@ func TestWatchdogOverrunNamesTheBlocker(t *testing.T) {
 	wd.Disarm() // idempotent
 }
 
+// TestWatchdogDisarmBeforeBoundIsSilent runs in a synctest bubble: the
+// watchdog's timers use the bubble's fake clock, and time.Sleep returns only
+// once every goroutine in the bubble is blocked, so a timer that survived
+// Disarm would have fired (and its callback run) before the check. That makes
+// "nothing fired" a proof, not a race, and costs no wall time.
 func TestWatchdogDisarmBeforeBoundIsSilent(t *testing.T) {
-	tr := NewTracker()
-	fired := make(chan string, 2)
-	wd := NewWatchdog(tr, Options{
-		Bound:    150 * time.Millisecond,
-		Progress: func(Report) { fired <- "progress" },
-		Overrun:  func(Report) { fired <- "overrun" },
+	synctest.Test(t, func(t *testing.T) {
+		tr := NewTracker()
+		fired := make(chan string, 2)
+		wd := NewWatchdog(tr, Options{
+			Bound:    150 * time.Millisecond,
+			Progress: func(Report) { fired <- "progress" },
+			Overrun:  func(Report) { fired <- "overrun" },
+		})
+		wd.Arm()
+		wd.Disarm()
+		time.Sleep(300 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case f := <-fired:
+			t.Fatalf("%s fired after Disarm", f)
+		default:
+		}
+		// Arm after Disarm does nothing.
+		wd.Arm()
+		time.Sleep(300 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case f := <-fired:
+			t.Fatalf("%s fired after a post-Disarm Arm", f)
+		default:
+		}
 	})
-	wd.Arm()
-	wd.Disarm()
-	time.Sleep(300 * time.Millisecond)
-	select {
-	case f := <-fired:
-		t.Fatalf("%s fired after Disarm", f)
-	default:
-	}
-	// Arm after Disarm does nothing.
-	wd.Arm()
-	time.Sleep(300 * time.Millisecond)
-	select {
-	case f := <-fired:
-		t.Fatalf("%s fired after a post-Disarm Arm", f)
-	default:
-	}
 }
 
 // TestNoForbiddenImports pins the module boundary (CLAUDE.md section 1).

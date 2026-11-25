@@ -203,7 +203,7 @@ func capBody(s string) string {
 
 // putID sets an optional id-shaped body value, refusing an over-long one.
 func putID(body map[string]string, key string, v *string) bool {
-	s := str(v)
+	s := vendorapi.Str(v)
 	if s == "" {
 		return true
 	}
@@ -223,36 +223,36 @@ func parseOrgSessions(r vendorapi.Response) (vendorapi.Page, error) {
 	page := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Items)}
 	seen := map[string]bool{}
 	for i, s := range *doc.Items {
-		id := str(s.SessionID)
+		id := vendorapi.Str(s.SessionID)
 		if !sessionIDRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].session_id is missing or not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].session_id is missing or not an id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d] repeats a session", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d] repeats a session", i)
 		}
 		seen[id] = true
-		status := str(s.Status)
+		status := vendorapi.Str(s.Status)
 		if status == "" || len(status) > 64 {
-			return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].status is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].status is missing", i)
 		}
 		created, ok := unixSeconds(s.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].created_at is not Unix seconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].created_at is not Unix seconds", i)
 		}
 		at := created
 		body := map[string]string{"status": status, "created_at": created.Format(time.RFC3339)}
 		if s.UpdatedAt != nil {
 			u, ok := unixSeconds(s.UpdatedAt)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].updated_at is not Unix seconds", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].updated_at is not Unix seconds", i)
 			}
 			at = u
 			body["updated_at"] = u.Format(time.RFC3339)
 		}
-		if v := capBody(str(s.Title)); v != "" {
+		if v := capBody(vendorapi.Str(s.Title)); v != "" {
 			body["title"] = v
 		}
-		if v := str(s.URL); v != "" && len(v) <= vendorapi.MaxAttrValue {
+		if v := vendorapi.Str(s.URL); v != "" && len(v) <= vendorapi.MaxAttrValue {
 			body["url"] = v
 		}
 		for _, f := range []struct {
@@ -269,7 +269,7 @@ func parseOrgSessions(r vendorapi.Response) (vendorapi.Page, error) {
 			{"automation_id", s.AutomationID},
 		} {
 			if !putID(body, f.key, f.v) {
-				return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].%s is over-long", i, f.key)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].%s is over-long", i, f.key)
 			}
 		}
 		if s.ChildSessionIDs != nil {
@@ -279,18 +279,18 @@ func parseOrgSessions(r vendorapi.Response) (vendorapi.Page, error) {
 			prs := *s.PullRequests
 			body["pull_request_count"] = strconv.Itoa(len(prs))
 			if len(prs) > 0 {
-				if v := str(prs[0].PRURL); v != "" && len(v) <= vendorapi.MaxAttrValue {
+				if v := vendorapi.Str(prs[0].PRURL); v != "" && len(v) <= vendorapi.MaxAttrValue {
 					body["pr_url"] = v
 				}
 				if !putID(body, "pr_state", prs[0].PRState) {
-					return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].pull_requests[0].pr_state is over-long", i)
+					return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].pull_requests[0].pr_state is over-long", i)
 				}
 			}
 		}
 		if s.OnDemandUsage != nil {
 			usd, ok := vendorapi.DecimalMicros(string(*s.OnDemandUsage), 0)
 			if !ok || usd < 0 {
-				return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].on_demand_usage is not a non-negative amount", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].on_demand_usage is not a non-negative amount", i)
 			}
 			body["on_demand_usage_usd"] = string(*s.OnDemandUsage)
 		}
@@ -300,18 +300,18 @@ func parseOrgSessions(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		acus, ok := acuMicros(s.ACUsConsumed)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceOrgSessions, "items[%d].acus_consumed is not a non-negative number", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceOrgSessions, "items[%d].acus_consumed is not a non-negative number", i)
 		}
 		u := vendorapi.UsageRow{
 			JoinKind: SessionUsageJoinKind, JoinNamespace: SessionUsageNamespace, JoinValue: id,
 			At: at, SessionRef: id, ChargedUnit: UnitACU, ChargedMicros: acus, Revision: at.Unix(),
 		}
 		switch {
-		case str(s.UserID) != "":
+		case vendorapi.Str(s.UserID) != "":
 			u.IdentityKind, u.Identity = "user_id", *s.UserID
-		case str(s.ServiceUserID) != "":
+		case vendorapi.Str(s.ServiceUserID) != "":
 			u.IdentityKind, u.Identity = ActorServiceUser, *s.ServiceUserID
-		case str(s.OrgID) != "":
+		case vendorapi.Str(s.OrgID) != "":
 			u.IdentityKind, u.Identity = ParamOrgID, *s.OrgID
 		default:
 			u.IdentityKind, u.Identity = ParamOrgID, r.Params[ParamOrgID]
@@ -351,38 +351,38 @@ func parseSessionMessages(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	sid := r.Params[ParamSessionID]
 	if !sessionIDRE.MatchString(sid) {
-		return vendorapi.Page{}, drift(SurfaceSessionMessages, "the request's %s parameter is not a session id", ParamSessionID)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "the request's %s parameter is not a session id", ParamSessionID)
 	}
 	page := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Items)}
 	seen := map[string]bool{}
 	for i, m := range *doc.Items {
-		id := str(m.EventID)
+		id := vendorapi.Str(m.EventID)
 		if !eventIDRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d].event_id is missing or not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d].event_id is missing or not an id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d] repeats an event", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d] repeats an event", i)
 		}
 		seen[id] = true
 		if m.Source == nil || m.Message == nil {
-			return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d] misses source or message", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d] misses source or message", i)
 		}
 		at, ok := unixSeconds(m.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d].created_at is not Unix seconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d].created_at is not Unix seconds", i)
 		}
 		role, known := messageRoles[*m.Source]
 		if !known {
 			continue
 		}
 		if !utf8.ValidString(*m.Message) {
-			return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d].message is not valid UTF-8", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d].message is not valid UTF-8", i)
 		}
 		text, cut := cutContent(*m.Message)
 		c := vendorapi.ContentItem{ItemID: id, At: at, SessionRef: sid, Role: role, Text: text, Truncated: cut}
-		if role == "prompt" && str(m.UserID) != "" {
+		if role == "prompt" && vendorapi.Str(m.UserID) != "" {
 			if len(*m.UserID) > vendorapi.MaxIDLen {
-				return vendorapi.Page{}, drift(SurfaceSessionMessages, "items[%d].user_id is over-long", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionMessages, "items[%d].user_id is over-long", i)
 			}
 			c.IdentityKind, c.Identity = "user_id", *m.UserID
 		}

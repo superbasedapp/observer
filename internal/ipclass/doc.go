@@ -23,9 +23,10 @@
 //     guard agree on.
 //
 // Both unwrap the IPv4-in-IPv6 transition forms the stdlib predicates do not
-// look through — IPv4-mapped (::ffff:a.b.c.d), NAT64 (64:ff9b::/96) and 6to4
-// (2002::/16) — so a metadata address wrapped in any of them is still seen as
-// the metadata address it really is.
+// look through — IPv4-mapped (::ffff:a.b.c.d), NAT64 (64:ff9b::/96), 6to4
+// (2002::/16) and Teredo (2001::/32, the obfuscated client address) — so a
+// metadata address wrapped in any of them is still seen as the metadata
+// address it really is.
 //
 // ParseHostIP accepts the LOOSE address spellings curl, wget and browsers
 // accept — a single decimal (2852039166), hex (0xa9fea9fe), octal parts

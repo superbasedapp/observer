@@ -48,7 +48,7 @@ func SessionStatus() vendorapi.Driver {
 func buildSessionStatus(p vendorapi.Params, _ vendorapi.Window, cursor string) (vendorapi.Request, error) {
 	id := p[ParamSessionID]
 	if !ValidID(id) || cursor != "" {
-		return vendorapi.Request{}, drift(SurfaceSessionStatus, "a status read needs one session id and no cursor")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceSessionStatus, "a status read needs one session id and no cursor")
 	}
 	return vendorapi.Request{Method: "GET", Path: "/api/v1/session/" + id + "/status"}, nil
 }
@@ -69,25 +69,25 @@ func parseSessionStatus(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	id := r.Params[ParamSessionID]
 	if !ValidID(id) {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "the response names no requested session")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "the response names no requested session")
 	}
 	var env envelope
-	if err := decode(r.Body, &env); err != nil || env.Data == nil || isNull(env.Data) {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "body is not the {data: {...}} envelope")
+	if err := vendorapi.DecodeNumbers(r.Body, &env); err != nil || env.Data == nil || isNull(env.Data) {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "body is not the {data: {...}} envelope")
 	}
 	var doc statusDoc
-	if err := decode(env.Data, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "data is not a status object")
+	if err := vendorapi.DecodeNumbers(env.Data, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "data is not a status object")
 	}
-	if s := str(doc.SessionID); s != "" && s != id {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "data.sessionId names another session")
+	if s := vendorapi.Str(doc.SessionID); s != "" && s != id {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "data.sessionId names another session")
 	}
-	if str(doc.Status) == "" {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "data.status is missing")
+	if vendorapi.Str(doc.Status) == "" {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "data.status is missing")
 	}
 	body := map[string]string{}
 	if !putShort(body, "status", doc.Status) || !putShort(body, "phase", doc.Phase) {
-		return vendorapi.Page{}, drift(SurfaceSessionStatus, "data has an over-long status or phase")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessionStatus, "data has an over-long status or phase")
 	}
 	return vendorapi.Page{
 		Snapshots: []vendorapi.VendorSnapshot{{Class: StatusClass, Subject: id, Body: body}}, SourceRecords: 1,

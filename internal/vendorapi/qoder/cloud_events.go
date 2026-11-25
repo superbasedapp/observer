@@ -162,7 +162,7 @@ func parseCloudEvents(r vendorapi.Response) (vendorapi.Page, error) {
 	out := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Data)}
 	seen := map[string]bool{}
 	for i, e := range *doc.Data {
-		id := str(e.ID)
+		id := vendorapi.Str(e.ID)
 		if !cloudIDRE.MatchString(id) {
 			return vendorapi.Page{}, d("data[%d].id is missing or not an id", i)
 		}
@@ -170,7 +170,7 @@ func parseCloudEvents(r vendorapi.Response) (vendorapi.Page, error) {
 			return vendorapi.Page{}, d("data[%d] repeats an event", i)
 		}
 		seen[id] = true
-		typ := str(e.Type)
+		typ := vendorapi.Str(e.Type)
 		if typ == "" || len(typ) > 64 {
 			return vendorapi.Page{}, d("data[%d].type is missing", i)
 		}
@@ -192,12 +192,12 @@ func parseCloudEvents(r vendorapi.Response) (vendorapi.Page, error) {
 		detail := map[string]string{}
 		switch rule.action {
 		case ActionToolCall:
-			name := str(e.Name)
+			name := vendorapi.Str(e.Name)
 			if len(name) > vendorapi.MaxTargetLen {
 				return vendorapi.Page{}, d("data[%d].name is over-long", i)
 			}
 			ev.Target = name
-			if v := str(e.MCPServerName); v != "" && len(v) <= 128 {
+			if v := vendorapi.Str(e.MCPServerName); v != "" && len(v) <= 128 {
 				detail[DetailMCPServer] = v
 			}
 		case ActionToolResult:
@@ -213,7 +213,7 @@ func parseCloudEvents(r vendorapi.Response) (vendorapi.Page, error) {
 			}
 		case ActionTurnEnd:
 			if e.StopReason != nil {
-				if v := str(e.StopReason.Type); v != "" && cloudTokenRE.MatchString(v) {
+				if v := vendorapi.Str(e.StopReason.Type); v != "" && cloudTokenRE.MatchString(v) {
 					detail[DetailStopReason] = v
 				}
 			}
@@ -228,7 +228,7 @@ func parseCloudEvents(r vendorapi.Response) (vendorapi.Page, error) {
 
 func firstSet(v ...*string) string {
 	for _, s := range v {
-		if str(s) != "" {
+		if vendorapi.Str(s) != "" {
 			return *s
 		}
 	}

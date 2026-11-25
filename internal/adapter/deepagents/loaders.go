@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 )
 
 // loadTouchedThreads returns the threads whose newest checkpoint in ANY
@@ -17,7 +19,7 @@ import (
 // namespace; LatestCheckpointID stays the root namespace's newest (the
 // out-of-graph spend row is timestamped from it).
 func loadTouchedThreads(ctx context.Context, db *sql.DB, cursor int64) ([]threadRow, error) {
-	if !tableExists(ctx, db, "checkpoints") || !tableExists(ctx, db, "writes") {
+	if !sqliteschema.TableExists(ctx, db, "checkpoints") || !sqliteschema.TableExists(ctx, db, "writes") {
 		return nil, nil
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -140,7 +142,7 @@ type threadWorkspace struct {
 // table or row yields the zero value (the checkpoint metadata cwd is the
 // fallback).
 func loadThreadWorkspace(ctx context.Context, db *sql.DB, threadID string) threadWorkspace {
-	if !tableExists(ctx, db, "dcode_thread_workspaces") {
+	if !sqliteschema.TableExists(ctx, db, "dcode_thread_workspaces") {
 		return threadWorkspace{}
 	}
 	var w threadWorkspace

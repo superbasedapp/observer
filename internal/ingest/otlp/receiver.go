@@ -108,8 +108,8 @@ func grpcHandlerError(err error) error {
 }
 
 // Handler ingests one decoded OTLP logs export. It is injected by the daemon
-// (ccotel.ParseLogs → store.UpsertTurnByRequestID) so this package carries no
-// dependency on the Claude Code schema or the store. A returned error is logged
+// (otlpvendor.ParseLogs → store.UpsertTurnByRequestID) so this package carries
+// no dependency on the Claude Code schema or the store. A returned error is logged
 // and surfaced to the client as an OTLP partial failure, but never panics the
 // receiver.
 type Handler func(ctx context.Context, req *collogspb.ExportLogsServiceRequest) error

@@ -36,7 +36,10 @@ import {
   type SettingsInput,
 } from "./config.js";
 import { _resetContextForTests, Scope } from "./context.js";
-import { discoverDestination, PendingProcessor, withDiscovered } from "./destination.js";
+import { discoverDestination, PendingProcessor, withDiscovered, withSdkFile, type SdkFileUse } from "./destination.js";
+import { readSdkCredentialFile, type SdkFileState } from "./credfile.js";
+import { homedir } from "node:os";
+import { _resetGatewayForTests } from "./aigateway.js";
 import {
   bounded,
   CountingExporter,
@@ -54,7 +57,11 @@ import { policyStats, resetPolicyStats, SwitchableSampler, type MaskFn, type Sho
 import { applyVendorTracing, dropScopePrefixes, resetVendorTracingForTests, type VendorTracing } from "./vendor.js";
 import { _resetNetInputWarningForTests } from "./spans.js";
 import { clearPromptCache } from "./prompts.js";
+import { planRefusalStats, resetPlanRefusal, type PlanRefusalError } from "./planrefusal.js";
 import { resetRuntime, runtime, SDK_MARKER, TRACER_NAME, VERSION } from "./runtime.js";
+import { projectFacts, type ProjectFacts } from "./project.js";
+import { _resetFirstTraceForTests, firstTraceWritten } from "./firsttrace.js";
+import { _resetInstrumentForTests, autoInstrument, instrumentSetting, instrumentStatus, resolveInstrumentSetting, type InstrumentSetting } from "./instrument.js";
 
 export { VERSION } from "./runtime.js";
 export {
@@ -87,6 +94,8 @@ export {
   type Settings,
   type SettingsInput,
 } from "./config.js";
+export { FIRST_TRACE_ENV, FIRST_TRACE_PREFIX, linkAllowed, traceLink } from "./firsttrace.js";
+export { normaliseServiceName, projectFacts, serviceNameLadder, type ProjectFacts, type ServiceNameSource } from "./project.js";
 export { K as Attr, LIMITS, REQUEST_PARAMS, SEMCONV_COMMIT, SEMCONV_SCHEMA_URL } from "./attrs.js";
 export {
   getCurrentAttributes,
@@ -97,6 +106,16 @@ export {
   type TraceAttributes,
 } from "./context.js";
 export { DISCOVERY_PATH, isLoopbackUrl, parseDiscovery, readCredentialFile, type Discovered } from "./destination.js";
+export {
+  CREDENTIAL_FILE_ENV,
+  EXPIRY_WARNING_DAYS,
+  parseCredentialText,
+  readCredentialRecord,
+  sdkCredentialPath,
+  type CredentialRead,
+  type CredentialRecord,
+  type PathFacts,
+} from "./credfile.js";
 export { keepTrace, TRUNCATED_MARK, type MaskFn, type ShouldExportFn } from "./policy.js";
 export { continueTrace, extract, getTraceparent, inject, type Carrier } from "./propagation.js";
 export {
@@ -131,11 +150,70 @@ export {
   type ToolInfo,
   type Usage,
 } from "./spans.js";
+export {
+  AllowanceExceededError,
+  PlanRefusalError,
+  PlanRequiredError,
+  parsePlanRefusal,
+  type PlanAllowance,
+  type PlanInfo,
+  type PlanQuota,
+  type PlanRefusalFields,
+  type PlanRefusalKind,
+} from "./planrefusal.js";
 export * from "./scores.js";
 export * from "./cost.js";
+export {
+  AI_GATEWAY_KEY_ENV,
+  AI_GATEWAY_URL_ENV,
+  GATEWAY_UPSTREAM_HEADER,
+  GatewayNotConfiguredError,
+  GatewayRefusalError,
+  anthropicOptions,
+  gatewayBaseUrl,
+  gatewayClientKey,
+  gatewayEndpoint,
+  gatewayKey,
+  gatewayRefusal,
+  gatewayRefusalFromResponse,
+  openAIOptions,
+  parseGatewayRefusal,
+  resolveGatewayEndpoint,
+  type GatewayBudget,
+  type GatewayClientInput,
+  type GatewayClientOptions,
+  type GatewayEndpoint,
+  type GatewayOptions,
+  type GatewayProblem,
+  type GatewayProvider,
+  type GatewayRefusalFields,
+  type GatewayRefusalKind,
+  type GatewayResolveInput,
+  type GatewayResolution,
+  type GatewaySource,
+} from "./aigateway.js";
 export * from "./prompts.js";
 export * from "./experiments.js";
-export * from "./instrument.js";
+export {
+  ALIASES,
+  ALREADY,
+  AUTO_EXCLUDED,
+  AUTO_SKIPPED_NOTE,
+  INSTRUMENTED,
+  NOT_INSTALLED,
+  PENDING,
+  PYTHON_ONLY,
+  SKIPPED_HOST_PROVIDER,
+  SKIPPED_NOT_INSTALLED,
+  TARGETS,
+  instrument,
+  instrumented,
+  resolveInstrumentSetting,
+  uninstrument,
+  type InstrumentOptions,
+  type InstrumentSetting,
+  type InstrumentTarget,
+} from "./instrument.js";
 
 export interface InitOptions extends SettingsInput {
   /** Also print spans to stdout (debugging). Env: SUPERBASED_CONSOLE. */
@@ -152,6 +230,16 @@ export interface InitOptions extends SettingsInput {
   mask?: MaskFn;
   /** Return false to drop a finished span. Code only. */
   shouldExport?: ShouldExportFn;
+  /**
+   * Model-library instrumentation (plan 3.1): `"auto"` (the default) turns
+   * on every installed target when the SDK owns the tracer provider, at once
+   * when the library is loaded and otherwise on its first load (CommonJS;
+   * ESM apps start with `--import @superbased/sdk/register`). `"off"` (or
+   * `false`) turns none on; a list (`["openai", "langgraph"]`) turns on
+   * exactly those, whatever the provider. `openai-agents` only when named.
+   * Env: SUPERBASED_INSTRUMENT. An explicit option wins over the env.
+   */
+  instrument?: "auto" | "off" | boolean | readonly string[];
 }
 
 /** How the SDK holds spans: its own registered provider, the host's provider, or a private one. */
@@ -175,6 +263,14 @@ interface State {
   ready: Promise<void>;
   /** Model client libraries that trace themselves, as the last init() left them (vendor.ts). */
   vendorTracing: Record<string, VendorTracing>;
+  /** The instrument setting the last init() applied. */
+  instrument: InstrumentSetting | null;
+  /** The SDK-held credential file as the last init() read it (null when it was not needed). */
+  sdkFile: SdkFileState | null;
+  /** Whether its record is the credential in use. */
+  sdkFileUsed: boolean;
+  /** Its state after the ladders (sdkFile.state). */
+  sdkFileUse: SdkFileUse;
 }
 
 const processor = new SwitchableProcessor();
@@ -193,6 +289,10 @@ const state: State = {
   effective: null,
   ready: Promise.resolve(),
   vendorTracing: {},
+  instrument: null,
+  sdkFile: null,
+  sdkFileUsed: false,
+  sdkFileUse: "not_read",
 };
 let ownResource: Record<string, unknown> = {};
 const objectIds = new WeakMap<object, number>();
@@ -256,6 +356,7 @@ function buildDelegate(dests: Destination[], exporter: SpanExporter | undefined,
       new BatchSpanProcessor(
         new CountingExporter(
           exporter ?? new OTLPTraceExporter({ url: d.endpoint, headers: d.headers, timeoutMillis: d.timeoutMs }),
+          d.name,
         ),
         { exportTimeoutMillis: d.timeoutMs },
       ),
@@ -305,8 +406,16 @@ function installExitHook(): void {
  * (live finding L-01). A named endpoint (the option or
  * SUPERBASED_OTLP_ENDPOINT, or under `local` an OTEL_* one) needs no answer.
  */
-function syncChoice(opts: InitOptions, env: Record<string, string | undefined>, s: Settings): [DestinationChoice | "", string] | null {
-  const chosen = resolveDestinationChoice(opts.destination, env);
+function syncChoice(
+  opts: InitOptions,
+  env: Record<string, string | undefined>,
+  s: Settings,
+  fileChoice: DestinationChoice | "",
+  inferOnline: boolean,
+): [DestinationChoice | "", string] | null {
+  // The option, then SUPERBASED_DESTINATION, then the SDK-held file's choice (rung 3, plan 3.4).
+  const given = resolveDestinationChoice(opts.destination, env);
+  const chosen = given.choice ? given : fileChoice ? { choice: fileChoice, source: "sdk_file" } : given;
   const onlineGap = (c: string) => (c === "online" || c === "both") && (!s.orgUrl || !s.apiKey);
   // A local destination the app named no endpoint for exports to the receiver
   // the machine advertises (a machine on other ports; live finding L-01).
@@ -315,8 +424,26 @@ function syncChoice(opts: InitOptions, env: Record<string, string | undefined>, 
   // A caller-supplied exporter takes every span; control calls follow the choice ("" = online when configured, else local).
   if (opts.exporter) return [chosen.choice, "exporter"];
   if (chosen.choice && !(canAsk && (onlineGap(chosen.choice) || localGap(chosen.choice)))) return [chosen.choice, chosen.source];
-  if (!canAsk) return chosen.choice ? [chosen.choice, chosen.source] : s.orgUrl && s.apiKey ? ["online", "inferred"] : ["local", "default"];
+  if (!canAsk) return chosen.choice ? [chosen.choice, chosen.source] : inferOnline ? ["online", "inferred"] : ["local", "default"];
   return null;
+}
+
+/**
+ * The SDK-held file, read only when it can matter (plan 3.4): no destination
+ * was chosen (its `destination` is rung 3), or `online` / `both` was chosen
+ * without a key and a gateway of the app's own. An explicit `local` never
+ * reads it.
+ */
+function sdkFileFor(chosen: DestinationChoice | "", s: Settings, env: Record<string, string | undefined>): SdkFileState | null {
+  const needed = !chosen || ((chosen === "online" || chosen === "both") && !(s.apiKey && s.orgUrl));
+  if (!needed) return null;
+  let home = "";
+  try {
+    home = homedir();
+  } catch {
+    // no home: only SUPERBASED_CREDENTIAL_FILE (or %LOCALAPPDATA%) can name it
+  }
+  return readSdkCredentialFile(env, home);
 }
 
 /** No destination chosen and no machine answered: a gateway and a credential given to the app mean `online`. */
@@ -347,6 +474,7 @@ function activate(
   state.problems = [
     ...(s.destinationInvalid ? [s.destinationInvalid] : []),
     ...(s.samplingInvalid ? [s.samplingInvalid] : []),
+    ...(state.instrument?.warnings ?? []),
     ...extraProblems,
     ...(opts.exporter ? [] : destinationProblems(s, choice)),
   ];
@@ -377,9 +505,10 @@ function activate(
  * replaces the SDK's exporters in place, shutting the previous ones down.
  */
 export function init(opts: InitOptions = {}): Settings {
-  const { console: consoleOpt, exporter, tracerProvider, mask, shouldExport, ...input } = opts;
+  const { console: consoleOpt, exporter, tracerProvider, mask, shouldExport, instrument: instrumentOpt, ...input } = opts;
   const env = (typeof process !== "undefined" ? process.env : {}) as Record<string, string | undefined>;
-  const s = resolveSettings(env, input);
+  const s = resolveSettings(env, input, processProject());
+  const instrumentChoice = resolveInstrumentSetting(instrumentOpt, env);
   const printSpans = consoleOpt ?? ["1", "true", "yes", "on"].includes((env.SUPERBASED_CONSOLE ?? "").toLowerCase());
   runtime.settings = s;
   runtime.resourceService = ""; // a new init: the next span says which service
@@ -411,7 +540,7 @@ export function init(opts: InitOptions = {}): Settings {
     promptCacheTtlMs: _p,
     ...exportShape
   } = s;
-  const configKey = JSON.stringify([exportShape, printSpans, oid(exporter), oid(tracerProvider)]);
+  const configKey = JSON.stringify([exportShape, printSpans, oid(exporter), oid(tracerProvider), instrumentChoice]);
   if (processor.active && configKey === state.configKey) return publicView(s);
 
   // Process-wide identity on the resource (contract section 2): release and
@@ -460,11 +589,34 @@ export function init(opts: InitOptions = {}): Settings {
 
   processor.shutdownTimeoutMs = s.shutdownTimeoutMs;
   const gen = ++initGeneration;
-  const sync = syncChoice(opts, env, s);
+  state.instrument = instrumentChoice;
+  const given = resolveDestinationChoice(opts.destination, env);
+  const file = sdkFileFor(given.choice, s, env);
+  const fileChoice: DestinationChoice | "" = !given.choice && file?.record?.destination ? file.record.destination : "";
+  state.sdkFile = file;
+  state.sdkFileUsed = false;
+  state.sdkFileUse = file ? (file.present ? (file.record ? "unused" : "refused") : "absent") : "not_read";
+  runtime.dashboardUrl = "";
+  // A file consulted for the destination that names none says so (destination.md section 6a).
+  const fileNotes: string[] =
+    !given.choice && file?.record && !file.record.destination && !file.ignored.includes("destination")
+      ? [`the SDK-held credential file ${file.path} names no destination (online or both), so it does not choose where traces go; run setup again to rewrite it`]
+      : [];
+  // Apply the SDK-held record after the machine's (ruling R10) and activate.
+  const finish = (base: Settings, choice: DestinationChoice | "", source: string, extra: string[], notes: string[], signedIn: boolean | null, machineDashboard = "") => {
+    const f = withSdkFile(base, file, choice);
+    state.sdkFileUse = f.use;
+    state.sdkFileUsed = f.use === "used";
+    runtime.dashboardUrl = f.use === "used" ? f.dashboardUrl : f.settings.credentialSource === "file" ? machineDashboard : "";
+    return activate(f.settings, choice, source, opts, printSpans, [...extra, ...fileNotes, ...f.problems], notes, signedIn);
+  };
+  // Only a key and a gateway the app gave make an unchosen destination `online` (rung 5).
+  const inferOnline = !!(s.orgUrl && s.apiKey);
+  const sync = syncChoice(opts, env, s, fileChoice, inferOnline);
   let delegate: SpanProcessor;
   runtime.admissionUrl = "";
   if (sync) {
-    delegate = activate(s, sync[0], sync[1], opts, printSpans);
+    delegate = finish(s, sync[0], sync[1], [], [], null);
     state.ready = Promise.resolve();
   } else {
     const pending = new PendingProcessor();
@@ -473,7 +625,7 @@ export function init(opts: InitOptions = {}): Settings {
     runtime.destinationSource = "discovering";
     state.active = [];
     state.problems = [];
-    const chosen = resolveDestinationChoice(opts.destination, env);
+    const chosen = given.choice ? given : fileChoice ? { choice: fileChoice, source: "sdk_file" } : given;
     state.ready = discoverDestination(s.nodeUrl, s.discoverTimeoutMs).then(({ found, error }) => {
       if (gen !== initGeneration) {
         pending.resolve(null);
@@ -482,16 +634,16 @@ export function init(opts: InitOptions = {}): Settings {
       const notes = error && error !== "discovery off" ? [error] : [];
       if (!found) {
         // No machine answered: the explicit choice, else inferred online, else local (a NOTE, not a warning).
-        const choice = chosen.choice || inferred(s, "local");
+        const choice = chosen.choice || (inferOnline ? "online" : "local");
         const source = chosen.choice ? chosen.source : choice === "online" ? "inferred" : "default";
-        pending.resolve(activate(s, choice, source, opts, printSpans, [], notes));
+        pending.resolve(finish(s, choice, source, [], notes, null));
         return;
       }
       const choice = chosen.choice || found.destination;
       const source = chosen.choice ? chosen.source : "machine";
       const { settings: merged, problems } = withDiscovered(s, found, choice);
       runtime.admissionUrl = found.admissionUrl;
-      pending.resolve(activate(merged, choice, source, opts, printSpans, problems, notes, found.signedIn));
+      pending.resolve(finish(merged, choice, source, problems, notes, found.signedIn, found.dashboardUrl));
     });
   }
   // Control calls wait for the destination (review E-33); never rejects.
@@ -504,6 +656,14 @@ export function init(opts: InitOptions = {}): Settings {
   state.configKey = configKey;
   runtime.tracer = provider.getTracer(TRACER_NAME, VERSION);
   runtime.provider = provider;
+  // Model-library instrumentation (plan 3.1): after the provider is known,
+  // since the rule depends on who owns it. (Its warnings are reported with
+  // the destination's problems.)
+  const auto = autoInstrument(instrumentChoice, state.mode, provider);
+  if (auto.note) {
+    state.notes = [...state.notes, auto.note];
+    if (s.debug) console.info(`@superbased/sdk: ${auto.note}`);
+  }
   installExitHook();
   return publicView(s);
 }
@@ -604,8 +764,19 @@ export interface Diagnostics {
   notes: string[];
   /** What the machine reported about sign-in; null when no machine answered. */
   signedIn: boolean | null;
-  /** Where the credential came from: argument, env, file, or "" (never the credential itself). */
+  /** Where the credential came from: argument, env, file (the machine's), sdk_file (the SDK-held file setup writes), or "" (never the credential itself). */
   credentialSource: string;
+  /**
+   * The SDK-held credential file (destination.md section 6a): its path, its
+   * state (`absent`, `used`, `unused` (valid, but another record won or the
+   * destination needs no key), `refused`, `expired`, or `not_read` (an
+   * explicit `local`)), and the refused rule ("" otherwise). Never the key.
+   */
+  sdkFile: { path: string; state: SdkFileUse; reason: string };
+  /** The dashboard base links point at for the online destination ("" when unknown). */
+  dashboardUrl: string;
+  /** The first-trace line's link (or refusal) once written, else "" (section 16). */
+  firstTraceLink: string;
   pendingSpans: number;
   exportedSpans: number;
   failedExports: number;
@@ -614,6 +785,20 @@ export interface Diagnostics {
   sampledOutSpans: number;
   /** Spans dropped by shouldExport. */
   filteredSpans: number;
+  /** The instrument setting in force (sdk-api-surface.md section 14): `auto`, `off`, or the list of targets. */
+  instrument: "auto" | "off" | string[] | "";
+  /**
+   * Model-library instrumentation per target, as init() left it and kept
+   * current: `instrumented`, `already`, `pending` (installed; turned on at its
+   * first load), `not-installed` (a named target), `error: ...`, or
+   * `skipped: <reason>` with reason `auto_excluded` (installed, turned on
+   * only when named), `host_provider` (the app registered its own provider)
+   * or `not_installed`. Empty when the setting is `off`.
+   */
+  instrumented: Record<string, string>;
+  /** The service name in force, and the rung of the ladder that named it (argument, env, manifest, entry_dir, default; section 15). */
+  serviceName: string;
+  serviceNameSource: string;
   /** shouldExport hooks that threw (the span was kept). */
   shouldExportErrors: number;
   /** mask hooks that threw (that value was dropped). */
@@ -637,6 +822,27 @@ export interface Diagnostics {
   vendorSpansDropped: number;
   /** setUsage calls whose inputTokens was below its cache parts, recorded as a net count (input + cache). */
   usageNetInputCorrected: number;
+  /**
+   * The last time the organization's plan refused AI Apps ingest (an export,
+   * or any other call to the gateway), else null: its `message`, and
+   * `upgradeUrl`, where the org's billing owner changes the plan. Export never
+   * throws: a refused export shows here, beside one warning line a minute.
+   */
+  planRefusal: PlanRefusalError | null;
+  /** Epoch ms of that refusal, 0 when none. */
+  planRefusalAt: number;
+}
+
+let projectCache: ProjectFacts | null = null;
+/** This process's project facts, read once (the entry script does not change). */
+function processProject(): ProjectFacts {
+  projectCache ??= projectFacts();
+  return projectCache;
+}
+
+function settingValue(st: InstrumentSetting | null): "auto" | "off" | string[] | "" {
+  if (!st) return "";
+  return st.mode === "list" ? [...st.names] : st.mode;
 }
 
 /** A snapshot of the SDK's export health. */
@@ -654,12 +860,19 @@ export function diagnostics(): Diagnostics {
     notes: [...state.notes],
     signedIn: state.signedIn,
     credentialSource: state.effective?.credentialSource ?? "",
+    sdkFile: { path: state.sdkFile?.path ?? "", state: state.sdkFileUse, reason: state.sdkFile?.reason ?? "" },
+    dashboardUrl: runtime.dashboardUrl,
+    firstTraceLink: firstTraceWritten(),
     pendingSpans: Number(snap.pendingSpans),
     exportedSpans: Number(snap.exportedSpans),
     failedExports: Number(snap.failedExports),
     droppedSpans: Number(snap.droppedSpans),
     sampledOutSpans: Number(snap.sampledOutSpans),
     filteredSpans: Number(snap.filteredSpans),
+    serviceName: runtime.settings?.serviceName ?? "",
+    serviceNameSource: runtime.settings?.serviceNameSource ?? "",
+    instrument: settingValue(instrumentSetting()),
+    instrumented: instrumentStatus(),
     shouldExportErrors: Number(snap.shouldExportErrors),
     maskErrors: Number(snap.maskErrors),
     lastHookError: String(snap.lastHookError),
@@ -674,6 +887,8 @@ export function diagnostics(): Diagnostics {
     vendorTracing: { ...state.vendorTracing },
     vendorSpansDropped: policyStats.vendorSpansDropped,
     usageNetInputCorrected: policyStats.usageNetInputCorrected,
+    planRefusal: planRefusalStats.last,
+    planRefusalAt: planRefusalStats.at,
   };
 }
 
@@ -693,7 +908,14 @@ export async function _resetForTests(): Promise<void> {
     effective: null,
     ready: Promise.resolve(),
     vendorTracing: {},
+    instrument: null,
+    sdkFile: null,
+    sdkFileUsed: false,
+    sdkFileUse: "not_read",
   });
+  _resetInstrumentForTests();
+  _resetFirstTraceForTests();
+  projectCache = null;
   resetVendorTracingForTests();
   _resetNetInputWarningForTests();
   initGeneration++;
@@ -707,5 +929,7 @@ export async function _resetForTests(): Promise<void> {
   _resetContextForTests();
   resetControlForTests();
   resetAdmitStats();
+  resetPlanRefusal();
+  _resetGatewayForTests();
   clearPromptCache();
 }

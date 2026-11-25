@@ -1,0 +1,153 @@
+{
+  "_doc": "GET /v1/connect/requests/{request_id} for a purpose sdk_key request (section 13.3), polled every interval seconds with Authorization: Bearer <device_code>; no SBO-PoP header. responses are what the cloud answers; setup-cases.json section device_flow maps each to setup's state and exit code. An sdk_key poll never carries sign_in or attach_grant. key_grant appears on at most three polls within 10 minutes of the approval, the same bytes each time; after that 409 key_grant_already_delivered. An approval whose 10 minutes pass before any grant could be delivered (a personal dashboard still being set up) answers 409 key_grant_window_closed.",
+  "method": "GET",
+  "url": "https://cloud.superbased.app/v1/connect/requests/6f1c8e2d-4b3a-4c5d-8e9f-0a1b2c3d4e5f",
+  "request": {
+    "headers": {
+      "Authorization": "Bearer FAKE-device-code-for-contract-tests-only-01",
+      "Accept": "application/json"
+    },
+    "body": null
+  },
+  "responses": {
+    "pending": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "status": "pending",
+        "target": null,
+        "consent_receipt_id": null,
+        "interval": 3
+      }
+    },
+    "approved_not_ready": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "status": "approved",
+        "target": {
+          "org_id": "0b6f3d2a-6a51-4c1e-9d0f-6f1c2b7e8a90",
+          "slug": "u-k7x2",
+          "kind": "personal",
+          "display_name": "Personal",
+          "server_url": "",
+          "ready": false
+        },
+        "consent_receipt_id": "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "interval": 3
+      }
+    },
+    "approved_with_grant": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "status": "approved",
+        "target": {
+          "org_id": "0b6f3d2a-6a51-4c1e-9d0f-6f1c2b7e8a90",
+          "slug": "u-k7x2",
+          "kind": "personal",
+          "display_name": "Personal",
+          "server_url": "https://u-k7x2.superbased.app",
+          "ready": true
+        },
+        "consent_receipt_id": "3c1d2e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "interval": 3,
+        "key_grant": "sbsk1.eyJ2IjoxLCJraWQiOiJsYnV6TDZ5aklZN1FPUkhyVk9YeFJRQ1dmN3hRUjN3Y3RjWTlOclFseVI4Iiwib3JnX2lkIjoiMGI2ZjNkMmEtNmE1MS00YzFlLTlkMGYtNmYxYzJiN2U4YTkwIiwic2x1ZyI6InUtazd4MiIsImtpbmQiOiJwZXJzb25hbCIsImFjY291bnRfaWQiOiI5YTNlMWM1NS0yZjdiLTRkOGUtYjFhMC0zYzRkNWU2ZjdhOGIiLCJzdWIiOiJ1c2VyXzAxSkQ3RkFLRVNVQkpFQ1QiLCJyZXF1ZXN0X2lkIjoiNmYxYzhlMmQtNGIzYS00YzVkLThlOWYtMGExYjJjM2Q0ZTVmIiwicmVkZWVtX2hhc2giOiI0Z0NMbG92VGdmR3p3SzR1ckd1MHVzaFB0SjdTRjFhM0U2UVZCZkZiMUtzIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDA2MDAsImp0aSI6IlZac05YbXlPZ3hJLS1XNDd4dkNoNmcifQ.LuylvJsPHYOPECoc6wb1pG0KMt93V0Smtm-4HwHiPK--zU5gxIIWpVZC7GbP3kAtZAblAXsAj_kgsSOBv7ZvDw"
+      }
+    },
+    "declined": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "status": "declined",
+        "target": null,
+        "consent_receipt_id": null,
+        "interval": 3
+      }
+    },
+    "expired": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "status": "expired",
+        "target": null,
+        "consent_receipt_id": null,
+        "interval": 3
+      }
+    },
+    "window_closed": {
+      "status": 409,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "the approval is more than 10 minutes old and no key grant was delivered; run setup again",
+        "code": "key_grant_window_closed"
+      }
+    },
+    "already_delivered": {
+      "status": 409,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "the key grant for this request was already delivered; run setup again",
+        "code": "key_grant_already_delivered"
+      }
+    },
+    "rate_limited": {
+      "status": 429,
+      "headers": {
+        "Content-Type": "application/json",
+        "Retry-After": "5"
+      },
+      "body": {
+        "error": "polling too fast",
+        "code": "rate_limited"
+      }
+    },
+    "unauthorized": {
+      "status": 401,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "the device code does not match this request",
+        "code": "unauthorized"
+      }
+    },
+    "not_found": {
+      "status": 404,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "no such connect request",
+        "code": "not_found"
+      }
+    }
+  },
+  "target_fields": [
+    "org_id",
+    "slug",
+    "kind",
+    "display_name",
+    "server_url",
+    "ready"
+  ]
+}

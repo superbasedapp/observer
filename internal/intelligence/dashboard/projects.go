@@ -2,14 +2,19 @@ package dashboard
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/loc"
+	"github.com/marmutapp/superbased-observer/internal/modelfilter"
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/projectroi"
 	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -1042,4 +1047,326 @@ func (s *Server) judgeGradeFix() settingslink.Fields {
 		return l.Fields()
 	}
 	return settingslink.Fields{}
+}
+
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	// The global filters (projectListScopeFrom). With none set, the list is
+	// byte-identical to before: every project, all-time counts, 30-day
+	// spend / code / commit columns (the FilterBar's project picker and every
+	// other caller that sends no filter rely on that). See projectListQuery
+	// for each filter's grain.
+	sc := projectListScopeFrom(r)
+	listQuery, listArgs := projectListQuery(sc)
+	//nolint:gosec // G202: every fragment of listQuery is a code constant; values are bound.
+	rows, err := s.db().QueryContext(r.Context(), listQuery, listArgs...)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+	// projectRow's additive fields (id/spend_usd_30d/ai_code_lines_30d/
+	// commits_30d/last_commit_at/capture) are the Projects-page ROI +
+	// commit-alignment arc's R7 extension (docs/plans/projects-page-roi-
+	// and-commit-alignment-plan-2026-09-21.md §3.4): omitempty scalars
+	// (a project with no cost/loc/commit data in the window simply omits
+	// them, never a fabricated zero — see TestAPIProjectsEmptyCorpusByteIdentical)
+	// and a POINTER composite for `capture` (F17: omitempty never elides
+	// a non-pointer struct).
+	type projectRow struct {
+		ID           int64  `json:"id"`
+		RootPath     string `json:"root_path"`
+		SessionCount int    `json:"session_count"`
+		ActionCount  int    `json:"action_count"`
+		LastSeen     string `json:"last_seen,omitempty"`
+		// SpendUSD30d is a POINTER (2026-09-22 rework finding #13): a nil
+		// pointer means "no priced-turn activity for this project in the
+		// window at all" (omitted from the JSON — the web renders "-"),
+		// while a non-nil pointer to 0.0 means "we priced every turn and
+		// the total genuinely came to $0.00" (a known-free model) — the
+		// web renders "$0.00". A plain float64 with `omitempty` could not
+		// tell those two cases apart: Go's encoding/json omits a zero
+		// VALUE regardless of whether the field was ever set.
+		SpendUSD30d *float64 `json:"spend_usd_30d,omitempty"`
+		// SpendUnpricedTurns30d counts the window's turns with no recorded
+		// cost and no pricing entry for their model (excluded from
+		// SpendUSD30d); omitted when zero.
+		SpendUnpricedTurns30d int `json:"spend_unpriced_turns_30d,omitempty"`
+		// AICodeLines30d is AI-authored CODE lines (added + modified,
+		// code-category files only since 2026-09-28 - docs/config lines
+		// used to be counted) and AISplit30d its code-vs-comment split
+		// (internal/loc.SplitAuthored); both omitted with no AI lines.
+		AICodeLines30d int                            `json:"ai_code_lines_30d,omitempty"`
+		AISplit30d     *projectAuthoredSplit          `json:"ai_split_30d,omitempty"`
+		Commits30d     int                            `json:"commits_30d,omitempty"`
+		LastCommitAt   string                         `json:"last_commit_at,omitempty"`
+		Capture        *dashapi.APIProjectCaptureInfo `json:"capture,omitempty"`
+		// Where it ran (cloud-agents lane CA-B5). ExecutionMix is the
+		// project's all-time session count per execution location ("unknown"
+		// for an unstamped session); absent on a project where nothing was
+		// ever stamped, so a node with no cloud sessions emits the
+		// byte-identical list. SyntheticCloud marks a "cloud:<remote>"
+		// project (CA-D3); CloudTwinOf names the local project it now folds
+		// under (the page groups it there) and CloudTwins the reverse.
+		ExecutionMix   map[string]int `json:"execution_mix,omitempty"`
+		SyntheticCloud bool           `json:"synthetic_cloud,omitempty"`
+		CloudTwinOf    int64          `json:"cloud_twin_of,omitempty"`
+		CloudTwins     []int64        `json:"cloud_twins,omitempty"`
+	}
+	out := []projectRow{}
+	for rows.Next() {
+		var pr projectRow
+		var lastSeen sql.NullString
+		if err := rows.Scan(&pr.ID, &pr.RootPath, &pr.SessionCount, &pr.ActionCount, &lastSeen); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if lastSeen.Valid {
+			pr.LastSeen = lastSeen.String
+		}
+		pr.SyntheticCloud = models.IsSyntheticCloudProjectRoot(pr.RootPath)
+		out = append(out, pr)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := attachProjectExecution(r.Context(), store.New(s.db()), out, func(pr *projectRow) (int64, *map[string]int, *int64, *[]int64) {
+		return pr.ID, &pr.ExecutionMix, &pr.CloudTwinOf, &pr.CloudTwins
+	}); err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	// R11: one small set of grouped queries over every project's last 30
+	// days, not one query per project. A project absent from the
+	// returned map (never touched by the commit scanner, or an
+	// installation predating this feature) simply omits every additive
+	// field below — see LoadProjectListExtras's own doc comment.
+	//
+	// ONE captured UTC `until` (2026-09-22 rework finding #12) threaded
+	// through every windowed loader below as a real [since30, until)
+	// half-open window — until now the list only ever bound the LOWER
+	// edge (`since30`), so a future-dated or corrupted row's timestamp
+	// had no upper bound at all, and the commits loader additionally
+	// used `<=` where the rest of this file uses `<` (a commit landing
+	// at exactly `until` could double up against the next window's
+	// query). This matches ComposeProjectDetail's own [since,until)
+	// contract (internal/intelligence/dashboard/projectdetail.go).
+	until := time.Now().UTC()
+	since30 := until.AddDate(0, 0, -30)
+	// A windowed request (the Projects page sends the global window) moves
+	// the spend / code / commit columns onto that window; the response's
+	// `window` block says so, so the page never labels them "30d".
+	if sc.windowed {
+		since30 = sc.since
+		if !sc.until.IsZero() {
+			until = sc.until
+		}
+	}
+	extras, err := store.New(s.db()).LoadProjectListExtras(r.Context(), since30, until)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Spend is priced through the SAME per-turn pipeline the detail
+	// panel's loadProjectSpend uses (cost.Engine.TurnRows -> loadRows ->
+	// priceRow), grouped per project via cost.Engine.Summary's
+	// GroupByProject rather than a separate day-bucket loader — one
+	// owner, so the list and the detail panel can never disagree about a
+	// project's 30-day spend (F6 of the 2026-09-22 arc review: the old
+	// day-bucket loader priced SUMMED buckets, which could cross a
+	// long-context pricing tier threshold a per-turn price never would).
+	// GroupByProject keys rows by projects.root_path, not id, so the
+	// result is joined back onto `out` by RootPath below. Until is now
+	// bound too (finding #12), matching every other loader in this
+	// handler.
+	spendSummary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
+		GroupBy: cost.GroupByProject, Since: since30, Until: until, Limit: 1_000_000,
+		Tool: sc.tool, ProjectRoot: sc.project, Model: sc.model,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	spendByRoot := make(map[string]cost.Row, len(spendSummary.Rows))
+	for _, row := range spendSummary.Rows {
+		spendByRoot[row.Key] = row
+	}
+	for i := range out {
+		if row, ok := spendByRoot[out[i].RootPath]; ok {
+			// finding #13: a project with priced-turn activity in the
+			// window gets a real pointer even when the total is exactly
+			// $0.00 (every turn priced to a known-free model) — see the
+			// projectRow.SpendUSD30d doc comment above. A project absent
+			// from spendByRoot (no turns at all in the window) leaves the
+			// pointer nil, rendering "-" on the web rather than a
+			// misleading "$0.00".
+			//
+			// 2026-09-22 rework finding S5: those are NOT the only two
+			// cases. A project can also have activity in the window that
+			// is entirely UNPRICED (no pricing-table entry for any of
+			// its models) — row.CostUSD is then a real float64 zero
+			// value, structurally indistinguishable from "every turn
+			// priced to a genuinely free model" unless PricedTurnCount
+			// is consulted too. Leaving SpendUSD30d nil whenever
+			// PricedTurnCount==0 keeps the pointer's honesty contract:
+			// non-nil means "we actually priced at least one turn",
+			// never "we have no idea and are showing zero anyway".
+			out[i].SpendUnpricedTurns30d = row.UnpricedTurnCount
+			if row.PricedTurnCount > 0 {
+				spendUSD := row.CostUSD
+				out[i].SpendUSD30d = &spendUSD
+			}
+		}
+		e, ok := extras[out[i].ID]
+		if !ok {
+			continue
+		}
+		out[i].AICodeLines30d = e.AILines30d
+		out[i].AISplit30d = optionalAuthoredSplit(e.AILines30d, e.AIComment30d)
+		out[i].Commits30d = e.Commits30d
+		if !e.LastCommitAt.IsZero() {
+			out[i].LastCommitAt = e.LastCommitAt.UTC().Format(time.RFC3339Nano)
+		}
+		if e.CommitsScanned {
+			out[i].Capture = &dashapi.APIProjectCaptureInfo{Commits: e.CommitCapture, HumanLOC: e.HumanLOC, CommitsKind: e.CommitCaptureKind}
+		}
+	}
+
+	resp := map[string]any{"rows": out}
+	if sc.narrows() {
+		// A narrowed list keeps only the projects with something in scope:
+		// an action in the window / tool / model, or priced spend there.
+		kept := out[:0]
+		for _, pr := range out {
+			if pr.ActionCount > 0 || pr.SpendUSD30d != nil || pr.SpendUnpricedTurns30d > 0 {
+				kept = append(kept, pr)
+			}
+		}
+		resp["rows"] = kept
+	}
+	if sc.windowed {
+		win := map[string]string{"since": since30.UTC().Format(time.RFC3339)}
+		if !sc.until.IsZero() {
+			win["until"] = sc.until.UTC().Format(time.RFC3339)
+		}
+		resp["window"] = win
+	}
+	writeJSON(w, resp)
+}
+
+// projectListScope is the Projects list's reading of the dashboard's global
+// filters. windowed is true when the request carries a window (days / hours /
+// since / until); without one the list keeps its all-time counts.
+type projectListScope struct {
+	windowed             bool
+	since, until         time.Time
+	tool, project, model string
+}
+
+// narrows reports whether the list drops projects with nothing in scope (a
+// window or a tool / model filter; a project filter already names its row).
+func (sc projectListScope) narrows() bool {
+	return sc.windowed || sc.tool != "" || sc.model != ""
+}
+
+func projectListScopeFrom(r *http.Request) projectListScope {
+	q := r.URL.Query()
+	sc := projectListScope{
+		tool:    strings.TrimSpace(q.Get("tool")),
+		project: strings.TrimSpace(q.Get("project")),
+		model:   modelParam(r),
+	}
+	if sc.tool == "all" {
+		sc.tool = ""
+	}
+	if sc.project == "all" {
+		sc.project = ""
+	}
+	for _, k := range []string{"days", "hours", "since", "until"} {
+		if q.Get(k) != "" {
+			sc.windowed = true
+		}
+	}
+	if sc.windowed {
+		sc.since, sc.until = windowRange(r, 30, 1, 36500)
+	}
+	return sc
+}
+
+// projectListQuery builds the Projects list SQL for a scope. Grains (the same
+// rules every filtered endpoint follows): the window bounds the counted
+// ACTIONS (a session counts when it has an action in the window); the tool
+// matches the session's tool; the model keeps sessions that used it
+// (modelfilter.SessionsUsing) and projects with such a session
+// (modelfilter.ProjectsUsing); the project filter keeps that one root.
+func projectListQuery(sc projectListScope) (string, []any) {
+	var actPred []string
+	var actArgs []any
+	if !sc.since.IsZero() {
+		actPred = append(actPred, "a.timestamp >= ?")
+		actArgs = append(actArgs, sc.since.UTC().Format(time.RFC3339Nano))
+	}
+	if !sc.until.IsZero() {
+		actPred = append(actPred, "a.timestamp < ?")
+		actArgs = append(actArgs, sc.until.UTC().Format(time.RFC3339Nano))
+	}
+	if sc.tool != "" {
+		actPred = append(actPred, "a.session_id IN (SELECT id FROM sessions WHERE tool = ?)")
+		actArgs = append(actArgs, sc.tool)
+	}
+	if frag, margs := modelfilter.SessionsUsing("a.session_id", sc.model); frag != "" {
+		actPred = append(actPred, frag)
+		actArgs = append(actArgs, margs...)
+	}
+	actWhere := ""
+	if len(actPred) > 0 {
+		actWhere = " AND " + strings.Join(actPred, " AND ")
+	}
+	// Sessions: windowed counts sessions with an action in scope; otherwise
+	// the session's own tool / model.
+	var sessWhere string
+	var sessArgs []any
+	if sc.windowed {
+		sessWhere = " AND s.id IN (SELECT a.session_id FROM actions a WHERE a.project_id = p.id" + actWhere + ")"
+		sessArgs = append(sessArgs, actArgs...)
+	} else {
+		if sc.tool != "" {
+			sessWhere += " AND s.tool = ?"
+			sessArgs = append(sessArgs, sc.tool)
+		}
+		if frag, margs := modelfilter.AndSessionsUsing("s.id", sc.model); frag != "" {
+			sessWhere += frag
+			sessArgs = append(sessArgs, margs...)
+		}
+	}
+	// A row the worktree-roots backfill folded into its repository's
+	// project, with nothing filed under it since, is not a project of its
+	// own: it is left out of every list (the FilterBar picker included).
+	projPred := []string{"NOT (" + store.FoldedProjectSQL("p") + ")"}
+	var projArgs []any
+	if sc.project != "" {
+		projPred = append(projPred, "p.root_path = ?")
+		projArgs = append(projArgs, sc.project)
+	}
+	if frag, margs := modelfilter.ProjectsUsing("p.id", sc.model); frag != "" {
+		projPred = append(projPred, frag)
+		projArgs = append(projArgs, margs...)
+	}
+	projWhere := ""
+	if len(projPred) > 0 {
+		projWhere = " WHERE " + strings.Join(projPred, " AND ")
+	}
+	args := make([]any, 0, len(sessArgs)+2*len(actArgs)+len(projArgs))
+	args = append(args, sessArgs...)
+	args = append(args, actArgs...)
+	args = append(args, actArgs...)
+	args = append(args, projArgs...)
+	q := `SELECT p.id, p.root_path,
+	        (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id` + sessWhere + `) AS session_count,
+	        (SELECT COUNT(*) FROM actions  a WHERE a.project_id = p.id` + actWhere + `) AS action_count,
+	        (SELECT MAX(a.timestamp) FROM actions a WHERE a.project_id = p.id` + actWhere + `) AS last_seen
+	 FROM projects p` + projWhere + `
+	 ORDER BY last_seen DESC NULLS LAST, p.id DESC`
+	return q, args
 }

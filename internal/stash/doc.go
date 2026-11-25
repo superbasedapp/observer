@@ -8,9 +8,9 @@
 // See `docs/compression-roadmap.md` (Tier 1, item G31) for the
 // strategic context. This package is one of three load-bearing pieces:
 //
-//	internal/stash/                       — disk read/write/GC
-//	internal/compression/conversation/    — pipeline integration + marker
-//	internal/mcp/tools_extra.go           — retrieve_stashed tool
+//	internal/stash/                        — disk read/write/GC
+//	internal/compression/conversation/     — pipeline integration + marker
+//	internal/mcp/tools_retrieve_stashed.go — retrieve_stashed tool
 //
 // Layout: flat. Every blob lives directly at `<dir>/<sha>` (no per-
 // session subdirs). Per-session aggregation is left for K43 in Tier 3

@@ -64,6 +64,8 @@ export const K = {
   serviceVersion: "service.version",
   deploymentEnvironment: "deployment.environment.name",
   sdk: "sbo.sdk",
+  /** On the one hello span `setup` sends (sdk-api-surface.md section 17; SDK-owned). */
+  setupHello: "sbo.setup.hello",
   // Experiment item (W3-2, SDK-owned).
   experimentRunId: "sbo.experiment.run_id",
   experimentItemId: "sbo.experiment.item_id",

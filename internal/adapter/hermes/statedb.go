@@ -8,6 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
 
@@ -193,7 +194,7 @@ func scanStateDB(ctx context.Context, dbPath string, fromMessageID int64) (map[s
 // NOT read: they are the same spend the sessions aggregate already
 // carries, split per model, so reading them too would double-count.
 func readAuxUsage(ctx context.Context, db *sql.DB, sessions map[string]sessionRow) error {
-	if len(sessions) == 0 || !tableExists(ctx, db, "session_model_usage") {
+	if len(sessions) == 0 || !sqliteschema.TableExists(ctx, db, "session_model_usage") {
 		return nil
 	}
 	ids := make([]any, 0, len(sessions))
@@ -239,17 +240,6 @@ func readAuxUsage(ctx context.Context, db *sql.DB, sessions map[string]sessionRo
 		sessions[sid] = s
 	}
 	return rows.Err()
-}
-
-// tableExists reports whether the named table is present. False on any
-// query error - callers treat an unreadable catalogue as "absent".
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
 }
 
 // readSchemaVersion returns the integer in schema_version. False ok

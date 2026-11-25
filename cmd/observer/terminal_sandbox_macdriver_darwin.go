@@ -21,7 +21,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxnet"
-	"github.com/marmutapp/superbased-observer/internal/sandboxrelayd"
 )
 
 // terminal_sandbox_macdriver_darwin.go is the host side both macOS sandbox
@@ -121,7 +120,7 @@ func startMacHostServices(h sandbox.HostArgs, opts macServiceOpts) (macServices,
 	ctx, cancel := context.WithCancel(context.Background())
 	undo = append(undo, cancel)
 
-	relayStop, err := serveMacRelay(ctx, h)
+	relayStop, err := serveRelay(ctx, h)
 	if err != nil {
 		return out, stop, fmt.Errorf("capture relay: %w", err)
 	}
@@ -182,45 +181,6 @@ func startMacHostServices(h sandbox.HostArgs, opts macServiceOpts) (macServices,
 		go func() { _ = srv.Serve(ln) }()
 	}
 	return out, stop, nil
-}
-
-// serveMacRelay starts the box side of the capture relay for the run h
-// names (the bwrap helper's serveRelay, on macOS): the box record in the
-// socket dir and relay.sock served with the forwarder, peer credentials
-// checked (sandboxrelayd.PeerSameUser, LOCAL_PEERCRED).
-func serveMacRelay(ctx context.Context, h sandbox.HostArgs) (func(), error) {
-	rec, err := sandboxrelayd.ReadRun(h.ObserverDir, h.RelayRun)
-	if err != nil {
-		return nil, err
-	}
-	unhold, herr := sandboxrelayd.HoldRun(h.ObserverDir, h.RelayRun)
-	if herr != nil {
-		unhold = func() {}
-	}
-	if err := sandboxrelayd.WriteBoxRecord(h.SockDir, rec); err != nil {
-		unhold()
-		return nil, err
-	}
-	ln, err := net.Listen("unix", filepath.Join(h.SockDir, sandboxrelayd.RelaySocketName))
-	if err != nil {
-		unhold()
-		return nil, err
-	}
-	fw := &sandboxrelayd.Forwarder{
-		Run:        rec,
-		DialDaemon: dialSandboxRelay(h.ObserverDir),
-		DaemonAddr: sandboxRelayAddr(h.ObserverDir),
-		Rules:      relayRules,
-		Peer:       sandboxrelayd.PeerSameUser,
-		HookProbe:  relayHookProbe(rec),
-	}
-	fw.ReadLaunchHooks()
-	go func() { _ = fw.Serve(ctx, ln) }()
-	return func() {
-		_ = ln.Close()
-		_ = sandboxrelayd.RemoveRun(h.ObserverDir, h.RelayRun)
-		unhold()
-	}, nil
 }
 
 // providerBlockFor is the gateway's provider block for h (the bwrap

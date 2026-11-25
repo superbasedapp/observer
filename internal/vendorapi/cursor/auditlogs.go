@@ -116,18 +116,18 @@ func scalar(raw json.RawMessage) (string, bool) {
 
 func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceAuditLogs, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "status %d is not the documented 200", r.Status)
 	}
 	var doc auditDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceAuditLogs, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "body does not decode as the documented object")
 	}
 	if doc.Events == nil || doc.Pagination == nil || doc.Pagination.Page == nil || doc.Pagination.HasNextPage == nil {
-		return vendorapi.Page{}, drift(SurfaceAuditLogs, "required field events, pagination.page or pagination.hasNextPage is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "required field events, pagination.page or pagination.hasNextPage is missing")
 	}
 	current, err := doc.Pagination.Page.Int64()
 	if err != nil || current < 1 {
-		return vendorapi.Page{}, drift(SurfaceAuditLogs, "pagination.page is not a page number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "pagination.page is not a page number")
 	}
 	page := vendorapi.Page{}
 	if *doc.Pagination.HasNextPage {
@@ -136,14 +136,14 @@ func parseAudit(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, e := range *doc.Events {
 		if e.EventID == nil || *e.EventID == "" || e.Timestamp == nil || e.EventType == nil {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "events[%d] misses event_id, timestamp or event_type", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "events[%d] misses event_id, timestamp or event_type", i)
 		}
 		at, err := time.Parse(time.RFC3339Nano, *e.Timestamp)
 		if err != nil {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "events[%d].timestamp is not RFC 3339", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "events[%d].timestamp is not RFC 3339", i)
 		}
 		if seen[*e.EventID] {
-			return vendorapi.Page{}, drift(SurfaceAuditLogs, "events[%d] repeats an event id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAuditLogs, "events[%d] repeats an event id", i)
 		}
 		seen[*e.EventID] = true
 		action := strings.ToLower(strings.TrimSpace(*e.EventType))

@@ -243,46 +243,6 @@ type SecurityContentResult struct {
 	Reused int
 }
 
-// stageInstalledArtifact stages the installed artifact src under a fresh
-// ".incoming-*" name in root, as a downloaded artifact is staged: a hard
-// link (no second copy of an export of hundreds of megabytes), or a copy
-// where the filesystem refuses the link. The caller removes the staged name.
-func stageInstalledArtifact(root, src string) (string, error) {
-	f, err := os.CreateTemp(root, ".incoming-*")
-	if err != nil {
-		return "", err
-	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := os.Remove(name); err != nil {
-		return "", err
-	}
-	if err := os.Link(src, name); err == nil {
-		return name, nil
-	}
-	in, err := os.Open(src) //nolint:gosec // G304: a file of the content channel's own kind directory
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", err
-	}
-	_, err = io.Copy(out, in)
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	return name, nil
-}
-
 // securityContentETagFile keeps the mirror envelopes' ETags beside the
 // content root, per kind.
 const securityContentETagFile = "org-mirror-etag.json"
@@ -378,7 +338,7 @@ func (c *Client) InstallSecurityContent(ctx context.Context, st contentchan.Stor
 		// only (static feed mirroring plan, B2). InstallFiles checks the
 		// staged file like a downloaded one.
 		if src, ok := st.InstalledArtifact(kind, e); ok {
-			if p, err := stageInstalledArtifact(st.Root, src); err == nil {
+			if p, err := contentchan.StageFile(st.Root, src); err == nil {
 				files[e.Name] = p
 				res.Reused++
 				continue

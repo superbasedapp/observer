@@ -19,7 +19,7 @@ import (
 // internal/db/migrations/009_compression_events.sql) is a durable, node-local
 // SQLite table — not an in-memory-only computation. The node's own
 // /api/compression/* dashboard handlers (handleCompressionEvents et al. in
-// internal/intelligence/dashboard/dashboard.go) read this same table. So the
+// internal/intelligence/dashboard/compression_handlers.go) read this same table. So the
 // figures this file ships are recomputed straight from the node's own
 // persisted ground truth, exactly like the SavedBytes/SavedTokensEst math the
 // node dashboard already performs — never a projection.
@@ -50,7 +50,7 @@ var compressionLossyMechanisms = map[string]bool{
 // W3.5 wire rows: one row per (day, mechanism) bucket for events in the
 // trailing window, replicating the SAME lossy-vs-real-savings split the
 // node's own handleCompressionEvents performs per-event
-// (internal/intelligence/dashboard/dashboard.go), just aggregated instead of
+// (internal/intelligence/dashboard/compression_handlers.go), just aggregated instead of
 // per-event.
 func (s *Store) SelectCompressionStatRows(ctx context.Context) ([]orgcontract.CompressionStatRow, error) {
 	since := time.Now().UTC().AddDate(0, 0, -compressionStatsWindowDays)

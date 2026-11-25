@@ -81,7 +81,8 @@ func newPrimeAgentCmd() *cobra.Command {
 			"message (delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to prime-agent.\n" +
 			"Use `--` to separate observer flags from prime-agent flags.\n" +
-			"Requires a running observer proxy (`observer start`).",
+			"Routes through the observer proxy; a daemon that is not running is\n" +
+			"started first (--no-start skips that).",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -239,6 +240,7 @@ func newPrimeAgentCmd() *cobra.Command {
 				proxyURL:   resolved,
 				env:        nil, // prime-agent routes via models.json, not an env var
 				dbPath:     cfg.Observer.DBPath,
+				routeArgs:  args, // proxy down: the operator's own args, no --provider
 				unrouted:   !route.routed,
 				stderr:     os.Stderr,
 			})

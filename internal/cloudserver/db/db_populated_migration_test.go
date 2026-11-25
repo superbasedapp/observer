@@ -15,17 +15,14 @@ package db
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"io/fs"
-	"os"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/db/migrations"
 )
 
@@ -97,49 +94,9 @@ func migratePrefixOnce(ctx context.Context, pool *pgxpool.Pool, target int) erro
 }
 
 func TestPopulatedMigration26ToHead(t *testing.T) {
-	dsn := os.Getenv("SBCI_TEST_PG_DSN")
-	if dsn == "" && os.Getenv("SBCI_TEST_PG_REQUIRED") == "1" {
-		t.Fatalf("SBCI_TEST_PG_REQUIRED=1 but SBCI_TEST_PG_DSN is empty: this run provides PostgreSQL, so the suite must not skip")
-	}
-	if dsn == "" {
-		t.Skipf("SKIP (no Postgres): set SBCI_TEST_PG_DSN to run this suite. This test did NOT run.")
-	}
+	pool := pgthrow.NewEmptyDB(t, "sbci_popmig_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-
-	// Fresh throwaway database.
-	rb := make([]byte, 8)
-	_, _ = rand.Read(rb)
-	dbName := "sbci_popmig_" + hex.EncodeToString(rb)
-	admin, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect admin: %v", err)
-	}
-	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+dbName+`" TEMPLATE template0`); err != nil {
-		_ = admin.Close(ctx)
-		t.Fatalf("create database: %v", err)
-	}
-	_ = admin.Close(ctx)
-	t.Cleanup(func() {
-		a, err := pgx.Connect(context.Background(), dsn)
-		if err != nil {
-			return
-		}
-		defer func() { _ = a.Close(context.Background()) }()
-		_, _ = a.Exec(context.Background(), `DROP DATABASE IF EXISTS "`+dbName+`" WITH (FORCE)`)
-	})
-
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse DSN: %v", err)
-	}
-	cfg.ConnConfig.Database = dbName
-	cfg.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
 
 	// 1) Migrate to version 26 (community_grants + leaderboard_contributions
 	// exist; both are still device-scope-less).

@@ -242,7 +242,7 @@ func (a *Adapter) parseIDESession(ctx context.Context, messagesPath string, from
 		warnf(&res, "kirocli: IDE session %s: session.json id %q differs from the directory name; keeping the directory id",
 			sessionID, meta.ID)
 	}
-	projectRoot, gitBranch, gitRemote, projectIdentity := resolveProjectRoot(ideWorkspacePath(meta))
+	projectRoot, gitBranch, gitRemote, projectIdentity := adapter.ResolveProjectRoot(ideWorkspacePath(meta))
 
 	f, err := os.Open(messagesPath) //nolint:gosec // messagesPath derives from a validated watch-root trigger
 	if err != nil {
