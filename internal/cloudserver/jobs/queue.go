@@ -1,11 +1,3 @@
-// Package jobs is the queue abstraction + worker skeleton for the hosted
-// cloud-intelligence service (plan §6 CI-P3/CI-P4). This phase implements ONLY
-// the Postgres-backed queue (the analysis_jobs table with lease columns IS the
-// queue, dequeued through the SECURITY DEFINER lease function) behind a narrow
-// Queue interface; the Azure Storage Queue driver is a later swap behind the
-// same interface (substrate contract §1). The worker proves the
-// lease/reservation/TTL/revalidation semantics with a no-op executor — NO
-// Foundry inference (CI-P4 adds that).
 package jobs
 
 import (

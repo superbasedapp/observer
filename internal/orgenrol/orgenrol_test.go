@@ -231,7 +231,7 @@ func TestBuildDisclosureManagedDefaults(t *testing.T) {
 		wantOwnPages   bool   // ownerPages absent from the hidden list
 	}{
 		{"team org, managed", false, true, nodegov.ManagedAudienceTeam, "Accepting makes ", false},
-		{"personal org, managed", true, true, nodegov.ManagedAudienceOwner, "Accepting makes ", true},
+		{"personal org, managed", true, true, nodegov.ManagedAudienceOwner, "Accepting hides or locks nothing", true},
 		{"personal org, individual (an old enrolment)", true, false, "", "", false},
 		{"team org, individual", false, false, "", "", false},
 	} {
@@ -248,7 +248,14 @@ func TestBuildDisclosureManagedDefaults(t *testing.T) {
 				t.Fatalf("lists do not come from the table for audience %q:\npages %+v\nwant  %+v\nsettings %+v\nwant     %+v",
 					tc.audience, d.ManagedPages, nav, d.ManagedSettings, settings)
 			}
-			if !strings.HasPrefix(d.ManagedSummary, tc.wantSummary) ||
+			if tc.owner {
+				// Operator ruling 2026-11-24: nothing starts restricted on
+				// an owner-managed machine, so nothing is listed and the
+				// summary says so.
+				if len(nav)+len(settings) != 0 || d.ManagedSummary != managedSummaryOwnerNone || len(d.ManagedLines) != 0 {
+					t.Fatalf("owner audience: lists %+v %+v, summary %q, lines %q", nav, settings, d.ManagedSummary, d.ManagedLines)
+				}
+			} else if !strings.HasPrefix(d.ManagedSummary, tc.wantSummary) ||
 				!strings.Contains(d.ManagedSummary, strconv.Itoa(len(nav))+" dashboard pages") ||
 				!strings.Contains(d.ManagedSummary, strconv.Itoa(len(settings))+" Settings sections") {
 				t.Fatalf("summary %q does not count %d pages and %d sections", d.ManagedSummary, len(nav), len(settings))
@@ -285,23 +292,27 @@ func TestBuildDisclosureManagedDefaults(t *testing.T) {
 }
 
 // TestOwnerParagraphNamesOnlyOwnerVisiblePages keeps DisclosureOwnerManaged
-// true to the table: the pages it says stay visible for the owner are
-// visible at the owner level (and hidden for a team member, which is why the
-// sentence is worth saying).
+// true to the table: it says every page and Settings section stays visible
+// for the owner (operator ruling 2026-11-24), and the table agrees row by
+// row, while a team member's machine still starts with restrictions (which
+// is why the sentence is worth saying).
 func TestOwnerParagraphNamesOnlyOwnerVisiblePages(t *testing.T) {
-	if !strings.Contains(DisclosureOwnerManaged, "Your AI apps pages, Egress, Routing and Policies stay visible") {
-		t.Fatalf("owner paragraph no longer names the pages it keeps: %q", DisclosureOwnerManaged)
+	if !strings.Contains(DisclosureOwnerManaged, "Every dashboard page and Settings section stays visible") ||
+		!strings.Contains(DisclosureOwnerManaged, "Settings > Developer dashboards") {
+		t.Fatalf("owner paragraph no longer says everything stays visible and where to change it: %q", DisclosureOwnerManaged)
 	}
-	for _, id := range []string{
-		"app-traces", "app-sessions", "app-analytics", "app-end-users",
-		"app-evals", "app-scores", "app-prompts", "app-alerts", "egress", "routing", "policies",
-	} {
+	for _, id := range nodegov.NavSectionIDs {
 		if got := nodegov.ManagedNavDefault(id, nodegov.ManagedAudienceOwner); got != nodegov.VisibilityVisible {
-			t.Errorf("owner paragraph says %q stays visible, the table says %q", id, got)
+			t.Errorf("owner paragraph says page %q stays visible, the table says %q", id, got)
 		}
-		if got := nodegov.ManagedNavDefault(id, nodegov.ManagedAudienceTeam); got == nodegov.VisibilityVisible {
-			t.Errorf("%q is visible for a team member too; the owner sentence no longer distinguishes anything", id)
+	}
+	for _, id := range nodegov.SettingsSectionIDs {
+		if got := nodegov.ManagedSettingsDefault(id, nodegov.ManagedAudienceOwner); got != nodegov.VisibilityVisible {
+			t.Errorf("owner paragraph says section %q stays visible, the table says %q", id, got)
 		}
+	}
+	if nav, settings := nodegov.ManagedRestrictions(nodegov.ManagedAudienceTeam); len(nav)+len(settings) == 0 {
+		t.Error("a team member's machine starts unrestricted too; the owner sentence no longer distinguishes anything")
 	}
 }
 

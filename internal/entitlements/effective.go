@@ -189,6 +189,20 @@ func (e Effective) Fallback() Fallback { return e.fallback }
 // Plan names the plan in force (the document's, or the floor's).
 func (e Effective) Plan() PlanRef { return e.plan }
 
+// OnFloorPlan reports whether the plan in force is its kind's floor plan
+// (any version of it): the floor alone, or a document of the floor's plan
+// (an issuer re-issues the floor as a document). False for an unknown kind.
+// A rule that treats the floor differently from the plans above it (the AI
+// gateway's grace: the floor stops at its allowance, plans above it get a
+// grace) reads it, never a plan name.
+func (e Effective) OnFloorPlan() bool {
+	if e.fallback == FallbackUnknownKind {
+		return false
+	}
+	f, ok := Floor(e.kind)
+	return ok && e.plan.Name == f.Plan.Name
+}
+
 // Version is the document version in force (0 on the floor alone).
 func (e Effective) Version() int64 { return e.version }
 

@@ -104,8 +104,9 @@ func newHermesCmd() *cobra.Command {
 			"Routing requires a matching `[proxy.upstreams]` entry in observer's\n" +
 			"config.toml (default upstream `" + hermesDefaultUpstream + "`). All\n" +
 			"arguments after the subcommand are forwarded to hermes. Use `--` to\n" +
-			"separate observer flags from hermes flags. Requires a running\n" +
-			"observer proxy (`observer start`).",
+			"separate observer flags from hermes flags. Routes through the\n" +
+			"observer proxy; a daemon that is not running is started first\n" +
+			"(--no-start skips that).",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -193,7 +194,7 @@ func newHermesCmd() *cobra.Command {
 			}
 			if !route.routed {
 				// runEnvLauncher prints "routing via <proxy>" when the proxy is
-				// reachable and a not-reachable warning when it is not — so the
+				// reachable and its proxy-down notice when it is not — so the
 				// disclaimer must not promise a specific line is coming. State
 				// the fact instead: whatever follows, THIS launch does not use
 				// the proxy.
@@ -214,7 +215,7 @@ func newHermesCmd() *cobra.Command {
 					return fmt.Errorf("ensure hermes provider: %w", err)
 				}
 			}
-			forwarded := route.args
+			forwarded, own := route.args, args
 
 			// --continue-from: hermes' TUI takes NO initial-prompt seed (its
 			// only prompt entry points, -z/--oneshot and `chat -q`, are
@@ -242,6 +243,7 @@ func newHermesCmd() *cobra.Command {
 					fmt.Fprintf(cmd.ErrOrStderr(), "observer hermes: %s\n", out.Note)
 				}
 				forwarded = ensureHermesTUIFlag(forwarded)
+				own = ensureHermesTUIFlag(own)
 				continueDir = launchDir(out.ProjectRoot)
 				if continueDir != "" {
 					fmt.Fprintf(cmd.ErrOrStderr(), "observer hermes: continuing in %s\n", continueDir)
@@ -256,6 +258,11 @@ func newHermesCmd() *cobra.Command {
 				proxyURL:   resolved,
 				env:        nil, // hermes routes via config.yaml, not an env var
 				dbPath:     cfg.Observer.DBPath,
+				// Proxy down (lane launcher-proxy-down): the operator's own
+				// argv without `--provider observer`, unless hermes' own
+				// config.yaml already selects a provider at the proxy.
+				routeArgs:  own,
+				fileRoutes: func() []string { return hermesFileRoutesToProxy(cfgPath, cfgPathErr, resolved) },
 				stderr:     cmd.ErrOrStderr(),
 			})
 		},
@@ -1016,6 +1023,48 @@ func hermesConfiguredModel(path string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// hermesFileRoutesToProxy names hermes' config.yaml when, as it stands, a
+// hermes started WITHOUT the launcher's `--provider` would still send its
+// requests to the proxy's listener at proxyURL: model.provider names a
+// providers entry whose base_url reaches that listener (the CLI-1a
+// default-provider write makes it `observer`). Nil otherwise or on any read
+// failure, and the proxy-down gate then neutralizes. Only those two members
+// are decoded; no credential is.
+func hermesFileRoutesToProxy(path string, pathErr error, proxyURL string) []string {
+	if pathErr != nil || path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // operator's own config path
+	if err != nil {
+		return nil
+	}
+	return hermesFileRoutesToProxyIn(data, proxyURL)
+}
+
+// hermesFileRoutesToProxyIn is hermesFileRoutesToProxy over config.yaml's
+// bytes. Pure.
+func hermesFileRoutesToProxyIn(data []byte, proxyURL string) []string {
+	var doc struct {
+		Model     any `yaml:"model"`
+		Providers map[string]struct {
+			BaseURL string `yaml:"base_url"`
+		} `yaml:"providers"`
+	}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	m, _ := doc.Model.(map[string]any)
+	name, _ := m["provider"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if p, ok := doc.Providers[name]; ok && proxyListenerURL(p.BaseURL, proxyURL) {
+		return []string{fmt.Sprintf("hermes config.yaml (model.provider %q)", name)}
+	}
+	return nil
 }
 
 // ensureHermesObserverProvider idempotently adds/merges the `observer`

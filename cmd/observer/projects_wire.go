@@ -29,10 +29,11 @@ import (
 
 // projectsDashboardOptions resolves the dashapi.Options.JudgeGrade /
 // JudgeGradeReason pair (build-tag-split, see projects_judge_wire.go /
-// projects_judge_wire_stub.go) for both dashboard.New call sites
-// (start.go, cmd/observer/dashboard.go). Options.CloudGradeAvailability
-// is wired directly to CommitAlignmentAvailability at each call site:
-// no wrapper needed, the signatures already match.
+// projects_judge_wire_stub.go) for nodeDashboardOptions
+// (dashboard_options.go), the one construction both dashboard commands
+// share. Options.CloudGradeAvailability is wired directly to
+// CommitAlignmentAvailability there: no wrapper needed, the signatures
+// already match.
 func projectsDashboardOptions(cfg *config.Config) (judgeGrade func(context.Context, alignment.Input) (alignment.Result, string, error), judgeGradeReason string) {
 	return projectsJudgeGradeSeam(cfg)
 }

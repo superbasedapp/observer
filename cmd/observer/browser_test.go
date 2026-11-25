@@ -1934,7 +1934,9 @@ func TestWithBrowserHealthLockAlreadyCanceledSkipsFnEvenWhenLockIsFree(t *testin
 	if atomic.LoadInt32(&ran) != 0 {
 		t.Error("fn ran despite ctx being canceled before the first lock attempt - cancellation boundary violated with an uncontended lock")
 	}
-	if elapsed > 500*time.Millisecond {
+	// 2s is well under browserHealthLockTimeout (5s), so a poll that runs
+	// to the lock timeout still fails, while a loaded race shard does not.
+	if elapsed > 2*time.Second {
 		t.Errorf("withBrowserHealthLock took %s to return on an already-canceled ctx with a FREE lock - should return promptly, not poll", elapsed)
 	}
 	if _, statErr := os.Stat(healthPath); !os.IsNotExist(statErr) {

@@ -84,8 +84,8 @@ const OBSERVER_CONFIG = process.env.OBSERVER_CONFIG || "";
 // escape from the reply-after-exit contract). It MUST exceed the daemon's
 // end-to-end Go ingest bound so a legitimately slow ingest is never cut off by
 // a premature reply + Chrome teardown. That Go bound is enforced at
-// config.maxBrowserIngestTimeoutMS (35000ms — the clamp/validation on
-// [browser].ingest_timeout_ms in internal/config/config.go, which now covers
+// config.maxBrowserIngestTimeoutMS (35000ms in internal/config/browser.go — the
+// clamp/validation on [browser].ingest_timeout_ms, which now covers
 // db.Open + ingest end-to-end, not just the insert); this 40000ms cap keeps a
 // ~5s margin above it. Keep the two in sync — the config constant carries the
 // matching cross-reference comment.

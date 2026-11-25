@@ -598,8 +598,9 @@ func revalidatePrompt(k promptKey, sd side, name string, query []queryParam, lab
 // cached for CacheTTL; after that the cached copy is returned at once and
 // revalidated in the background with If-None-Match. With nothing cached and a
 // failed fetch, Fallback is returned; without one the error wraps
-// ErrPromptNotFound or ErrPromptFetch. The span in ctx is stamped with the
-// prompt's name and version.
+// ErrPromptNotFound or ErrPromptFetch (and, when the org's plan refused the
+// fetch, the *PlanRefusalError: errors.Is(err, ErrPlanRequired)). The span
+// in ctx is stamped with the prompt's name and version.
 func GetPrompt(ctx context.Context, name string, o PromptOptions) (*Prompt, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -624,6 +625,7 @@ func GetPrompt(ctx context.Context, name string, o PromptOptions) (*Prompt, erro
 	}
 	span := trace.SpanFromContext(ctx)
 	var errs []string
+	var refused *PlanRefusalError
 	notFound := true
 	targets := sides(nil)
 	if len(targets) == 0 {
@@ -661,6 +663,9 @@ func GetPrompt(ctx context.Context, name string, o PromptOptions) (*Prompt, erro
 			continue
 		}
 		notFound = false
+		if refused == nil {
+			refused = resp.planRefusal()
+		}
 		errs = append(errs, sd.name+": "+resp.describe())
 	}
 	if o.Fallback != nil {
@@ -673,5 +678,11 @@ func GetPrompt(ctx context.Context, name string, o PromptOptions) (*Prompt, erro
 	if notFound {
 		return nil, fmt.Errorf("%w: prompt %q (%s): %s", ErrPromptNotFound, name, selector, detail)
 	}
-	return nil, fmt.Errorf("%w: prompt %q (%s): %s", ErrPromptFetch, name, selector, detail)
+	err = fmt.Errorf("%w: prompt %q (%s): %s", ErrPromptFetch, name, selector, detail)
+	if refused != nil {
+		// The org's plan refused it: still ErrPromptFetch, and errors.As
+		// finds the *PlanRefusalError.
+		return nil, &withPlanRefusal{err: err, refusal: refused}
+	}
+	return nil, err
 }

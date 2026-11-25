@@ -124,6 +124,32 @@ func TestBoundaryRules_FileAccess(t *testing.T) {
 			wantRule: "R-152", wantEnforce: DecisionAsk,
 		},
 		{name: "R-152 near-miss: similarly named dir", kind: KindFileAccess, actionType: "read_file", target: "~/.sshconfig-notes/readme.md", wantRule: "R-150", wantEnforce: DecisionFlag},
+		// SDK keys (SDK quickstart plan 3.4, ledger SDKQS-5, F9): a read asks,
+		// a write denies, on Observer's copy and on the SDK-held file.
+		{name: "R-152 hit: read Observer's SDK key", kind: KindFileAccess, actionType: "read_file", target: "~/.observer/sdk/sbo-sdk-credential-v1.sdk-credential", wantRule: "R-152", wantEnforce: DecisionAsk},
+		{name: "R-152 hit: write Observer's SDK key", kind: KindFileAccess, actionType: "write_file", target: "/home/u/.observer/sdk/sbo-sdk-credential-v1.sdk-credential", wantRule: "R-152", wantEnforce: DecisionDeny},
+		{name: "R-152 hit: read the SDK-held key", kind: KindFileAccess, actionType: "read_file", target: "~/.config/superbased/sdk-credential", wantRule: "R-152", wantEnforce: DecisionAsk},
+		{name: "R-152 hit: write the SDK-held key", kind: KindFileAccess, actionType: "edit_file", target: "/home/u/.config/superbased/sdk-credential", wantRule: "R-152", wantEnforce: DecisionDeny},
+		{
+			name: "R-152 hit: windows SDK-held key read", kind: KindFileAccess, actionType: "read_file",
+			target: `C:\Users\u\AppData\Local\superbased\sdk-credential`, home: `C:\Users\u`,
+			cwd: `C:\Users\u\proj`, root: `C:\Users\u\proj`,
+			wantRule: "R-152", wantEnforce: DecisionAsk,
+		},
+		{
+			name: "R-152 hit: windows SDK-held key write, home unknown", kind: KindFileAccess, actionType: "write_file",
+			target: `C:\Users\u\AppData\Local\superbased\sdk-credential`, home: `D:\elsewhere`,
+			cwd: `C:\Users\u\proj`, root: `C:\Users\u\proj`,
+			wantRule: "R-152", wantEnforce: DecisionDeny,
+		},
+		{
+			name: "R-152 hit: windows Observer SDK key read", kind: KindFileAccess, actionType: "read_file",
+			target: `C:\Users\u\.observer\sdk\sbo-sdk-credential-v1.sdk-credential`, home: `C:\Users\u`,
+			cwd: `C:\Users\u\proj`, root: `C:\Users\u\proj`,
+			wantRule: "R-152", wantEnforce: DecisionAsk,
+		},
+		{name: "R-152 near-miss: another superbased config file", kind: KindFileAccess, actionType: "read_file", target: "~/.config/superbased/settings.toml", wantRule: "R-150", wantEnforce: DecisionFlag},
+		{name: "R-152 near-miss: the observer directory beside sdk", kind: KindFileAccess, actionType: "read_file", target: "~/.observer/sdk-notes.md"},
 
 		// --- R-153: secret files ---
 		{name: "R-153 hit: read .env", kind: KindFileAccess, actionType: "read_file", target: ".env", wantRule: "R-153", wantEnforce: DecisionAsk},
@@ -246,6 +272,23 @@ func TestBoundaryRules_Shell(t *testing.T) {
 			wantRule: "R-152", wantEnforce: DecisionAsk,
 		},
 		{name: "R-152 sh near-miss: ls home", cmd: "ls ~/"},
+		{name: "R-152 sh hit: cat the SDK-held key", cmd: "cat ~/.config/superbased/sdk-credential", wantRule: "R-152", wantEnforce: DecisionAsk},
+		{name: "R-152 sh hit: copy Observer's SDK key out", cmd: "cp ~/.observer/sdk/sbo-sdk-credential-v1.sdk-credential /tmp/k", wantRule: "R-152", wantEnforce: DecisionAsk},
+		{name: "R-152 sh hit: overwrite the SDK-held key", cmd: "echo k.s > ~/.config/superbased/sdk-credential", wantRule: "R-152", wantEnforce: DecisionDeny},
+		{name: "R-152 sh hit: move a file over the SDK-held key", cmd: "mv /tmp/k ~/.config/superbased/sdk-credential", wantRule: "R-152", wantEnforce: DecisionDeny},
+		{name: "R-152 sh hit: delete Observer's SDK key", cmd: "rm ~/.observer/sdk/sbo-sdk-credential-v1.sdk-credential", wantRule: "R-152", wantEnforce: DecisionDeny},
+		{
+			name: "R-152 sh hit: PS read the SDK-held key under USERPROFILE", cmd: `Get-Content $env:USERPROFILE\AppData\Local\superbased\sdk-credential`, dialect: DialectPowerShell,
+			home: `C:\Users\u`, cwd: `C:\Users\u\proj`, root: `C:\Users\u\proj`,
+			wantRule: "R-152", wantEnforce: DecisionAsk,
+		},
+		{
+			name: "R-152 sh hit: PS read the SDK-held key by full path", cmd: `Get-Content C:\Users\u\AppData\Local\superbased\sdk-credential`, dialect: DialectPowerShell,
+			home: `C:\Users\u`, cwd: `C:\Users\u\proj`, root: `C:\Users\u\proj`,
+			wantRule: "R-152", wantEnforce: DecisionAsk,
+		},
+		{name: "R-152 sh near-miss: run the SDK's setup", cmd: "npx @superbased/sdk setup"},
+		{name: "R-152 sh near-miss: observer sdk status", cmd: "observer sdk status"},
 
 		// --- R-153 shell row ---
 		{name: "R-153 sh hit: cat .env", cmd: "cat .env", wantRule: "R-153", wantEnforce: DecisionAsk},

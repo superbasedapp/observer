@@ -2,13 +2,29 @@ package messagesummary
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
+	"github.com/marmutapp/superbased-observer/internal/store"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 )
+
+// storeWriter is the CallRowWriter cmd/observer wires: the store's
+// summary_calls seam over database.
+func storeWriter(database *sql.DB) CallRowWriter {
+	st := store.New(database)
+	return func(ctx context.Context, row CallRow) error {
+		return st.InsertSummaryCall(ctx, store.SummaryCallRow{
+			SessionID: row.SessionID, At: row.At, Model: row.Model,
+			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+			CacheReadTokens: row.CacheReadTokens, CacheCreationTokens: row.CacheCreationTokens,
+			CostUSD: row.CostUSD,
+		})
+	}
+}
 
 // stubPricing returns fixed rates for testing the cost computation.
 type stubPricing struct{}
@@ -30,7 +46,7 @@ func TestDBRecorder_RecordsRow(t *testing.T) {
 	}
 	t.Cleanup(func() { database.Close() })
 
-	r := NewDBRecorder(database, stubPricing{})
+	r := NewDBRecorder(storeWriter(database), stubPricing{})
 	err = r.Record(context.Background(), SummaryCall{
 		SessionID:    "sX",
 		Model:        "claude-haiku-4-5",
@@ -66,7 +82,7 @@ func TestDBRecorder_RecordsRow(t *testing.T) {
 	}
 }
 
-// TestDBRecorder_NilSafe pins that nil receiver / nil DB are no-ops.
+// TestDBRecorder_NilSafe pins that nil receiver / nil writer are no-ops.
 func TestDBRecorder_NilSafe(t *testing.T) {
 	var r *DBRecorder
 	if err := r.Record(context.Background(), SummaryCall{}); err != nil {
@@ -74,7 +90,7 @@ func TestDBRecorder_NilSafe(t *testing.T) {
 	}
 	r2 := NewDBRecorder(nil, stubPricing{})
 	if err := r2.Record(context.Background(), SummaryCall{}); err != nil {
-		t.Errorf("nil-db Record: %v", err)
+		t.Errorf("nil-writer Record: %v", err)
 	}
 }
 
@@ -88,7 +104,7 @@ func TestDBRecorder_UnknownModelZeroCost(t *testing.T) {
 	}
 	t.Cleanup(func() { database.Close() })
 
-	r := NewDBRecorder(database, stubPricing{})
+	r := NewDBRecorder(storeWriter(database), stubPricing{})
 	err = r.Record(context.Background(), SummaryCall{
 		Model:        "claude-future-9000",
 		InputTokens:  1000,

@@ -178,6 +178,9 @@ func TestLauncherHasOpenAIKey(t *testing.T) {
 
 // piLauncherRun executes `observer pi` against a stub that records its argv
 // and copies models.json as it saw it during the session.
+// piLauncherProxyURL is the live listener the last piLauncherRun used.
+var piLauncherProxyURL string
+
 func piLauncherRun(t *testing.T, home string, args ...string) (argv []string, during string, stderr string, err error) {
 	t.Helper()
 	originalRuntimeDir := agentRuntimeDir
@@ -204,7 +207,10 @@ func piLauncherRun(t *testing.T, home string, args ...string) (argv []string, du
 	output := new(bytes.Buffer)
 	root := &cobra.Command{Use: "observer", SilenceUsage: true}
 	root.AddCommand(newPiCmd())
-	root.SetArgs(append([]string{"pi", "--config", cfgPath, "--pi-path", stub, "--no-attach", "--proxy-url", "http://127.0.0.1:1"}, args...))
+	// A live listener: a routed launch needs a proxy that answers (the
+	// proxy-down gate neutralizes otherwise; lane launcher-proxy-down).
+	piLauncherProxyURL = openLoopbackURL(t)
+	root.SetArgs(append([]string{"pi", "--config", cfgPath, "--pi-path", stub, "--no-attach", "--proxy-url", piLauncherProxyURL}, args...))
 	root.SetOut(output)
 	root.SetErr(output)
 	executed, err := root.ExecuteC()
@@ -230,7 +236,7 @@ func TestPiLauncherRoutesForTheSessionOnly(t *testing.T) {
 	if want := []string{"--provider", piProviderName, "--model", piObserverModelIDs()[0]}; !equalArgs(argv, want) {
 		t.Fatalf("argv = %v, want %v", argv, want)
 	}
-	if !strings.Contains(during, `"baseUrl": "http://127.0.0.1:1/v1"`) {
+	if !strings.Contains(during, `"baseUrl": "`+piLauncherProxyURL+`/v1"`) {
 		t.Errorf("models.json during the session = %q, want the observer provider", during)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".pi", "agent", "models.json")); !errors.Is(err, os.ErrNotExist) {

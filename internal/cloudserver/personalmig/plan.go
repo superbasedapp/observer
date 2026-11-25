@@ -14,9 +14,12 @@ const (
 	// today (D-IND-6).
 	AccountPaidPlan = "plus_beta"
 	// OrgPlanName and OrgPlanVersion are the personal org plan a re-keyed
-	// subscription is rewritten to (D-IND-6).
+	// subscription is rewritten to (D-IND-6). Version 2 since L-166
+	// (2026-11-24): the AI Apps allowance. A row re-keyed earlier names v1,
+	// which the catalog carries forward to v2 (entitlements.Current), so
+	// both are issued the same document.
 	OrgPlanName    = "personal_pro"
-	OrgPlanVersion = 1
+	OrgPlanVersion = 2
 	// PaddlePlanSource is the account_plans source the Paddle account path
 	// writes; re-keying closes the account's row of this source.
 	PaddlePlanSource = "paddle"

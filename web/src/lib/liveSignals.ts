@@ -5,8 +5,8 @@ import type { Tone } from "@shared/lib/tone";
 // status moves, which tone a utilisation fill takes, how far a cache window
 // has run down, and which list rows arrived after the first render. Decision
 // logic as data (CLAUDE.md #5): each status value picks a row, never a tool
-// name. Pure (type-only imports), so src/lib/liveSignals.test.ts runs it
-// under plain node.
+// name. Pure (type-only imports, and one value re-export from a relative
+// shared .ts path), so src/lib/liveSignals.test.ts runs it under plain node.
 
 /** The shared LiveDot's tone set (shared/primitives/LiveDot.tsx). */
 export type LiveTone = "success" | "warn" | "danger" | "info" | "idle";
@@ -170,32 +170,10 @@ export function cacheLifeRatio(
   return Math.max(0, Math.min(1, (end - nowMs) / (end - start)));
 }
 
-/**
- * ArrivalState remembers a list's keys as of the last commit and which of
- * them arrived after the baseline, so a newly arrived row can fade in once
- * without re-animating the whole list on every poll.
- */
-export type ArrivalState = { seen: ReadonlySet<string>; arrived: ReadonlySet<string> };
-
-/**
- * advanceArrivals folds one committed key list into the state. With no prior
- * state the keys become the baseline (nothing arrives on the first render).
- * A key arrives when it was not seen at the last commit, and stays arrived
- * while it remains in the list (so its class is never removed mid-animation);
- * a key that leaves is forgotten.
- */
-export function advanceArrivals(prev: ArrivalState | null, keys: readonly string[]): ArrivalState {
-  if (!prev) return { seen: new Set(keys), arrived: new Set() };
-  const arrived = new Set<string>();
-  for (const k of keys) if (!prev.seen.has(k) || prev.arrived.has(k)) arrived.add(k);
-  return { seen: new Set(keys), arrived };
-}
-
-/** isArrival reports whether `key` arrived after the baseline (false with no baseline). */
-export function isArrival(state: ArrivalState | null, key: string): boolean {
-  if (!state) return false;
-  return !state.seen.has(key) || state.arrived.has(key);
-}
+// Row arrivals (ArrivalState, advanceArrivals, isArrival) live in
+// shared/lib/arrivals.ts, one copy for both dashboards; re-exported here for
+// this module's importers.
+export { advanceArrivals, isArrival, type ArrivalState } from "../../../shared/lib/arrivals.ts";
 
 /** One row of an ordered freshness table: the first row whose bound the age is within wins. */
 export type FreshnessBand = { withinMs: number; state: string };

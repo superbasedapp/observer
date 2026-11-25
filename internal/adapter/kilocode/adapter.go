@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -370,7 +371,7 @@ type toolInput struct {
 // chain (session.directory → project.worktree). One small query, used
 // to avoid N round-trips when resolving cwds across hundreds of rows.
 func (a *CLIAdapter) loadSessionDirectories(ctx context.Context, db *sql.DB) (map[string]kiloSessionDirectory, error) {
-	hasProject := tableExists(ctx, db, "project")
+	hasProject := sqliteschema.TableExists(ctx, db, "project")
 	out := map[string]kiloSessionDirectory{}
 	var query string
 	if hasProject {
@@ -402,7 +403,7 @@ func (a *CLIAdapter) loadSessionDirectories(ctx context.Context, db *sql.DB) (ma
 // re-stamps just the active sessions; the store's first-wins write makes
 // a repeat harmless anyway. The `version` column is absent on older Kilo
 // schemas, so a query error is TOLERATED (returns nil) rather than
-// failing the whole parse — the tableExists-tolerant posture the rest of
+// failing the whole parse — the TableExists-tolerant posture the rest of
 // this adapter uses.
 func (a *CLIAdapter) loadSessionToolVersions(ctx context.Context, db *sql.DB, touched map[string]bool) []models.SessionToolVersion {
 	if len(touched) == 0 {
@@ -1083,7 +1084,7 @@ func (a *CLIAdapter) loadSubtaskEvents(ctx context.Context, db *sql.DB, sourceFi
 // might lack the table (every capture so far has it but the
 // __drizzle_migrations stack is still growing).
 func (a *CLIAdapter) loadTodoEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]kiloResolvedRoot) ([]models.ToolEvent, error) {
-	if !tableExists(ctx, db, "todo") {
+	if !sqliteschema.TableExists(ctx, db, "todo") {
 		return nil, nil
 	}
 	sessDirs, err := a.loadSessionDirectories(ctx, db)
@@ -1211,7 +1212,7 @@ func latestWatermark(ctx context.Context, path string) (int64, bool, error) {
 	defer db.Close()
 
 	for _, t := range coreTables {
-		if !tableExists(ctx, db, t) {
+		if !sqliteschema.TableExists(ctx, db, t) {
 			return 0, false, nil
 		}
 	}
@@ -1247,10 +1248,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Kilo CLI store (kilo.db): every table this
@@ -1272,16 +1270,7 @@ var allHomesFunc = crossmount.AllHomes
 // \\wsl.localhost\<distro>\home\<u>\.local\share\kilo\kilo.db on a
 // Windows host.
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 func resolveDBPath(path string) string {
@@ -1321,19 +1310,6 @@ func defaultCLIRoots() []string {
 		roots = append(roots, filepath.Join(h.Path, ".local", "share", "kilo"))
 	}
 	return roots
-}
-
-// tableExists returns true when the given table is present in the
-// SQLite database. Used by loadTodoEvents (and loadSessionDirectories
-// for the `project` JOIN) to degrade gracefully on Kilo schemas that
-// haven't applied every migration.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
 }
 
 func firstOpenRouterReasoning(part toolPartData) string {

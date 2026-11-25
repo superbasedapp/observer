@@ -20,39 +20,15 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-COMMITTED_DIR="website/tools"
-MANIFEST="tool-count-manifest.json"
-
-if [ ! -d "tools/toolcountgen" ]; then
-    echo "verify-tool-count-build: missing tools/toolcountgen" >&2
-    exit 1
-fi
-if [ ! -f "$COMMITTED_DIR/$MANIFEST" ]; then
-    echo "verify-tool-count-build: missing $COMMITTED_DIR/$MANIFEST — run 'make tool-count-build' and commit" >&2
-    exit 1
-fi
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./tools/toolcountgen -outdir "$tmpdir" \
-    || { echo "verify-tool-count-build: toolcountgen failed" >&2; exit 1; }
-
-if [ ! -f "$tmpdir/$MANIFEST" ]; then
-    echo "verify-tool-count-build: toolcountgen did not emit $MANIFEST" >&2
-    exit 1
-fi
-
-if ! diff -u "$COMMITTED_DIR/$MANIFEST" "$tmpdir/$MANIFEST" > "$tmpdir/.diff" 2>&1; then
-    echo "verify-tool-count-build: $COMMITTED_DIR/$MANIFEST drifted from a fresh toolcountgen run"
-    echo "----- diff: committed (-) vs rebuilt (+) -----"
-    cat "$tmpdir/.diff"
-    echo "-----"
-    echo "tool-count drift detected; run 'make tool-count-build' and commit" >&2
-    exit 1
-fi
-
-echo "tool-count manifest: $COMMITTED_DIR/$MANIFEST in sync with internal/integration"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-tool-count-build \
+    --tool toolcountgen \
+    --tool-dir tools/toolcountgen \
+    --make tool-count-build \
+    --drift tool-count \
+    --ok "tool-count manifest: website/tools/tool-count-manifest.json in sync with internal/integration" \
+    --artifact website/tools/tool-count-manifest.json \
+    -- go run ./tools/toolcountgen -outdir @TMP@

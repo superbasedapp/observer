@@ -545,6 +545,34 @@
     return out;
   }
 
+  // --- ChatGPT op-grammar helpers ------------------------------------------
+  // Shared by both ChatGPT accumulators (the SSE makeChatGPTAccumulator and
+  // the WebSocket makeChatGPTWSAccumulator), which read the same o/p/v op
+  // grammar. Pure: no accumulator state.
+
+  // pathIsAssistantText matches an op path that appends to the assistant
+  // message body (content parts[0]).
+  function pathIsAssistantText(p) {
+    return typeof p === "string" && p.indexOf("content/parts/0") !== -1;
+  }
+
+  // pathIsConvId matches a delta-encoded snapshot path whose leaf is the
+  // conversation id (e.g. a patch sub-op `{"p":"/conversation_id",...}`).
+  function pathIsConvId(p) {
+    return typeof p === "string" && /conversation_id$/.test(p);
+  }
+
+  // isHiddenChatGPTSnapshot reports whether a message snapshot is a hidden /
+  // system one, which is never the answer (re-review HIGH #1, wave-5): it
+  // carries weight 0.0 EVEN WHEN the explicit is_visually_hidden flag is
+  // absent, or it carries metadata.is_visually_hidden_from_conversation. Such
+  // a snapshot streams with a terminal status already set. The real answer is
+  // weight 1.0 (fixture c289780f...). The SSE answer-container test and the
+  // WS answer-target test both use this one predicate.
+  function isHiddenChatGPTSnapshot(m) {
+    return m.weight === 0 || !!(m.metadata && m.metadata.is_visually_hidden_from_conversation === true);
+  }
+
   // --- ChatGPT accumulator -------------------------------------------------
   // SSE `data: {json}` frames keyed o=op / p=path / v=value. Frame shapes
   // ([high] confidence, July-2026 reverse-engineering):
@@ -667,16 +695,6 @@
       }
     }
 
-    function pathIsAssistantText(p) {
-      return typeof p === "string" && p.indexOf("content/parts/0") !== -1;
-    }
-
-    // pathIsConvId matches a delta-encoded snapshot path whose leaf is the
-    // conversation id (e.g. a patch sub-op `{"p":"/conversation_id",...}`).
-    function pathIsConvId(p) {
-      return typeof p === "string" && /conversation_id$/.test(p);
-    }
-
     // isAnswerContainer reports whether a message snapshot is the active
     // assistant ANSWER container — the one message whose content parts[0]
     // receives the harvested answer deltas and whose terminal status closes
@@ -693,17 +711,11 @@
     // context and answer messages carry it) since a model string is harmless.
     function isAnswerContainer(m) {
       if (!m || !m.author || m.author.role !== "assistant") return false;
-      // Mirror the WS answer predicate (~L1808) EXACTLY (re-review HIGH #1,
-      // wave-5): a hidden/system snapshot carries weight 0.0 EVEN WHEN the
-      // explicit is_visually_hidden flag is absent, and such a snapshot streams
-      // with a terminal status already set. The real answer is weight 1.0
-      // (fixture c289780f…). A weight-0 assistant/text snapshot must NEVER be
-      // the answer container — else its pre-carried finished_successfully marks
-      // completion and a later truncated real answer emits partial.
-      if (m.weight === 0) return false;
-      if (m.metadata && m.metadata.is_visually_hidden_from_conversation === true) {
-        return false;
-      }
+      // A hidden/system snapshot (isHiddenChatGPTSnapshot, the predicate the
+      // WS accumulator shares) must NEVER be the answer container — else its
+      // pre-carried finished_successfully marks completion and a later
+      // truncated real answer emits partial.
+      if (isHiddenChatGPTSnapshot(m)) return false;
       // When a channel field is present it MUST be "final" — the visible answer
       // message is channel:"final" (fixture). A non-final-channel assistant
       // snapshot (analysis/commentary/scratch channel) is NOT the answer, even
@@ -2113,12 +2125,6 @@
     function setWorkingTurnId(v) {
       if (typeof v === "string" && v && !state.workingTurnId) state.workingTurnId = v;
     }
-    function pathIsAssistantText(p) {
-      return typeof p === "string" && p.indexOf("content/parts/0") !== -1;
-    }
-    function pathIsConvId(p) {
-      return typeof p === "string" && /conversation_id$/.test(p);
-    }
     function harvestMessageMeta(m) {
       const meta = m && m.metadata;
       if (!meta) return;
@@ -2160,9 +2166,7 @@
         // TEXT message that is NOT hidden and NOT weight-0. A hidden weight-0
         // assistant snapshot, a system message, or a non-text assistant message
         // (reasoning_recap / model_editable_context) is NOT the answer.
-        const hidden =
-          m.weight === 0 ||
-          (m.metadata && m.metadata.is_visually_hidden_from_conversation === true);
+        const hidden = isHiddenChatGPTSnapshot(m);
         const ctype = m.content && m.content.content_type;
         if (role === "assistant" && !hidden && ctype === "text") {
           activeTargetId = m.id || "__asst__";

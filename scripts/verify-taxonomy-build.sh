@@ -23,49 +23,20 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-COMMITTED_DIR="shared/lib"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+#
 # Every artifact taxgen writes. A file added here without being added to
 # taxgen (or vice versa) fails loudly below rather than going unchecked.
-ARTIFACTS=(actiontax.gen.json actiontax.gen.ts actiontax.vectors.gen.json)
-
-if [ ! -d "web/taxgen" ]; then
-    echo "verify-taxonomy-build: missing web/taxgen" >&2
-    exit 1
-fi
-for name in "${ARTIFACTS[@]}"; do
-    if [ ! -f "$COMMITTED_DIR/$name" ]; then
-        echo "verify-taxonomy-build: missing $COMMITTED_DIR/$name — run 'make taxonomy-build' and commit" >&2
-        exit 1
-    fi
-done
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./web/taxgen -outdir "$tmpdir" \
-    || { echo "verify-taxonomy-build: taxgen failed" >&2; exit 1; }
-
-drift=0
-for name in "${ARTIFACTS[@]}"; do
-    if [ ! -f "$tmpdir/$name" ]; then
-        echo "verify-taxonomy-build: taxgen did not emit $name" >&2
-        exit 1
-    fi
-    if ! diff -u "$COMMITTED_DIR/$name" "$tmpdir/$name" > "$tmpdir/.diff-$name" 2>&1; then
-        echo "verify-taxonomy-build: $COMMITTED_DIR/$name drifted from a fresh taxgen run"
-        echo "----- diff: committed (-) vs rebuilt (+) -----"
-        cat "$tmpdir/.diff-$name"
-        echo "-----"
-        drift=1
-    fi
-done
-
-if [ "$drift" -ne 0 ]; then
-    echo "taxonomy drift detected; run 'make taxonomy-build' and commit" >&2
-    exit 1
-fi
-
-echo "action taxonomy: ${#ARTIFACTS[@]} generated files in $COMMITTED_DIR in sync with internal/tooltax"
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-taxonomy-build \
+    --tool taxgen \
+    --tool-dir web/taxgen \
+    --make taxonomy-build \
+    --drift taxonomy \
+    --ok "action taxonomy: @COUNT@ generated files in shared/lib in sync with internal/tooltax" \
+    --artifact shared/lib/actiontax.gen.json \
+    --artifact shared/lib/actiontax.gen.ts \
+    --artifact shared/lib/actiontax.vectors.gen.json \
+    -- go run ./web/taxgen -outdir @TMP@

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -124,11 +125,30 @@ func TestLegacy_IsSessionFileRejectsForeignAPIHistory(t *testing.T) {
 
 // TestLegacy_DefaultRootsIncludesVSCodeServer pins that we glob BOTH
 // the VS Code desktop globalStorage AND the VS Code Server location
-// (the latter is where Remote-WSL captured sessions live). On a host
-// without crossmount homes the test still passes — defaultRoots
-// returns nil; the assertion only fires when at least one home is
-// detected (every real install).
+// (the latter is where Remote-WSL captured sessions live). It runs over a
+// fake home holding both trees, so it can fail: a defaultRoots that drops
+// either layout is an error, not a log line.
 func TestLegacy_DefaultRootsIncludesVSCodeServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	var desktopUser string
+	switch runtime.GOOS {
+	case "windows":
+		desktopUser = filepath.Join(home, "AppData", "Roaming", "Code", "User")
+	case "darwin":
+		desktopUser = filepath.Join(home, "Library", "Application Support", "Code", "User")
+	default:
+		desktopUser = filepath.Join(home, ".config", "Code", "User")
+	}
+	serverUser := filepath.Join(home, ".vscode-server", "data", "User")
+	for _, u := range []string{desktopUser, serverUser} {
+		if err := os.MkdirAll(filepath.Join(u, "globalStorage", "kilocode.kilo-code", "tasks"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	a := NewLegacy()
 	hasDesktop := false
 	hasServer := false
@@ -149,11 +169,21 @@ func TestLegacy_DefaultRootsIncludesVSCodeServer(t *testing.T) {
 			}
 		}
 	}
-	// Only assert when we actually got roots back; on a sandboxed
-	// runner with no detected homes, hasDesktop/hasServer may both
-	// stay false and that's fine — the defaults_test invariants
-	// already cover the under-WatchPaths constraint.
-	if len(a.WatchPaths()) > 0 && !hasDesktop && !hasServer {
-		t.Logf("NewLegacy returned %d roots but none look like Code-desktop or vscode-server; check defaultRoots()", len(a.WatchPaths()))
+	if !hasDesktop || !hasServer {
+		t.Errorf("NewLegacy roots over a home with both trees: desktop=%v server=%v, want both; roots %v", hasDesktop, hasServer, a.WatchPaths())
+	}
+	for _, want := range []string{
+		filepath.Join(desktopUser, "globalStorage", "kilocode.kilo-code", "tasks"),
+		filepath.Join(serverUser, "globalStorage", "kilocode.kilo-code", "tasks"),
+	} {
+		found := false
+		for _, r := range a.WatchPaths() {
+			if r == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("root %q missing from %v", want, a.WatchPaths())
+		}
 	}
 }

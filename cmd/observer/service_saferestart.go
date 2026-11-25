@@ -113,6 +113,15 @@ type safeRestartEnv struct {
 	// proxyExpected reports whether the daemon's config runs the API proxy
 	// (capture.proxy active).
 	proxyExpected func() bool
+	// daemonHandover asks the running daemon's dashboard whether its
+	// in-place restart hands the proxy's listening socket over, and the
+	// digest of the command it runs (GET /api/admin/restart
+	// listener_handover, invocation_digest; L-168 (ii)). nil, or a daemon
+	// that predates the report, is no hand-over.
+	daemonHandover func(ctx context.Context) (handover bool, invocation string)
+	// unitInvocation is the digest of the command the installed unit (or
+	// LaunchAgent) runs ("" when it cannot be read).
+	unitInvocation func(m service.RestartManager, scope service.Scope) string
 	// registrar builds the route registrar for the hold.
 	registrar func(port int, dryRun bool) (*proxyroute.Registrar, error)
 	// liveRuns asks the daemon about its live sandboxed runs.
@@ -163,6 +172,8 @@ var newSafeRestartEnv = func(configPath string) safeRestartEnv {
 		orgMaintainsRoutes: func(ctx context.Context) (bool, error) { return restartOrgMaintainsRoutes(ctx, configPath) },
 		daemonProxyPort:    func(ctx context.Context) (int, bool) { return daemonProxyPortFor(ctx, configPath) },
 		proxyExpected:      func() bool { return componentSnapshotFor(configPath).Active("capture.proxy") },
+		daemonHandover:     func(ctx context.Context) (bool, string) { return daemonHandoverFor(ctx, configPath) },
+		unitInvocation:     installedServiceInvocation,
 		registrar:          routeHoldRegistrar,
 		liveRuns:           newDaemonLiveRunsClient(configPath),
 		restartUnit:        restartServiceUnit,
@@ -285,6 +296,117 @@ func daemonProxyPortFor(ctx context.Context, configPath string) (int, bool) {
 		return 0, false
 	}
 	return daemonProxyPortFromBody(resp.Body)
+}
+
+// daemonHandoverFor asks the dashboard of the daemon serving configPath's
+// database what its restart does with the proxy port (GET
+// /api/admin/restart listener_handover, invocation_digest). A daemon that
+// does not answer, or predates the report, is no hand-over.
+func daemonHandoverFor(ctx context.Context, configPath string) (bool, string) {
+	t := resolveDaemonHandoff(ctx, configPath)
+	if !t.Use {
+		return false, ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.Base+"/api/admin/restart", nil)
+	if err != nil {
+		return false, ""
+	}
+	t.setDBIdentity(req)
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req) //nolint:gosec // G704: this node's own dashboard address from its config or listen record
+	if err != nil {
+		return false, ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK || isDBIdentityRefusal(resp, t.DBIdentity) {
+		return false, ""
+	}
+	return daemonHandoverFromBody(resp.Body)
+}
+
+// daemonHandoverFromBody reads listener_handover and invocation_digest from
+// a GET /api/admin/restart body.
+func daemonHandoverFromBody(r io.Reader) (bool, string) {
+	var body struct {
+		ListenerHandover bool   `json:"listener_handover"`
+		InvocationDigest string `json:"invocation_digest"`
+	}
+	if json.NewDecoder(io.LimitReader(r, 1<<16)).Decode(&body) != nil {
+		return false, ""
+	}
+	return body.ListenerHandover, body.InvocationDigest
+}
+
+// installedServiceInvocation is the digest of the command the installed
+// unit (systemd ExecStart) or LaunchAgent (ProgramArguments) runs, the
+// executable's symlinks resolved; "" when it cannot be read or does not run
+// `<exe> start`. A seam for tests.
+var installedServiceInvocation = func(m service.RestartManager, scope service.Scope) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	var exe string
+	var args []string
+	switch m {
+	case service.ManagerSystemd:
+		raw, err := os.ReadFile(service.UnitPath(scope, home)) //nolint:gosec // the unit path is fixed by scope
+		if err != nil {
+			return ""
+		}
+		e, a, ok := service.SplitExecStart(service.ExecStartLine(string(raw)))
+		if !ok {
+			return ""
+		}
+		exe, args = e, a
+	case service.ManagerLaunchd:
+		raw, err := os.ReadFile(service.LaunchAgentPath(home)) //nolint:gosec // the agent path is fixed
+		if err != nil {
+			return ""
+		}
+		argv, ok := service.LaunchAgentProgramArguments(string(raw))
+		if !ok {
+			return ""
+		}
+		a, ok := service.StartArgs(argv)
+		if !ok {
+			return ""
+		}
+		exe, args = argv[0], a
+	default:
+		return ""
+	}
+	return service.InvocationDigest(resolvedExePath(exe), args)
+}
+
+// restartHandoverUsable reports whether the running daemon's in-place
+// restart can stand in for this restart with its proxy socket handed over:
+// it says it hands the socket over and, when a service manager runs it, it
+// runs exactly the unit's command (an in-place restart re-executes the
+// running command, so a unit changed since, `observer service upgrade` or
+// `install` included, needs the manager's restart to take effect). note
+// says why a hand-over the daemon offers is not used ("" otherwise).
+func restartHandoverUsable(ctx context.Context, env safeRestartEnv, m service.RestartManager, scope service.Scope, unitActive bool) (ok bool, note string) {
+	if env.daemonHandover == nil {
+		return false, ""
+	}
+	handover, running := env.daemonHandover(ctx)
+	if !handover {
+		return false, ""
+	}
+	if !unitActive {
+		return true, ""
+	}
+	unit := ""
+	if env.unitInvocation != nil {
+		unit = env.unitInvocation(m, scope)
+	}
+	if service.InvocationsMatch(running, unit) {
+		return true, ""
+	}
+	return false, fmt.Sprintf("The running daemon's command differs from the installed %s service's (the unit changed since it started, or could not be read), "+
+		"so %s restarts it to apply the unit; the proxy port is closed for that moment and the routes come off meanwhile.", m, m)
 }
 
 // daemonProxyPortFromBody reads proxy_port from a GET /api/admin/restart
@@ -592,21 +714,8 @@ func runSafeRestart(ctx context.Context, opts safeRestartOptions, envFor safeRes
 	}
 	defer unlock()
 
-	installed, active, unitPID := env.unit(m, opts.scope)
-	st := env.status(ctx)
-	serving := env.proxyServing(ctx, port)
-	daemonPID := env.daemonPID()
-	if daemonPID == 0 {
-		daemonPID = unitPID
-	}
-	in := service.RestartInputs{
-		Manager: m, UnitInstalled: installed, UnitActive: active,
-		DashboardAnswers: st.Answers, ProxyServing: serving, InPlaceSupported: env.inPlace(),
-		DaemonChild: env.daemonChild(daemonPID), KeepRoutes: opts.keepRoutes,
-		ProxyExpected: env.proxyExpected(),
-	}
-	orgErr := orgPosture(ctx, env, &in)
-	plan := service.DecideRestart(in)
+	d := decideSafeRestart(ctx, env, opts, m, port)
+	in, plan, st, serving, unitPID := d.in, d.plan, d.status, d.in.ProxyServing, d.unitPID
 
 	pending, err := restartPendingHold(w, reg, port)
 	if err != nil {
@@ -615,12 +724,15 @@ func runSafeRestart(ctx context.Context, opts safeRestartOptions, envFor safeRes
 
 	switch plan.Mechanism {
 	case service.RestartRefuse:
-		return refusal(plan, orgErr)
+		return refusal(plan, d.orgErr)
 	case service.RestartNothing:
 		if !pending.Empty() {
 			return fmt.Errorf("%s. %s", plan.Reason, pendingHoldNote(pending))
 		}
 		return fmt.Errorf("%s", plan.Reason)
+	}
+	if d.handoverNote != "" && !plan.Handover {
+		fmt.Fprintln(w, d.handoverNote)
 	}
 	fmt.Fprintf(w, "Restarting the Observer daemon: %s.\n", restartMechanismText(plan))
 
@@ -634,13 +746,9 @@ func runSafeRestart(ctx context.Context, opts safeRestartOptions, envFor safeRes
 		}
 	}
 
-	hold := pending
-	if plan.HoldRoutes {
-		if hold, err = holdRoutesFor(ctx, w, env, reg, port, "restarted"); err != nil {
-			return err
-		}
-	} else {
-		reportNoHold(w, plan, serving, opts.keepRoutes, port)
+	hold, err := restartRoutesBefore(ctx, w, env, reg, plan, pending, serving, opts.keepRoutes, port)
+	if err != nil {
+		return err
 	}
 	release := env.guardSignals(w)
 	defer release()
@@ -665,7 +773,79 @@ func runSafeRestart(ctx context.Context, opts safeRestartOptions, envFor safeRes
 		return fmt.Errorf("the daemon did not answer within %s, so the proxy routes stay off for now (your AI tools reach their providers directly); "+
 			"the daemon puts them back itself once its proxy on :%d answers, and `observer doctor` lists any still off", opts.timeout, port)
 	}
+	reportRestarted(w, plan, serving, wantProxy, port)
+	if !hold.Empty() {
+		if failed := reportRelease(w, reg.ReleaseRoutes(hold)); failed > 0 {
+			return fmt.Errorf("%d proxy route(s) could not be put back; they stay listed in %s for the next `observer service restart`", failed, reg.RouteHoldPath())
+		}
+	}
+	return nil
+}
+
+// safeRestartDecision is what `observer service restart` observed and
+// decided before it acts.
+type safeRestartDecision struct {
+	in           service.RestartInputs
+	plan         service.RestartPlan
+	status       daemonStatus
+	unitPID      int
+	orgErr       error
+	handoverNote string
+}
+
+// decideSafeRestart gathers the restart's inputs and walks DecideRestart.
+// The organization's posture is read only when no hand-over is used: a
+// hand-over takes no route off, so the posture does not matter to it.
+func decideSafeRestart(ctx context.Context, env safeRestartEnv, opts safeRestartOptions, m service.RestartManager, port int) safeRestartDecision {
+	installed, active, unitPID := env.unit(m, opts.scope)
+	st := env.status(ctx)
+	daemonPID := env.daemonPID()
+	if daemonPID == 0 {
+		daemonPID = unitPID
+	}
+	d := safeRestartDecision{status: st, unitPID: unitPID}
+	d.in = service.RestartInputs{
+		Manager: m, UnitInstalled: installed, UnitActive: active,
+		DashboardAnswers: st.Answers, ProxyServing: env.proxyServing(ctx, port), InPlaceSupported: env.inPlace(),
+		DaemonChild: env.daemonChild(daemonPID), KeepRoutes: opts.keepRoutes,
+		ProxyExpected: env.proxyExpected(),
+	}
+	if st.Answers && d.in.InPlaceSupported {
+		d.in.ListenerHandover, d.handoverNote = restartHandoverUsable(ctx, env, m, opts.scope, active)
+	}
+	if !d.in.ListenerHandover {
+		d.orgErr = orgPosture(ctx, env, &d.in)
+	}
+	d.plan = service.DecideRestart(d.in)
+	return d
+}
+
+// restartRoutesBefore does what the plan says about the routes before the
+// restart: take them off (the hold), leave them on for a hand-over (the
+// port keeps answering), or say why none is taken off. It returns the
+// routes to put back afterwards (pending ones an earlier run left off
+// included).
+func restartRoutesBefore(ctx context.Context, w io.Writer, env safeRestartEnv, reg *proxyroute.Registrar, plan service.RestartPlan,
+	pending proxyroute.RouteHold, serving, keepRoutes bool, port int,
+) (proxyroute.RouteHold, error) {
 	switch {
+	case plan.HoldRoutes:
+		return holdRoutesFor(ctx, w, env, reg, port, "restarted")
+	case plan.Handover:
+		if serving {
+			fmt.Fprintf(w, "The proxy routes to :%d stay on: a request an AI tool sends during the restart waits for the new daemon instead of failing.\n", port)
+		}
+	default:
+		reportNoHold(w, plan, serving, keepRoutes, port)
+	}
+	return pending, nil
+}
+
+// reportRestarted is the closing line of a restart that came up.
+func reportRestarted(w io.Writer, plan service.RestartPlan, serving, wantProxy bool, port int) {
+	switch {
+	case plan.Handover && serving:
+		fmt.Fprintf(w, "Restarted. The proxy on :%d kept answering throughout (its listening socket passed to the new daemon).\n", port)
 	case serving || wantProxy:
 		fmt.Fprintf(w, "Restarted. The proxy on :%d answers again.\n", port)
 	case plan.StartOnly:
@@ -673,12 +853,6 @@ func runSafeRestart(ctx context.Context, opts safeRestartOptions, envFor safeRes
 	default:
 		fmt.Fprintln(w, "Restarted.")
 	}
-	if !hold.Empty() {
-		if failed := reportRelease(w, reg.ReleaseRoutes(hold)); failed > 0 {
-			return fmt.Errorf("%d proxy route(s) could not be put back; they stay listed in %s for the next `observer service restart`", failed, reg.RouteHoldPath())
-		}
-	}
-	return nil
 }
 
 // safeRestartRun performs the plan's restart.

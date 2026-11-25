@@ -4,5 +4,6 @@
     "module": "CommonJS",
     "moduleResolution": "Node10",
     "outDir": "dist/cjs"
-  }
+  },
+  "exclude": ["src/register.ts", "src/setup"]
 }

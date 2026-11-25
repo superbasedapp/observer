@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 )
 
 // errNoStore is returned when no sessions.db can be resolved from the
@@ -24,7 +26,7 @@ func fileReadable(p string) bool {
 // maxRowID returns the largest message_nodes.row_id in the store — the
 // incremental watermark. A missing table (foreign/partial schema) yields 0.
 func maxRowID(ctx context.Context, db *sql.DB) (int64, error) {
-	if !tableExists(ctx, db, "message_nodes") {
+	if !sqliteschema.TableExists(ctx, db, "message_nodes") {
 		return 0, nil
 	}
 	var v sql.NullInt64
@@ -38,7 +40,7 @@ func maxRowID(ctx context.Context, db *sql.DB) (int64, error) {
 // message node with row_id > fromOffset, each with the metadata needed to
 // walk its active chain.
 func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]sessionRow, error) {
-	if !tableExists(ctx, db, "sessions") || !tableExists(ctx, db, "message_nodes") {
+	if !sqliteschema.TableExists(ctx, db, "sessions") || !sqliteschema.TableExists(ctx, db, "message_nodes") {
 		return nil, nil
 	}
 	/* #nosec G202 -- hiddenExpr/metadataExpr return one of two compile-time
@@ -95,7 +97,7 @@ func metadataExpr(ctx context.Context, db *sql.DB) string {
 // loadActiveChain return nothing, which the transcript reader handles).
 func loadSessionMeta(ctx context.Context, db *sql.DB, sessionID string) (sessionRow, error) {
 	s := sessionRow{ID: sessionID}
-	if !tableExists(ctx, db, "sessions") {
+	if !sqliteschema.TableExists(ctx, db, "sessions") {
 		return s, nil
 	}
 	err := db.QueryRowContext(ctx, `
@@ -185,15 +187,6 @@ func columnExists(ctx context.Context, db *sql.DB, table, column string) bool {
 	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
 	return err == nil && n > 0
-}
-
-// tableExists reports whether a table is present in the store, so a
-// foreign or older schema degrades gracefully instead of erroring.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
 }
 
 // contentString flattens a chat_message content field, which is a JSON

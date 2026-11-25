@@ -60,7 +60,7 @@ import java.util.function.Supplier;
  */
 public final class Superbased {
   /** The SDK version. */
-  public static final String VERSION = "0.1.0";
+  public static final String VERSION = "0.2.0";
 
   static final String TRACER_NAME = "superbased_sdk";
   static final String SDK_MARKER = "superbased-java";
@@ -82,7 +82,7 @@ public final class Superbased {
   private static volatile int maxContentChars = Settings.DEFAULT_MAX_CONTENT_CHARS;
   private static volatile Duration shutdownTimeout = Settings.DEFAULT_SHUTDOWN_TIMEOUT;
   private static volatile Settings settings;
-  private static volatile Destination.Plan plan;
+  static volatile Destination.Plan plan;
   private static final Pipeline.SwitchableSampler SAMPLER = new Pipeline.SwitchableSampler();
   private static final ExecutorService ASYNC =
       Executors.newCachedThreadPool(
@@ -248,7 +248,7 @@ public final class Superbased {
         inner = b.build();
         ownExporter = true;
       }
-      procs.add(BatchSpanProcessor.builder(new Export.CountingExporter(inner, owner)).build());
+      procs.add(BatchSpanProcessor.builder(new Export.CountingExporter(inner, owner, t.name)).build());
     }
     if (ownExporter) {
       Export.installLogCapture(s.quiet);
@@ -398,20 +398,36 @@ public final class Superbased {
    * {@code filtered_spans}, {@code mask_errors}, {@code destination},
    * {@code destinations}, {@code admission_degraded}, {@code vendor_tracing},
    * {@code usage_net_input_corrected} and the rest. Never the credential.
+   *
+   * <p>{@code plan_refusal} is the last time the organization's plan refused
+   * AI Apps ingest (an export, or any other call to the gateway), as a map
+   * ({@code kind}, {@code code}, {@code status}, {@code message},
+   * {@code upgrade_url}: where its billing owner changes the plan,
+   * {@code capability}, {@code plan}, {@code allowance}, {@code plans},
+   * {@code quota}, {@code retry_after_seconds}), else null;
+   * {@code plan_refusal_at} is when (epoch seconds, 0 when never). Export
+   * never throws: a refused export shows here, beside one warning line a
+   * minute.
    */
   public static Map<String, Object> diagnostics() {
     Map<String, Object> out = new LinkedHashMap<>(Export.STATS.snapshot());
     out.putAll(Pipeline.COUNTERS.snapshot());
     out.putAll(Admit.snapshot());
+    out.putAll(PlanRefusalException.snapshot());
     Export.SwitchableProcessor proc = processor;
     out.put("mode", mode);
     out.put("initialized", proc != null && proc.delegate() != null);
     out.put("vendor_tracing", new LinkedHashMap<>(vendorTracing));
+    Settings st = settings;
+    out.put("service_name", st == null ? "" : st.serviceName);
+    out.put("service_name_source", st == null ? "" : st.serviceNameSource);
+    out.put("first_trace_link", FirstTrace.TRACKER.printed());
     Destination.Plan p = plan;
     if (p != null) {
       out.putAll(p.summary());
     } else {
       out.put("destinations", new ArrayList<>());
+      out.put("sdk_file", new LinkedHashMap<>(Map.of("path", "", "state", SdkFile.NOT_READ, "reason", "")));
     }
     String mw = modeWarning;
     if (!mw.isEmpty()) {
@@ -815,7 +831,9 @@ public final class Superbased {
     Prompts.CACHE.clear();
     Export.STATS.reset();
     Admit.resetForTests();
+    PlanRefusalException.resetForTests();
     Pipeline.COUNTERS.reset();
+    FirstTrace.resetForTests();
     Vendor.resetForTests();
     Spans.resetForTests();
     Scores.resetForTests();

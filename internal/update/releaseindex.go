@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/updatespec"
 )
 
 // releaseindex.go is the VENDOR-signed release index (modular packaging
@@ -190,7 +192,7 @@ func ValidateReleaseIndex(ix ReleaseIndex) error {
 		if strings.TrimSpace(e.Distro) == "" || !ArtifactDistro(e.Distro) {
 			return fmt.Errorf("update.ValidateReleaseIndex: %w: %s: distro %q", ErrReleaseIndexInvalid, e.Filename, e.Distro)
 		}
-		if !isHexSHA256(e.ComponentsDigest) {
+		if !updatespec.IsHexSHA256(e.ComponentsDigest) {
 			return fmt.Errorf("update.ValidateReleaseIndex: %w: %s: components_digest", ErrReleaseIndexInvalid, e.Filename)
 		}
 		if names[e.Filename] || keys[KeyOf(a)] {

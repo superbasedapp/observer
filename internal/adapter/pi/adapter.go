@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -271,7 +272,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			continue
 		}
 		res.NewOffset = bytesRead
-		ts := parseTimestamp(line.Timestamp)
+		ts := parseutil.ParseRFC3339(line.Timestamp)
 
 		switch line.Type {
 		case "session":
@@ -581,32 +582,11 @@ func defaultRoots() []string {
 func canonicalSessionID(path string) string {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	if i := strings.LastIndexByte(base, '_'); i >= 0 && i+1 < len(base) {
-		if cand := base[i+1:]; looksLikeUUID(cand) {
+		if cand := base[i+1:]; parseutil.LooksLikeUUID(cand) {
 			return cand
 		}
 	}
 	return base
-}
-
-// looksLikeUUID reports whether s is a canonical 8-4-4-4-12 hex UUID
-// (RFC 4122 / UUIDv7 layout — Pi uses UUIDv7 session ids).
-func looksLikeUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if c != '-' {
-				return false
-			}
-			continue
-		}
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
 }
 
 // recoverSessionState pre-scans the already-consumed prefix [0, until) of an
@@ -656,19 +636,6 @@ func millisToTime(ms int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms).UTC()
-}
-
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	return time.Time{}
 }
 
 // isTerminalStopReason reports whether the assistant's stopReason

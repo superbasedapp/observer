@@ -12,7 +12,7 @@ import (
 // literal {"status":"ok"} body — and never reaches any configured
 // upstream. The backend below fails the test if it's ever dialed, so a
 // regression that routes healthz through the normal forwarding path (e.g.
-// stripUpstreamPrefix / upstreamForPath) is caught even if it happens to
+// resolveUpstreamPrefix / upstreamForPath) is caught even if it happens to
 // still return 200.
 func TestHealthz_GET(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

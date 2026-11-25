@@ -433,13 +433,7 @@ func TestMintRequiresInputs(t *testing.T) {
 	}
 }
 
-func TestEnumsRankAndExpand(t *testing.T) {
-	if got := AcceptedCredAssurances(CredSharedSecret); strings.Join(got, ",") != "hardware_bound,node_enrolled,workload_bound,shared_secret" {
-		t.Fatalf("cred expansion = %v", got)
-	}
-	if got := AcceptedClientAttestations(AttestIPCBound); strings.Join(got, ",") != "process_attested,ipc_bound" {
-		t.Fatalf("attest expansion = %v", got)
-	}
+func TestEnumsRank(t *testing.T) {
 	if AttestConfigured.ProductScoped() || !AttestIPCBound.ProductScoped() || AttestClaimed.ProductScoped() {
 		t.Fatal("product-scoped threshold wrong")
 	}

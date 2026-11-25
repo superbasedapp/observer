@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,22 +139,31 @@ func TestPrepareProviderOverridesRestoreIsCompareAndSwap(t *testing.T) {
 }
 
 // TestApplyManagedProviderOverridesOnlyOnManagedNodes: an individual node
-// writes nothing.
+// writes nothing, and neither does a managed node whose proxy is not
+// answering (lane launcher-proxy-down: never point every built-in provider at
+// a dead proxy lane).
 func TestApplyManagedProviderOverridesOnlyOnManagedNodes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	spec := testProviderOverridesSpec(path)
-	for _, managed := range []bool{false, true} {
+	prevUp := providerOverridesProxyUp
+	t.Cleanup(func() { providerOverridesProxyUp = prevUp })
+	for _, tc := range []struct{ managed, proxyUp, write bool }{
+		{managed: false, proxyUp: true, write: false},
+		{managed: true, proxyUp: true, write: true},
+		{managed: true, proxyUp: false, write: false},
+	} {
 		prev := launcherManagedNode
-		launcherManagedNode = func(context.Context, string) bool { return managed }
+		launcherManagedNode = func(context.Context, string) bool { return tc.managed }
+		providerOverridesProxyUp = func(context.Context, string, providerOverridesSpec, io.Writer) bool { return tc.proxyUp }
 		var stderr bytes.Buffer
 		restore, err := applyManagedProviderOverrides(context.Background(), "", spec, &stderr)
 		launcherManagedNode = prev
 		if err != nil {
-			t.Fatalf("managed=%v: %v", managed, err)
+			t.Fatalf("%+v: %v", tc, err)
 		}
 		_, statErr := os.Stat(path)
-		if managed != (statErr == nil) || managed != (restore != nil) {
-			t.Fatalf("managed=%v: file written=%v restore=%v", managed, statErr == nil, restore != nil)
+		if tc.write != (statErr == nil) || tc.write != (restore != nil) {
+			t.Fatalf("%+v: file written=%v restore=%v", tc, statErr == nil, restore != nil)
 		}
 		if restore != nil {
 			restore()

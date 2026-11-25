@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -85,7 +86,7 @@ func readThreadMessages(ctx context.Context, path, threadID string) ([]*rawMessa
 		return nil, false, fmt.Errorf("open: %w", err)
 	}
 	defer db.Close()
-	if !tableExists(ctx, db, "checkpoints") || !tableExists(ctx, db, "writes") {
+	if !sqliteschema.TableExists(ctx, db, "checkpoints") || !sqliteschema.TableExists(ctx, db, "writes") {
 		return nil, false, nil
 	}
 	var one int

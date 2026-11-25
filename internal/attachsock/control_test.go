@@ -242,18 +242,28 @@ func TestControlWaitEndsWhenClientHangsUp(t *testing.T) {
 	tightWaitPoll(t)
 	h := newFakeControlHost()
 	h.runs["r"] = RunInfo{RunID: "r", State: StateRunning}
-	cc := startServer(t, h)
+	// startServer, but keeping the connection handler's end: the wait polls
+	// inside it, so once it returns nothing reads the run any more.
+	cc, serverConn := net.Pipe()
+	s := &server{host: h, logger: nil, conns: make(map[*frameConn]net.Conn)}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		s.serveConn(context.Background(), serverConn)
+	}()
+	t.Cleanup(func() { _ = cc.Close(); _ = serverConn.Close() })
 	fc := newFrameConn(cc)
 	if err := fc.sendControl(controlMsg{Op: opWait, V: ProtocolVersion, Run: "r"}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	waitFor(t, "a few polls", func() bool { return h.reads.Load() >= 3 })
 	_ = cc.Close()
-	time.Sleep(30 * time.Millisecond)
-	settled := h.reads.Load()
-	time.Sleep(60 * time.Millisecond)
-	if got := h.reads.Load(); got != settled {
-		t.Fatalf("polling continued after hang-up: %d -> %d", settled, got)
+	// The wait polls inside the connection handler, so once the handler has
+	// returned no goroutine reads the run any more.
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("polling continued after hang-up: the wait did not end (%d reads so far)", h.reads.Load())
 	}
 }
 

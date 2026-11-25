@@ -13,13 +13,49 @@ to 3.13.
 - The same API in TypeScript:
   [superbased.app/docs/sdk/typescript](https://superbased.app/docs/sdk/typescript).
 
+## One command: `setup`
+
+In the project folder:
+
+```bash
+uvx superbased-sdk setup          # or: pipx run superbased-sdk setup
+                                  # or: pip install superbased-sdk && python -m superbased_sdk setup
+```
+
+`setup` finds the model libraries the project uses, installs the SDK with
+their extras (with the project's own tool: uv, poetry, pdm, pipenv or pip),
+and sets up where traces go:
+
+- **Online** (no Observer on this computer, or `--online`): it prints a link
+  and a code; sign in (or sign up) in the browser, check the code and click
+  Approve. Your own SDK key goes straight into a file only your user can
+  read (below); it is never printed. Traces need this SDK key, and nothing
+  else.
+- **This computer** (Observer running, or `--local`): with AI Apps off it asks
+  y/N on a terminal, or opens the dashboard's Turn on page when an agent runs
+  it.
+
+It then sends one hello span, waits for it to arrive, prints a link to it,
+and prints the one line to add to the app: `import superbased_sdk;
+superbased_sdk.init()`. It never edits your source files and never installs
+Observer. `--json` writes one JSON object per phase for agents; `--status`
+says what is configured; `--forget` revokes the stored key and removes its
+file; `--online --replace` gets a new key; `--key-only` only gets the key
+and sends the hello (for a Go or Java project, whose SDKs read the same file).
+Exit codes: 0 the trace arrived, 1 an unexpected error, 2 waiting for you
+(declined, expired, not clicked: run it again), 3 refused (the plan, the
+membership), 4 the environment (no supported project, the install failed,
+a self-hosted organization), 5 sent but not seen within 60 s.
+
 ## Install
 
 ```bash
 pip install superbased-sdk
 ```
 
-Auto-instrumentation for a framework is an extra:
+`init()` instruments every model library whose extra is installed (below),
+when the SDK owns the tracer provider; a framework the app has not imported
+yet is instrumented on its first import. The instrumentation is an extra:
 
 ```bash
 pip install "superbased-sdk[openai]"  # also [anthropic], [langchain] (LangGraph too), [mcp], [gemini],
@@ -31,8 +67,7 @@ pip install "superbased-sdk[openai]"  # also [anthropic], [langchain] (LangGraph
 ```python
 import superbased_sdk as sb
 
-sb.init(service_name="support-bot")      # once at startup; idempotent
-sb.instrument(["openai"])                # optional: trace every OpenAI call
+sb.init()                                # once at startup; idempotent: traces every installed model library
 
 def handle(request):
     with sb.propagate_attributes(user=request.user_id, session_id=request.chat_id):
@@ -71,7 +106,7 @@ receives spans on `127.0.0.1:4318`, the SDK's default.
 | Prompts | `get_prompt`, `async_get_prompt`, `Prompt.compile` |
 | Admission | `admit` |
 | Cost | `get_trace_cost`, `async_get_trace_cost` (each span's `cost_source`: gateway exact, proxy exact, computed, reported or unpriced) |
-| AI gateway | `gateway_event_hooks`, `async_gateway_event_hooks`, `GatewayAuth`, `gateway_headers`, `stamp_gateway_request_id` (send the app's end user and service to the AI gateway, and record its request id) |
+| AI gateway | `openai_client`, `anthropic_client`, `gateway_base_url`, `gateway_endpoint`, `gateway_key` (point a model client at the AI gateway; see below); `parse_gateway_refusal`, `gateway_refusal`, `GatewayRefusalError`; `gateway_event_hooks`, `async_gateway_event_hooks`, `GatewayAuth`, `gateway_headers`, `stamp_gateway_request_id` (send the app's end user, service and trace context to the AI gateway, and record its request id) |
 
 Nothing on the tracing path raises into your app: export failures are counted
 (`sb.diagnostics()`) and summarized in at most one `superbased_sdk` log line a
@@ -90,14 +125,17 @@ in the environment. `sb.settings()` returns what was resolved;
 
 | `init()` argument | Environment | Default |
 |---|---|---|
-| `destination` | `SUPERBASED_DESTINATION` (`local`, `online`, `both`) | this machine's default, else `local` |
-| `org_url` (the gateway) | `SUPERBASED_ORG_URL` | the address in this machine's SDK key file, after sign-in |
-| `api_key` (the SDK credential) | `SUPERBASED_API_KEY` | this machine's credential file, after sign-in |
+| `destination` | `SUPERBASED_DESTINATION` (`local`, `online`, `both`) | the SDK-held key file's choice, else this machine's default, else `local` |
+| `org_url` (the gateway) | `SUPERBASED_ORG_URL` | the address in this machine's SDK key file after sign-in, else the SDK-held key file's |
+| `api_key` (the SDK credential) | `SUPERBASED_API_KEY` | this machine's credential file after sign-in, else the SDK-held key file `setup` wrote |
 | `node_url` (this machine's dashboard API) | `SUPERBASED_NODE_URL` | `http://127.0.0.1:8081` |
 | `discover` (ask this machine for its default) | `SUPERBASED_DISCOVER` | on |
 | `endpoint` (the local OTLP receiver) | `SUPERBASED_OTLP_ENDPOINT`, then (destination `local` only) `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces` | `http://127.0.0.1:4318/v1/traces` |
 | `headers` | `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (destination `local` only), `SUPERBASED_OTLP_HEADERS` | none |
-| `service_name` | `SUPERBASED_SERVICE_NAME`, `OTEL_SERVICE_NAME`, `service.name` in `OTEL_RESOURCE_ATTRIBUTES` | `custom-app` |
+| `service_name` | `SUPERBASED_SERVICE_NAME`, `OTEL_SERVICE_NAME`, `service.name` in `OTEL_RESOURCE_ATTRIBUTES` | the project's own name (`[project] name` or `[tool.poetry] name` of the nearest `pyproject.toml` above the entry script), else the entry script's folder, else `custom-app` (`diagnostics()["service_name_source"]`) |
+| `instrument` (`"auto"`, `"off"` or a list of targets) | `SUPERBASED_INSTRUMENT` | `auto`: every installed target when the SDK owns the provider; never `openai-agents` unless named; nothing when the app registered its own provider (`diagnostics()["instrumented"]`) |
+| (the SDK-held key file `setup` writes) | `SUPERBASED_CREDENTIAL_FILE` | `$XDG_CONFIG_HOME` or `~/.config` `/superbased/sdk-credential`; Windows `%LOCALAPPDATA%\superbased\sdk-credential` |
+| (the first-trace line) | `SUPERBASED_FIRST_TRACE_LINK` (`0`, `false` or `off` turns it off) | on, only on a terminal and not under `CI` |
 | (resource attributes) | `OTEL_RESOURCE_ATTRIBUTES` | none |
 | `user`, `session_id`, `tenant` | `SUPERBASED_USER`, `SUPERBASED_SESSION_ID`, `SUPERBASED_TENANT` | none |
 | `release`, `environment` | `SUPERBASED_RELEASE`, `SUPERBASED_ENVIRONMENT` | none |
@@ -121,6 +159,24 @@ in the environment. `sb.settings()` returns what was resolved;
 destination: the gateway for `online` / `both`, else this machine. Re-recording
 the instrumentation fixtures uses `SUPERBASED_RECORD_FIXTURES=1` (tests only).
 
+### The SDK-held key file
+
+`setup` stores the member's SDK key in one file per user, outside any
+project: the key line, then `gateway_url`, `destination`, `dashboard_url` and
+`expires_at`. The SDK reads it itself (no environment variable), only when it
+is a regular file owned by this user and readable by nobody else (on Windows:
+under the user's own `%LOCALAPPDATA%`, owned by the user, no link or
+junction). The key expires after 90 days; the SDK warns from 14 days before,
+and `uvx superbased-sdk setup` gets a new one. A computer whose Observer is
+signed in keeps using Observer's key, and the file is reported as unused.
+
+### The first-trace line
+
+On a terminal, once per process, the SDK writes one line to stderr after the
+app's first trace is exported: `superbased: first trace from this process:
+<link>` (the dashboard on this computer, or the online one when the key file
+names it). Never under `CI`; `SUPERBASED_FIRST_TRACE_LINK=0` turns it off.
+
 ## Pre-flight check: `admit()`
 
 ```python
@@ -135,6 +191,74 @@ decision (`admission-unavailable`, `client-timeout`, `client-transport`,
 `client-http-error`, `client-bad-response`). Inside a span the verdict is
 recorded on it (`sbo.admission.*`).
 
+## Model calls through the AI gateway
+
+The AI gateway is the proxy your app's model calls go through: it prices each
+call exactly, holds your app's budgets and applies your organization's model
+and admission rules. `openai_client()` and `anthropic_client()` build a client
+pointed at it:
+
+```python
+import superbased_sdk as sb
+
+sb.init(service_name="support-bot")
+client = sb.openai_client()  # the key: SUPERBASED_AI_GATEWAY_KEY
+reply = client.chat.completions.create(model="gpt-5-nano", messages=messages)
+```
+
+The address is resolved first set wins: `url=`, then
+`SUPERBASED_AI_GATEWAY_URL` (the gateway's address, without `/v1`), then your
+organization's address `<org url>/ai/<upstream>` when the destination is
+`online`, then this machine's app lane (`observer apps lane add`) when it is
+`local` or `both`. The upstream defaults to `openai` or `anthropic`; name
+another with the first argument. With nothing to use the helpers raise
+`GatewayNotConfigured`: they never fall back to the provider itself. On the
+machine's app lane the client keeps the provider's own key
+(`OPENAI_API_KEY`); a remote gateway never receives it.
+`gateway_base_url("openai")` returns just the base URL for any other client.
+
+The client sends your app's end user and service, a request id and the
+current span's `traceparent`, and follows no redirect. A refusal reads as a
+`GatewayRefusalError` (`sb.gateway_refusal(err)` on the model SDK's error, or
+`parse_gateway_refusal(status, body, headers)`): `kind` is `budget_exceeded`
+(402, with `budget`), `model_not_allowed`, `admission_denied`,
+`plan_required` (403), `quota_exceeded` (429, with `retry_after`) or `other`,
+and `plan_refusal` carries the plan detail when the plan is why.
+
+## When the plan does not include AI Apps
+
+The organization's AI Apps gateway refuses ingest when its plan does not
+include AI Apps (HTTP 403 `plan_required`) or this month's allowance is used
+up (HTTP 429). The SDK reads that answer as a typed error,
+`sb.PlanRefusalError`: a `PlanRequiredError` for the first, an
+`AllowanceExceededError` for the second. `message` says why, and
+`upgrade_url` is where the organization's billing owner changes the plan. It
+also has `code`, `status`, `capability`, `plan` (the plan in force),
+`allowance`, `plans` (the plans that include more), and on a 429 `quota` and
+`retry_after` (seconds).
+
+- `get_prompt()`, `get_dataset()` and `run_experiment()` raise it. It is also
+  the `PromptFetchError` or `ExperimentError` they raise, so an existing
+  `except` still catches it.
+- The calls that never raise carry it: `ScoreResult.plan_refusal`,
+  `Verdict.plan_refusal` (from `admit()`) and `ExperimentResult.plan_refusal`.
+  `get_trace_cost()` returns None, as for any failed read.
+- Export never raises. A refused export shows in
+  `sb.diagnostics()["plan_refusal"]` (a dict of the same fields;
+  `plan_refusal_at` says when), and the SDK logs one warning line a minute
+  with the message and the upgrade URL. The last refusal of any call is kept
+  there.
+
+```python
+try:
+    prompt = sb.get_prompt("support-reply")
+except sb.PlanRefusalError as e:
+    print(e.message, e.upgrade_url)
+```
+
+`sb.parse_plan_refusal(status, body, headers)` reads a refusal from any HTTP
+answer, and returns None for anything else.
+
 ## An app that already uses OpenTelemetry
 
 If the app registered an OpenTelemetry SDK `TracerProvider` before
@@ -148,6 +272,33 @@ exporter pointed at superbased can send too; see
 Never set the resource attribute `sbo.emitted_by=observer`: it marks
 telemetry superbased emitted itself, and a resource carrying it is dropped at
 ingestion.
+
+## Changelog
+
+### 0.2.0
+
+- **`setup`**: one command from a project to its first trace
+  (`uvx superbased-sdk setup`, `python -m superbased_sdk setup`): detection,
+  the install, the online device sign-in or this computer's AI Apps enable,
+  a hello span with its link, and the one init line.
+- **`init()` instruments by itself** (`instrument=`, `SUPERBASED_INSTRUMENT`,
+  default `auto`) when the SDK owns the tracer provider. If your app called
+  `instrument([...])` and deliberately left an installed library out, it now
+  gets spans for that library too: pass `instrument=[...]` to `init()` to
+  keep the old set. If it wraps model calls with `llm_span` by hand, those
+  calls now appear twice: pass `instrument="off"`. An app with its own
+  OpenTelemetry provider is unchanged, and `openai-agents` is instrumented
+  only when named.
+- **The service name comes from the project** (`pyproject.toml`, else the
+  folder). An app that relied on `custom-app` starts a new service in the
+  dashboard: set `service_name=` or `SUPERBASED_SERVICE_NAME` to keep it.
+- **The SDK-held key file** is read as the destination's third rung
+  (`sdk_file`) and the third credential record.
+- **The first-trace line** on a terminal.
+- `diagnostics()` gains `instrument`, `instrumented`, `service_name`,
+  `service_name_source`, `sdk_file` and `first_trace_link`; `mode` can read
+  `standalone` (the SDK's own provider beside a non-SDK one the app
+  registered).
 
 ## Development
 

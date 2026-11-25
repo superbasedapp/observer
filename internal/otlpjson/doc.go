@@ -10,9 +10,8 @@
 //
 // It was built for the org gateway (plan-of-record W0-6, finding F08: the
 // gateway's HTTP path was protobuf only, so the TypeScript SDK and every JSON
-// exporter got 400). The node receiver (internal/ingest/otlp/jsonbody.go) and
-// internal/oteldirect each still carry a copy of the same steps; both can
-// delegate here (a follow-up for their owning lanes).
+// exporter got 400). The node receiver (internal/ingest/otlp/jsonbody.go),
+// internal/oteldirect and the org gateway all decode through this package.
 //
 // Pure: no database/sql, net/http or fsnotify (imports_test.go).
 package otlpjson

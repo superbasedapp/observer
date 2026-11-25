@@ -87,7 +87,7 @@ func (s *Store) loadCommitFilesByIDs(ctx context.Context, commitIDs []int64) ([]
 				rows.Close()
 				return nil, fmt.Errorf("store.loadCommitFilesByIDs: scan: %w", err)
 			}
-			r.CommittedAt = parseCommitTime(committedAt)
+			r.CommittedAt = parseStoredTime(committedAt)
 			r.Binary = binary != 0
 			out = append(out, r)
 		}
@@ -128,7 +128,7 @@ func (s *Store) LoadProjectPrompts(ctx context.Context, projectID int64, since, 
 		if err := rows.Scan(&p.ActionID, &p.SessionID, &ts, &p.Preview, &p.Tool); err != nil {
 			return nil, false, fmt.Errorf("store.LoadProjectPrompts: scan: %w", err)
 		}
-		p.At = parseCommitTime(ts)
+		p.At = parseStoredTime(ts)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -492,9 +492,9 @@ func (s *Store) LoadProjectSessions(ctx context.Context, projectID int64, since,
 		if err := rows.Scan(&sess.ID, &sess.Tool, &startedAt, &endedAt); err != nil {
 			return nil, fmt.Errorf("store.LoadProjectSessions: scan: %w", err)
 		}
-		sess.StartedAt = parseCommitTime(startedAt)
+		sess.StartedAt = parseStoredTime(startedAt)
 		if endedAt != "" {
-			sess.EndedAt = parseCommitTime(endedAt)
+			sess.EndedAt = parseStoredTime(endedAt)
 		}
 		out = append(out, sess)
 	}
@@ -675,10 +675,10 @@ func (s *Store) LoadProjectMeta(ctx context.Context, projectID int64) (ProjectMe
 		return ProjectMeta{}, false, fmt.Errorf("store.LoadProjectMeta: seen: %w", err)
 	}
 	if first.Valid {
-		m.FirstSeen = parseCommitTime(first.String)
+		m.FirstSeen = parseStoredTime(first.String)
 	}
 	if last.Valid {
-		m.LastSeen = parseCommitTime(last.String)
+		m.LastSeen = parseStoredTime(last.String)
 	}
 	return m, true, nil
 }
@@ -818,7 +818,7 @@ func (s *Store) LoadProjectListExtras(ctx context.Context, since, until time.Tim
 			lastRows.Close()
 			return nil, fmt.Errorf("store.LoadProjectListExtras: last commit scan: %w", err)
 		}
-		get(pid).LastCommitAt = parseCommitTime(last)
+		get(pid).LastCommitAt = parseStoredTime(last)
 	}
 	if err := lastRows.Err(); err != nil {
 		lastRows.Close()
@@ -977,7 +977,7 @@ func (s *Store) LoadPromptChainInput(ctx context.Context, projectID, actionID in
 	if err != nil {
 		return alignment.Input{}, PromptChainFacts{}, fmt.Errorf("store.LoadPromptChainInput: %w", err)
 	}
-	promptAt := parseCommitTime(ts)
+	promptAt := parseStoredTime(ts)
 	promptText := target
 	if rawInput.Valid && rawInput.String != "" {
 		promptText = rawInput.String

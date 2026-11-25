@@ -40,7 +40,9 @@ func TestF12PrintGrantOfferListsManagedDefaults(t *testing.T) {
 	owner := testGrantOffer(t, true, []string{govern.AuthorityDashboardVisibility})
 	owner.OwnerManaged = true
 	printGrantOffer(&buf, owner)
-	if !strings.Contains(buf.String(), "Hidden pages: Security") || strings.Contains(buf.String(), "App Traces") ||
+	// Operator ruling 2026-11-24: nothing starts hidden or read-only on an
+	// owner-managed machine, so no lines print and the summary says so.
+	if strings.Contains(buf.String(), "Hidden pages: ") || strings.Contains(buf.String(), "App Traces") ||
 		!strings.Contains(buf.String(), "both the admin and the developer") {
 		t.Fatalf("owner-managed offer: wrong managed-default lines:\n%s", buf.String())
 	}

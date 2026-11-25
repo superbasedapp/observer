@@ -331,7 +331,7 @@ func TestCloudSyncLastPlanFieldsRoundTrip(t *testing.T) {
 	monthlyCap := 500
 	if err := s.RecordCloudSyncLast(ctx, CloudSyncLast{
 		StartedAt: started, FinishedAt: started.Add(2 * time.Second), OK: true, Sent: 1,
-		PlanName: "plus", PlanLabel: "Plus",
+		PlanName: "plus_beta", PlanLabel: "Personal Pro",
 		DigestWeekly: &digestWeekly, ResultsRetentionDays: &retentionDays,
 		DailyCap: &dailyCap, MonthlyCap: &monthlyCap,
 	}); err != nil {
@@ -341,8 +341,8 @@ func TestCloudSyncLastPlanFieldsRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Get (with plan): ok=%v err=%v", ok, err)
 	}
-	if got2.PlanName != "plus" || got2.PlanLabel != "Plus" {
-		t.Fatalf("plan name/label = %q/%q, want plus/Plus", got2.PlanName, got2.PlanLabel)
+	if got2.PlanName != "plus_beta" || got2.PlanLabel != "Personal Pro" {
+		t.Fatalf("plan name/label = %q/%q, want plus_beta/Personal Pro", got2.PlanName, got2.PlanLabel)
 	}
 	if got2.DigestWeekly == nil || *got2.DigestWeekly != 1 {
 		t.Fatalf("digest_weekly = %v, want 1", got2.DigestWeekly)

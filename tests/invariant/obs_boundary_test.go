@@ -1,12 +1,11 @@
 package invariant
 
 import (
-	"go/parser"
-	"go/token"
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
 const obsImportPrefix = "github.com/marmutapp/superbased-observer/internal/obs"
@@ -55,52 +54,29 @@ var allowedObsImporters = map[string]bool{
 // offending commit can land. It textually scans imports (build-tag agnostic),
 // so the no_obs stub and the !no_obs wiring file are both covered.
 func TestObsReverseImportBoundary(t *testing.T) {
-	roots := []string{
-		filepath.Join("..", "..", "internal"),
-		filepath.Join("..", "..", "cmd"),
-	}
-	fset := token.NewFileSet()
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+	importpin.Check(t, importpin.Spec{
+		Dirs: []string{
+			filepath.Join("..", "..", "internal"),
+			filepath.Join("..", "..", "cmd"),
+		},
+		Recursive: true,
+		// The separability litmus is about the shipped binary's PRODUCTION
+		// coupling: a _test.go file that imports obs is removed together
+		// with the feature, so it's exempt (e.g. the cmd/observer
+		// live-integration test legitimately drives obs). importpin skips
+		// test files unless asked.
+		Custom: func(file, p string) string {
+			if p != obsImportPrefix && !strings.HasPrefix(p, obsImportPrefix+"/") {
+				return ""
 			}
-			slashed := filepath.ToSlash(path)
-			if d.IsDir() {
-				// The obs subtree imports its own packages — exempt it whole.
-				if slashed == "../../internal/obs" || strings.Contains(slashed, "/internal/obs/") {
-					return fs.SkipDir
-				}
-				return nil
+			// The obs subtree imports its own packages — exempt it whole.
+			if dir := filepath.ToSlash(filepath.Dir(file)); dir == "../../internal/obs" || strings.Contains(dir, "/internal/obs/") {
+				return ""
 			}
-			if !strings.HasSuffix(path, ".go") {
-				return nil
+			if allowedObsImporters[filepath.ToSlash(file)] {
+				return ""
 			}
-			// The separability litmus is about the shipped binary's
-			// PRODUCTION coupling: a _test.go file that imports obs is
-			// removed together with the feature, so it's exempt (e.g. the
-			// cmd/observer live-integration test legitimately drives obs).
-			if strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			af, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-			if perr != nil {
-				t.Fatalf("parse %s: %v", path, perr)
-			}
-			for _, imp := range af.Imports {
-				p := strings.Trim(imp.Path.Value, `"`)
-				if p != obsImportPrefix && !strings.HasPrefix(p, obsImportPrefix+"/") {
-					continue
-				}
-				if allowedObsImporters[slashed] {
-					continue
-				}
-				t.Errorf("%s imports %q — only the cmd/observer wiring file may import internal/obs/... (separability boundary, plan §2.3/§11)", slashed, p)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
+			return "only the cmd/observer wiring file may import internal/obs/... (separability boundary, plan §2.3/§11)"
+		},
+	})
 }

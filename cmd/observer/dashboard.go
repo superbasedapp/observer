@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -58,7 +57,7 @@ func newDashboardCmd() *cobra.Command {
 				return err
 			}
 			defer surfaces.close()
-			launchMgr, launchStatus, policyStop := surfaces.launchMgr, surfaces.launchStatus, surfaces.policyStop
+			launchMgr := surfaces.launchMgr
 			remoteCtrl := buildRemoteController(cfg, database)
 			// Wire the §4.δ remote-execute authorizer onto the launch manager
 			// (no-op + fail-closed unless BOTH the [remote] substrate and the PTY
@@ -74,205 +73,25 @@ func newDashboardCmd() *cobra.Command {
 			loadNodeGovernanceLKG(cmd.Context(), cfg, govStore, ngov, slog.Default())
 			processArchive, closeArchive := openProcessArchiveReader(cmd.Context(), cfg)
 			defer closeArchive()
-			// Projects-page ROI + commit-alignment arc (docs/plans/
-			// projects-page-roi-and-commit-alignment-plan-2026-09-21.md
-			// §4 W3) — same wiring as `observer start`.
-			projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
 			// D-MU1: the Connected-tools catalog reads every adapter's
 			// WatchPaths before the listener binds; discovery walks run in
 			// the background, as in `observer start`.
 			configureAdapterDiscovery(cmd.Context(), cfg, componentSnapshotForConfig(cfg).AdapterActive)
-			server, err := dashboard.New(withInstallSignals(dashapi.Options{
+			// The one construction `observer start` also uses
+			// (dashboard_options.go, CMD-01), so the two dashboards serve
+			// the same pages; this process adds nothing of its own (no
+			// watcher, proxy, push loop or restart runs here).
+			server, err := dashboard.New(withInstallSignals(nodeDashboardOptions(nodeDashboardDeps{
+				Ctx: cmd.Context(), Cfg: cfg, ConfigPath: configPath, ResolvedConfigPath: resolvedConfigPath,
+				DB: database, Surfaces: surfaces, Remote: remoteCtrl, Governance: ngov,
 				ProcessArchive: processArchive,
-				Governance:     ngov.Effective,
-				DB:             database,
-				DBPath:         cfg.Observer.DBPath,
-				CostEngine:     acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()),
-				// Production read caches: page loads fan several spend panels out at
-				// once and share one row read; watcher health is served SWR
-				// (optimization review 2026-09-27, findings N4/N5).
-				ReadCaches:             true,
-				Predict:                cfg.Predict,
-				Scoring:                cfg.Intelligence.Scoring,
-				CacheWarm:              cfg.CacheWarm,
-				Tasks:                  cfg.Tasks,
-				Projects:               cfg.Projects,
-				Plans:                  newPlansService(cfg, database, slog.Default()),
-				CloudAgents:            newCloudAgentsService(cfg, database, slog.Default()),
-				CloudGradeAvailability: CommitAlignmentAvailability,
-				JudgeGrade:             projectsJudgeGrade,
-				JudgeGradeReason:       projectsJudgeGradeReason,
-				JudgeGradePlace:        projectsJudgeGradePlace(&cfg, projectsJudgeGrade != nil),
-				// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
-				// commit scanner, nil when [projects].commit_scan is off.
-				CommitRescan: commitRescanWithDelivery(cfg, database),
-				// Package checks card (security_deps_dash.go): the install
-				// gate's state and the dashboard accept of its disclosure.
-				PackageChecks: packageChecksDash(resolvedConfigPath, database),
-				// Scanners card (security_scan_dash.go): the OSV database
-				// download's one-time accept (PT-19).
-				ScannerDB: scannerDBDash(resolvedConfigPath, database),
-				// SARIF upload (security_sarifimport.go): one file the
-				// developer picked, through the CLI's own import (lane SEC-P4).
-				SARIFImport: sarifImportDash(database),
-				// Code security "Scan now" (security_scan_now.go): one manual run of a
-				// selected scanner on one project, the same run its CLI verb starts.
-				SecurityScanNow: securityScanNowDash(resolvedConfigPath, database),
-				// DAST card (security_dast_dashboard.go) and Projects tab SBOM
-				// export (security_sbom_dashboard.go), security coverage gaps plan.
-				SecurityDAST:        securityDASTDash(resolvedConfigPath, database),
-				SecurityProjectSBOM: securityProjectSBOMDash(resolvedConfigPath),
-				// Code rules card (security_opengrep_dash.go): the guided
-				// install with its size consent (lane SEC-G2).
-				Opengrep: opengrepDash(resolvedConfigPath, database),
-				IaC:      iacDash(resolvedConfigPath, database),
-				// AI change records card (security_provenance_cmd.go, lane sec-f2a).
-				Provenance: provenanceDash(resolvedConfigPath, database),
-				// The one security opt-in rule (security_optin.go): the
-				// components state's security_selected (which Settings rows and
-				// the Explain button show), and the trust, git hooks and
-				// scanner routes.
-				SecuritySelected: securitySelected,
-				// The Components page's view with the modules' own rules
-				// (components_gate.go), so a removed sandbox root reads as off there
-				// as in `observer components status` (P-057).
-				ComponentStateView: componentStateView,
-				// The launch row's Observer-entry test (launch_trust_own.go), so
-				// the New Terminal trust chip leaves out what the launch leaves out.
-				RepoTrustOwn: repoTrustDashboardOwn,
-				// The launch row's conditional rows (trust_conditions.go), so the
-				// review lists N2's initializeCommand row as the launch reads it.
-				RepoTrustPaths: repoTrustDashboardPaths(resolvedConfigPath),
-				// The Findings tab's Explain (security.feedback, lane sec-h).
-				SecurityExplain:    securityExplainDash(resolvedConfigPath, database),
-				SecurityExplainFix: securityExplainFixDash(resolvedConfigPath, database),
-				// The affected-worker notice (security_orgnotice_dash.go, lane SEC-E3).
-				SecurityOrgShare: securityOrgShareDash(cfg.OrgClient.Share.Security),
-				// Delivery (delivery_wire.go, D-689): the [delivery] tunables and the
-				// one process-wide delivery service the poll loop also runs.
-				Delivery:        cfg.Delivery,
-				DeliveryService: deliveryDashOption(cfg, database),
-				// LOC editor endpoint credential — same resolution as
-				// `observer start`, so a developer running the dashboard
-				// standalone gets the identical posture.
-				LocEditorToken:         resolveLocEditorToken(locEditorTokenPath(cfg), slog.Default()),
-				LocEditorTokenRequired: cfg.Loc.EditorTokenRequired,
-				Dashboard:              cfg.Dashboard,
-				MonthlyBudgetUSD:       cfg.Intelligence.MonthlyBudgetUSD,
-				ConfigPath:             resolvedConfigPath,
-				RecognizesSessionFile:  recognizesSessionFile(),
-				CursorSemanticsFor:     cursorSemanticsFor(),
-				StashDir:               cfg.Compression.Conversation.Stash.Dir,
-				// Cloud account seam (cloudaccount_wire.go): local sign-in probe +
-				// `observer cloud login|logout` subprocess runner behind the Settings
-				// → Cloud Intelligence Sign-in button. Spawns the CLI; links nothing new.
-				CloudAccount:   newCloudAccountSeams(resolvedConfigPath),
-				ArenaAdmission: arenaBudgetAdmissionSeam(resolvedConfigPath),
-				ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
-				// OSH-R-005: may an Arena drive skip the harness's permission checks.
-				ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
-				GuardEnabled:          cfg.Guard.Enabled,
-				GuardMode:             cfg.Guard.Mode,
-				GuardStrict:           cfg.Guard.Strict,
-				GuardHookFailure:      guardHookFailureSeam(configPath),
-				GuardToolGates:        guardToolGatesSeam(configPath, surfaces.sandboxProber),
-				ToolCatalog:           toolCatalog(),
-				// Connected tools hooks probe: the daemon's own
-				// auto-registration options (T-376).
-				HookRegistryOptions: hookProbeOptionsSeam(configPath),
-				// Connected tools per-tool "Run checks" (T-421 item 3): the
-				// same report builder `observer doctor <tool>` prints.
-				ToolDoctor: dashboardToolDoctor(configPath),
-				Version:    version,
-				// Session handoff (docs/session-handoff.md P2): the shared
-				// handoffsvc runner behind /api/session/<id>/handoff*.
-				BuildHandoff: handoffRunner(cfg, database),
-				// P6.7: demo mode — temp DB seeded from embedded
-				// fixtures; never touches the real observer.db.
-				DemoSeeder: demoSeeder(slog.Default()),
-				// Embedded web-terminal launcher (docs/session-handoff.md
-				// launch section). Nil when [handoff].allow_dashboard_launch
-				// is false → the endpoints 503 and the button hides.
-				LaunchManager:  launchMgr,
-				TerminalStatus: launchStatus,
-				// Node-intervention policy-stop explanation (policystop.go).
-				// Nil unless the launch manager is also wired — a policy stop
-				// only ever concerns a dashboard-launched PTY run.
-				PolicyStop: policyStop,
-				// B9 sandboxed terminals: the availability probe behind
-				// GET /api/terminal/sandbox + the fail-closed launch validation.
-				// Nil unless [terminal.sandbox].enabled → endpoint reports
-				// disabled and a sandbox request 501s (fail closed).
-				SandboxProber:      surfaces.sandboxProber,
-				LoopbackCallerGate: surfaces.loopbackCallerGate,
-				LaunchCaller:       surfaces.launchCaller,
-				PendingLaunches:    surfaces.pendingLaunches,
-				// The New Terminal "project policy" line (lane sec-p2b): reads the
-				// project match record; shown only when the node holds a project delivery.
-				ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
-				// Sandbox setup (sandbox installation lifecycle plan, P-249): nil in a
-				// build without the sandbox module, so the setup routes answer 501.
-				SandboxSetup: newSandboxSetup(sandboxSetupOptions{ConfigPath: resolvedConfigPath, Surface: "dashboard", Ledger: surfaces.toolInstalls, Logger: slog.Default(), Spawn: func(_ context.Context, argv []string, label string) (string, int, error) {
-					if surfaces.launchMgr == nil {
-						return "", -1, errors.New("the dashboard terminal is off ([handoff].allow_dashboard_launch)")
-					}
-					h, err := surfaces.launchMgr.CreateSetup(dashapi.SetupSpec{Argv: argv, Label: label})
-					return h, -1, err
-				}}),
-				// Tool-binary-resolution seams (tool-binary-resolution arc §5):
-				// pre-launch verdict + guided install. Defined as plain funcs so
-				// the dashboard package never imports internal/toolresolve.
-				ToolPreflight:    toolPreflightSeam(resolvedConfigPath, allowToolInstallSeam(resolvedConfigPath)),
-				AllowToolInstall: allowToolInstallSeam(resolvedConfigPath),
-				ToolInstallHint:  toolInstallHintSeam(),
-				// Refuse a guided install whose grounded prerequisites
-				// (unzip, bzip2, ...) are missing, with the fix.
-				ToolInstallBlocked: toolInstallBlockedSeam(),
-				// The record of guided installs this dashboard ran + the
-				// matching uninstall (tool_installs, agent migration 149).
-				ToolInstalls: surfaces.toolInstalls,
-				// Command wrapping (backlog item 7): the one shim / start-up-file
-				// applier, behind the Settings -> Terminal card.
-				ShellWrap: newShellWrapService(resolvedConfigPath, dashResolveEnv),
-				// Windows-home init (T-421 item 4), WSL only.
-				WindowsHomes: newWindowsHomeService(resolvedConfigPath, cfg.Proxy.Port),
-				// Settings > Enrolment management; no push loop runs in this
-				// process, so an enrolment's outcome says a daemon start is needed.
+				// No loops run here, so fresh services, not the daemon's.
+				Plans:       newPlansService(cfg, database, slog.Default()),
+				CloudAgents: newCloudAgentsService(cfg, database, slog.Default()),
+				// No push loop runs in this process, so an enrolment's
+				// outcome says a daemon start is needed.
 				EnrolManager: enrolManagerFor(resolvedConfigPath, false, ngov),
-				// Plan 07 M8.4: the front door's one sentence (connect.go).
-				ConnectStatus: connectStatusSeam(database),
-				// Settings > Components and the route guard (modular packaging
-				// P1, lane MP-DASH): the same service `observer start` wires.
-				Components:         dashboardComponents(resolvedConfigPath, database),
-				SetupExtras:        dashboardSetupExtras(resolvedConfigPath),        // cli-parity L2: status line, start at login, browser capture setup
-				ComponentArtifacts: dashboardComponentArtifacts(resolvedConfigPath), // artifact_states (T-707)
-				BinaryInstall:      dashboardBinaryInstall,                          // binary_install (U12)
-				// Settings > Cloud Intelligence (org plane): `observer intel` behind
-				// the consent screen; the same functions the CLI runs.
-				OrgIntel: newOrgIntelDashboard(resolvedConfigPath, nil),
-				// Re-pricing stored costs (PRICE-REPRICE-1): the one plan/apply/
-				// revert service `observer reprice` also uses, behind the Settings card.
-				Reprice: newRepriceService(cmd.Context(), cfg, database, slog.Default(), ngov.Effective),
-				// New Terminal model picker (B5): same seam `observer start`
-				// wires — recent token_usage history + registry Known examples.
-				RecentModels: recentModelsSeam(database),
-				// Per-terminal project panel (Arc A): token→root resolver from
-				// termsvc. Nil when the launch manager is absent → panel 404s.
-				ProjectRootResolver: projectRootResolver(launchMgr),
-				// Per-terminal session cockpit (Session Cockpit): token→run/
-				// session-link resolver from termsvc. Nil when the launch
-				// manager is absent → cockpit 404s.
-				SessionResolver: sessionResolver(launchMgr),
-				// The agent-run security assessments' relaxations read the guard's own
-				// lock and decision per rule and project (fail closed when unreadable).
-				RuleRelaxation:     dashboardRuleRelaxation(resolvedConfigPath, database),
-				SandboxGatewayPort: sandboxGatewayPortFunc(),
-				// Remote-access substrate (plan §4). Nil unless [remote] is
-				// enabled AND a pairing secret is provisioned — so a
-				// non-loopback bind stays fail-closed until Phase 2 exposure.
-				Remote:      remoteCtrl,
-				RemoteAudit: remoteAuditSink(database),
-			}))
+			})))
 			if err != nil {
 				return err
 			}

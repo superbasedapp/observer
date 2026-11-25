@@ -118,8 +118,8 @@
 // `success` nor `error_message` — an optimistic row shipped between the
 // two records could never be corrected, and the parse-local correlation
 // map means the later result would be discarded outright. Bounded by
-// maxDeferTailBytes + pendingResultGrace so an interrupted call cannot
-// stall ingestion; see pending.go.
+// adapter.MaxDeferTailBytes + adapter.PendingResultGrace so an interrupted
+// call cannot stall ingestion; see adapter.DeferUnpairedTail.
 //
 // # Security
 //

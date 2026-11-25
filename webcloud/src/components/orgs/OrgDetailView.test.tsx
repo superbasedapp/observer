@@ -10,7 +10,6 @@ import type { ReactElement } from "react";
 import { OrgDetailView } from "./OrgDetailView";
 import { OrgBillingCard } from "./OrgBillingCard";
 import { OrgList } from "./OrgList";
-import { MachinesPanel } from "./MachinesPanel";
 import type { OrgBillingView, OrgDetail, PortalOrg } from "../../api";
 
 const html = (el: ReactElement) => renderToStaticMarkup(<MemoryRouter>{el}</MemoryRouter>);
@@ -152,24 +151,6 @@ test("the account home list shows each org's address, role and stage", () => {
   assert.match(out, /Admin/);
   assert.match(out, /Waitlisted/);
   assert.match(out, /Active/);
-});
-
-test("the machine panel links each team's own machines page and reads no tenant", () => {
-  const out = html(
-    <MachinesPanel
-      links={[
-        { orgId: "o1", orgName: "Acme", host: "acme.superbased.app", url: "https://acme.superbased.app/me/profile" },
-        { orgId: "o2", orgName: "Delta", host: "delta.superbased.app", url: "https://delta.superbased.app/me/profile" },
-      ]}
-    />,
-  );
-  assert.match(out, /href="https:\/\/acme\.superbased\.app\/me\/profile"/);
-  assert.match(out, /href="https:\/\/delta\.superbased\.app\/me\/profile"/);
-  assert.match(out, /Open machines/);
-  assert.doesNotMatch(out, /connected across/);
-  assert.doesNotMatch(out, /Not readable from here/);
-  const none = html(<MachinesPanel links={[]} />);
-  assert.match(none, /None of your teams is ready yet/);
 });
 
 test("an operator grant reads as granted, with its end when it has one", () => {

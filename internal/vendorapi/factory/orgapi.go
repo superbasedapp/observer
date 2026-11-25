@@ -96,52 +96,52 @@ func rfc3339(s string) (string, bool) {
 func parseOrgUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceOrgUsers
 	if r.Status != 200 {
-		return vendorapi.Page{}, driftAt(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var doc orgUsersDoc
-	if err := decodeStrict(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, driftAt(s, "body does not decode as the documented response")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented response")
 	}
 	if doc.Users == nil || doc.Pagination == nil || doc.Pagination.HasMore == nil {
-		return vendorapi.Page{}, driftAt(s, "required field users or pagination.hasMore is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field users or pagination.hasMore is missing")
 	}
 	page := vendorapi.Page{Snapshot: &vendorapi.SnapshotManifest{
 		Scope:          []vendorapi.ScopeKey{{Namespace: NamespaceUser, Kind: vs.KindUser}},
 		SelectorDigest: "organization", PageSet: "organization_users", ContractVersion: OrgAPIContract,
 	}}
 	if *doc.Pagination.HasMore {
-		nc := str(doc.Pagination.NextCursor)
+		nc := vendorapi.Str(doc.Pagination.NextCursor)
 		if !cursorRE.MatchString(nc) {
-			return vendorapi.Page{}, driftAt(s, "pagination.hasMore is true without a usable nextCursor")
+			return vendorapi.Page{}, vendorapi.Drift(s, "pagination.hasMore is true without a usable nextCursor")
 		}
 		if r.Cursor != "" && nc == r.Cursor {
-			return vendorapi.Page{}, driftAt(s, "pagination.nextCursor repeats the cursor the page was asked with")
+			return vendorapi.Page{}, vendorapi.Drift(s, "pagination.nextCursor repeats the cursor the page was asked with")
 		}
 		page.NextCursor = nc
 	}
 	seen := map[string]bool{}
 	for i, u := range *doc.Users {
 		if u.ID == nil || *u.ID == "" || u.Email == nil || u.CreatedAt == nil {
-			return vendorapi.Page{}, driftAt(s, "users[%d] misses id, email or createdAt", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "users[%d] misses id, email or createdAt", i)
 		}
 		if seen[*u.ID] {
-			return vendorapi.Page{}, driftAt(s, "users[%d] repeats a user", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "users[%d] repeats a user", i)
 		}
 		seen[*u.ID] = true
 		attrs := map[string]string{"email": *u.Email}
 		created, ok := rfc3339(*u.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, driftAt(s, "users[%d].createdAt is not ISO 8601", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "users[%d].createdAt is not ISO 8601", i)
 		}
 		attrs["created_at"] = created
 		if u.LastSignInAt != nil {
 			t, ok := rfc3339(*u.LastSignInAt)
 			if !ok {
-				return vendorapi.Page{}, driftAt(s, "users[%d].lastSignInAt is not ISO 8601", i)
+				return vendorapi.Page{}, vendorapi.Drift(s, "users[%d].lastSignInAt is not ISO 8601", i)
 			}
 			attrs["last_sign_in_at"] = t
 		}
-		name := strings.TrimSpace(str(u.FirstName) + " " + str(u.LastName))
+		name := strings.TrimSpace(vendorapi.Str(u.FirstName) + " " + vendorapi.Str(u.LastName))
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
 			Type: OrgUserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.ID}, DisplayName: name, Attrs: attrs,
 		})
@@ -196,7 +196,7 @@ func creditAttrs(s vs.SurfaceID, n *num, where string) (map[string]string, error
 	}
 	v, err := strconv.ParseInt(string(*n), 10, 64)
 	if err != nil || v < 0 {
-		return nil, driftAt(s, "%s is not a non-negative integer", where)
+		return nil, vendorapi.Drift(s, "%s is not a non-negative integer", where)
 	}
 	attrs["limit"] = strconv.FormatInt(v, 10)
 	attrs["state"] = "set"
@@ -206,21 +206,21 @@ func creditAttrs(s vs.SurfaceID, n *num, where string) (map[string]string, error
 func parseLimitsUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceLimitsUsers
 	if r.Status != 200 {
-		return vendorapi.Page{}, driftAt(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var raw map[string]any
-	if err := decodeStrict(r.Body, &raw); err != nil {
-		return vendorapi.Page{}, driftAt(s, "body is not a JSON object")
+	if err := vendorapi.DecodeNumbers(r.Body, &raw); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body is not a JSON object")
 	}
 	if _, ok := raw["globalLimit"]; !ok {
-		return vendorapi.Page{}, driftAt(s, "required field globalLimit is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field globalLimit is missing")
 	}
 	var doc limitsDoc
-	if err := decodeStrict(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, driftAt(s, "body does not decode as the documented response")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body does not decode as the documented response")
 	}
 	if doc.UserLimits == nil {
-		return vendorapi.Page{}, driftAt(s, "required field userLimits is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field userLimits is missing")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.UserLimits), Snapshot: &vendorapi.SnapshotManifest{
 		Scope:          []vendorapi.ScopeKey{{Namespace: NamespaceCreditLimit, Kind: vs.KindLimit}},
@@ -236,12 +236,12 @@ func parseLimitsUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	})
 	seen := map[string]bool{}
 	for i, u := range *doc.UserLimits {
-		e := strings.TrimSpace(str(u.Email))
+		e := strings.TrimSpace(vendorapi.Str(u.Email))
 		if e == "" {
-			return vendorapi.Page{}, driftAt(s, "userLimits[%d].email is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "userLimits[%d].email is missing", i)
 		}
 		if seen[e] {
-			return vendorapi.Page{}, driftAt(s, "userLimits[%d] repeats a user", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "userLimits[%d] repeats a user", i)
 		}
 		seen[e] = true
 		a, err := creditAttrs(s, u.Limit, fmt.Sprintf("userLimits[%d].limit", i))

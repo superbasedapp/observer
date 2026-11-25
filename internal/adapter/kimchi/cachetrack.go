@@ -1,7 +1,6 @@
 package kimchi
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -45,61 +44,23 @@ func cacheFamilyForAPI(api string) string {
 	return ""
 }
 
+// The canonical block forms live in cacheobs (message.go), so kimchi's
+// chain bytes cannot drift from the other Tier-2 producers'. The wrappers
+// below keep the parse loop's call sites unchanged.
+
 // observeText feeds one (already scrubbed) text block into acc.
 func observeText(acc *cacheobs.Accumulator, text, role string) {
-	canon, ok := marshalCacheBlock(struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "text", Text: text}, text == "")
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel: "message", Kind: "text", CanonicalBytes: canon, Role: role,
-	}})
+	acc.ObserveText(text, role)
 }
 
 // observeToolCall feeds one tool call's name + (already scrubbed) input.
 func observeToolCall(acc *cacheobs.Accumulator, name, input string) {
-	canon, ok := marshalCacheBlock(struct {
-		Type  string `json:"type"`
-		Name  string `json:"name,omitempty"`
-		Input string `json:"input,omitempty"`
-	}{Type: "tool_use", Name: name, Input: input}, name == "" && input == "")
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel: "message", Kind: "tool_use", CanonicalBytes: canon, Role: "assistant",
-	}})
+	acc.ObserveToolUse(name, input)
 }
 
 // observeToolResult feeds one tool result's (already scrubbed) text.
 func observeToolResult(acc *cacheobs.Accumulator, text string) {
-	canon, ok := marshalCacheBlock(struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "tool_result", Text: text}, text == "")
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel: "message", Kind: "tool_result", CanonicalBytes: canon, Role: "tool",
-	}})
-}
-
-// marshalCacheBlock produces the deterministic canonical JSON of one block
-// (an explicit struct, never a map, so field order is byte-stable). skip
-// short-circuits empty blocks.
-func marshalCacheBlock(payload any, skip bool) ([]byte, bool) {
-	if skip {
-		return nil, false
-	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
+	acc.ObserveToolResult(text)
 }
 
 // emitCacheObservation drains acc's pending block delta into one
@@ -114,10 +75,5 @@ func emitCacheObservation(acc *cacheobs.Accumulator, path, sessionID, messageID,
 		CacheReadTokens:     u.CacheRead,
 		CacheCreationTokens: u.CacheWrite,
 	}
-	if cacheobs.IsZeroUsage(cu) {
-		return nil
-	}
-	obs := acc.Emit(path, sessionID, messageID, model, ts, cu, false)
-	obs = cacheobs.ApplyImplicitCacheOverlay(obs, cacheFamilyForAPI(api), model)
-	return &obs
+	return acc.EmitTurn(path, sessionID, messageID, model, cacheFamilyForAPI(api), ts, cu)
 }

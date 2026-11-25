@@ -429,6 +429,43 @@ type operand struct {
 	// item marks the bare pipeline variable of a script block (`$_`,
 	// `$PSItem`) as an operand of a unit inside that block (psblock.go).
 	item bool
+	// arg is the argv index of the word the operand came from (>= 1), or 0
+	// for an operand the command implies (find's default ".").
+	arg int
+}
+
+// word returns the argv word the operand came from: text itself for a
+// whole word, the word it is part of for a value cut from one (`-Path:~`,
+// `-Cdir`) or a path joined from two (tar's -C DIR and an input).
+func (o operand) word(c *Command) string {
+	if o.arg > 0 && o.arg < len(c.Argv) {
+		return c.Argv[o.arg]
+	}
+	return o.text
+}
+
+// operandAt builds the operand for text, which starts at byte off of
+// Argv[i] (0 for the whole word).
+func (c *Command) operandAt(i int, text string, off int) operand {
+	op := operand{text: text, arg: i}
+	if len(c.ArgvLiterals) == len(c.Argv) && i < len(c.ArgvLiterals) {
+		for _, o := range c.ArgvLiterals[i] {
+			if o >= off && o-off < len(text) {
+				op.lit = append(op.lit, o-off)
+			}
+		}
+	}
+	op.item = c.inScriptBlock && isPipelineItem(op.text, op.lit)
+	return op
+}
+
+// operandsAt builds the operands for whole argv words.
+func (c *Command) operandsAt(idx []int) []operand {
+	out := make([]operand, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, c.operandAt(i, c.Argv[i], 0))
+	}
+	return out
 }
 
 // positionalOperands is Positionals with each word's literal offsets,
@@ -436,28 +473,11 @@ type operand struct {
 // each colon-bound path parameter (`-Path:~` names `~` exactly as `-Path
 // ~` does).
 func (c *Command) positionalOperands() []operand {
-	idx := c.positionalIndexes()
-	known := len(c.ArgvLiterals) == len(c.Argv)
-	out := make([]operand, 0, len(idx))
-	add := func(i int, text string, off int) {
-		op := operand{text: text}
-		if known {
-			for _, o := range c.ArgvLiterals[i] {
-				if o >= off {
-					op.lit = append(op.lit, o-off)
-				}
-			}
-		}
-		op.item = c.inScriptBlock && isPipelineItem(op.text, op.lit)
-		out = append(out, op)
-	}
-	for _, i := range idx {
-		add(i, c.Argv[i], 0)
-	}
+	out := c.operandsAt(c.positionalIndexes())
 	if params := psColonPathParams[c.Base]; c.Dialect == DialectPowerShell && params != nil {
 		for i := 1; i < len(c.Argv); i++ {
 			if name, v, ok := psColonParam(c.Argv[i]); ok && v != "" && psParamIn(name, params) {
-				add(i, v, len(c.Argv[i])-len(v))
+				out = append(out, c.operandAt(i, v, len(c.Argv[i])-len(v)))
 			}
 		}
 	}

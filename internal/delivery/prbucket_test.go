@@ -34,11 +34,11 @@ func TestPRBucket(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("PRBucket(%q, %q) = %s, want %s", tc.state, tc.r, got, tc.want)
 		}
-		if IsMergeable(tc.state, tc.r) != (tc.want == BucketOpenReady) {
-			t.Errorf("IsMergeable(%q, %q) disagrees with the bucket", tc.state, tc.r)
+		if isMergeable(tc.state, tc.r) != (tc.want == BucketOpenReady) {
+			t.Errorf("isMergeable(%q, %q) disagrees with the bucket", tc.state, tc.r)
 		}
-		if IsBlocked(tc.state, tc.r) != (tc.want == BucketOpenBlocked) {
-			t.Errorf("IsBlocked(%q, %q) disagrees with the bucket", tc.state, tc.r)
+		if isBlocked(tc.state, tc.r) != (tc.want == BucketOpenBlocked) {
+			t.Errorf("isBlocked(%q, %q) disagrees with the bucket", tc.state, tc.r)
 		}
 	}
 }

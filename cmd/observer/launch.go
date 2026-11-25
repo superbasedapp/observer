@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -40,8 +39,9 @@ import (
 
 // resolveProxyURL returns the proxy base URL a launcher should route to: the
 // explicit --proxy override when set, otherwise http://127.0.0.1:<port>
-// (cfgPort, or 8820 when unset/invalid). Shared by every launcher so the
-// default-port logic lives in exactly one place.
+// (cfgPort, or 8820 when unset/invalid). Not yet the only place: several
+// other commands, the claude and codex launchers among them, still repeat
+// the 8820 fallback inline.
 func resolveProxyURL(cfgPort int, override string) string {
 	if override != "" {
 		return override
@@ -76,14 +76,24 @@ func proxyDownAdvice(daemonChild bool) string {
 	return "start it with `observer start`"
 }
 
-// proxyUnreachableNotice composes the single stderr line a simple base-URL
-// launcher prints when the proxy is unreachable: what failed, the consequence,
-// and the honest next step. Pure (no I/O, no env reads) so the daemon-child fact
-// is injected and the whole message is table-testable.
-func proxyUnreachableNotice(tool, proxyURL string, daemonChild bool) string {
-	return fmt.Sprintf(
-		"observer %s: warning - proxy not reachable at %s - turns are NOT captured for this run (%s)",
-		tool, proxyURL, proxyDownAdvice(daemonChild))
+// neutralizeEnvLaunch is what a proxy-down neutralize verdict does to an env
+// launch: no injected env, the operator's own argv without the provider
+// selection the launcher prepended (routeArgs), no config-file evidence, and
+// unrouted, which also keeps the OTel "proxied" marker off. Pure.
+func neutralizeEnvLaunch(spec envLauncherSpec) envLauncherSpec {
+	spec.env, spec.unrouted, spec.routeFile = nil, true, nil
+	if spec.routeArgs != nil {
+		spec.args = spec.routeArgs
+	}
+	return spec
+}
+
+// proxyDownShadowCaveat is the second line of a neutralized launch whose tool
+// loads a base URL from its own files (names only, never values): the launch
+// is unrouted only if those do not point at the proxy.
+func proxyDownShadowCaveat(label string, shadows []string) string {
+	return "observer " + label + ": the tool loads its own base URL from " + strings.Join(shadows, "; ") +
+		"; if that points at the observer proxy, its requests fail until the proxy is back"
 }
 
 // agentRuntimeDir resolves the optional rename-safe runtime dir for launched
@@ -342,10 +352,17 @@ type envLauncherSpec struct {
 	routeArgs []string
 	// unrouted marks a launch the caller has already told the operator is NOT
 	// going through the proxy (cline-cli keeping the operator's own
-	// non-proxied provider). It suppresses the routing/unreachable note,
-	// which would otherwise claim a route that does not exist. Zero value =
-	// unchanged behaviour.
+	// non-proxied provider, or a caller whose own envLauncherProxyGate call
+	// neutralized the launch before it wrote a route). It suppresses the
+	// routing note and the proxy-down gate, which would otherwise claim or
+	// judge a route that does not exist. Zero value = unchanged behaviour.
 	unrouted bool
+	// fileRoutes, for a launcher whose registry route is a provider entry in
+	// the tool's own config file (a persisted RouteKind), names the places
+	// that config already routes a launch to the proxy, so the proxy-down
+	// gate refuses instead of launching into the dead port (see
+	// envProxyGateRequest.fileRoutes). Nil = none.
+	fileRoutes func() []string
 	// routeCaveat, when set, is printed right after the routing line of a
 	// routed launch (gatedRoute.caveat): a lane the route gate cannot see that
 	// still bypasses the proxy, so "routing via" never over-claims.
@@ -376,18 +393,31 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	if err := refuseIfToolDisallowedDB(spec.dbPath, gateTool, spec.stderr); err != nil {
 		return err
 	}
-	// A build without capture.proxy (lane MP-L1L, T-715, D-514): with nothing
-	// serving the proxy port, launch unrouted with the one reason rather than
-	// inject a base URL that points the tool at a dead port. A config-file
-	// route drops the provider selection the launcher prepended, so the tool
-	// runs on the operator's own default provider.
-	if !spec.unrouted && proxyNotInBuild() && !proxyReachable(spec.proxyURL, 250*time.Millisecond) {
-		if notice, ok := proxyNotInBuildNotice(spec.tool); ok {
-			fmt.Fprintln(spec.stderr, notice)
+	// Proxy-down fallback (lane launcher-proxy-down; D-514 for a build
+	// without capture.proxy): when nothing answers on the proxy port, never
+	// inject a base URL that points the tool at a dead port. The gate either
+	// neutralizes (one notice; the launch drops its env, its provider
+	// selection and its proxied marker) or fails closed when something the
+	// launcher cannot take away still pins the route, or the organization
+	// owns this managed machine's routes.
+	neutralized := false
+	if !spec.unrouted {
+		outcome, err := envLauncherProxyGate(context.Background(), envProxyGateRequest{
+			label:      spec.tool,
+			tool:       gateTool,
+			configPath: spec.configPath,
+			proxyURL:   spec.proxyURL,
+			inject:     spec.env,
+			parentEnv:  os.Environ(),
+			fileRoutes: spec.fileRoutes,
+			stderr:     spec.stderr,
+		})
+		if err != nil {
+			return err
 		}
-		spec.env, spec.unrouted, spec.routeFile = nil, true, nil
-		if spec.routeArgs != nil {
-			spec.args = spec.routeArgs
+		if outcome == envProxyGateNeutralize {
+			spec = neutralizeEnvLaunch(spec)
+			neutralized = true
 		}
 	}
 	// Layer the rename-safe agent runtime-dir env under the base-URL env, so
@@ -436,12 +466,16 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	}
 
 	switch {
+	case neutralized:
+		// The gate printed the proxy-down notice. The tool's own files can
+		// still name a base URL; say so, since that one may be the proxy.
+		if own := launchRouteShadows(gateTool, spec.args, spec.dir, childEnv); len(own) > 0 {
+			fmt.Fprintln(spec.stderr, proxyDownShadowCaveat(spec.tool, own))
+		}
 	case spec.unrouted:
 		// The caller already printed its own "not routed" note.
 	case len(shadows) > 0:
 		fmt.Fprintln(spec.stderr, routeShadowNotice(spec.tool, shadows))
-	case !proxyReachable(spec.proxyURL, 250*time.Millisecond):
-		fmt.Fprintln(spec.stderr, proxyUnreachableNotice(spec.tool, spec.proxyURL, runningAsDaemonChild()))
 	case len(applied) > 0:
 		fmt.Fprintf(spec.stderr,
 			"observer %s: routing via %s (set %s)\n",

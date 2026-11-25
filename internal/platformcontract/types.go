@@ -185,6 +185,16 @@ type TenantUsage struct {
 	Sessions int64 `json:"sessions"`
 	// Members is the current member count.
 	Members int64 `json:"members"`
+	// AIGWRequests is the hosted AI gateway's forwarded model calls in the
+	// UTC calendar month of the report's day, as counted when the host read
+	// the report (month to date: the meter is monthly; hosted AI gateway plan
+	// 3.13, lane L4). Absent (0) when the org made none. Additive: an older
+	// host never sends it and an older control plane ignores it.
+	AIGWRequests int64 `json:"aigw_requests,omitempty"`
+	// AIGWRefusals are the AI gateway usage gate's refusals in the same
+	// month by reason (refused_plan, refused_quota, refused_concurrency,
+	// refused_unavailable), for the staff usage card; absent when none.
+	AIGWRefusals map[string]int64 `json:"aigw_refusals,omitempty"`
 }
 
 // UsageResponse is the signed daily report body.

@@ -27,6 +27,7 @@ import { trace, type Span } from "@opentelemetry/api";
 import { K } from "./attrs.js";
 import { apiTimeout, call, noTargetReason, targets, track, type ControlOptions, type ControlResponse, type Target } from "./control.js";
 import { getCurrentAttributes } from "./context.js";
+import type { PlanRefusalError } from "./planrefusal.js";
 import { destinationKnown, runtime } from "./runtime.js";
 
 export const DEFAULT_PROMPT_LABEL = "production";
@@ -70,15 +71,23 @@ export interface PromptRollout {
   salt: string;
 }
 
-/** The base of every prompt error (contract sdk-api-surface.md section 7.3). */
+/**
+ * The base of every prompt error (contract sdk-api-surface.md section 7.3).
+ * `planRefusal` (also the `cause`) is set when the org's plan refused the
+ * fetch: its `message` and `upgradeUrl` say why and where to fix it.
+ */
 export class PromptError extends Error {
+  readonly planRefusal?: PlanRefusalError;
+
   constructor(
     message: string,
     readonly status = 0,
     readonly code = "",
+    planRefusal?: PlanRefusalError,
   ) {
-    super(message);
+    super(message, planRefusal ? { cause: planRefusal } : undefined);
     this.name = "PromptError";
+    if (planRefusal) this.planRefusal = planRefusal;
   }
 }
 
@@ -90,10 +99,14 @@ export class PromptNotFound extends PromptError {
   }
 }
 
-/** Thrown when a destination failed otherwise (transport, timeout, 5xx, a bad body) and there is no fallback. */
+/**
+ * Thrown when a destination failed otherwise (transport, timeout, 5xx, a bad
+ * body, the org's plan refusing it: then `planRefusal` is set) and there is
+ * no fallback.
+ */
 export class PromptFetchError extends PromptError {
-  constructor(message: string, status = 0, code = "") {
-    super(message, status, code);
+  constructor(message: string, status = 0, code = "", planRefusal?: PlanRefusalError) {
+    super(message, status, code, planRefusal);
     this.name = "PromptFetchError";
   }
 }
@@ -479,6 +492,7 @@ export async function getPrompt(name: string, opts: GetPromptOptions = {}): Prom
   const errors: string[] = [];
   let allNotFound = true;
   let last: ControlResponse | null = null;
+  let refused: PlanRefusalError | undefined;
   const cohort = cohortOf(opts, sel);
   await destinationKnown();
   const sides = targets("read", opts);
@@ -519,6 +533,7 @@ export async function getPrompt(name: string, opts: GetPromptOptions = {}): Prom
       continue;
     }
     allNotFound = false;
+    refused ??= r.planRefusal;
     errors.push(describe(r));
   }
   if (opts.fallback !== undefined) {
@@ -527,7 +542,7 @@ export async function getPrompt(name: string, opts: GetPromptOptions = {}): Prom
   }
   const detail = errors.join("; ") || noTargetReason();
   if (allNotFound) throw new PromptNotFound(`prompt ${JSON.stringify(name)} (${sel}) not found: ${detail}`, last?.status ?? 0, last?.error ?? "no_target");
-  throw new PromptFetchError(`prompt ${JSON.stringify(name)} (${sel}) could not be fetched: ${detail}`, last?.status ?? 0, last?.error ?? "");
+  throw new PromptFetchError(`prompt ${JSON.stringify(name)} (${sel}) could not be fetched: ${detail}`, last?.status ?? 0, last?.error ?? "", refused);
 }
 
 function envTtl(): number {

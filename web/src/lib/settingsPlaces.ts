@@ -41,6 +41,7 @@ export const PLACES = {
 
 export const ORG_PLACES = {
   org_session_enrichment: { href: "/intelligence?tab=session-enrichment", label: "Intelligence > Session enrichment" },
+  org_developer_dashboards: { href: "/settings?section=developer-dashboards", label: "Settings > Developer dashboards" },
 } as const satisfies Record<string, PlaceRow>;
 
 export type Place = keyof typeof PLACES;

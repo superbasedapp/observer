@@ -3,7 +3,7 @@ package orgcontract
 // CompressionStatRow is the W3.5 compression-savings/eviction wire row: one
 // row per (day, mechanism) bucket, mirroring the node dashboard's Compression
 // page (web/src/pages/Compression.tsx) and its /api/compression/* read-side
-// (internal/intelligence/dashboard/dashboard.go::handleCompressionEvents /
+// (internal/intelligence/dashboard/compression_handlers.go::handleCompressionEvents /
 // handleCompressionByModel), which both read the node-local compression_events
 // table (migration internal/db/migrations/009_compression_events.sql). This is
 // the confirmed durable backing store — compression figures are NOT computed

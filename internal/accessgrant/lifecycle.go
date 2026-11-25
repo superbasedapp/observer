@@ -428,16 +428,6 @@ func betterOverlay(a, b Overlay) bool {
 	return a.GrantID < b.GrantID
 }
 
-// RevertExpiredOverlay is the node's offline revert (§3.3): a cap raised by a
-// grant drops back to its base once the grant's expiry passes, without a
-// fetch. grantExpiresNs 0 (no overlay, or a perpetual one) never reverts.
-func RevertExpiredOverlay(capTokens int64, capUSD float64, baseTokens int64, baseUSD float64, grantExpiresNs int64, now time.Time) (int64, float64, bool) {
-	if grantExpiresNs <= 0 || now.UnixNano() < grantExpiresNs {
-		return capTokens, capUSD, false
-	}
-	return baseTokens, baseUSD, true
-}
-
 // ShapeContext is the ONE place the request context block's content keys are
 // kept or stripped (§1.2, §4.4; D-083). shipsRaw is the node's
 // shipsRawContent() (a managed node, or full_content / admin_managed);

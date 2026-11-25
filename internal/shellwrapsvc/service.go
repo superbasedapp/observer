@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/shellwrap"
+	"github.com/marmutapp/superbased-observer/internal/shimguard"
 )
 
 // Service applies and inspects the command-wrapping shell integration. The
@@ -445,21 +445,6 @@ func readRC(p string, local func(string) (string, error)) rcState {
 	return st
 }
 
-// readHead reads up to n bytes of p.
-func readHead(p string, n int) ([]byte, error) {
-	f, err := os.Open(p) /* #nosec G304 -- a file inside the observer-owned shim directory */
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	buf := make([]byte, n)
-	got, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	return buf[:got], nil
-}
-
 // inspectShims reads the marked shims in the shim directory. Symlinks and
 // anything without shellwrap.ShimMarker are not the applier's files and are
 // never returned. Paths are reported in the target's notation (join), read
@@ -475,7 +460,7 @@ func inspectShims(shimDir, localDir string, join func(...string) string) []shell
 			continue
 		}
 		lp := filepath.Join(localDir, e.Name())
-		head, err := readHead(lp, 512)
+		head, err := shimguard.ReadHead(lp, 512)
 		if err != nil || !shellwrap.IsShim(head) {
 			continue
 		}

@@ -12,7 +12,7 @@ import (
 // holds for each — the newest non-superseded cloud_results row per session.
 //
 // This lives in its own file (mirroring cloudlocal_lookup.go's pattern)
-// rather than as an addition to cloudlocal.go's GetCloudSessionResult, which
+// rather than as an addition to GetCloudSessionResult (cloudlocal_results.go), which
 // answers a different question (ONE session's full result + overrides, for
 // the session-detail panel) at a different cardinality. This lookup answers
 // "for these N sessions, which are enriched and what's their title" — the

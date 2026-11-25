@@ -1,8 +1,3 @@
-// Package api is the ONLY HTTP owner for the hosted cloud-intelligence service
-// (plan §6 CI-P3). It maps the /v1 surface to the store, enforcing device-bound
-// authentication + per-request proof-of-possession + jti replay defense on
-// every device endpoint. Account scope ALWAYS comes from the verified auth
-// context, never a request-body field.
 package api
 
 import (
@@ -293,6 +288,15 @@ type Options struct {
 	// and the machine falls back to the dashboard's own sign-in.
 	AttachGrantKey ed25519.PrivateKey
 
+	// SDKKeyGrantKey signs the key grant an approved SDK key connect request
+	// hands its SDK (connect_keygrant.go, internal/sdkkeygrant; the SDK
+	// quickstart plan section 3.6, ruling R13; docs/security.md SDKQS-2). It
+	// is a SECOND platform key, never the attach grant's: a compromise of one
+	// does not let its holder sign the other's documents. cmd/observer-cloud
+	// loads it from SBCI_SDK_KEY_GRANT_KEY_FILE (a hex Ed25519 seed); nil
+	// takes no SDK key requests (the create answers invalid_purpose).
+	SDKKeyGrantKey ed25519.PrivateKey
+
 	// Metrics is the serve process's counter registry (cloudmetrics; the
 	// separate SBCI_METRICS_LISTEN listener serves it). nil counts nothing.
 	// audit() and the Paddle webhook wrapper are its only feeds (metrics.go).
@@ -364,6 +368,8 @@ type Server struct {
 	ensurePersonalOnSignIn bool
 	// attachGrantKey is Options.AttachGrantKey (nil: no grant).
 	attachGrantKey ed25519.PrivateKey
+	// sdkKeyGrantKey is Options.SDKKeyGrantKey (nil: no SDK key requests).
+	sdkKeyGrantKey ed25519.PrivateKey
 	// background tracks the goroutines a request starts and does not wait
 	// for (personal_signin.go); WaitBackground waits for them.
 	background sync.WaitGroup
@@ -414,8 +420,8 @@ func New(o Options) *Server {
 		portalSessionTTL:     o.PortalSessionTTL,
 		portalSessionIdleTTL: o.PortalSessionIdleTTL,
 
-		portalHost: normalizeHost(o.PortalHost),
-		apiHost:    normalizeHost(o.APIHost),
+		portalHost: NormalizeHost(o.PortalHost),
+		apiHost:    NormalizeHost(o.APIHost),
 
 		metrics: o.Metrics,
 	}
@@ -500,11 +506,14 @@ func New(o Options) *Server {
 	s.initOIDC(o.OIDCIssuer)
 	s.initPortalMFA(o)
 
-	s.tenantDomain = normalizeHost(o.TenantDomain)
+	s.tenantDomain = NormalizeHost(o.TenantDomain)
 	s.teamCreateAllowlist = o.TeamCreateAllowlist
 	s.ensurePersonalOnSignIn = o.EnsurePersonalOnSignIn
 	if len(o.AttachGrantKey) == ed25519.PrivateKeySize {
 		s.attachGrantKey = o.AttachGrantKey
+	}
+	if len(o.SDKKeyGrantKey) == ed25519.PrivateKeySize {
+		s.sdkKeyGrantKey = o.SDKKeyGrantKey
 	}
 	if o.Store != nil {
 		s.orgLister = o.Store

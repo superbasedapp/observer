@@ -1,12 +1,12 @@
 package invariant
 
 import (
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
 // winrelay_test.go pins the fail-open Windows route relay's reach (lane
@@ -27,42 +27,27 @@ var winrelaySvcImporters = map[string]bool{
 
 func TestWinrelaySvcLinkedOnlyByTheRelayCommand(t *testing.T) {
 	root := filepath.Join("..", "..")
-	fset := token.NewFileSet()
-	for _, dir := range []string{"cmd", "internal"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			rel, _ := filepath.Rel(root, path)
+	importpin.Check(t, importpin.Spec{
+		Dirs:      []string{filepath.Join(root, "cmd"), filepath.Join(root, "internal")},
+		Recursive: true,
+		Custom: func(file, p string) string {
+			rel, _ := filepath.Rel(root, file)
 			rel = filepath.ToSlash(rel)
 			if strings.HasPrefix(rel, "internal/winrelaysvc/") {
-				return nil
+				return ""
 			}
-			af, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-			if err != nil {
-				t.Fatalf("parse %s: %v", rel, err)
+			if p == winrelaySvcImport && !winrelaySvcImporters[rel] {
+				return "the relay's forwarding package may be linked only by the `observer relay` command (winrelaySvcImporters)"
 			}
-			for _, imp := range af.Imports {
-				if strings.Trim(imp.Path.Value, `"`) == winrelaySvcImport && !winrelaySvcImporters[rel] {
-					t.Errorf("%s imports %s: the relay's forwarding package may be linked only by the `observer relay` command (winrelaySvcImporters)", rel, winrelaySvcImport)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", dir, err)
-		}
-	}
+			return ""
+		},
+	})
 }
 
 // TestHookPathNeverReachesTheRelay: no file of the hook package or of the
 // `observer hook` command imports either relay package.
 func TestHookPathNeverReachesTheRelay(t *testing.T) {
 	root := filepath.Join("..", "..")
-	fset := token.NewFileSet()
 	matches, _ := filepath.Glob(filepath.Join(root, "cmd", "observer", "hook*.go"))
 	_ = filepath.WalkDir(filepath.Join(root, "internal", "hook"), func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".go") {
@@ -73,16 +58,9 @@ func TestHookPathNeverReachesTheRelay(t *testing.T) {
 	if len(matches) < 10 {
 		t.Fatalf("only %d hook-path files found; the scan no longer sees them", len(matches))
 	}
-	for _, path := range matches {
-		af, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		for _, imp := range af.Imports {
-			p := strings.Trim(imp.Path.Value, `"`)
-			if p == winrelaySvcImport || p == modulePath+"internal/winrelay" {
-				t.Errorf("%s imports %s: the hook path never goes through the relay", filepath.ToSlash(path), p)
-			}
-		}
-	}
+	importpin.Check(t, importpin.Spec{
+		Files:     matches,
+		Forbidden: []string{winrelaySvcImport, modulePath + "internal/winrelay"},
+		Reason:    "the hook path never goes through the relay",
+	})
 }

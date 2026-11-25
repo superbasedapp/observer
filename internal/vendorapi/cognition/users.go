@@ -89,24 +89,24 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, u := range *doc.Items {
 		if u.UserID == nil || *u.UserID == "" {
-			return vendorapi.Page{}, drift(s, "items[%d].user_id is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].user_id is missing", i)
 		}
 		if seen[*u.UserID] {
-			return vendorapi.Page{}, drift(s, "items[%d] repeats a member", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d] repeats a member", i)
 		}
 		seen[*u.UserID] = true
 		if u.RoleAssignments == nil {
-			return vendorapi.Page{}, drift(s, "items[%d].role_assignments is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].role_assignments is missing", i)
 		}
 		attrs := map[string]string{}
-		if e := str(u.Email); e != "" {
+		if e := vendorapi.Str(u.Email); e != "" {
 			attrs["email"] = e
 		}
 		var entRoles []string
 		orgRoles := 0
 		for j, ra := range *u.RoleAssignments {
 			if ra.Role == nil || ra.Role.RoleName == nil || ra.Role.RoleType == nil || ra.Role.RoleID == nil {
-				return vendorapi.Page{}, drift(s, "items[%d].role_assignments[%d].role misses a required member", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].role_assignments[%d].role misses a required member", i, j)
 			}
 			switch *ra.Role.RoleType {
 			case "enterprise":
@@ -114,7 +114,7 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 			case "org":
 				orgRoles++
 			default:
-				return vendorapi.Page{}, drift(s, "items[%d].role_assignments[%d].role.role_type is not a documented value", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].role_assignments[%d].role.role_type is not a documented value", i, j)
 			}
 		}
 		if len(entRoles) > 0 {
@@ -125,12 +125,12 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 		if u.JoinedAt != nil {
 			t, ok := unixSeconds(u.JoinedAt)
 			if !ok {
-				return vendorapi.Page{}, drift(s, "items[%d].enterprise_joined_at is not a Unix time", i)
+				return vendorapi.Page{}, vendorapi.Drift(s, "items[%d].enterprise_joined_at is not a Unix time", i)
 			}
 			attrs["enterprise_joined_at"] = t.Format(time.RFC3339)
 		}
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
-			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.UserID}, DisplayName: str(u.Name), Attrs: attrs,
+			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.UserID}, DisplayName: vendorapi.Str(u.Name), Attrs: attrs,
 		})
 	}
 	return page, nil

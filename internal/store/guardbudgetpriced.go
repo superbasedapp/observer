@@ -946,7 +946,7 @@ func guardBudgetSpendPricedSQL(managed bool) string {
 		       input_tokens IS NULL OR output_tokens IS NULL OR
 		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL,
 		       0
-		  FROM api_turns` + guardBudgetUsageWhere(managed, "api_turns", spendverdict.CountedProxyRowOf("api_turns")) + `
+		  FROM api_turns` + guardBudgetUsageWhere(managed, "api_turns", spendverdict.GuardCountedProxyRowOf("api_turns")) + `
 		 UNION ALL
 		SELECT 1 AS source, COALESCE(session_id, ''), timestamp,
 		       COALESCE(tool, ''),

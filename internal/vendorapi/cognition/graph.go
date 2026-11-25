@@ -98,7 +98,7 @@ func listItems[T any](l listSpec, r vendorapi.Response, each func(i int, it T) (
 			return vendorapi.Page{}, err
 		}
 		if seen[obs.ID.Value] {
-			return vendorapi.Page{}, drift(l.surface, "items[%d] repeats a key", i)
+			return vendorapi.Page{}, vendorapi.Drift(l.surface, "items[%d] repeats a key", i)
 		}
 		seen[obs.ID.Value] = true
 		page.Resources = append(page.Resources, obs)
@@ -114,7 +114,7 @@ func timeAttr(s vs.SurfaceID, attrs map[string]string, name string, n *num, i in
 	}
 	t, ok := unixSeconds(n)
 	if !ok {
-		return drift(s, "items[%d].%s is not a Unix time", i, name)
+		return vendorapi.Drift(s, "items[%d].%s is not a Unix time", i, name)
 	}
 	attrs[name] = t.Format(time.RFC3339)
 	return nil
@@ -127,7 +127,7 @@ func countAttr(s vs.SurfaceID, attrs map[string]string, name string, n *num, i i
 	}
 	v, err := strconv.ParseInt(string(*n), 10, 64)
 	if err != nil || v < 0 {
-		return drift(s, "items[%d].%s is not a non-negative integer", i, name)
+		return vendorapi.Drift(s, "items[%d].%s is not a non-negative integer", i, name)
 	}
 	attrs[name] = strconv.FormatInt(v, 10)
 	return nil
@@ -165,7 +165,7 @@ func parseOrganizations(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceOrganizations
 	return listItems(orgList, r, func(i int, o organization) (vendorapi.ResourceObservation, error) {
 		if o.OrgID == nil || *o.OrgID == "" || o.Name == nil || o.CreatedAt == nil || o.UpdatedAt == nil {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d] misses a required member", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d] misses a required member", i)
 		}
 		attrs := map[string]string{}
 		for _, a := range []struct {
@@ -219,10 +219,10 @@ func parseRoles(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceRoles
 	return listItems(roleList, r, func(i int, ro role) (vendorapi.ResourceObservation, error) {
 		if ro.RoleID == nil || *ro.RoleID == "" || ro.RoleName == nil || ro.RoleType == nil {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d] misses a required member", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d] misses a required member", i)
 		}
 		if *ro.RoleType != "enterprise" && *ro.RoleType != "org" {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d].role_type is not a documented value", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d].role_type is not a documented value", i)
 		}
 		return vendorapi.ResourceObservation{
 			Type: RoleType, ID: vs.ExternalID{Namespace: NamespaceRole, Value: *ro.RoleID},
@@ -264,7 +264,7 @@ func parseServiceUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceServiceUsers
 	return listItems(serviceUserList, r, func(i int, u serviceUser) (vendorapi.ResourceObservation, error) {
 		if u.ID == nil || *u.ID == "" || u.Name == nil || u.RoleAssignments == nil {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d] misses a required member", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d] misses a required member", i)
 		}
 		attrs, err := roleAttrs(s, *u.RoleAssignments, i)
 		if err != nil {
@@ -294,7 +294,7 @@ func roleAttrs(s vs.SurfaceID, ras []roleAssignment, i int) (map[string]string, 
 	orgRoles := 0
 	for j, ra := range ras {
 		if ra.Role == nil || ra.Role.RoleName == nil || ra.Role.RoleType == nil || ra.Role.RoleID == nil {
-			return nil, drift(s, "items[%d].role_assignments[%d].role misses a required member", i, j)
+			return nil, vendorapi.Drift(s, "items[%d].role_assignments[%d].role misses a required member", i, j)
 		}
 		switch *ra.Role.RoleType {
 		case "enterprise":
@@ -302,7 +302,7 @@ func roleAttrs(s vs.SurfaceID, ras []roleAssignment, i int) (map[string]string, 
 		case "org":
 			orgRoles++
 		default:
-			return nil, drift(s, "items[%d].role_assignments[%d].role.role_type is not a documented value", i, j)
+			return nil, vendorapi.Drift(s, "items[%d].role_assignments[%d].role.role_type is not a documented value", i, j)
 		}
 	}
 	if len(ent) > 0 {
@@ -337,7 +337,7 @@ func parseIdPGroups(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceIdPGroups
 	return listItems(idpGroupList, r, func(i int, g idpGroup) (vendorapi.ResourceObservation, error) {
 		if g.Name == nil || *g.Name == "" {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d].idp_group_name is missing", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d].idp_group_name is missing", i)
 		}
 		return vendorapi.ResourceObservation{
 			Type: IdPGroupType, ID: vs.ExternalID{Namespace: NamespaceIdPGroup, Value: *g.Name}, DisplayName: *g.Name,
@@ -377,13 +377,13 @@ func parseACULimits(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceACULimits
 	return listItems(aculimitList, r, func(i int, l acuLimit) (vendorapi.ResourceObservation, error) {
 		if l.Limit == nil || l.Scope == nil {
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d] misses cycle_acu_limit or scope", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d] misses cycle_acu_limit or scope", i)
 		}
 		attrs := map[string]string{"scope": *l.Scope, "unit": UnitACU}
 		if err := countAttr(s, attrs, "cycle_acu_limit", l.Limit, i); err != nil {
 			return vendorapi.ResourceObservation{}, err
 		}
-		org, user := str(l.OrgID), str(l.UserID)
+		org, user := vendorapi.Str(l.OrgID), vendorapi.Str(l.UserID)
 		var key string
 		switch {
 		case *l.Scope == "enterprise" && org == "" && user == "":
@@ -393,7 +393,7 @@ func parseACULimits(r vendorapi.Response) (vendorapi.Page, error) {
 		case *l.Scope == "user" && user != "":
 			key = "user:" + org + ":" + user
 		default:
-			return vendorapi.ResourceObservation{}, drift(s, "items[%d] scope and owner ids disagree or the scope is undocumented", i)
+			return vendorapi.ResourceObservation{}, vendorapi.Drift(s, "items[%d] scope and owner ids disagree or the scope is undocumented", i)
 		}
 		if org != "" {
 			attrs["org_id"] = org

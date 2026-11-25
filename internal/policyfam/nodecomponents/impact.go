@@ -81,10 +81,6 @@ func effectOf(source string) sourceEffect {
 	return sourceEffect{source: Source(source)}
 }
 
-// FollowsPublishedPolicy reports whether a node in this governance source
-// applies the next node.components policy the org publishes.
-func FollowsPublishedPolicy(source string) bool { return effectOf(source).follows }
-
 // nodeSets is one node's derived component sets.
 type nodeSets struct {
 	compiled []string

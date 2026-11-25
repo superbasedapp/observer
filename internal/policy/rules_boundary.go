@@ -74,6 +74,17 @@ var sensitivePathPatterns = []pathPattern{
 	{"~/.bitcoin/**", "cryptocurrency wallet"},
 	{"~/.electrum/**", "cryptocurrency wallet"},
 	{"~/.ethereum/**", "cryptocurrency wallet"},
+	// The superbased SDK key (SDK quickstart plan 3.4, ledger SDKQS-5, F9):
+	// Observer's own delivery copy under its directory, and the SDK-held
+	// file the SDK's `setup` writes ($XDG_CONFIG_HOME or ~/.config on Linux
+	// and macOS, %LOCALAPPDATA% on Windows). A file moved with
+	// SUPERBASED_CREDENTIAL_FILE, or an XDG_CONFIG_HOME outside the home,
+	// has no static path here.
+	{"~/.observer/sdk/**", "Observer's SDK key"},
+	{"?:/users/*/.observer/sdk/**", "Observer's SDK key"},
+	{"~/.config/superbased/sdk-credential", "superbased SDK key"},
+	{"~/appdata/local/superbased/sdk-credential", "superbased SDK key"},
+	{"?:/users/*/appdata/local/superbased/sdk-credential", "superbased SDK key"},
 }
 
 // secretFileBasenames is the R-153 secret-file set, matched against
@@ -592,6 +603,14 @@ func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 // shPathMatchBy is shPathMatch with the path judgement passed in (R-166
 // judges a path by its place in the project, not by its absolute form).
 func shPathMatchBy(match func(ctx *MatchContext, p string) (string, bool), wantWrite bool) MatchCmdFn {
+	return shPathMatchClassified(match, wantWrite, classifyWrite)
+}
+
+// shPathMatchClassified is shPathMatchBy with the write classification
+// passed in (R-114 reads a removed word as not written, shWriteNotDelete).
+func shPathMatchClassified(match func(ctx *MatchContext, p string) (string, bool), wantWrite bool,
+	classify func(cmd *Command, tok string) bool,
+) MatchCmdFn {
 	return func(ctx *MatchContext, cmd *Command) (bool, string) {
 		tokens := sensitivePathTokensMemo(ctx, cmd)
 		if len(tokens) == 0 {
@@ -599,7 +618,7 @@ func shPathMatchBy(match func(ctx *MatchContext, p string) (string, bool), wantW
 		}
 		anchors := unitAnchors(ctx, cmd)
 		for _, t := range tokens {
-			write := classifyWrite(cmd, t.text)
+			write := classify(cmd, t.text)
 			if t.write != nil {
 				write = *t.write // a valuedWriteToken carries its own direction
 			}
@@ -667,7 +686,10 @@ func sensitivePathTokens(cmd *Command) []pathToken {
 // regardless of position. `sponge FILE` buffers stdin and overwrites FILE
 // (SA-1), the same shape as tee/truncate.
 var writeBases = map[string]bool{
-	"tee": true, "truncate": true, "install": true, "sponge": true,
+	// shred overwrites its files in place (and with -u then removes them,
+	// the delete table's row).
+	"shred": true,
+	"tee":   true, "truncate": true, "install": true, "sponge": true,
 	"set-content": true, "add-content": true, "out-file": true, "new-item": true,
 }
 
@@ -735,7 +757,9 @@ func hasEditorCommand(c *Command) bool {
 // its operands; copy/move/ln write their last positional operand,
 // path-like or bare (T-526: `cp /tmp/x.desktop evil.desktop` after a `cd`
 // writes evil.desktop; reading only path-like operands took the source for
-// the destination); delete commands write (destroy) their targets;
+// the destination); delete commands write (destroy) the words the delete
+// table names as their targets (every word of rm and its siblings, rsync's
+// --remove-source-files sources, tar's --remove-files inputs);
 // everything else reads. The `cp -t DIR` / `--target-directory` form's
 // destination is the DIR (a valuedWriteToken), so the last-operand rule
 // is suppressed for it.
@@ -751,7 +775,7 @@ func classifyWrite(cmd *Command, tok string) bool {
 	if mode, ok := inPlaceEditorMode[cmd.Base]; ok && mode(cmd) {
 		return true
 	}
-	if _, isDelete := deleteShape(cmd); isDelete {
+	if deletionOf(cmd).removes(tok) {
 		return true
 	}
 	if destBases[cmd.Base] {

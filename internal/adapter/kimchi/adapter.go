@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -140,7 +141,8 @@ func (a *Adapter) IsSessionFile(path string) bool {
 //
 // Malformed lines are warned about and skipped with the cursor advanced.
 // A partial trailing line and a tool call whose result has not landed yet
-// are DEFERRED (pending.go) so the next parse re-reads them whole.
+// are DEFERRED (adapter.DeferUnpairedTail) so the next parse re-reads them
+// whole.
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	f, err := os.Open(path) //nolint:gosec // path comes from the watcher's own watch roots
 	if err != nil {
@@ -153,7 +155,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		path:        path,
 		sessionID:   sessionIDFromPath(path),
 		rootCache:   map[string]string{},
-		pendingCall: map[string]pendingMark{},
+		pendingCall: map[string]adapter.PendingMark{},
 		cacheAcc:    cacheobs.New(MaxBlocksPerSession),
 		firstOffset: fromOffset,
 	}
@@ -206,7 +208,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
-	st.deferUnpairedTail(&res)
+	// Rewinds tool, token AND cache observations to the pending entry.
+	adapter.DeferUnpairedTail(&res, st.path, st.pendingCall, true)
 	st.emitLineage(&res)
 	st.emitToolVersion(&res)
 	adapter.ApplyProjectIdentity(&res, st.identity)
@@ -252,7 +255,13 @@ type parseState struct {
 	model    string
 	effort   string
 
-	pendingCall map[string]pendingMark
+	// pendingCall maps a toolCall id to its rewind coordinates (the
+	// prime-agent precedent, same pi-mono envelope); whatever is still
+	// pending at EOF drives the tail deferral (adapter.DeferUnpairedTail).
+	// Kimchi's bash tool can run a background command for up to an hour
+	// (`--bash-process-limit`, default 3600s), so adapter.PendingResultGrace
+	// must stay wider than that.
+	pendingCall map[string]adapter.PendingMark
 	cacheAcc    *cacheobs.Accumulator
 
 	firstOffset    int64
@@ -349,7 +358,7 @@ func (st *parseState) emitSessionStart(rec *rawLine, res *adapter.ParseResult) {
 		SourceEventID: "session_start:" + st.sessionID,
 		SessionID:     st.sessionID,
 		ProjectRoot:   st.projectRoot(),
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTC(rec.Timestamp),
 		GitBranch:     st.branch,
 		GitRemote:     st.remote,
 		Tool:          models.ToolKimchi,
@@ -370,7 +379,7 @@ func (st *parseState) emitMessage(rec *rawLine, msg *agentMessage, lineNum int, 
 	}
 	ts := parseUnixMillis(msg.Timestamp)
 	if ts.IsZero() {
-		ts = parseTimestamp(rec.Timestamp)
+		ts = parseutil.ParseRFC3339UTC(rec.Timestamp)
 	}
 
 	switch msg.Role {
@@ -463,12 +472,12 @@ func (st *parseState) emitAssistant(rec *rawLine, msg *agentMessage, lineNum int
 		}
 		if call.ID != "" {
 			ev.OutcomePending = true
-			st.pendingCall[call.ID] = pendingMark{
-				idx:       len(res.ToolEvents),
-				lineStart: lineStart,
-				toolLen:   toolLen,
-				tokenLen:  tokenLen,
-				cacheLen:  cacheLen,
+			st.pendingCall[call.ID] = adapter.PendingMark{
+				ToolIdx:   len(res.ToolEvents),
+				LineStart: lineStart,
+				ToolLen:   toolLen,
+				TokenLen:  tokenLen,
+				CacheLen:  cacheLen,
 			}
 		}
 		res.ToolEvents = append(res.ToolEvents, ev)
@@ -572,7 +581,7 @@ func (st *parseState) emitUsage(rec *rawLine, msg *agentMessage, lineNum int, ts
 		Reliability:      models.ReliabilityApproximate,
 		MessageID:        msgID,
 	}
-	if ms := genMs(parseTimestamp(rec.Timestamp), parseUnixMillis(msg.Timestamp)); ms > 0 {
+	if ms := genMs(parseutil.ParseRFC3339UTC(rec.Timestamp), parseUnixMillis(msg.Timestamp)); ms > 0 {
 		ev.GenMs, ev.GenBasis, ev.GenTimingV = ms, models.GenBasisNative, genTimingV
 	}
 	res.TokenEvents = append(res.TokenEvents, ev)
@@ -600,17 +609,18 @@ func genMs(end, start time.Time) int64 {
 }
 
 // stampToolResult attaches a result to the call it answers. A result whose
-// call is not in this window is dropped: the deferral in pending.go exists
-// so that cannot happen for a call observer emitted.
+// call is not in this window is dropped: the deferral
+// (adapter.DeferUnpairedTail) exists so that cannot happen for a call
+// observer emitted.
 func (st *parseState) stampToolResult(msg *agentMessage, res *adapter.ParseResult) {
 	output := st.adapter.scrubber.String(contentcap.Cap(msg.Content.text(), contentcap.DefaultMaxBytes))
 	observeToolResult(st.cacheAcc, output)
 	mark, ok := st.pendingCall[msg.ToolCallID]
-	if !ok || mark.idx >= len(res.ToolEvents) {
+	if !ok || mark.ToolIdx >= len(res.ToolEvents) {
 		return
 	}
 	delete(st.pendingCall, msg.ToolCallID)
-	ev := &res.ToolEvents[mark.idx]
+	ev := &res.ToolEvents[mark.ToolIdx]
 	ev.ToolOutput = output
 	// isError tracks the shell exit code for bash/powershell (exit 49 and
 	// 127 both arrived isError:true on the Windows session).
@@ -669,7 +679,7 @@ func (st *parseState) emitCompaction(rec *rawLine, lineNum int, res *adapter.Par
 		SourceEventID: eventID("compaction", rec.ID, lineNum),
 		SessionID:     st.sessionID,
 		ProjectRoot:   st.projectRoot(),
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTC(rec.Timestamp),
 		GitBranch:     st.branch,
 		GitRemote:     st.remote,
 		Model:         st.modelString(),
@@ -847,30 +857,10 @@ func sessionIDFromPath(path string) string {
 	if strings.EqualFold(filepath.Ext(base), ".jsonl") {
 		base = base[:len(base)-len(".jsonl")]
 	}
-	if i := strings.LastIndexByte(base, '_'); i >= 0 && looksLikeUUID(base[i+1:]) {
+	if i := strings.LastIndexByte(base, '_'); i >= 0 && parseutil.LooksLikeUUID(base[i+1:]) {
 		return base[i+1:]
 	}
 	return base
-}
-
-// looksLikeUUID reports whether s is a canonical 8-4-4-4-12 hex UUID.
-func looksLikeUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if c != '-' {
-				return false
-			}
-			continue
-		}
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
 }
 
 // mapToolName maps a native tool name onto a normalized action type.

@@ -604,21 +604,6 @@ func workTableExists(ctx context.Context, db *sql.DB, name string) (bool, error)
 	}
 }
 
-// isForeignMountPath reports whether path lives under a crossmount-
-// detected non-native home. Both bridge directions are covered.
-func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 // stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
 // store (a Windows-side store read by a WSL observer over /mnt/c, or
 // the reverse), which modernc.org/sqlite cannot open in place while the
@@ -627,10 +612,7 @@ func isForeignMountPath(path string) bool {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Qoder Work store (main.sqlite, which also holds BYOK and OAuth credential tables): every table this

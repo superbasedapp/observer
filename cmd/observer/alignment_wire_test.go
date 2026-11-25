@@ -3,6 +3,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -222,12 +225,21 @@ func TestAlignmentJudgeAdapterAllowInputLoopback(t *testing.T) {
 // calls" requirement for this test file itself: it exercises only the
 // wiring/selection logic and never calls .Judge() on the returned
 // adapter, which is the ONLY method that would attempt an HTTP request.
+// It parses this file and fails on any call of a method named Judge, so a
+// future edit that adds a live .Judge() call fails here instead of reaching
+// the network.
 func TestAlignmentJudgeAdapterNoNetworkCalls(t *testing.T) {
-	// This test is intentionally a no-op assertion beyond a comment — the
-	// other tests in this file already prove no test here invokes
-	// alignmentJudgeAdapter.Judge, only alignmentJudgeFor's pure wiring
-	// decisions. Documented here so a future edit that adds a live
-	// .Judge() call to this file is a visible diff against this test's
-	// stated intent.
-	t.Log("alignment_wire tests are wiring-only; none call .Judge()")
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "alignment_wire_test.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Judge" {
+				t.Errorf("%s calls .Judge(): the alignment wiring tests must stay offline", fset.Position(call.Pos()))
+			}
+		}
+		return true
+	})
 }

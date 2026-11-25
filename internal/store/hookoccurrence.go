@@ -35,7 +35,7 @@ func (s *Store) HookOccurrences(ctx context.Context, sourceFile, base string) ([
 		if err := rows.Scan(&id, &ts); err != nil {
 			return nil, fmt.Errorf("store.HookOccurrences: %w", err)
 		}
-		at, _ := parseDBTime(ts)
+		at, _ := parseStoredTimeOK(ts)
 		out = append(out, HookOccurrence{ID: id, At: at})
 	}
 	if err := rows.Err(); err != nil {

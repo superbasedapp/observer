@@ -11,8 +11,8 @@ import (
 )
 
 // parityAddresses is the fixed table the two classifiers are compared on: one
-// or more addresses per range either names, in plain, IPv4-mapped, NAT64 and
-// 6to4 forms.
+// or more addresses per range either names, in plain, IPv4-mapped, NAT64,
+// 6to4 and Teredo forms.
 var parityAddresses = []string{
 	"0.0.0.0", "0.1.2.3", "::", "127.0.0.1", "127.255.255.254", "::1",
 	"169.254.0.1", "169.254.169.254", "169.254.170.2", "169.254.170.23", "fe80::1",
@@ -24,6 +24,8 @@ var parityAddresses = []string{
 	"::ffff:127.0.0.1", "::ffff:10.1.2.3", "::ffff:169.254.169.254", "::ffff:100.100.100.200", "::ffff:8.8.8.8",
 	"64:ff9b::7f00:1", "64:ff9b::a01:203", "64:ff9b::a9fe:a9fe", "64:ff9b::6464:64c8", "64:ff9b::808:808",
 	"2002:7f00:1::", "2002:a00:1::", "2002:a9fe:a9fe::", "2002:6440:1::", "2002:6464:64c8::", "2002:808:808::",
+	"2001:0:4136:e378:8000:63bf:80ff:fffe", "2001:0:4136:e378:8000:63bf:f5ff:fffe", "2001:0:4136:e378:8000:63bf:5601:5601",
+	"2001:0:4136:e378:8000:63bf:9bbf:fffe", "2001:0:4136:e378:8000:63bf:9b9b:9b37", "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
 	"8.8.8.8", "203.0.113.7", "172.32.0.1", "100.128.0.1", "2001:4860:4860::8888",
 	"255.255.255.255", "fec0::1",
 }

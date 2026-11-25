@@ -82,3 +82,21 @@ func ProxyReasoningOf(table string) string {
 func ProxyInheritedFastOf(table string) string {
 	return `COALESCE((SELECT svp.inherited_fast FROM spend_verdict_proxy svp WHERE svp.api_turn_id = ` + table + `.id), 0)`
 }
+
+// NotAppLaneRowOf is the WHERE fragment keeping only the api_turns rows a
+// node's OWN coding-agent spend counts: every row except one that arrived on
+// an `/up/<id>` app lane (api_turns.upstream_lane, agent migration 260). An
+// app built on this machine spends through that lane against its own app
+// caps (the local app lane reservation, hosted AI gateway plan L7), so its
+// spend never counts in the developer's [guard.budget] windows: the two
+// planes stay separate (plan section 1.11 gap 3, APPLANE-1). table is the
+// api_turns table name or alias.
+func NotAppLaneRowOf(table string) string {
+	return `COALESCE(` + table + `.upstream_lane, '') = ''`
+}
+
+// GuardCountedProxyRowOf is CountedProxyRowOf plus NotAppLaneRowOf: the
+// api_turns rows the [guard.budget] windows count.
+func GuardCountedProxyRowOf(table string) string {
+	return CountedProxyRowOf(table) + ` AND ` + NotAppLaneRowOf(table)
+}

@@ -171,17 +171,8 @@ judge() { # judge NAME pass|fail DETAIL
 	[ -n "${3:-}" ] && R["check.$1.detail"]="$3"
 	[ "$2" = pass ] || FAIL=1
 }
-not_run() {
-	R["check.$1"]="not_run"
-	R["check.$1.detail"]="$2"
-	FAIL=1
-}
-refuse() {
-	R[refused]="$1"
-	echo "refused: $1" >&2
-	EXIT_CODE=2
-	exit 2
-}
+# shellcheck source=scripts/sandbox/live-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/live-lib.sh"
 # refusal_line prints the first refusal line of a launch's output ("" when
 # there is none), with terminal codes and carriage returns removed.
 refusal_line() {
@@ -189,18 +180,6 @@ refusal_line() {
 	tr -d '\r' <"$1" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' |
 		grep -m 1 -iE 'refused|sandboxrelayd:|terminal_sandbox:|not available here|sandboxopenshell:' | sed 's/^[[:space:]]*//' || true
 }
-# install_id prints this run's install id ("" before the driver minted it).
-install_id() {
-	[ -f "$INSTALL_ID_FILE" ] || return 0
-	tr -d '\n' <"$INSTALL_ID_FILE" 2>/dev/null || true
-}
-# The private gateway's names for this install (managed mode): name
-# observer-<12 hex>, unit observer-openshell-gateway-<12 hex>.service, CLI
-# registry in the private RAM dir; "" before the install id exists.
-gw_short() { local id; id="$(install_id)"; printf '%s' "${id:0:12}"; }
-gw_name() { [ -n "$(gw_short)" ] && printf 'observer-%s' "$(gw_short)"; }
-gw_unit() { [ -n "$(gw_short)" ] && printf 'observer-openshell-gateway-%s.service' "$(gw_short)"; }
-gw_rtdir() { [ -n "$(gw_short)" ] && printf '%s/observer-openshell-%s' "${XDG_RUNTIME_DIR:-/nonexistent}" "$(gw_short)"; }
 # osh runs the openshell CLI against the run's gateway: Observer's private
 # one (its name and private registry) in managed mode, the user's own in
 # external mode.
@@ -236,13 +215,6 @@ oc = o.get("ocsf", {})
 ep = (oc.get("endpoint") or o.get("endpoint") or "").rstrip("/")
 print("present" if oc.get("enabled") is True and ep == want else "missing")
 PY
-}
-# tree_digest prints a digest of a directory tree's names, modes, sizes
-# and contents ("absent" when it does not exist); it never prints a
-# content.
-tree_digest() {
-	[ -e "$1" ] || { echo absent; return 0; }
-	(cd "$1" && find . -printf '%p %m %s\n' 2>/dev/null | sort && find . -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null) | sha256sum | cut -c1-16
 }
 cleanup() {
 	local rc=$? left after n

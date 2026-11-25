@@ -1,0 +1,82 @@
+{
+  "_doc": "POST /v1/connect/requests with purpose sdk_key (docs/plans/onboarding-v2-connect-flow.md section 13.2). request.body is what setup sends (the SDKs build it; the field rules are request_rules). responses are what the cloud answers (internal/cloudserver/api must produce these shapes exactly: the same keys, the same types; ids, codes and times are examples). Cloud errors are the service's usual {error: <message>, code: <code>}; setup decides on code and status only. A purpose sdk_key body never carries device_public_key, and a machine body never carries redeem_hash (400 bad_request either way).",
+  "method": "POST",
+  "url": "https://cloud.superbased.app/v1/connect/requests",
+  "request": {
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {
+      "purpose": "sdk_key",
+      "client": "superbased-sdk-python",
+      "client_version": "0.2.0",
+      "project_name": "support-bot",
+      "machine_name": "studio-mac",
+      "os": "darwin",
+      "arch": "arm64",
+      "target_hint": "",
+      "redeem_hash": "4gCLlovTgfGzwK4urGu0ushPtJ7SF1a3E6QVBfFb1Ks"
+    }
+  },
+  "request_rules": {
+    "purpose": "sdk_key (absent or machine: the machine flow of section 2)",
+    "client": "superbased-sdk-python or superbased-sdk-typescript (closed; the package that runs setup)",
+    "client_version": "1 to 32 of [0-9A-Za-z.+_-]: the SDK package version",
+    "project_name": "1 to 64 of [a-z0-9._-]: the service name setup detected (the sdk-api-surface.md service-name ladder, normalised); shown on the approval page",
+    "machine_name": "1 to 64 characters after trimming, control and bidi characters removed (the machine flow's rule); the host name",
+    "os": "1 to 16 of [a-z0-9_]: Python sys.platform, Node process.platform (linux, darwin, win32)",
+    "arch": "1 to 16 of [a-z0-9_], lowercased: Python platform.machine().lower(), Node process.arch",
+    "target_hint": "\"\" or a team slug shape (the machine flow's rule); setup --team <slug>",
+    "redeem_hash": "43 characters of unpadded base64url: base64url-nopad(SHA-256(ASCII bytes of redeem_secret)); redeem_secret is 32 random bytes as unpadded base64url, kept in memory only (internal/sdkkeygrant RedeemHash, testdata/vectors.json redeem)"
+  },
+  "responses": {
+    "created": {
+      "status": 201,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "request_id": "6f1c8e2d-4b3a-4c5d-8e9f-0a1b2c3d4e5f",
+        "user_code": "KTRW-4821",
+        "approve_url": "https://cloud.superbased.app/connect/6f1c8e2d-4b3a-4c5d-8e9f-0a1b2c3d4e5f",
+        "verify_url": "https://cloud.superbased.app/connect",
+        "expires_in": 900,
+        "interval": 3,
+        "device_code": "FAKE-device-code-for-contract-tests-only-01"
+      }
+    },
+    "invalid_field": {
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "project_name must be 1 to 64 of [a-z0-9._-]",
+        "code": "invalid_project_name"
+      }
+    },
+    "rate_limited": {
+      "status": 429,
+      "headers": {
+        "Content-Type": "application/json",
+        "Retry-After": "60"
+      },
+      "body": {
+        "error": "too many connect requests from this network; try again in a minute",
+        "code": "rate_limited"
+      }
+    },
+    "purpose_not_offered": {
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "error": "this SuperBased cloud does not take SDK sign-in requests yet",
+        "code": "invalid_purpose"
+      }
+    }
+  }
+}

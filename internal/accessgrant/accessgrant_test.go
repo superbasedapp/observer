@@ -693,13 +693,6 @@ func TestBudgetOverlay(t *testing.T) {
 	if o, ok := BudgetOverlay(1000000, 0, grants, t0.Add(90*time.Minute)); !ok || o.GrantID != 2 {
 		t.Fatalf("scheduled grant should apply once started: %+v", o)
 	}
-	tok, _, reverted := RevertExpiredOverlay(1200000, 0, 1000000, 0, ns(time.Hour), t0.Add(time.Hour))
-	if !reverted || tok != 1000000 {
-		t.Fatal("expired overlay must revert to base")
-	}
-	if _, _, reverted := RevertExpiredOverlay(1200000, 0, 1000000, 0, 0, t0); reverted {
-		t.Fatal("no overlay never reverts")
-	}
 }
 
 func TestShapeContext(t *testing.T) {

@@ -37,6 +37,7 @@ func TestKeystoreTestsNeverWriteTheOSKeychain(t *testing.T) {
 		testsKeyring    []string
 	}
 	pkgs := map[string]*pkg{}
+	scanned := 0
 	for _, top := range []string{"cmd", "internal", "tests", "tools", "scripts"} {
 		_ = filepath.WalkDir(filepath.Join(root, top), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -59,6 +60,7 @@ func TestKeystoreTestsNeverWriteTheOSKeychain(t *testing.T) {
 			if perr != nil {
 				return nil
 			}
+			scanned++
 			dir := filepath.Dir(p)
 			if pkgs[dir] == nil {
 				pkgs[dir] = &pkg{}
@@ -80,6 +82,9 @@ func TestKeystoreTestsNeverWriteTheOSKeychain(t *testing.T) {
 			}
 			return nil
 		})
+	}
+	if scanned == 0 {
+		t.Fatalf("no .go file parsed under %s: the scan would be vacuous", root)
 	}
 	for _, p := range pkgs {
 		if len(p.testsKeyring) > 0 && !p.importsKeystore {

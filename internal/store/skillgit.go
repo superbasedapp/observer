@@ -109,7 +109,7 @@ func triState(v, known bool) int {
 	if !known {
 		return -1
 	}
-	return boolToInt(v)
+	return boolInt(v)
 }
 
 // NewestHeadMove returns the newest stored reflog entry's time (ok=false

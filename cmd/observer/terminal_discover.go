@@ -28,6 +28,7 @@
 // above MinLinkConfidence, so a discovered link still attaches downstream links
 // until upgraded). This is why the confidence is 0.75, not 0.95: the id rests on
 // a project/time/uniqueness inference, not a forced or echoed id.
+
 package main
 
 import (

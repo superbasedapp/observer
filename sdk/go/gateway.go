@@ -62,8 +62,9 @@ func appValue(v string) string {
 // GatewayHeaders are the headers a request to the AI gateway should carry
 // now: X-Superbased-User (the request scope's end user, else Init's),
 // X-Superbased-Service (the service the app's spans carry, which app budget
-// caps bind on) and a client-minted X-SBO-Request-Id. A value that is empty or
-// not header-safe is left out.
+// caps bind on), a client-minted X-SBO-Request-Id and the traceparent of the
+// span in ctx (so the organization joins the call to that span even without
+// the request id). A value that is empty or not header-safe is left out.
 func GatewayHeaders(ctx context.Context) map[string]string {
 	out := map[string]string{HeaderRequestID: "sdk-" + randomHex(16)}
 	user, _ := CurrentAttributes(ctx)["user"].(string)
@@ -77,6 +78,9 @@ func GatewayHeaders(ctx context.Context) map[string]string {
 	}
 	if v := appValue(admitServiceName()); v != "" {
 		out[HeaderService] = v
+	}
+	if tp := Traceparent(ctx); tp != "" {
+		out[HeaderTraceparent] = tp
 	}
 	return out
 }

@@ -2,6 +2,7 @@ package coverage
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -414,7 +415,7 @@ func Render(rows []Row) string {
 		}
 		b.WriteString(string(l))
 		b.WriteByte('=')
-		b.WriteString(itoa(s[l]))
+		b.WriteString(strconv.Itoa(s[l]))
 	}
 	b.WriteString("\nnode-side points other than the relay are BEST-EFFORT controls unless backed by MDM/EDR + network egress enforcement (doc3 §12.7).\n")
 	return b.String()
@@ -425,18 +426,4 @@ func pad(s string, w int) string {
 		return s + " "
 	}
 	return s + strings.Repeat(" ", w-len(s))
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }

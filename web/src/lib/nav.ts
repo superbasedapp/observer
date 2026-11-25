@@ -1,6 +1,7 @@
 import {
   Activity,
   BellRing,
+  Cable,
   ChartColumn,
   FileText,
   FlaskConical,
@@ -129,6 +130,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "app-scores", label: "Scores", path: "/apps/scores", icon: Star },
       { id: "app-prompts", label: "Prompts", path: "/apps/prompts", icon: FileText },
       { id: "app-alerts", label: "Alerts", path: "/apps/alerts", icon: BellRing },
+      { id: "app-model-calls", label: "Model calls", path: "/apps/model-calls", icon: Cable },
       { id: "policies", label: "Policies", path: "/policies", icon: ScrollText },
       { id: "egress", label: "Egress", path: "/egress", icon: Route },
     ],

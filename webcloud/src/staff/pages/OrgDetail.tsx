@@ -22,6 +22,7 @@ import { Pill } from "@shared/primitives/Pill";
 import { TableSkeleton } from "@shared/primitives/Skeleton";
 import { Table } from "@shared/primitives/Table";
 import { getOrg, listAvailability, listLog, postPlanGrant, type StaffOrgDetail } from "../api";
+import { gatewayCell, gatewayMonthToDate, hasGatewayUsage, monthOf, type GatewayUsageDay } from "../lib/gatewayUsage";
 import { ChangeDialog } from "../components/ChangeDialog";
 import { GrantCommand } from "../components/GrantCommand";
 import { InputEditorDialog, RemoveInputDialog } from "../components/InputEditor";
@@ -370,37 +371,57 @@ function ControlLines({ label, value, reason, at }: { label: string; value?: unk
   );
 }
 
+// UsageDay is one daily usage report, plus the hosted AI gateway's
+// forwarded requests that day (lane L4 adds `aigw_requests` to the host
+// usage pull; an older host omits it). Typed here, additively, so the staff
+// API types stay as they are until the field lands there.
+type UsageDay = StaffOrgDetail["usage"][number] & GatewayUsageDay;
+
 function UsageCard({ d }: { d: StaffOrgDetail }) {
+  const rows: UsageDay[] = d.usage;
+  const gateway = hasGatewayUsage(rows);
+  const now = new Date();
+  const mtd = gateway ? gatewayMonthToDate(rows, now) : null;
   return (
     <Card title="Usage" sub="Daily reports from the org's host (the last 30). Counts only.">
-      {d.usage.length === 0 ? (
+      {rows.length === 0 ? (
         <p className="text-[12px] text-fg-3">No usage report yet.</p>
       ) : (
-        <Table
-          padded
-          minWidth={420}
-          maxHeight={320}
-          stickyHead
-          head={
-            <tr>
-              <th>Day</th>
-              <th className="text-right">Seats</th>
-              <th className="text-right">Members</th>
-              <th className="text-right">Sessions</th>
-              <th className="text-right">Machines</th>
-            </tr>
-          }
-        >
-          {d.usage.map((u) => (
-            <tr key={u.day}>
-              <td className="whitespace-nowrap">{u.day}</td>
-              <td className="text-right tabular-nums">{u.seats}</td>
-              <td className="text-right tabular-nums">{u.members}</td>
-              <td className="text-right tabular-nums">{u.sessions ?? 0}</td>
-              <td className="text-right tabular-nums">{u.machine_identities ?? 0}</td>
-            </tr>
-          ))}
-        </Table>
+        <>
+          {gateway && (
+            <p className="mb-2 text-[12px] text-fg-2">
+              AI gateway requests in {monthOf(now)} (UTC):{" "}
+              <span className="font-medium tabular-nums text-fg-1">{mtd === null ? "none reported" : mtd.toLocaleString("en-US")}</span>
+            </p>
+          )}
+          <Table
+            padded
+            minWidth={gateway ? 520 : 420}
+            maxHeight={320}
+            stickyHead
+            head={
+              <tr>
+                <th>Day</th>
+                <th className="text-right">Seats</th>
+                <th className="text-right">Members</th>
+                <th className="text-right">Sessions</th>
+                <th className="text-right">Machines</th>
+                {gateway && <th className="text-right">Gateway requests</th>}
+              </tr>
+            }
+          >
+            {rows.map((u) => (
+              <tr key={u.day}>
+                <td className="whitespace-nowrap">{u.day}</td>
+                <td className="text-right tabular-nums">{u.seats}</td>
+                <td className="text-right tabular-nums">{u.members}</td>
+                <td className="text-right tabular-nums">{u.sessions ?? 0}</td>
+                <td className="text-right tabular-nums">{u.machine_identities ?? 0}</td>
+                {gateway && <td className="text-right tabular-nums">{gatewayCell(u)}</td>}
+              </tr>
+            ))}
+          </Table>
+        </>
       )}
     </Card>
   );

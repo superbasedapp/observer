@@ -15,6 +15,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
+	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -685,7 +687,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			continue
 		}
 
-		ts := parseTimestamp(rec.AuditTimestamp)
+		ts := parseutil.ParseRFC3339(rec.AuditTimestamp)
 
 		switch rec.Type {
 		case "user":
@@ -1116,30 +1118,11 @@ func userPromptText(blocks []rawContentBlock) string {
 }
 
 // decodeContent handles both array and bare-string forms of
-// message.content (mirrors claudecode's helper).
+// message.content through the shared transcriptutil decoder.
 func decodeContent(raw json.RawMessage) []rawContentBlock {
-	if len(raw) == 0 {
-		return nil
-	}
-	trimmed := bytesTrimSpace(raw)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	switch trimmed[0] {
-	case '[':
-		var blocks []rawContentBlock
-		if err := json.Unmarshal(raw, &blocks); err != nil {
-			return nil
-		}
-		return blocks
-	case '"':
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil
-		}
-		return []rawContentBlock{{Type: "text", Text: s}}
-	}
-	return nil
+	return transcriptutil.DecodeContent(raw, func(text string) rawContentBlock {
+		return rawContentBlock{Type: "text", Text: text}
+	})
 }
 
 // decodeResultContent unwraps a tool_result's content field which
@@ -1149,7 +1132,7 @@ func decodeResultContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	trimmed := bytesTrimSpace(raw)
+	trimmed := transcriptutil.TrimJSONSpace(raw)
 	if len(trimmed) == 0 {
 		return ""
 	}
@@ -1177,27 +1160,6 @@ func decodeResultContent(raw json.RawMessage) string {
 		}
 	}
 	return string(raw)
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end {
-		c := b[start]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			start++
-			continue
-		}
-		break
-	}
-	for end > start {
-		c := b[end-1]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			end--
-			continue
-		}
-		break
-	}
-	return b[start:end]
 }
 
 // extractTarget pulls the human-meaningful target string from a
@@ -1243,21 +1205,6 @@ func extractTarget(toolName string, rawInput []byte, projectRoot string) string 
 		return pick("skill", "name")
 	}
 	return ""
-}
-
-// parseTimestamp handles the audit.jsonl `_audit_timestamp` field
-// (ISO-8601 with milliseconds; UTC `Z` suffix in practice).
-func parseTimestamp(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
-	}
-	return time.Time{}
 }
 
 func appendCapped(s []string, v string, cap int) []string {
@@ -1556,7 +1503,7 @@ func seedRateLimitTracker(f *os.File, until int64, sessionID string) ratelimitst
 			var rec rawRecord
 			if json.Unmarshal([]byte(strings.TrimRight(line, "\r\n")), &rec) == nil &&
 				rec.Type == "rate_limit_event" && len(rec.RateLimitInfo) > 0 {
-				coworkRateLimitEmit(&tr, sessionID, rec.RateLimitInfo, parseTimestamp(rec.AuditTimestamp))
+				coworkRateLimitEmit(&tr, sessionID, rec.RateLimitInfo, parseutil.ParseRFC3339(rec.AuditTimestamp))
 			}
 		}
 		if err != nil {

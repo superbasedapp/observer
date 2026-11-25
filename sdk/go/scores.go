@@ -48,6 +48,9 @@ type ScoreResult struct {
 	ClientID     string                       `json:"client_id"` // the idempotency id sent
 	Destinations map[string]DestinationResult `json:"destinations"`
 	Errors       []string                     `json:"errors"`
+	// PlanRefusal is set when the org's plan refused the score (its Message
+	// and UpgradeURL say why and where to fix it).
+	PlanRefusal *PlanRefusalError `json:"plan_refusal,omitempty"`
 }
 
 // ScoreError is a score the rules refuse; Code is the contract's error code.
@@ -212,8 +215,14 @@ func resultOK(r *ScoreResult) bool {
 	return true
 }
 
-// retryable: no answer, 429 or a 5xx is worth one more try.
-func retryable(r *response) bool { return r.status == 0 || r.status == 429 || r.status >= 500 }
+// retryable: no answer, 429 or a 5xx is worth one more try. A 429 over the
+// plan's allowance is not: it holds until the plan changes or the month turns.
+func retryable(r *response) bool {
+	if r.status == 429 && r.planRefusal() != nil {
+		return false
+	}
+	return r.status == 0 || r.status == 429 || r.status >= 500
+}
 
 var (
 	scoreLogMu sync.Mutex
@@ -262,6 +271,7 @@ func postScores(ctx context.Context, objs []map[string]any) []*ScoreResult {
 			// Once, with the same ids: a repeat is a no-op on the server.
 			resp = sd.call(ctx, "POST", "scores", body, nil, nil, nil)
 		}
+		refusal := resp.planRefusal()
 		accepted, rejected := map[int64]string{}, map[int64]string{}
 		if m := resp.obj(); m != nil {
 			if arr, ok := m["accepted"].([]any); ok {
@@ -301,6 +311,9 @@ func postScores(ctx context.Context, objs []map[string]any) []*ScoreResult {
 			}
 			r.Destinations[sd.name] = DestinationResult{Status: resp.status, Error: e}
 			r.Errors = append(r.Errors, sd.name+": "+e)
+			if r.PlanRefusal == nil {
+				r.PlanRefusal = refusal
+			}
 		}
 	}
 	for _, r := range results {

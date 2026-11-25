@@ -801,15 +801,7 @@ func formatGuidanceTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// parseGuidanceTime is parseStoredTime normalized to UTC.
 func parseGuidanceTime(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t.UTC()
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC()
-	}
-	return time.Time{}
+	return parseStoredTime(s).UTC()
 }

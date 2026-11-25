@@ -263,6 +263,7 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 		ChatGPTUpstream:   cfg.Proxy.ChatGPTUpstream,
 		GeminiUpstream:    cfg.Proxy.GeminiUpstream,
 		Upstreams:         cfg.Proxy.Upstreams,
+		AppLanes:          proxyAppLaneOptions(cfg),
 		// The registry's built-in lanes under [proxy.agent_upstreams]
 		// (proxylane.go), so a launcher's lane resolves on a fresh install.
 		AgentUpstreams:   effectiveAgentUpstreams(cfg),

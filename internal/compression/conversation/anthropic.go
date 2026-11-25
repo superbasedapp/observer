@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/compression/conversation/types"
+	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
 // anthropicBlock is one entry inside an Anthropic message's `content` array.
@@ -313,7 +314,7 @@ func compressToolResults(extracted []extractedMessage, registry *Registry, allow
 			// compressor replaced every action_id / rank scalar with
 			// `<number>`. Pinned by
 			// `TestCompressToolResults_SkipsMCPToolResults`.
-			if j < len(em.resultToolNames) && isMCPToolName(em.resultToolNames[j]) {
+			if j < len(em.resultToolNames) && tooltax.IsMCPToolName(em.resultToolNames[j]) {
 				continue
 			}
 			filename := ""
@@ -525,7 +526,7 @@ func stashLargeBodies(extracted []extractedMessage, store interface {
 			// returning a stash marker would be catastrophic; same
 			// hazard exists for any MCP tool whose response is the
 			// actual answer.
-			if j < len(em.resultToolNames) && isMCPToolName(em.resultToolNames[j]) {
+			if j < len(em.resultToolNames) && tooltax.IsMCPToolName(em.resultToolNames[j]) {
 				continue
 			}
 			body := em.compressedTexts[j]
@@ -554,18 +555,6 @@ func stashLargeBodies(extracted []extractedMessage, store interface {
 		}
 	}
 	return events
-}
-
-// isMCPToolName reports whether a tool_use.name belongs to an MCP
-// server (Anthropic's MCP convention prefixes such names with
-// `mcp__<server>__<tool>`). The proxy's per-type compression and
-// stash passes use this to leave MCP tool_results untouched —
-// those bodies carry structured query data where the values ARE
-// the answer (action_ids, file hashes, cost dollars, stashed
-// bytes); compressing them with JSON/code/logs replaces scalars
-// with type sentinels and corrupts the response.
-func isMCPToolName(name string) bool {
-	return strings.HasPrefix(name, "mcp__")
 }
 
 // formatStashMarker is the canonical marker form. Exported indirectly
@@ -762,32 +751,6 @@ func stripExamplesDeep(v any) (any, bool) {
 	}
 }
 
-// findLastCacheBreakpoint returns the position of the latest
-// cache_control marker in the messages array. Walks each message's
-// blocks (when content is an array) and tracks the last (msgIdx,
-// blockIdx) pair carrying a non-empty CacheControl annotation.
-//
-// Only messages-level markers count — system-prompt cache_control is
-// useful to Anthropic but not relevant for the per-turn compression
-// boundary the cache-aware pipeline cares about. The Anthropic SDK
-// (Claude Code 2.1+) sets a rolling marker on the last block of the
-// last message every turn; this helper is the detection signal.
-//
-// Returns found=false when no marker is present (cache-cold request,
-// non-Anthropic-SDK client). Callers should fall back to the
-// non-cache-aware behaviour in that case.
-func findLastCacheBreakpoint(extracted []extractedMessage) (msgIdx, blockIdx int, found bool) {
-	msgIdx, blockIdx = -1, -1
-	for i := range extracted {
-		for j, b := range extracted[i].blocks {
-			if len(b.CacheControl) > 0 {
-				msgIdx, blockIdx, found = i, j, true
-			}
-		}
-	}
-	return msgIdx, blockIdx, found
-}
-
 // toConversationMessages projects extractedMessage → conversation.Message
 // so the scorer + budget enforcer can operate on them. When the message
 // carries tool_result blocks, Text reflects the post-pre-compression
@@ -825,7 +788,7 @@ func toConversationMessages(extracted []extractedMessage) []Message {
 		// any block is MCP.
 		noCompress := false
 		for _, name := range em.resultToolNames {
-			if isMCPToolName(name) {
+			if tooltax.IsMCPToolName(name) {
 				noCompress = true
 				break
 			}

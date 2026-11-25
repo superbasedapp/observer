@@ -14,6 +14,7 @@ import { Pill } from "@shared/primitives/Pill";
 import { fmtInt } from "@shared/lib/format";
 import { PortalMetricIcon } from "../lib/metricIcons";
 import { routeIcon } from "../lib/nav";
+import { planDisplayName } from "../lib/labels";
 import { PlanComparison } from "../components/billing/PlanComparison";
 import { SubscriptionCard } from "../components/billing/SubscriptionCard";
 import {
@@ -51,12 +52,13 @@ const CONFIRM_TIMEOUT_MS = 120_000;
 
 // planDisplayValue picks the friendliest name available for the current
 // entitlement, falling back to the live subscription's plan name and then
-// to an honest generic label - never a raw plan token.
+// to an honest generic label - never a raw plan token (planDisplayName).
 function planDisplayValue(view: BillingView): string {
-  if (view.plan?.plan_label) return view.plan.plan_label;
-  if (view.plan?.plan) return view.plan.plan;
-  if (view.subscription?.plan_name) return view.subscription.plan_name;
-  return "Free plan";
+  return (
+    planDisplayName(view.plan?.plan, view.plan?.plan_label) ||
+    planDisplayName(view.subscription?.plan_name) ||
+    "Free plan"
+  );
 }
 
 // heroStatus builds the one honest status sentence for the Current-plan
@@ -174,8 +176,8 @@ export function Billing() {
   const showResubscribeOffer = data.has_subscription && (terminal || canceled);
 
   // Header pill: the human plan name, never the raw token. A subscribed
-  // account with no plan snapshot for some reason still reads as Plus - it
-  // has an active paid subscription regardless.
+  // account with no plan snapshot for some reason still reads as Personal
+  // Pro - it has an active paid subscription regardless.
   const planToken = plan?.plan ?? (data.has_subscription ? "plus_beta" : "free");
   const hero = heroStatus(data);
 

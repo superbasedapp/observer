@@ -9,8 +9,8 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's running
-// block count. Matches the claudecode template's cap (same memory
-// budget, same OOM guard).
+// block count: the shared cacheobs default (same memory budget, same OOM
+// guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // accumulateCacheBlocks converts a DeepSeek content-block array
@@ -21,23 +21,7 @@ const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 // skipped rather than aborting the whole message — see the package doc
 // for the confirmed block-kind inventory.
 func accumulateCacheBlocks(blocks []contentBlock, role string) []models.CacheBlockMeta {
-	if len(blocks) == 0 {
-		return nil
-	}
-	out := make([]models.CacheBlockMeta, 0, len(blocks))
-	for _, b := range blocks {
-		canon, kind, ok := marshalCanonicalBlock(b)
-		if !ok {
-			continue
-		}
-		out = append(out, models.CacheBlockMeta{
-			LevelLabel:     "message", // R1: transcripts never expose tools/system
-			Kind:           kind,
-			CanonicalBytes: canon,
-			Role:           role,
-		})
-	}
-	return out
+	return cacheobs.ContentBlocks(blocks, role, marshalCanonicalBlock)
 }
 
 // marshalCanonicalBlock produces the deterministic JSON canonical form of
@@ -105,15 +89,10 @@ func emitCacheObservation(acc *cacheobs.Accumulator, path, sessionID, messageID,
 		OutputTokens:    u.OutputTokens,
 		CacheReadTokens: u.CacheReadTokens,
 	}
-	if cacheobs.IsZeroUsage(usage) {
-		return nil
-	}
-	obs := acc.Emit(path, sessionID, messageID, model, ts, usage, false)
 	// §15.3 boundary: DeepSeek Harness talks to the DeepSeek API
 	// directly (a first-party CLI, not an OpenAI-gateway-shaped
-	// provider), so ApplyImplicitCacheOverlay is a no-op for its model
+	// provider), so the implicit-cache overlay is a no-op for its model
 	// strings — applied here only for consistency with every other
 	// Tier-2 producer.
-	obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", model)
-	return &obs
+	return acc.EmitTurn(path, sessionID, messageID, model, "", ts, usage)
 }

@@ -459,15 +459,12 @@ func (s *Server) handleRoutingShadow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if fn := enginePriceFn(s.opts.CostEngine); fn != nil {
+	if fn := s.opts.CostEngine.RoutingPriceFn(); fn != nil {
 		facts.Price = fn
 	}
 	evidence := modelvalue.Build(facts, modelvalue.Options{}).EvidenceByKindTier()
 	writeJSON(w, store.BuildAdviseShadowReport(rows, evidence, routing.NewTierResolver().Table(), days))
 }
-
-// enginePriceFn lives in the core file routing_price.go (the model value
-// report uses it in every build).
 
 // handleRoutingSimulate — POST /api/routing/simulate (R1.2): the
 // §R18.1 counterfactual replay as a dashboard surface — the backend
@@ -528,7 +525,7 @@ func (s *Server) handleRoutingSimulate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if fn := enginePriceFn(s.opts.CostEngine); fn != nil {
+	if fn := s.opts.CostEngine.RoutingPriceFn(); fn != nil {
 		facts.Price = fn
 	}
 	mvReport := modelvalue.Build(facts, modelvalue.Options{})

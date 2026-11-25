@@ -66,29 +66,25 @@ type trpcEnvelope struct {
 // unwrapTRPC returns the data member of a 200 tRPC answer.
 func unwrapTRPC(s vs.SurfaceID, r vendorapi.Response) (json.RawMessage, error) {
 	if r.Status != 200 {
-		return nil, drift(s, "status %d is not the documented 200", r.Status)
+		return nil, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var env trpcEnvelope
 	dec := json.NewDecoder(bytes.NewReader(r.Body))
 	dec.UseNumber()
 	if err := dec.Decode(&env); err != nil {
-		return nil, drift(s, "body is not the documented tRPC envelope")
+		return nil, vendorapi.Drift(s, "body is not the documented tRPC envelope")
 	}
 	if env.Result == nil || len(env.Result.Data) == 0 || string(env.Result.Data) == "null" {
-		return nil, drift(s, "required field result.data is missing")
+		return nil, vendorapi.Drift(s, "required field result.data is missing")
 	}
 	return env.Result.Data, nil
-}
-
-func drift(s vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
 }
 
 func decodeData(s vs.SurfaceID, raw json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
-		return drift(s, "result.data does not decode as the documented output")
+		return vendorapi.Drift(s, "result.data does not decode as the documented output")
 	}
 	return nil
 }

@@ -34,6 +34,12 @@ const maxSeatMembers = 100000
 
 var reportDigestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// The AI gateway refusal reasons a report may carry (cloud 0157): a short
+// counter name, at most a handful of them.
+var aigwReasonRE = regexp.MustCompile(`^[a-z_]{1,40}$`)
+
+const maxAIGWRefusalReasons = 16
+
 // OrgUsageDay is one stored daily report.
 type OrgUsageDay struct {
 	// Day is the receipt day (YYYY-MM-DD).
@@ -59,8 +65,16 @@ func checkUsageReport(orgID, day string, u platformcontract.TenantUsage, digest 
 	if u.TenantID != orgID {
 		return fmt.Errorf("report for tenant %q stored under org %q: %w", u.TenantID, orgID, ErrUsageReport)
 	}
-	if u.MachineIdentities < 0 || u.Sessions < 0 || u.Members < 0 {
+	if u.MachineIdentities < 0 || u.Sessions < 0 || u.Members < 0 || u.AIGWRequests < 0 {
 		return fmt.Errorf("negative count: %w", ErrUsageReport)
+	}
+	if len(u.AIGWRefusals) > maxAIGWRefusalReasons {
+		return fmt.Errorf("%d AI gateway refusal reasons: %w", len(u.AIGWRefusals), ErrUsageReport)
+	}
+	for reason, n := range u.AIGWRefusals {
+		if !aigwReasonRE.MatchString(reason) || n < 0 {
+			return fmt.Errorf("AI gateway refusal reason %q = %d: %w", reason, n, ErrUsageReport)
+		}
 	}
 	if len(u.ActiveSeatMemberIDs) > maxSeatMembers {
 		return fmt.Errorf("%d seat members: %w", len(u.ActiveSeatMemberIDs), ErrUsageReport)
@@ -90,10 +104,15 @@ func (s *Store) RecordOrgUsageDay(ctx context.Context, orgID, day string, u plat
 	if seats == nil {
 		seats = []string{}
 	}
+	refusals := u.AIGWRefusals
+	if refusals == nil {
+		refusals = map[string]int64{}
+	}
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`INSERT INTO org_usage_days (org_id, day, seat_member_ids, machine_identities, sessions, members, report_digest)
-			 VALUES ($1::uuid, $2::date, $3::text[], $4, $5, $6, $7)
+			`INSERT INTO org_usage_days (org_id, day, seat_member_ids, machine_identities, sessions, members, report_digest,
+			                             aigw_requests, aigw_refusals)
+			 VALUES ($1::uuid, $2::date, $3::text[], $4, $5, $6, $7, $8, $9::jsonb)
 			 ON CONFLICT (org_id, day) DO UPDATE SET
 			     seat_member_ids = CASE WHEN org_usage_days.minimised_at IS NOT NULL THEN '{}'::text[]
 			                            ELSE (SELECT coalesce(array_agg(DISTINCT m ORDER BY m), '{}')
@@ -105,8 +124,12 @@ func (s *Store) RecordOrgUsageDay(ctx context.Context, orgID, day string, u plat
 			     sessions = greatest(org_usage_days.sessions, EXCLUDED.sessions),
 			     members = EXCLUDED.members,
 			     report_digest = EXCLUDED.report_digest,
+			     aigw_requests = greatest(org_usage_days.aigw_requests, EXCLUDED.aigw_requests),
+			     aigw_refusals = (SELECT coalesce(jsonb_object_agg(k, greatest(coalesce((org_usage_days.aigw_refusals->>k)::bigint, 0),
+			                                                                    coalesce((EXCLUDED.aigw_refusals->>k)::bigint, 0))), '{}'::jsonb)
+			                        FROM jsonb_object_keys(org_usage_days.aigw_refusals || EXCLUDED.aigw_refusals) AS k),
 			     received_at = now()`,
-			orgID, day, seats, u.MachineIdentities, u.Sessions, u.Members, reportDigest)
+			orgID, day, seats, u.MachineIdentities, u.Sessions, u.Members, reportDigest, u.AIGWRequests, refusals)
 		return err
 	})
 	if err != nil {
@@ -127,7 +150,8 @@ func (s *Store) OrgUsageDays(ctx context.Context, orgID, start, end string) ([]O
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
 			`SELECT to_char(day, 'YYYY-MM-DD'), seat_member_ids, machine_identities, sessions, members, report_digest, received_at,
-			        coalesce(seat_count, cardinality(seat_member_ids)), minimised_at IS NOT NULL
+			        coalesce(seat_count, cardinality(seat_member_ids)), minimised_at IS NOT NULL,
+			        aigw_requests, aigw_refusals
 			   FROM org_usage_days
 			  WHERE org_id = $1::uuid AND day >= $2::date AND day < $3::date
 			  ORDER BY day`, orgID, start, end)
@@ -137,9 +161,14 @@ func (s *Store) OrgUsageDays(ctx context.Context, orgID, start, end string) ([]O
 		defer rows.Close()
 		for rows.Next() {
 			d := OrgUsageDay{Usage: platformcontract.TenantUsage{TenantID: orgID}}
+			var refusals map[string]int64
 			if err := rows.Scan(&d.Day, &d.Usage.ActiveSeatMemberIDs, &d.Usage.MachineIdentities, &d.Usage.Sessions,
-				&d.Usage.Members, &d.ReportDigest, &d.ReceivedAt, &d.SeatCount, &d.Minimised); err != nil {
+				&d.Usage.Members, &d.ReportDigest, &d.ReceivedAt, &d.SeatCount, &d.Minimised,
+				&d.Usage.AIGWRequests, &refusals); err != nil {
 				return err
+			}
+			if len(refusals) > 0 {
+				d.Usage.AIGWRefusals = refusals
 			}
 			out = append(out, d)
 		}

@@ -4,6 +4,290 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-11-25
+
+Minor release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.43.1.
+
+The headline is AI Apps' first trace in one command: `npx @superbased/sdk setup` or
+`uvx superbased-sdk setup` installs the SDK, gets a key with one approval and shows you your first
+trace. The SDKs move to 0.2.0: `init()` instruments your model libraries by itself, and helpers
+route model calls through a self-hosted AI gateway or this machine's own app lane. A self-hosted
+org server's AI gateway gains admission, a judge, usage and admin pages.
+
+The release also:
+- makes the daemon and the launchers behave when the proxy is down (a stop takes the routes off,
+  a launcher starts the daemon);
+- lets a member of an organization that issues no member keys use an admin-issued SDK key
+  (`observer sdk use-key`);
+- lets an org admin retire a machine that will never come back;
+- makes a personal organization's owner the administrator of their own machine;
+- teaches the org's LLM provider client the request shape of OpenAI's GPT-5 and o-series models;
+- carries a maintainability pass over the tree and the defect fixes that pass found.
+
+Like 1.37.x to 1.43.1 it needs macOS 13 Ventura or later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Upgrade notes
+
+- **Org servers run database migrations SQLite 383 to 392 and PostgreSQL 0561 to 0578.**
+  - **SQLite 383** adds the `org_machine_retirements` table and **384** adds
+    `org_llm_provider.request_profile` (a text column, empty meaning "decide from the model").
+    PostgreSQL 0561 and 0563 are the same two changes, labelled expand.
+  - **SQLite 385 to 391 and PostgreSQL 0564 to 0576** are the AI gateway's:
+    - its tables and columns (per-org settings, the usage windows and monthly totals, the
+      service on a gateway key, the audit's enforcement columns), labelled expand;
+    - the `admin:aigateway` permission granted to the built-in admin role (0569, data);
+    - admission's new `org_gateway` source. PostgreSQL 0574 swaps the source CHECK
+      constraint, so it is labelled contract; SQLite 391 rebuilds the table.
+  - **SQLite 392 and PostgreSQL 0577** add `org_sdk_key_grant_uses`, the single-use record of a
+    redeemed SDK key grant (expand).
+  - **PostgreSQL 0562, 0566, 0570, 0572 and 0578** are labelled contract. They replace the
+    tenancy installer function and apply the tenant policies to the new tables inertly, with
+    row-level security left as it was.
+  - **Compatibility:** 1.43.1 still runs on a database migrated by any of these. It ignores the
+    new tables and columns and never writes the new admission source.
+- **A new optional `[platform] sdk_key_grant_pubkey_file`** pins the public key that signs SDK key
+  grants, on a pooled hosted server only. Nothing else needs it.
+- **No node migration.** The node's database is unchanged and its push is unchanged.
+- **superbased's hosted service also runs cloud migrations 0155 to 0159.**
+  - 0155 and 0156 are labelled contract only because they replace or revoke on a function (0155
+    adds one new function; 0156 replaces a trigger function).
+  - 0157 and 0158 are the AI gateway's usage columns.
+  - 0159 adds the SDK key purpose to connect requests.
+  - None changes anything the running 1.43.1 release uses.
+- **A deliberate stop of the daemon now takes the proxy routes off** (see Changed). A machine
+  whose organization maintains its routes keeps them on, as before.
+- **A new `[launch].start_daemon_wait_seconds` setting** (default 30) bounds how long a launcher
+  waits for a daemon it started. Nothing needs changing to keep the default.
+
+### Added
+
+- **Your first AI Apps trace in one command.**
+  - **What it does.** `npx @superbased/sdk setup` (Node) or `uvx superbased-sdk setup` (Python;
+    or `python -m superbased_sdk setup`):
+    1. detects your language and model libraries;
+    2. installs the SDK with the right extras using your project's own package manager;
+    3. gets a key;
+    4. sends one hello trace and prints a link to it.
+  - **Online**, you approve once in your browser at cloud.superbased.app (signing up there if you
+    are new). The approval mints your own member SDK key: 90 days, revocable, never printed.
+  - **Locally**, with Observer running, you answer one y/N, or click Turn on in the dashboard
+    when your coding agent runs it, to turn AI Apps on.
+  - **Your code.** setup prints the one init line to add and never edits your source.
+  - **Go and Java** users run `setup --key-only` to get the key their SDK reads.
+  - **Other flags:** `--status`, `--forget` (revokes the key and removes the file), `--replace`
+    and `--json`.
+- **The SDK key file.** setup keeps the key in a file only you can read, outside every project:
+  `~/.config/superbased/sdk-credential` (or under `$XDG_CONFIG_HOME`), or
+  `%LOCALAPPDATA%\superbased\sdk-credential` on Windows, or `SUPERBASED_CREDENTIAL_FILE`. All four
+  SDKs read it. When this machine's Observer is signed in, Observer's key wins and the SDKs say the
+  file is unused. Observer's guard treats an agent's read of the file, or of `~/.observer/sdk/`,
+  as a sensitive-path read.
+- **SDK 0.2.0 (Python, TypeScript, Java; the Go module).**
+  - **`init()` instruments the model libraries you have installed by itself**, when the SDK owns
+    the tracer provider. It checks without importing them and hooks each one on its first import.
+    `instrument="off"` or `SUPERBASED_INSTRUMENT=off` turns this off, and `openai-agents` is
+    instrumented only when you name it.
+  - **The service name comes from your project** (`pyproject.toml`, `package.json`, the Go module
+    or the jar), not `custom-app`.
+  - **The first trace sent prints its link** once, on a terminal.
+  - **TypeScript ESM apps** use `--import @superbased/sdk/register`. In Next.js, use
+    `instrumentation.ts` and list the SDK and your model libraries in `serverExternalPackages`.
+  - **AI gateway helpers** (`gateway_endpoint()`, `openai_client()`, `anthropic_client()` and
+    their twins) point a model client at a self-hosted org's AI gateway or at this machine's app
+    lane. They never send a provider's own key to a remote gateway.
+- **An app's model calls can be policed in the call's path, in three places, with one client
+  shape.**
+  - **What the AI gateway does:** it prices each call exactly, reserves its budget before
+    forwarding, applies the organization's model and egress rules and its admission policy, and
+    refuses a call over a cap.
+  - **Where it runs:** on a self-hosted org server (off by default, as before). It is built for
+    superbased's hosted organizations but not offered there yet (below).
+  - **The machine's app lane:** on a developer's machine, the proxy's app lane
+    (`http://127.0.0.1:8820/up/<lane>`, managed with `observer apps lane add|list|remove`) does
+    the same for the calls an app sends through it. The node dashboard's Model calls page shows
+    them.
+  - **What can be bypassed:** a gateway enforces only on the calls that go through it.
+    - An organization's AI gateway cannot be bypassed when the provider key stays sealed in the
+      gateway and the app holds only an AI gateway key.
+    - On a machine's app lane the app still holds the provider key and can call the provider
+      directly, so enforcement there is cooperative.
+- **App keys.** An AI gateway key can be bound to an app's service, with a label. Every call with
+  it counts as that service: a request header naming another service is refused, and a missing
+  one is filled from the key. A personal organization can now give each app its own key and
+  budget.
+- **Admission in the AI gateway.** Calls made with an app key are checked against the
+  organization's published AI Apps admission policy, the one `admit()` uses, with the
+  organization's judge, so the policy holds even for an app that never calls `admit()`.
+  - Verdicts are recorded with the message's hash only.
+  - An organization admin can turn admission at the gateway off for an app that already calls
+    `admit()` on every message.
+  - A developer's key keeps the coding-agent admission policy.
+- **The judge in effect is shown.** Which judge decides an admission check depends on where the
+  check is sent. The organization's dashboard, the machine's dashboard and
+  `observer obs admission status` now say which judge that is.
+- **AI gateway settings per organization:**
+  - what happens when a store is unavailable: refuse (the default), or forward with enforcement
+    skipped and recorded (never for the key or the provider key);
+  - admission at the gateway;
+  - egress markers.
+
+  The AI Gateway pages need the new permission `admin:aigateway`, which the built-in admin role
+  holds. Like `admin:deployment`, it is privileged and asks for a fresh multi-factor sign-in.
+- **An optional path prefix** (`[aigateway] path_prefix`, for example `/ai`) lets an app name the
+  upstream in the URL, `/ai/<upstream>/...`. With no prefix nothing changes.
+- **`observer sdk use-key` installs an SDK key an admin issued.** A member of an organization that
+  mints no member keys can keep an admin-issued machine-identity key on their machine with
+  `observer sdk use-key --gateway-url <address>`. The key is read from standard input only (a
+  no-echo prompt on a terminal, one line from a pipe); a key given on the command line is refused
+  without being repeated. The key is written the way a sign-in key is (a delivery file readable by
+  you alone, plus the keychain copy), and no network call is made. `observer sdk status` and the
+  `sdk.key` doctor row name the key's origin. Signing out removes an admin-issued key from the
+  machine without revoking it, since it is the admin's.
+- **Use an admin's SDK key from the node dashboard.** Settings > Observability > SDK data
+  destination gains "Use an SDK key from my admin". On the org dashboard the
+  `observer sdk use-key --gateway-url <address>` line now sits beside every minted key and in the
+  first-run panel. The line never contains the key.
+- **One-click SDK key on an organization of one.** On a personal organization, one action on the
+  org dashboard creates an `sdk-quickstart` service account and mints its key with the same
+  defaults a member key has (traces, logs and metrics), and answers the secret once. A team
+  organization is refused.
+- **Retire a machine.** A machine that left the organization or was lost for good no longer keeps
+  its "Nodes out of contact" finding open forever. `observer unenroll` retires the machine it
+  runs on, and an admin can retire a machine from a Control Center finding, with a reason; the
+  action is audited and the assistant can propose it for approval. Retirement deletes nothing: the
+  machine's open findings close with a reason that says so, and a machine that pushes again after
+  it was retired is tracked again.
+- **A typed plan refusal in every SDK.** When the organization's plan does not include AI Apps, or
+  its monthly allowance is used up, the Python, TypeScript, Go and Java SDKs now raise one typed
+  error carrying the message, the upgrade address, the plan in force, its allowance and the plans
+  with more. The gateway's 403 for an unentitled plan is now one stable `plan_required` body.
+- **An AI Apps first-run panel and plan empty state on the org dashboard**, and the daemon's
+  governance read now says where a hidden or read-only page can be reached online (see Changed).
+- **A request profile on an org LLM provider.** The provider form has a new Request profile
+  (automatic, chat or reasoning) for a model or Azure deployment name the built-in model table
+  does not know. Automatic is the default and matches today's behaviour for known models.
+
+### Changed
+
+- **A deliberate stop takes the proxy routes off, and a restart keeps the port answering.**
+  Stopping the daemon (a service stop, SIGTERM, Ctrl-C, uninstalling the service, closing a
+  Windows console) now takes off the routes that reach its own proxy, and only those it can put
+  back exactly. The next daemon puts them back once its proxy answers. An in-place restart now
+  hands the proxy's listening socket to the new process, waiting up to 30 seconds for requests in
+  flight, so connections made meanwhile are served by the new process and not refused.
+  `observer service restart` uses that hand-over when the running daemon supports it.
+- **A launcher that finds the daemon down starts it.** `observer claude`, `codex` and the other
+  launchers used to go direct or refuse when nothing answered on the proxy port. They now start the
+  daemon this install owns (its systemd user unit, launchd agent or Windows sign-in entry when one
+  runs this config, otherwise `observer start --no-open` in the background, logging to
+  `daemon.log` beside the database), wait for the proxy, and continue routed. Going direct or
+  refusing remains for a daemon that cannot come up, and the start line says why and where the log
+  is.
+- **A hidden or read-only page is never a dead end.** The notice now says who controls the page and
+  offers the matching online page, a page-access request or the administrator's contact, instead of
+  a bare "hidden". On a personal organization it says the owner controls it.
+- **An owner-managed machine starts with every page and Settings section visible.** On a machine
+  managed from a personal organization of one, the owner is the administrator, so nothing is
+  hidden or read-only by default. The org server states those defaults in the governance body it
+  serves, so machines on builds older than 1.43.0 follow them too. An explicit directive the owner
+  publishes still wins.
+- **`observer init` stops calling live-verified routes unverified.** The probe-route step now words
+  its consent from what the registry says about the tool, and no longer offers qwen-code or
+  kimi-code the Codex config writer.
+- **The reference service unit matches the supplied one.** The unit `observer service install`
+  writes now has the 120-second stop timeout, waits for the network to be online and carries its
+  documentation line, like `deploy/supervisor/observer.service`.
+- **The guard sees more deletes.** `rsync --delete` and its forms, `rsync --remove-source-files`,
+  `shred -u`, `tar --remove-files`, `find -ok rm` and `unlink` now reach the dangerous-delete
+  rules, and `find ~ -delete` is judged like `rm -rf ~`. One ordered table owns what counts as a
+  delete.
+
+### Fixed
+
+- **The AI gateway settles every call at a cost.**
+  - A call that ends with no usage the gateway can read, such as a cut stream, is booked at its
+    reserved worst case instead of zero.
+  - OpenAI-compatible chat streams ask the provider for their usage, so neither a stream nor a
+    disconnect can spend past a cap.
+  - The model policy now refuses a call (`503 policy_unavailable`) when it cannot be read, instead
+    of allowing every model.
+  - A disabled upstream can no longer be reached by naming it.
+- **The AI gateway's security review.** Three reviews found 47 issues, 7 of them High. Every High
+  and Medium one is fixed, including:
+  - a forged key can no longer spend the organization's rate budget;
+  - a client can no longer pick the Azure deployment or API version;
+  - the pre-call reservation is a true upper bound for multi-answer requests;
+  - spend totals are kept in whole micro-dollars.
+- **Launchers no longer point a tool at a dead proxy.** The generic launchers (gemini, aider, goose,
+  grok, openclaw, copilot-cli, cline-cli, pi, prime-agent, hermes) and `observer opencode`
+  printed "proxy not reachable" and then injected the base URL anyway, so the tool's first request
+  hit the dead port. With nothing answering they now launch unrouted and say what is and is not
+  captured, or refuse when a route they cannot take away still points at the dead port or the
+  organization owns the machine's routes.
+- **An org LLM provider on a GPT-5 or o-series model works.** Test failed with OpenAI's
+  "Unsupported parameter: 'max_tokens'" because the client always sent `max_tokens` and a
+  temperature, and capped the Test reply at 16 tokens. The OpenAI and Azure wires now send those
+  models `max_completion_tokens`, no temperature and a larger reply cap (never above the provider's
+  own output limit). The Anthropic wire is unchanged. The cloud service's OpenAI-compatible lane
+  uses the same shape.
+- **The Code security switch is read per organization on a pooled server.** Components'
+  `config_off` and the ingest of security rows followed one process-wide switch for every
+  organization; each now follows the organization's own.
+- **Retention deletes the rows keyed to an aged action.** Lines-of-code (`file_changes`) and todo
+  transition (`task_transitions`) rows are now deleted with their action instead of surviving as
+  orphans.
+- **A Teredo address is classified by the IPv4 address it carries.** A Teredo address embedding
+  127.0.0.1, a private range or a metadata endpoint was classified as public, so the sandbox egress
+  gateway would dial it and the guard's network rules missed it.
+- **A re-run openclaw backfill keeps every session column.** Merging a legacy raw-id session onto
+  its canonical one dropped 24 of 41 columns (surface, tool version, workspace, summary and more).
+- **Kilo Code cache deltas on incremental parses.** An already-emitted step now closes its cache
+  delta, so the first new step no longer carries every older block of the session again.
+- **The org dashboard offers every egress reason code the server accepts.**
+- **The org dashboard's SDK key and request-profile copy no longer shows internal field names.**
+- **The feed publisher sweeps its shard bucket.** Shard objects no manifest names any more are
+  deleted; the public bucket had only grown.
+
+### superbased's hosted service
+
+- **Personal Free and Personal Pro include AI Apps.** Personal Free (the personal floor) gets a
+  monthly allowance of 100,000 events and 1 GB, and Personal Pro 2,000,000 events and 10 GB, with
+  the AI Apps ingest gateway. Every personal organization holds the Personal Free allowance after
+  the roll.
+- **A Plus purchase lands on the personal organization as Personal Pro**, as soon as the owner's
+  subscription is live, without waiting for a migration of the subscription row. "Personal Pro"
+  is now the only name shown for the paid individual plan, in the portal, `observer cloud status`
+  and the node dashboard.
+- **Approve an SDK key in your browser.** `setup`'s device sign-in runs on cloud.superbased.app.
+  - **The approval page** shows the request's computer, project and code, and lets you choose your
+    personal dashboard or a team that issues member SDK keys. A team whose plan has no AI Apps is
+    shown but cannot be chosen.
+  - **After you approve,** your dashboard waits for setup's hello trace and links it.
+  - **The grant** the cloud signs is single use, lasts ten minutes and is redeemed only by your
+    organization's own host, with a separate signing key from machine connections.
+  - **The key** never passes through the cloud.
+- **The AI gateway is built for hosted organizations but not offered yet.** It ships turned off for
+  every organization; until it opens, a hosted organization polices an app's requests with
+  `admit()`.
+- **An org model provider on a shared hosted server can no longer reach the hosting estate's
+  internal network.** The provider Test, the judge relay and admission now refuse loopback and
+  private addresses there.
+
+### Docs and website
+
+- **The AI Apps pages lead with one command.** The website's `/apps` and `/sdk` pages, the SDK
+  quickstarts and both dashboards' first-run panels lead with the four-line agent prompt and
+  `setup`. The code-by-hand path and the environment variables are kept for a server or CI.
+- **The website has three doors:** coding agents (`/`), AI apps (`/apps` and `/sdk`) and
+  enterprise (`/enterprise`). The Enterprise contact section has a link to book a call.
+- **The ingest gateway, the AI gateway and `admit()` are explained as three different things**
+  (`docs/sdk/gateways-and-admit.md`): which one sits in the model call's path, where each runs,
+  its key, and which judge decides. The AI gateway guide covers a hosted organization (not
+  available yet), a self-hosted org server and the machine's app lane.
+
 ## [1.43.1] - 2026-11-24
 
 Patch release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

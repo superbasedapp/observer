@@ -6,10 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/archive"
@@ -616,90 +612,11 @@ var lateSteps = []migplan.LateStep{}
 // existed has its steps up to 'version' adopted (recorded without running),
 // the old behaviour, unless lateSteps lists one. The whole pass, steps and
 // bookkeeping, is one transaction: a failing step rolls everything back.
+// The pass itself is the shared sqliteledger.Run.
 func runMigrationsFrom(ctx context.Context, db *sql.DB, source fs.FS, late []migplan.LateStep) error {
-	entries, err := readMigrationEntries(source)
+	entries, err := sqliteledger.ReadEntries(source, "archivestore.readMigrationEntries")
 	if err != nil {
 		return err
 	}
-	embedded := make([]int, 0, len(entries))
-	byVersion := make(map[int]migrationEntry, len(entries))
-	for _, e := range entries {
-		embedded = append(embedded, e.version)
-		byVersion[e.version] = e
-	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (
-		key TEXT PRIMARY KEY, value TEXT NOT NULL
-	)`); err != nil {
-		return fmt.Errorf("archivestore.runMigrations: bootstrap schema_meta: %w", err)
-	}
-
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("archivestore.runMigrations: acquire connection: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("archivestore.runMigrations: acquire migration lock: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
-		}
-	}()
-
-	plan, err := sqliteledger.Plan(ctx, conn, embedded, late)
-	if err != nil {
-		return fmt.Errorf("archivestore.runMigrations: %w", err)
-	}
-	if err := sqliteledger.Apply(ctx, conn, plan, func(version int) error {
-		e := byVersion[version]
-		body, readErr := fs.ReadFile(source, e.filename)
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", e.filename, readErr)
-		}
-		if _, err := conn.ExecContext(ctx, string(body)); err != nil {
-			return fmt.Errorf("exec %s: %w", e.filename, err)
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("archivestore.runMigrations: %w", err)
-	}
-
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("archivestore.runMigrations: commit: %w", err)
-	}
-	committed = true
-	return nil
-}
-
-type migrationEntry struct {
-	version  int
-	filename string
-}
-
-// readMigrationEntries lists source's NNN_name.sql files, ascending.
-func readMigrationEntries(source fs.FS) ([]migrationEntry, error) {
-	dirEntries, err := fs.ReadDir(source, ".")
-	if err != nil {
-		return nil, fmt.Errorf("archivestore.readMigrationEntries: %w", err)
-	}
-	var entries []migrationEntry
-	for _, de := range dirEntries {
-		if de.IsDir() {
-			continue
-		}
-		name := de.Name()
-		if filepath.Ext(name) != ".sql" {
-			continue
-		}
-		prefix := strings.SplitN(name, "_", 2)[0]
-		v, err := strconv.Atoi(prefix)
-		if err != nil {
-			return nil, fmt.Errorf("archivestore.readMigrationEntries: unparseable migration %q: %w", name, err)
-		}
-		entries = append(entries, migrationEntry{version: v, filename: name})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].version < entries[j].version })
-	return entries, nil
+	return sqliteledger.Run(ctx, db, source, entries, late, "archivestore.runMigrations")
 }

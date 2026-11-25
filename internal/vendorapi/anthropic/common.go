@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -34,16 +33,6 @@ var adminAuth = vendorapi.AuthContract{Kind: vs.AuthHeaderKey, Scheme: vendorapi
 
 func headers() map[string]string { return map[string]string{"anthropic-version": APIVersion} }
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // cursorRE bounds an opaque next_page or last_id cursor before it is sent
 // back as a query value.
 var cursorRE = regexp.MustCompile(`^[A-Za-z0-9_=+/.:-]{1,512}$`)
@@ -60,19 +49,19 @@ type reportDoc[T any] struct {
 // cursor ("" on the terminal page).
 func envelope[T any](surface vs.SurfaceID, r vendorapi.Response, doc *reportDoc[T]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented report")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented report")
 	}
 	if doc.Data == nil || doc.HasMore == nil {
-		return "", drift(surface, "required field data or has_more is missing")
+		return "", vendorapi.Drift(surface, "required field data or has_more is missing")
 	}
 	if !*doc.HasMore {
 		return "", nil
 	}
 	if doc.NextPage == nil || !cursorRE.MatchString(*doc.NextPage) {
-		return "", drift(surface, "has_more is true without a usable next_page")
+		return "", vendorapi.Drift(surface, "has_more is true without a usable next_page")
 	}
 	return *doc.NextPage, nil
 }
@@ -106,16 +95,16 @@ func bucketWindow(surface vs.SurfaceID, w vendorapi.Window) (time.Time, time.Tim
 // it (decide.MergeFact) instead of adding a second interval.
 func bucketInterval(surface vs.SurfaceID, i int, startS, endS *string) (time.Time, time.Time, error) {
 	if startS == nil || endS == nil {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] misses starting_at or ending_at", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] misses starting_at or ending_at", i)
 	}
 	start, err1 := time.Parse(time.RFC3339Nano, *startS)
 	end, err2 := time.Parse(time.RFC3339Nano, *endS)
 	if err1 != nil || err2 != nil {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] bounds are not RFC 3339", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] bounds are not RFC 3339", i)
 	}
 	start, end = start.UTC(), end.UTC()
 	if !start.Equal(start.Truncate(day)) || !end.After(start) || end.Sub(start) > day {
-		return time.Time{}, time.Time{}, drift(surface, "data[%d] is not a daily bucket", i)
+		return time.Time{}, time.Time{}, vendorapi.Drift(surface, "data[%d] is not a daily bucket", i)
 	}
 	return start, start.Add(day), nil
 }
@@ -130,12 +119,4 @@ func count(n *json.Number) (int64, bool) {
 		return 0, false
 	}
 	return vendorapi.CountMicros(v)
-}
-
-// str returns a JSON string field or "" when null or absent.
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

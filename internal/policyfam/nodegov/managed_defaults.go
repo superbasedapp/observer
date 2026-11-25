@@ -22,12 +22,18 @@ package nodegov
 // the v1.42.1 ship-readiness audit). A team organization's machine is managed
 // by an admin who is not its developer: the row's Level. A personal
 // organization of one is managed by its owner (operator ruling 2026-11-19,
-// orgkind's OwnerManaged capability), whose own AI apps (Egress among them,
-// operator ruling R2, 2026-11-23), routing and policy pages an organization
-// has no one else to keep them from: the row's Owner
-// level, which is the team Level when the row leaves it empty. The audience
-// is a capability resolved at the boundary (govern.Grant.OwnerManaged, and
-// the org server's orgkind row), never an org id or a kind string read here.
+// orgkind's OwnerManaged capability): the row's Owner level, which is the
+// team Level when the row leaves it empty. The owner IS the administrator,
+// so on their machine every page and every Settings section starts fully
+// visible (operator ruling 2026-11-24, superseding the narrower F12 column
+// that kept only the AI Apps pages, Egress, Routing and Policies): every row
+// whose team Level is not visible states Owner: VisibilityVisible with its
+// own reason, and TestManagedDefaultsOwnerAudienceAllVisible pins it. A
+// directive the owner publishes from their online dashboard (Settings >
+// Developer dashboards) still wins, exactly as on a team machine
+// (internal/govern/visibility.go). The audience is a capability resolved at
+// the boundary (govern.Grant.OwnerManaged, and the org server's orgkind row),
+// never an org id or a kind string read here.
 //
 // The T8 floor (UnhideableNavSectionIDs / UnhideableSettingsSectionIDs) is
 // always Visible here, for every audience; TestManagedDefaultsRespectTheFloor
@@ -120,6 +126,10 @@ func (r ManagedDefault) WhyFor(a ManagedAudience) string {
 	return r.Why
 }
 
+// ownerIsAdmin opens every owner-audience reason: the owner of a personal
+// organization of one is its administrator (operator ruling 2026-11-24).
+const ownerIsAdmin = "On a machine its owner manages from a personal organization of one, the owner is the administrator, so nothing starts hidden or read-only: "
+
 // ManagedNavDefaults is the nav-page half, in nav order.
 var ManagedNavDefaults = []ManagedDefault{
 	{ID: "overview", Level: VisibilityVisible, Why: "The developer's own spend, tokens and activity."},
@@ -127,68 +137,87 @@ var ManagedNavDefaults = []ManagedDefault{
 	{ID: "sessions", Level: VisibilityVisible, Why: "The developer's own sessions, tags, notes and resume."},
 	{ID: "actions", Level: VisibilityVisible, Why: "The developer's own captured tool calls."},
 	{ID: "projects", Level: VisibilityVisible, Why: "The developer's own per-project spend, commits and guidance files."},
-	{ID: "security", Level: VisibilityHidden, Why: "Guard verdicts, rule editing, approvals, prompt-guard and MCP pins: guard configuration the organization owns on a managed machine."},
-	{ID: "code-security", Level: VisibilityHidden, Why: "Code security findings and the commit-gate posture: hidden by default like Guard's page, which the organization may expose."},
+	{
+		ID: "security", Level: VisibilityHidden, Why: "Guard verdicts, rule editing, approvals, prompt-guard and MCP pins: guard configuration the organization owns on a managed machine.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the guard's verdicts, rules, approvals and MCP pins are the owner's own to read and change.",
+	},
+	{
+		ID: "code-security", Level: VisibilityHidden, Why: "Code security findings and the commit-gate posture: hidden by default like Guard's page, which the organization may expose.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the code security findings and the commit-gate posture are the owner's own.",
+	},
 	{
 		ID: "egress", Level: VisibilityHidden, Why: "AI Apps egress routing of an app's end-user traffic: organization policy, not the developer's own usage.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps and their egress routing are the owner's own, so the page stays visible like the other Your AI apps pages (operator ruling R2, 2026-11-23).",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps and their egress routing are the owner's own (operator ruling R2, 2026-11-23).",
 	},
 	{ID: "search", Level: VisibilityVisible, Why: "Full-text search over the developer's own sessions."},
 	{ID: "cost", Level: VisibilityVisible, Why: "The developer's own spend (or token usage, per the organization's display policy) and budgets."},
 	{ID: "plans", Level: VisibilityVisible, Why: "The developer's own subscription limits and account balances, read on their machine."},
 	{ID: "analysis", Level: VisibilityVisible, Why: "Insights over the developer's own spending."},
 	{ID: "tools", Level: VisibilityVisible, Why: "The developer's own per-tool activity."},
-	{ID: "compression", Level: VisibilityReadOnly, Why: "The savings are the developer's; the proxy and compression configuration is the organization's."},
+	{
+		ID: "compression", Level: VisibilityReadOnly, Why: "The savings are the developer's; the proxy and compression configuration is the organization's.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the proxy and compression configuration is the owner's own to change.",
+	},
 	{ID: "cache", Level: VisibilityVisible, Why: "The developer's own prompt-cache savings and keep-warm advice."},
 	{ID: "suggestions", Level: VisibilityVisible, Why: "Recommendations computed from the developer's own activity."},
 	{
 		ID: "routing", Level: VisibilityHidden, Why: "Model-routing policy, apply and shadow: an organization rail on a managed machine.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, model routing is the owner's own choice, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "model routing is the owner's own choice.",
 	},
 	{ID: "benchmarks", Level: VisibilityVisible, Why: "Results of the developer's own benchmark runs (read-only)."},
 	{ID: "discovery", Level: VisibilityVisible, Why: "Wasted-effort signals in the developer's own sessions."},
 	{ID: "patterns", Level: VisibilityVisible, Why: "Habits from the developer's own sessions, written into their own project files."},
 	{
 		ID: "app-traces", Level: VisibilityHidden, Why: "Traces of the AI apps the developer builds: on a managed machine app telemetry belongs to the organization's gateway, which the organization may expose here.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, app telemetry is the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "app telemetry is the owner's own, and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API.",
 	},
 	{
 		ID: "app-sessions", Level: VisibilityHidden, Why: "Sessions of the AI apps the developer builds: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps are the owner's own, and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API.",
 	},
 	{
 		ID: "app-analytics", Level: VisibilityHidden, Why: "Analytics of the AI apps the developer builds: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps are the owner's own, and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API.",
 	},
 	{
 		ID: "app-end-users", Level: VisibilityHidden, Why: "End users of the developer's AI apps (personal data): hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps and their end users are the owner's own.",
 	},
 	{
 		ID: "app-evals", Level: VisibilityHidden, Why: "AI app eval datasets and runs: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps' eval datasets and runs are the owner's own.",
 	},
 	{
 		ID: "app-scores", Level: VisibilityHidden, Why: "AI app scores and feedback: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI apps' scores and feedback are the owner's own.",
 	},
 	{
 		ID: "app-prompts", Level: VisibilityHidden, Why: "The machine's AI Apps prompt registry: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the machine's AI Apps prompt registry is the owner's own.",
 	},
 	{
 		ID: "app-alerts", Level: VisibilityHidden, Why: "Alert rules over AI app traces: hidden by default like the other Your AI apps pages.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI apps are the owner's own and the AI Apps SDK's score, feedback and trace-cost calls read this machine's API, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the alert rules over the owner's own AI app traces are theirs.",
+	},
+	{
+		ID: "app-model-calls", Level: VisibilityHidden, Why: "The model calls the developer's AI apps make through this machine's proxy: hidden by default like the other Your AI apps pages.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the model calls of the owner's own AI apps are theirs.",
 	},
 	{ID: "you", Level: VisibilityVisible, Why: "The developer's own identity, accounts, consents and stored credentials. Can never be hidden."},
 	{
 		ID: "policies", Level: VisibilityHidden, Why: "Authoring AI Apps admission and egress policy: organization policy.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the AI Apps admission and egress policy is for the owner's own apps, so the page stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI Apps admission and egress policy is for the owner's own apps.",
 	},
-	{ID: "agent-config", Level: VisibilityReadOnly, Why: "The developer's AI tool settings and instruction files: readable, but on a managed machine the organization decides who may edit them (read-only until it grants editing, D-102)."},
+	{
+		ID: "agent-config", Level: VisibilityReadOnly, Why: "The developer's AI tool settings and instruction files: readable, but on a managed machine the organization decides who may edit them (read-only until it grants editing, D-102).",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the AI tool settings and instruction files are the owner's own to edit.",
+	},
 	{ID: "privacy", Level: VisibilityVisible, Why: "Transparency: what is captured and shared. Can never be hidden."},
 	{ID: "terminals", Level: VisibilityVisible, Why: "The developer's own agent terminals and launch settings."},
-	{ID: "remote", Level: VisibilityReadOnly, Why: "Exposing the machine remotely is a machine-security decision; the developer still sees whether it is on and who connected."},
+	{
+		ID: "remote", Level: VisibilityReadOnly, Why: "Exposing the machine remotely is a machine-security decision; the developer still sees whether it is on and who connected.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "exposing the machine remotely is the owner's own machine-security decision.",
+	},
 	{ID: "messages", Level: VisibilityVisible, Why: "Conversations between the developer and their organization's admins (D-695). Can never be hidden."},
 	{ID: "requests", Level: VisibilityVisible, Why: "Where the developer asks the organization for an exception and follows the answer (D-089). Can never be hidden."},
 	{ID: "settings", Level: VisibilityVisible, Why: "Carries enrolment and unenrol. Can never be hidden."},
@@ -197,44 +226,107 @@ var ManagedNavDefaults = []ManagedDefault{
 // ManagedSettingsDefaults is the Settings sub-section half, in Settings order.
 var ManagedSettingsDefaults = []ManagedDefault{
 	{ID: "general", Level: VisibilityVisible, Why: "The developer's own focus (AI coding agents, AI apps or both): which pages lead the dashboard. A view preference, not an organization setting."},
-	{ID: "pricing", Level: VisibilityReadOnly, Why: "A local rate override could re-price spend under an organization budget; the rates stay readable."},
+	{
+		ID: "pricing", Level: VisibilityReadOnly, Why: "A local rate override could re-price spend under an organization budget; the rates stay readable.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "a local rate override re-prices only the owner's own spend under the owner's own budgets.",
+	},
 	{ID: "backfill", Level: VisibilityVisible, Why: "Maintenance of the developer's own local database."},
 	{ID: "tools", Level: VisibilityVisible, Why: "Read-only status of the developer's connected AI tools."},
 	{ID: "health", Level: VisibilityVisible, Why: "The developer's own diagnostics."},
 	{ID: "storage", Level: VisibilityVisible, Why: "The developer's own disk: size, vacuum, backup."},
 	{ID: "enrolment", Level: VisibilityVisible, Why: "The enrolment and the way out. Can never be hidden."},
-	{ID: "intelligence", Level: VisibilityReadOnly, Why: "Summary model, budget cap and code index: capture and spend configuration."},
-	{ID: "observer", Level: VisibilityReadOnly, Why: "Database path, log level and watched roots: what gets captured."},
-	{ID: "watcher", Level: VisibilityReadOnly, Why: "Watch paths and ignore globs: what gets captured."},
-	{ID: "freshness", Level: VisibilityReadOnly, Why: "Freshness classifier: capture configuration."},
-	{ID: "retention", Level: VisibilityReadOnly, Why: "Retention windows are a compliance decision."},
-	{ID: "hooks", Level: VisibilityReadOnly, Why: "Hook registration is capture integrity; managed machines register hooks automatically."},
-	{ID: "proxy", Level: VisibilityReadOnly, Why: "The proxy is the organization's enforcement point."},
-	{ID: "dashboard", Level: VisibilityReadOnly, Why: "Binding the dashboard off loopback is a machine-security decision."},
-	{ID: "compression", Level: VisibilityReadOnly, Why: "Proxy compression configuration."},
-	{ID: "profiles", Level: VisibilityReadOnly, Why: "Proxy compression profiles."},
+	{
+		ID: "intelligence", Level: VisibilityReadOnly, Why: "Summary model, budget cap and code index: capture and spend configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the summary model, budget cap and code index are the owner's own.",
+	},
+	{
+		ID: "observer", Level: VisibilityReadOnly, Why: "Database path, log level and watched roots: what gets captured.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "what gets captured on the owner's own machine is theirs to decide.",
+	},
+	{
+		ID: "watcher", Level: VisibilityReadOnly, Why: "Watch paths and ignore globs: what gets captured.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "what gets captured on the owner's own machine is theirs to decide.",
+	},
+	{
+		ID: "freshness", Level: VisibilityReadOnly, Why: "Freshness classifier: capture configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the capture configuration is the owner's own.",
+	},
+	{
+		ID: "retention", Level: VisibilityReadOnly, Why: "Retention windows are a compliance decision.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the retention windows of the owner's own data are theirs to decide.",
+	},
+	{
+		ID: "hooks", Level: VisibilityReadOnly, Why: "Hook registration is capture integrity; managed machines register hooks automatically.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "hook registration on the owner's own machine is theirs to manage.",
+	},
+	{
+		ID: "proxy", Level: VisibilityReadOnly, Why: "The proxy is the organization's enforcement point.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the proxy is the owner's own enforcement point.",
+	},
+	{
+		ID: "dashboard", Level: VisibilityReadOnly, Why: "Binding the dashboard off loopback is a machine-security decision.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "binding the dashboard off loopback is the owner's own machine-security decision.",
+	},
+	{
+		ID: "compression", Level: VisibilityReadOnly, Why: "Proxy compression configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the proxy compression configuration is the owner's own.",
+	},
+	{
+		ID: "profiles", Level: VisibilityReadOnly, Why: "Proxy compression profiles.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the proxy compression profiles are the owner's own.",
+	},
 	{ID: "org", Level: VisibilityVisible, Why: "What this machine shares with the organization. Can never be hidden."},
-	{ID: "guard", Level: VisibilityHidden, Why: "Guard posture, rules, budgets and MCP pinning: security configuration the organization owns."},
+	{
+		ID: "guard", Level: VisibilityHidden, Why: "Guard posture, rules, budgets and MCP pinning: security configuration the organization owns.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the guard posture, rules, budgets and MCP pinning are the owner's own security configuration.",
+	},
 	{
 		ID: "routing", Level: VisibilityHidden, Why: "Model-routing configuration: an organization rail.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, the model-routing configuration behind the Routing page is the owner's own, so the section stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the model-routing configuration behind the Routing page is the owner's own.",
 	},
-	{ID: "otel", Level: VisibilityHidden, Why: "Exporting spans to an arbitrary collector is a data-egress decision."},
-	{ID: "mcp", Level: VisibilityReadOnly, Why: "The MCP retrieval tool surface and its allow/deny lists."},
+	{
+		ID: "otel", Level: VisibilityHidden, Why: "Exporting spans to an arbitrary collector is a data-egress decision.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "exporting spans to a collector is the owner's own data-egress decision.",
+	},
+	{
+		ID: "mcp", Level: VisibilityReadOnly, Why: "The MCP retrieval tool surface and its allow/deny lists.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the MCP retrieval tool surface and its allow and deny lists are the owner's own.",
+	},
 	{ID: "advisor", Level: VisibilityVisible, Why: "How chatty the developer's own suggestions are."},
-	{ID: "cachetrack", Level: VisibilityReadOnly, Why: "Cache-tracking engine: capture configuration."},
+	{
+		ID: "cachetrack", Level: VisibilityReadOnly, Why: "Cache-tracking engine: capture configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the cache-tracking engine is the owner's own capture configuration.",
+	},
 	{
 		ID: "observability", Level: VisibilityHidden, Why: "The admin-plane OTLP receiver and eval plane, not the developer's own usage.",
-		Owner: VisibilityVisible, OwnerWhy: "On a machine its owner manages from a personal organization of one, this section configures the owner's own Your AI apps pages and the AI Apps SDK credential, so it stays visible.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "this section configures the owner's own Your AI apps pages and the AI Apps SDK credential.",
 	},
-	{ID: "secrets", Level: VisibilityReadOnly, Why: "The developer must not weaken redaction; the patterns stay readable."},
+	{
+		ID: "secrets", Level: VisibilityReadOnly, Why: "The developer must not weaken redaction; the patterns stay readable.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the redaction patterns protect the owner's own data, and the owner decides them.",
+	},
 	{ID: "antigravity", Level: VisibilityVisible, Why: "The developer's own Antigravity adapter setup."},
-	{ID: "process", Level: VisibilityReadOnly, Why: "Process capture: capture configuration the organization extracts."},
-	{ID: "browser", Level: VisibilityReadOnly, Why: "Browser-capture granularity ceiling: capture configuration."},
+	{
+		ID: "process", Level: VisibilityReadOnly, Why: "Process capture: capture configuration the organization extracts.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "process capture on the owner's own machine is theirs to decide.",
+	},
+	{
+		ID: "browser", Level: VisibilityReadOnly, Why: "Browser-capture granularity ceiling: capture configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the browser-capture granularity ceiling is the owner's own.",
+	},
 	{ID: "terminal", Level: VisibilityVisible, Why: "Session attach: the developer's own terminal workflow."},
-	{ID: "cloud", Level: VisibilityHidden, Why: "Personal Cloud Intelligence on an organization machine: sessions captured while enrolled belong to the organization plane (the `intel` section), so the personal section is hidden by default; the admin can expose it for sessions captured before enrolment (parity design Q8)."},
-	{ID: "intel", Level: VisibilityReadOnly, Why: "The organization's own session enrichment: the developer sees what it runs and its evidence level; the settings are the organization's."},
-	{ID: "tasks", Level: VisibilityReadOnly, Why: "Task tracking engine: capture configuration."},
+	{
+		ID: "cloud", Level: VisibilityHidden, Why: "Personal Cloud Intelligence on an organization machine: sessions captured while enrolled belong to the organization plane (the `intel` section), so the personal section is hidden by default; the admin can expose it for sessions captured before enrolment (parity design Q8).",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the owner's sessions are their own, so personal Cloud Intelligence stays available.",
+	},
+	{
+		ID: "intel", Level: VisibilityReadOnly, Why: "The organization's own session enrichment: the developer sees what it runs and its evidence level; the settings are the organization's.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the organization's session enrichment is the owner's own to read and change.",
+	},
+	{
+		ID: "tasks", Level: VisibilityReadOnly, Why: "Task tracking engine: capture configuration.",
+		Owner: VisibilityVisible, OwnerWhy: ownerIsAdmin + "the task tracking engine is the owner's own capture configuration.",
+	},
 }
 
 var (

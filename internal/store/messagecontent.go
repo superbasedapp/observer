@@ -52,9 +52,9 @@ const defaultMessageContentMaxBytes = 32 << 10
 
 // otel_content `kind` vocabulary.
 //
-// The first three MIRROR the native rail (internal/adapter/ccotel: KindPrompt /
-// KindToolInput / KindToolOutput) so the org viewer renders adapter-captured
-// rows exactly like native-OTel ones.
+// The first three MIRROR the native rail (internal/otlpvendor's claude-code
+// row: KindPrompt / KindToolInput / KindToolOutput) so the org viewer renders
+// adapter-captured rows exactly like native-OTel ones.
 //
 // kindAssistant is an EXTENSION: Claude Code's OTel stream carries no
 // assistant-text event, so the native vocabulary has no slot for the model's
@@ -72,7 +72,7 @@ const (
 )
 
 // messageContentSource is the provenance stamped on adapter-captured rows,
-// distinguishing them from the native rail's ccotel.SourceTag ("cc_otel").
+// distinguishing them from the native rail's source tag SourceCCOTel ("cc_otel").
 // Node-local: otel_content.source is not selected by the org-push seam.
 const messageContentSource = "adapter"
 

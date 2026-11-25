@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,9 +13,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cloudpop"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
 // exchangeBody builds the JSON body POST /v1/auth/exchange expects (the same
@@ -384,34 +380,16 @@ func brokenTokenServer(t *testing.T, status int, body string) *httptest.Server {
 // following it), so it does not need a working stand-in.
 func newBrokenExchangeHarness(t *testing.T, tokenStatus int, tokenBody string) *workosHarness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
 	broken := brokenTokenServer(t, tokenStatus, tokenBody)
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            fakeWorkOSVerifier{},
-		ExternalBaseURL:     base,
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PortalWorkOSEnabled: true,
-		WorkOSClientID:      "client_test",
-		WorkOSAPIKey:        testWorkOSSecret,
-		WorkOSAuthorizeURL:  broken.URL + "/authorize",
-		WorkOSTokenURL:      broken.URL + "/token",
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &workosHarness{harness: &harness{srv: srv, store: s}}
+	h := newHarnessWith(t, harnessSetup{noJournal: true, opts: func(o *api.Options) {
+		o.Verifier = fakeWorkOSVerifier{}
+		o.PortalWorkOSEnabled = true
+		o.WorkOSClientID = "client_test"
+		o.WorkOSAPIKey = testWorkOSSecret
+		o.WorkOSAuthorizeURL = broken.URL + "/authorize"
+		o.WorkOSTokenURL = broken.URL + "/token"
+	}})
+	return &workosHarness{harness: h}
 }
 
 // TestS10_BrowserCodeExchangeSlowDownIsHonest pins the §10 "slow_down" row: a

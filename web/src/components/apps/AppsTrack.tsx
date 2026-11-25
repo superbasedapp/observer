@@ -13,6 +13,11 @@
 // same seam and says a restart is needed only where there is no seam.
 // Features a hot enable cannot start (pending_next_start) are named on the
 // waiting card (FR-M01).
+//
+// The /apps page opened with ?enable=1 (AppsStart) runs the same track with
+// the Turn on button and the one consent sentence first, one click; opened
+// by the SDK's setup (?enable=1&from=setup, SDK quickstart plan 3.7, 3.8)
+// it then waits for setup's hello trace and links it.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -20,6 +25,7 @@ import { GatedLink } from "@/components/GatedLink";
 import clsx from "clsx";
 import { ArrowRight, Check, Telescope } from "lucide-react";
 import {
+  Button,
   buttonClasses,
   Callout,
   ConfirmButton,
@@ -38,7 +44,6 @@ import { useMachineTail } from "@/lib/appExplorerViews";
 import { fmtCompact, fmtCostFine, fmtRelative } from "@/lib/format";
 import { useNowTick } from "@/lib/useNowTick";
 import { PRODUCT_NAMES } from "@shared/lib/productNames";
-import { SDK_CATALOG } from "@shared/lib/sdkCatalog";
 import { provenanceText } from "@shared/components/planea/costSource";
 import type { ConfigResponse } from "@/lib/types";
 import type { AppTraceRow, AppTracesResult } from "@/lib/planeaApi";
@@ -53,6 +58,7 @@ import {
   APPS_HOME_PATH,
   FIRST_TRACE_OPENED_KEY,
   OBS_BUILDS,
+  SETUP_COPY,
   WAITING_POLL_MS,
   agentPrompt,
   appsSteps,
@@ -64,8 +70,11 @@ import {
   pendingLine,
   receiverAddress,
   sendTabs,
+  setupApps,
   showWaitingHelp,
+  traceHref,
   waitingHelp,
+  type AppsStartMode,
   type AppsTrackPhase,
   type SendTab,
 } from "@/lib/planeaFirstRun";
@@ -94,11 +103,17 @@ const NO_FILTERS: Record<string, string> = {};
 /** The phases in which the column reads the daemon every few seconds. */
 const POLLING: ReadonlySet<AppsTrackPhase> = new Set(["waiting", "bind_failed"]);
 
+/** Where the track shows: the getting-started surface ("overview"), or the
+ *  /apps page opened to turn AI Apps on ("enable"), by the SDK's setup
+ *  ("setup"). */
+export type AppsTrackMode = "overview" | Exclude<AppsStartMode, "default">;
+
 export function AppsTrack({
   apps,
   loaded,
   codingHistory,
   onChanged,
+  mode = "overview",
 }: {
   /** The apps block of the first-run read (undefined from an older daemon). */
   apps: FirstRunApps | null | undefined;
@@ -107,14 +122,20 @@ export function AppsTrack({
   codingHistory: boolean;
   /** Re-read the first-run state after a change (the track may move). */
   onChanged: () => void;
+  mode?: AppsTrackMode;
 }) {
   const [poll, setPoll] = useState(false);
+  const [openedAt] = useState(() => Date.now());
   const status = useApi<AppsStatusResponse>(loaded && apps ? APPS_STATUS_PATH : null, undefined, [], {
     refreshMs: poll ? WAITING_POLL_MS : 0,
   });
-  const live: FirstRunApps | null | undefined = status.data ?? apps;
+  const read: FirstRunApps | null | undefined = status.data ?? apps;
+  // Opened by setup, only a trace that arrived since counts: the track waits
+  // for setup's hello and links it, never an older trace (and never folds to
+  // the glance strip on a trace opened before).
+  const live = mode === "setup" ? setupApps(read, openedAt) : read;
   const [openedTrace, setOpenedTrace] = useState<string | null>(readOpened);
-  const phase = appsTrackPhase({ loaded, apps: live, openedTrace });
+  const phase = appsTrackPhase({ loaded, apps: live, openedTrace: mode === "setup" ? null : openedTrace });
   useEffect(() => setPoll(POLLING.has(phase)), [phase]);
   // U-07: while waiting, the machine's live trace tail (server-sent events,
   // polling when the stream is refused) tells the card the moment a trace
@@ -172,12 +193,13 @@ export function AppsTrack({
     setOpenedTrace(id);
   }, []);
 
-  if (phase === "legacy") return <AppsFirstRunCard variant="overview" />;
+  if (phase === "legacy") return <AppsFirstRunCard variant={mode === "overview" ? "overview" : "page"} />;
 
   return (
-    <div className="space-y-3" data-testid="apps-track" data-phase={phase}>
+    <div className="space-y-3" data-testid="apps-track" data-phase={phase} data-mode={mode}>
       <AppsTrackHeader phase={phase} />
       <AppsTrackBody
+        mode={mode}
         phase={phase}
         apps={live}
         receiver={receiver}
@@ -223,6 +245,8 @@ export function AppsTrackHeader({ phase }: { phase: AppsTrackPhase }) {
 }
 
 export type AppsTrackBodyProps = {
+  /** Where the track shows ("overview" when absent). */
+  mode?: AppsTrackMode;
   phase: AppsTrackPhase;
   apps: FirstRunApps | null | undefined;
   receiver: string;
@@ -279,7 +303,52 @@ function UnavailableCard({ apps }: { apps: FirstRunApps | null | undefined }) {
 
 /** ConsentCard is plan 3.6 (c): one click, the confirm step, the one
  *  consent sentence the daemon builds, and "What changes" behind a fold. */
-export function ConsentCard({
+export function ConsentCard(p: AppsTrackBodyProps & { retry?: boolean }) {
+  if (p.mode && p.mode !== "overview" && !p.retry) return <ConsentFirstCard {...p} />;
+  return <ConsentFoldedCard {...p} />;
+}
+
+/** ConsentFirstCard is the /apps page opened to turn AI Apps on (SDK
+ *  quickstart plan 3.7): the one consent sentence and the Turn on button
+ *  first, one click, through the same seam. Opened by setup it says why and
+ *  that closing the page changes nothing. */
+export function ConsentFirstCard({ apps, receiver, busy, report, onEnable, mode }: AppsTrackBodyProps) {
+  const lines = consentLines(apps, receiver);
+  const result = enableResult(report);
+  const setup = mode === "setup";
+  return (
+    <div className="space-y-2 rounded-2 border border-accent/40 bg-bg-2 p-3 text-[12px]" data-testid="apps-consent-first">
+      <p className="font-semibold text-fg-0">{setup ? SETUP_COPY.consentTitle : `Turn on ${PRODUCT_NAMES.planea}`}</p>
+      <p className="text-fg-1" data-testid="apps-consent-sentence">
+        {lines[0]} {lines[1]}
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="primary" size="sm" onClick={onEnable} disabled={busy} loading={busy}>
+          Turn on {PRODUCT_NAMES.planea}
+        </Button>
+      </div>
+      {setup && <p className="text-fg-2">{SETUP_COPY.consentWhy}</p>}
+      <p className="text-fg-3">{lines[2]}</p>
+      {setup && <p className="text-fg-3">{SETUP_COPY.consentNotYou}</p>}
+      <details className="text-[11.5px] text-fg-3">
+        <summary className="cursor-pointer text-fg-2 hover:text-fg-1">What changes</summary>
+        <ul className="mt-1 list-disc space-y-0.5 pl-5">
+          {consentChanges(apps).map((l) => (
+            <li key={l}>{l}</li>
+          ))}
+        </ul>
+      </details>
+      {result && (
+        <p role="status" className={result.tone === "success" ? "text-success" : "text-danger"}>
+          {result.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** ConsentFoldedCard is the getting-started surface's consent card. */
+function ConsentFoldedCard({
   apps,
   receiver,
   busy,
@@ -339,12 +408,52 @@ export function ConsentCard({
 
 /** WaitingCard is plan 3.6 (d): the two ways to send a trace, the live
  *  "waiting" line, and the help after two minutes (at once on a refusal). */
-export function WaitingCard({ apps, receiver, dashboard, codingHistory, phase }: AppsTrackBodyProps) {
+export function WaitingCard(p: AppsTrackBodyProps) {
+  if (p.mode === "setup") return <SetupWaitingCard {...p} />;
+  return <SendWaitingCard {...p} />;
+}
+
+/** SetupWaitingCard: opened by setup, the page waits for setup's hello
+ *  trace (setup sends it itself), then the track turns into its link. */
+export function SetupWaitingCard({ apps, receiver, phase }: AppsTrackBodyProps) {
+  const [openedAt] = useState(() => Date.now());
+  const now = useNowTick(10_000);
+  const failed = phase === "bind_failed";
+  return (
+    <div className="space-y-2 rounded-2 border border-line-2 bg-bg-2 p-3 text-[12px]" data-testid="apps-setup-waiting">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-semibold text-fg-0">{SETUP_COPY.waitingTitle}</p>
+        {failed ? (
+          <span className="flex items-center gap-1.5 text-[11px] text-danger">
+            <LiveDot tone="danger" still size="sm" /> receiver not listening
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-[11px] text-fg-3">
+            <LiveDot tone="accent" size="sm" /> waiting for a trace
+          </span>
+        )}
+      </div>
+      <p className="text-fg-2">{SETUP_COPY.waitingBody}</p>
+      {showWaitingHelp(openedAt, now, apps) && (
+        <ul className="list-disc space-y-0.5 pl-5 text-[11px]" data-testid="apps-waiting-help">
+          {waitingHelp(apps, receiver).map((l) => (
+            <li key={l.text} className={l.tone === "danger" ? "text-danger" : "text-fg-3"}>
+              {l.text}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** SendWaitingCard is the getting-started surface's waiting card. */
+function SendWaitingCard({ apps, receiver, dashboard, codingHistory, phase }: AppsTrackBodyProps) {
   const tabs = sendTabs(codingHistory);
   const [tab, setTab] = useState<SendTab>(tabs[0]);
   const [openedAt] = useState(() => Date.now());
   const now = useNowTick(10_000);
-  const prompt = useMemo(() => agentPrompt({ receiver, dashboard, sdks: SDK_CATALOG }), [receiver, dashboard]);
+  const prompt = useMemo(() => agentPrompt({ dashboard }), [dashboard]);
   const helpShown = showWaitingHelp(openedAt, now, apps);
   const failed = phase === "bind_failed";
   const waits = pendingLine(apps?.pending_next_start);
@@ -450,14 +559,14 @@ export function FirstTraceView({
       </div>
       <p className="text-fg-2">{facts.filter(Boolean).join(" · ")}</p>
       <div className="flex flex-wrap items-center gap-3">
-        <Link
-          to={`${APPS_HOME_PATH}?trace=${encodeURIComponent(id)}`}
+        <GatedLink
+          to={traceHref(id)}
           onClick={() => onOpened(id)}
           className={buttonClasses({ variant: "primary", size: "md" })}
         >
           Open the trace
           <Icon icon={ArrowRight} size="sm" />
-        </Link>
+        </GatedLink>
         <GatedLink to="/apps/scores" className="text-accent hover:underline">
           Next: score it
         </GatedLink>
@@ -500,9 +609,12 @@ export function GlanceView({
           {latest.started_at ? `, ${fmtRelative(latest.started_at)}` : ""}
         </span>
       )}
-      <Link to={APPS_HOME_PATH} className="ml-auto text-accent hover:underline">
+      {/* Gated like every in-app link: on a machine that hides the traces
+          page it opens the online dashboard's equivalent instead (operator
+          ruling 2, 2026-11-24). */}
+      <GatedLink to={APPS_HOME_PATH} className="ml-auto text-accent hover:underline">
         See the traces
-      </Link>
+      </GatedLink>
     </div>
   );
 }

@@ -593,6 +593,15 @@ func (s *Server) handleAdminRestartStatus(w http.ResponseWriter, r *http.Request
 			resp["proxy_recent_requests"] = n
 		}
 	}
+	// L-168 (ii): whether the restart hands the proxy socket over, and the
+	// command the daemon runs (a digest), for `observer service restart`.
+	if s.opts.RestartFunc != nil && s.opts.RestartHandover != nil {
+		handover, digest := s.opts.RestartHandover()
+		resp["listener_handover"] = handover
+		if digest != "" {
+			resp["invocation_digest"] = digest
+		}
+	}
 	// Live sandboxed runs (restart_liveruns.go): the header always, the
 	// fields only while a run is live or an answer is pending.
 	if seam := s.opts.LiveSandboxRuns; seam != nil {

@@ -56,19 +56,6 @@ type Composition struct {
 	PackVersion string
 }
 
-// WiredComponentIDs returns every component id the pack table names that
-// has at least one rule, for the catalog pin (a misspelt id must fail the
-// build, never silently turn a pack on or off).
-func WiredComponentIDs() []string {
-	var out []string
-	for _, r := range packTable {
-		if len(r.rules()) > 0 {
-			out = append(out, r.component)
-		}
-	}
-	return out
-}
-
 // Compose returns the rules of every active child, validated: every id is
 // in its child's S-7xx range and appears once, none collides with a
 // built-in rule, each row carries Source policy.SourcePackSecurity and a

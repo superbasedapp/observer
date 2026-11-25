@@ -14,6 +14,23 @@ Full reference: [superbased.app/docs/sdk/typescript](https://superbased.app/docs
 
 ## Install
 
+The quickest way: in your app's folder run
+
+```bash
+npx @superbased/sdk setup
+```
+
+It finds your model libraries, installs the SDK and their instrumentation
+with your package manager, sets up where traces go (your online dashboard
+after one approval in the browser, or this computer's Observer), sends one
+hello trace, prints its link, and prints the one line to add. Online, the
+SDK key is kept in a file only your user account can read; it is never
+printed. `--json` gives one JSON object per step for coding agents;
+`--status`, `--forget` and `--online --replace` manage the key; Go and Java
+apps use `--key-only`. `npx @superbased/sdk setup --help` lists the rest.
+
+Or by hand:
+
 ```bash
 npm install @superbased/sdk
 ```
@@ -23,6 +40,30 @@ dashboard (or `[observability] enabled = true`). The SDK sends spans to
 `http://127.0.0.1:4318/v1/traces` unless you point it elsewhere.
 
 ## Quick start
+
+The one line, CommonJS:
+
+```js
+require("@superbased/sdk").init(); // first line of the entry file
+```
+
+ESM (an ESM namespace cannot be patched after it loads, so the SDK loads first):
+
+```bash
+node --import @superbased/sdk/register server.js
+```
+
+Next.js, `instrumentation.ts` (and list the SDK and your model libraries in
+`next.config`'s `serverExternalPackages`, so Node loads them itself):
+
+```ts
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") await import("@superbased/sdk/register");
+}
+```
+
+With that, every installed model library is instrumented and the service is
+named after your package.json. Richer traces:
 
 ```ts
 import { init, propagateAttributes, setUsage, shutdown, withAgentSpan, withLlmSpan } from "@superbased/sdk";
@@ -106,10 +147,27 @@ The SDK writes only keys from Observer's vocabulary (the GenAI semantic
 conventions pinned at `SEMCONV_COMMIT`, plus OpenInference names Observer
 reads); `Attr` lists them.
 
-## Auto-instrumentation: `instrument()`
+## Auto-instrumentation: `init()` and `instrument()`
+
+`init()` instruments by itself (`instrument` option, env
+`SUPERBASED_INSTRUMENT`; the option wins):
+
+| Setting | Provider | Result |
+|---|---|---|
+| `"off"` (also `false`, `0`, `none`, an empty list) | any | nothing |
+| a list (`["openai", "langgraph"]` or `"openai,anthropic"`) | any | exactly those |
+| `"auto"` (default) | your app registered its own OpenTelemetry provider | nothing (one note), so model spans never reach your other exporters; call `instrument([...])` |
+| `"auto"` | the SDK's own | every installed target, except `openai-agents` (only when named) |
+
+Nothing is imported to check: a library already loaded is instrumented at
+`init()`, another on its first `require`; ESM apps start with
+`--import @superbased/sdk/register`. `diagnostics().instrumented` gives each
+target's status (`instrumented`, `pending` until its first load,
+`skipped: auto_excluded | host_provider | not_installed`, ...). An unknown
+name in the env list is skipped with a warning.
 
 ```ts
-init();
+init({ instrument: "off" });
 instrument(["openai", "anthropic", "langchain", "mcp", "vercel-ai", "gemini", "bedrock", "llama-index", "openai-agents"]); // or instrument() for every installed one
 ```
 
@@ -148,16 +206,27 @@ TypeError that says so (use the Python SDK).
 | `both` | each of them, through its own exporter: one being down never delays or drops the other |
 
 The choice: `init({ destination })`, then `SUPERBASED_DESTINATION`, then the
-default this machine's Observer advertises (`both` when you have signed in,
-`local` otherwise, or what you chose in its Settings), then `local`. While the
-SDK asks the machine (at most 500 ms, loopback only), finished spans wait;
+SDK-held file `setup` wrote (below), then the default this machine's
+Observer advertises (`both` when you have signed in, `local` otherwise, or
+what you chose in its Settings), then `local`. While the SDK asks the
+machine (at most 500 ms, loopback only), finished spans wait;
 `await ready()` resolves once it knows.
 
 - The gateway URL: `orgUrl`, `SUPERBASED_ORG_URL`, then the one the machine
   learned when you signed in. Spans go to `<orgUrl>/v1/traces`.
 - The credential: `apiKey`, `SUPERBASED_API_KEY`, then the file the machine
   wrote at sign-in (read only when it is yours alone: not a symlink, mode
-  0600). It is sent only to the gateway, never to the machine.
+  0600), then the SDK-held file. It is sent only to the gateway its record
+  names, never to the machine.
+- The SDK-held file (`setup` writes it): `SUPERBASED_CREDENTIAL_FILE`, else
+  `$XDG_CONFIG_HOME/superbased/sdk-credential` or
+  `~/.config/superbased/sdk-credential`, on Windows
+  `%LOCALAPPDATA%\superbased\sdk-credential`. Read only when it is yours
+  alone (unix: no symlink, mode 0600, your uid; Windows: no link, inside
+  your own `%LOCALAPPDATA%`). The machine's key wins over it; an expired key
+  sends nothing and says to run `setup` again; from 14 days before expiry the
+  SDK says so once. `diagnostics().sdkFile` gives its path and state, never
+  the key.
 - `online` without a gateway URL or a credential exports nothing; `both`
   exports to the machine only. Either way the SDK says so once and in
   `diagnostics().destinationProblems`. Fix: `observer sdk sign-in`, or
@@ -219,8 +288,42 @@ const openai = new OpenAI({ baseURL: "https://gw.example/v1", fetch: gatewayFetc
   response you got another way. It also names the end user and the service
   for the gateway's app budgets (`X-Superbased-User`: the per-request user,
   else `init`'s; `X-Superbased-Service`: the spans' `service.name`), keeping
-  any such header the call already sets. Pass `gatewayFetch()` only to a
-  client pointed at the gateway: the end user is PII.
+  any such header the call already sets, and sends the active span's
+  `traceparent`. Pass `gatewayFetch()` only to a client pointed at the
+  gateway: the end user is PII.
+
+## Model calls through the AI gateway
+
+The AI gateway is the proxy your app's model calls go through: it prices each
+call exactly, holds your app's budgets and applies your organization's model
+and admission rules. `openAIOptions()` and `anthropicOptions()` are the options
+for a client pointed at it:
+
+```ts
+import OpenAI from "openai";
+import { init, openAIOptions } from "@superbased/sdk";
+
+init({ serviceName: "support-bot" });
+const openai = new OpenAI(await openAIOptions()); // the key: SUPERBASED_AI_GATEWAY_KEY
+```
+
+The address is resolved first set wins: `url`, then `SUPERBASED_AI_GATEWAY_URL`
+(the gateway's address, without `/v1`), then your organization's address
+`<org url>/ai/<upstream>` when the destination is `online`, then this
+machine's app lane (`observer apps lane add`) when it is `local` or `both`.
+The upstream defaults to `openai` or `anthropic` (`{ upstream }` names
+another). With nothing to use they reject with `GatewayNotConfiguredError`:
+they never fall back to the provider itself. On the machine's app lane the
+client keeps the provider's own key (`OPENAI_API_KEY`); a remote gateway never
+receives it. `gatewayBaseUrl("openai")` resolves just the base URL.
+
+The options' `fetch` is `gatewayFetch()` that follows no redirect. A refusal
+reads as a `GatewayRefusalError`: `gatewayRefusal(err)` on the model SDK's
+error, `gatewayRefusalFromResponse(response)`, or `parseGatewayRefusal(status,
+body, headers)`. `kind` is `budget_exceeded` (402, with `budget`),
+`model_not_allowed`, `admission_denied`, `plan_required` (403),
+`quota_exceeded` (429, with `retryAfterMs`) or `other`, and `planRefusal`
+carries the plan detail when the plan is why.
 
 ## Experiments
 
@@ -372,7 +475,43 @@ settings it replaces the exporters in place.
   `destinations`, `destinationProblems`, `pendingSpans`, `exportedSpans`,
   `failedExports`, `droppedSpans`, `sampledOutSpans`, `filteredSpans`,
   `shouldExportErrors`, `maskErrors`, `lastError`, `controlCalls`,
-  `controlFailures`.
+  `controlFailures`, `planRefusal`.
+
+## When the plan does not include AI Apps
+
+The organization's AI Apps gateway refuses ingest when its plan does not
+include AI Apps (HTTP 403 `plan_required`) or this month's allowance is used
+up (HTTP 429). The SDK reads that answer as a `PlanRefusalError`: a
+`PlanRequiredError` for the first, an `AllowanceExceededError` for the
+second. `message` says why, and `upgradeUrl` is where the organization's
+billing owner changes the plan. It also has `kind`, `code`, `status`,
+`capability`, `plan` (the plan in force), `allowance`, `plans` (the plans that
+include more), and on a 429 `quota` and `retryAfterMs`.
+
+- `getPrompt()`, `getDataset()` and `runExperiment()` reject with the error
+  they always reject with (`PromptFetchError`, `ExperimentError`), now with
+  `planRefusal` set (it is also the error's `cause`), so an existing `catch`
+  still works.
+- The calls that never reject carry it: `ScoreResult.planRefusal`,
+  `Verdict.planRefusal` (from `admit()`) and `ExperimentResult.planRefusal`.
+  `getTraceCost()` resolves to null, as for any failed read.
+- Export never throws. A refused export (a 403) shows in
+  `diagnostics().planRefusal` (`planRefusalAt` says when), and the SDK writes
+  one `console.warn` line a minute with the message and the upgrade URL. The
+  last refusal of any call is kept there. The OpenTelemetry exporter retries a
+  429 and drops its body, so an allowance refusal on export is counted as a
+  failed export but not read as a plan refusal.
+
+```ts
+try {
+  await getPrompt("support-reply");
+} catch (err) {
+  if (err instanceof PromptFetchError && err.planRefusal) console.error(err.planRefusal.message, err.planRefusal.upgradeUrl);
+}
+```
+
+`parsePlanRefusal(status, body, headers?)` reads a refusal from any HTTP
+answer, and returns null for anything else.
 
 ## Settings
 
@@ -392,7 +531,10 @@ milliseconds.
 | `nodeUrl` | `SUPERBASED_NODE_URL` | `http://127.0.0.1:8081` |
 | `discover` | `SUPERBASED_DISCOVER` | on |
 | `discoverTimeoutMs` | `SUPERBASED_DISCOVER_TIMEOUT_MS` | 500 |
-| `serviceName` | `SUPERBASED_SERVICE_NAME`, `OTEL_SERVICE_NAME`, `service.name` in `OTEL_RESOURCE_ATTRIBUTES` | `custom-app` |
+| `serviceName` | `SUPERBASED_SERVICE_NAME`, `OTEL_SERVICE_NAME`, `service.name` in `OTEL_RESOURCE_ATTRIBUTES` | the nearest package.json's `name` (scope dropped), else the entry script's folder, else `custom-app` (`diagnostics().serviceNameSource`) |
+| `instrument` | `SUPERBASED_INSTRUMENT` | `auto` |
+| none | `SUPERBASED_CREDENTIAL_FILE` | the SDK-held file's path (above) |
+| none | `SUPERBASED_FIRST_TRACE_LINK` | on: once per process, after the first trace is exported, one stderr line with its link, only on a terminal and not under `CI` |
 | `resourceAttributes` | `OTEL_RESOURCE_ATTRIBUTES` | none |
 | `user` | `SUPERBASED_USER` | none |
 | `sessionId` | `SUPERBASED_SESSION_ID` | none |
@@ -418,6 +560,27 @@ milliseconds.
 (`SUPERBASED_ORG_URL`), `apiKey` (`SUPERBASED_API_KEY`), `timeoutMs` (the
 server's advertised timeout, else 12000), `failClosed`
 (`SUPERBASED_ADMISSION_FAIL_CLOSED`, off).
+
+## Changes in 0.2.0
+
+The SDK quickstart:
+
+- `npx @superbased/sdk setup` (the `superbased-sdk` bin; Node built-ins
+  only, never loaded by the runtime).
+- `init()` instruments every installed model library when the SDK owns the
+  tracer provider. **Effect on existing apps:** one that called
+  `instrument([...])` keeps its spans but also gets spans for installed
+  libraries it left out (set `init({ instrument: [...] })` to keep the old
+  set); one that wrapped model calls with `withLlmSpan` by hand now sees
+  them twice (set `init({ instrument: "off" })`); one with its own
+  OpenTelemetry provider is unchanged.
+- `@superbased/sdk/register` for ESM apps and Next.js.
+- The service name defaults from package.json (then the entry folder),
+  not `custom-app`: an app that relied on `custom-app` starts a new service
+  in the dashboard; set `serviceName` to keep the old one.
+- The SDK-held credential file (rung 3 of the destination and of the
+  credential), read on Windows too.
+- The first-trace line on stderr (a terminal only; `SUPERBASED_FIRST_TRACE_LINK=0` turns it off).
 
 ## Echo-guard caveat
 

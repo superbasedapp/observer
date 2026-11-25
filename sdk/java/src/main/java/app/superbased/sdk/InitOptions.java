@@ -156,7 +156,11 @@ public final class InitOptions {
       return this;
     }
 
-    /** {@code service.name} ({@code SUPERBASED_SERVICE_NAME}, {@code OTEL_SERVICE_NAME}). */
+    /**
+     * {@code service.name} ({@code SUPERBASED_SERVICE_NAME}, {@code OTEL_SERVICE_NAME},
+     * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES}, else the main jar's
+     * {@code Implementation-Title}, else {@code custom-app}).
+     */
     public Builder serviceName(String v) {
       serviceName = v;
       return this;
@@ -168,7 +172,10 @@ public final class InitOptions {
       return this;
     }
 
-    /** The SDK credential {@code <key_id>.<secret>} ({@code SUPERBASED_API_KEY}). */
+    /**
+     * The SDK credential {@code <key_id>.<secret>} ({@code SUPERBASED_API_KEY}, else the
+     * machine's sign-in file, else the SDK-held key file setup writes).
+     */
     public Builder apiKey(String v) {
       apiKey = v;
       return this;
@@ -256,7 +263,10 @@ public final class InitOptions {
       return this;
     }
 
-    /** {@code local}, {@code online} or {@code both} ({@code SUPERBASED_DESTINATION}). */
+    /**
+     * {@code local}, {@code online} or {@code both} ({@code SUPERBASED_DESTINATION}, else the
+     * SDK-held key file's choice, else the machine's default, else {@code local}).
+     */
     public Builder destination(String v) {
       destination = v;
       return this;

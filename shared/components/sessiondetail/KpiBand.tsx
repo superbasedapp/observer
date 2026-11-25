@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import clsx from "clsx";
-import { BigStat, Tooltip } from "../../primitives";
-import { ClockIcon, DollarIcon, LayersIcon, LightningIcon } from "../../lib/icons";
+import { Clock, DollarSign, Layers, Zap } from "lucide-react";
+import { BigStat, Icon, Tooltip } from "../../primitives";
 import { dollarsShown, fmtCompact, fmtDuration, fmtInt } from "../../lib/format";
 import { elapsedMillis, elapsedSub } from "../../lib/sessionElapsed";
 import { TOKENS_DEFINITION } from "../../lib/tokenSources";
@@ -108,14 +108,14 @@ export function KpiBand({
       )}
       <BigStat
         label="Actions"
-        icon={<LightningIcon size={12} />}
+        icon={<Icon icon={Zap} size={12} />}
         value={fmtInt(totalActions)}
         sub={renderActionsSub(successActions, failureActions, ungraded)}
         warn={failureActions > 0}
       />
       <BigStat
         label="Elapsed"
-        icon={<ClockIcon size={12} />}
+        icon={<Icon icon={Clock} size={12} />}
         value={elapsedMs != null ? fmtDuration(elapsedMs) : "(open)"}
         sub={elapsedSub({ ended_at: endedAt, last_activity_at: lastActivityAt })}
       />
@@ -125,7 +125,7 @@ export function KpiBand({
       <div className={showCost ? "contents" : "col-span-2 grid md:col-span-1"}>
       <BigStat
         label="Tokens"
-        icon={<LayersIcon size={12} />}
+        icon={<Icon icon={Layers} size={12} />}
         value={
           usageUnknown
             ? "Unknown"
@@ -207,7 +207,7 @@ function CostStat({
       />
       <div className="relative">
         <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-3">
-          <DollarIcon size={12} />
+          <Icon icon={DollarSign} size={12} />
           Total cost
         </span>
         {usageKnown && !hasCost ? (

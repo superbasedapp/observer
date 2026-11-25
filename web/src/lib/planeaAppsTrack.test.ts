@@ -9,8 +9,6 @@ import {
   APPS_TRACK_RULES,
   agentPrompt,
   appsSteps,
-  CHECKOUT_PLACEHOLDER,
-  promptInstall,
   snippetForReceiver,
   appsTrackPhase,
   consentChanges,
@@ -28,6 +26,8 @@ import {
   type AppsTrackPhase,
 } from "./planeaFirstRun.ts";
 import type { FirstRunApps } from "./firstRun.ts";
+import { readFileSync } from "node:fs";
+import { sdkAgentPrompt } from "../../../shared/lib/sdkPrompt.ts";
 import { SDK_CATALOG } from "../../../shared/lib/sdkCatalog.ts";
 
 function apps(over: Partial<FirstRunApps>): FirstRunApps {
@@ -103,37 +103,40 @@ test("receiverAddress: the daemon's report, then the configured address", () => 
   assert.equal(receiverAddress(null, ""), "127.0.0.1:4318");
 });
 
-test("agentPrompt uses the live addresses and every catalog row, never a hard-coded port", () => {
-  const p = agentPrompt({ receiver: "127.0.0.1:24318", dashboard: "http://127.0.0.1:28081/", sdks: SDK_CATALOG });
-  assert.match(p, /http:\/\/127\.0\.0\.1:24318/);
-  assert.match(p, /http:\/\/127\.0\.0\.1:28081\/api\/obs\/traces/);
-  assert.doesNotMatch(p, /:4318\b/);
+test("agentPrompt is the one four-line SDK prompt, the catalog's setup commands", () => {
+  const p = agentPrompt({ dashboard: "http://127.0.0.1:8081" });
+  assert.equal(p, sdkAgentPrompt());
+  const lines = p.split("\n");
+  assert.equal(lines.length, 4);
+  for (const s of SDK_CATALOG) if (s.setup) assert.ok(lines[0].includes(s.setup), `${s.label}: ${s.setup}`);
+  assert.match(lines[1], /approve in the browser or to answer y\/N, tell me and wait/);
+  assert.match(lines[1], /Never read, print, copy or move the SDK key or the file it is stored in\./);
+  assert.match(lines[3], /^For more detail later .*https:\/\/superbased\.app\/docs\/sdk\/overview$/);
+  assert.doesNotMatch(p, /gateway/i, "the prompt never names a gateway");
+  assert.doesNotMatch(p, /SUPERBASED_NODE_URL/, "the default dashboard needs no hint");
+});
+
+test("agentPrompt names a dashboard that is not at the default address, never a hard-coded port", () => {
+  const p = agentPrompt({ dashboard: "http://127.0.0.1:28081/" });
+  assert.match(p.split("\n")[0], /SUPERBASED_NODE_URL=http:\/\/127\.0\.0\.1:28081 set/);
   assert.doesNotMatch(p, /:8081\b/);
-  for (const s of SDK_CATALOG) assert.ok(p.includes(s.label), `${s.label} is named`);
-  assert.doesNotMatch(p, /#/, "install-line comments are dropped");
+  assert.equal(p.split("\n").length, 4);
 });
 
-test("agentPrompt never names a checkout path relative to the app's folder (U-06)", () => {
-  const p = agentPrompt({ receiver: "127.0.0.1:4318", dashboard: "http://127.0.0.1:8081", sdks: SDK_CATALOG });
-  assert.doesNotMatch(p, /(^|[\s=])\.\/sdk\//, "no ./sdk/ path");
-  for (const s of SDK_CATALOG) {
-    if (!s.published) assert.ok(p.includes(s.installPublished.replace(/\s+(#|\/\/).*$/, "")), `${s.label}: the registry line is named`);
-  }
-});
-
-test("promptInstall: published, unpublished with a ./ path, and a <checkout> path", () => {
-  // A made-up package, not a catalog row: scripts/sdk-install-strings.py
-  // refuses a web source that spells a real catalog install line.
-  assert.equal(promptInstall({ label: "Python", install: "pip install example-sdk", published: true, installPublished: "pip install example-sdk" }), "Python: pip install example-sdk");
-  assert.equal(
-    promptInstall({ label: "Python", install: "pip install ./sdk/example  # from a checkout", published: false, installPublished: "pip install example-sdk" }),
-    `Python: pip install example-sdk once it is published; until then, from a superbased checkout: pip install ${CHECKOUT_PLACEHOLDER}/sdk/example`,
-  );
-  assert.match(
-    promptInstall({ label: "Go", install: "go mod edit -replace=x=<checkout>/sdk/go  # not tagged", published: false, installPublished: "go get x" }),
-    new RegExp(`-replace=x=${CHECKOUT_PLACEHOLDER.replace(/[<>]/g, "\\$&")}/sdk/go$`),
-  );
-  assert.equal(promptInstall({ label: "X", install: "x install" }), "X: x install", "no registry line: the line as is");
+// The website shows the same prompt from its own partial (tokens from the
+// same catalog): one text on every surface (plan 3.9).
+test("the website's SDK prompt is the dashboards' prompt", () => {
+  const raw = readFileSync(new URL("../../../website/pages-src/partials/prompt-sdk.html", import.meta.url), "utf8");
+  const text = raw
+    .replace(/@@sdk\.([a-z][a-z0-9-]*)\.([a-z_]+)@@/g, (tok, id: string, field: string) => {
+      const row = SDK_CATALOG.find((s) => s.id === id) as unknown as Record<string, string> | undefined;
+      const value = row?.[field];
+      assert.ok(typeof value === "string" && value, `unknown token ${tok}`);
+      return value;
+    })
+    .replace(/&amp;/g, "&")
+    .replace(/\n+$/, "");
+  assert.equal(text, sdkAgentPrompt());
 });
 
 test("snippetForReceiver: unchanged on the default, the live address elsewhere (U-04)", () => {

@@ -68,13 +68,13 @@ func PRBucket(state PRState, r Readiness) Bucket {
 	return BucketOther
 }
 
-// IsMergeable reports whether a PR is open and ready to merge (plan 5.1).
-func IsMergeable(state PRState, r Readiness) bool {
+// isMergeable reports whether a PR is open and ready to merge (plan 5.1).
+func isMergeable(state PRState, r Readiness) bool {
 	return PRBucket(state, r) == BucketOpenReady
 }
 
-// IsBlocked reports whether a PR is open with a known blocking reason. An
+// isBlocked reports whether a PR is open with a known blocking reason. An
 // open PR whose readiness is unknown is NOT blocked.
-func IsBlocked(state PRState, r Readiness) bool {
+func isBlocked(state PRState, r Readiness) bool {
 	return PRBucket(state, r) == BucketOpenBlocked
 }

@@ -472,7 +472,7 @@ func newObsSharingClient(t *testing.T, s *store.Store, bs BearerStore) *Client {
 // TestPushOnce_ShipsObsTiers guards the obs push leg: with the obs provider
 // seam wired and every [org_client.share] obs flag opted in, all six obs
 // slices must survive the PushEnvelope construction and reach the server.
-// This is the direct regression guard for the client.go envelope mapping
+// This is the direct regression guard for the envelope.go envelope mapping
 // (the obs slices were composed but never mapped into the envelope).
 func TestPushOnce_ShipsObsTiers(t *testing.T) {
 	s := newAgentStore(t)

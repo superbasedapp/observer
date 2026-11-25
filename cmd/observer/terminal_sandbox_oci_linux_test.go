@@ -827,7 +827,7 @@ func TestOCIToolFactsAsksTheImage(t *testing.T) {
 	f := newOCIFake(t)
 	cfg := ociTestConfig(t, true, "oci-runc")
 	cfg.Launch.Tools = map[string]config.LaunchToolConfig{"claude-code": {Path: ls}}
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	rt.launchTools = cfg.Launch.Tools
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	c, err := ociEngineClient(f.sock, "1.52")
@@ -885,7 +885,7 @@ func TestOCIToolFactsFollowsAScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := ociTestConfig(t, true, "oci-runc")
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	prog, _, ok := rt.hostLoader("claude-code", script)
 	if !ok || !strings.HasSuffix(filepath.Base(prog), "sh") && !strings.Contains(prog, "dash") && !strings.Contains(prog, "bash") && !strings.Contains(prog, "busybox") {
 		t.Fatalf("prog %q ok %v", prog, ok)
@@ -1062,7 +1062,7 @@ func TestOCIToolFactsProbeAnswerIsBounded(t *testing.T) {
 	f := newOCIFake(t)
 	cfg := ociTestConfig(t, true, "oci-runc")
 	cfg.Launch.Tools = map[string]config.LaunchToolConfig{"claude-code": {Path: ls}}
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	rt.launchTools = cfg.Launch.Tools
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	c, err := ociEngineClient(f.sock, "1.52")
@@ -1131,7 +1131,7 @@ func TestOCIToolFactsFallsBackToAStartedCheck(t *testing.T) {
 			f.paths = tc.paths
 			cfg := ociTestConfig(t, true, "oci-runc")
 			cfg.Launch.Tools = map[string]config.LaunchToolConfig{"claude-code": {Path: ls}}
-			rt := ociTestRuntime(t, cfg)
+			rt := testSandboxRuntime(t, cfg)
 			rt.launchTools = cfg.Launch.Tools
 			d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 			c, err := ociEngineClient(f.sock, "1.41")

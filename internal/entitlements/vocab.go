@@ -93,6 +93,15 @@ const (
 	// CapPlaneAGBMonthly is the Plane A gateway's monthly decoded-bytes
 	// allowance in GB (D14 and D20: the safety valve beside the event cap).
 	CapPlaneAGBMonthly CapName = "planea.gb_monthly"
+	// CapAIGWRequestsMonthly is the hosted AI gateway's monthly allowance of
+	// forwarded requests: model calls the gateway forwarded to the org's
+	// upstream in one UTC calendar month (hosted AI gateway plan 3.13,
+	// decision 4 of L-174). A refused call does not count.
+	CapAIGWRequestsMonthly CapName = "aigw.requests_monthly"
+	// CapAIGWConcurrency is the hosted AI gateway's per-org cap on requests
+	// in flight at once (plan 3.8 and 3.13, decision 4), across the
+	// gateway's replicas.
+	CapAIGWConcurrency CapName = "aigw.concurrency"
 )
 
 // RetentionClasses are the only retention.days values a pooled document may
@@ -136,6 +145,8 @@ func capRules() []capRule {
 		{name: CapRequestsBurst, unit: "requests", kinds: pooled},
 		{name: CapPlaneAEventsMonthly, unit: "events per month", kinds: pooled},
 		{name: CapPlaneAGBMonthly, unit: "GB per month", kinds: pooled},
+		{name: CapAIGWRequestsMonthly, unit: "requests per month", kinds: pooled},
+		{name: CapAIGWConcurrency, unit: "concurrent requests", kinds: pooled},
 	}
 }
 
@@ -148,8 +159,8 @@ func capRuleFor(n CapName) (capRule, bool) {
 	return capRule{}, false
 }
 
-// CapNames returns every cap name, in vocabulary order.
-func CapNames() []CapName {
+// capNames returns every cap name, in vocabulary order.
+func capNames() []CapName {
 	var out []CapName
 	for _, r := range capRules() {
 		out = append(out, r.name)
@@ -157,9 +168,9 @@ func CapNames() []CapName {
 	return out
 }
 
-// CapsFor returns the caps a document of kind k may set, in vocabulary
+// capsFor returns the caps a document of kind k may set, in vocabulary
 // order; the floor of k sets every one of them.
-func CapsFor(k Kind) []CapName {
+func capsFor(k Kind) []CapName {
 	var out []CapName
 	for _, r := range capRules() {
 		if slices.Contains(r.kinds, k) {
@@ -179,6 +190,15 @@ func (n CapName) Unit() string {
 func (n CapName) Known() bool {
 	_, ok := capRuleFor(n)
 	return ok
+}
+
+// AppliesTo reports whether a document of kind k may set the cap n (so the
+// floor of k sets it): false for an unknown cap or a kind it does not apply
+// to. A reader that finds such a cap unset on an entitlement of k reads a
+// missing value, never an absent limit.
+func (n CapName) AppliesTo(k Kind) bool {
+	r, ok := capRuleFor(n)
+	return ok && slices.Contains(r.kinds, k)
 }
 
 // TermName names a string-valued term. The vocabulary is closed.
@@ -219,8 +239,8 @@ func termRuleFor(n TermName) (termRule, bool) {
 	return termRule{}, false
 }
 
-// TermNames returns every term name, in vocabulary order.
-func TermNames() []TermName {
+// termNames returns every term name, in vocabulary order.
+func termNames() []TermName {
 	var out []TermName
 	for _, r := range termRules() {
 		out = append(out, r.name)

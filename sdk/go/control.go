@@ -57,7 +57,11 @@ func (s side) call(ctx context.Context, method, resource string, body any, query
 	for k, v := range headers {
 		h[k] = v
 	}
-	return doRequest(ctx, method, s.url(resource, query, parts), body, h, s.timeout)
+	resp := doRequest(ctx, method, s.url(resource, query, parts), body, h, s.timeout)
+	if r := resp.planRefusal(); r != nil {
+		notePlanRefusal(r, "") // Diagnostics; the call reports it its own way
+	}
+	return resp
 }
 
 var (

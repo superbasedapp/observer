@@ -61,6 +61,14 @@ func (a nodeInterventionFixtureAdapter) ParseSessionFile(ctx context.Context, pa
 	return adapter.ParseResult{TokenEvents: tokens, NewOffset: int64(len(raw))}, nil
 }
 
+// fixtureExecWindow bounds how long a fixture process may take to exec its
+// native binary. The poll returns as soon as the exec is visible, so a wide
+// window costs nothing on an idle machine; 1-2 s windows failed under load.
+const fixtureExecWindow = 15 * time.Second
+
+// fixtureExecPoll is the poll interval while waiting for that exec.
+const fixtureExecPoll = 5 * time.Millisecond
+
 func TestNodeInterventionDirectProcessStopsFromNativeSpend(t *testing.T) {
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "fixture-member" })
@@ -120,13 +128,16 @@ func TestNodeInterventionDirectProcessStopsFromNativeSpend(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-		deadline := time.Now().Add(time.Second)
+		// The poll returns as soon as the exec lands; the window only
+		// matters on a loaded machine (a 1 s window failed on a gate
+		// shard), so it is wide and bounded by ctx.
+		deadline := time.Now().Add(fixtureExecWindow)
 		for time.Now().Before(deadline) {
 			id, e := intervention.Inspect(ctx, cmd.Process.Pid)
 			if e == nil && (path != native || id.Executable == row.Targets[0].Executable.Identity) {
 				return cmd
 			}
-			time.Sleep(time.Millisecond)
+			time.Sleep(fixtureExecPoll)
 		}
 		t.Fatal("fixture did not reach native executable")
 		return nil
@@ -282,13 +293,13 @@ func TestNodeInterventionScopesAccountingFailureToItsOwnTool(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(fixtureExecWindow)
 		for time.Now().Before(deadline) {
 			id, e := intervention.Inspect(ctx, cmd.Process.Pid)
 			if e == nil && id.Executable == row.Targets[0].Executable.Identity {
 				return cmd
 			}
-			time.Sleep(time.Millisecond)
+			time.Sleep(fixtureExecPoll)
 		}
 		t.Fatalf("%s fixture did not reach its native executable", surfaceID)
 		return nil

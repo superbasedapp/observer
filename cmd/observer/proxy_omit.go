@@ -84,6 +84,12 @@ func (inertProxy) Handler() http.Handler {
 // ListenAndServe binds nothing and names the build.
 func (inertProxy) ListenAndServe(context.Context, string) error { return errProxyNotInBuild }
 
+// Serve closes the listener and names the build.
+func (inertProxy) Serve(_ context.Context, ln net.Listener, _ string) error {
+	_ = ln.Close()
+	return errProxyNotInBuild
+}
+
 // buildProxy builds the proxy-free part of the daemon assembly. recipeName is
 // ignored: the deprecated `--recipe` alias only names compression profiles,
 // which need the proxy.

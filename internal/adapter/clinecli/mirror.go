@@ -2,8 +2,6 @@ package clinecli
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -22,10 +20,7 @@ var allHomesFunc = crossmount.AllHomes
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Cline CLI store (sessions.db): every table this
@@ -46,16 +41,5 @@ var mirrorSpec = mirrorbase.Spec{
 // same adapter; only the foreign ones need the mirror — native
 // paths open directly with no overhead.
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		// Accept both the OS-native separator and forward slash —
-		// /mnt/c uses forward slashes regardless of the foreign OS.
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }

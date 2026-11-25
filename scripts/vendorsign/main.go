@@ -34,6 +34,8 @@ const usage = `usage:
                             [-rebase-ratio 0.10] [-reissue-hours 20]
   vendorsign osvshards      -key FILE (-lang DIR | -os DIR)... -state DIR -objects DIR -out DIR
                             [-manifest-version N] [-reissue-hours 20]
+  vendorsign osvshardsweep  -state DIR -objects DIR -uploaded FILE -pending FILE [-days 30]
+                            [-dry-run [-report FILE]]
   vendorsign kev            -key FILE -in FILE -state DIR -out DIR [-source-url URL] [-min-entries 1000]
                             [-manifest-version N] [-reissue-hours 20]
   vendorsign epss           -key FILE -in FILE -state DIR -out DIR [-osv DIR]... [-source-url URL]
@@ -76,6 +78,8 @@ func run(args []string, out *os.File) error {
 		return runOSVExport(args[1:], out)
 	case "osvshards":
 		return runOSVShards(args[1:], out)
+	case "osvshardsweep":
+		return runOSVShardSweep(args[1:], out)
 	case "kev":
 		return runKEV(args[1:], out)
 	case "epss":

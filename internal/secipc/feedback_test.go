@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +20,18 @@ import (
 
 func serveFeedback(t *testing.T, f FeedbackAnswerer, allow func(string) bool) string {
 	t.Helper()
+	return serveFeedbackWith(t, Options{Feedback: f, AllowRoot: allow})
+}
+
+// serveFeedbackOne serves f one connection at a time (MaxConns 1), so
+// waitIdle can tell when every earlier connection's handler has returned.
+func serveFeedbackOne(t *testing.T, f FeedbackAnswerer) string {
+	t.Helper()
+	return serveFeedbackWith(t, Options{Feedback: f, MaxConns: 1})
+}
+
+func serveFeedbackWith(t *testing.T, o Options) string {
+	t.Helper()
 	if !localipc.Supported() {
 		t.Skip("no owner-only IPC transport on this platform")
 	}
@@ -33,8 +46,35 @@ func serveFeedback(t *testing.T, f FeedbackAnswerer, allow func(string) bool) st
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = ServeWith(ctx, ln, nil, Options{Feedback: f, AllowRoot: allow}) }()
+	go func() { _ = ServeWith(ctx, ln, nil, o) }()
 	return ep
+}
+
+// waitIdle waits until an endpoint served by serveFeedbackOne takes a new
+// connection instead of answering it busy. Its one slot frees only after
+// the handler holding it returned, so whatever an earlier connection's
+// handler was going to record, it has recorded. The probe line is a
+// feedback request the endpoint refuses (bad_request) without calling the
+// answerer.
+func waitIdle(t *testing.T, ep string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		conn, err := localipc.DefaultTransport().Dial(context.Background(), ep, time.Second)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		if _, err := conn.Write([]byte(`{"v":0,"kind":"feedback"}` + "\n")); err != nil {
+			return false
+		}
+		raw, err := readLine(conn)
+		if err != nil {
+			return false
+		}
+		var resp feedbackWireResponse
+		return json.Unmarshal(raw, &resp) == nil && resp.Reason == "bad_request"
+	}, "the endpoint's earlier connections finished")
 }
 
 var hits = []policy.SecurityHit{
@@ -167,7 +207,7 @@ func countingOffer(delay time.Duration) (FeedbackAnswerer, *atomic.Int64) {
 func TestFeedbackLeaseAckRecords(t *testing.T) {
 	t.Parallel()
 	f, acked := countingOffer(0)
-	ep := serveFeedback(t, f, nil)
+	ep := serveFeedbackOne(t, f)
 	l, err := AskFeedbackLease(context.Background(), ep, FeedbackRequest{ProjectRoot: "/repo", SessionID: "s1"}, time.Second)
 	if err != nil || len(l.Hits()) != 2 {
 		t.Fatalf("lease: %+v %v", l, err)
@@ -180,7 +220,7 @@ func TestFeedbackLeaseAckRecords(t *testing.T) {
 	l.Ack()
 	l.Close()
 	waitFor(t, func() bool { return acked.Load() == 1 }, "the acknowledged offer recorded")
-	time.Sleep(20 * time.Millisecond)
+	waitIdle(t, ep)
 	if acked.Load() != 1 {
 		t.Fatalf("recorded %d times", acked.Load())
 	}
@@ -226,9 +266,11 @@ func TestFeedbackLeaseLossPathsRecordNothing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		f, acked := countingOffer(tc.delay)
-		ep := serveFeedback(t, f, nil)
+		ep := serveFeedbackOne(t, f)
 		tc.hook(t, ep)
-		time.Sleep(4 * FeedbackBudget)
+		// Only the connection's handler records an offer: once it has
+		// returned, nothing can record this one.
+		waitIdle(t, ep)
 		if acked.Load() != 0 {
 			t.Errorf("%s: recorded %d", tc.name, acked.Load())
 		}
@@ -253,7 +295,9 @@ func TestFeedbackAckMustMatchTheReply(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = conn.Write([]byte(ack + "\n"))
-		time.Sleep(20 * time.Millisecond)
+		// The endpoint hangs up once it has judged the acknowledgement line;
+		// any record it made came before that.
+		_, _ = io.ReadAll(conn)
 		_ = conn.Close()
 		if acked.Load() != 0 {
 			t.Errorf("%s recorded the offer", ack)
@@ -385,18 +429,26 @@ func TestFeedbackPendingHoldOnlyForLateAckHooks(t *testing.T) {
 	t.Parallel()
 	const token = "fedcba9876543210fedcba9876543210"
 	var pending atomic.Int64
-	ep := serveFeedback(t, func(context.Context, FeedbackRequest) (FeedbackOffer, error) {
+	ep := serveFeedbackOne(t, func(context.Context, FeedbackRequest) (FeedbackOffer, error) {
 		return FeedbackOffer{Hits: hits, Token: token, Ack: func(context.Context) {}, Pending: func(context.Context) { pending.Add(1) }}, nil
-	}, nil)
+	})
 	old := rawFeedbackRequest(t, ep, feedbackWireRequest{V: feedbackVersion, Kind: KindFeedback, ProjectRoot: "/repo", SessionID: "s1", Ack: true})
 	if old.Offer != "" || len(old.Findings) == 0 {
 		t.Fatalf("an older hook was given the offer token: %+v", old)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// The pending hold is taken, if at all, before the handler waits for
+	// the acknowledgement; once the handler has returned it was not.
+	waitIdle(t, ep)
 	if pending.Load() != 0 {
 		t.Fatalf("an older hook's offer was held pending (%d)", pending.Load())
 	}
-	cur := rawFeedbackRequest(t, ep, feedbackWireRequest{V: feedbackVersion, Kind: KindFeedback, ProjectRoot: "/repo", SessionID: "s1", Ack: true, LateAck: true})
+	// waitIdle's own probe may still hold the one slot for a moment: a
+	// busy answer is retried, and only a request the endpoint took counts.
+	var cur feedbackWireResponse
+	waitFor(t, func() bool {
+		cur = rawFeedbackRequest(t, ep, feedbackWireRequest{V: feedbackVersion, Kind: KindFeedback, ProjectRoot: "/repo", SessionID: "s1", Ack: true, LateAck: true})
+		return cur.Reason != policy.QuickScanReasonBusy
+	}, "the endpoint took the late-ack hook's request")
 	if cur.Offer != token {
 		t.Fatalf("a late-ack hook got no offer token: %+v", cur)
 	}

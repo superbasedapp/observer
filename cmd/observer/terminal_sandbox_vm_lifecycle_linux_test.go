@@ -129,13 +129,13 @@ func TestVMSweepRunsOnlyInTheDaemon(t *testing.T) {
 	prev := vmSweepFn
 	vmSweepFn = func(string) { sweeps.Add(1) }
 	t.Cleanup(func() { vmSweepFn = prev })
-	cli := macTestRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
+	cli := testSandboxRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
 	_ = cli.drivers[sandboxbackend.BackendCloudHypervisor].probe(context.Background())
 	time.Sleep(50 * time.Millisecond)
 	if sweeps.Load() != 0 {
 		t.Fatal("a CLI runtime swept")
 	}
-	d := macTestRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
+	d := testSandboxRuntime(t, vmTestConfig(t, true, "cloud-hypervisor"))
 	d.inDaemon = true
 	_ = d.drivers[sandboxbackend.BackendCloudHypervisor].probe(context.Background())
 	vmWaitFor(t, "the daemon's sweep", func() bool { return sweeps.Load() == 1 })

@@ -75,8 +75,8 @@ func (e *RefusedError) Error() string {
 }
 
 // addrClass is one destination as the policy rows read it: the address
-// after ipclass.Unwrap (IPv4-mapped, NAT64 and 6to4 forms carry an IPv4
-// address the rows judge) and its ipclass.Detail kind. ipclass is the one
+// after ipclass.Unwrap (IPv4-mapped, NAT64, 6to4 and Teredo forms carry an
+// IPv4 address the rows judge) and its ipclass.Detail kind. ipclass is the one
 // owner of the classification (SEC-02): before, this package carried its
 // own classifier, which unwrapped IPv4-mapped and NAT64 but not 6to4, and had
 // no metadata rule.
@@ -220,7 +220,8 @@ func (p Policy) allowed(ip net.IP) bool {
 // and, unless the address lies inside p.Allow, the RFC 1918 private ranges,
 // the RFC 6598 shared address space 100.64.0.0/10, IPv6 unique local
 // fc00::/7 and the deprecated site-local fec0::/10. IPv4-mapped
-// (::ffff:a.b.c.d), NAT64 (64:ff9b::a.b.c.d) and 6to4 (2002:aabb:ccdd::)
+// (::ffff:a.b.c.d), NAT64 (64:ff9b::a.b.c.d), 6to4 (2002:aabb:ccdd::) and
+// Teredo (2001:0:...: with the client IPv4 inverted in the low 32 bits)
 // addresses are unwrapped to the IPv4 they carry first (ipclass.Unwrap) so
 // they cannot bypass an IPv4 rule; the classification is ipclass.Detail's.
 func (p Policy) Check(ip net.IP, local []net.IP) error {

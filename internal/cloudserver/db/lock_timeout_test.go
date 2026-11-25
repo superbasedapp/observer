@@ -23,6 +23,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 )
 
 func TestMigrateOptionsResolveDefaults(t *testing.T) {
@@ -79,7 +81,7 @@ func TestMigrateOptionsResolveDefaults(t *testing.T) {
 // and — because the whole batch runs in one transaction that gets rolled
 // back — the schema version must be exactly what it was before the attempt.
 func TestMigrateLockTimeoutSurfacesTypedErrorAndDoesNotAdvanceVersion(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_locktimeout_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_locktimeout_")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

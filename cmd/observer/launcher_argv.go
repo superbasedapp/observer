@@ -10,6 +10,7 @@
 // command itself registered, applies their values the same way pflag would
 // have, and returns everything else as passthrough argv for the wrapped
 // tool's own exec.
+
 package main
 
 import (
@@ -210,5 +211,6 @@ func launcherArgsOrDone(cmd *cobra.Command, argv []string) (args []string, done 
 		}
 		return nil, true, err
 	}
+	recordNoStartFlag(cmd)
 	return args, false, nil
 }

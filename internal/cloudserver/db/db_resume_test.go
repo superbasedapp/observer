@@ -12,6 +12,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 )
 
 // stagedLineage is a three-step lineage; broken3 is step 3's failing body.
@@ -26,7 +28,7 @@ func stagedLineage(step3 string) fstest.MapFS {
 
 func TestMigrateResumesAtFailedStepAndRecordsLabels(t *testing.T) {
 	t.Parallel()
-	pool := newThrowawayDB(t, "sbci_e12_resume_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_e12_resume_")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -87,7 +89,7 @@ func TestMigrateResumesAtFailedStepAndRecordsLabels(t *testing.T) {
 
 func TestMigrateRefusesNonTransactionalStep(t *testing.T) {
 	t.Parallel()
-	pool := newThrowawayDB(t, "sbci_e12_nontx_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_e12_nontx_")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -110,7 +112,7 @@ func TestMigrateRefusesNonTransactionalStep(t *testing.T) {
 
 func TestMigrateAddsLabelColumnToExistingLedger(t *testing.T) {
 	t.Parallel()
-	pool := newThrowawayDB(t, "sbci_e12_upgrade_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_e12_upgrade_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "superbased-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "superbased SDK: traces, scores, prompts and experiments for LLM apps and agents, over OpenTelemetry."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -103,6 +103,11 @@ test-instrument-crewai = [
   "crewai>=1.10.1; python_version < '3.14'",
 ]
 dev = ["pytest>=7", "mypy>=1.10"]
+
+# The setup command (plan 3.5): `uvx superbased-sdk setup`,
+# `pipx run superbased-sdk setup`, or `python -m superbased_sdk setup`.
+[project.scripts]
+superbased-sdk = "superbased_sdk._setup:main"
 
 [project.urls]
 Homepage = "https://superbased.app"

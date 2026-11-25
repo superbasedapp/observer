@@ -60,6 +60,10 @@ type Verdict struct {
 	VerdictID       string `json:"verdict_id"`
 	HTTPStatus      int    `json:"http_status"`
 	Error           string `json:"error"`
+	// PlanRefusal is set when the org's plan refused the check (its Message
+	// and UpgradeURL say why and where to fix it); the verdict is degraded
+	// as for any other refusal.
+	PlanRefusal *PlanRefusalError `json:"plan_refusal,omitempty"`
 }
 
 func verdictFrom(d map[string]any) Verdict {
@@ -179,6 +183,11 @@ func noteDegraded(v Verdict, rawURL string) {
 		detail = v.Degraded
 	}
 	fix := degradedFix(v.Degraded, v.HTTPStatus, rawURL)
+	if r := v.PlanRefusal; r != nil {
+		// The org's plan refused it: its own words and where to fix it.
+		fix = strings.Join(strings.Fields(r.Message), " ") + " (upgrade: " + r.UpgradeURL + ")"
+		notePlanRefusal(r, "")
+	}
 	outcome := "admitted (fail open)"
 	if !v.Allowed {
 		outcome = "denied (fail_closed)"
@@ -455,6 +464,12 @@ func admitPost(ctx context.Context, rawURL, origin, initKey string, payload []by
 		noteDegraded(v, rawURL)
 		return v
 	}
+	refused := func(cause string, status int, r *PlanRefusalError) Verdict {
+		v := degradedVerdict(cause, failClosed, status, fmt.Sprintf("HTTP %d %s: %s", status, r.Code, r.Message), started)
+		v.PlanRefusal = r
+		noteDegraded(v, rawURL)
+		return v
+	}
 	timeout := o.Timeout
 	if timeout <= 0 {
 		timeout = advertisedTimeout(rawURL)
@@ -498,6 +513,17 @@ func admitPost(ctx context.Context, rawURL, origin, initKey string, payload []by
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var refusal *PlanRefusalError
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			refusal = ParsePlanRefusal(resp.StatusCode, raw, resp.Header)
+		}
+		switch {
+		case refusal != nil && resp.StatusCode == 403:
+			return refused(DegradedUnavailable, resp.StatusCode, refusal)
+		case refusal != nil:
+			return refused(DegradedHTTPError, resp.StatusCode, refusal)
+		}
 		if resp.StatusCode == 403 || resp.StatusCode == 404 {
 			return fail(DegradedUnavailable, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode))
 		}

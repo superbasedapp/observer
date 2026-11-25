@@ -77,7 +77,7 @@ func installTenantContextKey(ctx context.Context, pool *pgxpool.Pool) (string, e
 	if err != nil || key == nil {
 		return "", err
 	}
-	settings, err := readKeyLogSettings(ctx, pool)
+	settings, err := store.ReadServerLogSettings(ctx, pool, tenantctx.KeyLogSettings)
 	if err != nil {
 		return "", err
 	}
@@ -89,29 +89,6 @@ func installTenantContextKey(ctx context.Context, pool *pgxpool.Pool) (string, e
 		return "", err
 	}
 	return id, nil
-}
-
-// readKeyLogSettings reads tenantctx.KeyLogSettings as the migrating login's
-// session sees them (per-role and per-database settings included). A setting
-// the server does not have (pgaudit not loaded) is simply absent.
-func readKeyLogSettings(ctx context.Context, pool *pgxpool.Pool) (map[string]string, error) {
-	rows, err := pool.Query(ctx, `SELECT name, setting FROM pg_settings WHERE name = ANY($1)`, tenantctx.KeyLogSettings)
-	if err != nil {
-		return nil, fmt.Errorf("read the server's logging settings: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var name, value string
-		if err := rows.Scan(&name, &value); err != nil {
-			return nil, fmt.Errorf("read the server's logging settings: %w", err)
-		}
-		out[name] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the server's logging settings: %w", err)
-	}
-	return out, nil
 }
 
 // keyLogDecision refuses to send the key while any exposure reason applies,

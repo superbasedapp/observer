@@ -46,11 +46,11 @@ type writeResult struct {
 // the executor records as an unknown effect (the request may have applied).
 func ParseUserSpendLimitResult(r vendorapi.Response) (string, error) {
 	if r.Status < 200 || r.Status > 299 {
-		return "", drift(SurfaceUserSpendLimit, "status %d is not a 2xx answer", r.Status)
+		return "", vendorapi.Drift(SurfaceUserSpendLimit, "status %d is not a 2xx answer", r.Status)
 	}
 	var doc writeResult
-	if err := decode(r.Body, &doc); err != nil || doc.Outcome == nil {
-		return "", drift(SurfaceUserSpendLimit, "body does not decode as the documented {outcome, message} object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil || doc.Outcome == nil {
+		return "", vendorapi.Drift(SurfaceUserSpendLimit, "body does not decode as the documented {outcome, message} object")
 	}
 	switch *doc.Outcome {
 	case "success":
@@ -58,5 +58,5 @@ func ParseUserSpendLimitResult(r vendorapi.Response) (string, error) {
 	case "error":
 		return WriteRejected, nil
 	}
-	return "", drift(SurfaceUserSpendLimit, "outcome is neither of the documented values")
+	return "", vendorapi.Drift(SurfaceUserSpendLimit, "outcome is neither of the documented values")
 }

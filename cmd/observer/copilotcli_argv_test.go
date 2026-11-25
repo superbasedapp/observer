@@ -35,13 +35,16 @@ func writeArgvEnvRecorderStub(t *testing.T, dir, argvPath, envPath string) strin
 
 // writeCopilotCLITestConfig writes a minimal config.toml pointing db_path at
 // a throwaway file inside dir, sufficient for config.Load in the bare-launch
-// path.
+// path. Its [proxy] port is a live loopback listener, so a launch that takes
+// the configured proxy routes (the proxy-down gate neutralizes a launch whose
+// proxy does not answer; lane launcher-proxy-down).
 func writeCopilotCLITestConfig(t *testing.T, dir string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.toml")
+	_, port, _ := strings.Cut(strings.TrimPrefix(openLoopbackURL(t), "http://"), ":")
 	// ToSlash: a Windows path in a TOML basic string would read "\U" as an
 	// escape.
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n[proxy]\nport = "+port+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	// The launch gates open this DB; a migrated copy keeps each launch from

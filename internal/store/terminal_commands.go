@@ -59,9 +59,9 @@ func (s *Store) InsertTerminalCommand(ctx context.Context, c TerminalCommand) er
 		   cmd_hash      = COALESCE(NULLIF(excluded.cmd_hash, ''), terminal_commands.cmd_hash),
 		   -- A trusted OOB boundary upgrades a prior untrusted hint; never the reverse.
 		   trust         = CASE WHEN excluded.trust = 'oob' THEN 'oob' ELSE terminal_commands.trust END`,
-		c.RunID, c.TurnSeq, nullTimeStr(c.StartedAt), nullTimeStr(c.EndedAt), nullIntPtr(c.ExitCode),
-		nullInt64Ptr(c.BufferEpoch), nullInt64Ptr(c.BufferStart), nullInt64Ptr(c.BufferEnd),
-		nullInt64Ptr(c.MarkerOffset), c.Trust, c.CmdHash)
+		c.RunID, c.TurnSeq, nullableTimestamp(c.StartedAt), nullableTimestamp(c.EndedAt), nullableIntPtr(c.ExitCode),
+		nullableInt64Ptr(c.BufferEpoch), nullableInt64Ptr(c.BufferStart), nullableInt64Ptr(c.BufferEnd),
+		nullableInt64Ptr(c.MarkerOffset), c.Trust, c.CmdHash)
 	if err != nil {
 		return fmt.Errorf("store.InsertTerminalCommand: %w", err)
 	}
@@ -108,22 +108,6 @@ func (s *Store) LoadTerminalCommands(ctx context.Context, runID string) ([]Termi
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-// nullTimeStr renders a time as RFC3339Nano UTC, or nil for the zero time.
-func nullTimeStr(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-// nullInt64Ptr renders an *int64 as a DB arg, or nil.
-func nullInt64Ptr(p *int64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
 }
 
 // int64PtrFromNull lifts a sql.NullInt64 to *int64.

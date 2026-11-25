@@ -1,0 +1,1431 @@
+{
+  "_doc": "The setup command of the superbased SDKs (sdk-api-surface.md section 17; SDK quickstart plan sections 3.5 to 3.8; lane L0). Python and TypeScript run these from 0.2.0 (sdk/python/tests, sdk/typescript/test); a planner is tested from plain facts, the network through stubs serving sdk/contract/fixtures/setup. Exit codes: 0 done, 1 unexpected, 2 waiting for a person, 3 refused, 4 environment, 5 sent but not seen in 60 s.",
+  "since": "0.2.0",
+  "sdks": [
+    "python",
+    "typescript"
+  ],
+  "exit_codes": {
+    "0": "done: the hello arrived",
+    "1": "unexpected error",
+    "2": "waiting for a person: declined, expired, not clicked; a re-run continues",
+    "3": "refused: plan, membership, no member keys, the month used",
+    "4": "environment or usage: an unknown flag or two destination flags, no supported language, the package manager failed, self-hosted --org-url, rate limited",
+    "5": "sent but not seen within 60 s"
+  },
+  "detection": {
+    "_doc": "Phase 1 and the install command of phase 3 (sdk-api-surface.md section 17). A case's own sdks, when present, narrows the file's (the npm cases name typescript). Inputs: files (path relative to --dir -> content; a lock file's content is irrelevant, '' stands for it), installed (Python: distributions the project interpreter reports; null: none queried), setup_version. want: language (python, typescript, or null: none supported, exit 4), package_manager, targets (sorted, the target rows whose packages the project uses; auto: false targets listed too), install (argv; {python} is the project interpreter setup found; extras sorted; auto: false targets (openai-agents) are not installed), and for TypeScript esm and nextjs. Python package-manager table, first match: uv.lock -> uv add; poetry.lock or a [tool.poetry] table -> poetry add; pdm.lock -> pdm add; Pipfile -> pipenv install; else {python} -m pip install. TypeScript: pnpm-lock.yaml -> pnpm add; yarn.lock -> yarn add; bun.lock or bun.lockb -> bun add; else npm install. Python reads [project] dependencies, [tool.poetry.dependencies], requirements*.txt and Pipfile first, then installed; a requirement name is compared normalised (PEP 503). TypeScript reads dependencies and devDependencies of package.json. boto3 selects bedrock only when a .py file under --dir contains bedrock-runtime; @aws-sdk/client-bedrock-runtime selects it directly. The register entry's own dependencies come with @superbased/sdk, so an ESM install adds nothing.",
+    "cases": [
+      {
+        "name": "uv project with openai and anthropic",
+        "files": {
+          "pyproject.toml": "[project]\nname = \"support-bot\"\ndependencies = [\"openai>=1\", \"anthropic\"]\n",
+          "uv.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "uv",
+          "targets": [
+            "anthropic",
+            "openai"
+          ],
+          "install": [
+            "uv",
+            "add",
+            "superbased-sdk[anthropic,openai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "poetry project",
+        "files": {
+          "pyproject.toml": "[tool.poetry]\nname = \"bot\"\n[tool.poetry.dependencies]\npython = \"^3.11\"\nlangchain-core = \"*\"\n",
+          "poetry.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "poetry",
+          "targets": [
+            "langchain"
+          ],
+          "install": [
+            "poetry",
+            "add",
+            "superbased-sdk[langchain]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "pdm project",
+        "files": {
+          "pyproject.toml": "[project]\nname = \"bot\"\ndependencies = [\"mcp\"]\n",
+          "pdm.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pdm",
+          "targets": [
+            "mcp"
+          ],
+          "install": [
+            "pdm",
+            "add",
+            "superbased-sdk[mcp]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "pipenv project",
+        "files": {
+          "Pipfile": "[packages]\nopenai = \"*\"\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pipenv",
+          "targets": [
+            "openai"
+          ],
+          "install": [
+            "pipenv",
+            "install",
+            "superbased-sdk[openai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "requirements.txt only: pip in the project interpreter",
+        "files": {
+          "requirements.txt": "OpenAI==1.40.0\nflask\n",
+          "app.py": "import openai\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [
+            "openai"
+          ],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk[openai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "the installed distributions fill in what the manifests do not name",
+        "files": {
+          "main.py": "import anthropic\n"
+        },
+        "installed": [
+          "anthropic",
+          "httpx"
+        ],
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [
+            "anthropic"
+          ],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk[anthropic]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "no model library: the SDK alone",
+        "files": {
+          "requirements.txt": "flask\n",
+          "app.py": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "boto3 without bedrock-runtime in the source: no bedrock",
+        "files": {
+          "requirements.txt": "boto3\nopenai\n",
+          "app.py": "s3 = boto3.client('s3')\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [
+            "openai"
+          ],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk[openai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "boto3 with bedrock-runtime in the source: bedrock",
+        "files": {
+          "requirements.txt": "boto3\n",
+          "app.py": "c = boto3.client('bedrock-runtime')\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [
+            "bedrock"
+          ],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk[bedrock]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "openai-agents is detected but not installed (auto: false)",
+        "files": {
+          "pyproject.toml": "[project]\nname = \"agent\"\ndependencies = [\"openai-agents\", \"openai\"]\n",
+          "uv.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "uv",
+          "targets": [
+            "openai",
+            "openai-agents"
+          ],
+          "install": [
+            "uv",
+            "add",
+            "superbased-sdk[openai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "pydantic-ai-slim selects pydantic-ai; a name is compared normalised",
+        "files": {
+          "requirements.txt": "Pydantic_AI_Slim[openai]>=0.4\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "python",
+          "package_manager": "pip",
+          "targets": [
+            "pydantic-ai"
+          ],
+          "install": [
+            "{python}",
+            "-m",
+            "pip",
+            "install",
+            "superbased-sdk[pydantic-ai]>=0.2.0"
+          ]
+        }
+      },
+      {
+        "name": "npm, CommonJS, openai",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"bot\", \"dependencies\": {\"openai\": \"^4\"}}",
+          "package-lock.json": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "npm",
+          "targets": [
+            "openai"
+          ],
+          "install": [
+            "npm",
+            "install",
+            "@superbased/sdk@^0.2.0",
+            "@arizeai/openinference-instrumentation-openai"
+          ],
+          "esm": false,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "pnpm, ESM, two libraries",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"bot\", \"type\": \"module\", \"dependencies\": {\"@anthropic-ai/sdk\": \"*\", \"@langchain/core\": \"*\"}}",
+          "pnpm-lock.yaml": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "pnpm",
+          "targets": [
+            "anthropic",
+            "langchain"
+          ],
+          "install": [
+            "pnpm",
+            "add",
+            "@superbased/sdk@^0.2.0",
+            "@arizeai/openinference-instrumentation-anthropic",
+            "@arizeai/openinference-instrumentation-langchain"
+          ],
+          "esm": true,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "yarn",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"bot\", \"devDependencies\": {\"@modelcontextprotocol/sdk\": \"*\"}}",
+          "yarn.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "yarn",
+          "targets": [
+            "mcp"
+          ],
+          "install": [
+            "yarn",
+            "add",
+            "@superbased/sdk@^0.2.0",
+            "@arizeai/openinference-instrumentation-mcp"
+          ],
+          "esm": false,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "bun",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"bot\", \"dependencies\": {\"@google/genai\": \"*\"}}",
+          "bun.lock": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "bun",
+          "targets": [
+            "gemini"
+          ],
+          "install": [
+            "bun",
+            "add",
+            "@superbased/sdk@^0.2.0",
+            "@traceloop/instrumentation-google-generativeai"
+          ],
+          "esm": false,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "Next.js with the AI SDK",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"web\", \"dependencies\": {\"next\": \"15\", \"ai\": \"7\"}}",
+          "package-lock.json": ""
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "npm",
+          "targets": [
+            "vercel-ai"
+          ],
+          "install": [
+            "npm",
+            "install",
+            "@superbased/sdk@^0.2.0",
+            "@ai-sdk/otel"
+          ],
+          "esm": false,
+          "nextjs": true
+        }
+      },
+      {
+        "name": "bedrock through the AWS SDK client",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"bot\", \"type\": \"module\", \"dependencies\": {\"@aws-sdk/client-bedrock-runtime\": \"*\"}}"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "npm",
+          "targets": [
+            "bedrock"
+          ],
+          "install": [
+            "npm",
+            "install",
+            "@superbased/sdk@^0.2.0",
+            "@arizeai/openinference-instrumentation-bedrock"
+          ],
+          "esm": true,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "@openai/agents is detected but not installed (auto: false)",
+        "sdks": ["typescript"],
+        "files": {
+          "package.json": "{\"name\": \"agent\", \"dependencies\": {\"@openai/agents\": \"*\", \"openai\": \"*\"}}"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": "typescript",
+          "package_manager": "npm",
+          "targets": [
+            "openai",
+            "openai-agents"
+          ],
+          "install": [
+            "npm",
+            "install",
+            "@superbased/sdk@^0.2.0",
+            "@arizeai/openinference-instrumentation-openai"
+          ],
+          "esm": false,
+          "nextjs": false
+        }
+      },
+      {
+        "name": "no supported language",
+        "files": {
+          "go.mod": "module example.com/x\n"
+        },
+        "installed": null,
+        "setup_version": "0.2.0",
+        "want": {
+          "language": null,
+          "exit": 4
+        }
+      }
+    ]
+  },
+  "destination_plan": {
+    "_doc": "Phase 2 (sdk-api-surface.md section 17, the destination plan table, ruling R8, R10). Inputs: flags, machine (null: no answer on SUPERBASED_NODE_URL within 500 ms; else signed_in and local_enabled), observer_on_path, tty, answer (what the person answers a question; null when none is asked), sdk_file (valid: a valid SDK-held file is present). want: plan (local, online, both, or null when setup stops), credential (device_flow: the online sign-in of section 13 of onboarding-v2-connect-flow.md; machine: Observer's own key; sdk_file: the file already held; none), approval (none, ask (a question on the terminal), enable_prompt (y/N on the terminal), enable_browser (opens <node_url>/apps?enable=1&from=setup and polls GET /api/apps/status every 2 s up to 5 minutes), browser (the device sign-in's approve_url)), writes_file, and exit when setup stops here (with message_contains). Every row with credential device_flow also has approval browser; a plan with both a device flow and an enable has approval enable_and_browser.",
+    "cases": [
+      {
+        "name": "row 1: signed in: both through Observer's key, no device flow, no file",
+        "flags": [],
+        "machine": {
+          "signed_in": true,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": true,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "both",
+          "credential": "machine",
+          "approval": "none",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "row 1 with --online: still Observer's key, never a file",
+        "flags": [
+          "--online"
+        ],
+        "machine": {
+          "signed_in": true,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "online",
+          "credential": "machine",
+          "approval": "none",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "row 2: AI Apps on, a terminal: ask, answered this computer only",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": true,
+        "answer": "local",
+        "sdk_file": null,
+        "want": {
+          "plan": "local",
+          "credential": "none",
+          "approval": "ask",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "row 2: AI Apps on, a terminal: ask, answered also online",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": true,
+        "answer": "both",
+        "sdk_file": null,
+        "want": {
+          "plan": "both",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true
+        }
+      },
+      {
+        "name": "row 2: AI Apps on, no terminal: local, and say setup --online",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "local",
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false,
+          "message_contains": "setup --online"
+        }
+      },
+      {
+        "name": "row 3: AI Apps off, a terminal: y/N",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": false
+        },
+        "observer_on_path": true,
+        "tty": true,
+        "answer": "y",
+        "sdk_file": null,
+        "want": {
+          "plan": "local",
+          "credential": "none",
+          "approval": "enable_prompt",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "row 3: AI Apps off, a terminal, answered no: exit 2",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": false
+        },
+        "observer_on_path": true,
+        "tty": true,
+        "answer": "n",
+        "sdk_file": null,
+        "want": {
+          "plan": null,
+          "credential": "none",
+          "approval": "enable_prompt",
+          "writes_file": false,
+          "exit": 2,
+          "message_contains": "observer apps on"
+        }
+      },
+      {
+        "name": "row 3: AI Apps off, no terminal: the dashboard click",
+        "flags": [],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": false
+        },
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "local",
+          "credential": "none",
+          "approval": "enable_browser",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "row 4: Observer installed but not running, no terminal: exit 4 with both ways",
+        "flags": [],
+        "machine": null,
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": null,
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false,
+          "exit": 4,
+          "message_contains": "observer start"
+        }
+      },
+      {
+        "name": "row 4: Observer installed but not running, a terminal, answered online",
+        "flags": [],
+        "machine": null,
+        "observer_on_path": true,
+        "tty": true,
+        "answer": "online",
+        "sdk_file": null,
+        "want": {
+          "plan": "online",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true
+        }
+      },
+      {
+        "name": "row 5: no Observer: online",
+        "flags": [],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "online",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true
+        }
+      },
+      {
+        "name": "row 5 with --local: print the installer line for the person and stop",
+        "flags": [
+          "--local"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": true,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": null,
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false,
+          "exit": 4,
+          "message_contains": "install.sh"
+        }
+      },
+      {
+        "name": "--online with no machine",
+        "flags": [
+          "--online"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "online",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true
+        }
+      },
+      {
+        "name": "--local with AI Apps on: nothing to approve",
+        "flags": [
+          "--local"
+        ],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": true
+        },
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "local",
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "--both with AI Apps off and no terminal: the enable click and the sign-in",
+        "flags": [
+          "--both"
+        ],
+        "machine": {
+          "signed_in": false,
+          "local_enabled": false
+        },
+        "observer_on_path": true,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "both",
+          "credential": "device_flow",
+          "approval": "enable_and_browser",
+          "writes_file": true
+        }
+      },
+      {
+        "name": "a valid SDK-held file: no device flow again",
+        "flags": [],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": "valid",
+        "want": {
+          "plan": "online",
+          "credential": "sdk_file",
+          "approval": "none",
+          "writes_file": false
+        }
+      },
+      {
+        "name": "a valid SDK-held file with --online --replace: a new device flow naming the old key",
+        "flags": [
+          "--online",
+          "--replace"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": "valid",
+        "want": {
+          "plan": "online",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true,
+          "replaces_key_id": true
+        }
+      },
+      {
+        "name": "--key-only: the device flow, the file and the hello",
+        "flags": [
+          "--key-only"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": "online",
+          "credential": "device_flow",
+          "approval": "browser",
+          "writes_file": true,
+          "phases": [
+            "destination",
+            "approve",
+            "credential",
+            "hello",
+            "done"
+          ]
+        }
+      },
+      {
+        "name": "--org-url (self-hosted): hosted only in v1",
+        "flags": [
+          "--org-url",
+          "https://observer.example.com"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": null,
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false,
+          "exit": 4,
+          "message_contains": "SUPERBASED_API_KEY"
+        }
+      },
+      {
+        "name": "two destination flags: refused",
+        "flags": [
+          "--local",
+          "--online"
+        ],
+        "machine": null,
+        "observer_on_path": false,
+        "tty": false,
+        "answer": null,
+        "sdk_file": null,
+        "want": {
+          "plan": null,
+          "credential": "none",
+          "approval": "none",
+          "writes_file": false,
+          "exit": 4
+        }
+      }
+    ]
+  },
+  "device_flow": {
+    "_doc": "Phase 4 online: the create, the polls and the redeem against stubs serving sdk/contract/fixtures/setup (response names of connect-create.json, connect-poll.json and grant-redeem.json). Inputs: create (a connect-create.json response name), polls (connect-poll.json response names in order; setup polls every interval seconds, after a 429 the Retry-After), redeem (a grant-redeem.json response name, or a list when setup retries; null: never reached). want: outcome (continue: the key is held and setup goes on to the hello; stop: setup exits), exit (when stop), file_written, message_contains (a substring of what setup prints; the server's message is printed as sent), and requests (how many polls were sent, when it matters). setup never polls faster than interval and stops at expires_in. A redeem 429 is retried once after Retry-After, then exit 4.",
+    "cases": [
+      {
+        "name": "approved with a grant at once",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "minted",
+        "want": {
+          "outcome": "continue",
+          "file_written": true
+        }
+      },
+      {
+        "name": "pending, then approved",
+        "create": "created",
+        "polls": [
+          "pending",
+          "pending",
+          "approved_with_grant"
+        ],
+        "redeem": "minted",
+        "want": {
+          "outcome": "continue",
+          "file_written": true,
+          "requests": 3
+        }
+      },
+      {
+        "name": "approved before the personal dashboard is ready",
+        "create": "created",
+        "polls": [
+          "pending",
+          "approved_not_ready",
+          "approved_not_ready",
+          "approved_with_grant"
+        ],
+        "redeem": "minted",
+        "want": {
+          "outcome": "continue",
+          "file_written": true,
+          "requests": 4
+        }
+      },
+      {
+        "name": "declined",
+        "create": "created",
+        "polls": [
+          "pending",
+          "declined"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "declined"
+        }
+      },
+      {
+        "name": "expired",
+        "create": "created",
+        "polls": [
+          "pending",
+          "expired"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "the grant was already delivered three times",
+        "create": "created",
+        "polls": [
+          "already_delivered"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "the 10-minute window closed before the dashboard was ready",
+        "create": "created",
+        "polls": [
+          "approved_not_ready",
+          "window_closed"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "a 429 waits Retry-After, then polls on",
+        "create": "created",
+        "polls": [
+          "rate_limited",
+          "approved_with_grant"
+        ],
+        "redeem": "minted",
+        "want": {
+          "outcome": "continue",
+          "file_written": true,
+          "requests": 2
+        }
+      },
+      {
+        "name": "401 on the poll",
+        "create": "created",
+        "polls": [
+          "unauthorized"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "404 on the poll",
+        "create": "created",
+        "polls": [
+          "not_found"
+        ],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false
+        }
+      },
+      {
+        "name": "the create is rate limited",
+        "create": "rate_limited",
+        "polls": [],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 4,
+          "file_written": false
+        }
+      },
+      {
+        "name": "the cloud does not take SDK sign-in requests yet",
+        "create": "purpose_not_offered",
+        "polls": [],
+        "redeem": null,
+        "want": {
+          "outcome": "stop",
+          "exit": 4,
+          "file_written": false,
+          "message_contains": "does not take SDK sign-in requests yet"
+        }
+      },
+      {
+        "name": "redeem: minted, the month's allowance already used",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "minted_month_used",
+        "want": {
+          "outcome": "stop",
+          "exit": 3,
+          "file_written": true,
+          "message_contains": "/portal/billing"
+        }
+      },
+      {
+        "name": "redeem: the plan does not include AI Apps",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "plan_required",
+        "want": {
+          "outcome": "stop",
+          "exit": 3,
+          "file_written": false,
+          "message_contains": "Change the plan: "
+        }
+      },
+      {
+        "name": "redeem: not a member",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "not_a_member",
+        "want": {
+          "outcome": "stop",
+          "exit": 3,
+          "file_written": false,
+          "message_contains": "not a member"
+        }
+      },
+      {
+        "name": "redeem: the grant was refused (expired)",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "grant_refused",
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "redeem: the dashboard does not take key grants",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "not_accepted",
+        "want": {
+          "outcome": "stop",
+          "exit": 3,
+          "file_written": false
+        }
+      },
+      {
+        "name": "redeem: the organization issues no member keys",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "not_supported",
+        "want": {
+          "outcome": "stop",
+          "exit": 3,
+          "file_written": false,
+          "message_contains": "app key"
+        }
+      },
+      {
+        "name": "redeem: the grant was already used",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": "grant_used",
+        "want": {
+          "outcome": "stop",
+          "exit": 2,
+          "file_written": false,
+          "message_contains": "run setup again"
+        }
+      },
+      {
+        "name": "redeem: 429 retried once",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": [
+          "rate_limited",
+          "minted"
+        ],
+        "want": {
+          "outcome": "continue",
+          "file_written": true
+        }
+      },
+      {
+        "name": "redeem: 429 twice",
+        "create": "created",
+        "polls": [
+          "approved_with_grant"
+        ],
+        "redeem": [
+          "rate_limited",
+          "rate_limited"
+        ],
+        "want": {
+          "outcome": "stop",
+          "exit": 4,
+          "file_written": false
+        }
+      }
+    ]
+  },
+  "first_run_refusals": {
+    "_doc": "The five first-run refusals of the SDK quickstart plan section 3.8, read with the SDK's one plan refusal parser. Inputs: stage (redeem or hello), and the answer: fixture (a grant-redeem.json response name) or plan_refusal_case (a name in plan-refusal-cases.json cases; its status, headers and body). want: lines (substrings setup prints, in order: the server's message exactly as sent first, then the setup line), no_line_contains (substrings it must not print), exit, file_written, hello_sent. setup never prints a plan name or a number of its own: the plan's 'more with Personal Pro' line is 'More: <upgrade_url>' here.",
+    "cases": [
+      {
+        "name": "redeem: the chosen team's plan does not include AI Apps",
+        "stage": "redeem",
+        "fixture": "plan_required",
+        "want": {
+          "lines": [
+            "AI Apps ingest is not part of this organization's plan (Team).",
+            "Change the plan: https://cloud.superbased.app/portal/orgs/5d4c3b2a"
+          ],
+          "exit": 3,
+          "file_written": false,
+          "hello_sent": false
+        }
+      },
+      {
+        "name": "redeem: minted, the month already used",
+        "stage": "redeem",
+        "fixture": "minted_month_used",
+        "want": {
+          "lines": [
+            "This organization has used this month's AI Apps allowance of its plan (Personal Free)",
+            "Ingest resumes 2027-02-01T00:00:00Z. More: https://cloud.superbased.app/portal/billing"
+          ],
+          "exit": 3,
+          "file_written": true,
+          "hello_sent": false
+        }
+      },
+      {
+        "name": "hello: over the plan's allowance",
+        "stage": "hello",
+        "plan_refusal_case": "429 events quota over the plan's allowance, with Retry-After",
+        "want": {
+          "lines": [
+            "This organization has used this month's AI Apps allowance of its plan (Team).",
+            "Ingest resumes 2026-12-01T00:00:00Z. More: "
+          ],
+          "exit": 3,
+          "file_written": true,
+          "hello_sent": true
+        }
+      },
+      {
+        "name": "hello: over the organization's own cap (no upgrade_url, not a plan refusal)",
+        "stage": "hello",
+        "plan_refusal_case": "429 events quota over the org's own cap (no upgrade_url) is not a plan refusal",
+        "want": {
+          "lines": [
+            "This organization has used this month's AI Apps cap.",
+            "your organization set this cap itself (Settings > Server > Runtime settings)"
+          ],
+          "no_line_contains": [
+            "More: ",
+            "Change the plan"
+          ],
+          "exit": 3,
+          "file_written": true,
+          "hello_sent": true
+        }
+      },
+      {
+        "name": "hello: a plan with no AI Apps allowance",
+        "stage": "hello",
+        "plan_refusal_case": "403 plan_required in the SDK control API envelope",
+        "want": {
+          "lines": [
+            "This organization's plan (Starter) includes no AI Apps allowance.",
+            "Change the plan: https://superbased.app/pricing"
+          ],
+          "exit": 3,
+          "file_written": true,
+          "hello_sent": true
+        }
+      }
+    ]
+  },
+  "next_steps": {
+    "_doc": "Phase 6, the one line and where (SDK quickstart plan section 2.3, sdk-api-surface.md sections 17 and 18). A case's own sdks, when present, narrows the file's (the npm cases name typescript). Inputs: language, esm, nextjs, entry (the entry candidate setup chose). want: init_line (exactly), where (a substring of the placement text), start_script (TypeScript ESM: the flag added to the start command), instrumentation_file (Next.js: the file to add and a substring of it).",
+    "cases": [
+      {
+        "name": "python",
+        "language": "python",
+        "esm": false,
+        "nextjs": false,
+        "entry": "app/main.py",
+        "want": {
+          "init_line": "import superbased_sdk; superbased_sdk.init()",
+          "where": "app/main.py"
+        }
+      },
+      {
+        "name": "typescript, CommonJS",
+        "sdks": ["typescript"],
+        "language": "typescript",
+        "esm": false,
+        "nextjs": false,
+        "entry": "src/server.js",
+        "want": {
+          "init_line": "require(\"@superbased/sdk\").init()",
+          "where": "src/server.js"
+        }
+      },
+      {
+        "name": "typescript, ESM: the start script, not a line of code",
+        "sdks": ["typescript"],
+        "language": "typescript",
+        "esm": true,
+        "nextjs": false,
+        "entry": "server.js",
+        "want": {
+          "init_line": null,
+          "start_script": "--import @superbased/sdk/register",
+          "where": "package.json"
+        }
+      },
+      {
+        "name": "Next.js: instrumentation.ts",
+        "sdks": ["typescript"],
+        "language": "typescript",
+        "esm": false,
+        "nextjs": true,
+        "entry": null,
+        "want": {
+          "init_line": null,
+          "instrumentation_file": {
+            "path": "instrumentation.ts",
+            "contains": "await import(\"@superbased/sdk/register\")"
+          },
+          "where": "instrumentation.ts"
+        }
+      }
+    ]
+  },
+  "secrecy": {
+    "_doc": "SDKQS-4: no secret ever leaves the SDK-held file. The fakes are sdk/contract/fixtures/setup/secrecy-fakes.json (sdk_key, sdk_key_secret, device_code, redeem_secret, key_grant). Each case runs setup through stubs serving the fixtures (scenario names the path) with --json on and off and a logging handler at DEBUG; want.channels lists where none of the five values (nor sdk_key_secret alone) may appear, matched as substrings: stdout, stderr, json (every --json line), log (every record's message and arguments), exception (the text and repr of any exception raised or printed), argv (every child process's argv and environment, e.g. the package manager). The SDK-held file is the only place the key is written.",
+    "fakes": "fixtures/setup/secrecy-fakes.json",
+    "cases": [
+      {
+        "name": "the whole online path",
+        "scenario": {
+          "create": "created",
+          "polls": [
+            "pending",
+            "approved_with_grant"
+          ],
+          "redeem": "minted",
+          "hello": "arrived"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception",
+            "argv"
+          ]
+        }
+      },
+      {
+        "name": "a redeem refused with plan_required",
+        "scenario": {
+          "create": "created",
+          "polls": [
+            "approved_with_grant"
+          ],
+          "redeem": "plan_required"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception"
+          ]
+        }
+      },
+      {
+        "name": "a redeem minted with the month used",
+        "scenario": {
+          "create": "created",
+          "polls": [
+            "approved_with_grant"
+          ],
+          "redeem": "minted_month_used"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception"
+          ]
+        }
+      },
+      {
+        "name": "the file write fails (the folder is read-only)",
+        "scenario": {
+          "create": "created",
+          "polls": [
+            "approved_with_grant"
+          ],
+          "redeem": "minted",
+          "write": "fails"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception"
+          ]
+        }
+      },
+      {
+        "name": "the hello is sent but not seen in 60 s",
+        "scenario": {
+          "create": "created",
+          "polls": [
+            "approved_with_grant"
+          ],
+          "redeem": "minted",
+          "hello": "not_seen"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception"
+          ]
+        }
+      },
+      {
+        "name": "setup --status with a held key",
+        "scenario": {
+          "flags": [
+            "--status"
+          ],
+          "sdk_file": "valid"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception"
+          ]
+        }
+      },
+      {
+        "name": "setup --forget",
+        "scenario": {
+          "flags": [
+            "--forget"
+          ],
+          "sdk_file": "valid",
+          "revoke": "revoked"
+        },
+        "want": {
+          "channels": [
+            "stdout",
+            "stderr",
+            "json",
+            "log",
+            "exception",
+            "argv"
+          ]
+        }
+      }
+    ]
+  },
+  "no_ai_gateway": {
+    "_doc": "SDKQS-10: setup never offers, prints, configures or tests the AI gateway. For every scenario of the device_flow, destination_plan and secrecy sections, and the next phase's text for every detection case, no stdout or stderr line, --json line or next-steps text may contain any forbidden string, compared case-insensitively. The plain word 'gateway' is allowed (the ingest gateway).",
+    "forbidden": [
+      "ai gateway",
+      "ai_gateway",
+      "aigateway",
+      "gateway_endpoint",
+      "gatewayendpoint",
+      "openai_client",
+      "anthropic_client",
+      "openaiclient",
+      "anthropicclient",
+      "superbased_ai_gateway",
+      "/ai/"
+    ]
+  },
+  "no_r165": {
+    "_doc": "SDKQS-8: setup never calls the machine's credential routes or runs the person's sign-in verbs (guard R-165 keeps those for the person). Each SDK's test greps its setup module's sources (Python superbased_sdk/_setup/, TypeScript src/setup/) for these strings, case-sensitively; none may appear.",
+    "forbidden_in_source": [
+      "/api/sdk/credential",
+      "sdk sign-in",
+      "sdk sign-out",
+      "sdk use-key",
+      "sdk-credential/key"
+    ]
+  }
+}

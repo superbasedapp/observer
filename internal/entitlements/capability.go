@@ -64,8 +64,8 @@ func gateRows() []gateRow {
 		{id: "org.sor.azblob", gate: GateIncluded, why: infra},
 		{id: "org.analytics.clickhouse", gate: GateIncluded, why: infra},
 		{id: "org.opamp", gate: GatePlan, why: card + ": AI Apps is Business"},
-		{id: "org.planea.gateway", gate: GatePlan, why: card + ": AI Apps OTLP ingest is Business"},
-		{id: "org.aigateway", gate: GatePlan, why: dflt},
+		{id: CapabilityPlaneAGateway, gate: GatePlan, why: card + ": AI Apps OTLP ingest is Business; L-166 adds a capped allowance to Personal Free and Personal Pro (v2)"},
+		{id: CapabilityAIGateway, gate: GatePlan, why: card + ": the AI gateway is Business; the hosted AI gateway (L-172, decision 4 of L-174) adds a capped allowance to Personal Free and Personal Pro (v3)"},
 		{id: "org.agentaccess", gate: GatePlan, why: dflt},
 		{id: "org.openshell", gate: GatePlan, why: dflt},
 		{id: "org.sandbox", gate: GateIncluded, why: "the managed sandbox settings and their pull (wave 17 lane pooled-sandbox): every plan includes it; staff switch it per org through the availability envelope"},
@@ -140,8 +140,8 @@ func GatedIDs(g Gate) []string {
 	return out
 }
 
-// MappedIDs returns every mapped id, sorted.
-func MappedIDs() []string {
+// mappedIDs returns every mapped id, sorted.
+func mappedIDs() []string {
 	var out []string
 	for _, r := range allRows() {
 		out = append(out, r.id)
@@ -150,8 +150,8 @@ func MappedIDs() []string {
 	return out
 }
 
-// GateReason returns why a component has its gate ("" when unmapped).
-func GateReason(id string) string {
+// gateReason returns why a component has its gate ("" when unmapped).
+func gateReason(id string) string {
 	for _, r := range allRows() {
 		if r.id == id {
 			return r.why

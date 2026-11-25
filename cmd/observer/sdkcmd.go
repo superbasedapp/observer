@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -17,6 +22,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/pastedsecret"
 	"github.com/marmutapp/superbased-observer/internal/sdkcredsvc"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -73,11 +79,14 @@ func newSDKCmd() *cobra.Command {
 			"local when you are not signed in, both when you are.\n\n" +
 			"  observer sdk status                  what an SDK on this machine would do\n" +
 			"  observer sdk sign-in                 get your SDK key from your organization\n" +
+			"  observer sdk use-key --gateway-url <address>\n" +
+			"                                       install an SDK key an admin issued you (read from stdin)\n" +
 			"  observer sdk sign-out                revoke it and remove it from this machine\n" +
+			"                                       (an admin-issued key is removed, never revoked)\n" +
 			"  observer sdk sign-out --all          revoke every SDK key you have, on every machine\n" +
 			"  observer config set observability.sdk.destination local|online|both --yes",
 	}
-	cmd.AddCommand(newSDKStatusCmd(), newSDKSignInCmd(), newSDKSignOutCmd())
+	cmd.AddCommand(newSDKStatusCmd(), newSDKSignInCmd(), newSDKUseKeyCmd(), newSDKSignOutCmd())
 	return cmd
 }
 
@@ -96,17 +105,107 @@ func newSDKStatusCmd() *cobra.Command {
 				return err
 			}
 			st := sdkCredentialService(cfg, nil).Status()
-			d := sdkcredsvc.BuildDiscovery(cfg, st, "http://"+dashboardLoopbackAddr(cfg))
+			d := sdkcredsvc.BuildDiscoveryWithOrg(cfg, st, "http://"+dashboardLoopbackAddr(cfg), sdkOrgDashboard(cmd.Context(), cfg))
+			held := sdkHeldFile(st.Usable())
 			if asJSON {
-				return writeJSONOut(cmd.OutOrStdout(), d)
+				return writeJSONOut(cmd.OutOrStdout(), sdkStatusJSON{Discovery: d, SDKHeldFile: held})
 			}
 			printSDKStatus(cmd.OutOrStdout(), d)
+			printSDKHeldFile(cmd.OutOrStdout(), held)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the discovery body the SDKs read (never the key)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the discovery body the SDKs read, and the SDK-held file's state (never a key)")
 	return cmd
+}
+
+// sdkStatusJSON is `observer sdk status --json`: the discovery body the
+// SDKs read, plus (additive, beside it) the SDK-held file's state.
+type sdkStatusJSON struct {
+	sdkcredsvc.Discovery
+	SDKHeldFile sdkcredsvc.HeldFile `json:"sdk_held_file"`
+}
+
+// sdkOrgDashboard reads the enrolment's dashboard facts for the discovery
+// body's online.dashboard_url, the same facts the dashboard's discovery
+// route uses. It never creates the database: with none, or not enrolled,
+// the field stays "".
+func sdkOrgDashboard(ctx context.Context, cfg config.Config) sdkcredsvc.OrgDashboard {
+	if inRelayBox() {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	if _, err := os.Stat(cfg.Observer.DBPath); err != nil {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	_, database, cleanup, err := openNodeDB(ctx, cfg, cfg.Observer.DBPath)
+	if err != nil {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	defer cleanup()
+	enr, err := store.New(database).LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return sdkcredsvc.OrgDashboard{}
+	}
+	return sdkcredsvc.OrgDashboardFrom(enr.OrgID, enr.OnlineURL, enr.OrgServerURL)
+}
+
+// sdkHeldFile reports the SDK-held credential file the SDK's `setup` writes
+// (SDK quickstart plan 3.4, destination.md section 6a), from a stat of it:
+// never opened, never read, so the key in it is never seen. machineKeyUsable
+// is whether this machine offers the SDKs its own key, which wins the
+// credential (ruling R10).
+func sdkHeldFile(machineKeyUsable bool) sdkcredsvc.HeldFile {
+	home, _ := os.UserHomeDir() //nolint:errcheck // no home: the ladder names no path and says so
+	p, src := sdkcredsvc.SDKHeldFilePath(runtime.GOOS, os.Getenv, home)
+	facts := sdkHeldFileFacts(p)
+	if facts.Exists {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		facts.OutsideLocalAppData = sdkcredsvc.HeldFileOutsideLocalAppData(runtime.GOOS, abs, os.Getenv("LOCALAPPDATA"))
+	}
+	return sdkcredsvc.DescribeHeldFile(runtime.GOOS, p, src, facts, machineKeyUsable)
+}
+
+// sdkHeldFileFacts stats path without following a link and without opening
+// it.
+func sdkHeldFileFacts(path string) sdkcredsvc.HeldFileFacts {
+	if path == "" {
+		return sdkcredsvc.HeldFileFacts{}
+	}
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return sdkcredsvc.HeldFileFacts{}
+	case err != nil:
+		return sdkcredsvc.HeldFileFacts{StatErr: err.Error()}
+	}
+	link := fi.Mode()&fs.ModeSymlink != 0
+	if runtime.GOOS == "windows" {
+		// A junction or another reparse point reads as irregular.
+		link = link || fi.Mode()&fs.ModeIrregular != 0
+	}
+	return sdkcredsvc.HeldFileFacts{
+		Exists:  true,
+		Link:    link,
+		Regular: fi.Mode().IsRegular(),
+		Size:    fi.Size(),
+		// Windows has no group or other bits; its reader checks the folder
+		// and the owner SID instead (destination.md section 6a, ruling R4).
+		OpenToOthers: runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0,
+		ForeignOwner: sdkHeldFileForeignOwner(fi),
+	}
+}
+
+// printSDKHeldFile prints the SDK-held file's line of `observer sdk status`.
+func printSDKHeldFile(out io.Writer, h sdkcredsvc.HeldFile) {
+	if h.Path == "" {
+		fmt.Fprintln(out, "SDK file:    "+h.Text)
+		return
+	}
+	fmt.Fprintf(out, "SDK file:    %s: %s\n", h.Path, h.Text)
 }
 
 func printSDKStatus(out io.Writer, d sdkcredsvc.Discovery) {
@@ -119,8 +218,15 @@ func printSDKStatus(out io.Writer, d sdkcredsvc.Discovery) {
 	}
 	fmt.Fprintf(out, "gateway:     %s\n", gw)
 	if d.Online.CredentialPresent {
-		fmt.Fprintf(out, "SDK key:     %s (%s), file %s\n", d.Online.KeyID, joinOrNone(d.Online.Scopes), d.Online.CredentialFile)
-		printSDKWorkspace(out, "workspace:   ", d.Online.WorkspaceID, d.Online.CaptureLevel)
+		if d.Online.KeyOrigin == sdkcredsvc.KeyOriginAdminIssued {
+			// An installed admin key's scopes and workspace are the admin's
+			// to know (Machine identities); the key itself does not say.
+			fmt.Fprintf(out, "SDK key:     %s (%s), file %s\n", d.Online.KeyID, sdkcredsvc.Meta{Origin: d.Online.KeyOrigin}.KeyOriginText(), d.Online.CredentialFile)
+			fmt.Fprintln(out, "             its scopes and workspace are on Machine identities, in your organization's dashboard settings")
+		} else {
+			fmt.Fprintf(out, "SDK key:     %s (%s), file %s\n", d.Online.KeyID, joinOrNone(d.Online.Scopes), d.Online.CredentialFile)
+			printSDKWorkspace(out, "workspace:   ", d.Online.WorkspaceID, d.Online.CaptureLevel)
+		}
 	}
 	for _, w := range d.Warnings {
 		fmt.Fprintln(out, "warning:     "+w)
@@ -168,6 +274,134 @@ func newSDKSignInCmd() *cobra.Command {
 	return cmd
 }
 
+// sdkUseKeyArgsRefusal is what `observer sdk use-key` says to anything on
+// its command line. It never repeats the argument: a key typed there is
+// already in the shell history, and must not also reach a terminal log.
+const sdkUseKeyArgsRefusal = "observer sdk use-key reads the key from stdin only, never from the command line (a key there lands in your shell history and the process list); nothing was stored. Run it with no argument and paste the key when asked, or pipe it in"
+
+func newSDKUseKeyCmd() *cobra.Command {
+	var configPath, gatewayURL string
+	cmd := &cobra.Command{
+		Use:   "use-key --gateway-url <address>",
+		Short: "Install an SDK key an admin issued you, so your apps send to your organization",
+		Long: "For an organization that does not give members their own SDK keys (a hosted\n" +
+			"organization today): an admin mints a key under Machine identities, in the\n" +
+			"organization's dashboard settings, and gives it to you with the organization's\n" +
+			"gateway address. This command keeps it\n" +
+			"the way `observer sdk sign-in` keeps a key: in this machine's keychain and in a\n" +
+			"file only you can read, with the gateway address beside it, where the superbased\n" +
+			"SDKs find it. After it, an SDK's default destination is both (this machine and\n" +
+			"your organization) unless you chose another.\n\n" +
+			"The key is read from stdin only: paste it when asked (it is not shown), or pipe\n" +
+			"it in. It is never taken from the command line, never printed and never logged.\n" +
+			"--gateway-url is the address the admin's dialog shows (SUPERBASED_ORG_URL); it\n" +
+			"must be https (plain http only to this machine). Without it, the setting\n" +
+			"observability.sdk.gateway_url is used.\n\n" +
+			"`observer sdk sign-out` removes the key from this machine; it does not revoke it\n" +
+			"(the key is the admin's), so ask an admin to revoke it when you are done.\n\n" +
+			"Without Observer on the machine, an app can carry the key itself instead:\n" +
+			"SUPERBASED_API_KEY=<key>, SUPERBASED_ORG_URL=<address> and\n" +
+			"SUPERBASED_DESTINATION=both (or online) in the app's environment.",
+		Example: "  observer sdk use-key --gateway-url https://acme.superbased.app\n" +
+			"  observer sdk use-key --gateway-url https://gw.example.com:4318 < key.txt",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return errors.New(sdkUseKeyArgsRefusal)
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runSDKUseKey(cmd, configPath, gatewayURL)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
+	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "The organization's gateway address the key is sent to (https; the admin's dialog shows it)")
+	return cmd
+}
+
+// runSDKUseKey reads the key and installs it through sdkcredsvc.InstallKey.
+// It needs no database and no organization call.
+func runSDKUseKey(cmd *cobra.Command, configPath, gatewayURL string) error {
+	cfg, err := loadConfigFile(configPath)
+	if err != nil {
+		return err
+	}
+	svc := sdkCredentialService(cfg, nil)
+	// Everything that does not need the key is checked before asking for it.
+	if _, err := svc.CheckInstall(gatewayURL); err != nil {
+		return err
+	}
+	key, err := sdkReadKey(cmd.InOrStdin(), cmd.ErrOrStderr())
+	if err != nil {
+		return fmt.Errorf("read the SDK key from stdin: %w; nothing was stored", err)
+	}
+	status, err := sdkUseKey(svc, sdkcredsvc.InstallInput{Compound: key, GatewayURL: gatewayURL})
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "installed: SDK key %s (%s) saved to %s (readable by you only)\n", status.KeyID, status.KeyOriginText(), status.CredentialFile)
+	fmt.Fprintf(out, "apps send it only to: %s\n", status.KeyGatewayURL)
+	d := sdkcredsvc.BuildDiscovery(cfg, status, "http://"+dashboardLoopbackAddr(cfg))
+	fmt.Fprintf(out, "an SDK on this machine now sends to: %s (%s)\n", d.Destination, d.Source)
+	fmt.Fprintln(out, "restart your apps to pick it up; `observer sdk sign-out` removes it from this machine (it does not revoke it)")
+	for _, w := range d.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+w)
+	}
+	return nil
+}
+
+// sdkUseKey is the one install path (CLI and dashboard).
+func sdkUseKey(svc sdkcredsvc.Service, in sdkcredsvc.InstallInput) (sdkcredsvc.Status, error) {
+	return svc.InstallKey(in)
+}
+
+// sdkPasteTries is how many times the terminal read asks again when a read
+// brings nothing (D9: through wsl.exe from Windows PowerShell an Enter could
+// arrive before the paste did).
+const sdkPasteTries = 3
+
+// sdkReadKey reads the SDK key: without echo from a terminal, else one line
+// of stdin (8 KiB at most). The prompt goes to prompt (stderr), so a script
+// that captures stdout sees only the result.
+var sdkReadKey = func(in io.Reader, prompt io.Writer) (string, error) {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { //nolint:gosec // G115: a descriptor number
+		return sdkReadPasted(prompt, func() ([]byte, error) {
+			return term.ReadPassword(int(f.Fd())) //nolint:gosec // G115: a descriptor number
+		})
+	}
+	line, err := bufio.NewReader(io.LimitReader(in, 8<<10)).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if pastedsecret.Clean(line) == "" {
+		return "", errors.New("no SDK key on stdin (paste it when asked, or pipe it in)")
+	}
+	return line, nil
+}
+
+// sdkReadPasted prompts and reads one pasted key without echo, asking again
+// (up to sdkPasteTries) while a read brings nothing once a paste's wrappers
+// are removed.
+func sdkReadPasted(out io.Writer, read func() ([]byte, error)) (string, error) {
+	prompt := "Paste the SDK key your admin gave you (not shown): "
+	var last string
+	for range sdkPasteTries {
+		fmt.Fprint(out, prompt)
+		b, err := read()
+		fmt.Fprintln(out)
+		if err != nil {
+			return "", err
+		}
+		last = string(b)
+		if pastedsecret.Clean(last) != "" {
+			return last, nil
+		}
+		prompt = "Nothing was read (the paste may not have arrived yet). Paste the SDK key again (not shown): "
+	}
+	return last, nil
+}
+
 func newSDKSignOutCmd() *cobra.Command {
 	var (
 		configPath string
@@ -178,7 +412,9 @@ func newSDKSignOutCmd() *cobra.Command {
 		Short: "Revoke your SDK key on your organization and remove it from this machine",
 		Long: "Revokes the SDK key this machine holds on your organization and removes\n" +
 			"every local copy. Your other machines keep their keys. When this machine\n" +
-			"holds no key, nothing is revoked at your organization.\n\n" +
+			"holds no key, nothing is revoked at your organization. A key an admin issued\n" +
+			"you (`observer sdk use-key`) is removed from this machine but never revoked:\n" +
+			"it is the admin's, so ask an admin to revoke it on Machine identities.\n\n" +
 			"--all revokes every SDK key you have, on every machine (it asks first;\n" +
 			"--yes answers for a script).",
 		Args: cobra.NoArgs,
@@ -237,8 +473,36 @@ func runSDKSignOut(cmd *cobra.Command, configPath string, all bool) error {
 		fmt.Fprintln(out, "signed out: "+err.Error())
 		return nil
 	}
+	if errors.Is(err, sdkcredsvc.ErrAdminIssuedKeyKept) {
+		// An admin-issued key: removed here, never revoked (it is the
+		// admin's). With --all the member's own keys were still revoked.
+		if all {
+			fmt.Fprintf(out, "signed out: %d SDK key(s) of yours revoked on your organization\n", n)
+		}
+		fmt.Fprintln(out, "removed: "+sdkcredsvc.ErrAdminIssuedKeyKept.Error())
+		return withoutErr(err, sdkcredsvc.ErrAdminIssuedKeyKept)
+	}
 	fmt.Fprintf(out, "signed out: %d SDK key(s) revoked on your organization; local copies removed\n", n)
 	return err
+}
+
+// withoutErr is err with every target taken out of an errors.Join tree, nil
+// when nothing else is left (a notice the caller already printed).
+func withoutErr(err, target error) error {
+	if err == nil || err == target { //nolint:errorlint // identity: the target itself is dropped
+		return nil
+	}
+	j, ok := err.(interface{ Unwrap() []error }) //nolint:errorlint // only an errors.Join node is split
+	if !ok {
+		return err
+	}
+	var rest []error
+	for _, e := range j.Unwrap() {
+		if e = withoutErr(e, target); e != nil {
+			rest = append(rest, e)
+		}
+	}
+	return errors.Join(rest...)
 }
 
 // sdkSignIn is the one sign-in path (CLI and dashboard).
@@ -250,12 +514,18 @@ func sdkSignIn(ctx context.Context, svc sdkcredsvc.Service, m sdkcredsvc.Minter)
 	case errors.Is(err, orgclient.ErrNotEnrolled):
 		return status, fmt.Errorf("this machine is not signed in to an organization; run `observer org enroll` first (without an organization, SDKs send to this machine only)")
 	case errors.Is(err, orgclient.ErrSDKCredentialNotSupported):
-		// SR-9: a hosted organization issues no member keys; say what to do.
-		return status, fmt.Errorf("this organization does not give members their own SDK keys yet; ask an admin for an SDK key (Machine identities, in the organization's dashboard settings). Until you have one, your apps' data does not reach the organization")
+		// SR-9: a hosted organization issues no member keys; say what to do
+		// with the key an admin issues instead.
+		return status, errors.New(sdkAdminKeyHelp)
 	default:
 		return status, err
 	}
 }
+
+// sdkAdminKeyHelp is what a member of an organization that issues no member
+// SDK keys is told (SR-9): where the key comes from and the two supported
+// ways to use it. One sentence set, shared by sign-in's refusal.
+const sdkAdminKeyHelp = "this organization does not give members their own SDK keys yet; ask an admin for an SDK key (Machine identities, in the organization's dashboard settings) and its gateway address, then install it on this machine with `observer sdk use-key --gateway-url <address>` (paste the key when asked; it is read from stdin only), or give it to one app as SUPERBASED_API_KEY with SUPERBASED_ORG_URL=<address> and SUPERBASED_DESTINATION=both. Until then, your apps' data does not reach the organization"
 
 // appObsCompiledIn reports whether this build includes AI Apps on the
 // machine: the obs component compiled in and offered by the distro (review
@@ -283,6 +553,11 @@ func sdkDashboardSeams(cfg config.Config, st *store.Store) dashapi.SDKSeams {
 		// nothing at the org and says so (review E-28).
 		SignOut: func(ctx context.Context) (int, error) {
 			return svc.SignOut(ctx, sdkMinter(cfg, st), false)
+		},
+		// "Use an SDK key from my admin": the same install as `observer sdk
+		// use-key`, the key from the request body.
+		InstallKey: func(compound, gatewayURL string) (sdkcredsvc.Status, error) {
+			return sdkUseKey(svc, sdkcredsvc.InstallInput{Compound: compound, GatewayURL: gatewayURL})
 		},
 		Receiver: func() (dashapi.OTLPReceiverState, bool) {
 			rs, ok, err := loadOTLPReceiverStatus(cfg)

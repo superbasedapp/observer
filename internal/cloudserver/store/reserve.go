@@ -8,12 +8,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/enrichbudget"
 	"github.com/marmutapp/superbased-observer/internal/reserve"
 )
 
-// Feature identifiers. Only session_enrichment ships this arc.
-const FeatureSessionEnrichment = "session_enrichment"
+// Feature identifiers (cloudcontract owns the values). FeatureProjectDigest
+// (jobs.go) is the other one.
+const FeatureSessionEnrichment = cloudcontract.FeatureSessionEnrichment
 
 // Default Signed-in Free entitlement: 3000 enrichment bundles/month, ≤100/day
 // (migration 0041, operator ruling D-299: 0039's 20/day and 100/month rose to
@@ -148,7 +150,7 @@ func refusal(l reserve.Limit) error {
 	return ErrConcurrency
 }
 
-// ReserveAllowance atomically enforces daily (≤cap, UTC day) + monthly (≤cap,
+// reserveAllowanceTx atomically enforces daily (≤cap, UTC day) + monthly (≤cap,
 // calendar month) + per-account concurrency + the account's plan budget pool in
 // ONE transaction with row locks (Sol SD6). Racing devices serialize on the
 // cycle rows and cannot exceed any window. It returns the reservation id, to be
@@ -158,22 +160,9 @@ func refusal(l reserve.Limit) error {
 // (W4 / review finding 12), so a mid-cycle upgrade raises the ceiling
 // immediately while the counters keep counting, and a Plus reservation draws
 // from the plus_beta pool and never from the free tier's.
-func (s *Store) ReserveAllowance(ctx context.Context, accountID, feature string, now time.Time) (string, error) {
-	var reservationID string
-	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		var e error
-		reservationID, e = reserveAllowanceTx(ctx, tx, accountID, feature, now, s.spendCeilings)
-		return e
-	})
-	if err != nil {
-		return "", err
-	}
-	return reservationID, nil
-}
-
-// reserveAllowanceTx is the reservation logic operating on an existing tenant
-// transaction, so a caller (SubmitJob) can make the reservation atomic with the
-// evidence + job insert. Its contract is identical to ReserveAllowance.
+//
+// It operates on an existing tenant transaction, so a caller (SubmitJob) can
+// make the reservation atomic with the evidence + job insert.
 func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature string, now time.Time, ceilings map[string]SpendCeiling) (string, error) {
 	allow, err := resolveAllowanceTx(ctx, tx, accountID, feature, now)
 	if err != nil {
@@ -308,24 +297,6 @@ func reserveCycle(ctx context.Context, tx pgx.Tx, accountID, feature, kind, wind
 	return nil
 }
 
-// SettleReservation marks a reservation settled: the user unit is CONSUMED
-// (daily/monthly/global stay), only the concurrency slot is released. Idempotent.
-func (s *Store) SettleReservation(ctx context.Context, accountID, reservationID string) error {
-	return s.finalizeReservation(ctx, accountID, reservationID, "settled", false)
-}
-
-// ReleaseReservation marks a reservation released (or expired) and REFUNDS the
-// user unit (daily/monthly/global decremented) plus the concurrency slot — for
-// jobs that never produced a result (parked, evidence_expired, canceled).
-// Idempotent.
-func (s *Store) ReleaseReservation(ctx context.Context, accountID, reservationID string, expired bool) error {
-	state := "released"
-	if expired {
-		state = "expired"
-	}
-	return s.finalizeReservation(ctx, accountID, reservationID, state, true)
-}
-
 // closeOutcome is one row of closeOutcomes.
 type closeOutcome struct {
 	state   string
@@ -351,12 +322,6 @@ func closeOutcomeFor(newState string, refundUnit bool) (reserve.Outcome, error) 
 		}
 	}
 	return "", fmt.Errorf("cloudserver/store.finalizeReservation: no close for state %q with refund=%t", newState, refundUnit)
-}
-
-func (s *Store) finalizeReservation(ctx context.Context, accountID, reservationID, newState string, refundUnit bool) error {
-	return s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		return finalizeReservationTx(ctx, tx, accountID, reservationID, newState, refundUnit)
-	})
 }
 
 // finalizeReservationTx is the reservation-finalize logic on an existing tenant

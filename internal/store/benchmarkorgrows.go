@@ -393,7 +393,7 @@ func buildBenchmarkAttemptRow(runID string, r benchmarkAttemptRaw, f benchmark.A
 }
 
 // nullTimeString formats a possibly-zero time.Time as an RFC3339 timestamp,
-// or "" when zero — the wire-row analog of nullTime (which returns a driver
+// or "" when zero — the wire-row analog of nullableTimestamp (which returns a driver
 // value for a SQL bind, not a string).
 func nullTimeString(t time.Time) string {
 	if t.IsZero() {

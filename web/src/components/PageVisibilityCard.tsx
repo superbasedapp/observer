@@ -4,7 +4,7 @@ import { NAV_ITEMS } from "@/lib/nav";
 import { pageRequestLink } from "@/lib/requestEntry";
 import { NODE_TAB_ROUTES } from "@/lib/pageTabRoutes";
 import { governedOrgLabel, useGovernance } from "@/lib/governance";
-import { orgDisplayLabelSentence, type VisibilityEntry } from "@/lib/visibility";
+import { onlineHref, orgDisplayLabelSentence, type VisibilityEntry } from "@/lib/visibility";
 
 // PageVisibilityCard is the Privacy page's answer to "which pages did my
 // organization hide or lock on this machine, and why". It reads the same
@@ -83,12 +83,33 @@ export function PageVisibilityCard() {
     .sort((a, b) => a.label.localeCompare(b.label));
   rows.push(...settingsRows);
   if (rows.length === 0) return null;
+  // Who can change it, and where (operator ruling 2, 2026-11-24): the owner
+  // of a personal organization changes it themselves on their dashboard.
+  const online = gov.data?.online;
+  const owner = online?.kind === "personal";
+  const placeHref = onlineHref(online?.visibility.href);
+  const placeLabel = online?.visibility.label || "Settings > Developer dashboards";
 
   return (
     <ChartShell
-      title="Pages managed by your organization"
-      sub={`What ${governedOrgLabel(gov.data)} hid or locked on this machine. The daemon refuses the same pages, so this list is exactly what applies. Your administrator can make any of them available.`}
+      title={owner ? "Pages hidden or locked by your personal dashboard" : "Pages managed by your organization"}
+      sub={
+        owner
+          ? `What your personal dashboard hid or locked on this machine. The daemon refuses the same pages, so this list is exactly what applies. You are its owner, so you can change any of them in ${placeLabel}.`
+          : `What ${governedOrgLabel(gov.data)} hid or locked on this machine. The daemon refuses the same pages, so this list is exactly what applies. Your administrator can make any of them available.`
+      }
     >
+      {owner && placeHref && (
+        <a
+          href={placeHref}
+          target="_blank"
+          rel="noreferrer"
+          className="mb-2 inline-block text-[11.5px] font-medium text-accent hover:text-accent-strong"
+          data-testid="page-visibility-online"
+        >
+          Open {placeLabel}
+        </a>
+      )}
       <Table
         head={
           <tr className="text-left">

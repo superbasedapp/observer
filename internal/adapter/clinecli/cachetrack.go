@@ -8,8 +8,8 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's
-// running block count. Matches the claudecode template's cap
-// (same memory budget, same OOM guard).
+// running block count: the shared cacheobs default (same memory
+// budget, same OOM guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // buildCacheObservations walks every session's messages in order
@@ -77,84 +77,39 @@ func buildCacheObservations(sessions []sessionRow, dbPath string) []models.Cache
 }
 
 // accumulateCacheBlocksTier2 converts cline-cli's Anthropic-shape
-// content blocks into deterministic CacheBlockMeta entries. Per
-// the audit, NO block-level volatile fields exist; the marshaller
-// is a straight struct-encode per type. Each canonical payload
-// uses an explicit STRUCT (NOT a map) so encoding/json's
-// deterministic field order preserves the R3 byte-stability
-// invariant.
+// content blocks into deterministic CacheBlockMeta entries, in
+// array order (cacheobs.ContentBlocks). Per the audit, NO
+// block-level volatile fields exist; the marshaller is a straight
+// struct-encode per type. Each canonical payload uses an explicit
+// STRUCT (NOT a map) so encoding/json's deterministic field order
+// preserves the R3 byte-stability invariant.
 func accumulateCacheBlocksTier2(blocks []messageBlock, role string) []models.CacheBlockMeta {
-	if len(blocks) == 0 {
-		return nil
-	}
-	out := make([]models.CacheBlockMeta, 0, len(blocks))
-	for _, b := range blocks {
-		canon, kind, ok := marshalCanonicalBlockTier2(b)
-		if !ok {
-			continue
-		}
-		out = append(out, models.CacheBlockMeta{
-			LevelLabel:     "message", // R1: transcripts never expose tools/system
-			Kind:           kind,
-			CanonicalBytes: canon,
-			Role:           role,
-		})
-	}
-	return out
+	return cacheobs.ContentBlocks(blocks, role, marshalCanonicalBlockTier2)
 }
 
 // marshalCanonicalBlockTier2 produces the deterministic JSON
-// canonical form of one cline-cli content block. Returns
-// (canonical bytes, engine kind label, ok=false on unknown
-// block type).
+// canonical form of one cline-cli content block: the shared
+// cacheobs forms for text, thinking and tool_use, its own for
+// tool_result. Returns (canonical bytes, engine kind label,
+// ok=false on unknown block type).
 func marshalCanonicalBlockTier2(b messageBlock) (canon []byte, kind string, ok bool) {
 	switch b.Type {
 	case "text":
-		payload := struct {
-			Type string `json:"type"`
-			Text string `json:"text,omitempty"`
-		}{Type: "text", Text: b.Text}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, "", false
-		}
-		return buf, "text", true
+		return cacheobs.ContentText("text", b.Text)
 
 	case "thinking":
-		// Re-map onto the engine's canonical "thinking" kind label,
-		// matching the claudecode template's intent. The cline-cli
-		// schema uses .thinking; the canonical bytes carry it as
-		// .text so cross-adapter chain comparisons stay shape-
-		// stable.
-		payload := struct {
-			Type string `json:"type"`
-			Text string `json:"text,omitempty"`
-		}{Type: "thinking", Text: b.Thinking}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, "", false
-		}
-		return buf, "thinking", true
+		// Re-map onto the engine's canonical "thinking" kind label.
+		// The cline-cli schema uses .thinking; the canonical bytes
+		// carry it as .text so cross-adapter chain comparisons stay
+		// shape-stable.
+		return cacheobs.ContentText("thinking", b.Thinking)
 
 	case "tool_use":
-		payload := struct {
-			Type  string          `json:"type"`
-			ID    string          `json:"id,omitempty"`
-			Name  string          `json:"name,omitempty"`
-			Input json.RawMessage `json:"input,omitempty"`
-		}{
-			Type:  "tool_use",
-			ID:    b.ID,
-			Name:  b.Name,
-			Input: b.Input,
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, "", false
-		}
-		return buf, "tool_use", true
+		return cacheobs.ContentToolUse(b.ID, b.Name, b.Input)
 
 	case "tool_result":
+		// cline-cli's tool_result also carries the tool name, so its
+		// canonical form is its own (not cacheobs.ContentToolResult).
 		payload := struct {
 			Type      string          `json:"type"`
 			ToolUseID string          `json:"tool_use_id,omitempty"`

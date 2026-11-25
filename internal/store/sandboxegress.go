@@ -172,12 +172,6 @@ func (s *Store) ListSandboxEgressRefusalsByRun(ctx context.Context, runID string
 	return s.ListSandboxEgressRefusals(ctx, SandboxEgressRefusalQuery{RunID: runID, Before: before, Limit: limit})
 }
 
-// ListSandboxEgressRefusalsByProject returns a page of the refusals of runs
-// attributed to projectRoot, newest first.
-func (s *Store) ListSandboxEgressRefusalsByProject(ctx context.Context, projectRoot string, before int64, limit int) ([]SandboxEgressRefusal, error) {
-	return s.ListSandboxEgressRefusals(ctx, SandboxEgressRefusalQuery{ProjectRoot: projectRoot, Before: before, Limit: limit})
-}
-
 // ListSandboxEgressRefusals returns the page q selects, newest first.
 func (s *Store) ListSandboxEgressRefusals(ctx context.Context, q SandboxEgressRefusalQuery) ([]SandboxEgressRefusal, error) {
 	limit := q.Limit

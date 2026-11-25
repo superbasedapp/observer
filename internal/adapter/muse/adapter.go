@@ -139,7 +139,7 @@ func matchesShape(path string) bool {
 // stall the poll loop. Two record shapes are deliberately deferred rather
 // than consumed, so the next parse re-reads them whole: a partial trailing
 // line (a record still being written) and a tool call whose result batch
-// has not landed yet (see pending.go).
+// has not landed yet (see adapter.DeferUnpairedTail).
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	f, err := os.Open(path) //nolint:gosec // path comes from the watcher's own watch roots
 	if err != nil {
@@ -151,7 +151,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		adapter:     a,
 		path:        path,
 		rootCache:   map[string]string{},
-		pendingCall: map[string]pendingMark{},
+		pendingCall: map[string]adapter.PendingMark{},
 		toolIdx:     map[string]int{},
 		unknownTool: map[string]bool{},
 		firstOffset: fromOffset,
@@ -220,7 +220,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
-	st.deferUnpairedTail(&res)
+	// Rewinds tool and token events only; cache observations stay.
+	adapter.DeferUnpairedTail(&res, st.path, st.pendingCall, false)
 	return res, nil
 }
 
@@ -235,8 +236,15 @@ type parseState struct {
 	// pendingCall maps a tool call_id to the rewind coordinates of the
 	// record that produced its ToolEvent. An entry survives until the
 	// matching tool_result_batch_committed lands; whatever is still pending
-	// at EOF drives the tail deferral in pending.go.
-	pendingCall map[string]pendingMark
+	// at EOF drives the tail deferral (adapter.DeferUnpairedTail). A Muse
+	// tool call and its result are FOUR separate records
+	// (assistant_tool_calls_committed, tool_batch.effect.started,
+	// tool_batch.effect.terminal with the success verdict, and
+	// tool_result_batch_committed with the body), and Muse interleaves a
+	// lot of scheduler bookkeeping between a call and its result (16
+	// records in the Phase-0 capture's first bash call), which is why the
+	// deferral window is generous. ToolIdx is unused here: see toolIdx.
+	pendingCall map[string]adapter.PendingMark
 	// toolIdx maps a tool call_id to its ToolEvent's index in
 	// res.ToolEvents, so the later outcome + result records can stamp onto
 	// it. Kept separate from pendingCall because the outcome record
@@ -490,35 +498,23 @@ func (st *parseState) handleSessionEvent(rec *rawRecord, lineStart int64, res *a
 	// so a long session doesn't flood the watcher log.
 }
 
-// projectRoot resolves the header workspace root and memoizes the result.
-//
-// The translation is UNCONDITIONAL: crossmount.TranslateForeignPath maps a
-// foreign-OS root to its locally-visible equivalent, so a foreign path never
-// reaches git.Resolve — where filepath.Abs would treat it as relative and
-// CWD-prefix the observer's OWN .git onto every event.
+// projectRoot resolves the header workspace root and memoizes the result
+// (adapter.ResolveProjectRootCached: the foreign-path translation is
+// unconditional, so a foreign path never reaches git and the observer's
+// OWN .git is never stamped onto every event). The first resolution fills
+// the branch (only when no branch is known yet), remote and identity.
 func (st *parseState) projectRoot() string {
-	if st.cwd == "" {
-		return ""
+	root, id, fresh := adapter.ResolveProjectRootCached(st.rootCache, st.cwd)
+	if fresh {
+		// The log's own workspace_branch record is authoritative when
+		// present; git only fills the gap before one is seen.
+		if st.branch == "" {
+			st.branch = id.Branch
+		}
+		st.remote = id.Remote
+		st.identity = id
 	}
-	cwd := crossmount.TranslateForeignPath(st.cwd)
-	if root, ok := st.rootCache[cwd]; ok {
-		return root
-	}
-	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		st.rootCache[cwd] = cwd
-		return cwd
-	}
-	st.rootCache[cwd] = id.Root
-	// The log's own workspace_branch record is authoritative when present;
-	// git.ResolveIdentity only fills the gap before one is seen.
-	if st.branch == "" {
-		st.branch = id.Branch
-	}
-	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
-	st.remote = id.Remote
-	st.identity = id
-	return id.Root
+	return root
 }
 
 // eventKey returns the record's deterministic identity for SourceEventID
@@ -690,10 +686,10 @@ func (st *parseState) emitToolCalls(rec *rawRecord, e *sessionEvent, lineStart i
 			continue
 		}
 		st.toolIdx[tc.CallID] = idx
-		st.pendingCall[tc.CallID] = pendingMark{
-			lineStart: st.curLineStart,
-			toolLen:   st.curToolLen,
-			tokenLen:  st.curTokenLen,
+		st.pendingCall[tc.CallID] = adapter.PendingMark{
+			LineStart: st.curLineStart,
+			ToolLen:   st.curToolLen,
+			TokenLen:  st.curTokenLen,
 		}
 	}
 }

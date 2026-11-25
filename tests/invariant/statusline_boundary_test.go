@@ -85,7 +85,13 @@ func scanFileImports(t *testing.T, filename string, src []byte, forbidden []stri
 	}
 	var hits []string
 	for _, imp := range file.Imports {
-		p := strings.Trim(imp.Path.Value, `"`)
+		// Unquote, not a trim of double quotes: a raw-string (`...`)
+		// import literal must not slip past the check.
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			t.Errorf("%s: unparseable import literal %s: %v", filename, imp.Path.Value, err)
+			continue
+		}
 		if forbiddenSet[p] {
 			hits = append(hits, p)
 		}
@@ -156,6 +162,12 @@ func demo() {
 }
 `,
 			want: "github.com/marmutapp/superbased-observer/internal/hook",
+		},
+		{
+			// A raw-string import literal is still an import.
+			name: "database/sql (raw-string literal)",
+			src:  "package fixture\n\nimport `database/sql`\n\nfunc demo() {\n\tvar _ *sql.DB\n}\n",
+			want: "database/sql",
 		},
 	}
 	for _, tc := range cases {

@@ -16,7 +16,8 @@ import (
 // tagged !sbo_omit_proxy_routing; routing_omit.go stands in for it.
 
 // routingPriceFn adapts the cost engine to the routing vocabulary's
-// injected pricing seam: the single place the two vocabularies meet.
+// injected pricing seam. internal/mcp keeps an identical adapter
+// (mcpRoutingPriceFn); a change here must be made there too.
 func routingPriceFn(engine *cost.Engine) routingcore.PriceFn {
 	return func(model string, u routingcore.PromptUsage) (float64, bool) {
 		return engine.Compute(model, cost.TokenBundle{

@@ -339,7 +339,7 @@ func loadTaskItemState(ctx context.Context, tx *sql.Tx, sessionID, key string) (
 	st.ActiveForm = activeForm.String
 	st.Owner = owner.String
 	st.RawStatus = rawStatus.String
-	if t, ok := parseDBTime(firstSeen.String); ok {
+	if t, ok := parseStoredTimeOK(firstSeen.String); ok {
 		st.FirstSeenAt = t
 	}
 	if snapshotActionID.Valid {
@@ -389,10 +389,10 @@ func (s *Store) LoadTaskItems(ctx context.Context, sessionID string) ([]TaskItem
 			&r.RawStatus, &r.Status, &r.Order, &firstSeen, &lastSeen, &unmatched); err != nil {
 			return nil, fmt.Errorf("store.LoadTaskItems: scan: %w", err)
 		}
-		if t, ok := parseDBTime(firstSeen); ok {
+		if t, ok := parseStoredTimeOK(firstSeen); ok {
 			r.FirstSeenAt = t
 		}
-		if t, ok := parseDBTime(lastSeen); ok {
+		if t, ok := parseStoredTimeOK(lastSeen); ok {
 			r.LastSeenAt = t
 		}
 		r.Unmatched = unmatched != 0
@@ -424,7 +424,7 @@ func (s *Store) LoadTaskTransitions(ctx context.Context, sessionID string) ([]ta
 		if err := rows.Scan(&tr.Key, &tr.FromStatus, &tr.ToStatus, &ts, &tr.ActionID, &tr.SourceEventID); err != nil {
 			return nil, fmt.Errorf("store.LoadTaskTransitions: scan: %w", err)
 		}
-		if t, ok := parseDBTime(ts); ok {
+		if t, ok := parseStoredTimeOK(ts); ok {
 			tr.Ts = t
 		}
 		out = append(out, tr)
@@ -557,7 +557,7 @@ func (s *Store) LoadTaskActionTimestamps(ctx context.Context, sessionID string, 
 		if err := rows.Scan(&ts); err != nil {
 			return nil, fmt.Errorf("store.LoadTaskActionTimestamps: scan: %w", err)
 		}
-		if t, ok := parseDBTime(ts); ok {
+		if t, ok := parseStoredTimeOK(ts); ok {
 			out = append(out, t)
 		}
 	}
@@ -654,10 +654,10 @@ func (s *Store) LoadTaskItemsBatch(ctx context.Context, sessionIDs []string) (ma
 				rows.Close()
 				return nil, fmt.Errorf("store.LoadTaskItemsBatch: scan: %w", err)
 			}
-			if t, ok := parseDBTime(firstSeen); ok {
+			if t, ok := parseStoredTimeOK(firstSeen); ok {
 				r.FirstSeenAt = t
 			}
-			if t, ok := parseDBTime(lastSeen); ok {
+			if t, ok := parseStoredTimeOK(lastSeen); ok {
 				r.LastSeenAt = t
 			}
 			r.Unmatched = unmatched != 0
@@ -696,7 +696,7 @@ func (s *Store) LoadTaskTransitionsBatch(ctx context.Context, sessionIDs []strin
 				rows.Close()
 				return nil, fmt.Errorf("store.LoadTaskTransitionsBatch: scan: %w", err)
 			}
-			if t, ok := parseDBTime(ts); ok {
+			if t, ok := parseStoredTimeOK(ts); ok {
 				tr.Ts = t
 			}
 			out[sid] = append(out[sid], tr)
@@ -758,7 +758,7 @@ func (s *Store) LoadTaskActionTimestampsBatch(ctx context.Context, sessionIDs []
 				rows.Close()
 				return nil, fmt.Errorf("store.LoadTaskActionTimestampsBatch: scan: %w", err)
 			}
-			if t, ok := parseDBTime(ts); ok {
+			if t, ok := parseStoredTimeOK(ts); ok {
 				out[sid] = append(out[sid], t)
 			}
 		}
@@ -1014,7 +1014,7 @@ func (s *Store) BackfillTaskItems(ctx context.Context, limit int) (TaskBackfillR
 				rows.Close()
 				return res, fmt.Errorf("store.BackfillTaskItems: scan: %w", err)
 			}
-			if t, ok := parseDBTime(ts); ok {
+			if t, ok := parseStoredTimeOK(ts); ok {
 				a.Timestamp = t
 			}
 			cursorTs, cursorID = ts, a.ID

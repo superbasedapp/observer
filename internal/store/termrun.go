@@ -190,10 +190,10 @@ func (s *Store) InsertTerminalRun(ctx context.Context, run TerminalRun) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.Tool, run.Kind, run.SourceSessionID, run.ProjectRootHash,
 		run.CorrelationTokenHash, launched.UTC().Format(time.RFC3339Nano),
-		endedArg, nullIntPtr(run.ExitCode),
-		nullIntPtr(run.PID), boolToInt(run.WrapApplied), run.WrapNote,
+		endedArg, nullableIntPtr(run.ExitCode),
+		nullableIntPtr(run.PID), boolInt(run.WrapApplied), run.WrapNote,
 		iso.Class, strings.Join(iso.Stack, ","), iso.EgressTier, iso.CaptureLevel, iso.CaptureRule,
-		iso.CaptureOrigin, boolToInt(iso.CaptureDegraded), iso.NativeSandboxState,
+		iso.CaptureOrigin, boolInt(iso.CaptureDegraded), iso.NativeSandboxState,
 		iso.Verification, iso.KeyCustody, iso.EvidenceDigest,
 		iso.EvidenceProducer, iso.EvidenceComponent, iso.EvidenceComponentVersion,
 		iso.Seccomp, run.Initiator, run.ParentSessionID)
@@ -229,7 +229,7 @@ func (s *Store) StampTerminalRunSpawn(ctx context.Context, runID string, pid int
 		`UPDATE terminal_run
 		    SET pid = ?, wrap_applied = ?, wrap_note = ?
 		  WHERE run_id = ?`,
-		pid, boolToInt(wrapApplied), wrapNote, runID)
+		pid, boolInt(wrapApplied), wrapNote, runID)
 	if err != nil {
 		return fmt.Errorf("store.StampTerminalRunSpawn: %w", err)
 	}

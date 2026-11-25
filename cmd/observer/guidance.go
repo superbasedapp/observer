@@ -429,7 +429,6 @@ const (
 	// here long before overflow).
 	guidanceDefaultRootTimeoutMax = 180 * time.Second
 	guidanceDefaultPassTimeout    = 10 * time.Minute
-	guidanceDefaultStartupDelay   = 90 * time.Second
 	// guidancePauseBetweenRoots keeps a pass a background trickle. It is
 	// not a config key: it is small enough that no operator needs to tune
 	// it, and the real bounds are the two timeouts.

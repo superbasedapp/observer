@@ -41,7 +41,7 @@ func DefaultShimDir(goos, home string) string {
 // this is for the few call sites that use a bare PATH lookup.
 func LookPath(name string) (string, error) {
 	p, err := exec.LookPath(name)
-	if err != nil || !isShimFile(p) {
+	if err != nil || !IsShimFile(p) {
 		return p, err
 	}
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
@@ -51,21 +51,25 @@ func LookPath(name string) (string, error) {
 		// A path with a separator makes exec.LookPath check that one file
 		// (applying PATHEXT on Windows) instead of walking PATH again.
 		c, err := exec.LookPath(filepath.Join(dir, name))
-		if err == nil && !isShimFile(c) {
+		if err == nil && !IsShimFile(c) {
 			return c, nil
 		}
 	}
 	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 }
 
-func isShimFile(p string) bool {
-	head, err := readHead(p, 512)
+// IsShimFile reports whether the file at p is a command-wrapping shim: its
+// first 512 bytes carry ShimMarker. An unreadable file is not a shim.
+func IsShimFile(p string) bool {
+	head, err := ReadHead(p, 512)
 	return err == nil && IsShim(head)
 }
 
-// readHead returns up to n leading bytes of a file.
-func readHead(p string, n int) ([]byte, error) {
-	f, err := os.Open(p) /* #nosec G304 -- a binary exec.LookPath itself located on PATH, never request-derived */ //nolint:gosec // G703: a binary exec.LookPath itself located on PATH
+// ReadHead returns up to n leading bytes of the file at p (fewer when the
+// file is shorter). It is the one shim-detection read: LookPath's PATH walk
+// and the shell-wrap applier's shim-directory scan both use it.
+func ReadHead(p string, n int) ([]byte, error) {
+	f, err := os.Open(p) /* #nosec G304 -- a binary exec.LookPath itself located on PATH, or a file in the observer-owned shim directory; never request-derived */ //nolint:gosec // G703: a PATH hit or a file in the observer-owned shim directory
 	if err != nil {
 		return nil, err
 	}

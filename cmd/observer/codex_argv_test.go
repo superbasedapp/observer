@@ -51,22 +51,6 @@ func writeRecordingCodexBin(t *testing.T) (bin, argsFile string) {
 	return writeShellStub(t, bin, script), argsFile
 }
 
-// codexRecordedArgv reads back the argv writeRecordingCodexBin captured.
-// Duplicated (not shared with recordedArgv) only in name — same shape,
-// kept local to this file per the task's file-ownership boundary.
-func codexRecordedArgv(t *testing.T, argsFile string) []string {
-	t.Helper()
-	raw, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("read recorded argv: %v", err)
-	}
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
-	}
-	return lines
-}
-
 // argvContains reports whether argv has tok as an exact element anywhere.
 func argvContains(argv []string, tok string) bool {
 	for _, a := range argv {
@@ -120,7 +104,7 @@ func TestCodexArgvWrapperFlagsConsumedForwardedInOrder(t *testing.T) {
 		t.Fatalf("cmd.Execute: %v (stderr=%q)", err, out.String())
 	}
 
-	got := codexRecordedArgv(t, argsFile)
+	got := recordedArgv(t, argsFile)
 	if !argvHasPair(got, "--model", "gpt-5") {
 		t.Fatalf("recorded argv %v missing forwarded --model gpt-5 pair", got)
 	}
@@ -173,7 +157,7 @@ func TestCodexArgvNativeShortFlagPassesThroughUntouched(t *testing.T) {
 		t.Fatalf("cmd.Execute: %v (stderr=%q)", err, out.String())
 	}
 
-	got := codexRecordedArgv(t, argsFile)
+	got := recordedArgv(t, argsFile)
 	want := []string{"-c", "mymodel=x"}
 	if !equalArgs(got, want) {
 		t.Fatalf("recorded argv = %v, want %v", got, want)
@@ -211,7 +195,7 @@ func TestCodexArgvUserBaseURLOverrideSkipsWrapperInjection(t *testing.T) {
 		t.Fatalf("cmd.Execute: %v (stderr=%q)", err, out.String())
 	}
 
-	got := codexRecordedArgv(t, argsFile)
+	got := recordedArgv(t, argsFile)
 	if !argvHasPair(got, "-c", "openai_base_url=http://mine") {
 		t.Fatalf("recorded argv %v missing forwarded user override pair", got)
 	}

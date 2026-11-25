@@ -10,18 +10,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
 // W1 "lifecycle phase 1" + R5 origin cover (plan §3 W1): device /v1/logout
@@ -39,35 +33,17 @@ import (
 // (signIn / bootstrap / callback) work unchanged.
 func newWebhookHarness(t *testing.T, secret string) *workosHarness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
 	fake := newFakeWorkOS(t, testWorkOSSecret)
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            fakeWorkOSVerifier{},
-		ExternalBaseURL:     base,
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PortalWorkOSEnabled: true,
-		WorkOSClientID:      "client_test",
-		WorkOSAPIKey:        testWorkOSSecret,
-		WorkOSAuthorizeURL:  fake.srv.URL + "/authorize",
-		WorkOSTokenURL:      fake.srv.URL + "/token",
-		WorkOSWebhookSecret: secret,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &workosHarness{harness: &harness{srv: srv, store: s}, workos: fake}
+	h := newHarnessWith(t, harnessSetup{noJournal: true, opts: func(o *api.Options) {
+		o.Verifier = fakeWorkOSVerifier{}
+		o.PortalWorkOSEnabled = true
+		o.WorkOSClientID = "client_test"
+		o.WorkOSAPIKey = testWorkOSSecret
+		o.WorkOSAuthorizeURL = fake.srv.URL + "/authorize"
+		o.WorkOSTokenURL = fake.srv.URL + "/token"
+		o.WorkOSWebhookSecret = secret
+	}})
+	return &workosHarness{harness: h, workos: fake}
 }
 
 // loginBroker is harness.login generalized over the raw broker credential, so a
@@ -605,29 +581,10 @@ func TestWorkOSWebhookRejectsMalformedEnvelope(t *testing.T) {
 // newHostHarness builds a dev-auth server with canonical hosts configured.
 func newHostHarness(t *testing.T, portalHost, apiHost string) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{},
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-		PortalHost:      portalHost,
-		APIHost:         apiHost,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{noJournal: true, opts: func(o *api.Options) {
+		o.PortalHost = portalHost
+		o.APIHost = apiHost
+	}})
 }
 
 // getWithHost issues a bare GET with an explicit Host header.
@@ -785,28 +742,7 @@ func stubSPA() http.Handler {
 
 func newSPAHarness(t *testing.T, spa http.Handler) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{},
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-		PortalSPA:       spa,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{noJournal: true, opts: func(o *api.Options) { o.PortalSPA = spa }})
 }
 
 // TestPortalSPAWiring is the E9 pin: with a PortalSPA the UI routes serve HTML

@@ -43,6 +43,8 @@ func setup(t *testing.T) *logCapture {
 		}
 	}
 	t.Setenv("SUPERBASED_DISCOVER", "0")
+	// Never the developer's own SDK-held key file.
+	t.Setenv(EnvCredentialFile, filepath.Join(t.TempDir(), "no-sdk-credential"))
 	resetForTests()
 	otel.SetTracerProvider(noop.NewTracerProvider())
 	lc := &logCapture{}
@@ -243,7 +245,9 @@ type rtFunc func(*http.Request) (*http.Response, error)
 func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // loadSection reads one section of sdk-behaviour-cases.json.
-func loadSection(t *testing.T, name string) map[string]json.RawMessage {
+// behaviourSections is every section of sdk-behaviour-cases.json (every
+// top-level key that does not start with an underscore).
+func behaviourSections(t *testing.T) map[string]json.RawMessage {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(contractDir(), "sdk-behaviour-cases.json"))
 	if err != nil {
@@ -253,8 +257,45 @@ func loadSection(t *testing.T, name string) map[string]json.RawMessage {
 	if err := json.Unmarshal(raw, &all); err != nil {
 		t.Fatal(err)
 	}
+	out := map[string]json.RawMessage{}
+	for k, v := range all {
+		if !strings.HasPrefix(k, "_") {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// namesGo reports whether an sdks list names Go (no list: every SDK).
+func namesGo(sdks []string) bool {
+	if sdks == nil {
+		return true
+	}
+	for _, s := range sdks {
+		if s == "go" {
+			return true
+		}
+	}
+	return false
+}
+
+// sectionNamesGo reports whether a section's sdks names Go.
+func sectionNamesGo(raw json.RawMessage) bool {
+	var sec struct {
+		SDKs []string `json:"sdks"`
+	}
+	_ = json.Unmarshal(raw, &sec)
+	return namesGo(sec.SDKs)
+}
+
+func loadSection(t *testing.T, name string) map[string]json.RawMessage {
+	t.Helper()
+	raw, ok := behaviourSections(t)[name]
+	if !ok {
+		t.Fatalf("no section %s", name)
+	}
 	var sec map[string]json.RawMessage
-	if err := json.Unmarshal(all[name], &sec); err != nil {
+	if err := json.Unmarshal(raw, &sec); err != nil {
 		t.Fatalf("section %s: %v", name, err)
 	}
 	return sec

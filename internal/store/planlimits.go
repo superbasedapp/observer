@@ -208,7 +208,7 @@ func (s *Store) InsertPlanSnapshot(ctx context.Context, accountID, sessionID str
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO plan_snapshots (account_id, provider, source, session_id, observed_at, status, body)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		nullStr(accountID), snap.Provider, snap.Source, nullStr(sessionID), snap.ObservedAt.Unix(), snap.Status, string(body))
+		nullableString(accountID), snap.Provider, snap.Source, nullableString(sessionID), snap.ObservedAt.Unix(), snap.Status, string(body))
 	if err != nil {
 		return fmt.Errorf("store.InsertPlanSnapshot: %w", err)
 	}
@@ -585,7 +585,7 @@ func (s *Store) LoadPlanPassiveSignals(ctx context.Context, since time.Time) (Pl
 				rows.Close()
 				return out, fmt.Errorf("store.LoadPlanPassiveSignals: logs: %w", err)
 			}
-			if t, ok := parseDBTime(ts); ok {
+			if t, ok := parseStoredTimeOK(ts); ok {
 				r.ObservedAt = t
 			}
 			r.Raw = []byte(raw)

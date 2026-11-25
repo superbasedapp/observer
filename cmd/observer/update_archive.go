@@ -6,14 +6,13 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/filehash"
 	"github.com/marmutapp/superbased-observer/internal/update"
 )
 
@@ -225,18 +224,14 @@ func writeMember(dest string, r io.Reader) (string, error) {
 	return sha256File(dest)
 }
 
-// sha256File hashes a file on disk.
+// sha256File hashes a file on disk (a path this process composed under
+// state_dir).
 func sha256File(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // a path this process composed under state_dir
+	sum, err := filehash.SHA256(path)
 	if err != nil {
 		return "", fmt.Errorf("observer update: hash %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("observer update: hash %s: %w", path, err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return sum, nil
 }
 
 // cleanArchiveEntryName normalises separators so a zip written on Windows and

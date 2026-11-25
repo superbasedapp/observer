@@ -19,8 +19,7 @@ func TestPureSubpackageImports_Bounded(t *testing.T) {
 			"analyze",
 			"query",
 		},
-		Recursive:       true,
-		SkipMissingDirs: true,
+		Recursive: true,
 		ForbiddenTrees: []string{
 			"database/sql",
 			"net/http",

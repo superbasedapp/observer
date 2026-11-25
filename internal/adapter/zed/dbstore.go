@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver (no CGO), per CLAUDE.md
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -67,22 +67,6 @@ func openDB(path string) (*sql.DB, error) {
 // allHomesFunc is the test seam over crossmount.AllHomes.
 var allHomesFunc = crossmount.AllHomes
 
-// isForeignMountPath reports whether path lives under a
-// crossmount-detected non-native home (both bridge directions: /mnt/c
-// on WSL2, \\wsl.localhost on Windows).
-func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" || h.Path == "" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 // stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
 // store (a Windows-side store read by a WSL observer over /mnt/c, or
 // the reverse), which modernc.org/sqlite cannot open in place while the
@@ -91,10 +75,7 @@ func isForeignMountPath(path string) bool {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Zed threads store (threads.db): every table this
@@ -107,15 +88,6 @@ var mirrorSpec = mirrorbase.Spec{
 	Tables: []string{"threads"},
 }
 
-// tableExists lets a foreign or older schema degrade gracefully instead
-// of erroring the whole parse.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
-}
-
 // scanWatermarks reads every thread row's (id, updated_at, data_type,
 // parent_id, created_at) — cheap TEXT columns only, no BLOB — and
 // returns them alongside the overall latest UnixNano watermark. Full
@@ -123,7 +95,7 @@ func tableExists(ctx context.Context, db *sql.DB, name string) bool {
 // for the threads that actually changed, so an untouched thread's
 // multi-KB payload is never decompressed on a no-op poll tick.
 func scanWatermarks(ctx context.Context, db *sql.DB) ([]threadRow, int64, error) {
-	if !tableExists(ctx, db, "threads") {
+	if !sqliteschema.TableExists(ctx, db, "threads") {
 		return nil, 0, nil
 	}
 	rows, err := db.QueryContext(ctx,

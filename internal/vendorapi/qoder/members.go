@@ -101,14 +101,7 @@ type membersDoc struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceMembers}, a...)...)
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
+	return vendorapi.Drift(SurfaceMembers, format, a...)
 }
 
 func isoTime(s string) (string, bool) {
@@ -136,7 +129,7 @@ func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 		Scope:          []vendorapi.ScopeKey{{Namespace: NamespaceMember, Kind: vs.KindUser}},
 		SelectorDigest: "organization_active", PageSet: "organization_members", ContractVersion: MembersContract,
 	}}
-	if tok := str(doc.NextToken); tok != "" {
+	if tok := vendorapi.Str(doc.NextToken); tok != "" {
 		if !tokenRE.MatchString(tok) {
 			return vendorapi.Page{}, drift("nextToken is not an opaque token")
 		}
@@ -147,7 +140,7 @@ func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	seen := map[string]bool{}
 	for i, m := range *doc.Members {
-		id := str(m.ID)
+		id := vendorapi.Str(m.ID)
 		if id == "" || m.Status == nil || m.JoinedAt == nil {
 			return vendorapi.Page{}, drift("members[%d] misses id, status or joinedAt", i)
 		}
@@ -171,13 +164,13 @@ func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 			}
 			attrs["deleted_at"] = t
 		}
-		for k, v := range map[string]string{"user_id": str(m.UserID), "email": strings.TrimSpace(str(m.Email)), "role": str(m.Role)} {
+		for k, v := range map[string]string{"user_id": vendorapi.Str(m.UserID), "email": strings.TrimSpace(vendorapi.Str(m.Email)), "role": vendorapi.Str(m.Role)} {
 			if v != "" {
 				attrs[k] = v
 			}
 		}
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
-			Type: MemberType, ID: vs.ExternalID{Namespace: NamespaceMember, Value: id}, DisplayName: str(m.Name), Attrs: attrs,
+			Type: MemberType, ID: vs.ExternalID{Namespace: NamespaceMember, Value: id}, DisplayName: vendorapi.Str(m.Name), Attrs: attrs,
 		})
 	}
 	return page, nil

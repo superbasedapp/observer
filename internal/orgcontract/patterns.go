@@ -24,7 +24,7 @@ package orgcontract
 // invoked from orgpush.go's existing shipsRawContent() block, exactly like
 // SessionVerbositySummaries/SessionCacheSummaries/SessionProcesses.
 //
-// Value extraction by Kind mirrors internal/mcp/tools_extra.go's
+// Value extraction by Kind mirrors internal/mcp/tools_get_project_patterns.go's
 // get_project_patterns "derived_patterns" half (which reads project_patterns
 // directly, the same source this row reads):
 //   - "hot_file"       → pattern_data.file_path (the raw path).

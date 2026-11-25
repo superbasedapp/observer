@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/localipc"
 )
 
 // transport_windows_test.go keeps the protocol round trip over a real named
@@ -18,7 +20,7 @@ import (
 // shipped naming.
 func testPipeEndpoint(t *testing.T) string {
 	t.Helper()
-	ep, err := Endpoint(filepath.Join(t.TempDir(), "observer.db"))
+	ep, err := localipc.Endpoint(filepath.Join(t.TempDir(), "observer.db"))
 	if err != nil {
 		t.Fatalf("Endpoint: %v", err)
 	}
@@ -31,7 +33,7 @@ func testPipeEndpoint(t *testing.T) string {
 // transport-agnostic — the same harness the AF_UNIX test uses, over a pipe.
 func TestPipeDialRoundTrip(t *testing.T) {
 	endpoint := testPipeEndpoint(t)
-	ln, err := ListenSocket(endpoint)
+	ln, err := localipc.ListenSocket(endpoint)
 	if err != nil {
 		t.Fatalf("ListenSocket: %v", err)
 	}

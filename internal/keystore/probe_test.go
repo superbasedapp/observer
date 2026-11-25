@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -186,19 +187,23 @@ func TestProbeSingleFlight(t *testing.T) {
 	}()
 
 	dir := t.TempDir()
-	var wg sync.WaitGroup
 	reasons := make([]string, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if i == 1 {
-				time.Sleep(10 * time.Millisecond)
-			}
+	// The two opens run in a synctest bubble on its fake clock: the second
+	// starts only once synctest.Wait says the first is blocked on its
+	// probe, so the two always overlap, and the probe's 50 ms pass only
+	// when both are waiting.
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan struct{}, 2)
+		open := func(i int) {
 			reasons[i] = OpenReport("svc-single", dir, nil).Reason
-		}(i)
-	}
-	wg.Wait()
+			done <- struct{}{}
+		}
+		go open(0)
+		synctest.Wait()
+		go open(1)
+		<-done
+		<-done
+	})
 	mu.Lock()
 	n := calls
 	mu.Unlock()

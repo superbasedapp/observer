@@ -134,26 +134,26 @@ func parseUsage(r vendorapi.Response) (vendorapi.Page, error) {
 			return vendorapi.Page{}, err
 		}
 		if b.Results == nil {
-			return vendorapi.Page{}, drift(SurfaceUsageMessages, "data[%d].results is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageMessages, "data[%d].results is missing", i)
 		}
 		seen := map[string]bool{}
 		for j, res := range *b.Results {
-			model := str(res.Model)
+			model := vendorapi.Str(res.Model)
 			if seen[model] {
-				return vendorapi.Page{}, drift(SurfaceUsageMessages, "data[%d].results[%d] repeats a model group", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageMessages, "data[%d].results[%d] repeats a model group", i, j)
 			}
 			seen[model] = true
 			for _, m := range usageMetrics {
 				n := m.get(res)
 				if n == nil {
 					if m.required {
-						return vendorapi.Page{}, drift(SurfaceUsageMessages, "data[%d].results[%d] misses %s", i, j, m.metric)
+						return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageMessages, "data[%d].results[%d] misses %s", i, j, m.metric)
 					}
 					continue
 				}
 				v, ok := count(n)
 				if !ok {
-					return vendorapi.Page{}, drift(SurfaceUsageMessages, "data[%d].results[%d] %s is not a token count", i, j, m.metric)
+					return vendorapi.Page{}, vendorapi.Drift(SurfaceUsageMessages, "data[%d].results[%d] %s is not a token count", i, j, m.metric)
 				}
 				page.Facts = append(page.Facts, vendorapi.FactRow{
 					IntervalStart: start, IntervalEnd: end, SourceTZ: "UTC", CoverageDomain: "anthropic.console.api",

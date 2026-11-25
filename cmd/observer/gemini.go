@@ -62,7 +62,8 @@ func newGeminiCmd() *cobra.Command {
 			"flag (delivery=inject_prompt). See `observer handoff --help`.\n\n" +
 			"All arguments after the subcommand are forwarded to gemini. Use\n" +
 			"`--` to separate observer flags from gemini flags. NEVER touches\n" +
-			"the API key. Requires a running observer proxy (`observer start`).",
+			"the API key. Routes through the observer proxy; a daemon that is\n" +
+			"not running is started first (--no-start skips that).",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

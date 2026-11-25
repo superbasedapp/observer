@@ -1,5 +1,5 @@
 // Words for the sources the 2026-10-21 capture wave adds
-// (internal/planlimits/src_wave1021.go, AP-134). Pure data; plans.ts merges
+// (internal/planlimits/src_experimental_2026_10.go, AP-134). Pure data; plans.ts merges
 // it. Keys of WAVE_1021 are source ids; keys of WAVE_1021_WORDS are new
 // parameter keys and parameter choices.
 import type { SourceWords } from "./types.ts";

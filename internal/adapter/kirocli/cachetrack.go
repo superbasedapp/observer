@@ -9,20 +9,21 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-conversation Tier-2 accumulator's
-// running block count. Matches the claudecode template's cap (same
-// memory budget, same OOM guard).
+// running block count: the shared cacheobs default (same memory budget,
+// same OOM guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // accumulateTurnCache feeds one conversations_v2 history entry's user
 // and assistant content into acc, in wire order: the user's prompt or
 // tool-use-results, then the assistant's tool_use calls or text
-// response. Only the SQLite (conversations_v2) path calls this — the
+// response. Text blocks use the shared cacheobs form; the tool blocks
+// keep kiro-cli's own fields (id, status, result_text). Only the SQLite (conversations_v2) path calls this — the
 // flat-bundle path's turn metadata carries no cache fields at all (see
 // flatTurnMeta in flat.go), so there is nothing to accumulate there.
 func accumulateTurnCache(acc *cacheobs.Accumulator, h sqliteHistory) {
 	var blocks []models.CacheBlockMeta
 	if h.User.Content.Prompt != nil {
-		if canon, ok := marshalCacheTextBlock(h.User.Content.Prompt.Prompt); ok {
+		if canon, ok := cacheobs.MarshalTextBlock(h.User.Content.Prompt.Prompt); ok {
 			blocks = append(blocks, models.CacheBlockMeta{
 				LevelLabel:     "message", // R1: transcripts never expose tools/system
 				Kind:           "text",
@@ -56,7 +57,7 @@ func accumulateTurnCache(acc *cacheobs.Accumulator, h sqliteHistory) {
 		}
 	}
 	if h.Assistant.Response != nil {
-		if canon, ok := marshalCacheTextBlock(h.Assistant.Response.Content); ok {
+		if canon, ok := cacheobs.MarshalTextBlock(h.Assistant.Response.Content); ok {
 			blocks = append(blocks, models.CacheBlockMeta{
 				LevelLabel:     "message",
 				Kind:           "text",
@@ -68,25 +69,6 @@ func accumulateTurnCache(acc *cacheobs.Accumulator, h sqliteHistory) {
 	if len(blocks) > 0 {
 		acc.ObserveBlocks(blocks)
 	}
-}
-
-// marshalCacheTextBlock produces the deterministic JSON canonical form
-// of a plain text block (a user prompt or an assistant text response).
-// Each payload is an explicit STRUCT (never a map) so encoding/json's
-// deterministic field order preserves the R3 byte-stability invariant.
-func marshalCacheTextBlock(text string) ([]byte, bool) {
-	if text == "" {
-		return nil, false
-	}
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "text", Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
 }
 
 // marshalCacheToolUseBlock produces the canonical form of one assistant
@@ -150,15 +132,10 @@ func emitCacheObservation(acc *cacheobs.Accumulator, path, sessionID, messageID,
 		CacheReadTokens:     deref(m.CacheReadInputTokens),
 		CacheCreationTokens: deref(m.CacheWriteInputTokens),
 	}
-	if cacheobs.IsZeroUsage(usage) {
-		return nil
-	}
-	obs := acc.Emit(path, sessionID, messageID, model, ts, usage, false)
 	// §15.3 boundary: Kiro CLI's SigV4 endpoint never surfaces which
 	// upstream provider served a model (model_id is often the literal
 	// string "auto"), so provider is always "" here — a no-op today,
 	// kept for consistency with every other Tier-2 producer's identical
-	// three-line overlay.
-	obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", model)
-	return &obs
+	// overlay.
+	return acc.EmitTurn(path, sessionID, messageID, model, "", ts, usage)
 }

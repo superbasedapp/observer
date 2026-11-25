@@ -1,8 +1,6 @@
 package cursor
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -62,10 +60,6 @@ func buildMembers(_ vendorapi.Params, _ vendorapi.Window, cursor string) (vendor
 	return vendorapi.Request{Method: "GET", Path: "/teams/members"}, nil
 }
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
 type membersDoc struct {
 	TeamMembers *[]member `json:"teamMembers"`
 }
@@ -78,22 +72,16 @@ type member struct {
 	IsRemoved *bool   `json:"isRemoved"`
 }
 
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceMembers, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceMembers, "status %d is not the documented 200", r.Status)
 	}
 	var doc membersDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceMembers, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceMembers, "body does not decode as the documented object")
 	}
 	if doc.TeamMembers == nil {
-		return vendorapi.Page{}, drift(SurfaceMembers, "required field teamMembers is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceMembers, "required field teamMembers is missing")
 	}
 	page := vendorapi.Page{Snapshot: &vendorapi.SnapshotManifest{
 		Scope:           []vendorapi.ScopeKey{{Namespace: NamespaceUser, Kind: vs.KindUser}},
@@ -104,10 +92,10 @@ func parseMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, m := range *doc.TeamMembers {
 		if m.ID == nil || *m.ID == "" {
-			return vendorapi.Page{}, drift(SurfaceMembers, "teamMembers[%d].id is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceMembers, "teamMembers[%d].id is missing", i)
 		}
 		if seen[*m.ID] {
-			return vendorapi.Page{}, drift(SurfaceMembers, "teamMembers[%d] repeats a member", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceMembers, "teamMembers[%d] repeats a member", i)
 		}
 		seen[*m.ID] = true
 		attrs := map[string]string{}

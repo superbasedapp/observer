@@ -180,7 +180,7 @@
 // A toolCall and its `toolResult` are separate lines written however long
 // the tool took apart. A poll tick landing between them would persist an
 // optimistic success that the store's ON CONFLICT clause can never flip.
-// The tail deferral (pending.go) rewinds the cursor to the start of the
+// The tail deferral (adapter.DeferUnpairedTail) rewinds the cursor to the start of the
 // unanswered assistant entry, bounded by tail size and file mtime, so the
 // pair always resolves inside ONE parse window — the same mechanism
 // commandcode uses.

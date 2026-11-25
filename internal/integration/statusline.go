@@ -180,15 +180,3 @@ func StatusLineWriterTools(initFlag string) []string {
 	sort.Strings(out)
 	return out
 }
-
-// StatusLineTools returns every tool with a grounded status-line command
-// (Kind != StatusLineNone), unsorted.
-func StatusLineTools() []string {
-	out := make([]string, 0, len(statusLines))
-	for t, s := range statusLines {
-		if s.Kind != StatusLineNone {
-			out = append(out, t)
-		}
-	}
-	return out
-}

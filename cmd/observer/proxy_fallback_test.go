@@ -87,39 +87,63 @@ func TestDecideProxyFallback_Table(t *testing.T) {
 	}
 }
 
-// TestDecideProxyFallback_Exhaustive proves the table is total over all 2^4
+// TestDecideProxyFallback_Exhaustive proves the table is total over all 2^5
 // inputs and that fail-closed happens EXACTLY on a blocking route
 // (persistentRoute && !canNeutralizePersistent) combined with a non-proceed
-// intent — never when the route is overridable or absent.
+// intent, or on a routed proxy-down launch whose organization owns the route
+// (orgRequiresRoute) — never otherwise.
 func TestDecideProxyFallback_Exhaustive(t *testing.T) {
 	failClosed := 0
 	for _, npr := range []bool{false, true} {
 		for _, reach := range []bool{false, true} {
 			for _, route := range []bool{false, true} {
 				for _, canNeut := range []bool{false, true} {
-					in := proxyFallbackInputs{
-						noProxyRoute: npr, proxyReachable: reach,
-						persistentRoute: route, canNeutralizePersistent: canNeut,
-					}
-					d := decideProxyFallback(in)
-					switch d.action {
-					case proxyRouteProceed, proxyNeutralize, proxyFailClosed:
-					default:
-						t.Fatalf("undefined action for %+v", in)
-					}
-					if d.action == proxyFailClosed {
-						failClosed++
-						if !route || canNeut {
-							t.Errorf("fail-closed must require a BLOCKING (un-overridable) route: %+v", in)
+					for _, org := range []bool{false, true} {
+						in := proxyFallbackInputs{
+							noProxyRoute: npr, proxyReachable: reach,
+							persistentRoute: route, canNeutralizePersistent: canNeut,
+							orgRequiresRoute: org,
+						}
+						d := decideProxyFallback(in)
+						switch d.action {
+						case proxyRouteProceed, proxyNeutralize, proxyFailClosed:
+						default:
+							t.Fatalf("undefined action for %+v", in)
+						}
+						blocking := route && !canNeut
+						want := (blocking && (npr || !reach)) || (org && !npr && !reach)
+						if (d.action == proxyFailClosed) != want {
+							t.Errorf("%+v: fail-closed = %v, want %v", in, d.action == proxyFailClosed, want)
+						}
+						if d.action == proxyFailClosed {
+							failClosed++
+						}
+						if d.reason == reasonProxyDownOrgRoute && (!org || blocking || npr || reach) {
+							t.Errorf("%+v: the org reason fired outside its row", in)
 						}
 					}
 				}
 			}
 		}
 	}
-	// Blocking = route && !canNeut → 4 combos (npr × reach). Of those:
-	// {npr,down}, {npr,up}, {routed,down} fail closed; {routed,up} proceeds. So 3.
-	if failClosed != 3 {
-		t.Fatalf("expected 3 fail-closed combinations, got %d", failClosed)
+	// Blocking (route && !canNeut): {npr,down}, {npr,up}, {routed,down} fail
+	// closed, for both org values: 6. Org on a routed, down, non-blocking
+	// launch: (route,canNeut) in {(f,f),(f,t),(t,t)}: 3 more. So 9.
+	if failClosed != 9 {
+		t.Fatalf("expected 9 fail-closed combinations, got %d", failClosed)
+	}
+}
+
+// TestDecideProxyFallback_OrgRow pins the managed-node row: a routed,
+// proxy-down launch with nothing pinned fails closed with its own reason
+// when the organization owns the route, and neutralizes otherwise.
+func TestDecideProxyFallback_OrgRow(t *testing.T) {
+	got := decideProxyFallback(proxyFallbackInputs{orgRequiresRoute: true})
+	if got.action != proxyFailClosed || got.reason != reasonProxyDownOrgRoute {
+		t.Fatalf("org-owned, down = %+v, want fail closed / reasonProxyDownOrgRoute", got)
+	}
+	got = decideProxyFallback(proxyFallbackInputs{orgRequiresRoute: true, proxyReachable: true})
+	if got.action != proxyRouteProceed {
+		t.Fatalf("org-owned, up = %+v, want proceed", got)
 	}
 }

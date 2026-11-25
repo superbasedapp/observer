@@ -1,12 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ConnectHome } from "../api.ts";
+import type { ConnectChoice, ConnectHome } from "../api.ts";
 import {
   CONNECT_FIRST,
   CONNECT_PAGE_TEXT,
   INSTALL_TABS,
+  PURPOSE_TEXT,
+  SDK_KEY_PAGE_TEXT,
   ageLabel,
+  choiceAvailable,
   choiceLabel,
+  connectPurpose,
+  pickChoice,
+  sdkClientLabel,
+  sdkKeyAfter,
   connectPageState,
   connectedDashboards,
   PORTAL_HOME,
@@ -188,4 +195,69 @@ test("after approval the page shows both dashboards, each with its role", () => 
 test("the connected line still lets the person close the page", () => {
   assert.match(CONNECT_PAGE_TEXT.connected.line, /close this page\.$/);
   assert.match(CONNECT_PAGE_TEXT.connected.line, /finishes connecting by itself/);
+});
+
+// ---------------------------------------------------------------------------
+// An SDK key request (the AI Apps SDK quickstart, purpose "sdk_key")
+// ---------------------------------------------------------------------------
+
+test("an older server's view (no purpose) is a machine; an SDK key has its own words and no Not now", () => {
+  assert.equal(connectPurpose({}), "machine");
+  assert.equal(connectPurpose({ purpose: "sdk_key" }), "sdk_key");
+  assert.equal(PURPOSE_TEXT.machine.notNow, true);
+  assert.equal(PURPOSE_TEXT.sdk_key.notNow, false);
+  assert.equal(PURPOSE_TEXT.machine.approve, "Connect");
+  assert.equal(PURPOSE_TEXT.sdk_key.approve, "Approve");
+  // The hosted AI gateway ships dark: the SDK key page never names it.
+  for (const t of [...Object.values(PURPOSE_TEXT.sdk_key).map(String), ...Object.values(SDK_KEY_PAGE_TEXT).flatMap((x) => [x.title, x.line])]) {
+    assert.equal(/gateway/i.test(t), false, t);
+  }
+});
+
+test("the SDK that asks is named by its package", () => {
+  assert.equal(sdkClientLabel("superbased-sdk-python", "0.3.0"), "Python SDK 0.3.0");
+  assert.equal(sdkClientLabel("superbased-sdk-typescript", "0.3.0"), "TypeScript SDK 0.3.0");
+  assert.equal(sdkClientLabel("something-else", ""), "something-else");
+  assert.equal(sdkClientLabel(undefined, undefined), "SDK");
+  assert.equal(osLabel("win32"), "Windows");
+});
+
+const choice = (org_id: string, extra: Partial<ConnectChoice> = {}): ConnectChoice => ({
+  org_id,
+  kind: "team",
+  display_name: org_id,
+  status: "active",
+  share_level: "full",
+  disclosure: { share_level: "full", title: "t", text: "x", disclosure_version: "v", disclosure_sha256: "s" },
+  preselected: false,
+  ...extra,
+});
+
+test("a dashboard without AI Apps is never the selected one", () => {
+  const personal = choice("p", { kind: "personal", preselected: true });
+  const noApps = choice("t", { available: false, refusal: { code: "plan_required", message: "no", upgrade_url: "https://x" } });
+  const older = choice("o"); // an older server sends no available flag
+  assert.equal(choiceAvailable(older), true);
+  assert.equal(choiceAvailable(noApps), false);
+  assert.equal(pickChoice([personal, noApps], null)?.org_id, "p");
+  assert.equal(pickChoice([personal, noApps], "t")?.org_id, "p", "picking an unavailable one keeps the preselected");
+  assert.equal(pickChoice([noApps, older], null)?.org_id, "o", "no preselected: the first available");
+  assert.equal(pickChoice([noApps], null), undefined);
+});
+
+test("after Approve: go to the AI apps page, wait while the dashboard is set up, else nothing", () => {
+  const target = { org_id: "o", slug: "acme", kind: "team" as const, display_name: "Acme", share_level: "full" as const };
+  const href = "https://acme.superbased.app/trajectories?from=connect";
+  const cases: { name: string; v: Parameters<typeof sdkKeyAfter>[0]; want: ReturnType<typeof sdkKeyAfter> }[] = [
+    { name: "pending", v: { status: "pending", target: null, open_url: href }, want: { state: "none" } },
+    { name: "declined", v: { status: "declined", target: null }, want: { state: "none" } },
+    { name: "approved, not ready", v: { status: "approved", target, target_ready: false, open_url: href }, want: { state: "wait" } },
+    { name: "approved, ready", v: { status: "approved", target, target_ready: true, open_url: href }, want: { state: "go", href } },
+    { name: "an older server (no ready flag)", v: { status: "approved", target, open_url: href }, want: { state: "go", href } },
+    { name: "not https", v: { status: "approved", target, target_ready: true, open_url: "http://acme.superbased.app/" }, want: { state: "none" } },
+    { name: "no address", v: { status: "approved", target, target_ready: true }, want: { state: "none" } },
+  ];
+  for (const c of cases) {
+    assert.deepEqual(sdkKeyAfter(c.v), c.want, c.name);
+  }
 });

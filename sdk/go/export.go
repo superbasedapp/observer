@@ -60,6 +60,7 @@ func clip(s string, n int) string {
 type countingExporter struct {
 	inner sdktrace.SpanExporter
 	quiet bool
+	dest  string // the destination it exports to: local or online
 }
 
 func (c *countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) (err error) {
@@ -88,7 +89,15 @@ func (c *countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Rea
 		stats.lastErrorAt = time.Now()
 	}
 	stats.mu.Unlock()
+	var refusal *PlanRefusalError
 	if err != nil {
+		refusal = planRefusalInExportError(err)
+	}
+	noteFirstTrace(c.dest, spans, err == nil, refusal)
+	if err != nil {
+		if refusal != nil {
+			notePlanRefusal(refusal, "trace export")
+		}
 		maybeLogFailures(time.Now())
 		if c.quiet {
 			return nil

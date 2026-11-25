@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"runtime"
 	"time"
 
@@ -26,37 +25,21 @@ func checkClaudeCodeTeams(cfg config.Config) Check {
 		return Check{Name: name, Status: StatusOK, Message: "native-console ingest disabled ([ingest.otel].enabled=false)"}
 	}
 
-	var details []string
-	worst := StatusOK
-	note := func(status Status, msg string) {
-		details = append(details, msg)
-		if status > worst {
-			worst = status
-		}
-	}
+	var d detailCheck
 
 	// (a/d) Receiver listening / OTLP endpoint reachable. The daemon owns the
 	// listener, so a dial failure usually means `observer start` isn't running.
-	for _, addr := range []string{cfg.Ingest.OTel.GRPCAddr, cfg.Ingest.OTel.HTTPAddr} {
-		if addr == "" {
-			continue
-		}
-		if dialable(addr) {
-			note(StatusOK, fmt.Sprintf("OTLP receiver reachable at %s", addr))
-		} else {
-			note(StatusWarn, fmt.Sprintf("OTLP receiver NOT reachable at %s - is `observer start` running with [ingest.otel].enabled?", addr))
-		}
-	}
+	d.noteOTLPReceivers(cfg, "")
 
 	// (b) Managed-settings present + parseable.
 	if path, ok := managedSettingsPath(); ok {
 		if err := parseableJSON(path); err != nil {
-			note(StatusWarn, fmt.Sprintf("managed-settings at %s is not valid JSON: %v", path, err))
+			d.note(StatusWarn, fmt.Sprintf("managed-settings at %s is not valid JSON: %v", path, err))
 		} else {
-			note(StatusOK, fmt.Sprintf("Claude Code managed-settings present + parseable (%s)", path))
+			d.note(StatusOK, fmt.Sprintf("Claude Code managed-settings present + parseable (%s)", path))
 		}
 	} else {
-		note(StatusWarn, fmt.Sprintf("Claude Code managed-settings not found - deploy with `observer org emit-managed-settings` (file channel: %s)", hook.ClaudeManagedPaths(runtime.GOOS).Settings))
+		d.note(StatusWarn, fmt.Sprintf("Claude Code managed-settings not found - deploy with `observer org emit-managed-settings` (file channel: %s)", hook.ClaudeManagedPaths(runtime.GOOS).Settings))
 	}
 
 	// (c) MCP pin resolvable: the managed-mcp.json pin runs `npx -y
@@ -64,18 +47,14 @@ func checkClaudeCodeTeams(cfg config.Config) Check {
 	// The pin is opt-in (`--exclusive-mcp`, surface-gap D2), so npx only
 	// matters where a managed-mcp.json is deployed.
 	if path, ok := managedMCPPath(); !ok {
-		note(StatusOK, "no managed-mcp.json - Observer's MCP server is the one `observer init` registers per node")
-	} else if _, err := exec.LookPath("npx"); err == nil {
-		note(StatusOK, fmt.Sprintf("npx present - the managed-mcp.json pin (%s) can bootstrap the MCP server", path))
+		d.note(StatusOK, "no managed-mcp.json - Observer's MCP server is the one `observer init` registers per node")
 	} else {
-		note(StatusWarn, fmt.Sprintf("npx not on PATH - the managed-mcp.json (%s) `npx -y @superbased/observer` pin will not start", path))
+		d.noteNPX(
+			fmt.Sprintf("npx present - the managed-mcp.json pin (%s) can bootstrap the MCP server", path),
+			fmt.Sprintf("npx not on PATH - the managed-mcp.json (%s) `npx -y @superbased/observer` pin will not start", path))
 	}
 
-	msg := "native-console ingest enabled - all checks passed"
-	if worst != StatusOK {
-		msg = "native-console ingest enabled - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return d.result(name, "native-console ingest enabled - all checks passed", "native-console ingest enabled - see warnings below")
 }
 
 // dialable reports whether a TCP connection to addr succeeds within a short

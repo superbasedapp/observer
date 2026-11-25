@@ -232,10 +232,20 @@ func TestGithooksHistoryOnlyHold(t *testing.T) {
 	}
 }
 
+// historyStallBudget is the history pass budget in
+// TestSecurityHistoryCannotStallTheLoop. The ticks are timed apart from it,
+// and the pass is waited for, so a wider budget costs only its own length.
+const historyStallBudget = 2 * time.Second
+
 // TestSecurityHistoryCannotStallTheLoop (lane sec-gate4 milestone 2a): a
 // git that hangs (it ignores its own per-call timeout) cannot stall the
 // post-write loop. The tick returns at once, a tick while the pass still
 // runs does not start a second one, and the pass ends at its budget.
+//
+// The pass budget also covers the work before the first git call (the held
+// commits read and the real default-push-remote lookup, which starts git
+// processes). A 300 ms budget was used up by that work under load, so the
+// stub was never called; historyStallBudget leaves room for it.
 func TestSecurityHistoryCannotStallTheLoop(t *testing.T) {
 	ctx := context.Background()
 	n := newGate2Node(t)
@@ -264,7 +274,7 @@ func TestSecurityHistoryCannotStallTheLoop(t *testing.T) {
 		return nil, false, ctx.Err()
 	}
 	rs := &securityRescan{
-		st: n.st, q: n.q, logger: n.log, historyBudget: 300 * time.Millisecond,
+		st: n.st, q: n.q, logger: n.log, historyBudget: historyStallBudget,
 		history: func(ctx context.Context, root, sha string) secquickscan.HistoryVerdict {
 			return secquickscan.HistoryChecker{Git: hang, ExitCode: func(error) (int, bool) { return 0, false }}.Inspect(ctx, root, sha)
 		},
@@ -280,7 +290,7 @@ func TestSecurityHistoryCannotStallTheLoop(t *testing.T) {
 	go func() { rs.waitHistory(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(historyStallBudget + 10*time.Second):
 		t.Fatal("the history pass did not end at its budget")
 	}
 	if c := calls.Load(); c != 1 {

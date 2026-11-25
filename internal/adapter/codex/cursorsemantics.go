@@ -6,12 +6,12 @@ import "github.com/marmutapp/superbased-observer/internal/adapter"
 //
 // A Codex rollout is an append-only JSONL file tailed by byte offset
 // (the default Kind), and ParseSessionFile SEEKS to the persisted offset
-// (adapter.go:973) before reading records through a bounded
+// (parseSessionFile) before reading records through a bounded
 // bufio.Reader — it never slurps the file.
 //
 // The incremental-resume path additionally re-reads the PREFIX from byte
-// 0 (prefetchSessionContext, adapter.go:4107) to rebuild dedup state,
-// but that scan is also a 64 KiB streaming reader with a per-record cap
+// 0 (prefetchSessionContext) to rebuild dedup state, but that scan is
+// also a 64 KiB streaming reader with a per-record cap
 // (maxRecordBytes), so it costs CPU, not heap. The MaxFileBytes guard is
 // a heap guard, so gating on the unread tail is correct here.
 //

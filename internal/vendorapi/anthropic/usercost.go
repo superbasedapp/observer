@@ -144,11 +144,11 @@ func userCostIdentity(r userCostRow) (string, string, bool) {
 	if a == nil || a.Type == nil || *a.Type != "user_actor" {
 		return "", "", false
 	}
-	id := strings.TrimSpace(str(a.UserID))
+	id := strings.TrimSpace(vendorapi.Str(a.UserID))
 	if id == "" || len(id) > vendorapi.MaxIDLen {
 		return "", "", false
 	}
-	if e, ok := asciiEmail(str(a.Email)); ok {
+	if e, ok := asciiEmail(vendorapi.Str(a.Email)); ok {
 		return "email", e, true
 	}
 	return "user_id", id, true
@@ -169,23 +169,23 @@ func parseUserCost(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		kind, id, ok := userCostIdentity(row)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d].actor is not a documented user actor", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d].actor is not a documented user actor", i)
 		}
 		if row.Currency == nil || !strings.EqualFold(*row.Currency, "USD") {
-			return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d] currency is not USD", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d] currency is not USD", i)
 		}
 		if row.Amount == nil || row.ListAmount == nil {
-			return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d] misses amount or list_amount", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d] misses amount or list_amount", i)
 		}
 		cost, ok1 := vendorapi.DecimalMicros(*row.Amount, 2)
 		list, ok2 := vendorapi.DecimalMicros(*row.ListAmount, 2)
 		if !ok1 || !ok2 {
-			return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d] amount or list_amount is not a decimal in cents", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d] amount or list_amount is not a decimal in cents", i)
 		}
-		feature := "product:" + str(row.Product)
+		feature := "product:" + vendorapi.Str(row.Product)
 		key := start.Format(time.DateOnly) + "\x00" + kind + "\x00" + id + "\x00" + feature
 		if seen[key] {
-			return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d] repeats a user day and product", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d] repeats a user day and product", i)
 		}
 		seen[key] = true
 		fact := func(metric, unit string, micros int64) vendorapi.FactRow {
@@ -198,7 +198,7 @@ func parseUserCost(r vendorapi.Response) (vendorapi.Page, error) {
 		if row.Requests != nil {
 			n, ok := count(row.Requests)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceUserCost, "data[%d].requests is not a non-negative integer", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceUserCost, "data[%d].requests is not a non-negative integer", i)
 			}
 			page.Facts = append(page.Facts, fact("requests", "count", n))
 		}

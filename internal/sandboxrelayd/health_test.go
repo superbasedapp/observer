@@ -112,6 +112,7 @@ func TestHealthRecordsEveryDegradedEvent(t *testing.T) {
 func TestHookDriftReachesTheDaemon(t *testing.T) {
 	var mu sync.Mutex
 	reg := HookRegistration{Events: []string{"PreToolUse", "PostToolUse"}}
+	probes := 0
 	log := &healthLog{}
 	m := startMultiRelay(t, 4, 4, false, func(d *Daemon, f *Forwarder) {
 		d.OnHealth = log.on
@@ -119,11 +120,22 @@ func TestHookDriftReachesTheDaemon(t *testing.T) {
 		f.HookProbe = func() (HookRegistration, error) {
 			mu.Lock()
 			defer mu.Unlock()
+			probes++
 			return HookRegistration{Events: slices.Clone(reg.Events), Covered: reg.Covered, Conflict: reg.Conflict}, nil
 		}
 	})
 	m.fw.ReadLaunchHooks()
-	time.Sleep(120 * time.Millisecond)
+	// The launch read is one probe and each interval re-read one more. The
+	// re-reads run one after another, and each reports a drift to the
+	// daemon before it returns, so once a fourth probe starts two re-reads
+	// of the unchanged registration have finished; FlushHealth then waits
+	// for anything they reported to reach OnHealth.
+	waitUntil(t, 5*time.Second, "two interval re-reads of the registration", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return probes >= 4
+	})
+	m.daemon.FlushHealth()
 	if log.calls() != 0 || m.fw.HooksDrifted() {
 		t.Fatal("an unchanged registration drifted")
 	}
@@ -183,7 +195,10 @@ func TestBoxCannotSendRunHealth(t *testing.T) {
 	if err == nil {
 		t.Fatal("a box's run_health was answered")
 	}
-	time.Sleep(100 * time.Millisecond)
+	// The helper reports the refused request as dropped once it is done
+	// with the connection, after anything it could have forwarded: once
+	// that report reaches OnHealth, so would a forwarded run_health have.
+	log.waitHealth(t, CauseDropped)
 	if log.last().Has(CauseHooksDrifted) {
 		t.Fatal("a box's run_health reached the daemon")
 	}

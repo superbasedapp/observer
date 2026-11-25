@@ -130,12 +130,8 @@ judge() {
 	[ "$2" = pass ] || FAIL=1
 	return 0
 }
-refuse() {
-	R[refused]="$1"
-	echo "refused: $1" >&2
-	EXIT_CODE=2
-	exit 2
-}
+# shellcheck source=scripts/sandbox/live-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/live-lib.sh"
 cleanup() {
 	local rc=$? c
 	set +e

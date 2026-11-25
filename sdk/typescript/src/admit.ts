@@ -11,6 +11,8 @@ import { trace } from "@opentelemetry/api";
 import { envFlag, onlineUsable, resolveServiceName, type Env } from "./config.js";
 import { getCurrentAttributes } from "./context.js";
 import { isLoopbackUrl } from "./destination.js";
+import { fetchBounded, startTimer, transportDetail, type RequestTimer } from "./http.js";
+import { notePlanRefusal, parsePlanRefusal, type PlanRefusalError } from "./planrefusal.js";
 import { destinationKnown, runtime } from "./runtime.js";
 
 /** Default admission-check endpoint: this machine's Observer API on the dashboard port. */
@@ -82,6 +84,12 @@ export interface Verdict {
   httpStatus: number;
   /** Detail for a client-degraded verdict. */
   error: string;
+  /**
+   * Set when the org's plan refused the check (its `message` and
+   * `upgradeUrl` say why and where to fix it); the verdict is degraded as
+   * for any other refusal.
+   */
+  planRefusal?: PlanRefusalError;
 }
 
 export interface AdmitOptions {
@@ -185,7 +193,12 @@ function where(url: string): string {
 function noteDegraded(v: Verdict, url: string): void {
   try {
     const detail = v.httpStatus ? `HTTP ${v.httpStatus}` : v.error || v.degraded;
-    const fix = degradedFix(v.degraded, v.httpStatus, url);
+    let fix = degradedFix(v.degraded, v.httpStatus, url);
+    if (v.planRefusal) {
+      // The org's plan refused it: its own words and where to fix it.
+      fix = `${v.planRefusal.message.split(/\s+/).join(" ")} (upgrade: ${v.planRefusal.upgradeUrl})`;
+      notePlanRefusal(v.planRefusal);
+    }
     const outcome = v.allowed ? "admitted (fail open)" : "denied (failClosed)";
     const msg =
       `admit() got no decision${url ? ` from ${where(url)}` : ""} (${v.degraded}: ${detail}); the message was ${outcome}` +
@@ -424,39 +437,40 @@ function withoutAuthorization(h: Record<string, string> | undefined): Record<str
 
 /** One admission request to url; a failure is a counted degraded verdict. The caller stamps the span. */
 async function post(url: string, key: string, payload: string, opts: AdmitOptions, failClosed: boolean, started: number): Promise<Verdict> {
-  const fail = (cause: string, status = 0, error = ""): Verdict => {
+  const fail = (cause: string, status = 0, error = "", refusal?: PlanRefusalError): Verdict => {
     const v = degraded(cause, failClosed, started, status, error);
+    if (refusal) v.planRefusal = refusal;
     noteDegraded(v, url);
     return v;
   };
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  // The org's plan refusal in a 403 / 429 answer (its body, read within the deadline), else null.
+  const refusalOf = async (resp: Response): Promise<PlanRefusalError | null> => {
+    if (resp.status !== 403 && resp.status !== 429) return null;
+    try {
+      return parsePlanRefusal(resp.status, await resp.text(), resp.headers);
+    } catch {
+      return null;
+    }
+  };
+  let timer: RequestTimer | undefined;
   try {
     const timeoutMs = opts.timeoutMs ?? advertised.get(url) ?? DEFAULT_ADMIT_TIMEOUT_MS;
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
     if (key) headers.Authorization = `Bearer ${key}`;
     if (opts.headers) Object.assign(headers, opts.headers);
-    const controller = new AbortController();
-    let timedOut = false;
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: payload,
-        signal: controller.signal,
-        // Never follow a redirect: the key must not ride to a host it was not sent to (R-B26).
-        redirect: "manual",
-      });
-    } catch (err) {
-      if (timedOut) return fail(Degraded.TIMEOUT, 0, `timed out after ${timeoutMs}ms`);
-      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-      return fail(Degraded.TRANSPORT, 0, cause?.code ?? cause?.message ?? String(err));
+    timer = startTimer(timeoutMs, false);
+    const sent = await fetchBounded(url, { method: "POST", headers, body: payload }, timer);
+    if ("failed" in sent) {
+      if (timer.timedOut()) return fail(Degraded.TIMEOUT, 0, `timed out after ${timeoutMs}ms`);
+      return fail(Degraded.TRANSPORT, 0, transportDetail(sent.failed));
     }
+    const resp = sent.resp;
     rememberTimeout(url, firstPresent((n) => resp.headers.get(n), TIMEOUT_HEADERS));
+    const refusal = await refusalOf(resp);
+    if (refusal) {
+      const cause = resp.status === 403 ? Degraded.UNAVAILABLE : Degraded.HTTP_ERROR;
+      return fail(cause, resp.status, `HTTP ${resp.status} ${refusal.code}: ${refusal.message}`, refusal);
+    }
     if (resp.status === 403 || resp.status === 404) {
       void resp.body?.cancel().catch(() => undefined);
       return fail(Degraded.UNAVAILABLE, resp.status, `HTTP ${resp.status}`);
@@ -469,7 +483,7 @@ async function post(url: string, key: string, payload: string, opts: AdmitOption
     try {
       text = await resp.text();
     } catch (err) {
-      if (timedOut) return fail(Degraded.TIMEOUT, resp.status, `timed out after ${timeoutMs}ms`);
+      if (timer.timedOut()) return fail(Degraded.TIMEOUT, resp.status, `timed out after ${timeoutMs}ms`);
       return fail(Degraded.TRANSPORT, resp.status, String(err));
     }
     let body: unknown;
@@ -494,6 +508,6 @@ async function post(url: string, key: string, payload: string, opts: AdmitOption
   } catch (err) {
     return fail(Degraded.BAD_RESPONSE, 0, String(err));
   } finally {
-    if (timer) clearTimeout(timer);
+    timer?.clear();
   }
 }

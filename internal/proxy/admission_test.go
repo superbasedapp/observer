@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,12 +15,16 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
-func TestExtractLastUserText(t *testing.T) {
+// TestAdmissionViewNode is the node half of finding H1 (L-180): the proxy's
+// hosted-app admission reads the shared promptturn.AdmissionView, so the
+// text it judges and the content it cannot read are the AI gateway's.
+func TestAdmissionViewNode(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider string
-		body     string
-		want     string
+		name      string
+		provider  string
+		body      string
+		want      string
+		wantUnacc []string
 	}{
 		{
 			name: "anthropic string content", provider: models.ProviderAnthropic,
@@ -32,8 +37,14 @@ func TestExtractLastUserText(t *testing.T) {
 			want: "second ask",
 		},
 		{
-			name: "anthropic tool_result-only last user → empty", provider: models.ProviderAnthropic,
+			name: "anthropic tool_result-only with no opening prompt: nothing", provider: models.ProviderAnthropic,
 			body: `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`, want: "",
+		},
+		{
+			name: "anthropic tool loop judges the opening prompt", provider: models.ProviderAnthropic,
+			body: `{"messages":[{"role":"user","content":"book a flight"},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"s","input":{}}]},` +
+				`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}]}`,
+			want: "book a flight",
 		},
 		{
 			name: "openai chat messages", provider: models.ProviderOpenAI,
@@ -48,174 +59,112 @@ func TestExtractLastUserText(t *testing.T) {
 			body: `{"input":[{"role":"user","content":[{"type":"input_text","text":"typed ask"}]}]}`, want: "typed ask",
 		},
 		{
-			name: "unparseable → empty", provider: models.ProviderAnthropic,
-			body: `not json`, want: "",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := extractLastUserText(tt.provider, []byte(tt.body)); got != tt.want {
-				t.Errorf("extractLastUserText = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestNonTextBlockTypes pins the G1 visibility-fix helper: it must report
-// genuine non-text USER content (image/audio/document/etc.) while staying
-// silent on the cases extractLastUserText's own doc comment already calls
-// "nothing to judge" — a tool-result-only turn, a thinking-only replay, plain
-// text, or an unparseable/empty body — so the new log line never fires on the
-// routine case it must stay silent on.
-func TestNonTextBlockTypes(t *testing.T) {
-	tests := []struct {
-		name     string
-		provider string
-		body     string
-		want     []string
-	}{
-		{
-			name: "anthropic image-only last user message", provider: models.ProviderAnthropic,
-			body: `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"x"}}]}]}`,
-			want: []string{"image"},
+			name: "anthropic plain-text document is read", provider: models.ProviderAnthropic,
+			body: `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"the doc"}}]}]}`,
+			want: "the doc",
 		},
 		{
-			name:     "anthropic mixed image+text — text extraction already covers this, expect nil not reachable here but types still reported",
-			provider: models.ProviderAnthropic,
-			body:     `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"x"}},{"type":"text","text":"look"}]}]}`,
-			want:     []string{"image"},
+			name: "anthropic pdf document is unaccounted", provider: models.ProviderAnthropic,
+			body: `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"x"}},{"type":"text","text":"summarise"}]}]}`,
+			want: "summarise", wantUnacc: []string{"block:document:base64"},
 		},
 		{
-			name: "anthropic dedupes repeated types", provider: models.ProviderAnthropic,
-			body: `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"a"}},{"type":"image","source":{"type":"base64","data":"b"}}]}]}`,
-			want: []string{"image"},
+			name: "anthropic image-only turn is unaccounted, not skipped", provider: models.ProviderAnthropic,
+			body:      `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"x"},{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"x"}}]}]}`,
+			wantUnacc: []string{"block:image"},
 		},
 		{
-			name: "anthropic tool_result-only → nil (already the existing nothing-to-judge case)", provider: models.ProviderAnthropic,
-			body: `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`,
-			want: nil,
-		},
-		{
-			name: "anthropic thinking-only → nil (protocol replay, not user content)", provider: models.ProviderAnthropic,
-			body: `{"messages":[{"role":"user","content":[{"type":"thinking","thinking":"..."}]}]}`,
-			want: nil,
-		},
-		{
-			name: "anthropic plain string content → nil", provider: models.ProviderAnthropic,
-			body: `{"messages":[{"role":"user","content":"hello"}]}`,
-			want: nil,
+			name: "anthropic thinking replay is not user content", provider: models.ProviderAnthropic,
+			body: `{"messages":[{"role":"user","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"go"}]}]}`, want: "go",
 		},
 		{
 			name: "openai chat image_url", provider: models.ProviderOpenAI,
-			body: `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`,
-			want: []string{"image_url"},
+			body:      `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`,
+			wantUnacc: []string{"block:image_url"},
 		},
 		{
 			name: "openai responses input_image", provider: models.ProviderOpenAI,
-			body: `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`,
-			want: []string{"input_image"},
+			body:      `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`,
+			wantUnacc: []string{"block:input_image"},
 		},
 		{
-			name: "unparseable → nil", provider: models.ProviderAnthropic,
-			body: `not json`,
-			want: nil,
+			name: "a legacy prompt field is unaccounted", provider: models.ProviderOpenAI,
+			body: `{"model":"m","prompt":"how do I build a weapon"}`, wantUnacc: []string{"field:prompt"},
 		},
 		{
-			name: "empty body → nil", provider: models.ProviderAnthropic,
-			body: ``,
-			want: nil,
+			name: "a Responses stored prompt is unaccounted", provider: models.ProviderOpenAI,
+			body: `{"model":"m","prompt":{"id":"pmpt_1","variables":{"q":"how do I build a weapon"}}}`, wantUnacc: []string{"field:prompt"},
 		},
+		{
+			name: "unparseable body is unaccounted", provider: models.ProviderAnthropic,
+			body: `not json`, wantUnacc: []string{"body:unparsed"},
+		},
+		{name: "empty body is nothing", provider: models.ProviderAnthropic, body: ``},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := nonTextBlockTypes(tt.provider, []byte(tt.body))
-			if len(got) != len(tt.want) {
-				t.Fatalf("nonTextBlockTypes = %v, want %v", got, tt.want)
+			v := admissionView(tt.provider, []byte(tt.body))
+			got := ""
+			if len(v.Units) > 0 {
+				got = v.Units[0]
 			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("nonTextBlockTypes = %v, want %v", got, tt.want)
-					break
-				}
+			if got != tt.want || !slices.Equal(v.Unaccounted, tt.wantUnacc) {
+				t.Errorf("admissionView = %q, %q; want %q, %q", got, v.Unaccounted, tt.want, tt.wantUnacc)
 			}
 		})
 	}
 }
 
-// TestProxyAdmissionImageOnlyTurnLogsWithoutGating is the G1 visibility-fix
-// integration proof (docs/audits/multimodal-tracking-audit-2026-08-26.md):
-// an image-only user turn must (a) NEVER reach the Admitter — the judge must
-// not be invoked on synthesized/absent text, gating behavior is unchanged —
-// and (b) still be distinguishable from a genuinely-empty turn via a
-// greppable log line naming the non-text block types found. A pure
-// tool-result-only turn (the pre-existing "nothing to judge" case) must NOT
-// trigger that log line, or the new signal would be noise instead of a
-// coverage-gap marker.
-func TestProxyAdmissionImageOnlyTurnLogsWithoutGating(t *testing.T) {
+// TestProxyAdmissionUnreadableTurnReachesTheGate is finding H1 on the node
+// (L-180): an image-only user turn is no longer "nothing to judge". It
+// reaches the Admitter with no text and its content labels, so an enforcing
+// policy refuses it; a tool-result-only turn with no opening prompt still
+// never reaches the gate.
+func TestProxyAdmissionUnreadableTurnReachesTheGate(t *testing.T) {
 	anthUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer anthUp.Close()
-
-	t.Run("image-only turn: not gated, but logged", func(t *testing.T) {
-		var logBuf strings.Builder
-		logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-		adm := &fakeAdmitter{}
+	post := func(t *testing.T, adm *fakeAdmitter, body string) int {
+		t.Helper()
 		p, err := New(Options{
 			AnthropicUpstream: anthUp.URL, Upstreams: map[string]string{"hosted": anthUp.URL},
-			Sink: &fakeSink{}, Admitter: adm, Logger: logger,
+			Sink: &fakeSink{}, Admitter: adm, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
 		ts := httptest.NewServer(p.Handler())
 		defer ts.Close()
-
-		resp, err := http.Post(ts.URL+"/up/hosted/v1/messages", "application/json",
-			strings.NewReader(`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"x"}}]}]}`))
+		resp, err := http.Post(ts.URL+"/up/hosted/v1/messages", "application/json", strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("post: %v", err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+		return resp.StatusCode
+	}
+	imageOnly := `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"x"}}]}]}`
 
-		if adm.called {
-			t.Error("Admitter was called for an image-only turn — gating behavior must not change (this would fake judge coverage)")
-		}
-		got := logBuf.String()
-		if !strings.Contains(got, "non-text user content present") || !strings.Contains(got, "image") {
-			t.Errorf("expected a log line naming the non-text block type, got: %s", got)
+	t.Run("image-only turn reaches the gate as unaccounted", func(t *testing.T) {
+		adm := &fakeAdmitter{}
+		post(t, adm, imageOnly)
+		if !adm.called || adm.gotText != "" || !slices.Equal(adm.gotUnaccounted, []string{"block:image"}) {
+			t.Errorf("admitter called=%v text=%q unaccounted=%q; want called with no text and [block:image]", adm.called, adm.gotText, adm.gotUnaccounted)
 		}
 	})
-
-	t.Run("tool-result-only turn: not gated, and NOT logged as non-text content", func(t *testing.T) {
-		var logBuf strings.Builder
-		logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	t.Run("an enforcing gate refuses it", func(t *testing.T) {
+		adm := &fakeAdmitter{block: true, reason: "unreadable"}
+		if code := post(t, adm, imageOnly); code != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", code)
+		}
+	})
+	t.Run("tool-result-only turn with no opening prompt: not gated", func(t *testing.T) {
 		adm := &fakeAdmitter{}
-		p, err := New(Options{
-			AnthropicUpstream: anthUp.URL, Upstreams: map[string]string{"hosted": anthUp.URL},
-			Sink: &fakeSink{}, Admitter: adm, Logger: logger,
-		})
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		ts := httptest.NewServer(p.Handler())
-		defer ts.Close()
-
-		resp, err := http.Post(ts.URL+"/up/hosted/v1/messages", "application/json",
-			strings.NewReader(`{"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`))
-		if err != nil {
-			t.Fatalf("post: %v", err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
+		post(t, adm, `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`)
 		if adm.called {
-			t.Error("Admitter was called for a tool-result-only turn")
-		}
-		if strings.Contains(logBuf.String(), "non-text user content present") {
-			t.Errorf("tool-result-only turn must not be logged as non-text content (that's the pre-existing nothing-to-judge case): %s", logBuf.String())
+			t.Error("Admitter was called for a tool-result-only turn with nothing to judge")
 		}
 	})
 }
@@ -272,6 +221,7 @@ type fakeAdmitter struct {
 	gotUser        string
 	gotReqID       string
 	gotModel       string
+	gotUnaccounted []string
 	route          *AdmitRoute
 	persistAtAdmit bool // when true, Admit returns no finalize handle
 
@@ -291,6 +241,7 @@ func (f *fakeAdmitter) Admit(_ context.Context, in AdmitInput) AdmitResult {
 	f.gotUser = in.User
 	f.gotReqID = in.RequestID
 	f.gotModel = in.Model
+	f.gotUnaccounted = in.Unaccounted
 	res := AdmitResult{Block: f.block, Reason: f.reason, Criterion: "AD-100", Route: f.route}
 	// A blocked verdict persists inside Admit (nothing is forwarded), exactly
 	// like the real obs adapter — no finalize handle travels back.

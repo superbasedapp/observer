@@ -99,6 +99,10 @@ export const EXPORT_ROUTES: readonly ExportRow[] = [
   { path: "/apps/prompts", endpoint: "/api/obs/sdk/prompts", base: { limit: 500 } },
   { path: "/apps/alerts", endpoint: "/api/obs/alerts/firings", base: { limit: 500 } },
   {
+    path: "/apps/model-calls",
+    none: "Nothing to export here: the lanes are this machine's configuration, and each call's cost is on Your apps > Traces.",
+  },
+  {
     path: "/search",
     endpoint: "/api/search",
     base: { limit: 50 },

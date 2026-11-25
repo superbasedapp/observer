@@ -47,10 +47,6 @@ type SecurityShare struct {
 // unbinds it, and with it every security row.
 func (s *Store) SetSecurityOrgProviders(p SecurityOrgProviders) { s.secOrg = p }
 
-// SecurityOrgBound reports whether the security wire seam is bound (the
-// daemon binds it wherever it runs the push loop, cmd/observer/start.go).
-func (s *Store) SecurityOrgBound() bool { return s.secOrg.Level != nil }
-
 // SecurityScope is one push's project scope over the sec_* tables'
 // project_root_hash key (lane SEC-E2 audit finding 1): the [org_client]
 // project allow and deny lists, exactly as the delivery rows honour them, so

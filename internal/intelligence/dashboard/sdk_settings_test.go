@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,58 @@ func TestSDKDestinationDescribesTheKeyWithoutIt(t *testing.T) {
 	}
 }
 
+// TestSDKDestinationDashboardURLFromTheEnrolment (SDK quickstart plan 3.8):
+// online.dashboard_url is the enrolled organization's dashboard for the
+// held key, "" before enrolment, and the online address `observer connect`
+// recorded wins over the org server address.
+func TestSDKDestinationDashboardURLFromTheEnrolment(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[observability]\nenabled = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newRemoteTestServer(t, Options{
+		ConfigPath: cfgPath,
+		SDK: SDKSeams{Status: func() sdkcredsvc.Status {
+			return sdkcredsvc.Status{
+				SignedIn: true, CredentialFile: "/home/u/.observer/sdk/k", KeyGatewayURL: "https://u-sam.superbased.app",
+				Meta: sdkcredsvc.Meta{KeyID: "ik_1", OrgID: "o1", GatewayURL: "https://u-sam.superbased.app"},
+			}
+		}},
+	})
+	get := func() sdkcredsvc.Discovery {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/sdk/destination", nil)
+		req.Host = "127.0.0.1:8081"
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET: %d %s", rr.Code, rr.Body)
+		}
+		var d sdkcredsvc.Discovery
+		if err := json.Unmarshal(rr.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if d := get(); d.Online.DashboardURL != "" {
+		t.Fatalf("not enrolled: dashboard_url %q", d.Online.DashboardURL)
+	}
+	st := store.New(s.opts.DB)
+	ctx := context.Background()
+	if err := st.WriteEnrolment(ctx, store.Enrolment{OrgID: "o1", OrgName: "Sam", OrgServerURL: "https://org.internal.example:8443/", UserID: "u1", BearerKeyID: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := get(); d.Online.DashboardURL != "https://org.internal.example:8443" {
+		t.Fatalf("enrolled: dashboard_url %q", d.Online.DashboardURL)
+	}
+	if ok, err := st.SetEnrolmentConnection(ctx, "o1", "Sam", "https://u-sam.superbased.app/"); err != nil || !ok {
+		t.Fatalf("connection: %v %v", ok, err)
+	}
+	if d := get(); d.Online.DashboardURL != "https://u-sam.superbased.app" {
+		t.Fatalf("connected: dashboard_url %q", d.Online.DashboardURL)
+	}
+}
+
 func TestSDKCredentialNeedsTheConfirmToken(t *testing.T) {
 	called := false
 	s := newRemoteTestServer(t, Options{SDK: SDKSeams{SignIn: func(context.Context) (sdkcredsvc.Status, error) {
@@ -55,6 +108,84 @@ func TestSDKCredentialNeedsTheConfirmToken(t *testing.T) {
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden || called {
 		t.Fatalf("a sign-in without the confirm token must be refused: %d called=%v", rr.Code, called)
+	}
+}
+
+// TestSDKInstallKeyRoute pins the dashboard form of `observer sdk use-key`
+// (POST /api/sdk/credential/key): confirm token required, the key in the JSON
+// body only (a query string is refused unread), never in the answer.
+func TestSDKInstallKeyRoute(t *testing.T) {
+	const fakeKey = "ik_dash.fakeDashboardSecret"
+	type call struct{ key, gateway string }
+	var calls []call
+	s := newRemoteTestServer(t, Options{SDK: SDKSeams{InstallKey: func(compound, gatewayURL string) (sdkcredsvc.Status, error) {
+		calls = append(calls, call{compound, gatewayURL})
+		if gatewayURL == "http://gw.example.com" {
+			return sdkcredsvc.Status{}, errors.New("the gateway address is not usable for the SDK key; nothing was stored")
+		}
+		return sdkcredsvc.Status{
+			SignedIn: true, CredentialFile: "/home/u/.observer/sdk/k", KeyGatewayURL: gatewayURL,
+			Meta: sdkcredsvc.Meta{KeyID: "ik_dash", Origin: sdkcredsvc.KeyOriginAdminIssued},
+		}, nil
+	}}})
+	const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	send := func(method, target, body string, confirm bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if confirm {
+			req.Header.Set(remoteConfirmHeader, token)
+			req.AddCookie(&http.Cookie{Name: remoteConfirmCookie, Value: token})
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+	good := `{"key":"` + fakeKey + `","gateway_url":"https://acme.superbased.app"}`
+	cases := []struct {
+		name, method, target, body string
+		confirm                    bool
+		code                       int
+		calls                      int
+	}{
+		{"no confirm token", http.MethodPost, "/api/sdk/credential/key", good, false, http.StatusForbidden, 0},
+		{"a GET", http.MethodGet, "/api/sdk/credential/key", "", true, http.StatusMethodNotAllowed, 0},
+		{"the key in a query string", http.MethodPost, "/api/sdk/credential/key?key=" + fakeKey, "{}", true, http.StatusBadRequest, 0},
+		{"not JSON", http.MethodPost, "/api/sdk/credential/key", "key=" + fakeKey, true, http.StatusBadRequest, 0},
+		{"a refused install", http.MethodPost, "/api/sdk/credential/key", `{"key":"` + fakeKey + `","gateway_url":"http://gw.example.com"}`, true, http.StatusBadRequest, 1},
+		{"installed", http.MethodPost, "/api/sdk/credential/key", good, true, http.StatusOK, 1},
+	}
+	for _, tc := range cases {
+		calls = nil
+		rr := send(tc.method, tc.target, tc.body, tc.confirm)
+		if rr.Code != tc.code || len(calls) != tc.calls {
+			t.Fatalf("%s: %d calls=%d %s", tc.name, rr.Code, len(calls), rr.Body)
+		}
+		if strings.Contains(rr.Body.String(), "fakeDashboardSecret") {
+			t.Fatalf("%s: the answer carries the key: %s", tc.name, rr.Body)
+		}
+	}
+	// The last row: the seam got the key and the address from the body, and
+	// the answer is the key's status.
+	if calls[0].key != fakeKey || calls[0].gateway != "https://acme.superbased.app" {
+		t.Fatalf("seam input = %+v", calls[0])
+	}
+	rr := send(http.MethodPost, "/api/sdk/credential/key", good, true)
+	var out struct {
+		Status sdkcredsvc.Status `json:"status"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil || out.Status.KeyID != "ik_dash" || out.Status.Origin != sdkcredsvc.KeyOriginAdminIssued || !out.Status.SignedIn {
+		t.Fatalf("answer: %v %s", err, rr.Body)
+	}
+	// Not wired: 501, nothing read.
+	bare := newRemoteTestServer(t, Options{})
+	req := httptest.NewRequest(http.MethodPost, "/api/sdk/credential/key", strings.NewReader(good))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(remoteConfirmHeader, token)
+	req.AddCookie(&http.Cookie{Name: remoteConfirmCookie, Value: token})
+	rec := httptest.NewRecorder()
+	bare.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("unwired: %d", rec.Code)
 	}
 }
 

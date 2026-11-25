@@ -237,10 +237,16 @@ final class Export {
   static final class CountingExporter implements SpanExporter {
     private final SpanExporter inner;
     private final SwitchableProcessor owner;
+    private final String dest; // the destination it exports to: local or online
 
     CountingExporter(SpanExporter inner, SwitchableProcessor owner) {
+      this(inner, owner, "");
+    }
+
+    CountingExporter(SpanExporter inner, SwitchableProcessor owner, String dest) {
       this.inner = inner;
       this.owner = owner;
+      this.dest = dest == null ? "" : dest;
     }
 
     @Override
@@ -262,7 +268,15 @@ final class Export {
         IN_SDK_EXPORT.set(Boolean.FALSE);
       }
       CompletableResultCode done = result;
-      done.whenComplete(() -> counted(done.isSuccess(), n));
+      done.whenComplete(
+          () -> {
+            PlanRefusalException refusal = null;
+            if (!done.isSuccess()) {
+              refusal = exportRefusal(done.getFailureThrowable());
+            }
+            counted(done.isSuccess(), n);
+            FirstTrace.note(dest, out, done.isSuccess(), refusal);
+          });
       return done;
     }
 
@@ -305,6 +319,62 @@ final class Export {
         return CompletableResultCode.ofSuccess();
       }
     }
+  }
+
+  /**
+   * A failed export's plan refusal. The OTLP/HTTP exporter fails its result
+   * with an exception that holds the HTTP answer (status and body; the
+   * headers are not kept, so no Retry-After). That exception is an internal
+   * OpenTelemetry type, so it is read by reflection through its public
+   * methods, and anything else is ignored. When the org's plan refused the
+   * export: keep the refusal for diagnostics' {@code plan_refusal} and write
+   * one warning line (message and upgrade URL) at most once a minute.
+   */
+  static boolean noteExportRefusal(Throwable failure) {
+    return exportRefusal(failure) != null;
+  }
+
+  /** {@link #noteExportRefusal}'s refusal (noted the same way), or null when the failure is not one. */
+  static PlanRefusalException exportRefusal(Throwable failure) {
+    try {
+      Object resp = invokePublic(failure, "getResponse");
+      Object status = invokePublic(resp, "statusCode");
+      Object body = invokePublic(resp, "responseBody");
+      if (!(status instanceof Integer) || !(body instanceof byte[])) {
+        return null;
+      }
+      PlanRefusalException r = PlanRefusalException.parse((Integer) status, body, null);
+      if (r == null) {
+        return null;
+      }
+      PlanRefusalException.note(r, "trace export");
+      return r;
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      return null;
+    }
+  }
+
+  /** {@code target.name()} through a public type that declares it; null when there is none. */
+  private static Object invokePublic(Object target, String name) throws ReflectiveOperationException {
+    if (target == null) {
+      return null;
+    }
+    for (Class<?> c = target.getClass(); c != null; c = c.getSuperclass()) {
+      List<Class<?>> types = new ArrayList<>();
+      types.add(c);
+      types.addAll(List.of(c.getInterfaces()));
+      for (Class<?> t : types) {
+        if (!java.lang.reflect.Modifier.isPublic(t.getModifiers())) {
+          continue;
+        }
+        try {
+          return t.getMethod(name).invoke(target);
+        } catch (NoSuchMethodException e) {
+          // try the next type
+        }
+      }
+    }
+    return null;
   }
 
   /** The delegate of a plan with nowhere to export: every span counted as dropped. */

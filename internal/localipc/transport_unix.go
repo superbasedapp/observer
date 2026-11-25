@@ -40,7 +40,7 @@ func (unixTransport) Supported() bool { return true }
 func (unixTransport) Endpoint(dbPath string) (string, error) {
 	path := SocketPath(dbPath)
 	if err := checkSocketPathLength(path); err != nil {
-		return "", fmt.Errorf("attachsock.Endpoint: %w", err)
+		return "", fmt.Errorf("localipc.Endpoint: %w", err)
 	}
 	return path, nil
 }
@@ -99,26 +99,26 @@ func (t unixTransport) Listen(endpoint string) (net.Listener, error) {
 	// "bind: invalid argument", which names no cause and no fix. Any operator
 	// with a deep $HOME or a relocated [observer].db_path can hit this.
 	if err := checkSocketPathLength(endpoint); err != nil {
-		return nil, fmt.Errorf("attachsock.ListenSocket: %w", err)
+		return nil, fmt.Errorf("localipc.ListenSocket: %w", err)
 	}
 	dir := filepath.Dir(endpoint)
 	// Create the parent 0700. MkdirAll won't tighten an existing looser dir, so
 	// we stat + chmod it below to guarantee owner-only search permission.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("attachsock.ListenSocket: create attach dir %q: %w", dir, err)
+		return nil, fmt.Errorf("localipc.ListenSocket: create attach dir %q: %w", dir, err)
 	}
 	dfi, err := os.Stat(dir)
 	if err != nil {
-		return nil, fmt.Errorf("attachsock.ListenSocket: stat attach dir %q: %w", dir, err)
+		return nil, fmt.Errorf("localipc.ListenSocket: stat attach dir %q: %w", dir, err)
 	}
 	if !dfi.IsDir() {
-		return nil, fmt.Errorf("attachsock.ListenSocket: attach path parent %q is not a directory", dir)
+		return nil, fmt.Errorf("localipc.ListenSocket: attach path parent %q is not a directory", dir)
 	}
 	if perm := dfi.Mode().Perm(); perm != 0o700 {
 		// A pre-existing dir may be looser (e.g. the DB dir shared with other
 		// state). Tighten it to owner-only so connect() is owner-enforced.
 		if err := os.Chmod(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("attachsock.ListenSocket: tighten attach dir %q perms (%o→0700): %w", dir, perm, err)
+			return nil, fmt.Errorf("localipc.ListenSocket: tighten attach dir %q perms (%o→0700): %w", dir, perm, err)
 		}
 	}
 
@@ -132,9 +132,9 @@ func (t unixTransport) Listen(endpoint string) (net.Listener, error) {
 	lock, lerr := acquireListenLock(filepath.Join(dir, "attach.lock"))
 	if lerr != nil {
 		if errors.Is(lerr, errLockHeld) {
-			return nil, fmt.Errorf("attachsock.ListenSocket: %w at %q", ErrSocketLiveDaemon, endpoint)
+			return nil, fmt.Errorf("localipc.ListenSocket: %w at %q", ErrSocketLiveDaemon, endpoint)
 		}
-		return nil, fmt.Errorf("attachsock.ListenSocket: acquire listen lock: %w", lerr)
+		return nil, fmt.Errorf("localipc.ListenSocket: acquire listen lock: %w", lerr)
 	}
 	// The lock is HELD from here. Release it on every error path below; on
 	// success the returned lockedListener's Close releases it (A3-5).
@@ -147,7 +147,7 @@ func (t unixTransport) Listen(endpoint string) (net.Listener, error) {
 
 	if fi, err := os.Stat(endpoint); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("attachsock.ListenSocket: refusing to remove non-socket file %q", endpoint)
+			return nil, fmt.Errorf("localipc.ListenSocket: refusing to remove non-socket file %q", endpoint)
 		}
 		// Secondary stale check (A9): the held lock already excludes a live
 		// local daemon, but a probe-dial that unexpectedly succeeds means
@@ -155,17 +155,17 @@ func (t unixTransport) Listen(endpoint string) (net.Listener, error) {
 		// unlink when the dial fails (stale socket from a crashed daemon).
 		if c, derr := net.DialTimeout("unix", endpoint, 500*time.Millisecond); derr == nil {
 			_ = c.Close()
-			return nil, fmt.Errorf("attachsock.ListenSocket: %w at %q", ErrSocketLiveDaemon, endpoint)
+			return nil, fmt.Errorf("localipc.ListenSocket: %w at %q", ErrSocketLiveDaemon, endpoint)
 		}
 		if err := os.Remove(endpoint); err != nil {
-			return nil, fmt.Errorf("attachsock.ListenSocket: remove stale socket: %w", err)
+			return nil, fmt.Errorf("localipc.ListenSocket: remove stale socket: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("attachsock.ListenSocket: stat %q: %w", endpoint, err)
+		return nil, fmt.Errorf("localipc.ListenSocket: stat %q: %w", endpoint, err)
 	}
 	ln, err := net.Listen("unix", endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("attachsock.ListenSocket: listen: %w", err)
+		return nil, fmt.Errorf("localipc.ListenSocket: listen: %w", err)
 	}
 	// Take ownership of the unlink: the stdlib's default unlink-on-close would
 	// remove whatever file sits at the path at Close time, UNORDERED against
@@ -178,7 +178,7 @@ func (t unixTransport) Listen(endpoint string) (net.Listener, error) {
 	if err := os.Chmod(endpoint, 0o600); err != nil {
 		_ = ln.Close()
 		_ = os.Remove(endpoint)
-		return nil, fmt.Errorf("attachsock.ListenSocket: chmod: %w", err)
+		return nil, fmt.Errorf("localipc.ListenSocket: chmod: %w", err)
 	}
 	// Record the bound socket's identity for the SameFile unlink guard in Close.
 	boundInfo, _ := os.Stat(endpoint)

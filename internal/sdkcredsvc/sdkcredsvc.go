@@ -14,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/applane"
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/pastedsecret"
 )
 
 // Keystore names. KeystoreService is listed in keystore's service table.
@@ -73,6 +75,61 @@ type Meta struct {
 	// it at sign-in ("metadata_only", "classified_safe", "full_redacted";
 	// "" when the org did not say). Review L-23.
 	CaptureLevel string `json:"capture_level,omitempty"`
+	// Origin is where the key came from: KeyOriginSignIn (minted for the
+	// member by `observer sdk sign-in`; "" on a description written before
+	// origins were recorded) or KeyOriginAdminIssued (a machine-identity key
+	// an admin issued, installed by `observer sdk use-key`). It decides what
+	// sign-out may do: only a sign-in key is revoked on the organization.
+	Origin string `json:"origin,omitempty"`
+	// InstalledAt is when `observer sdk use-key` installed an admin-issued
+	// key (RFC 3339; "" for a sign-in key, which has MintedAt).
+	InstalledAt string `json:"installed_at,omitempty"`
+}
+
+// Key origins (Meta.Origin, Discovery's online.key_origin).
+const (
+	// KeyOriginSignIn is the member's own key, minted on the organization by
+	// `observer sdk sign-in`.
+	KeyOriginSignIn = "sign_in"
+	// KeyOriginAdminIssued is a machine-identity key an admin issued (web2
+	// Settings > Machine identities, or the one-click key), installed by
+	// `observer sdk use-key`. This machine never revokes it.
+	KeyOriginAdminIssued = "admin_issued"
+)
+
+// KeyOrigin is the key's origin, a description from before origins were
+// recorded reading as a sign-in key (only sign-in wrote one then).
+func (m Meta) KeyOrigin() string {
+	if m.Origin == KeyOriginAdminIssued {
+		return KeyOriginAdminIssued
+	}
+	return KeyOriginSignIn
+}
+
+// AdminIssued reports whether the key was issued by an admin and installed
+// with `observer sdk use-key`.
+func (m Meta) AdminIssued() bool { return m.KeyOrigin() == KeyOriginAdminIssued }
+
+// keyOriginTexts names each origin in plain words and says how to put the
+// key back, for `observer sdk status`, the doctor row and the problem lines.
+var keyOriginTexts = []struct{ origin, text, again string }{
+	{KeyOriginSignIn, "your own key, from `observer sdk sign-in`", "sign in again (`observer sdk sign-in`)"},
+	{KeyOriginAdminIssued, "issued by an admin, installed with `observer sdk use-key`", "install the key again (`observer sdk use-key`)"},
+}
+
+// KeyOriginText is the key's origin in plain words.
+func (m Meta) KeyOriginText() string { return keyOriginRow(m.KeyOrigin()).text }
+
+// againHint says how to put the key back on this machine.
+func (m Meta) againHint() string { return keyOriginRow(m.KeyOrigin()).again }
+
+func keyOriginRow(origin string) struct{ origin, text, again string } {
+	for _, r := range keyOriginTexts {
+		if r.origin == origin {
+			return r
+		}
+	}
+	return keyOriginTexts[0]
 }
 
 // Capture level wire tokens (the org gateway's classify.Level names).
@@ -226,7 +283,7 @@ func (s Service) SignIn(ctx context.Context, m Minter) (Status, error) {
 		CredID: minted.CredID, KeyID: minted.KeyID, OrgID: minted.OrgID, WorkspaceID: minted.WorkspaceID,
 		EnvironmentID: minted.EnvironmentID, Scopes: minted.Scopes, Signals: minted.Signals,
 		GatewayURL: minted.GatewayURL, MintedAt: minted.MintedAt, ExpiresAt: minted.ExpiresAt,
-		CaptureLevel: minted.CaptureLevel,
+		CaptureLevel: minted.CaptureLevel, Origin: KeyOriginSignIn,
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -303,18 +360,30 @@ func loopbackHost(host string) bool {
 	return err == nil && ip.Unmap().IsLoopback()
 }
 
-// heldKeyID is the key id of the key this machine holds ("" when none is
-// described).
-func (s Service) heldKeyID() string {
+// heldMeta is the description of the key this machine holds (ok false when
+// none is described).
+func (s Service) heldMeta() (Meta, bool) {
 	if s.CredentialFile() == "" {
-		return ""
+		return Meta{}, false
 	}
 	raw, err := s.file().Read(RecordMeta)
 	if err != nil {
-		return ""
+		return Meta{}, false
 	}
 	var m Meta
-	if json.Unmarshal(raw, &m) != nil {
+	if json.Unmarshal(raw, &m) != nil || strings.TrimSpace(m.KeyID) == "" {
+		return Meta{}, false
+	}
+	return m, true
+}
+
+// heldKeyID is the key id of the member's own (sign-in) key this machine
+// holds: the only key this machine names to the organization, for a mint to
+// replace or a sign-out to revoke. "" when none is described, or when the
+// key held is an admin-issued one (never this machine's to revoke).
+func (s Service) heldKeyID() string {
+	m, ok := s.heldMeta()
+	if !ok || m.AdminIssued() {
 		return ""
 	}
 	return strings.TrimSpace(m.KeyID)
@@ -329,9 +398,16 @@ func (s Service) heldKeyID() string {
 // Without it, SignOut still removes the local copies and returns
 // ErrNoHeldKey. Local copies are removed even when the org call fails; the
 // error says so.
+//
+// An admin-issued key (installed by InstallKey) is never revoked from here:
+// SignOut removes its local copies and returns ErrAdminIssuedKeyKept, and the
+// organization is not asked anything unless all is set (which revokes the
+// member's own sign-in keys, never the admin's).
 func (s Service) SignOut(ctx context.Context, m Minter, all bool) (int, error) {
 	revoked := 0
 	var errs []error
+	meta, described := s.heldMeta()
+	adminIssued := described && meta.AdminIssued()
 	held := s.heldKeyID()
 	req := orgcontract.SDKCredentialRequest{KeyID: held}
 	if all {
@@ -339,6 +415,8 @@ func (s Service) SignOut(ctx context.Context, m Minter, all bool) (int, error) {
 	}
 	switch {
 	case m == nil:
+	case adminIssued && !req.All:
+		// Nothing of the member's to revoke: the admin owns this key.
 	case req.KeyID == "" && !req.All:
 		errs = append(errs, ErrNoHeldKey)
 	default:
@@ -358,12 +436,120 @@ func (s Service) SignOut(ctx context.Context, m Minter, all bool) (int, error) {
 			errs = append(errs, fmt.Errorf("remove the keychain copy: %w", err))
 		}
 	}
+	if adminIssued {
+		errs = append(errs, ErrAdminIssuedKeyKept)
+	}
 	return revoked, errors.Join(errs...)
 }
 
-// HoldsKey reports whether this machine describes an SDK key it holds (the
-// key SignOut would revoke).
-func (s Service) HoldsKey() bool { return s.heldKeyID() != "" }
+// ErrAdminIssuedKeyKept is joined into SignOut's error when the key this
+// machine held was issued by an admin: its local copies are removed, but it
+// is not revoked, so it keeps working wherever else it is used. It is a
+// notice, not a failure (the CLI prints it and exits 0).
+var ErrAdminIssuedKeyKept = errors.New("the SDK key on this machine was issued by an admin, so it was removed from this machine only and not revoked: it keeps working wherever else it is used until an admin revokes it (Machine identities, in the organization's dashboard settings)")
+
+// InstallInput is an admin-issued SDK key a member installs on this machine
+// (`observer sdk use-key`, the dashboard's "Use an SDK key from my admin").
+type InstallInput struct {
+	// Compound is the key, "<key_id>.<secret>", exactly as the admin's
+	// dialog showed it (what a paste wraps around it is removed first,
+	// internal/pastedsecret). It is never
+	// logged, returned or written anywhere but the two hardened copies.
+	Compound string
+	// GatewayURL is the organization's gateway address the key is sent to
+	// (the admin's dialog shows it; SUPERBASED_ORG_URL). Empty uses
+	// GatewayOverride (observability.sdk.gateway_url).
+	GatewayURL string
+}
+
+// Install refusals. None of them carries the key.
+var (
+	// ErrKeyShape: the input is not "<key_id>.<secret>"; the returned error
+	// wraps it with the one rule the input broke (installKeyRules).
+	ErrKeyShape = errors.New("that is not an SDK key")
+	// ErrNoGatewayURL: neither the input nor the config names the gateway.
+	ErrNoGatewayURL = errors.New("name the organization's gateway address the key is sent to (--gateway-url https://...; the admin's dialog shows it beside the key); nothing was stored")
+	// ErrSignInKeyHeld: this machine holds the member's own sign-in key,
+	// which installing another key would leave live on the organization with
+	// no machine holding it.
+	ErrSignInKeyHeld = errors.New("this machine holds your own SDK key from `observer sdk sign-in`; run `observer sdk sign-out` first (it revokes that key on your organization), then install the admin's key; nothing was stored")
+)
+
+// CheckInstall runs every InstallKey check that does not need the key (a
+// hardened file store, the gateway address, no held sign-in key) and returns
+// the gateway address the key would be stored with, so the CLI can refuse
+// before it asks for the key. InstallKey runs it again.
+func (s Service) CheckInstall(gatewayURL string) (string, error) {
+	if s.CredentialFile() == "" {
+		return "", ErrNoHardenedFile
+	}
+	gateway := strings.TrimRight(strings.TrimSpace(gatewayURL), "/")
+	if gateway == "" {
+		gateway = strings.TrimRight(strings.TrimSpace(s.GatewayOverride), "/")
+	}
+	if gateway == "" {
+		return "", ErrNoGatewayURL
+	}
+	if err := validOrgGatewayURL(gateway); err != nil {
+		return "", fmt.Errorf("sdkcredsvc: the gateway address is not usable for the SDK key (%w); nothing was stored", err)
+	}
+	if s.heldKeyID() != "" {
+		return "", ErrSignInKeyHeld
+	}
+	return gateway, nil
+}
+
+// InstallKey stores an SDK key an admin issued (a machine-identity key from
+// web2's Settings > Machine identities or the one-click key) as this
+// machine's SDK key, through the same hardened writes as SignIn: the
+// delivery file first (the key, then the gateway_url line; directory 0700,
+// file 0600, owner-checked, no symlinks, atomic), then the keychain copy,
+// then the description, marked KeyOriginAdminIssued. No network: the key is
+// not checked against the organization here; an app's first export is the
+// check (a wrong key gets 401 there, counted by the SDK's diagnostics).
+//
+// The gateway address follows the same rule as sign-in's (https, or plain
+// http only to this machine's loopback). An installed admin key replaces an
+// earlier installed one; a held sign-in key is refused (ErrSignInKeyHeld).
+// After it, discovery reports the credential present and the machine default
+// destination is both, as after a sign-in.
+func (s Service) InstallKey(in InstallInput) (Status, error) {
+	gateway, err := s.CheckInstall(in.GatewayURL)
+	if err != nil {
+		return Status{}, err
+	}
+	compound := pastedsecret.Clean(in.Compound)
+	if problem := installKeyProblem(compound); problem != "" {
+		return Status{}, fmt.Errorf("%w: %s; an SDK key is <key_id>.<secret>, exactly as the admin's dialog shows it; nothing was stored", ErrKeyShape, problem)
+	}
+	keyID, _, _ := strings.Cut(compound, ".")
+	if err := s.file().Write(RecordCredential, deliveryFile(compound, gateway)); err != nil {
+		return Status{}, fmt.Errorf("sdkcredsvc: write the SDK key file: %w", err)
+	}
+	if s.Keychain != nil && s.Keychain.Backend() == "keychain" {
+		if err := s.Keychain.Set(RecordCredential, compound); err != nil {
+			s.logger().Warn("sdk key: keychain copy not written; the 0600 file holds it", "err", err)
+		}
+	}
+	raw, err := json.Marshal(Meta{
+		KeyID: keyID, GatewayURL: gateway, Origin: KeyOriginAdminIssued,
+		InstalledAt: s.now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return Status{}, err
+	}
+	if err := s.file().Write(RecordMeta, raw); err != nil {
+		return Status{}, fmt.Errorf("sdkcredsvc: write the SDK key description: %w", err)
+	}
+	return s.Status(), nil
+}
+
+// HoldsKey reports whether this machine describes an SDK key it holds, a
+// sign-in key or an admin-issued one.
+func (s Service) HoldsKey() bool {
+	_, ok := s.heldMeta()
+	return ok
+}
 
 // Status describes the stored key without returning it.
 func (s Service) Status() Status {
@@ -379,7 +565,7 @@ func (s Service) Status() Status {
 		return st
 	}
 	if json.Unmarshal(raw, &st.Meta) != nil {
-		st.Problem = "the SDK key description does not parse; sign in again"
+		st.Problem = "the SDK key description does not parse; " + Meta{}.againHint()
 		return st
 	}
 	// The delivery file is read only to check it (the keystore's hardened
@@ -387,12 +573,12 @@ func (s Service) Status() Status {
 	// never returned.
 	raw, err = s.file().Read(RecordCredential)
 	if err != nil {
-		st.Problem = "the SDK key file does not read back (" + err.Error() + "); sign in again"
+		st.Problem = "the SDK key file does not read back (" + err.Error() + "); " + st.againHint()
 		return st
 	}
 	_, gw, ok := parseDeliveryFile(raw)
 	if !ok {
-		st.Problem = "the SDK key file is not in the expected shape; sign in again"
+		st.Problem = "the SDK key file is not in the expected shape; " + st.againHint()
 		return st
 	}
 	st.SignedIn, st.KeyGatewayURL = true, gw
@@ -453,11 +639,42 @@ func DoctorCheck(st Status) KeyCheck {
 	case st.ExpiresSoon:
 		return KeyCheck{Level: "warn", Message: st.Notice, Details: []string{"key " + st.KeyID}}
 	}
-	msg := "SDK key " + st.KeyID + " held"
+	msg := "SDK key " + st.KeyID + " held (" + st.KeyOriginText() + ")"
 	if st.ExpiresAt != "" {
 		msg += ", expires " + st.ExpiresAt
 	}
 	return KeyCheck{Level: "ok", Message: msg}
+}
+
+// installKeyRules is the check an installed key passes, in order; the first
+// rule broken is the one named (never the key). Stricter than validCompound
+// on the key id, which a minted key id always meets (hex), so a pasted
+// variable assignment or header is named rather than stored.
+var installKeyRules = []struct {
+	problem string
+	breaks  func(string) bool
+}{
+	{"nothing was read (the key is empty)", func(k string) bool { return k == "" }},
+	{"it holds a line break (paste one key)", func(k string) bool { return strings.ContainsAny(k, "\r\n") }},
+	{"it holds a space (paste the key alone, without `Bearer` or a variable name)", func(k string) bool { return strings.ContainsAny(k, " \t") }},
+	{"it carries a variable name or a header (paste only the key, not SUPERBASED_API_KEY=...)", func(k string) bool { return strings.ContainsAny(k, "=:") }},
+	{"it is not two parts joined by a dot", func(k string) bool { return !validCompound(k) }},
+	{"its key id (before the dot) holds a character a key id never has", func(k string) bool {
+		id, _, _ := strings.Cut(k, ".")
+		return strings.IndexFunc(id, func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+		}) >= 0
+	}},
+}
+
+// installKeyProblem names the first install rule compound breaks, or "".
+func installKeyProblem(compound string) string {
+	for _, r := range installKeyRules {
+		if r.breaks(compound) {
+			return r.problem
+		}
+	}
+	return ""
 }
 
 // validCompound is the "<key_id>.<secret>" shape: one dot, both halves
@@ -500,6 +717,26 @@ type DiscoveryLocal struct {
 	OTLPLogsURL    string `json:"otlp_logs_url"`
 	OTLPMetricsURL string `json:"otlp_metrics_url"`
 	AdmissionURL   string `json:"admission_url"`
+	// AppLanes are this machine's local app lanes (hosted AI gateway plan
+	// L7): the /up/<id> routes on the proxy an app points its model client
+	// at, each with its client base URL. Additive (api_version stays 1);
+	// the SDK helpers' gateway_base_url falls back to it (L8). Empty when
+	// the user has added no lane or the proxy is off (decision 8).
+	AppLanes []DiscoveryAppLane `json:"app_lanes"`
+}
+
+// DiscoveryAppLane is one local app lane in the discovery body.
+type DiscoveryAppLane struct {
+	// ID is the lane id (the /up/<id> segment).
+	ID string `json:"id"`
+	// Kind is the client shape: openai, anthropic, openrouter, gemini or
+	// openai_compatible.
+	Kind string `json:"kind"`
+	// BaseURL is the lane root (http://127.0.0.1:<port>/up/<id>).
+	BaseURL string `json:"base_url"`
+	// ClientBaseURL is the base URL for a model client of the lane's kind
+	// (an OpenAI client's ends in /v1).
+	ClientBaseURL string `json:"client_base_url"`
 }
 
 // DiscoveryOnline describes the org gateway and the stored key (never the
@@ -521,6 +758,18 @@ type DiscoveryOnline struct {
 	OrgID        string `json:"org_id"`
 	MintedAt     string `json:"minted_at"`
 	ExpiresAt    string `json:"expires_at"`
+	// KeyOrigin is where the held key came from: KeyOriginSignIn or
+	// KeyOriginAdminIssued ("" when no key is held). Additive (api_version
+	// stays 1): the SDKs do not read it; the machine's Settings card does, to
+	// offer "Remove" instead of "Revoke" for a key the member does not own.
+	KeyOrigin string `json:"key_origin"`
+	// DashboardURL is the base of the organization's own dashboard for the
+	// held key, for links to an app's trace (SDK quickstart plan 3.8:
+	// <dashboard_url>/trajectories?trace=<id>); never a place the key goes.
+	// "" when no key is offered or the machine knows no address that is the
+	// key's organization's (BuildDiscoveryWithOrg, dashboardurl.go).
+	// Additive (api_version stays 1).
+	DashboardURL string `json:"dashboard_url"`
 }
 
 // obsCompiledIn reports whether this build includes app observability (the
@@ -556,6 +805,7 @@ func BuildDiscovery(cfg config.Config, st Status, dashboardBase string) Discover
 		OTLPLogsURL:    otlp + "/v1/logs",
 		OTLPMetricsURL: otlp + "/v1/metrics",
 		AdmissionURL:   strings.TrimRight(dashboardBase, "/") + "/api/obs/admission/check",
+		AppLanes:       discoveryAppLanes(cfg),
 	}
 	on := DiscoveryOnline{CredentialFile: st.CredentialFile, Scopes: nonNil(st.Scopes), Signals: nonNil(st.Signals)}
 	if st.SignedIn {
@@ -564,6 +814,7 @@ func BuildDiscovery(cfg config.Config, st Status, dashboardBase string) Discover
 		on.CredID, on.KeyID, on.WorkspaceID, on.EnvironmentID = st.CredID, st.KeyID, st.WorkspaceID, st.EnvironmentID
 		on.OrgID, on.MintedAt, on.ExpiresAt = st.OrgID, st.MintedAt, st.ExpiresAt
 		on.CaptureLevel = st.CaptureLevel
+		on.KeyOrigin = st.KeyOrigin()
 	}
 	// Informational: the SDKs take the address from the key file itself
 	// (E-04). With a key, that file's address is the one apps use.
@@ -592,10 +843,10 @@ func discoveryWarnings(d Discovery, st Status, override string, compiled bool) [
 	}{
 		{st.Problem != "", st.Problem},
 		{st.ExpiresSoon, st.Notice},
-		{online && !d.SignedIn, "the destination sends data online but this machine holds no SDK key; run `observer sdk sign-in` or set SUPERBASED_API_KEY"},
+		{online && !d.SignedIn, "the destination sends data online but this machine holds no SDK key; run `observer sdk sign-in`, install a key an admin issued you with `observer sdk use-key --gateway-url <address>`, or set SUPERBASED_API_KEY"},
 		{online && !d.SignedIn && d.Online.GatewayURL == "", "the destination sends data online but no gateway address is known; set observability.sdk.gateway_url or ask your admin to set [gateway] public_url"},
 		{online && st.Usable() && keyGateway == "", "the SDK key was stored without a gateway address, so apps cannot send online; set observability.sdk.gateway_url (or ask your admin to set [gateway] public_url), then run `observer sdk sign-in` again"},
-		{st.SignedIn && override != "" && keyGateway != "" && override != keyGateway, "observability.sdk.gateway_url (" + override + ") differs from the address stored with the SDK key (" + keyGateway + "); apps send to the stored address until you run `observer sdk sign-in` again"},
+		{st.SignedIn && override != "" && keyGateway != "" && override != keyGateway, "observability.sdk.gateway_url (" + override + ") differs from the address stored with the SDK key (" + keyGateway + "); apps send to the stored address until you " + st.againHint()},
 		{online && d.SignedIn && d.Online.CaptureLevel == CaptureMetadataOnly, "your organization keeps only metadata for workspace " + d.Online.WorkspaceID + " (capture level L0): no prompt or response text and no end user reach it; an admin raises the level in the workspace's capture settings"},
 		{sendsLocal && !compiled, "this build of Observer does not include AI Apps observability, so it cannot receive an app's spans; choose destination online, or install an edition that includes it"},
 		{sendsLocal && compiled && !d.Local.Enabled, "observability is off on this machine ([observability] enabled = false), so it refuses an app's spans; turn it on in Settings"},
@@ -636,4 +887,19 @@ func localOTLPBase(addr string) string {
 		host = "[" + host + "]"
 	}
 	return "http://" + host + ":" + u.Port()
+}
+
+// discoveryAppLanes lists the local app lanes for the discovery body: the
+// [proxy.upstreams] lanes, only while the proxy is on (a lane needs it). No
+// upstream URL is advertised: an SDK needs the client base URL, not where the
+// lane forwards.
+func discoveryAppLanes(cfg config.Config) []DiscoveryAppLane {
+	out := []DiscoveryAppLane{}
+	if !cfg.Proxy.Enabled {
+		return out
+	}
+	for _, l := range applane.List(cfg.Proxy.Upstreams, nil, cfg.Proxy.Port) {
+		out = append(out, DiscoveryAppLane{ID: l.ID, Kind: l.Kind, BaseURL: l.BaseURL, ClientBaseURL: l.ClientBaseURL})
+	}
+	return out
 }

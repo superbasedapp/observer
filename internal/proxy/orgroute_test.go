@@ -101,7 +101,7 @@ func doPost(t *testing.T, url, body string, setHeaders func(*http.Request)) *htt
 
 // TestOrgRoute_PlaneBoundaryTable pins Sol S8's fall-through guard across
 // every /up/ lane shape: a named lane and a resolved-auto lane are both
-// "explicitly lane-routed" (stripUpstreamPrefix returns a non-empty
+// "explicitly lane-routed" (resolveUpstreamPrefix returns a non-empty
 // upstreamLaneID, "x" or "auto") and so NEVER fall through to org-route,
 // even though the auto lane's own resolution (resolveAutoLane) is a
 // completely separate mechanism from upstreamForPath's org-route branch.
@@ -214,7 +214,7 @@ func TestOrgRoute_PlaneBoundaryTable(t *testing.T) {
 // ---------------------------------------------------------------------
 // obsUpstreamLane must be unaffected by whether org-route redirected the
 // request's DESTINATION — the lane id on the request context reflects
-// only stripUpstreamPrefix's (later resolveAutoLane's) computation, never
+// only resolveUpstreamPrefix's (later resolveAutoLane's) computation, never
 // which physical URL ended up serving it.
 // ---------------------------------------------------------------------
 

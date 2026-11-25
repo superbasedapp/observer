@@ -3,16 +3,13 @@ package main
 import (
 	"context"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -183,8 +180,8 @@ func resolveStaffServeConfig(getenv func(string) string) (staffServeConfig, erro
 	default:
 		return staffServeConfig{}, fmt.Errorf("%s %q must be https (http only on loopback)", envStaffBaseURL, c.baseURL)
 	}
-	rpID := normalizeHostName(u.Hostname())
-	c.host = normalizeHostName(get(envStaffHost))
+	rpID := api.NormalizeHost(u.Hostname())
+	c.host = api.NormalizeHost(get(envStaffHost))
 	if c.host == "" {
 		c.host = rpID
 	}
@@ -195,7 +192,7 @@ func resolveStaffServeConfig(getenv func(string) string) (staffServeConfig, erro
 		return staffServeConfig{}, fmt.Errorf("the staff host %q is a registrable domain; use a subdomain of its own (default %s), never the parent domain", rpID, api.DefaultStaffHost)
 	}
 	for _, r := range staffHostRules {
-		if v := normalizeHostName(get(r.env)); v != "" && v == rpID {
+		if v := api.NormalizeHost(get(r.env)); v != "" && v == rpID {
 			return staffServeConfig{}, fmt.Errorf("the staff host %q equals %s, %s; the staff console needs a host of its own", rpID, r.env, r.reason)
 		}
 	}
@@ -337,28 +334,7 @@ func newStaffServeCmd() *cobra.Command {
 				StaffSPA: webcloud.StaffHandler(),
 			})
 			log.Info("observer-cloud: staff console", "base_url", cfg.baseURL, "host", cfg.host, "login", m.Login)
-			srv := &http.Server{
-				Addr:              cfg.listen,
-				Handler:           apiServer.StaffHandler(),
-				ReadHeaderTimeout: 10 * time.Second,
-				ReadTimeout:       30 * time.Second,
-				IdleTimeout:       120 * time.Second,
-			}
-			errCh := make(chan error, 1)
-			go func() {
-				log.Info("observer-cloud: staff serving", "addr", cfg.listen)
-				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					errCh <- err
-				}
-			}()
-			select {
-			case <-ctx.Done():
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				return srv.Shutdown(shutdownCtx)
-			case err := <-errCh:
-				return err
-			}
+			return runHTTPServer(ctx, log, "observer-cloud: staff serving", cfg.listen, apiServer.StaffHandler())
 		},
 	}
 }

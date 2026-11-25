@@ -1,0 +1,551 @@
+{
+  "_doc": "The AI gateway helpers every SDK runs (hosted AI gateway arc L-172, lane L8; plan docs/plans/hosted-ai-gateway-plan-2026-11-25.md section 8.2 L8, seam S4 docs/plans/hosted-ai-gateway/api-s4.md). Three pure functions. (1) base_url: the base URL a model client is given, resolved first set wins: the explicit argument (source argument), SUPERBASED_AI_GATEWAY_URL (source env), the organization's address org_url + /ai/<upstream> when the destination is online (source org), the machine's app lane from the discovery answer's local.app_lanes when the destination is local or both (source machine). The provider is the client family of S4: openai appends /v1, anthropic and azure_openai append nothing (their clients add the API path themselves). An explicit or env URL is the gateway's address for that client without the provider path; a URL that already ends in that path gets nothing appended. It must be http(s) with a host, no user info, query or fragment, and plain http only to a loopback host (the AI gateway key is sent there); a bad one is the problem bad_url, never a silent fall-through. With an explicit or env URL an upstream the caller named is returned as upstream_header (the X-SBO-Upstream header a single-org gateway without a path lane selects by); the org address and the machine lane carry the upstream in the path, so upstream_header is empty there. The upstream defaults to the provider (openai, anthropic); azure_openai has no default, so the org address and the machine lane need one (upstream_required). An upstream id matches ^[a-z0-9][a-z0-9-]{0,31}$ and is not v1 or v1beta (bad_upstream). Under destination online the machine lane is never used. local.app_lanes is a list of {id, base_url}; an entry that is not an object, has no string id or base_url, or whose base_url is not an http(s) loopback address with no user info, query or fragment is skipped; the first entry with the upstream's id wins. Nothing resolvable is not_configured. Each case gives provider, upstream (null: none), url (the explicit argument, null: none), env (SUPERBASED_AI_GATEWAY_URL, null: unset), destination, org_url (the resolved organization address, \"\": none) and local (the discovery answer's local object, null: no answer); want is {url, source, upstream_header} or {problem}. An absent upstream_header is \"\". (2) refusal: an AI gateway refusal read from one HTTP answer, or null. The gateway writes every refusal with a top-level reason; the planrefusal body of a plan refusal (L4) may instead carry its code as a top-level string error. Anything without either (a provider's own error relayed as is, a success, a body that is not a JSON object) is null; the parser never raises. kind comes from the code and the status together: budget_exceeded (402), model_not_allowed (403), admission_denied (403), plan_required (403), quota_exceeded (429 aigw_requests_quota_exceeded); any other code, or a known code on another status, is other. message is error.message when error is an object, else the top-level message, else error when it is a string other than the code (without any, the SDK's own default line is not compared). request_id is the X-SBO-Request-Id header, else request-id, else x-request-id (\"\" when none). retry_after_seconds is the Retry-After header in integer seconds (absent: none). budget is read for the code budget_exceeded: level, scope_id, unit, and remaining and cap from remaining_usd and cap_usd (unit usd) or remaining_tokens and cap_tokens (unit tokens), estimated; a field absent or of the wrong type is null (estimated false). plan_refusal is the plan refusal parser's reading of the same body (sdk/contract/plan-refusal-cases.json, with the AI gateway's code aigw_requests_quota_exceeded and allowance axes requests_monthly and concurrency) for the codes plan_required and aigw_requests_quota_exceeded when the body carries a non-empty upgrade_url; want gives its kind, code, upgrade_url and capability. Python runs these in sdk/python/tests/test_ai_gateway.py, TypeScript in sdk/typescript/test/aigateway.test.mjs, Go in sdk/go/aigateway_test.go, Java in sdk/java/src/test/java/app/superbased/sdk/AIGatewayTest.java. (3) api_key: the key a model client sends to a resolved endpoint (source and base_url as base_url answers them), from SUPERBASED_AI_GATEWAY_KEY (gateway_key, trimmed; null: unset). On the machine's app lane (source machine) it is none whatever the gateway key: the client keeps its own provider key, which the lane forwards, and the gateway key never reaches the lane. Otherwise it is the gateway key when one is set; on a loopback base_url with no gateway key it is none (the provider's own key, to a gateway on this machine); on any other address with no gateway key it is the problem no_key, so a provider's own key is never sent to a remote gateway. want is {key} (null: none, leave the client's own key option unset) or {problem}. A key the caller passes explicitly always wins and is not in the cases (Go and Java take none). Python runs these through the client factories' key rule, TypeScript through openAIOptions, Go through GatewayEndpoint.APIKey, Java through GatewayEndpoint.apiKey(). (4) From SDK 0.2.0 the organization's address may come from the SDK-held file (contracts/destination.md section 6a, SDK quickstart plan section 3.4, SDKQS-10): it is the same resolved org address, so the same answers; a case's from field (destination_source, org_url_source) and sdk_key_present are informational and the runners ignore them. The SDK key in that file is an ingest key and never an AI gateway key: with no gateway key a remote address is no_key.",
+  "base_url": [
+    {
+      "name": "the explicit argument wins over the environment and the organization",
+      "provider": "openai", "upstream": null, "url": "https://ai.example.com", "env": "https://env.example.com",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://ai.example.com/v1", "source": "argument"}
+    },
+    {
+      "name": "an explicit URL's trailing slash is dropped",
+      "provider": "openai", "upstream": null, "url": "https://ai.example.com/", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"url": "https://ai.example.com/v1", "source": "argument"}
+    },
+    {
+      "name": "an explicit URL that already ends in /v1 gets nothing appended",
+      "provider": "openai", "upstream": null, "url": "https://ai.example.com/v1/", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"url": "https://ai.example.com/v1", "source": "argument"}
+    },
+    {
+      "name": "an explicit hosted path gets the client path",
+      "provider": "openai", "upstream": null, "url": "https://acme.superbased.app/ai/openai", "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/openai/v1", "source": "argument"}
+    },
+    {
+      "name": "anthropic: the gateway address as it is (the client adds /v1/messages)",
+      "provider": "anthropic", "upstream": null, "url": "https://ai.example.com", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"url": "https://ai.example.com", "source": "argument"}
+    },
+    {
+      "name": "an upstream named with an explicit URL is the X-SBO-Upstream header",
+      "provider": "openai", "upstream": "openai-eu", "url": "https://ai.example.com", "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://ai.example.com/v1", "source": "argument", "upstream_header": "openai-eu"}
+    },
+    {
+      "name": "plain http to a loopback gateway is allowed",
+      "provider": "openai", "upstream": null, "url": "http://127.0.0.1:8840", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"url": "http://127.0.0.1:8840/v1", "source": "argument"}
+    },
+    {
+      "name": "plain http to a remote host is refused (the key would travel in clear)",
+      "provider": "openai", "upstream": null, "url": "http://ai.example.com", "env": "https://env.example.com",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_url"}
+    },
+    {
+      "name": "an explicit URL that is not http(s) is refused, never a fall-through",
+      "provider": "openai", "upstream": null, "url": "ftp://ai.example.com", "env": "https://env.example.com",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_url"}
+    },
+    {
+      "name": "an explicit URL with user info is refused",
+      "provider": "openai", "upstream": null, "url": "https://me:pw@ai.example.com", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"problem": "bad_url"}
+    },
+    {
+      "name": "an explicit URL with a query is refused",
+      "provider": "anthropic", "upstream": null, "url": "https://ai.example.com/?k=v", "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"problem": "bad_url"}
+    },
+    {
+      "name": "the environment is used without an explicit argument",
+      "provider": "openai", "upstream": null, "url": null, "env": "https://ai.example.com/",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://ai.example.com/v1", "source": "env"}
+    },
+    {
+      "name": "a blank explicit argument and environment are unset",
+      "provider": "openai", "upstream": null, "url": "  ", "env": "  ",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/openai/v1", "source": "org"}
+    },
+    {
+      "name": "a bad environment URL is refused, never a fall-through",
+      "provider": "openai", "upstream": null, "url": null, "env": "ai.example.com",
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_url"}
+    },
+    {
+      "name": "online: the organization's address with the default upstream",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/openai/v1", "source": "org"}
+    },
+    {
+      "name": "online: anthropic's address is the upstream path",
+      "provider": "anthropic", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app/", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/anthropic", "source": "org"}
+    },
+    {
+      "name": "online: a named upstream goes in the path, not a header",
+      "provider": "openai", "upstream": "openai-eu", "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/openai-eu/v1", "source": "org"}
+    },
+    {
+      "name": "online: azure_openai has no default upstream",
+      "provider": "azure_openai", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "upstream_required"}
+    },
+    {
+      "name": "online: azure_openai with an upstream is its azure_endpoint",
+      "provider": "azure_openai", "upstream": "azure-east", "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/azure-east", "source": "org"}
+    },
+    {
+      "name": "online without the organization's address never uses the machine lane",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai"}]},
+      "want": {"problem": "not_configured"}
+    },
+    {
+      "name": "both: the machine's app lane, even when the organization is known",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "both", "org_url": "https://acme.superbased.app",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai"}]},
+      "want": {"url": "http://127.0.0.1:8820/up/openai/v1", "source": "machine"}
+    },
+    {
+      "name": "local: an anthropic lane, its trailing slash dropped",
+      "provider": "anthropic", "upstream": null, "url": null, "env": null,
+      "destination": "local", "org_url": "",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai"}, {"id": "anthropic", "base_url": "http://localhost:8820/up/anthropic/"}]},
+      "want": {"url": "http://localhost:8820/up/anthropic", "source": "machine"}
+    },
+    {
+      "name": "local: a named upstream picks its lane",
+      "provider": "openai", "upstream": "groq", "url": null, "env": null,
+      "destination": "local", "org_url": "",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai"}, {"id": "groq", "base_url": "http://127.0.0.1:8820/up/groq"}]},
+      "want": {"url": "http://127.0.0.1:8820/up/groq/v1", "source": "machine"}
+    },
+    {
+      "name": "a lane that is not on a loopback address is skipped",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "local", "org_url": "",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://10.0.0.5:8820/up/openai"}]},
+      "want": {"problem": "not_configured"}
+    },
+    {
+      "name": "malformed lane entries are skipped and a later good one is used",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "both", "org_url": "",
+      "local": {"app_lanes": ["openai", {"id": 7, "base_url": "http://127.0.0.1:8820/up/x"}, {"id": "openai"}, {"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai?x=1"}, {"id": "openai", "base_url": "http://[::1]:8820/up/openai"}]},
+      "want": {"url": "http://[::1]:8820/up/openai/v1", "source": "machine"}
+    },
+    {
+      "name": "app_lanes that is not a list is no lane",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "local", "org_url": "",
+      "local": {"app_lanes": {"openai": "http://127.0.0.1:8820/up/openai"}},
+      "want": {"problem": "not_configured"}
+    },
+    {
+      "name": "no lane for the upstream",
+      "provider": "anthropic", "upstream": null, "url": null, "env": null,
+      "destination": "local", "org_url": "",
+      "local": {"app_lanes": [{"id": "openai", "base_url": "http://127.0.0.1:8820/up/openai"}]},
+      "want": {"problem": "not_configured"}
+    },
+    {
+      "name": "no discovery answer and nothing else",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "local", "org_url": "", "local": null,
+      "want": {"problem": "not_configured"}
+    },
+    {
+      "name": "the provider is matched case-insensitively",
+      "provider": " OpenAI ", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"url": "https://acme.superbased.app/ai/openai/v1", "source": "org"}
+    },
+    {
+      "name": "an unknown provider",
+      "provider": "cohere", "upstream": null, "url": "https://ai.example.com", "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "unknown_provider"}
+    },
+    {
+      "name": "an upstream id with a space or capitals",
+      "provider": "openai", "upstream": "Open AI", "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_upstream"}
+    },
+    {
+      "name": "the reserved upstream id v1",
+      "provider": "openai", "upstream": "v1", "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_upstream"}
+    },
+    {
+      "name": "the reserved upstream id v1beta, even with an explicit URL",
+      "provider": "openai", "upstream": "v1beta", "url": "https://ai.example.com", "env": null,
+      "destination": "online", "org_url": "", "local": null,
+      "want": {"problem": "bad_upstream"}
+    },
+    {
+      "name": "an upstream id over 32 characters",
+      "provider": "anthropic", "upstream": "a234567890123456789012345678901233", "url": null, "env": null,
+      "destination": "online", "org_url": "https://acme.superbased.app", "local": null,
+      "want": {"problem": "bad_upstream"}
+    },
+    {
+      "name": "SDK-held file (0.2.0): destination online from the SDK-held file, the org address from its gateway_url line: source org, the same answer as the sign-in file",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://u-k7x2.superbased.app", "local": null,
+      "from": {"destination_source": "sdk_file", "org_url_source": "sdk_file"},
+      "want": {"url": "https://u-k7x2.superbased.app/ai/openai/v1", "source": "org"}
+    },
+    {
+      "name": "SDK-held file (0.2.0): the same for anthropic",
+      "provider": "anthropic", "upstream": null, "url": null, "env": null,
+      "destination": "online", "org_url": "https://u-k7x2.superbased.app", "local": null,
+      "from": {"destination_source": "sdk_file", "org_url_source": "sdk_file"},
+      "want": {"url": "https://u-k7x2.superbased.app/ai/anthropic", "source": "org"}
+    },
+    {
+      "name": "SDK-held file (0.2.0): destination both from the SDK-held file and no machine answer: the org address is not used under both",
+      "provider": "openai", "upstream": null, "url": null, "env": null,
+      "destination": "both", "org_url": "https://u-k7x2.superbased.app", "local": null,
+      "from": {"destination_source": "sdk_file", "org_url_source": "sdk_file"},
+      "want": {"problem": "not_configured"}
+    }
+  ],
+  "refusal": [
+    {
+      "name": "402 token cap on the Anthropic Messages API",
+      "status": 402,
+      "headers": {"Content-Type": "application/json", "X-SBO-Request-Id": "sdk-0123abcd", "request-id": "sdk-0123abcd"},
+      "body": {
+        "type": "error",
+        "error": {"type": "billing_error", "message": "request denied: the service token cap was reached (estimated)", "details": {"error_code": "budget_exceeded"}},
+        "reason": "budget_exceeded",
+        "level": "service",
+        "scope_id": "checkout-api",
+        "unit": "tokens",
+        "remaining_tokens": -994,
+        "cap_tokens": 100,
+        "estimated": true
+      },
+      "want": {
+        "kind": "budget_exceeded", "code": "budget_exceeded", "status": 402,
+        "message": "request denied: the service token cap was reached (estimated)",
+        "request_id": "sdk-0123abcd",
+        "budget": {"level": "service", "scope_id": "checkout-api", "unit": "tokens", "remaining": -994, "cap": 100, "estimated": true}
+      }
+    },
+    {
+      "name": "402 dollar cap on an OpenAI endpoint, request id from x-request-id",
+      "status": 402,
+      "headers": {"x-request-id": "gw-77"},
+      "body": {
+        "error": {"message": "request denied: the end user dollar cap was reached (estimated)", "type": "insufficient_quota", "param": null, "code": "budget_exceeded"},
+        "reason": "budget_exceeded",
+        "level": "end_user",
+        "scope_id": "9f2c",
+        "unit": "usd",
+        "remaining_usd": -0.0025,
+        "cap_usd": 0.01,
+        "estimated": true
+      },
+      "want": {
+        "kind": "budget_exceeded", "code": "budget_exceeded", "status": 402,
+        "message": "request denied: the end user dollar cap was reached (estimated)",
+        "request_id": "gw-77",
+        "budget": {"level": "end_user", "scope_id": "9f2c", "unit": "usd", "remaining": -0.0025, "cap": 0.01, "estimated": true}
+      }
+    },
+    {
+      "name": "402 with budget fields of the wrong type: they are left out",
+      "status": 402,
+      "headers": {},
+      "body": {"error": "request denied", "reason": "budget_exceeded", "level": 3, "unit": "usd", "remaining_usd": "-1", "cap_usd": 5, "estimated": "yes"},
+      "want": {
+        "kind": "budget_exceeded", "code": "budget_exceeded", "status": 402,
+        "message": "request denied",
+        "budget": {"level": null, "scope_id": null, "unit": "usd", "remaining": null, "cap": 5, "estimated": false}
+      }
+    },
+    {
+      "name": "403 model_not_allowed on an OpenAI endpoint",
+      "status": 403,
+      "headers": {"X-SBO-Request-Id": "r-1"},
+      "body": {"error": {"message": "model gpt-5 is not allowed for this key", "type": "permission_error", "param": null, "code": "model_not_allowed"}, "reason": "model_not_allowed"},
+      "want": {"kind": "model_not_allowed", "code": "model_not_allowed", "status": 403, "message": "model gpt-5 is not allowed for this key", "request_id": "r-1"}
+    },
+    {
+      "name": "403 admission_denied on the Anthropic Messages API",
+      "status": 403,
+      "headers": {"x-sbo-request-id": "r-2"},
+      "body": {"type": "error", "error": {"type": "permission_error", "message": "the organization's admission policy denied this request", "details": {"error_code": "admission_denied"}}, "reason": "admission_denied"},
+      "want": {"kind": "admission_denied", "code": "admission_denied", "status": 403, "message": "the organization's admission policy denied this request", "request_id": "r-2"}
+    },
+    {
+      "name": "403 model_not_allowed in the plain shape: the message is the error string",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "model not allowed", "reason": "model_not_allowed"},
+      "want": {"kind": "model_not_allowed", "code": "model_not_allowed", "status": 403, "message": "model not allowed"}
+    },
+    {
+      "name": "403 plan_required with the plan detail",
+      "status": 403,
+      "headers": {},
+      "body": {
+        "error": "plan_required",
+        "reason": "plan_required",
+        "message": "The AI gateway is not part of this organization's plan (Team).",
+        "capability": "org.aigateway",
+        "plan": {"name": "team", "version": 1, "label": "Team"},
+        "allowance": {"requests_monthly": 0, "concurrency": 0},
+        "plans": [{"name": "business", "version": 3, "label": "Business", "allowance": {"requests_monthly": 1000000, "concurrency": 64}}],
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"
+      },
+      "want": {
+        "kind": "plan_required", "code": "plan_required", "status": 403,
+        "message": "The AI gateway is not part of this organization's plan (Team).",
+        "plan_refusal": {"kind": "plan_required", "code": "plan_required", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1", "capability": "org.aigateway"}
+      }
+    },
+    {
+      "name": "403 plan_required without an upgrade_url has no plan detail",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "plan_required", "reason": "plan_required", "message": "not in plan"},
+      "want": {"kind": "plan_required", "code": "plan_required", "status": 403, "message": "not in plan"}
+    },
+    {
+      "name": "429 monthly allowance on an OpenAI endpoint, with Retry-After and the plan detail",
+      "status": 429,
+      "headers": {"Retry-After": "172800", "X-SBO-Request-Id": "r-3"},
+      "body": {
+        "error": {"message": "This organization's AI gateway allowance for November is used up.", "type": "rate_limit_error", "param": null, "code": "aigw_requests_quota_exceeded"},
+        "reason": "aigw_requests_quota_exceeded",
+        "capability": "org.aigateway",
+        "plan": {"name": "personal_free", "version": 3, "label": "Free"},
+        "allowance": {"requests_monthly": 10000, "concurrency": 4},
+        "plans": [{"name": "personal_pro", "version": 3, "label": "Pro", "allowance": {"requests_monthly": 250000, "concurrency": 16}}],
+        "quota": {"quota": "requests_monthly", "unit": "requests", "used": 10000, "limit": 11000, "allowance": 10000, "resets_at": "2026-12-01T00:00:00Z"},
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2"
+      },
+      "want": {
+        "kind": "quota_exceeded", "code": "aigw_requests_quota_exceeded", "status": 429,
+        "message": "This organization's AI gateway allowance for November is used up.",
+        "request_id": "r-3",
+        "retry_after_seconds": 172800,
+        "plan_refusal": {"kind": "allowance_exceeded", "code": "aigw_requests_quota_exceeded", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2", "capability": "org.aigateway"}
+      }
+    },
+    {
+      "name": "429 monthly allowance in the bare planrefusal body (code in error, no reason)",
+      "status": 429,
+      "headers": {"Retry-After": "60"},
+      "body": {"error": "aigw_requests_quota_exceeded", "message": "allowance used up", "capability": "org.aigateway", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2"},
+      "want": {
+        "kind": "quota_exceeded", "code": "aigw_requests_quota_exceeded", "status": 429,
+        "message": "allowance used up",
+        "retry_after_seconds": 60,
+        "plan_refusal": {"kind": "allowance_exceeded", "code": "aigw_requests_quota_exceeded", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2", "capability": "org.aigateway"}
+      }
+    },
+    {
+      "name": "429 over the organization's own cap (no upgrade_url): no plan detail",
+      "status": 429,
+      "headers": {"Retry-After": "3600"},
+      "body": {"error": "aigw_requests_quota_exceeded", "reason": "aigw_requests_quota_exceeded", "message": "the organization's own monthly cap is reached"},
+      "want": {"kind": "quota_exceeded", "code": "aigw_requests_quota_exceeded", "status": 429, "message": "the organization's own monthly cap is reached", "retry_after_seconds": 3600}
+    },
+    {
+      "name": "429 per-key concurrency is another refusal",
+      "status": 429,
+      "headers": {"Retry-After": "soon"},
+      "body": {"error": {"message": "too many concurrent requests for this key", "type": "rate_limit_error", "param": null, "code": "per_key_concurrency"}, "reason": "per_key_concurrency"},
+      "want": {"kind": "other", "code": "per_key_concurrency", "status": 429, "message": "too many concurrent requests for this key"}
+    },
+    {
+      "name": "403 egress_guard is another refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "request refused by the egress rules", "reason": "egress_guard"},
+      "want": {"kind": "other", "code": "egress_guard", "status": 403, "message": "request refused by the egress rules"}
+    },
+    {
+      "name": "401 unknown key is another refusal",
+      "status": 401,
+      "headers": {},
+      "body": {"type": "error", "error": {"type": "authentication_error", "message": "unknown key", "details": {"error_code": "unknown"}}, "reason": "unknown"},
+      "want": {"kind": "other", "code": "unknown", "status": 401, "message": "unknown key"}
+    },
+    {
+      "name": "a known code on another status is another refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "denied", "reason": "budget_exceeded", "unit": "usd", "cap_usd": 1},
+      "want": {"kind": "other", "code": "budget_exceeded", "status": 403, "message": "denied", "budget": {"level": null, "scope_id": null, "unit": "usd", "remaining": null, "cap": 1, "estimated": false}}
+    },
+    {
+      "name": "the raw body text of a refusal parses like the object",
+      "status": 403,
+      "headers": {},
+      "body": "{\"error\": {\"message\": \"no\", \"type\": \"permission_error\", \"param\": null, \"code\": \"admission_denied\"}, \"reason\": \"admission_denied\"}",
+      "want": {"kind": "admission_denied", "code": "admission_denied", "status": 403, "message": "no"}
+    },
+    {
+      "name": "a provider's own error relayed as is is not a gateway refusal",
+      "status": 429,
+      "headers": {"x-request-id": "req_abc"},
+      "body": {"error": {"message": "Rate limit reached", "type": "requests", "param": null, "code": "rate_limit_exceeded"}},
+      "want": null
+    },
+    {
+      "name": "a provider's own 403 with a string error is not a gateway refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "Forbidden"},
+      "want": null
+    },
+    {
+      "name": "a success is not a refusal",
+      "status": 200,
+      "headers": {},
+      "body": {"reason": "budget_exceeded"},
+      "want": null
+    },
+    {
+      "name": "an empty reason is not a refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "no", "reason": "  "},
+      "want": null
+    },
+    {
+      "name": "a malformed body is not a refusal",
+      "status": 402,
+      "headers": {},
+      "body": "{\"reason\": \"budget_exceeded\"",
+      "want": null
+    },
+    {
+      "name": "a JSON body that is not an object is not a refusal",
+      "status": 403,
+      "headers": {},
+      "body": "[\"model_not_allowed\"]",
+      "want": null
+    },
+    {
+      "name": "an empty body is not a refusal",
+      "status": 403,
+      "headers": {},
+      "body": "",
+      "want": null
+    }
+  ],
+  "api_key": [
+    {
+      "name": "machine lane: the provider's own key, even with a gateway key set",
+      "source": "machine", "base_url": "http://127.0.0.1:8820/up/openai/v1", "gateway_key": "sbo-vk-abc",
+      "want": {"key": null}
+    },
+    {
+      "name": "machine lane, no gateway key",
+      "source": "machine", "base_url": "http://127.0.0.1:8820/up/openai/v1", "gateway_key": null,
+      "want": {"key": null}
+    },
+    {
+      "name": "org address with a gateway key",
+      "source": "org", "base_url": "https://acme.superbased.app/ai/openai/v1", "gateway_key": "sbo-vk-abc",
+      "want": {"key": "sbo-vk-abc"}
+    },
+    {
+      "name": "the gateway key is trimmed",
+      "source": "org", "base_url": "https://acme.superbased.app/ai/openai/v1", "gateway_key": "  sbo-vk-abc\n",
+      "want": {"key": "sbo-vk-abc"}
+    },
+    {
+      "name": "org address, no gateway key: no_key (the provider key never goes to a remote gateway)",
+      "source": "org", "base_url": "https://acme.superbased.app/ai/openai/v1", "gateway_key": null,
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "a blank gateway key is none",
+      "source": "org", "base_url": "https://acme.superbased.app/ai/openai/v1", "gateway_key": "   ",
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "explicit remote address, no gateway key: no_key",
+      "source": "argument", "base_url": "https://gw.example.com/v1", "gateway_key": null,
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "env remote address with a gateway key",
+      "source": "env", "base_url": "https://gw.example.com", "gateway_key": "sbo-vk-env",
+      "want": {"key": "sbo-vk-env"}
+    },
+    {
+      "name": "a host that only starts like localhost is remote",
+      "source": "argument", "base_url": "https://localhost.example.com/v1", "gateway_key": null,
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "a host that only starts like 127 is remote",
+      "source": "argument", "base_url": "https://127.0.0.1.example.com/v1", "gateway_key": null,
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "loopback gateway, no gateway key: the provider's own key",
+      "source": "env", "base_url": "http://127.0.0.1:8840/v1", "gateway_key": null,
+      "want": {"key": null}
+    },
+    {
+      "name": "localhost gateway, no gateway key",
+      "source": "argument", "base_url": "http://localhost:8840", "gateway_key": null,
+      "want": {"key": null}
+    },
+    {
+      "name": "ipv6 loopback gateway, no gateway key",
+      "source": "argument", "base_url": "http://[::1]:8840/v1", "gateway_key": null,
+      "want": {"key": null}
+    },
+    {
+      "name": "loopback gateway with a gateway key: the gateway key",
+      "source": "argument", "base_url": "http://127.0.0.1:8840/v1", "gateway_key": "sbo-vk-abc",
+      "want": {"key": "sbo-vk-abc"}
+    },
+    {
+      "name": "SDK-held file (0.2.0): the org address from the SDK-held file with no gateway key is no_key: the SDK key in the file is never sent there",
+      "source": "org", "base_url": "https://u-k7x2.superbased.app/ai/openai/v1", "gateway_key": null,
+      "sdk_key_present": true, "from": {"destination_source": "sdk_file", "org_url_source": "sdk_file"},
+      "want": {"problem": "no_key"}
+    },
+    {
+      "name": "SDK-held file (0.2.0): anthropic, no gateway key: no_key",
+      "source": "org", "base_url": "https://u-k7x2.superbased.app/ai/anthropic", "gateway_key": null,
+      "sdk_key_present": true, "from": {"destination_source": "sdk_file", "org_url_source": "sdk_file"},
+      "want": {"problem": "no_key"}
+    }
+  ]
+}

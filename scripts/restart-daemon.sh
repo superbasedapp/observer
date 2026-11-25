@@ -28,6 +28,26 @@
 # `--detach` opts IN to that trade (setsid nohup … --detached; the restart
 # completes, THIS session dies); `--detached` is the internal re-entry marker.
 #
+# PREFER `observer service restart` (L-168, 2026-11-24). A daemon of this
+# release restarts in place and hands its proxy's LISTENING SOCKET to the new
+# process (internal/listenhandover), so the port keeps answering throughout:
+# a request sent during the restart waits in the socket's backlog and the new
+# daemon serves it, and no route is taken off. `bin/observer service restart`
+# does that from a source checkout too (it re-executes the binary at the
+# daemon's own path, so `go build -o bin/observer` first and the restart picks
+# up the new build). A plain SIGTERM (what this script sends) is a deliberate
+# STOP: the daemon itself takes the routes that reach its proxy off, journals
+# them, and the relaunched daemon puts them back once its proxy answers, so
+# this script's own claude-code toggle is now belt-and-braces.
+#
+# WHY THIS SCRIPT REMAINS: it is the tool for what `service restart` does not
+# do: rebuilding before the stop (--build), flipping conversation compression
+# (--compression), a daemon that predates the hand-over, a daemon that is
+# stuck or already half-stopped (the pid-wait and SIGKILL escalation below,
+# T-553 / P3-06, which never relaunches beside a second writer), and the WAL
+# checkpoint while the daemon is down. Its stop-and-relaunch still has a
+# short window in which the port is closed.
+#
 # Usage:
 #   scripts/restart-daemon.sh                       # plain safe restart
 #   scripts/restart-daemon.sh --build               # `go build` the binary first, then restart

@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/benchmark"
 )
@@ -32,10 +31,10 @@ func (s *Store) InsertBenchmarkRun(ctx context.Context, r benchmark.RunRecord) e
 		   spend_usd, judge_spend_usd, budget_json, notes)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.SpecName, r.SpecHash, r.SpecJSON,
-		nullStr(r.ManifestJSON), nullStr(r.PricingSnapshotJSON),
-		timestamp(r.StartedAt), nullTime(r.FinishedAt), r.Status,
+		nullableString(r.ManifestJSON), nullableString(r.PricingSnapshotJSON),
+		timestamp(r.StartedAt), nullableTimestamp(r.FinishedAt), r.Status,
 		r.PlannedCells, r.CompletedCells, r.SpendUSD, r.JudgeSpendUSD,
-		nullStr(r.BudgetJSON), nullStr(r.Notes))
+		nullableString(r.BudgetJSON), nullableString(r.Notes))
 	if err != nil {
 		return fmt.Errorf("store.InsertBenchmarkRun: %w", err)
 	}
@@ -51,9 +50,9 @@ func (s *Store) UpdateBenchmarkRun(ctx context.Context, r benchmark.RunRecord) e
 		       status = ?, planned_cells = ?, completed_cells = ?,
 		       spend_usd = ?, judge_spend_usd = ?, notes = ?
 		 WHERE run_id = ?`,
-		nullStr(r.ManifestJSON), nullStr(r.PricingSnapshotJSON), nullTime(r.FinishedAt),
+		nullableString(r.ManifestJSON), nullableString(r.PricingSnapshotJSON), nullableTimestamp(r.FinishedAt),
 		r.Status, r.PlannedCells, r.CompletedCells,
-		r.SpendUSD, r.JudgeSpendUSD, nullStr(r.Notes), r.RunID)
+		r.SpendUSD, r.JudgeSpendUSD, nullableString(r.Notes), r.RunID)
 	if err != nil {
 		return fmt.Errorf("store.UpdateBenchmarkRun: %w", err)
 	}
@@ -70,9 +69,9 @@ func (s *Store) InsertBenchmarkAttempt(ctx context.Context, a benchmark.AttemptR
 		   spend_usd, turns, error_class, started_at, finished_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.RunID, a.TaskID, a.ConfigID, a.Harness, a.ModelRequested, a.RepeatIdx, a.AttemptNo,
-		nullStr(a.WorkspacePath), a.WallMS, nullIntPtr(a.ExitCode), string(a.Status),
-		nullStr(a.FinalAnswerExcerpt), a.SpendUSD, a.Turns, nullStr(a.ErrorClass),
-		timestamp(a.StartedAt), nullTime(a.FinishedAt))
+		nullableString(a.WorkspacePath), a.WallMS, nullableIntPtr(a.ExitCode), string(a.Status),
+		nullableString(a.FinalAnswerExcerpt), a.SpendUSD, a.Turns, nullableString(a.ErrorClass),
+		timestamp(a.StartedAt), nullableTimestamp(a.FinishedAt))
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertBenchmarkAttempt: %w", err)
 	}
@@ -99,7 +98,7 @@ func (s *Store) InsertBenchmarkSessionMembers(ctx context.Context, members []ben
 			INSERT OR IGNORE INTO benchmark_session_members
 			  (attempt_id, run_id, session_id, role, model_returned)
 			VALUES (?, ?, ?, ?, ?)`,
-			m.AttemptID, m.RunID, m.SessionID, string(m.Role), nullStr(m.ModelReturned)); err != nil {
+			m.AttemptID, m.RunID, m.SessionID, string(m.Role), nullableString(m.ModelReturned)); err != nil {
 			return fmt.Errorf("store.InsertBenchmarkSessionMembers: %w", err)
 		}
 	}
@@ -124,9 +123,9 @@ func (s *Store) InsertBenchmarkScores(ctx context.Context, scores []benchmark.Sc
 			INSERT INTO benchmark_scores
 			  (attempt_id, run_id, scorer, score, passed, rationale, judge_model, rubric_hash, degraded)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sc.AttemptID, sc.RunID, sc.Scorer, sc.Score, boolToInt(sc.Passed),
-			nullStr(sc.Rationale), nullStr(sc.JudgeModel), nullStr(sc.RubricHash),
-			boolToInt(sc.Degraded)); err != nil {
+			sc.AttemptID, sc.RunID, sc.Scorer, sc.Score, boolInt(sc.Passed),
+			nullableString(sc.Rationale), nullableString(sc.JudgeModel), nullableString(sc.RubricHash),
+			boolInt(sc.Degraded)); err != nil {
 			return fmt.Errorf("store.InsertBenchmarkScores: %w", err)
 		}
 	}
@@ -142,7 +141,7 @@ func (s *Store) InsertBenchmarkScores(ctx context.Context, scores []benchmark.Sc
 func (s *Store) UpdateBenchmarkAttemptStatus(ctx context.Context, attemptID int64, status benchmark.Status, errorClass string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE benchmark_attempts SET status = ?, error_class = ? WHERE id = ?`,
-		string(status), nullStr(errorClass), attemptID)
+		string(status), nullableString(errorClass), attemptID)
 	if err != nil {
 		return fmt.Errorf("store.UpdateBenchmarkAttemptStatus: %w", err)
 	}
@@ -203,11 +202,11 @@ func scanBenchmarkRun(sc rowScanner) (benchmark.RunRecord, error) {
 	}
 	r.ManifestJSON, r.PricingSnapshotJSON = manifest.String, pricing.String
 	r.BudgetJSON, r.Notes = budget.String, notes.String
-	if t, ok := parseDBTime(startedAt); ok {
+	if t, ok := parseStoredTimeOK(startedAt); ok {
 		r.StartedAt = t
 	}
 	if finishedAt.Valid {
-		if t, ok := parseDBTime(finishedAt.String); ok {
+		if t, ok := parseStoredTimeOK(finishedAt.String); ok {
 			r.FinishedAt = t
 		}
 	}
@@ -377,11 +376,4 @@ func (s *Store) AvgTurnCostUSD(ctx context.Context, model string, windowDays int
 		return 0, false
 	}
 	return avg.Float64, true
-}
-
-func nullTime(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return timestamp(t)
 }

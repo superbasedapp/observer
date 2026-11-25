@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -84,12 +85,22 @@ func (a *CLIAdapter) loadCacheObservations(ctx context.Context, db *sql.DB, sour
 		}
 		acc.ObserveBlocks(blocks)
 
-		if meta.Role != "assistant" || m.TimeUpdate <= fromOffset {
+		// Emit only assistant messages with non-zero tokens AND whose own
+		// time_updated has crossed the cursor (loadTokenEvents' cadence).
+		if meta.Role != "assistant" {
 			continue
 		}
 		if meta.Tokens.Input == 0 && meta.Tokens.Output == 0 &&
 			meta.Tokens.Cache.Read == 0 && meta.Tokens.Cache.Write == 0 &&
 			meta.Tokens.Reasoning == 0 {
+			continue
+		}
+		if m.TimeUpdate <= fromOffset {
+			// T-930 (CAPTURE-01, ported from opencode): an earlier parse
+			// already emitted this step. Close its delta without emitting,
+			// so the first new step carries only the blocks written since
+			// it, not the session's older blocks again.
+			_ = acc.Emit(sourceFile, m.SessionID, m.ID, "", time.Time{}, models.CacheUsage{}, false)
 			continue
 		}
 

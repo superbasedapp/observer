@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg/pgthrow"
 )
 
 const gpt6LunaRoute = "session_enrichment.gpt-6-luna.v1"
@@ -163,7 +165,7 @@ func checkGPT6LunaRoute(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 }
 
 func TestPopulatedMigration40To41MovesAssignmentsToV3(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv3_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv3_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -264,7 +266,7 @@ func TestPopulatedMigration40To41MovesAssignmentsToV3(t *testing.T) {
 // repointed rather than skipped (a strict "< now()" alone would leave a
 // subscriber on plus_beta v2 forever).
 func TestPopulatedMigration38To41InOneTransactionLandsOnV3(t *testing.T) {
-	pool := newThrowawayDB(t, "sbci_planv3jump_")
+	pool := pgthrow.NewEmptyDB(t, "sbci_planv3jump_")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 

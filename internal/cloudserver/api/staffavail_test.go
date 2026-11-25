@@ -106,10 +106,19 @@ func TestStaffAvailabilityIssueFlowWithPostgres(t *testing.T) {
 		var out struct {
 			Components []componentRow `json:"components"`
 		}
-		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || len(out.Components) != 1 {
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
 			t.Fatalf("GET components = %d %s", rec.Code, rec.Body)
 		}
-		return out.Components[0]
+		// The org lists every per-org component (org.security, and
+		// org.aigateway since the hosted AI gateway arc); this flow
+		// drives org.security only.
+		for _, c := range out.Components {
+			if c.Component == "org.security" {
+				return c
+			}
+		}
+		t.Fatalf("GET components has no org.security row: %s", rec.Body)
+		return componentRow{}
 	}
 	type preview struct {
 		BaseVersion  int64            `json:"base_version"`

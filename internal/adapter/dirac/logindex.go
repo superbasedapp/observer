@@ -268,14 +268,5 @@ func pidSeed(sessionID string, pid int, cwd string) (models.SessionProcessSeed, 
 // foreign-OS home (the clinecli precedent: /mnt/c/... seen by a WSL
 // daemon). Both separators are accepted.
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }

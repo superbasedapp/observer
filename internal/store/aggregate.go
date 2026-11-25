@@ -69,8 +69,8 @@ func (s *Store) LoadAggregateState(ctx context.Context, month string) (*Aggregat
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadAggregateState: %w", err)
 	}
-	row.CreatedAt = parseAggTime(createdAt)
-	row.UpdatedAt = parseAggTime(updatedAt)
+	row.CreatedAt = parseStoredTime(createdAt)
+	row.UpdatedAt = parseStoredTime(updatedAt)
 	return &row, nil
 }
 
@@ -95,8 +95,8 @@ func (s *Store) ListAggregateStates(ctx context.Context) ([]AggregateSubmissionR
 			&row.Attempts, &row.State, &row.PayloadJSON, &row.LastError, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("store.ListAggregateStates: scan: %w", err)
 		}
-		row.CreatedAt = parseAggTime(createdAt)
-		row.UpdatedAt = parseAggTime(updatedAt)
+		row.CreatedAt = parseStoredTime(createdAt)
+		row.UpdatedAt = parseStoredTime(updatedAt)
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -227,7 +227,7 @@ func (s *Store) LoadConsentReceipt(ctx context.Context) (*aggregate.Receipt, err
 	if revokedAt != "" {
 		return nil, nil
 	}
-	r.ConsentedAt = parseAggTime(consentedAt)
+	r.ConsentedAt = parseStoredTime(consentedAt)
 	return &r, nil
 }
 
@@ -244,13 +244,3 @@ func (s *Store) RevokeConsent(ctx context.Context, now time.Time) error {
 }
 
 func formatAggTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-
-func parseAggTime(s string) time.Time {
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
-	}
-	return time.Time{}
-}

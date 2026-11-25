@@ -30,12 +30,11 @@
  * to the chosen destination; none are sent to a guess.
  */
 
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-
 import type { Context } from "@opentelemetry/api";
 import type { ReadableSpan, Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 import { DESTINATION_CHOICES, trimSlash, type DestinationChoice, type Settings } from "./config.js";
+import { dashboardProblem, expired, expiryNote, readCredentialRecord, type SdkFileState } from "./credfile.js";
 import { legsOf, stats } from "./export.js";
 
 /** The machine's discovery route (contract section 4). */
@@ -55,6 +54,10 @@ export interface Discovered {
   gatewayUrl: string;
   credentialPresent: boolean;
   credentialFile: string;
+  /** The answer's `online.dashboard_url` (additive; links only, never a place the key goes): "" when absent or not https. */
+  dashboardUrl: string;
+  /** The answer's `local.app_lanes` as it came (the AI gateway helpers read it; loopback-checked there). */
+  appLanes: unknown;
   warnings: string[];
   /** Local URLs the answer named that were not loopback, and so were ignored (review E-04). */
   refused: string[];
@@ -96,6 +99,8 @@ export function parseDiscovery(body: unknown): Discovered | null {
     gatewayUrl: trimSlash(s(online, "gateway_url")),
     credentialPresent: online.credential_present === true,
     credentialFile: s(online, "credential_file"),
+    dashboardUrl: dashboardProblem(s(online, "dashboard_url")) ? "" : trimSlash(s(online, "dashboard_url")),
+    appLanes: local.app_lanes,
     warnings: [...(Array.isArray(d.warnings) ? d.warnings.filter((w): w is string => typeof w === "string") : []), ...unknownDest],
     refused,
   };
@@ -179,23 +184,7 @@ export async function discoverDestination(nodeUrl: string, timeoutMs: number): P
 /** The credential file's gateway line (contract destination.md section 6). */
 export const CREDENTIAL_GATEWAY_FIELD = "gateway_url";
 
-/**
- * Why `url` is not a usable gateway base for the key ("" when it is): https
- * (or http to a loopback host), a host, no user info, query, fragment or path.
- */
-export function gatewayProblem(url: string): string {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return `${JSON.stringify(url)} is not a URL`;
-  }
-  if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.hostname) return `${JSON.stringify(url)} is not an http(s) address with a host`;
-  if (u.username || u.password) return `${JSON.stringify(url)} carries a user name or password`;
-  if (u.search || u.hash || (u.pathname !== "/" && u.pathname !== "")) return `${JSON.stringify(url)} is not a base address`;
-  if (u.protocol !== "https:" && !isLoopbackUrl(url)) return `${JSON.stringify(url)} is plain http to a remote host`;
-  return "";
-}
+export { gatewayProblem } from "./credfile.js";
 
 /**
  * Read the machine's SDK credential file under the contract's rules (unix):
@@ -205,53 +194,17 @@ export function gatewayProblem(url: string): string {
  * address comes from this owner-only file, never from the discovery answer).
  * Unknown names are ignored; a gateway that is not https (or http to this
  * machine) is ignored with an error. Returns the compound and the gateway,
- * or `error` saying why it was refused. On Windows the file is never read:
- * there is no owner check to make, so SUPERBASED_API_KEY is the way (as
- * Python; review R-C33).
+ * or `error` saying why it was refused. On Windows the machine's file is
+ * never read: there is no owner check to make, so SUPERBASED_API_KEY is the
+ * way (as Python; review R-C33). The SDK-held file (credfile.ts) has its own
+ * Windows rule.
  */
 export function readCredentialFile(path: string): { key: string; gateway: string; error: string } {
   if (!path) return { key: "", gateway: "", error: "" };
   if (process.platform === "win32") return { key: "", gateway: "", error: "credential files are not read on Windows; set SUPERBASED_API_KEY" };
-  const refuse = (error: string) => ({ key: "", gateway: "", error });
-  try {
-    const st = lstatSync(path);
-    if (st.isSymbolicLink()) return refuse(`credential file ${path} is a symlink; refused`);
-    if (!st.isFile()) return refuse(`credential file ${path} is not a regular file; refused`);
-    if ((st.mode & 0o077) !== 0) return refuse(`credential file ${path} is readable by others (mode ${(st.mode & 0o777).toString(8)}); refused`);
-    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-    if (uid >= 0 && st.uid !== uid) return refuse(`credential file ${path} is not owned by this user; refused`);
-    if (st.size > 4096) return refuse(`credential file ${path} is too large; refused`);
-    // Open without following a symlink swapped in after the lstat, and read the
-    // descriptor that is checked.
-    const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    let raw: string;
-    try {
-      const fst = fstatSync(fd);
-      if (!fst.isFile() || fst.ino !== st.ino || fst.dev !== st.dev) return refuse(`credential file ${path} changed while it was read; refused`);
-      raw = readFileSync(fd, "utf8");
-    } finally {
-      closeSync(fd);
-    }
-    // Printable ASCII only (and line ends).
-    if (/[^ -~\n\r\t]/.test(raw)) return refuse(`credential file ${path} has non-ASCII content; refused`);
-    const lines = (raw.endsWith("\n") ? raw.slice(0, -1) : raw).split("\n");
-    const bad = `credential file ${path} is not one <key_id>.<secret> line followed by name=value lines; refused`;
-    const key = lines[0] ?? "";
-    if (!/^[^\s.]+\.\S+$/.test(key)) return refuse(bad);
-    let gateway = "";
-    for (const line of lines.slice(1)) {
-      const eq = line.indexOf("=");
-      if (eq <= 0) return refuse(bad);
-      if (line.slice(0, eq) === CREDENTIAL_GATEWAY_FIELD) gateway = line.slice(eq + 1).trim();
-    }
-    if (gateway) {
-      const problem = gatewayProblem(gateway);
-      if (problem) return { key, gateway: "", error: `credential file ${path} names a gateway address that is not usable (${problem}); it is ignored` };
-    }
-    return { key, gateway: trimSlash(gateway), error: "" };
-  } catch (err) {
-    return refuse(`credential file ${path}: ${(err as { code?: string }).code ?? String(err)}`);
-  }
+  const r = readCredentialRecord(path);
+  if (!r.record) return { key: "", gateway: "", error: r.error || `credential file ${path}: ENOENT` };
+  return { key: r.record.key, gateway: r.record.gateway, error: r.warnings.join("; ") };
 }
 
 /** Settings with what the machine supplied filled in; explicit settings win. Also returns problems. */
@@ -274,6 +227,63 @@ export function withDiscovered(s: Settings, d: Discovered, choice: DestinationCh
     problems.push("this machine's Observer has [observability] off, so it refuses local spans; turn it on in the dashboard (Settings > Your apps)");
   }
   return { settings: out, problems };
+}
+
+/** The SDK-held file's state after the ladders (sdk-api-surface.md section 1, `sdkFile.state`). */
+export type SdkFileUse = "absent" | "used" | "unused" | "refused" | "expired" | "not_read";
+
+/**
+ * Settings with the SDK-held file's record filled in (credential ladder
+ * record 3; plan 3.4, ruling R10), for a destination that needs the online
+ * leg. A key and its gateway travel together: the file's key is used only
+ * with the file's own gateway_url, never sent to an address named elsewhere.
+ * A key the app gave (option or env) keeps its place, and may take the
+ * file's gateway line when it was given none (record 1, as with the
+ * machine's file). A key from the machine's record wins, and the file is
+ * named as present but unused. An expired key is never used (the fix is
+ * setup). Returns the settings, the problems to report, the file's state,
+ * and the dashboard base when the file's record is the one in use.
+ */
+export function withSdkFile(
+  s: Settings,
+  file: SdkFileState | null,
+  choice: DestinationChoice | "",
+  now: number = Date.now(),
+): { settings: Settings; problems: string[]; use: SdkFileUse; dashboardUrl: string } {
+  const out: Settings = { ...s };
+  if (!file) return { settings: out, problems: [], use: "not_read", dashboardUrl: "" };
+  if (!file.present) return { settings: out, problems: [], use: "absent", dashboardUrl: "" };
+  if (!file.record) return { settings: out, problems: [`${file.error}; the next source is used`], use: "refused", dashboardUrl: "" };
+  const rec = file.record;
+  const problems = [...file.warnings];
+  const result = (use: SdkFileUse, dashboardUrl = "") => ({ settings: out, problems, use, dashboardUrl });
+  if (choice !== "online" && choice !== "both") return result("unused");
+  if (out.apiKey) {
+    if (out.credentialSource === "file") {
+      problems.push(`the SDK-held credential file ${file.path} is present but unused: this machine's Observer is signed in, and its key is used`);
+    } else if (!out.orgUrl && rec.gateway) {
+      out.orgUrl = rec.gateway;
+    }
+    return result("unused");
+  }
+  if (expired(rec.expiresAt, now)) {
+    problems.push(expiryNote(rec.expiresAt, file.path, now));
+    return result("expired");
+  }
+  if (!rec.gateway) {
+    problems.push(`the SDK-held credential file ${file.path} names no usable gateway_url; its key is not used`);
+    return result("unused");
+  }
+  if (out.orgUrl && trimSlash(out.orgUrl) !== rec.gateway) {
+    problems.push(`the gateway URL the app set (${out.orgUrl}) is not the one the key in ${file.path} belongs to (${rec.gateway}); the file's key is not used`);
+    return result("unused");
+  }
+  out.apiKey = rec.key;
+  out.orgUrl = rec.gateway;
+  out.credentialSource = "sdk_file";
+  const soon = expiryNote(rec.expiresAt, file.path, now);
+  if (soon) problems.push(soon);
+  return result("used", rec.dashboardUrl);
 }
 
 /**

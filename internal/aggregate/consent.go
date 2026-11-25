@@ -121,16 +121,6 @@ func NormalizeEndpoint(raw string) string {
 	return scheme + "://" + host + path
 }
 
-// EndpointHost returns the lowercased host of an endpoint URL (no port-strip),
-// for approved-host checks. Empty when the input does not parse to a host.
-func EndpointHost(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
-}
-
 // HashDisclosure returns the hex sha256 of the disclosure text the operator
 // saw at consent time, so a later change to the disclosure wording is
 // detectable (the receipt pins what was actually agreed to).

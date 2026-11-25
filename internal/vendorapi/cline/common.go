@@ -2,7 +2,6 @@ package cline
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -44,17 +43,6 @@ var idRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 // ValidID reports whether s may be used as a session id in a request path.
 func ValidID(s string) bool { return idRE.MatchString(s) }
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-// decode decodes a JSON body with numbers kept as literals.
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // isNull reports whether a body is the JSON literal null (the node egress
 // answers a 404 the connector declares absent with it).
 func isNull(body []byte) bool { return string(bytes.TrimSpace(body)) == "null" }
@@ -62,7 +50,7 @@ func isNull(body []byte) bool { return string(bytes.TrimSpace(body)) == "null" }
 // checkStatus refuses any status but the documented 200.
 func checkStatus(surface vs.SurfaceID, r vendorapi.Response) error {
 	if r.Status != 200 {
-		return drift(surface, "status %d is not the documented 200", r.Status)
+		return vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
 	return nil
 }
@@ -101,13 +89,6 @@ func putShort(body map[string]string, key string, v *string) bool {
 	}
 	body[key] = *v
 	return true
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // num is a JSON number kept as its literal text; it refuses a quoted value

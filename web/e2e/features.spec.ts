@@ -7,9 +7,8 @@ test.use({ viewport: { width: 1280, height: 900 } });
 
 test("Settings → Health shows a Restart daemon button", async ({ page }) => {
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(600);
   // The section-nav button's accessible name carries a badge (e.g. "Health
-  // SOFT"), so match loosely.
+  // SOFT"), so match loosely. click() waits for the button to render.
   await page.getByRole("button", { name: /Health/ }).first().click();
   await page.waitForTimeout(600);
   await expect(
@@ -38,7 +37,7 @@ test("terminal dock grip drags and persists", async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(before.x - 200, before.y - 200, { steps: 8 });
   await page.mouse.up();
-  await page.waitForTimeout(200);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("sb_dock_pos"))).toBeTruthy();
   const stored = await page.evaluate(() => localStorage.getItem("sb_dock_pos"));
   expect(stored).toBeTruthy();
   const pos = JSON.parse(stored as string);
@@ -47,7 +46,7 @@ test("terminal dock grip drags and persists", async ({ page }) => {
   await page.screenshot({ path: "e2e/shots/features/dock-moved.png" });
   // Reload → position persists (grip is left of its original spot).
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(600);
-  const after = await grip.boundingBox();
-  expect(after!.x).toBeLessThan(before.x);
+  await expect
+    .poll(async () => (await grip.boundingBox())?.x ?? Number.POSITIVE_INFINITY)
+    .toBeLessThan(before.x);
 });

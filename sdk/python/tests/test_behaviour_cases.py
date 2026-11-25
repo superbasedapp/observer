@@ -564,6 +564,10 @@ def test_experiment_strict_gate(i):
 
 RUNNERS |= {"get_dataset_missing"}
 
+# The SDK quickstart's sections (sdk-api-surface.md sections 14 to 16,
+# destination.md section 6a) run in test_quickstart_contract.py.
+RUNNERS |= {"auto_instrument", "service_name_default", "destination_sdk_file", "first_trace_link"}
+
 
 @pytest.mark.parametrize("i", _ids("get_dataset_missing"))
 def test_get_dataset_missing(i, stub, monkeypatch):

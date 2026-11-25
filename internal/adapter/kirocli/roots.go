@@ -3,7 +3,6 @@ package kirocli
 import (
 	"context"
 	"path/filepath"
-	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -82,10 +81,7 @@ func sqliteDataSubdir(homeOS string) []string {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Kiro CLI store (data.sqlite3, whose auth_kv table holds sign-in tokens): every table this
@@ -101,14 +97,5 @@ var mirrorSpec = mirrorbase.Spec{
 // isForeignMountPath reports whether path lives under a crossmount-
 // detected non-native home. Both bridge directions are covered.
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }

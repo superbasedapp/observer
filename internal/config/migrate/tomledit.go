@@ -37,17 +37,7 @@ type document struct {
 
 // parseDocument splits text into lines and analyses table context.
 func parseDocument(text string) *document {
-	trailing := strings.HasSuffix(text, "\n")
-	body := text
-	if trailing {
-		body = body[:len(body)-1]
-	}
-	var lines []string
-	if body == "" && !trailing {
-		lines = nil
-	} else {
-		lines = strings.Split(body, "\n")
-	}
+	lines, trailing := SplitLines(text)
 	d := &document{lines: lines, trailingNL: trailing}
 	d.metas = analyze(lines)
 	return d
@@ -56,8 +46,31 @@ func parseDocument(text string) *document {
 // render reassembles the document back into text, preserving the
 // original trailing-newline state.
 func (d *document) render() string {
-	s := strings.Join(d.lines, "\n")
-	if d.trailingNL {
+	return JoinLines(d.lines, d.trailingNL)
+}
+
+// SplitLines splits a TOML file's text into its physical lines and
+// reports whether it ended in a newline. Empty text yields no lines.
+// JoinLines(SplitLines(text)) returns text byte for byte, which is what
+// lets every line editor in package config leave an untouched file
+// unchanged.
+func SplitLines(text string) (lines []string, trailingNL bool) {
+	trailingNL = strings.HasSuffix(text, "\n")
+	body := text
+	if trailingNL {
+		body = body[:len(body)-1]
+	}
+	if body == "" && !trailingNL {
+		return nil, trailingNL
+	}
+	return strings.Split(body, "\n"), trailingNL
+}
+
+// JoinLines reassembles lines split by SplitLines, restoring the trailing
+// newline when trailingNL is set.
+func JoinLines(lines []string, trailingNL bool) string {
+	s := strings.Join(lines, "\n")
+	if trailingNL {
 		s += "\n"
 	}
 	return s
@@ -77,10 +90,10 @@ func analyze(lines []string) []meta {
 		case t == "" || t[0] == '#':
 			metas[i] = meta{kind: kOther}
 		case strings.HasPrefix(t, "[["):
-			cur = parseHeaderPath(t, true)
+			cur = HeaderPath(t, true)
 			metas[i] = meta{kind: kArray, table: cur}
 		case t[0] == '[':
-			cur = parseHeaderPath(t, false)
+			cur = HeaderPath(t, false)
 			metas[i] = meta{kind: kHeader, table: cur}
 		default:
 			key, rhs, ok := splitKeyVal(raw)
@@ -88,7 +101,7 @@ func analyze(lines []string) []meta {
 				metas[i] = meta{kind: kOther}
 				continue
 			}
-			seg := parseDottedKey(key)
+			seg := SplitDottedKey(key)
 			full := make([]string, 0, len(cur)+len(seg))
 			full = append(full, cur...)
 			full = append(full, seg...)
@@ -98,11 +111,12 @@ func analyze(lines []string) []meta {
 	return metas
 }
 
-// parseHeaderPath extracts the dotted table path from a header line.
-// For array tables (`[[a.b]]`) pass array=true. Best-effort: an inline
+// HeaderPath extracts the dotted table path from a header line (already
+// trimmed of leading whitespace). For array tables (`[[a.b]]`) pass
+// array=true. Best-effort: an inline
 // comment or exotic quoting only risks a MISS (the line won't match a
 // migration target), never a wrong edit.
-func parseHeaderPath(trimmed string, array bool) []string {
+func HeaderPath(trimmed string, array bool) []string {
 	open, close := "[", "]"
 	if array {
 		open, close = "[[", "]]"
@@ -111,7 +125,7 @@ func parseHeaderPath(trimmed string, array bool) []string {
 	if idx := strings.Index(inner, close); idx >= 0 {
 		inner = inner[:idx]
 	}
-	return parseDottedKey(inner)
+	return SplitDottedKey(inner)
 }
 
 // splitKeyVal splits a `key = value` line into its raw left-hand key
@@ -133,9 +147,11 @@ func splitKeyVal(raw string) (key, rhs string, ok bool) {
 	return key, rhs, true
 }
 
-// parseDottedKey splits a dotted TOML key/table path on '.' outside
-// quotes and trims quotes/space from each segment.
-func parseDottedKey(s string) []string {
+// SplitDottedKey splits a dotted TOML key/table path on '.' outside
+// quotes and trims quotes/space from each segment. It is the one
+// quote-aware dotted-key splitter in package config and its
+// subpackages.
+func SplitDottedKey(s string) []string {
 	var segs []string
 	var b strings.Builder
 	inBasic, inLiteral := false, false

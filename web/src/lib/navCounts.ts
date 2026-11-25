@@ -117,6 +117,7 @@ export const UNBADGED_NAV_IDS: Readonly<Record<string, string>> = {
   "app-scores": "no cheap count: /api/status never reads the obs store (obs boundary)",
   "app-prompts": "configuration, not records",
   "app-alerts": "the breaching state is the page's own evaluation, not a status count",
+  "app-model-calls": "configuration, not records: the machine's app lanes",
   policies: "configuration, not records (moved from Configure into Your apps)",
 };
 

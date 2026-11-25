@@ -89,11 +89,13 @@ type UsageSnapshot struct {
 	// was the honest R4 string "Plus beta entitlement simulation" (keeping a
 	// beta grant from reading as a purchased subscription) until the
 	// 2026-09-15 ruling made Plus a real purchasable plan; migration 0037
-	// updates the seeded label to plain "Plus".
+	// updated the seeded label to plain "Plus", and since the 2026-11-24 ruling
+	// the catalog's label, which the plans generator writes (cloud 0156), is
+	// "Personal Pro". The internal name stays plus_beta.
 	PlanLabel   string `json:"plan_label"`
 	PlanVersion int    `json:"plan_version"`
-	// BudgetPool is the pool this account's reservations draw from. Plus never
-	// draws the free pool (R4).
+	// BudgetPool is the pool this account's reservations draw from. Personal
+	// Pro (plus_beta) never draws the free pool (R4).
 	BudgetPool string `json:"budget_pool"`
 	// PlanOverridden reports that an explicit per-account entitlement override
 	// supplied the caps instead of the plan.

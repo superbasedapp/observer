@@ -420,7 +420,7 @@ func TestOBORules(t *testing.T) {
 			}
 			last = s
 		}
-		if !IsOBOWireReason(ReasonOBOActorToken) || IsOBOWireReason(ReasonOBOReplay) {
+		if !isOBOWireReason(ReasonOBOActorToken) || isOBOWireReason(ReasonOBOReplay) {
 			t.Fatal("wire classification")
 		}
 	})

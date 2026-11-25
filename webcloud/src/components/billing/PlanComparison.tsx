@@ -9,6 +9,12 @@ import type {
   CheckoutPrice,
 } from "../../api";
 import { ensurePaddleReady, loadPaddleJs, paddleFailureText } from "./paddleCheckout";
+import {
+  GATEWAY_BETA_NOTE,
+  GATEWAY_COMPARISON_ROWS,
+  GATEWAY_COMPARISON_TITLE,
+  GATEWAY_STATUS_PILL,
+} from "./gatewayRows";
 import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList";
 import { Pill } from "@shared/primitives/Pill";
 import {
@@ -26,17 +32,17 @@ import { vocabIcon } from "@shared/lib/vocabIcons";
 import { Check, Sparkles } from "lucide-react";
 
 // PlanComparison renders the "Plans" row: two side-by-side cards (Free /
-// Plus) sharing the design-system card surface, each a proper definition
-// list of the same comparison rows so the values line up. The Plus card
-// additionally carries whichever of the three states applies: the checkout
-// offer (consent checkbox + Upgrade/Subscribe-again button), an honest
-// "Current plan" state when the reader is already on a live Plus
-// subscription, or the honest unavailable copy when this deployment has no
-// checkout catalogue configured.
+// Personal Pro) sharing the design-system card surface, each a proper
+// definition list of the same comparison rows so the values line up. The
+// Personal Pro card additionally carries whichever of the three states
+// applies: the checkout offer (consent checkbox + Upgrade/Subscribe-again
+// button), an honest "Current plan" state when the reader is already on a
+// live Personal Pro subscription, or the honest unavailable copy when this
+// deployment has no checkout catalogue configured.
 //
-// Showcase (design-kit WS10): the Plus card is the featured card (accent
-// border, soft glow, a "Recommended" tag unless it is already the reader's
-// plan); a yes / no comparison cell draws its planFeature glyph (Check /
+// Showcase (design-kit WS10): the Personal Pro card is the featured card
+// (accent border, soft glow, a "Recommended" tag unless it is already the
+// reader's plan); a yes / no comparison cell draws its planFeature glyph (Check /
 // Minus) beside the words; "Current plan" is a status, never a disabled
 // primary button (Button.tsx: a disabled button reads as "not allowed", and
 // this is not an action at all).
@@ -97,11 +103,35 @@ function PlanCell({ text }: { text: string }) {
 
 function ComparisonRows({ pick }: { pick: "free" | "plus" }) {
   return (
-    <DefinitionList className={rowsClass}>
-      {PLAN_COMPARISON_ROWS.map((row) => (
-        <DefinitionRow key={row.label} label={row.label} value={<PlanCell text={row[pick]} />} />
-      ))}
-    </DefinitionList>
+    <>
+      <DefinitionList className={rowsClass}>
+        {PLAN_COMPARISON_ROWS.map((row) => (
+          <DefinitionRow key={row.label} label={row.label} value={<PlanCell text={row[pick]} />} />
+        ))}
+      </DefinitionList>
+      <GatewayRows pick={pick} />
+    </>
+  );
+}
+
+// GatewayRows: the hosted AI gateway's allowances (lane L9, decision 4),
+// under their own heading marked "Not offered yet" while no hosted
+// team is offered it (decision 6, C-118), so the comparison never
+// claims it is available.
+function GatewayRows({ pick }: { pick: "free" | "plus" }) {
+  return (
+    <div className="mt-3">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-fg-2">
+        {GATEWAY_COMPARISON_TITLE}
+        <Pill variant="neutral">{GATEWAY_STATUS_PILL}</Pill>
+      </div>
+      <DefinitionList className="mt-1 divide-y divide-line-1 text-[12px]">
+        {GATEWAY_COMPARISON_ROWS.map((row) => (
+          <DefinitionRow key={row.label} label={row.label} value={<PlanCell text={row[pick]} />} />
+        ))}
+      </DefinitionList>
+      <p className="mt-1 text-[11px] text-fg-3">{GATEWAY_BETA_NOTE}</p>
+    </div>
   );
 }
 

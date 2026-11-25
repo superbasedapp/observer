@@ -54,19 +54,6 @@ func (a allocations) report(t *testing.T, what string) {
 	}
 }
 
-func uniqueSorted(xs []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, x := range xs {
-		if !seen[x] {
-			seen[x] = true
-			out = append(out, x)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // guardRuleID is the shape of a guard rule id.
 var guardRuleID = regexp.MustCompile(`^[A-Z]-[0-9]{3}$`)
 

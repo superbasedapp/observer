@@ -4,11 +4,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/defaultworkspace"
+	"github.com/marmutapp/superbased-observer/internal/filehash"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -124,7 +122,7 @@ func productionSandboxSetupRunIO(configPath string) sandboxSetupRunIO {
 			return p
 		},
 		goos:       sandboxSetupGOOS(),
-		fileSHA256: sandboxSetupFileSHA256,
+		fileSHA256: filehash.SHA256,
 		removeFile: os.Remove,
 		defaultWorkspace: func(cfg config.Config) defaultworkspace.Status {
 			return defaultworkspace.Inspect(defaultWorkspaceEnv(cfg), cfg.Workspace.DefaultDir)
@@ -193,20 +191,6 @@ func sandboxSetupComponentChange(ctx context.Context, configPath string, ch comp
 	}
 	_, err = svc.Apply(ctx, ch, componentsvc.ApplyOptions{ExpectFingerprint: p.Fingerprint, Principal: principal})
 	return err
-}
-
-// sandboxSetupFileSHA256 hashes a placed file.
-func sandboxSetupFileSHA256(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: a file Observer placed and recorded
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // sandboxPinConfigKeys maps a pinned download's pin id to the config key the

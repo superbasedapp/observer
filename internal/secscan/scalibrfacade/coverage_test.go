@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
 
 // readSampleOverrides are the sample paths of a table row whose Files
@@ -190,7 +191,7 @@ func TestUnreadFilesPerRow(t *testing.T) {
 			if !ok {
 				body = "x\n"
 			}
-			gaps, err := UnreadFiles(context.Background(), writeTree(t, map[string]string{rel: body}), ExtractOptions{})
+			gaps, err := UnreadFiles(context.Background(), fstree.WritePrivate(t, map[string]string{rel: body}), ExtractOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +256,7 @@ func TestUnreadFilesLockedAndSkipped(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			root := writeTree(t, c.files)
+			root := fstree.WritePrivate(t, c.files)
 			var skips []string
 			for _, s := range c.skip {
 				skips = append(skips, filepath.Join(root, filepath.FromSlash(s)))
@@ -275,7 +276,7 @@ func TestUnreadFilesLockedAndSkipped(t *testing.T) {
 // pubspec.lock gets a gap for it (until an extractor reads it), so the run
 // is never clean.
 func TestUnreadFilesOnlyPubspecLock(t *testing.T) {
-	gaps, err := UnreadFiles(context.Background(), writeTree(t, map[string]string{"pubspec.lock": "packages: {}\n"}), ExtractOptions{})
+	gaps, err := UnreadFiles(context.Background(), fstree.WritePrivate(t, map[string]string{"pubspec.lock": "packages: {}\n"}), ExtractOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +290,7 @@ func TestUnreadFilesOnlyPubspecLock(t *testing.T) {
 
 // TestUnreadFilesInodeCap: the walk stops past its cap, with an error.
 func TestUnreadFilesInodeCap(t *testing.T) {
-	root := writeTree(t, map[string]string{"a/1": "x", "a/2": "x", "b/3": "x", "b/4": "x"})
+	root := fstree.WritePrivate(t, map[string]string{"a/1": "x", "a/2": "x", "b/3": "x", "b/4": "x"})
 	if _, err := UnreadFiles(context.Background(), root, ExtractOptions{MaxInodes: 2}); !errors.Is(err, errInodeCap) {
 		t.Fatalf("err %v, want the inode cap", err)
 	}
@@ -303,7 +304,7 @@ func TestUnreadFilesInodeCap(t *testing.T) {
 // reported by the facade's manifest probe; one with a lockfile, one that
 // declares nothing and anything under node_modules are not.
 func TestUnlockedManifestsNewRows(t *testing.T) {
-	inv := extractTree(t, writeTree(t, map[string]string{
+	inv := extractTree(t, fstree.WritePrivate(t, map[string]string{
 		"js/package.json":             `{"name":"js","dependencies":{"left-pad":"^1.3.0"}}`,
 		"ws/yarn.lock":                "# yarn lockfile v1\n",
 		"ws/web/package.json":         `{"name":"web","dependencies":{"left-pad":"^1.3.0"}}`,
@@ -332,7 +333,7 @@ func TestUnlockedManifestsNewRows(t *testing.T) {
 // TestLockedCargoStaysClean: a Cargo.toml with its Cargo.lock leaves no
 // unlocked manifest and no unread file, so the run can still be clean.
 func TestLockedCargoStaysClean(t *testing.T) {
-	root := writeTree(t, map[string]string{
+	root := fstree.WritePrivate(t, map[string]string{
 		"Cargo.toml": "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
 		"Cargo.lock": "version = 3\n",
 	})

@@ -177,15 +177,6 @@ func (b *breakdownAccumulator) AddActionTypeCount(tool, actionType string, n int
 	a.categories[category] = struct{}{}
 }
 
-// AddNativeCount folds one (tool, raw_tool_name) group — the capped pass
-// that owns BySurface. Anything it never sees becomes the remainder that
-// Rows() parks in SurfaceUnresolved. The native name is resolved under the
-// tool's own vocabulary; AddNativeCountIn is the form for a group whose
-// names belong to another tool's vocabulary.
-func (b *breakdownAccumulator) AddNativeCount(tool, rawToolName string, n int) {
-	b.AddNativeCountIn(tool, tool, rawToolName, n)
-}
-
 // AddNativeCountIn folds one (tool, raw_tool_name) group whose native name
 // is classified under vocabulary rather than under tool: a cloud-agent
 // connector whose sessions land under one tool while its tool calls carry

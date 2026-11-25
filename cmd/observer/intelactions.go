@@ -114,15 +114,13 @@ func orgIntelActionsView(s orgIntelSession, kind string) dashapi.OrgIntelActions
 }
 
 // orgDashboardAddress is where the organization's own dashboard is: the
-// online address `observer connect` recorded, else the org server address.
+// online address `observer connect` recorded, else the org server address
+// (settingslink.DashboardAddress, the one owner of the rule).
 func orgDashboardAddress(e *store.Enrolment) string {
 	if e == nil {
 		return ""
 	}
-	if settingslink.OrgDashboardBase(e.OnlineURL) != "" {
-		return e.OnlineURL
-	}
-	return e.OrgServerURL
+	return settingslink.DashboardAddress(e.OnlineURL, e.OrgServerURL)
 }
 
 // orgIntelSessionState is `observer intel results` and GET /api/intel/session.

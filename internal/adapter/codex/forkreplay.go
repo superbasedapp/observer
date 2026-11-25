@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 )
 
 // threadSourceSubagent is the sessionMetaPayload.ThreadSource value
@@ -169,7 +172,7 @@ func ReplayedTokenLines(r io.Reader) (map[int]bool, error) {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	lineNum := 0
 	for {
-		lineStr, consumed, oversized, err := readRecord(reader, maxRecordBytes)
+		lineStr, consumed, oversized, err := adapter.ReadRecord(reader, maxRecordBytes)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("codex.ReplayedTokenLines: %w", err)
 		}
@@ -177,7 +180,7 @@ func ReplayedTokenLines(r io.Reader) (map[int]bool, error) {
 			break
 		}
 		// Unified deferral rule (mirrors ParseSessionFile): an io.EOF from
-		// readRecord marks an unterminated final fragment (no '\n'). The
+		// adapter.ReadRecord marks an unterminated final fragment (no '\n'). The
 		// ingest parse defers it whole and never assigns it a line, so the
 		// destructive backfill must NOT count it either — line-number
 		// lockstep with tk:<base>:L<line> ids is a delete invariant.
@@ -275,7 +278,7 @@ type ForkLineage struct {
 func ScanForkLineage(r io.Reader) (ForkLineage, bool, error) {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	for {
-		lineStr, consumed, oversized, err := readRecord(reader, maxRecordBytes)
+		lineStr, consumed, oversized, err := adapter.ReadRecord(reader, maxRecordBytes)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return ForkLineage{}, false, fmt.Errorf("codex.ScanForkLineage: %w", err)
 		}
@@ -283,7 +286,7 @@ func ScanForkLineage(r io.Reader) (ForkLineage, bool, error) {
 			break
 		}
 		// Unified deferral rule (mirrors ParseSessionFile): an io.EOF from
-		// readRecord marks an unterminated final fragment (no '\n'). It is
+		// adapter.ReadRecord marks an unterminated final fragment (no '\n'). It is
 		// an in-progress append, not a complete record — defer it. The
 		// owning session_meta leads the file and is always terminated, so
 		// this only guards against classifying a partial trailing record.
@@ -326,10 +329,10 @@ func ScanForkLineage(r io.Reader) (ForkLineage, bool, error) {
 // fork's re-stamping); the envelope timestamp is the fallback. Returns
 // have=false when neither parses.
 func sessionMetaCreationSec(meta sessionMetaPayload, envelopeTS string) (int64, bool) {
-	if t := parseTimestamp(meta.Timestamp); !t.IsZero() {
+	if t := parseutil.ParseRFC3339(meta.Timestamp); !t.IsZero() {
 		return t.Unix(), true
 	}
-	if t := parseTimestamp(envelopeTS); !t.IsZero() {
+	if t := parseutil.ParseRFC3339(envelopeTS); !t.IsZero() {
 		return t.Unix(), true
 	}
 	return 0, false

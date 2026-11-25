@@ -113,17 +113,17 @@ func parseConversation(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	runID := r.Params[ParamRunID]
 	if !idRE.MatchString(runID) {
-		return vendorapi.Page{}, drift(SurfaceConversation, "the request named no run id")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceConversation, "the request named no run id")
 	}
 	var doc conversationDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceConversation, "body does not decode as the documented ConversationResponse")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceConversation, "body does not decode as the documented ConversationResponse")
 	}
-	if !idRE.MatchString(str(doc.ConversationID)) {
-		return vendorapi.Page{}, drift(SurfaceConversation, "required field conversation_id is missing or not an id")
+	if !idRE.MatchString(vendorapi.Str(doc.ConversationID)) {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceConversation, "required field conversation_id is missing or not an id")
 	}
 	if doc.Steps == nil {
-		return vendorapi.Page{}, drift(SurfaceConversation, "required field steps is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceConversation, "required field steps is missing")
 	}
 	// SourceRecords counts the record container, the root steps.
 	out := vendorapi.Page{SourceRecords: len(*doc.Steps)}
@@ -138,20 +138,20 @@ func parseConversation(r vendorapi.Response) (vendorapi.Page, error) {
 
 func (w *convWalk) step(at string, s step, depth int) error {
 	if depth >= maxStepDepth {
-		return drift(SurfaceConversation, "%s nests deeper than %d steps", at, maxStepDepth)
+		return vendorapi.Drift(SurfaceConversation, "%s nests deeper than %d steps", at, maxStepDepth)
 	}
-	id := str(s.ID)
+	id := vendorapi.Str(s.ID)
 	if !idRE.MatchString(id) {
-		return drift(SurfaceConversation, "%s.id is missing or not an id", at)
+		return vendorapi.Drift(SurfaceConversation, "%s.id is missing or not an id", at)
 	}
 	if s.Messages == nil || s.Steps == nil {
-		return drift(SurfaceConversation, "%s is missing the required messages or steps", at)
+		return vendorapi.Drift(SurfaceConversation, "%s is missing the required messages or steps", at)
 	}
 	var stepStart time.Time
 	if s.StartedAt != nil {
 		t, ok := rfc3339(s.StartedAt)
 		if !ok {
-			return drift(SurfaceConversation, "%s.started_at is not an RFC 3339 timestamp", at)
+			return vendorapi.Drift(SurfaceConversation, "%s.started_at is not an RFC 3339 timestamp", at)
 		}
 		stepStart = t
 	}
@@ -169,18 +169,18 @@ func (w *convWalk) step(at string, s step, depth int) error {
 }
 
 func (w *convWalk) message(at, stepID string, idx int, m message, stepStart time.Time) error {
-	role := str(m.Role)
+	role := vendorapi.Str(m.Role)
 	if role == "" {
-		return drift(SurfaceConversation, "%s.role is missing", at)
+		return vendorapi.Drift(SurfaceConversation, "%s.role is missing", at)
 	}
 	if m.Content == nil {
-		return drift(SurfaceConversation, "%s.content is missing", at)
+		return vendorapi.Drift(SurfaceConversation, "%s.content is missing", at)
 	}
 	ts := stepStart
 	if m.Timestamp != nil {
 		t, ok := rfc3339(m.Timestamp)
 		if !ok {
-			return drift(SurfaceConversation, "%s.timestamp is not an RFC 3339 timestamp", at)
+			return vendorapi.Drift(SurfaceConversation, "%s.timestamp is not an RFC 3339 timestamp", at)
 		}
 		ts = t
 	}
@@ -193,37 +193,37 @@ func (w *convWalk) message(at, stepID string, idx int, m message, stepStart time
 	}
 	var text []string
 	for j, b := range *m.Content {
-		kind := str(b.Type)
+		kind := vendorapi.Str(b.Type)
 		switch kind {
 		case "text":
 			if b.Text == nil {
-				return drift(SurfaceConversation, "%s.content[%d] is a text block without text", at, j)
+				return vendorapi.Drift(SurfaceConversation, "%s.content[%d] is a text block without text", at, j)
 			}
 			text = append(text, *b.Text)
 		case "action":
-			if !idRE.MatchString(str(b.ID)) || !tokenRE.MatchString(str(b.Name)) {
-				return drift(SurfaceConversation, "%s.content[%d] is an action without an id or a name", at, j)
+			if !idRE.MatchString(vendorapi.Str(b.ID)) || !tokenRE.MatchString(vendorapi.Str(b.Name)) {
+				return vendorapi.Drift(SurfaceConversation, "%s.content[%d] is an action without an id or a name", at, j)
 			}
-			if err := w.event(str(b.ID), ts, ActionToolCall, str(b.Name), true, map[string]string{"category": token(b.Category)}); err != nil {
+			if err := w.event(vendorapi.Str(b.ID), ts, ActionToolCall, vendorapi.Str(b.Name), true, map[string]string{"category": token(b.Category)}); err != nil {
 				return err
 			}
 		case "action_result":
-			if !idRE.MatchString(str(b.ActionID)) || !tokenRE.MatchString(str(b.Name)) {
-				return drift(SurfaceConversation, "%s.content[%d] is an action result without an action id or a name", at, j)
+			if !idRE.MatchString(vendorapi.Str(b.ActionID)) || !tokenRE.MatchString(vendorapi.Str(b.Name)) {
+				return vendorapi.Drift(SurfaceConversation, "%s.content[%d] is an action result without an action id or a name", at, j)
 			}
-			if err := w.event("result:"+str(b.ActionID), ts, ActionToolResult, str(b.Name), false,
-				map[string]string{"category": token(b.Category), "state": token(b.State), "action_id": str(b.ActionID)}); err != nil {
+			if err := w.event("result:"+vendorapi.Str(b.ActionID), ts, ActionToolResult, vendorapi.Str(b.Name), false,
+				map[string]string{"category": token(b.Category), "state": token(b.State), "action_id": vendorapi.Str(b.ActionID)}); err != nil {
 				return err
 			}
 		case "event":
-			if !tokenRE.MatchString(str(b.Name)) {
-				return drift(SurfaceConversation, "%s.content[%d] is an event without a name", at, j)
+			if !tokenRE.MatchString(vendorapi.Str(b.Name)) {
+				return vendorapi.Drift(SurfaceConversation, "%s.content[%d] is an event without a name", at, j)
 			}
-			if err := w.event("event:"+itemID+":"+strconv.Itoa(j), ts, ActionEvent, str(b.Name), true, nil); err != nil {
+			if err := w.event("event:"+itemID+":"+strconv.Itoa(j), ts, ActionEvent, vendorapi.Str(b.Name), true, nil); err != nil {
 				return err
 			}
 		default:
-			return drift(SurfaceConversation, "%s.content[%d] has an undocumented block type", at, j)
+			return vendorapi.Drift(SurfaceConversation, "%s.content[%d] has an undocumented block type", at, j)
 		}
 	}
 	cr, ok := roleContent[role]
@@ -231,7 +231,7 @@ func (w *convWalk) message(at, stepID string, idx int, m message, stepStart time
 		return nil
 	}
 	if w.items[itemID] {
-		return drift(SurfaceConversation, "%s repeats message %s", at, itemID)
+		return vendorapi.Drift(SurfaceConversation, "%s repeats message %s", at, itemID)
 	}
 	w.items[itemID] = true
 	t, cut := capText(strings.Join(text, "\n\n"), vendorapi.MaxContentBytes)
@@ -243,10 +243,10 @@ func (w *convWalk) message(at, stepID string, idx int, m message, stepStart time
 
 func (w *convWalk) event(id string, at time.Time, action, target string, agent bool, detail map[string]string) error {
 	if len(id) > vendorapi.MaxIDLen {
-		return drift(SurfaceConversation, "an event id is over-long")
+		return vendorapi.Drift(SurfaceConversation, "an event id is over-long")
 	}
 	if w.evs[id] {
-		return drift(SurfaceConversation, "event %s repeats", id)
+		return vendorapi.Drift(SurfaceConversation, "event %s repeats", id)
 	}
 	w.evs[id] = true
 	for k, v := range detail {
@@ -263,7 +263,7 @@ func (w *convWalk) event(id string, at time.Time, action, target string, agent b
 
 // token lowercases a bounded enum value ("" when absent or malformed).
 func token(s *string) string {
-	v := str(s)
+	v := vendorapi.Str(s)
 	if !tokenRE.MatchString(v) {
 		return ""
 	}

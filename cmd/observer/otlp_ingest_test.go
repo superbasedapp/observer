@@ -8,10 +8,11 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/marmutapp/superbased-observer/internal/adapter/ccotel"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
+	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/otlpvendor"
 	"github.com/marmutapp/superbased-observer/internal/store"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -19,12 +20,17 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
-// TestSourceTagPinnedToStore guards the cross-package contract: ccotel stamps a
-// literal source tag (it must not import store), so this asserts the two stay
-// equal. If they drift, native turns would map to the wrong fidelity.
+// TestSourceTagPinnedToStore guards the cross-package contract: the
+// claude-code row of internal/otlpvendor stamps a literal source tag (the
+// package must not import store), so this asserts the two stay equal. If
+// they drift, native turns would map to the wrong fidelity.
 func TestSourceTagPinnedToStore(t *testing.T) {
-	if ccotel.SourceTag != store.SourceCCOTel {
-		t.Fatalf("ccotel.SourceTag (%q) != store.SourceCCOTel (%q)", ccotel.SourceTag, store.SourceCCOTel)
+	v, ok := otlpvendor.ForTool(models.ToolClaudeCode)
+	if !ok {
+		t.Fatal("otlpvendor has no claude-code row")
+	}
+	if v.SourceTag != store.SourceCCOTel {
+		t.Fatalf("otlpvendor claude-code row source tag (%q) != store.SourceCCOTel (%q)", v.SourceTag, store.SourceCCOTel)
 	}
 }
 

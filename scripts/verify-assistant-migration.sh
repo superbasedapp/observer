@@ -30,39 +30,15 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-COMMITTED_DIR="internal/db/migrations"
-ARTIFACT="078_assistant_text_action_type_relabel.sql"
-
-if [ ! -d "internal/db/asstbackfillgen" ]; then
-    echo "verify-assistant-migration: missing internal/db/asstbackfillgen" >&2
-    exit 1
-fi
-if [ ! -f "$COMMITTED_DIR/$ARTIFACT" ]; then
-    echo "verify-assistant-migration: missing $COMMITTED_DIR/$ARTIFACT — run 'make assistant-migration-build' and commit" >&2
-    exit 1
-fi
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./internal/db/asstbackfillgen -outdir "$tmpdir" \
-    || { echo "verify-assistant-migration: asstbackfillgen failed" >&2; exit 1; }
-
-if [ ! -f "$tmpdir/$ARTIFACT" ]; then
-    echo "verify-assistant-migration: asstbackfillgen did not emit $ARTIFACT" >&2
-    exit 1
-fi
-
-if ! diff -u "$COMMITTED_DIR/$ARTIFACT" "$tmpdir/$ARTIFACT" > "$tmpdir/.diff" 2>&1; then
-    echo "verify-assistant-migration: $COMMITTED_DIR/$ARTIFACT drifted from a fresh asstbackfillgen run"
-    echo "----- diff: committed (-) vs rebuilt (+) -----"
-    cat "$tmpdir/.diff"
-    echo "-----"
-    echo "assistant-text migration drift detected; run 'make assistant-migration-build' and commit" >&2
-    exit 1
-fi
-
-echo "assistant-text relabel migration: $COMMITTED_DIR/$ARTIFACT in sync with the emit-site table"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-assistant-migration \
+    --tool asstbackfillgen \
+    --tool-dir internal/db/asstbackfillgen \
+    --make assistant-migration-build \
+    --drift "assistant-text migration" \
+    --ok "assistant-text relabel migration: internal/db/migrations/078_assistant_text_action_type_relabel.sql in sync with the emit-site table" \
+    --artifact internal/db/migrations/078_assistant_text_action_type_relabel.sql \
+    -- go run ./internal/db/asstbackfillgen -outdir @TMP@

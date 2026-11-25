@@ -162,6 +162,7 @@ def installed() -> List[str]:
 USER_HEADER = "X-Superbased-User"
 SERVICE_HEADER = "X-Superbased-Service"
 REQUEST_ID_HEADER = "X-SBO-Request-Id"
+TRACEPARENT_HEADER = "traceparent"
 # The gateway ignores a longer value (internal/aigateway/gwhttp maxAppIDLen).
 MAX_APP_ID_LEN = 512
 
@@ -178,8 +179,8 @@ def _app_value(v: Any) -> str:
 def gateway_headers() -> Dict[str, str]:
     """The headers the org AI gateway reads a call's app identity from, for
     the request being made now: ``X-Superbased-User`` (the per-request user,
-    else ``init()``'s), ``X-Superbased-Service`` (the spans' ``service.name``)
-    and a fresh ``X-SBO-Request-Id``. A value that is empty, too long or not
+    else ``init()``'s), ``X-Superbased-Service`` (the spans' ``service.name``),
+    a fresh ``X-SBO-Request-Id`` and the current span's ``traceparent``. A value that is empty, too long or not
     printable ASCII is left out. For an HTTP client the hooks below do not
     cover (pass them as per-request headers). Never raises. (TS: what
     ``gatewayFetch()`` sends.)"""
@@ -197,6 +198,13 @@ def gateway_headers() -> Dict[str, str]:
         if service:
             out[SERVICE_HEADER] = service
         out[REQUEST_ID_HEADER] = "sdk-" + uuid.uuid4().hex
+        # The span active during the call (an instrumentor's LLM span), so the
+        # organization joins the call to it even without the request id.
+        from ._context import get_traceparent
+
+        tp = get_traceparent()
+        if tp:
+            out[TRACEPARENT_HEADER] = tp
     except Exception:  # noqa: BLE001 - never breaks the host's HTTP call
         pass
     return out

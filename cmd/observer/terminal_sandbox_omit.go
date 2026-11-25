@@ -78,17 +78,13 @@ func (h *sandboxHolder) Prepare(context.Context, termsvc.PrepareRequest) (termsv
 	return termsvc.PrepareResult{}, termsvc.ErrSandboxUnavailable
 }
 
-// newSandboxCmd registers `observer sandbox` as a compiled-out verb.
-// sandboxDoctorChecks adds nothing: the Components section of doctor
-// already says the module is not in this build.
-func sandboxDoctorChecks(context.Context, config.Config) []diag.Check { return nil }
-
 // sandboxDoctorSection adds nothing and reports no sandbox: the module is
 // not in this build.
 func sandboxDoctorSection(context.Context, config.Config, string) ([]diag.Check, bool) {
 	return nil, false
 }
 
+// newSandboxCmd registers `observer sandbox` as a compiled-out verb.
 func newSandboxCmd() *cobra.Command {
 	return compiledOutVerb("sandbox", "Sandboxes and VMs (not in this build)", "terminals.sandbox")
 }

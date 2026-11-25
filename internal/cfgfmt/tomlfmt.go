@@ -847,13 +847,18 @@ func renderTOMLKey(p []string) string {
 		if bareTOMLKey.MatchString(s) {
 			parts[i] = s
 		} else {
-			parts[i] = tomlString(s)
+			parts[i] = TOMLString(s)
 		}
 	}
 	return strings.Join(parts, ".")
 }
 
-func tomlString(s string) string {
+// TOMLString renders s as a TOML basic string: `"` and `\` escaped, a
+// control character (below U+0020, or U+007F) as its short escape or
+// \uXXXX, everything else verbatim. For an ordinary value it matches Go's %q
+// byte for byte. The TOML engine and the managed-settings generator share
+// it.
+func TOMLString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range s {
@@ -889,7 +894,7 @@ func tomlString(s string) string {
 func renderTOMLInline(v any) (string, error) {
 	switch x := v.(type) {
 	case string:
-		return tomlString(x), nil
+		return TOMLString(x), nil
 	case bool:
 		return strconv.FormatBool(x), nil
 	case int64:

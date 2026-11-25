@@ -98,14 +98,8 @@ func (s *Store) GetEvidence(ctx context.Context, accountID, evidencePK string) (
 	return eo, err
 }
 
-// MarkEvidenceDeleted sets deleted_at (early deletion; the expires_at trigger
-// still forbids extending the TTL). Idempotent.
-func (s *Store) MarkEvidenceDeleted(ctx context.Context, accountID, evidencePK string, now time.Time) error {
-	return s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		return markEvidenceDeletedTx(ctx, tx, accountID, evidencePK, now)
-	})
-}
-
+// markEvidenceDeletedTx sets deleted_at (early deletion; the expires_at trigger
+// still forbids extending the TTL) on the caller's transaction. Idempotent.
 func markEvidenceDeletedTx(ctx context.Context, tx pgx.Tx, accountID, evidencePK string, now time.Time) error {
 	_, e := tx.Exec(ctx,
 		`UPDATE evidence_objects SET deleted_at = $3

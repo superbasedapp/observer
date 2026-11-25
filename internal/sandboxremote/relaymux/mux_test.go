@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,17 +268,39 @@ func TestMuxHostileGuest(t *testing.T) {
 	}
 }
 
+// readSignal is a home-side socket that closes reading on its first Read.
+// The host's pump makes that read only after it added the stream, so the
+// stream's data is routed from then on.
+type readSignal struct {
+	io.ReadWriteCloser
+	once    sync.Once
+	reading chan struct{}
+}
+
+func (r *readSignal) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.reading) })
+	return r.ReadWriteCloser.Read(p)
+}
+
 func TestMuxWindowOverrunCloses(t *testing.T) {
-	g := newRawGuestDial(t, testSecret, stuckDial)
+	reading := make(chan struct{})
+	g := newRawGuestDial(t, testSecret, func(ctx context.Context, kind string) (io.ReadWriteCloser, error) {
+		rw, err := stuckDial(ctx, kind)
+		return &readSignal{ReadWriteCloser: rw, reading: reading}, err
+	})
 	defer g.c.Close()
-	// Ask for a stream through the control stream, then wait for the host's
-	// answer by sending past the window on the stream id the host will use.
+	// Ask for a stream through the control stream, wait until the host has
+	// added it, then send past the window on the stream id the host uses.
 	msg := []byte(`{"op":"connect","id":1,"kind":"relay"}`)
 	_ = sandboxrelay.AppendMessageFrames(msg, limits.MaxPayload, func(c []byte) error {
 		g.send(t, sandboxrelay.TypeData, StreamControl, c)
 		return nil
 	})
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-reading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never opened the stream")
+	}
 	chunk := bytes.Repeat([]byte("x"), int(limits.MaxPayload))
 	for sent := 0; sent <= Window; sent += len(chunk) {
 		g.send(t, sandboxrelay.TypeData, firstDynamic, chunk)

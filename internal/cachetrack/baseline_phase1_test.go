@@ -588,11 +588,11 @@ func runSequenceFromWHH(t *testing.T) []turnSnapshot {
 	return runSequence(t, "sess-aggregated-whh", "claude-sonnet-4", cachetrack.TierProxy, turns)
 }
 
-// TestEngineTier2Baseline_AggregateAnchor is the §14.3 Tier-2
-// fixture-grading aggregate. Log-only anchor — per-fixture
-// assertions live in fixture_grading_test.go; this test pins the
-// TOTAL so the phase-4 soak has a single Tier-2 number to diff
-// against.
+// Tier-2 fixture-grading aggregate (§14.3). Each per-fixture count
+// below is asserted by the named test in fixture_grading_test.go;
+// their sum is the single Tier-2 number the phase-4 soak diffs
+// against. (This used to be a log-only test,
+// TestEngineTier2Baseline_AggregateAnchor, that asserted nothing.)
 //
 // POST-FIX (per §15.3 (c)-phase-2 + the operator-confirmed
 // cline-cli correction in Drift #2):
@@ -617,27 +617,10 @@ func runSequenceFromWHH(t *testing.T) []turnSnapshot {
 // cline-cli flip claim was wrong because cline-cli sessions never
 // create entries for snapshot-before-push to find. Operator
 // confirmed in Drift #2 response.)
-func TestEngineTier2Baseline_AggregateAnchor(t *testing.T) {
-	const (
-		preFixTotal  = 4
-		postFixTotal = 2
-	)
-	t.Logf("  POST-FIX TIER-2 BUCKET-MISPREDICT ANCHOR")
-	t.Logf("  pre-fix total:        %d", preFixTotal)
-	t.Logf("  post-fix:             %d (v1 closure)", postFixTotal)
-	t.Logf("  drop:                 %d", preFixTotal-postFixTotal)
-	t.Logf("")
-	t.Logf("  per-fixture post-fix:")
-	t.Logf("    TestGradeOpenCodeMultiTurnFixture          0")
-	t.Logf("    TestGradeKiloCLIMultiTurnFixture           0")
-	t.Logf("    TestGradeClineCLIImplicitCacheShape        2  (NO FLIP — implicit-cache gap)")
-	t.Logf("    TestGradeOpenCodeCleanContinuation         0  (flipped from 1)")
-	t.Logf("    TestGradeKiloCLICleanContinuation          0  (flipped from 1)")
-	t.Logf("")
-	t.Logf("  PHASE-4 G2 GATE: real-data Tier-2 rec.Mispredicted COUNT")
-	t.Logf("  must not exceed %d + continuation-flip margin.", postFixTotal)
-	t.Logf("  Any growth-turn increase is STOP-and-investigate.")
-}
+//
+// PHASE-4 G2 GATE: the real-data Tier-2 rec.Mispredicted count
+// must not exceed the post-fix total (2) plus the continuation-flip
+// margin. Any growth-turn increase is STOP-and-investigate.
 
 // TestForecasterEMABaseline_v1 pins SessionEMA.Scale + Samples
 // for the Tier-1 sequence shapes. F1/F2 directional anchors for
@@ -1066,37 +1049,51 @@ func TestBucketHelperConformance(t *testing.T) {
 //
 // The realistic continuation golden above
 // (TestEngineTier1Baseline_RealisticContinuation_FlipSentinel_3Turns)
-// catches this regression by assertion; this probe documents the
-// underlying invariant.
+// catches this regression through the engine; this probe asserts the
+// underlying chain arithmetic on a bare cachetrack.Chain.
 func TestChainCountDivergesFromBlocksLen_TierOneCumulative(t *testing.T) {
-	// We don't have direct access to Chain.Count() from
-	// _test.go (chain is internal), but we can verify the
-	// invariant analytically + via the observable fact that the
-	// realistic continuation test passes:
-	//
-	//   T1 push: 3 blocks → chain.n = 3.
-	//   T2 push: 5 cumulative blocks → chain.n = 3 + 5 = 8.
-	//   T3 push: 6 cumulative blocks (or 7 in the growth case).
-	//   Chain.Count() at T3 start = 8. len(in.Blocks) at T3 = 6.
-	//   Guard `8 < 6` = false → start=0 → sum-all → wrong.
-	//
-	// matched.BlockCount at T3 = 5 (T2 was a write that created
-	// an entry with BlockCount = len(in.Blocks) at T2 = 5).
-	// Guard `5 < 6` = true → start=5 → slice in.Blocks[5:] = 1
-	// block → correct.
-	//
-	// This documents the chain-vs-in.Blocks unit mismatch. The
-	// realistic continuation test is the assertion-level proof.
-	t.Logf("Chain-vs-in.Blocks unit divergence (Tier-1 cumulative):")
-	t.Logf("  T1: chain.n monotonic from 0; len(in.Blocks)=3 → chain.n=3 post-push")
-	t.Logf("  T2: chain pushes 5 more (cumulative shape) → chain.n=8; len(in.Blocks)=5")
-	t.Logf("       guard `8 (chain) < 5 (blocks)` is FALSE → start=0 → sum-all WRONG")
-	t.Logf("       guard `3 (T1 matched.BlockCount) < 5 (blocks)` is TRUE → start=3 RIGHT")
-	t.Logf("  T3: chain.n=8 before push; len(in.Blocks)=6")
-	t.Logf("       Chain.Count() anchor STILL fails (8 < 6 false)")
-	t.Logf("       matched.BlockCount=5 from T2 → start=5 → slice in.Blocks[5:] RIGHT")
-	t.Logf("")
-	t.Logf("The realistic continuation golden")
-	t.Logf("(TestEngineTier1Baseline_RealisticContinuation_FlipSentinel_3Turns)")
-	t.Logf("is the assertion-level regression guard for this invariant.")
+	// Tier-1 cumulative shape: every turn's in.Blocks is the whole
+	// conversation so far, and the session's chain is pushed every
+	// block of every turn (chain.go::Push increments c.n; only Reset
+	// zeroes it, on compaction).
+	block := func(i int) cachetrack.Block {
+		return cachetrack.Block{Level: cachetrack.LevelMessage, Kind: "text", CanonicalBytes: []byte(fmt.Sprintf(`{"seq":%d}`, i))}
+	}
+	chain := cachetrack.NewChain()
+	push := func(n int) {
+		for i := 0; i < n; i++ {
+			chain.Push(block(i))
+		}
+	}
+
+	// T1: 3 blocks.
+	push(3)
+	if got := chain.Count(); got != 3 {
+		t.Fatalf("T1: Chain.Count() = %d, want 3", got)
+	}
+	t1Matched := 3 // T1 cold-seeds an entry with BlockCount = len(in.Blocks) = 3.
+
+	// T2: 5 cumulative blocks. Chain.Count() before the push is 3, so
+	// the anchor still agrees with the blocks at T2 ...
+	t2Len := 5
+	if before := chain.Count(); before >= t2Len || t1Matched >= t2Len {
+		t.Fatalf("T2: Chain.Count()=%d and matched.BlockCount=%d must both be < len(in.Blocks)=%d", before, t1Matched, t2Len)
+	}
+	push(t2Len)
+	if got := chain.Count(); got != 8 {
+		t.Fatalf("T2: Chain.Count() after push = %d, want 3+5=8 (the chain accumulates across turns)", got)
+	}
+	t2Matched := t2Len // T2 writes an entry with BlockCount = 5.
+
+	// T3: 6 cumulative blocks. ... but at T3 the chain anchor has
+	// diverged: guard `8 < 6` is false, which would fall through to
+	// start=0 (sum-all), while matched.BlockCount gives start=5 and
+	// slices exactly the one new block.
+	t3Len := 6
+	if before := chain.Count(); before < t3Len {
+		t.Fatalf("T3: Chain.Count()=%d < len(in.Blocks)=%d; the chain-unit anchor no longer diverges, so the probe's premise changed", before, t3Len)
+	}
+	if t3Len-t2Matched != 1 {
+		t.Fatalf("T3: matched.BlockCount=%d must slice in.Blocks[%d:] to exactly 1 new block of %d", t2Matched, t2Matched, t3Len)
+	}
 }

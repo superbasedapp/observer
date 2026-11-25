@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
 
@@ -310,4 +311,37 @@ func resetSweepForTest(t *testing.T) {
 	stageMu.Lock()
 	swept = map[string]bool{}
 	stageMu.Unlock()
+}
+
+func TestStageIfForeignStagesOnlyForeignStores(t *testing.T) {
+	dir := t.TempDir()
+	SetBaseForProcess(filepath.Join(dir, "cache"))
+	t.Cleanup(func() { SetBaseForProcess("") })
+	foreignHome := filepath.Join(dir, "foreign")
+	src := filepath.Join(foreignHome, "vendor", "store.db")
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seedVendorStore(t, src)
+
+	// The store's home is the NATIVE one: opened in place, nothing staged.
+	native := []crossmount.HomeRoot{{Path: foreignHome, Origin: "native"}}
+	got, err := StageIfForeign(context.Background(), src, testSpec, native)
+	if err != nil || got != src {
+		t.Fatalf("native StageIfForeign = %q, %v; want %q unchanged", got, err, src)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cache", testSpec.Dir)); !os.IsNotExist(err) {
+		t.Errorf("a native store created the mirror dir (err=%v)", err)
+	}
+
+	// The same store under a foreign-mount home is read through the mirror.
+	foreign := []crossmount.HomeRoot{{Path: foreignHome, Origin: "wsl-mnt:u"}}
+	got, err = StageIfForeign(context.Background(), src, testSpec, foreign)
+	if err != nil {
+		t.Fatalf("foreign StageIfForeign: %v", err)
+	}
+	if got == src {
+		t.Fatalf("foreign store returned in place, want a mirror path")
+	}
+	assertAllowListOnly(t, got, testSpec.Tables, canaryCheckpointed, canaryInWAL, "cred_view", "cred_audit")
 }

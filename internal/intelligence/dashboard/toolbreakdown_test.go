@@ -392,3 +392,12 @@ func TestCloudAgentToolSurfaces(t *testing.T) {
 		}
 	}
 }
+
+// AddNativeCount is a test-only shorthand. It folds one (tool,
+// raw_tool_name) group — the capped pass that owns BySurface. Anything it never sees becomes the remainder that
+// Rows() parks in SurfaceUnresolved. The native name is resolved under the
+// tool's own vocabulary; AddNativeCountIn is the form for a group whose
+// names belong to another tool's vocabulary.
+func (b *breakdownAccumulator) AddNativeCount(tool, rawToolName string, n int) {
+	b.AddNativeCountIn(tool, tool, rawToolName, n)
+}

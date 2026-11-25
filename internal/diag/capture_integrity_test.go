@@ -40,7 +40,7 @@ func TestInspectCaptureIntegritySeparatesObservedAndUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := InspectCaptureIntegrity(home, "/current/observer")
+	got := InspectCaptureIntegrityWith(home, CaptureIntegrityOptions{BinaryPath: "/current/observer"})
 	wantRisks := map[string]bool{
 		orgcontract.CaptureRiskHookRegistrationError: true,
 		orgcontract.CaptureRiskHookBinaryMismatch:    true,
@@ -61,7 +61,7 @@ func TestInspectCaptureIntegritySeparatesObservedAndUnknown(t *testing.T) {
 }
 
 func TestInspectCaptureIntegrityMissingRegistryIsUnknown(t *testing.T) {
-	got := InspectCaptureIntegrity(t.TempDir(), "")
+	got := InspectCaptureIntegrityWith(t.TempDir(), CaptureIntegrityOptions{BinaryPath: ""})
 	if len(got.Risks) != 0 {
 		t.Errorf("risks = %v, want none", got.Risks)
 	}
@@ -86,7 +86,7 @@ func TestInspectCaptureIntegrityRejectsNonRegularRegisteredPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(observerDir, "hook_checksums.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := InspectCaptureIntegrity(home, "/current/observer")
+	got := InspectCaptureIntegrityWith(home, CaptureIntegrityOptions{BinaryPath: "/current/observer"})
 	if len(got.Risks) != 0 || len(got.Unknown) != 1 || got.Unknown[0] != orgcontract.CaptureUnknownConfigUnreadable {
 		t.Fatalf("non-regular path = risks %v unknown %v", got.Risks, got.Unknown)
 	}
@@ -102,7 +102,7 @@ func TestInspectCaptureIntegrityBoundsRegistryRead(t *testing.T) {
 		make([]byte, maxCaptureRegistryBytes+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := InspectCaptureIntegrity(home, "/current/observer")
+	got := InspectCaptureIntegrityWith(home, CaptureIntegrityOptions{BinaryPath: "/current/observer"})
 	if len(got.Risks) != 0 || len(got.Unknown) != 1 || got.Unknown[0] != orgcontract.CaptureUnknownRegistryUnreadable {
 		t.Fatalf("oversized registry = risks %v unknown %v", got.Risks, got.Unknown)
 	}

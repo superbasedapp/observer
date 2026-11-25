@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -265,8 +266,8 @@ func TestParseTimestamp(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parseTimestamp(tc.raw); !got.Equal(tc.want) {
-				t.Errorf("parseTimestamp(%q) = %v, want %v", tc.raw, got, tc.want)
+			if got := parseutil.ParseRFC3339UTC(tc.raw); !got.Equal(tc.want) {
+				t.Errorf("parseutil.ParseRFC3339UTC(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}

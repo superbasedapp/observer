@@ -123,11 +123,10 @@ type Digests struct {
 // leaves a node for it. DigestSchemaVersion identifies the RESULT the job
 // produces; ResultKindSessionEnrichment/ResultKindProjectDigest are the
 // analysis_results.kind discriminator values (migration 0037) the store and
-// the wire both use to classify a result row. They are duplicated (not
-// imported) into internal/cloudserver/store as plain string constants of the
-// same value — the store package deliberately never imports cloudcontract
-// (CLAUDE.md #1: a domain package stays free of a validation layer it does not
-// need), so the two sides agree on the literal, not on a shared symbol.
+// the wire both use to classify a result row. This package is the one owner
+// of these literals: internal/cloudserver/store, internal/cloudserver/personalmig
+// and cmd/observer refer to them (and to the Feature* identifiers below) by
+// name instead of re-declaring the strings.
 const (
 	// DigestSchemaVersion identifies the project-digest RESULT schema
 	// (analysis_results.result for a kind='project_digest' row).
@@ -143,6 +142,17 @@ const (
 	ResultKindSessionEnrichment = "session_enrichment"
 	// ResultKindProjectDigest marks a weekly project-digest result row.
 	ResultKindProjectDigest = "project_digest"
+)
+
+// Feature identifiers: the analysis_jobs.feature value a job is submitted,
+// reserved and reported under (and the node's consent feature list). Each
+// feature's results land under the result kind of the same name, so the
+// literals are shared.
+const (
+	// FeatureSessionEnrichment is per-session enrichment.
+	FeatureSessionEnrichment = ResultKindSessionEnrichment
+	// FeatureProjectDigest is the weekly per-project digest (W5).
+	FeatureProjectDigest = ResultKindProjectDigest
 )
 
 // Project-digest result bounds (mirroring limits.go's discipline: one place

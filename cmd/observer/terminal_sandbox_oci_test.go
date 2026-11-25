@@ -89,7 +89,7 @@ func healthyOCIEnv(cfg config.TerminalSandboxOCIConfig) sandboxoci.ProbeEnv {
 // active there (componentstate.Legacy); a block that adds it does.
 func TestOCIDriverIsOptIn(t *testing.T) {
 	n := countProbeEnv(t, true)
-	legacy := ociTestRuntime(t, ociTestConfig(t, false, "oci-runc", "bwrap"))
+	legacy := testSandboxRuntime(t, ociTestConfig(t, false, "oci-runc", "bwrap"))
 	if len(legacy.drivers) != 0 || legacy.inactiveDrivers[sandboxbackend.BackendOCIRunc] != ociComponent {
 		t.Fatalf("legacy drivers %v inactive %v", legacy.drivers, legacy.inactiveDrivers)
 	}
@@ -102,7 +102,7 @@ func TestOCIDriverIsOptIn(t *testing.T) {
 	if n.Load() != 0 {
 		t.Fatal("an unselected driver probed the engine")
 	}
-	on := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc"))
+	on := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc"))
 	if _, ok := on.drivers[sandboxbackend.BackendOCIRunc]; !ok {
 		t.Fatal("a block that adds terminals.sandbox.oci did not get the driver")
 	}
@@ -113,7 +113,7 @@ func TestOCIDriverIsOptIn(t *testing.T) {
 // is probed or dialled and every launch takes the bwrap path.
 func TestOCIDriverInertWhenNotListed(t *testing.T) {
 	n := countProbeEnv(t, true)
-	rt := ociTestRuntime(t, ociTestConfig(t, true))
+	rt := testSandboxRuntime(t, ociTestConfig(t, true))
 	p := rt.driverProbes(context.Background())[sandboxbackend.BackendOCIRunc]
 	if p.Verdict != sandboxselect.VerdictDisabledByConfig {
 		t.Fatalf("probe %+v", p)
@@ -155,14 +155,14 @@ func TestOCIDriverChosenWhenListedAndHealthy(t *testing.T) {
 	// under load). With no bwrap on PATH the outcome is fixed: the beta
 	// row is never called available, only named in the refusal.
 	t.Setenv("PATH", t.TempDir())
-	auto := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
+	auto := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
 	if av := auto.ProbeSandbox(context.Background()); av.Available || av.Verdict != sandboxselect.VerdictBetaNotChosen {
 		t.Fatalf("the legacy fields call the beta row usable for an automatic launch: %+v", av)
 	}
 	if d, err := auto.chosenDriver(context.Background(), ""); d != nil || err == nil || !strings.Contains(err.Error(), sandboxselect.VerdictBetaNotChosen) {
 		t.Fatalf("an automatic launch must refuse the beta row: %v %v", d, err)
 	}
-	rt := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
+	rt := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
 	rt.forceBackend = sandboxbackend.BackendOCIRunc
 	av := rt.ProbeSandbox(context.Background())
 	if !av.Available || av.Backend != sandboxbackend.BackendOCIRunc {
@@ -191,11 +191,11 @@ func TestOCIDriverChosenWhenListedAndHealthy(t *testing.T) {
 // (never runs unsandboxed) when it is not.
 func TestOCIDriverFallsBackToBwrapWhenTheEngineIsDown(t *testing.T) {
 	countProbeEnv(t, false)
-	rt := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
+	rt := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
 	if d, err := rt.chosenDriver(context.Background(), ""); d != nil || err != nil {
 		t.Fatalf("with bwrap listed: %v %v", d, err)
 	}
-	only := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc"))
+	only := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc"))
 	if d, err := only.chosenDriver(context.Background(), ""); d != nil || err == nil {
 		t.Fatalf("with only oci-runc listed an unavailable engine must refuse: %v %v", d, err)
 	}
@@ -379,7 +379,7 @@ func TestOCIDevcontainerNeedsConsent(t *testing.T) {
 	}
 	write(img)
 	cfg := ociTestConfig(t, true, "oci-runc")
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	if c, _ := d.runChoice(repo); c.image != ociTestImage {
 		t.Fatalf("used without allow_devcontainer_image: %+v", c)
@@ -476,7 +476,7 @@ func TestOCIComposeRelayAndTiers(t *testing.T) {
 func TestOCIRefusesTheHostTier(t *testing.T) {
 	cfg := ociTestConfig(t, true, "oci-runc")
 	cfg.Terminal.Sandbox.Egress = "host"
-	rt := ociTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	d := rt.drivers[sandboxbackend.BackendOCIRunc].(*ociDriver)
 	if err := d.floor(launchFloorConfig(rt.cfg, "host")); err == nil || !strings.Contains(err.Error(), "no host network tier") {
 		t.Fatalf("err %v", err)
@@ -782,7 +782,7 @@ func TestOCIDriverChosenPerLaunch(t *testing.T) {
 		t.Skip("oci-runc runs on Linux and WSL2")
 	}
 	countProbeEnv(t, true)
-	rt := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
+	rt := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
 	if d, err := rt.chosenDriver(context.Background(), ""); d != nil || (err != nil && !strings.Contains(err.Error(), sandboxselect.VerdictBetaNotChosen)) {
 		t.Fatalf("an automatic launch took %v %v", d, err)
 	}

@@ -70,7 +70,7 @@ func TestGatedIDsPartitionTheMapping(t *testing.T) {
 	t.Parallel()
 	all := append(GatedIDs(GateIncluded), GatedIDs(GatePlan)...)
 	sort.Strings(all)
-	mapped := MappedIDs()
+	mapped := mappedIDs()
 	if len(all) != len(mapped) {
 		t.Fatalf("gates cover %d ids, mapping has %d", len(all), len(mapped))
 	}
@@ -79,8 +79,8 @@ func TestGatedIDsPartitionTheMapping(t *testing.T) {
 			t.Fatalf("gates and mapping differ at %d: %s vs %s", i, all[i], mapped[i])
 		}
 	}
-	if GateReason("org.saml") == "" || GateReason("no.such") != "" {
-		t.Error("GateReason does not follow the table")
+	if gateReason("org.saml") == "" || gateReason("no.such") != "" {
+		t.Error("gateReason does not follow the table")
 	}
 }
 

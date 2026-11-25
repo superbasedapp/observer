@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
-	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
 
 // toolArgs is the decoded `args` object of a Kiro tool_use. Only the
@@ -149,27 +147,4 @@ func firstReadPath(a toolArgs) string {
 		return a.Operations[0].Path
 	}
 	return ""
-}
-
-// resolveProjectRoot translates a foreign-OS cwd (WSL2 reading /mnt/c,
-// or a Windows observer reading \\wsl.localhost) BEFORE git.Resolve.
-// The translation is UNCONDITIONAL — crossmount.TranslateForeignPath
-// always converts a `C:\...` drive path to its `/mnt/c/...` absolute
-// equivalent, so the drive-letter string never reaches git.Resolve
-// where filepath.Abs would treat it as relative and CWD-prefix the
-// observer's own .git onto it ([[feedback-foreign-path-git-resolve]]).
-// Mirrors opencode/clinecli. Returns (projectRoot, gitBranch,
-// gitRemote); a blank cwd yields ("", "", "").
-func resolveProjectRoot(rawCWD string) (root, branch, remote string, id git.Identity) {
-	cwd := strings.TrimSpace(rawCWD)
-	if cwd == "" {
-		return "", "", "", git.Identity{}
-	}
-	cwd = crossmount.TranslateForeignPath(cwd)
-	identity, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
-	if err != nil {
-		return cwd, "", "", git.Identity{}
-	}
-	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
-	return identity.Root, identity.Branch, identity.Remote, identity
 }

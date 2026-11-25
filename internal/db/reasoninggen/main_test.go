@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/genout"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -507,7 +508,7 @@ func TestHeaderIsPresentAndSelfDescribing(t *testing.T) {
 // scratch directory that does not exist yet.
 func TestWriteCreatesParentDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "dir", migrationName)
-	if err := write(path, []byte("-- x\n")); err != nil {
+	if err := genout.WriteFile(path, []byte("-- x\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {

@@ -253,19 +253,6 @@ func WriteChangeNote(ctx context.Context, read GitRunner, write GitWriter, root,
 	return true, nil
 }
 
-// ReadChangeNote returns the commit's note body under secchange.NotesRef,
-// nil when it has none.
-func ReadChangeNote(ctx context.Context, read GitRunner, root, sha string) []byte {
-	if !isCommitSHA(sha) {
-		return nil
-	}
-	out, _, err := read(ctx, root, 1<<20, githookGitTimeout, "notes", "--ref="+secchange.NotesRef, "show", sha)
-	if err != nil {
-		return nil
-	}
-	return out
-}
-
 func isCommitSHA(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
@@ -276,16 +263,6 @@ func isCommitSHA(s string) bool {
 		}
 	}
 	return true
-}
-
-// TrailerHookInstalled reports whether the repository's prepare-commit-msg
-// hook carries the trailer block.
-func TrailerHookInstalled(t GithookTarget) (bool, error) {
-	text, _, _, err := readHook(filepath.Join(t.HooksDir, secchange.TrailerHookName))
-	if err != nil {
-		return false, err
-	}
-	return secchange.HasTrailerBlock(text), nil
 }
 
 // InstallTrailerHook writes the trailer block into the repository's

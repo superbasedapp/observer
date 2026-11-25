@@ -5,8 +5,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,8 +20,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/secquickscan"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
-
-func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // testIdentify is a value-free identity for tests: the type and the
 // value's length, enough to tell one fake secret from another.

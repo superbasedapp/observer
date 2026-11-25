@@ -1334,14 +1334,16 @@ func advertisedCapability(tool string) (c integration.Capability, isWindows bool
 	return clientwire.AdvertisedCapability(tool)
 }
 
-// hookSupported, hookRemovable, mcpSupported and routeSupported are the
-// init / uninstall spellings of internal/clientwire's predicates, the ONE
-// owner the dashboard's Connected tools panel reads too (T-421): a tool the
-// CLI can wire or remove is exactly a tool the dashboard can.
+// hookSupported, mcpSupported and routeSupported are init's spellings of
+// internal/clientwire's predicates, the ONE owner the dashboard's Connected
+// tools panel reads too (T-421): a tool the CLI can wire or remove is exactly
+// a tool the dashboard can.
 func hookSupported(tool string) bool { return clientwire.HookSupported(tool) }
 
-// hookRemovable reports whether `observer uninstall` should ask the hook
-// registry to remove tool's registration (clientwire.HookRemovable).
+// hookRemovable reports whether a removal should ask the hook registry to
+// remove tool's registration (clientwire.HookRemovable). Only tests call this
+// spelling: `observer uninstall` reaches clientwire.HookRemovable through
+// clientwire.Removable.
 func hookRemovable(tool string) bool { return clientwire.HookRemovable(tool) }
 
 // mcpSupported reports whether `observer init` can write MCP server config
@@ -1353,10 +1355,12 @@ func mcpSupported(tool string) bool { return clientwire.MCPSupported(tool) }
 func routeSupported(tool string) bool { return clientwire.RouteSupported(tool) }
 
 // routeProbeSupported reports whether a GUARDED, ADDITIVE config-lane proxy
-// writer exists for tool but is NOT yet live-verified — the registry's
-// ProxyProbe (Proxy stays nil, Routability stays probe_required). Distinct
-// from routeSupported, which gates the VERIFIED routes init writes on a
-// plain scoped run. Registry-driven (CLAUDE.md #3): the answer is the shape
+// writer exists for tool — the registry's ProxyProbe. Most such rows are not
+// yet live-verified (Proxy stays nil, Routability stays probe_required);
+// qwen-code, kimi-code and crush are (Proxy set), and their routes still go
+// through this writer, never routeSupported's codex/claude-code writer
+// (routeWriterFor). Distinct from routeSupported, which gates the main
+// route step init writes on a plain scoped run. Registry-driven (CLAUDE.md #3): the answer is the shape
 // of the registry row, never a tool-name hand-list.
 func routeProbeSupported(tool string) bool {
 	c, _, ok := advertisedCapability(tool)

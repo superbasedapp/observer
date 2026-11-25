@@ -309,12 +309,6 @@ func sandboxLinkedWorktreeRows(gitDir, remedy string, w *orgBindWalk) (rows []pr
 	return rows, pins, nil
 }
 
-// sandboxOrgBindModuleGitDirs is the modules walk of one repository with its
-// own budget (moduleGitDirs).
-func sandboxOrgBindModuleGitDirs(bind, gitDir string) (rows []protectedRow, pins []string, err error) {
-	return (&orgBindWalk{bind: bind}).moduleGitDirs(gitDir)
-}
-
 // moduleGitDirs finds the submodule git directories a repository keeps
 // under gitDir/modules (git's own layout since 1.7.8: an absorbed
 // submodule's .git is a pointer FILE to .git/modules/<name>, and a nested

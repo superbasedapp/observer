@@ -15,22 +15,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 )
 
-// macTestRuntime builds a sandbox runtime over cfg for the macOS drivers'
-// tests.
-func macTestRuntime(t *testing.T, cfg config.Config) *sandboxRuntime {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, nil, t.TempDir(), exe, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt.applyDaemonConfig(cfg)
-	return rt
-}
-
 // sandboxMacSettingsInventory is the inventory of the macOS drivers'
 // blocks, keyed "<block>.<key>": their node home is the macOS sandboxes
 // panel (SandboxMacPanel.tsx).

@@ -4,26 +4,11 @@ package scalibrfacade
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
-)
 
-func writeTree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for name, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
+)
 
 func extractTree(t *testing.T, root string) *Inventory {
 	t.Helper()
@@ -36,7 +21,7 @@ func extractTree(t *testing.T, root string) *Inventory {
 
 // TestUnpinnedRequirements: a range is not a version; only == and === pin.
 func TestUnpinnedRequirements(t *testing.T) {
-	inv := extractTree(t, writeTree(t, map[string]string{
+	inv := extractTree(t, fstree.WritePrivate(t, map[string]string{
 		"requirements.txt": "requests>=2.0\nflask==1.0\nurllib3~=1.26\nidna===3.4\n",
 	}))
 	got := map[string]bool{}
@@ -73,7 +58,7 @@ func TestOversizeLockfileMarksLocalEntries(t *testing.T) {
 // TestUnlockedManifests: a Cargo.toml or pyproject.toml that declares
 // dependencies with no lockfile beside or above it is reported.
 func TestUnlockedManifests(t *testing.T) {
-	root := writeTree(t, map[string]string{
+	root := fstree.WritePrivate(t, map[string]string{
 		"lone/Cargo.toml":               "[package]\nname = \"lone\"\n[dependencies]\nserde = \"1\"\n",
 		"ws/Cargo.lock":                 "version = 3\n",
 		"ws/member/Cargo.toml":          "[package]\nname = \"member\"\n[dependencies]\nserde = \"1\"\n",
@@ -105,7 +90,7 @@ func TestUnlockedManifests(t *testing.T) {
 // TestFailedFileIsNamed: a lockfile caught mid-write fails its extractor,
 // and the status names the file, so the run can report it not scanned.
 func TestFailedFileIsNamed(t *testing.T) {
-	inv := extractTree(t, writeTree(t, map[string]string{
+	inv := extractTree(t, fstree.WritePrivate(t, map[string]string{
 		"package-lock.json": "{\"name\":\"x\",\"lockfileVersion\":3,\"packages\":{\"node_modules/a\":{\"vers",
 	}))
 	for _, s := range inv.Statuses {

@@ -13,10 +13,10 @@ import (
 // so (docs/components.md is generated from the catalog).
 func TestCatalogStatesCoverTheTables(t *testing.T) {
 	produced := map[components.ArtifactKind][]State{
-		components.ArtifactBrowserExtension: BrowserStates(),
-		components.ArtifactEditorExtension:  EditorStates(),
-		components.ArtifactPluginShim:       ShimStates(),
-		components.ArtifactHelperBinary:     HelperStates(),
+		components.ArtifactBrowserExtension: browserStates(),
+		components.ArtifactEditorExtension:  editorStates(),
+		components.ArtifactPluginShim:       shimStates(),
+		components.ArtifactHelperBinary:     helperStates(),
 	}
 	known := map[State]bool{}
 	for _, s := range []State{StateNotDetected, StateConnected, StateStale, StateIncompatible, StateHostRemoved, StatePolicyBlocked, StateInstalled, StateAbsent, StateNotApplicable} {

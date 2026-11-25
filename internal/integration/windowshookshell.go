@@ -113,8 +113,9 @@ const (
 // dispatches on Kind, never on Tool.
 type WindowsHookRunner struct {
 	// Tool is the registry row the precondition belongs to. A row on
-	// HookSpec leaves it empty: WindowsHookRunnerFor and WindowsHookRunners
-	// fill it from the capability, so the tool is named once, by the row.
+	// HookSpec leaves it empty: WindowsHookRunners (and the test-only
+	// WindowsHookRunnerFor) fill it from the capability, so the tool is
+	// named once, by the row.
 	Tool string
 	Kind WindowsHookRunnerKind
 	// PowerShell lists, for RunnerPowerShellScript, the executables the host
@@ -169,17 +170,6 @@ var windowsRunnerCodeBuddy = WindowsHookRunner{
 	OnFailure: FailureUnverified,
 	Fix:       `install Git for Windows, or set CODEBUDDY_CODE_GIT_BASH_PATH to the full path of bash.exe (for example C:\Program Files\Git\bin\bash.exe)`,
 	Grounding: "https://www.codebuddy.cn/docs/cli/hooks (read 2026-10-25): on Windows hook commands are forced through Git Bash (cmd.exe and PowerShell are not supported), CODEBUDDY_CODE_GIT_BASH_PATH names bash.exe, and a missing Git Bash reports an error asking to install Git for Windows; the automatic lookup is not documented; gap review S-19",
-}
-
-// WindowsHookRunnerFor returns tool's Windows hook-runner precondition, read
-// from its registry row's HookSpec.WindowsRunner. A "-windows" cross-OS
-// target answers for its base row. ok is false when the row declares none.
-func WindowsHookRunnerFor(tool string) (WindowsHookRunner, bool) {
-	c, found := For(strings.TrimSuffix(tool, "-windows"))
-	if !found || !c.Hook.WindowsRunner.Declared() {
-		return WindowsHookRunner{}, false
-	}
-	return runnerOf(c), true
 }
 
 // WindowsHookRunners lists every declared Windows hook-runner precondition,

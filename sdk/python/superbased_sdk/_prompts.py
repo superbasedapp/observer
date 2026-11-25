@@ -20,10 +20,11 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Type, Union
 
 from . import _control
 from . import _keys as K
+from ._planrefusal import AllowanceExceededError, PlanRefusalError, PlanRequiredError
 
 LOG = logging.getLogger("superbased_sdk")
 
@@ -46,6 +47,21 @@ class PromptNotFound(PromptError, LookupError):
 
 class PromptFetchError(PromptError, RuntimeError):
     """The registry could not be reached or answered badly, and nothing was cached."""
+
+
+class PromptPlanRequiredError(PlanRequiredError, PromptFetchError):
+    """get_prompt()'s PromptFetchError when the org's plan does not include
+    AI Apps (403 ``plan_required``): both a ``PlanRequiredError`` and a
+    ``PromptFetchError``."""
+
+
+class PromptAllowanceExceededError(AllowanceExceededError, PromptFetchError):
+    """get_prompt()'s PromptFetchError over the plan's monthly AI Apps
+    allowance (429): both an ``AllowanceExceededError`` and a
+    ``PromptFetchError``."""
+
+
+_PLAN_ERRORS: Dict[str, Type[PlanRefusalError]] = {PlanRequiredError.kind: PromptPlanRequiredError, AllowanceExceededError.kind: PromptAllowanceExceededError}
 
 
 class PromptCompileError(PromptError, KeyError):
@@ -491,7 +507,9 @@ def get_prompt(
     once and revalidated in the background. When nothing is cached and the
     fetch fails, ``fallback`` (a text body or a message list) is returned as
     an unversioned prompt that stamps nothing; without one this raises
-    PromptNotFound or PromptFetchError. Called inside a span, it stamps the
+    PromptNotFound or PromptFetchError (when the org's plan refused the
+    fetch, a PromptFetchError that is also a PlanRequiredError or an
+    AllowanceExceededError, with the ``upgrade_url``). Called inside a span, it stamps the
     span with the prompt's name and version.
 
     A label under a staged rollout (prompts.md v2) serves each end user the
@@ -511,6 +529,7 @@ def get_prompt(
         ttl = s.prompt_cache_ttl if s is not None else 60.0
     errors: List[str] = []
     not_found = True
+    refused: Optional[PlanRefusalError] = None
     targets = _control.sides()
     if not targets:
         errors.append(_control.unavailable_reason())
@@ -547,13 +566,19 @@ def get_prompt(
             errors.append(f"{side.name}: {msg}")
             continue
         not_found = False
+        refused = refused or resp.plan_refusal()
         errors.append(f"{side.name}: {resp.describe()}")
     if fallback is not None:
         return _fallback(name, fallback)
     detail = "; ".join(errors) or "no destination"
     if not_found:
         raise PromptNotFound(f"prompt {name!r} ({selector}) not found: {detail}")
-    raise PromptFetchError(f"prompt {name!r} ({selector}) could not be fetched: {detail}")
+    msg = f"prompt {name!r} ({selector}) could not be fetched: {detail}"
+    if refused is not None:
+        # The org's plan refused it: a PlanRefusalError that is also the
+        # PromptFetchError this call raises (existing except clauses hold).
+        raise refused.rebased(_PLAN_ERRORS, msg)
+    raise PromptFetchError(msg)
 
 
 def _fallback(name: str, body: Union[str, List[Dict[str, str]]]) -> Prompt:

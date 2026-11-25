@@ -60,6 +60,12 @@ type RestartInputs struct {
 	// KeepRoutes: the operator asked to restart with the routes left on
 	// (--keep-routes).
 	KeepRoutes bool
+	// ListenerHandover: the running daemon says (on its dashboard) that its
+	// in-place restart hands its proxy's listening socket to the new process
+	// image, and, when a service manager runs it, it runs exactly the command
+	// the installed unit or agent does (InvocationDigest), so an in-place
+	// restart brings back what the manager would start (L-168).
+	ListenerHandover bool
 }
 
 // Running reports whether a daemon appears to run.
@@ -95,6 +101,11 @@ type RestartPlan struct {
 	// HoldRoutes: take the routes that reach this proxy off first and put
 	// them back once the new proxy serves.
 	HoldRoutes bool
+	// Handover: the in-place restart hands the proxy's listening socket to
+	// the new process image, so the port keeps answering throughout (a
+	// connection made meanwhile waits in the socket's backlog and the new
+	// daemon serves it) and no route is taken off.
+	Handover bool
 	// Rule names the table row that decided.
 	Rule string
 	// Reason is the refusal, or what the plan does, in plain words.
@@ -120,6 +131,19 @@ var restartRules = []restartRule{
 		reason: "this command is running inside a session the Observer daemon started (a dashboard terminal or an attached launcher session). " +
 			"Stopping the daemon ends that session, and this command with it, before the routes are back on. " +
 			"Run it from a terminal the daemon did not start",
+	},
+	{
+		// L-168 (ii): the port keeps answering, so nothing is taken off and
+		// neither the organization's routes nor the resolved port matter.
+		// Above the service-manager rows: execve keeps the main pid, so
+		// systemd and launchd see no restart at all.
+		name:  "running, hands its proxy over in place",
+		match: func(in RestartInputs) bool { return in.DashboardAnswers && in.InPlaceSupported && in.ListenerHandover },
+		plan: func(RestartInputs) RestartPlan {
+			return RestartPlan{Mechanism: RestartInPlace, Handover: true}
+		},
+		reason: "the daemon restarts itself in place and hands its proxy's listening socket to the new process, " +
+			"so the proxy port keeps answering throughout and no route is taken off",
 	},
 	{
 		name:  "organization maintains routes",

@@ -107,6 +107,8 @@ PROMPT_LABEL = "sbo.prompt.label"
 PROMPT_COHORT = "sbo.prompt.cohort"
 EXPERIMENT_RUN_ID = "sbo.experiment.run_id"
 EXPERIMENT_ITEM_ID = "sbo.experiment.item_id"
+# The hello span `setup` sends (plan 3.8, SDKQS-9): no content, this mark only.
+SETUP_HELLO = "sbo.setup.hello"
 
 # --- content keys: capture_content, mask and max_content_chars apply ---------------
 # The keys of the genaiattr content fields (input/output messages, system

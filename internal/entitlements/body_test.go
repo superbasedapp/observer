@@ -160,10 +160,10 @@ func TestVocabularyTables(t *testing.T) {
 			}
 		}
 	}
-	if len(CapNames()) != len(seen) || CapName("x").Known() || CapName("x").Unit() != "" {
-		t.Error("CapNames or Known disagree with the table")
+	if len(capNames()) != len(seen) || CapName("x").Known() || CapName("x").Unit() != "" {
+		t.Error("capNames or Known disagree with the table")
 	}
-	for _, n := range TermNames() {
+	for _, n := range termNames() {
 		if !n.Known() {
 			t.Errorf("term %s not known", n)
 		}

@@ -117,9 +117,9 @@ func (s *Store) LookupSessionWindow(ctx context.Context, sessionID string, now t
 	if !pid.Valid || pid.Int64 <= 0 {
 		return SessionWindow{}, true, nil
 	}
-	w := SessionWindow{ProjectID: pid.Int64, StartedAt: parseCommitTime(started), EndedAt: now}
+	w := SessionWindow{ProjectID: pid.Int64, StartedAt: parseStoredTime(started), EndedAt: now}
 	if ended.Valid && ended.String != "" {
-		if t := parseCommitTime(ended.String); !t.IsZero() && t.Before(now) {
+		if t := parseStoredTime(ended.String); !t.IsZero() && t.Before(now) {
 			w.EndedAt = t
 		}
 	}

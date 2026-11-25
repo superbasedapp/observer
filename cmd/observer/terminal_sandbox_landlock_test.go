@@ -50,26 +50,12 @@ func fakeLandlockABI(t *testing.T, abi int) *atomic.Int64 {
 	return &n
 }
 
-func landlockTestRuntime(t *testing.T, cfg config.Config) *sandboxRuntime {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, nil, t.TempDir(), exe, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt.applyDaemonConfig(cfg)
-	return rt
-}
-
 // TestLandlockDriverIsOptIn: no [components] block (every existing install)
 // never gets the driver and nothing reads the ABI; a block that adds it,
 // with process_lite listed, probes it.
 func TestLandlockDriverIsOptIn(t *testing.T) {
 	n := fakeLandlockABI(t, 9)
-	legacy := landlockTestRuntime(t, landlockTestConfig(t, false, "process_lite"))
+	legacy := testSandboxRuntime(t, landlockTestConfig(t, false, "process_lite"))
 	if _, ok := legacy.drivers[sandboxbackend.BackendProcessLite]; ok || legacy.inactiveDrivers[sandboxbackend.BackendProcessLite] != landlockComponent {
 		t.Fatalf("legacy drivers %v inactive %v", legacy.drivers, legacy.inactiveDrivers)
 	}
@@ -77,11 +63,11 @@ func TestLandlockDriverIsOptIn(t *testing.T) {
 	if n.Load() != 0 {
 		t.Fatal("the ABI was read on an install that never selected the driver")
 	}
-	notListed := landlockTestRuntime(t, landlockTestConfig(t, true, "bwrap"))
+	notListed := testSandboxRuntime(t, landlockTestConfig(t, true, "bwrap"))
 	if p := notListed.drivers[sandboxbackend.BackendProcessLite].probe(context.Background()); p.Verdict != "disabled_by_config" || n.Load() != 0 {
 		t.Fatalf("not listed: %+v (reads %d)", p, n.Load())
 	}
-	rt := landlockTestRuntime(t, landlockTestConfig(t, true, "process_lite"))
+	rt := testSandboxRuntime(t, landlockTestConfig(t, true, "process_lite"))
 	p := rt.drivers[sandboxbackend.BackendProcessLite].probe(context.Background())
 	if p.Verdict != sandboxlandlock.VerdictAvailable || p.Version != "9" || n.Load() == 0 {
 		t.Fatalf("selected and listed: %+v", p)
@@ -99,7 +85,7 @@ func TestLandlockNeverPickedAutomatically(t *testing.T) {
 		t.Skip("process_lite does not run on WSL2 (its registry row refuses it there)")
 	}
 	fakeLandlockABI(t, 9)
-	rt := landlockTestRuntime(t, landlockTestConfig(t, true, "process_lite"))
+	rt := testSandboxRuntime(t, landlockTestConfig(t, true, "process_lite"))
 	if d, err := rt.chosenDriver(context.Background(), ""); d != nil || err == nil {
 		t.Fatalf("an automatic launch took the explicit-only row: %v %v", d, err)
 	}
@@ -120,14 +106,14 @@ func TestLandlockOnlyTheHostTier(t *testing.T) {
 	fakeLandlockABI(t, 9)
 	cfg := landlockTestConfig(t, true, "process_lite")
 	cfg.Terminal.Sandbox.Egress = "proxy_only"
-	rt := landlockTestRuntime(t, cfg)
+	rt := testSandboxRuntime(t, cfg)
 	d := rt.drivers[sandboxbackend.BackendProcessLite].(*landlockDriver)
 	err := d.floor(launchFloorConfig(rt.cfg, string(rt.egress.Mode)))
 	if err == nil || !strings.Contains(err.Error(), "only tier is host") {
 		t.Fatalf("a proxy_only launch: %v", err)
 	}
 	fakeLandlockABI(t, 7)
-	rt2 := landlockTestRuntime(t, landlockTestConfig(t, true, "process_lite"))
+	rt2 := testSandboxRuntime(t, landlockTestConfig(t, true, "process_lite"))
 	if p := rt2.drivers[sandboxbackend.BackendProcessLite].probe(context.Background()); p.Verdict != sandboxlandlock.VerdictLandlockABITooOld {
 		t.Fatalf("ABI 7: %+v", p)
 	}

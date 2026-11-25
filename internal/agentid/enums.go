@@ -6,6 +6,12 @@ import (
 
 // CredentialAssurance is the CLOSED, ranked "how strong is the credential"
 // enum (R2/R8.23.i). Higher values are stronger. The zero value is invalid.
+//
+// The MCP policy compiler, lint and matcher expand a minimum rank into an
+// explicit accepted-value set (CEL has no ordinal over these strings) from
+// mcpaccess.CredAssuranceRanks, the same order written strongest first as
+// wire names. rankparity_test.go pins the two orders together, so a rank
+// added here fails that test until the mcpaccess slice is updated.
 type CredentialAssurance int
 
 // Credential assurance levels, weakest first.
@@ -66,21 +72,11 @@ func (c *CredentialAssurance) UnmarshalText(b []byte) error {
 // AtLeast reports whether c meets the minimum rank min.
 func (c CredentialAssurance) AtLeast(min CredentialAssurance) bool { return c.Valid() && c >= min }
 
-// AcceptedCredAssurances expands a MINIMUM rank into the explicit accepted
-// value set, strongest first - what the CEL compiler emits as `in [...]`
-// because CEL has no ordinal over these strings (R8.23.i).
-func AcceptedCredAssurances(min CredentialAssurance) []string {
-	var out []string
-	for v := CredHardwareBound; v >= CredClaimed; v-- {
-		if v >= min {
-			out = append(out, v.String())
-		}
-	}
-	return out
-}
-
 // ClientAttestation is the CLOSED, ranked "which product/process is calling"
 // enum (R2/R8.23.i). Higher values are stronger. The zero value is invalid.
+//
+// mcpaccess.ClientAttestationRanks carries the same order strongest first
+// for the MCP policy compiler; rankparity_test.go pins the two together.
 type ClientAttestation int
 
 // Client attestation levels, weakest first.
@@ -140,15 +136,3 @@ func (a ClientAttestation) AtLeast(min ClientAttestation) bool { return a.Valid(
 // X") may be honoured at this attestation: only process_attested or
 // ipc_bound. Below that the principal is node-wide (R2, finding-9/10).
 func (a ClientAttestation) ProductScoped() bool { return a.AtLeast(AttestIPCBound) }
-
-// AcceptedClientAttestations expands a MINIMUM rank into the explicit
-// accepted value set, strongest first (CEL `in [...]`, R8.23.i).
-func AcceptedClientAttestations(min ClientAttestation) []string {
-	var out []string
-	for v := AttestProcessAttested; v >= AttestClaimed; v-- {
-		if v >= min {
-			out = append(out, v.String())
-		}
-	}
-	return out
-}

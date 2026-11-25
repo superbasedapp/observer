@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -2778,37 +2779,11 @@ func openclawProjectRootBackfillDirs() []string {
 func backfillOpenClawSessionID(ctx context.Context, db *sql.DB, agentsDirs []string, fileLimit int) (OpenClawSessionIDBackfill, error) {
 	res := OpenClawSessionIDBackfill{}
 
-	insertTarget, err := db.PrepareContext(ctx, `
-		INSERT INTO sessions (
-			id, project_id, tool, model, git_branch, started_at, ended_at,
-			total_actions, metadata, quality_score, redundancy_ratio,
-			error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens,
-			authority, authority_org_key
-		)
-		SELECT ?, project_id, tool, model, git_branch, started_at, ended_at,
-		       total_actions, metadata, quality_score, redundancy_ratio,
-		       error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens,
-		       authority, authority_org_key
-		  FROM sessions
-		 WHERE id = ?
-		   AND tool = 'openclaw'
-		ON CONFLICT(id) DO UPDATE SET
-		   model = COALESCE(NULLIF(excluded.model, ''), sessions.model),
-		   git_branch = COALESCE(NULLIF(excluded.git_branch, ''), sessions.git_branch),
-		   started_at = MIN(sessions.started_at, excluded.started_at),
-		   ended_at = COALESCE(excluded.ended_at, sessions.ended_at),
-		   total_actions = MAX(sessions.total_actions, excluded.total_actions),
-		   metadata = COALESCE(NULLIF(excluded.metadata, ''), sessions.metadata),
-		   quality_score = COALESCE(excluded.quality_score, sessions.quality_score),
-		   redundancy_ratio = COALESCE(excluded.redundancy_ratio, sessions.redundancy_ratio),
-		   error_rate = COALESCE(excluded.error_rate, sessions.error_rate),
-		   onboarding_cost = COALESCE(excluded.onboarding_cost, sessions.onboarding_cost),
-		   turns_to_first_edit = COALESCE(excluded.turns_to_first_edit, sessions.turns_to_first_edit),
-		   retry_cost_tokens = COALESCE(excluded.retry_cost_tokens, sessions.retry_cost_tokens),
-		   -- Attribution is sticky (M8.1): the canonical row keeps its own
-		   -- stamp; only a NULL one takes the merged row's.
-		   authority = COALESCE(sessions.authority, excluded.authority),
-		   authority_org_key = COALESCE(sessions.authority_org_key, excluded.authority_org_key)`)
+	mergeSQL, err := openclawSessionMergeSQL(ctx, db)
+	if err != nil {
+		return res, fmt.Errorf("backfill openclaw-session-id: %w", err)
+	}
+	insertTarget, err := db.PrepareContext(ctx, mergeSQL)
 	if err != nil {
 		return res, fmt.Errorf("backfill openclaw-session-id: prepare session merge: %w", err)
 	}
@@ -2902,6 +2877,123 @@ func backfillOpenClawSessionID(ctx context.Context, db *sql.DB, agentsDirs []str
 		}
 	}
 	return res, nil
+}
+
+// sessionMergeRule is how the openclaw session merge resolves one sessions
+// column when the canonical row already exists: a SET expression with the
+// column name as %[1]s, or "" to keep the canonical row's value untouched.
+type sessionMergeRule string
+
+const (
+	// mergeKeep never updates the canonical row's value.
+	mergeKeep sessionMergeRule = ""
+	// mergePreferMergedText takes the merged (legacy) row's non-empty value.
+	mergePreferMergedText sessionMergeRule = "%[1]s = COALESCE(NULLIF(excluded.%[1]s, ''), sessions.%[1]s)"
+	// mergePreferMerged takes the merged row's non-NULL value.
+	mergePreferMerged sessionMergeRule = "%[1]s = COALESCE(excluded.%[1]s, sessions.%[1]s)"
+	// mergeEarliest and mergeLargest keep the earlier / larger value.
+	mergeEarliest sessionMergeRule = "%[1]s = MIN(sessions.%[1]s, excluded.%[1]s)"
+	mergeLargest  sessionMergeRule = "%[1]s = MAX(sessions.%[1]s, excluded.%[1]s)"
+	// mergeSticky keeps the canonical row's value; only a NULL one takes the
+	// merged row's (attribution, M8.1).
+	mergeSticky sessionMergeRule = "%[1]s = COALESCE(sessions.%[1]s, excluded.%[1]s)"
+	// mergeFill is the default for every column the table does not name:
+	// the canonical row keeps its own value, and a NULL or empty one is
+	// filled from the merged row. It never overwrites a fact the canonical
+	// row already holds.
+	mergeFill sessionMergeRule = "%[1]s = COALESCE(NULLIF(sessions.%[1]s, ''), excluded.%[1]s)"
+)
+
+// openclawSessionMergeRules names the sessions columns whose conflict rule
+// is not mergeFill. The first 17 rows are the rules the hand-written merge
+// shipped with; the scoring columns Scorer.Write stamps together with
+// quality_score follow quality_score's rule so the family stays from one
+// row.
+var openclawSessionMergeRules = map[string]sessionMergeRule{
+	"project_id":                   mergeKeep,
+	"tool":                         mergeKeep,
+	"model":                        mergePreferMergedText,
+	"git_branch":                   mergePreferMergedText,
+	"started_at":                   mergeEarliest,
+	"ended_at":                     mergePreferMerged,
+	"total_actions":                mergeLargest,
+	"metadata":                     mergePreferMergedText,
+	"quality_score":                mergePreferMerged,
+	"redundancy_ratio":             mergePreferMerged,
+	"error_rate":                   mergePreferMerged,
+	"onboarding_cost":              mergePreferMerged,
+	"turns_to_first_edit":          mergePreferMerged,
+	"retry_cost_tokens":            mergePreferMerged,
+	"exploration_efficiency":       mergePreferMerged,
+	"continuity_score":             mergePreferMerged,
+	"scored_at":                    mergePreferMerged,
+	"scored_action_count":          mergePreferMerged,
+	"stale_reads_wasteful":         mergePreferMerged,
+	"stale_reads_necessary":        mergePreferMerged,
+	"redundancy_ratio_wasteful":    mergePreferMerged,
+	"authority":                    mergeSticky,
+	"authority_org_key":            mergeSticky,
+	"authority_classifier_version": mergeSticky,
+}
+
+// sessionColumnName is the shape a sessions column name must have to be
+// spliced into the merge statement.
+var sessionColumnName = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+// openclawSessionMergeSQL builds the statement that copies a legacy
+// openclaw session row (second parameter) onto its canonical id (first
+// parameter). The column list is read from the live sessions schema, not
+// written out by hand (CORE-05): a hand-copied list once dropped every
+// column added after it (surface, workspace, org_id, user_email, the
+// lineage and identity columns, ...) from the merged row. Every column but
+// id is copied; on conflict each is resolved by openclawSessionMergeRules,
+// or mergeFill when the table does not name it.
+func openclawSessionMergeSQL(ctx context.Context, db *sql.DB) (string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info('sessions') ORDER BY cid`)
+	if err != nil {
+		return "", fmt.Errorf("read sessions columns: %w", err)
+	}
+	var cols []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return "", fmt.Errorf("scan sessions column: %w", err)
+		}
+		if !sessionColumnName.MatchString(name) {
+			_ = rows.Close()
+			return "", fmt.Errorf("sessions column %q is not a plain identifier", name)
+		}
+		if name != "id" {
+			cols = append(cols, name)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return "", fmt.Errorf("read sessions columns: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("read sessions columns: %w", err)
+	}
+	if len(cols) == 0 {
+		return "", errors.New("sessions table has no columns")
+	}
+	var sets []string
+	for _, c := range cols {
+		rule, named := openclawSessionMergeRules[c]
+		if !named {
+			rule = mergeFill
+		}
+		if rule != mergeKeep {
+			sets = append(sets, fmt.Sprintf(string(rule), c))
+		}
+	}
+	list := strings.Join(cols, ", ")
+	return "INSERT INTO sessions (id, " + list + ")\n" +
+		"SELECT ?, " + list + "\n" +
+		"  FROM sessions\n" +
+		" WHERE id = ?\n" +
+		"   AND tool = 'openclaw'\n" +
+		"ON CONFLICT(id) DO UPDATE SET\n   " + strings.Join(sets, ",\n   "), nil
 }
 
 // backfillOpenClawProjectRoot re-attributes openclaw action / session

@@ -102,6 +102,12 @@ const activityStampPoll = 2 * time.Second
 // cheapest signal that needs no listener, no auth surface and works with the
 // dashboard off. The first observation only records the baseline.
 func watchActivityStamp(ctx context.Context, dbPath string, note func(kind string)) {
+	watchActivityStampEvery(ctx, dbPath, activityStampPoll, note)
+}
+
+// watchActivityStampEvery is watchActivityStamp looking at the stamp every
+// poll; the daemon always passes activityStampPoll, a test a shorter one.
+func watchActivityStampEvery(ctx context.Context, dbPath string, poll time.Duration, note func(kind string)) {
 	path := budgetwarnfile.ActivityPath(dbPath)
 	if path == "" || note == nil {
 		return
@@ -110,7 +116,7 @@ func watchActivityStamp(ctx context.Context, dbPath string, note func(kind strin
 	if fi, err := os.Stat(path); err == nil {
 		last = fi.ModTime()
 	}
-	t := time.NewTicker(activityStampPoll)
+	t := time.NewTicker(poll)
 	defer t.Stop()
 	for {
 		select {

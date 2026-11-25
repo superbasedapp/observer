@@ -28,6 +28,13 @@ type OrgGrantReader interface {
 	OrgPlanGrant(ctx context.Context, orgID string) (store.OrgPlanGrant, error)
 }
 
+// OwnerPlanReader reads the account-scoped subscription of a personal org's
+// owner (*store.Store: PersonalOrgOwnerSubscription, cloud 0155).
+// store.ErrNotFound (or an error wrapping it) means none.
+type OwnerPlanReader interface {
+	PersonalOrgOwnerSubscription(ctx context.Context, orgID string) (store.PaddleSubscription, error)
+}
+
 // DefaultLaunchWindow is how long a new team org runs on its launch plan
 // without a subscription: plan 06 5.8.6's "Team trial of 14 days with no
 // card".
@@ -109,6 +116,10 @@ type SubscriptionPlans struct {
 	// worker's composition, cmd/observer-cloud hostapiworker.go, reads grants
 	// with no edit there), else no org has a grant.
 	Grants OrgGrantReader
+	// Owners reads a personal org owner's account subscription (L-167). nil:
+	// Subs is used when it also implements OwnerPlanReader (the production
+	// store does), else no org is entitled through its owner's account.
+	Owners OwnerPlanReader
 	// Launch is the launch table (nil: DefaultLaunchPlans).
 	Launch []LaunchPlan
 	// PastDueGrace is how long a past_due subscription stays live after it
@@ -128,6 +139,10 @@ type planFacts struct {
 	// past_due (nil otherwise).
 	sub      *entitlements.Body
 	subUntil *time.Time
+	// paired is the personal plan the catalog pairs with the org owner's
+	// live account subscription (L-167), with its dunning grace end.
+	paired      *entitlements.Body
+	pairedUntil *time.Time
 	// grant is the org's operator grant when it is in force at now and a
 	// catalog plan of the org's kind (with its end, if any).
 	grant      *entitlements.Body
@@ -155,6 +170,24 @@ var planRules = []planRule{
 				// W16-D5: a past_due plan carries its grace end, so a host
 				// falls back by itself if the control plane goes silent.
 				pl.NotAfter = f.subUntil.UTC().Truncate(time.Second).Unix()
+			}
+			return pl, nil
+		},
+	},
+	{
+		// L-167: Personal Pro is what the plus_beta subscription buys. A personal
+		// org whose owner holds a live account subscription to a plan the
+		// catalog pairs (entitlements.PairedPersonalPlan) is issued the
+		// paired personal plan, before and after migrate-personal re-keys
+		// the row onto the org (then the subscription row above decides).
+		// Like the org's own subscription it is paid for, so it wins over a
+		// grant; a past_due one carries its grace end.
+		name:  "account_subscription",
+		match: func(f planFacts) bool { return f.paired != nil },
+		plan: func(f planFacts) (Plan, error) {
+			pl := Plan{Name: f.paired.Plan.Name, Version: f.paired.Plan.Version}
+			if f.pairedUntil != nil {
+				pl.NotAfter = f.pairedUntil.UTC().Truncate(time.Second).Unix()
 			}
 			return pl, nil
 		},
@@ -218,6 +251,17 @@ func (p SubscriptionPlans) PlanFor(ctx context.Context, org store.OrgEntitlement
 	return pl, err
 }
 
+// ownerReader is Owners, else Subs when it reads owner subscriptions too.
+func (p SubscriptionPlans) ownerReader() OwnerPlanReader {
+	if p.Owners != nil {
+		return p.Owners
+	}
+	if o, ok := p.Subs.(OwnerPlanReader); ok {
+		return o
+	}
+	return nil
+}
+
 // grantReader is Grants, else Subs when it reads grants too.
 func (p SubscriptionPlans) grantReader() OrgGrantReader {
 	if p.Grants != nil {
@@ -246,6 +290,16 @@ func (p SubscriptionPlans) Resolve(ctx context.Context, org store.OrgEntitlement
 			return Plan{}, "", fmt.Errorf("entitlementwork.SubscriptionPlans: subscription: %w", err)
 		default:
 			f.sub, f.subUntil = subscriptionPlan(sub, kind, f.now, p.PastDueGrace)
+		}
+	}
+	if or := p.ownerReader(); or != nil && entitlements.AccountPlansPairInto(kind) {
+		sub, err := or.PersonalOrgOwnerSubscription(ctx, org.OrgID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			return Plan{}, "", fmt.Errorf("entitlementwork.SubscriptionPlans: owner subscription: %w", err)
+		default:
+			f.paired, f.pairedUntil = pairedPlan(sub, kind, f.now, p.PastDueGrace)
 		}
 	}
 	if gr := p.grantReader(); gr != nil {
@@ -283,13 +337,15 @@ func (p SubscriptionPlans) Resolve(ctx context.Context, org store.OrgEntitlement
 
 // grantPlan returns the catalog plan an operator grant gives at now, with its
 // end, when the grant is in force and names a catalog plan of the org's
-// kind; nil otherwise. A grant of another kind (a personal plan on a team
+// kind; nil otherwise. A version the catalog carries forward is issued as
+// its successor (entitlements.Current; L-166: a Personal Pro v1 grant is
+// issued Personal Pro v2). A grant of another kind (a personal plan on a team
 // org) grants nothing: the org falls through to its launch plan or floor.
 func grantPlan(g store.OrgPlanGrant, kind entitlements.Kind, now time.Time) (*entitlements.Body, *time.Time) {
 	if !g.InForce(now) || g.PlanVersion == 0 {
 		return nil, nil
 	}
-	b, ok := entitlements.Plan(g.PlanName, g.PlanVersion)
+	b, ok := entitlements.Current(g.PlanName, g.PlanVersion)
 	if !ok || b.Kind != kind {
 		return nil, nil
 	}
@@ -298,7 +354,11 @@ func grantPlan(g store.OrgPlanGrant, kind entitlements.Kind, now time.Time) (*en
 
 // subscriptionPlan returns the catalog plan a subscription grants when the
 // subscription is live at now (liveRules) and its plan is a catalog plan of
-// the org's kind; nil otherwise. A plan of another kind (a personal price
+// the org's kind; nil otherwise. The row's version is resolved through
+// entitlements.Current, so a version the catalog carries forward (L-166:
+// Personal Pro v1, the version migrate-personal re-keyed subscriptions to)
+// is issued as its successor with no write to the row; a version that moves
+// only by its price (Business v1) stays as it is. A plan of another kind (a personal price
 // mapped onto a team org, a misconfigured price map) grants nothing: the org
 // falls through to its launch plan or floor, never to a plan it did not buy.
 //
@@ -316,8 +376,30 @@ func subscriptionPlan(s store.PaddleSubscription, kind entitlements.Kind, now ti
 	if !subscriptionLive(s, now, grace) || s.PlanName == "" {
 		return nil, nil
 	}
-	b, ok := entitlements.Plan(s.PlanName, s.PlanVersion)
+	b, ok := entitlements.Current(s.PlanName, s.PlanVersion)
 	if !ok || s.PlanVersion == 0 || b.Kind != kind {
+		return nil, nil
+	}
+	if s.Status != "past_due" || s.PastDueSince == nil {
+		return &b, nil
+	}
+	until := pastDueEnd(*s.PastDueSince, grace)
+	return &b, &until
+}
+
+// pairedPlan returns the personal plan the catalog pairs with an owner's
+// account subscription when it is live at now (liveRules, the same dunning
+// grace as subscriptionPlan) and the paired plan is of the org's kind; nil
+// otherwise.
+func pairedPlan(s store.PaddleSubscription, kind entitlements.Kind, now time.Time, grace time.Duration) (*entitlements.Body, *time.Time) {
+	if grace <= 0 {
+		grace = DefaultPastDueGrace
+	}
+	if !subscriptionLive(s, now, grace) || s.PlanName == "" {
+		return nil, nil
+	}
+	b, ok := entitlements.PairedPersonalPlan(s.PlanName)
+	if !ok || b.Kind != kind {
 		return nil, nil
 	}
 	if s.Status != "past_due" || s.PastDueSince == nil {

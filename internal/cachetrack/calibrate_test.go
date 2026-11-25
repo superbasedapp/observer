@@ -102,7 +102,7 @@ func TestCalibrate_AutoStopAfterCap(t *testing.T) {
 }
 
 // TestCalibrate_NilSinkNoOp pins that ObserveTurn does not panic
-// or allocate when the sidecar is off (default).
+// when the sidecar is off (default).
 func TestCalibrate_NilSinkNoOp(t *testing.T) {
 	t.Parallel()
 	e := NewEngine(8)

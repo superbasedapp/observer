@@ -19,7 +19,6 @@ import (
 func TestOTLPServiceVersionIsNotAToolVersionSource(t *testing.T) {
 	roots := []string{
 		"../../internal/ingest/otlp",
-		"../../internal/adapter/ccotel",
 		"../../internal/otlpvendor",
 		"../../internal/obs",
 	}

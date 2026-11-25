@@ -100,7 +100,7 @@ func (s Store) FetchInstall(ctx context.Context, kind content.Kind, tr Trust, sr
 			continue // InstallFiles refuses the set (structure)
 		}
 		if p, ok := s.InstalledArtifact(kind, e); ok {
-			if staged, err := stageFile(s.Root, p); err == nil {
+			if staged, err := StageFile(s.Root, p); err == nil {
 				files[e.Name] = staged
 				res.Reused++
 				continue
@@ -129,10 +129,12 @@ func (s Store) FetchInstall(ctx context.Context, kind content.Kind, tr Trust, sr
 	return res, nil
 }
 
-// stageFile stages src under a fresh ".incoming-*" name in root: a hard
+// StageFile stages src under a fresh ".incoming-*" name in root: a hard
 // link (no second copy of a large export), or a copy where the filesystem
-// refuses the link. The caller removes the staged name.
-func stageFile(root, src string) (string, error) {
+// refuses the link. The caller removes the staged name. FetchInstall stages
+// a reused installed artifact through it, and so does the org security
+// content mirror (internal/orgclient/seccontent.go).
+func StageFile(root, src string) (string, error) {
 	f, err := os.CreateTemp(root, ".incoming-*")
 	if err != nil {
 		return "", err

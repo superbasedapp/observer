@@ -991,7 +991,7 @@ func eventIDs(events []models.ToolEvent) map[string]bool {
 // past itself, or (b) parsed as valid-JSON-prefix and advanced past
 // itself, and in both cases the next pass resumed AFTER the record.
 // The discriminator is now the '\n' terminator, matching the repo
-// convention (internal/adapter/codex/adapter.go readRecord).
+// convention (adapter.ReadRecord).
 func TestJSONLUnterminatedTailDeferredThenZeroLoss(t *testing.T) {
 	full, err := os.ReadFile("../../../testdata/gemini/session-live-toolcalls.jsonl")
 	if err != nil {

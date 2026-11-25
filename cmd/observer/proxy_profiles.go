@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/stash"
 	"github.com/marmutapp/superbased-observer/internal/stashalign"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // This file assembles the Track-R compression profile router
@@ -118,7 +119,7 @@ func newCompressionRouter(cfg config.Config, masterPath string, loadFresh func()
 	}
 	if cfg.Compression.Conversation.Rolling.Enabled {
 		deps.authCache = messagesummary.NewAuthCache(cfg.Compression.Conversation.Rolling.AuthCacheSize)
-		deps.recorder = messagesummary.NewDBRecorder(database, costEnginePricingAdapter{e: acquireProcessCostEngine(context.Background(), cfg, database, logger)})
+		deps.recorder = messagesummary.NewDBRecorder(summaryCallWriter(database), costEnginePricingAdapter{e: acquireProcessCostEngine(context.Background(), cfg, database, logger)})
 	}
 
 	// The Resolve/Build closures read assignments and master
@@ -136,7 +137,7 @@ func newCompressionRouter(cfg config.Config, masterPath string, loadFresh func()
 	// P3.4: user profiles (~/.observer/profiles/*.toml) resolve
 	// alongside the built-ins; their content stamp rides the instance
 	// key so edits apply to new sessions without a restart.
-	store := config.ProfileStore{Dir: config.DefaultProfilesDir(masterPath)}
+	profileStore := config.ProfileStore{Dir: config.DefaultProfilesDir(masterPath)}
 
 	// The default profile's pipeline is built eagerly from master
 	// parameters — it is the never-fail fallback for unresolvable or
@@ -160,11 +161,11 @@ func newCompressionRouter(cfg config.Config, masterPath string, loadFresh func()
 			// stopping restores them). Per-request traffic
 			// (sessionID "") never enters experiments.
 			name, _, _ := config.ResolveProfileNameForSession(profiles, s.experiments, provider, tool, sessionID)
-			return profileInstanceKey(name, store.Stamp(name), root, stamp)
+			return profileInstanceKey(name, profileStore.Stamp(name), root, stamp)
 		},
 		Build: func(key string) (pipelineAdapter, error) {
 			name, root := splitProfileKey(key)
-			resolved, _, err := store.ResolveCompression(snap.Load().master, name)
+			resolved, _, err := profileStore.ResolveCompression(snap.Load().master, name)
 			if err != nil {
 				return pipelineAdapter{}, err
 			}
@@ -214,7 +215,7 @@ func newCompressionRouter(cfg config.Config, masterPath string, loadFresh func()
 				profiles = config.ProjectProfiles(profiles, raw)
 			}
 			name, _, _ := config.ResolveProfileNameForSession(profiles, fresh.Experiments, provider, tool, sessionID)
-			return profileInstanceKey(name, store.Stamp(name), root, stamp)
+			return profileInstanceKey(name, profileStore.Stamp(name), root, stamp)
 		}, newProfilePipeline(master, deps))
 		logger.Info("profiles hot-reload applied: new sessions resolve against the updated config",
 			"default", config.ResolveProfileName(fresh.Profiles, "", ""),
@@ -232,6 +233,28 @@ type profileConfigSnapshot struct {
 	master      config.CompressionConfig
 	profiles    config.ProfilesConfig
 	experiments []config.ExperimentConfig
+}
+
+// summaryCallWriter is the rolling summarizer's summary_calls writer: the
+// store's InsertSummaryCall seam over database. A nil database yields a nil
+// writer, which makes the recorder a no-op.
+func summaryCallWriter(database *sql.DB) messagesummary.CallRowWriter {
+	if database == nil {
+		return nil
+	}
+	st := store.New(database)
+	return func(ctx context.Context, row messagesummary.CallRow) error {
+		return st.InsertSummaryCall(ctx, store.SummaryCallRow{
+			SessionID:           row.SessionID,
+			At:                  row.At,
+			Model:               row.Model,
+			InputTokens:         row.InputTokens,
+			OutputTokens:        row.OutputTokens,
+			CacheReadTokens:     row.CacheReadTokens,
+			CacheCreationTokens: row.CacheCreationTokens,
+			CostUSD:             row.CostUSD,
+		})
+	}
 }
 
 // applyRecipeAliasToProfiles maps the deprecated `observer start

@@ -48,7 +48,7 @@ func TestMXCCLIArgvAndPlan(t *testing.T) {
 	// home and mark it onboarded instead of reading the real profile (FU-20).
 	onboardTestClaude(t, pinToolHomes(t))
 	countMXCProbes(t, "windows", availableMXC())
-	rt := ociTestRuntime(t, mxcTestConfig(t, true, "mxc-process"))
+	rt := testSandboxRuntime(t, mxcTestConfig(t, true, "mxc-process"))
 	rt.forceBackend = sandboxbackend.BackendMXCProcess
 	d := rt.drivers[sandboxbackend.BackendMXCProcess].(*mxcDriver)
 	// The driver's own steps, which ComposePrepare runs after the host's

@@ -1551,7 +1551,7 @@ func (p *parser) parse(n *yaml.Node) *Workflow {
 
 func handleYAMLUnmarshalError(err error) []*Error {
 	// Patched by SuperBased Observer for go.yaml.in/yaml/v4 v4.0.0-rc.4
-	// (see PATCHES.md): decode errors arrive as *yaml.LoadErrors, and the
+	// (see UPSTREAM): decode errors arrive as *yaml.LoadErrors, and the
 	// parser error type is no longer exported, so its line and column are
 	// read from the error text.
 	var le *yaml.LoadErrors
@@ -1579,7 +1579,7 @@ func handleYAMLUnmarshalError(err error) []*Error {
 }
 
 // yamlErrorPositionRe reads "line N" and an optional "column M" from a yaml
-// error message (patched, see PATCHES.md).
+// error message (patched, see UPSTREAM).
 var yamlErrorPositionRe = regexp.MustCompile(`line (\d+)(?:, column (\d+))?`)
 
 func yamlErrorPosition(m string) (int, int) {

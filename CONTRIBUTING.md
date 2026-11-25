@@ -122,7 +122,7 @@ make build
 
 ## What we especially welcome
 
-- **New AI-tool adapters.** Observer supports 26 coding tools today;
+- **New AI-tool adapters.** Observer supports 50 coding tools today;
   if yours isn't one of them, this is the highest-leverage
   contribution you can make. Look at an existing adapter under
   `internal/adapter/` for the shape.

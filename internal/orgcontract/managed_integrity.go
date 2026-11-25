@@ -686,17 +686,6 @@ var driftedToolLabels = map[string]bool{
 // `drifted_tools` vocabulary.
 func validDriftedToolLabel(label string) bool { return driftedToolLabels[label] }
 
-// DriftedToolLabels returns the closed `drifted_tools` vocabulary, sorted —
-// for surfaces (and tests) that need to enumerate it.
-func DriftedToolLabels() []string {
-	out := make([]string, 0, len(driftedToolLabels))
-	for label := range driftedToolLabels {
-		out = append(out, label)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func validManagedSiblingLabel(label string) bool {
 	parts := strings.Split(label, "/")
 	if len(parts) != 2 {

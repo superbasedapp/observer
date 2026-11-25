@@ -327,6 +327,9 @@ model-pricing/scripts/extract-cache/
 # The adapter parity doc generator: rewrites docs/adapter-parity.md
 # (private) and its test reads that doc.
 /tools/adapterparitygen/
+# The dated doc index generator: writes docs/{plans,audits,handovers}/INDEX.md
+# (private) and its drift test reads them.
+/tools/docsindexgen/
 # The shipped-migrations record generator: records private lineages from git.
 /tools/shippedmiggen/
 # The parallel test runner: maintainer tooling for the private CI selection.

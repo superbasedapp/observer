@@ -168,14 +168,8 @@ judge() { # judge NAME pass|fail DETAIL
 	[ -n "${3:-}" ] && R["check.$1.detail"]="$3"
 	[ "$2" = pass ] || FAIL=1
 }
-# not_run NAME REASON records a check that could not be judged (what it
-# needed never happened) as not_run with the reason, never as a fail of the
-# thing it checks. The run still does not pass: a check did not run.
-not_run() {
-	R["check.$1"]="not_run"
-	R["check.$1.detail"]="$2"
-	FAIL=1
-}
+# shellcheck source=scripts/sandbox/live-lib.sh
+. "$(cd "$(dirname "$0")" && pwd)/live-lib.sh"
 # refusal_line prints the first line of a launch's refusal from its output
 # file ("" when there is none): the driver's or the box's own refusal (for
 # example the launch checks inside the box refusing the run), with the
@@ -185,24 +179,6 @@ refusal_line() {
 	tr -d '\r' <"$1" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' |
 		grep -m 1 -iE 'refused|sandboxrelayd:|terminal_sandbox:|not available here' | sed 's/^[[:space:]]*//' || true
 }
-refuse() {
-	R[refused]="$1"
-	echo "refused: $1" >&2
-	EXIT_CODE=2
-	exit 2
-}
-# install_id prints this run's install id ("" before the driver minted it).
-install_id() {
-	[ -f "$INSTALL_ID_FILE" ] || return 0
-	tr -d '\n' <"$INSTALL_ID_FILE" 2>/dev/null || true
-}
-# The managed gateway's names for this install (lane O2: name
-# observer-<12 hex>, unit observer-openshell-gateway-<12 hex>.service, CLI
-# registry in the private RAM dir); "" before the install id exists.
-gw_short() { local id; id="$(install_id)"; printf '%s' "${id:0:12}"; }
-gw_name() { [ -n "$(gw_short)" ] && printf 'observer-%s' "$(gw_short)"; }
-gw_unit() { [ -n "$(gw_short)" ] && printf 'observer-openshell-gateway-%s.service' "$(gw_short)"; }
-gw_rtdir() { [ -n "$(gw_short)" ] && printf '%s/observer-openshell-%s' "${XDG_RUNTIME_DIR:-/nonexistent}" "$(gw_short)"; }
 gw_pid() { local u; u="$(gw_unit)"; [ -n "$u" ] && systemctl --user show -p MainPID --value "$u" 2>/dev/null | tr -d '\n'; }
 # osh runs the openshell CLI against the run's gateway: the user's own in
 # external mode, Observer's private one (its name and private registry) in
@@ -329,13 +305,6 @@ coexist_events() {
 	R[coexist.box_created_before_release]="$(printf '%s\n' "$ev" | awk -v rel="$rel" '$2=="create" && ($3=="/" || $3=="sandbox/" || $3=="supervisor/") && $1+0 < rel+0' | grep -c . || true)"
 	R[coexist.box_stop_events]="$(printf '%s\n' "$ev" | awk -v rel="$rel" '($2=="kill" || $2=="stop" || $2=="die") && ($3=="/" || $3=="sandbox/" || $3=="supervisor/") && $1+0 <= rel+0' | grep -c . || true)"
 	R[coexist.box_teardown_events]="$(printf '%s\n' "$ev" | awk -v rel="$rel" '($2=="kill" || $2=="stop" || $2=="die") && ($3=="/" || $3=="sandbox/" || $3=="supervisor/") && $1+0 > rel+0' | grep -c . || true)"
-}
-# tree_digest prints a digest of a directory tree's names, modes, sizes
-# and contents ("absent" when it does not exist); it never prints a
-# content.
-tree_digest() {
-	[ -e "$1" ] || { echo absent; return 0; }
-	(cd "$1" && find . -printf '%p %m %s\n' 2>/dev/null | sort && find . -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null) | sha256sum | cut -c1-16
 }
 # cleanup runs on every exit: it deletes the boxes still listed under this
 # run's install label and records what was left before and after, stops the

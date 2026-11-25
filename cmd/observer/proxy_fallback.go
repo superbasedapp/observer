@@ -80,6 +80,12 @@ const (
 	// Fail closed with copy naming the fix (start the daemon, or remove the
 	// baked-in route). This is the resilient-attach scenario-4/5 break.
 	reasonProxyDownConflict
+	// reasonProxyDownOrgRoute: routed launch, proxy UNreachable, nothing pins
+	// the route, but this is a MANAGED node whose organization owns the AI
+	// tools' proxy routes (route posture maintain). A working bypass would
+	// skip the proxy-resident controls the organization requires, so refuse
+	// and name the fix (lane launcher-proxy-down, 2026-11-24).
+	reasonProxyDownOrgRoute
 )
 
 // proxyFallbackInputs are the injected capability facts decideProxyFallback
@@ -110,6 +116,15 @@ type proxyFallbackInputs struct {
 	// route forces the honest fail-closed; when true, the launch neutralizes via
 	// the override instead of refusing (honoring operator decision #2).
 	canNeutralizePersistent bool
+	// orgRequiresRoute reports a MANAGED node whose organization owns the AI
+	// tools' proxy routes (govern route posture maintain: the admin pinned
+	// proxy.maintain_routes ON, or left it unset while governing a
+	// proxy-resident enforcement point). Consulted ONLY on the routed,
+	// proxy-down row: a bypass there would skip the organization's proxy-
+	// resident controls, so it fails closed instead of neutralizing. The env
+	// launchers resolve it (envLauncherProxyGate); claude and codex leave it
+	// false today, so their verdicts are unchanged.
+	orgRequiresRoute bool
 }
 
 // proxyFallbackDecision is decideProxyFallback's verdict: the action plus the
@@ -130,19 +145,23 @@ type proxyFallbackDecision struct {
 //  2. --no-proxy-route  && !blocking               → neutralize   (bypass; override the route if any)
 //  3. routed            &&  proxy reachable         → proceed      (happy path)
 //  4. routed && !reachable &&  blocking route       → FAIL CLOSED  (dead baked-in proxy, can't override)
-//  5. routed && !reachable && !blocking             → neutralize   (working daemon-down fallback)
+//  5. routed && !reachable &&  org owns the route   → FAIL CLOSED  (managed node: a bypass skips org controls)
+//  6. routed && !reachable && !blocking             → neutralize   (working daemon-down fallback)
 //
 // Row 1 is FIRST and independent of proxy reachability: an un-overridable route
 // the tool applies over the launcher's bypass makes the `--no-proxy-route`
 // promise false whether the proxy is up (turns captured against the user's wish)
 // or down (dead-proxy break) — the honest move is to refuse and name the fix,
-// exactly like codex's B3-1 guard. Rows 4/5 are the routed daemon-down split:
+// exactly like codex's B3-1 guard. Rows 4-6 are the routed daemon-down split:
 // refuse when a baked-in route the launcher can't override would silently send
-// API calls into a dead proxy, else neutralize (operator decision #2 — notice +
-// working launch). When canNeutralizePersistent is true (claude's `--settings`
-// override lever), `blocking` collapses to false, so a claude launch with a
-// baked-in route NEUTRALIZES via the override instead of refusing; codex passes
-// canNeutralizePersistent=false, so its persistent-route rows stay fail-closed.
+// API calls into a dead proxy (row 4), refuse on a managed node whose
+// organization owns the routes even with nothing pinned (row 5: a bypass would
+// skip the organization's proxy-resident controls), else neutralize (operator
+// decision #2 — notice + working launch). When canNeutralizePersistent is true
+// (claude's `--settings` override lever), `blocking` collapses to false, so a
+// claude launch with a baked-in route NEUTRALIZES via the override instead of
+// refusing; codex passes canNeutralizePersistent=false, so its
+// persistent-route rows stay fail-closed.
 func decideProxyFallback(in proxyFallbackInputs) proxyFallbackDecision {
 	blocking := in.persistentRoute && !in.canNeutralizePersistent
 	switch {
@@ -154,6 +173,8 @@ func decideProxyFallback(in proxyFallbackInputs) proxyFallbackDecision {
 		return proxyFallbackDecision{proxyRouteProceed, reasonRouteHealthy}
 	case blocking:
 		return proxyFallbackDecision{proxyFailClosed, reasonProxyDownConflict}
+	case in.orgRequiresRoute:
+		return proxyFallbackDecision{proxyFailClosed, reasonProxyDownOrgRoute}
 	default:
 		return proxyFallbackDecision{proxyNeutralize, reasonProxyDownClean}
 	}

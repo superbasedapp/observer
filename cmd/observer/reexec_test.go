@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -31,8 +32,15 @@ func TestPreflightRestart(t *testing.T) {
 
 // TestReexecSupportedIsUnix documents the platform gate: the daemon runs under
 // WSL/Linux (unix) where self re-exec works; a native-Windows build refuses.
+// The answer follows the unix build constraint (reexec_unix.go vs
+// reexec_other.go), whose operating systems are listed here.
 func TestReexecSupportedIsUnix(t *testing.T) {
-	// On the unix build this is true; the !unix build returns false. Either way
-	// execSelf must be defined (compile-time) — this just exercises the gate.
-	_ = reexecSupported()
+	unix := map[string]bool{
+		"aix": true, "android": true, "darwin": true, "dragonfly": true,
+		"freebsd": true, "hurd": true, "illumos": true, "ios": true,
+		"linux": true, "netbsd": true, "openbsd": true, "solaris": true,
+	}
+	if got, want := reexecSupported(), unix[runtime.GOOS]; got != want {
+		t.Errorf("reexecSupported() on %s = %v, want %v", runtime.GOOS, got, want)
+	}
 }

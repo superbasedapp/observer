@@ -121,12 +121,6 @@ func (g Governed) ManagedRefusal(what string) string {
 	return fmt.Sprintf("%s: this machine is managed by %s, which decides which components run; a local change cannot narrow it (request a change from your organization)", what, g.OrgLabel())
 }
 
-// FromConfig resolves the snapshot of a loaded config against this
-// binary's compiled set.
-func FromConfig(cfg config.Config) Snapshot {
-	return Resolve(cfg.Components, nil)
-}
-
 // Legacy is the unconfigured snapshot for this binary: everything compiled
 // is active. Callers that could not load a config use it, matching the
 // fail-open posture of every other daemon gate on a missing config.

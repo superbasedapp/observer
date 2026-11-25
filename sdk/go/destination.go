@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 )
 
 // Destination values (contract destination.md section 1).
@@ -53,7 +52,7 @@ func (t exportTarget) key() string {
 // and the control-API bases.
 type plan struct {
 	destination    string
-	source         string // argument | env | machine | inferred | default
+	source         string // argument | env | sdk_file | machine | inferred | default
 	exporters      []exportTarget
 	nodeURL        string
 	gatewayURL     string
@@ -64,8 +63,15 @@ type plan struct {
 	warnings       []string
 	notes          []string
 	signedIn       *bool
-	credentialFrom string // argument | env | file | ""
-	key            string // never logged, never in diagnostics
+	credentialFrom string      // argument | env | file | sdk_file | ""
+	key            string      // never logged, never in diagnostics
+	sdkFile        SDKFileInfo // the SDK-held file: path, state, reason
+	// onlineDashboard is the organization's dashboard base for links (the
+	// SDK-held file's dashboard_url, or discovery's online.dashboard_url
+	// for the machine's key); localDashboard is the machine's dashboard
+	// base, known only when the machine answered discovery.
+	onlineDashboard string
+	localDashboard  string
 }
 
 func (p *plan) onlineHeaders() map[string]string {
@@ -127,47 +133,21 @@ var discover = func(nodeURL string) (map[string]any, string) {
 // readCredentialRecord reads the machine's SDK credential file: (compound,
 // gateway, problem). The first line is <key_id>.<secret>; each further line is
 // name=value, where gateway_url names the only address the key is sent to
-// (review E-04). Unknown names are ignored.
+// (review E-04). Unknown names are ignored. An unusable gateway_url keeps the
+// key and gives no gateway, with the problem as a warning.
 func readCredentialRecord(path string) (string, string, string) {
 	if path == "" {
 		return "", "", ""
 	}
-	raw, problem := readOwnerOnlyFile(path, 4097)
+	raw, problem := readOwnerOnlyFile(path, credRecordLimit+1)
 	if problem != "" {
 		return "", "", problem
 	}
-	bad := "the SDK credential file is not one key line followed by name=value lines; refused"
-	if len(raw) > 4096 {
-		return "", "", bad
+	rec, problem, _ := parseCredentialRecord(raw)
+	if problem != "" {
+		return "", "", problem
 	}
-	for _, c := range raw {
-		if c > 0x7f {
-			return "", "", bad
-		}
-	}
-	text := strings.TrimSuffix(string(raw), "\n")
-	lines := strings.Split(text, "\n")
-	key := lines[0]
-	keyID, secret, dot := strings.Cut(key, ".")
-	if !dot || keyID == "" || secret == "" || strings.IndexFunc(key, unicode.IsSpace) >= 0 {
-		return "", "", bad
-	}
-	gateway := ""
-	for _, line := range lines[1:] {
-		name, value, eq := strings.Cut(line, "=")
-		if !eq || name == "" {
-			return "", "", bad
-		}
-		if name == credGatewayField {
-			gateway = strings.TrimSpace(value)
-		}
-	}
-	if gateway != "" {
-		if p := gatewayProblem(gateway); p != "" {
-			return key, "", fmt.Sprintf("the SDK credential file names a gateway address that is not usable (%s); it is ignored", p)
-		}
-	}
-	return key, strings.TrimRight(gateway, "/"), ""
+	return rec.key, rec.gateway, rec.gatewayIssue
 }
 
 // gatewayProblem is "" when raw is a usable gateway base for the key: https
@@ -203,6 +183,19 @@ func loopbackLocalInfo(local map[string]any, warnings *[]string) map[string]any 
 		if v, ok := out[k].(string); ok && v != "" && !isLoopbackURL(v) {
 			*warnings = append(*warnings, fmt.Sprintf("the machine's discovery answer names a non-loopback %s (%s); ignored", k, v))
 			delete(out, k)
+		}
+	}
+	return out
+}
+
+// machineWarnings are the discovery answer's warnings, each marked as the
+// machine's.
+func machineWarnings(found map[string]any) []string {
+	var out []string
+	ws, _ := found["warnings"].([]any)
+	for _, w := range ws {
+		if t, ok := w.(string); ok && t != "" {
+			out = append(out, "machine: "+t)
 		}
 	}
 	return out
@@ -285,6 +278,10 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 			source = "env"
 		}
 	}
+	held := newSDKFileReader(env, time.Now())
+	if dest == "" {
+		dest, source = held.destination(&warnings)
+	}
 	nodeURL := strings.TrimRight(s.NodeURL, "/")
 	if nodeURL == "" {
 		nodeURL = DefaultNodeURL
@@ -311,19 +308,16 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 	}
 	var signedIn *bool
 	local := map[string]any{}
+	machineRecord := false
+	onlineDashboard, localDashboard := "", ""
 	if found != nil {
+		localDashboard = nodeURL
 		si, _ := found["signed_in"].(bool)
 		signedIn = &si
 		lr, _ := found["local"].(map[string]any)
 		local = loopbackLocalInfo(lr, &warnings)
 		online, _ := found["online"].(map[string]any)
-		if ws, ok := found["warnings"].([]any); ok {
-			for _, w := range ws {
-				if t, ok := w.(string); ok && t != "" {
-					warnings = append(warnings, "machine: "+t)
-				}
-			}
-		}
+		warnings = append(warnings, machineWarnings(found)...)
 		if dest == "" {
 			d, _ := found["destination"].(string)
 			dest = validDestination(d, "the machine", &warnings)
@@ -335,8 +329,10 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 		file, isStr := online["credential_file"].(string)
 		if dest != DestinationLocal && (key == "" || gateway == "") && present && isStr {
 			fkey, fgateway, ferr := readCredentialRecord(file)
+			machineRecord = fkey != ""
 			if key == "" && fkey != "" {
 				key, keySource = fkey, "file"
+				onlineDashboard = discoveredDashboard(online)
 			}
 			if gateway == "" {
 				gateway = fgateway
@@ -354,6 +350,13 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 	if dest == "" {
 		dest, source = DestinationLocal, "default"
 	}
+	if dest == DestinationOnline || dest == DestinationBoth {
+		// Record 3, the SDK-held file, once the destination is known: it
+		// never makes the inferred rung (that is argument or env only).
+		var w []string
+		key, keySource, gateway, onlineDashboard, w = applySDKFile(held, machineRecord, keySource == "file", key, keySource, gateway, onlineDashboard)
+		warnings = append(warnings, w...)
+	}
 	onlineReady := gateway != "" && key != ""
 	degraded := ""
 	if (dest == DestinationOnline || dest == DestinationBoth) && !onlineReady {
@@ -364,7 +367,7 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 		if key == "" {
 			missing = append(missing, "an SDK credential")
 		}
-		fix := "run `observer sdk sign-in`, or set SUPERBASED_ORG_URL and SUPERBASED_API_KEY"
+		fix := held.degradedFix(source, keySource)
 		if dest == DestinationOnline {
 			degraded = fmt.Sprintf("destination online is missing %s: nothing is exported (%s)", strings.Join(missing, " and "), fix)
 		} else {
@@ -421,20 +424,23 @@ func resolvePlan(s Settings, env envFunc, ex explicitInputs) *plan {
 		admitURL = strings.TrimRight(gateway, "/") + sdkAdmitPath
 	}
 	return &plan{
-		destination:    dest,
-		source:         source,
-		exporters:      exporters,
-		nodeURL:        nodeURL,
-		gatewayURL:     strings.TrimRight(gateway, "/"),
-		onlineReady:    onlineReady,
-		admitURL:       admitURL,
-		machineAdmit:   machineAdmit,
-		degraded:       degraded,
-		warnings:       warnings,
-		notes:          notes,
-		signedIn:       signedIn,
-		credentialFrom: keySource,
-		key:            key,
+		destination:     dest,
+		source:          source,
+		exporters:       exporters,
+		nodeURL:         nodeURL,
+		gatewayURL:      strings.TrimRight(gateway, "/"),
+		onlineReady:     onlineReady,
+		admitURL:        admitURL,
+		machineAdmit:    machineAdmit,
+		degraded:        degraded,
+		warnings:        warnings,
+		notes:           notes,
+		signedIn:        signedIn,
+		credentialFrom:  keySource,
+		key:             key,
+		sdkFile:         held.info(keySource),
+		onlineDashboard: onlineDashboard,
+		localDashboard:  localDashboard,
 	}
 }
 

@@ -55,7 +55,7 @@ func helperRequest(t *testing.T, args ...string) extrun.Request {
 }
 
 // gone reports whether pid has exited (no process, or a zombie no one has
-// reaped yet), waiting up to two seconds.
+// reaped yet), waiting up to ten seconds.
 func gone(pid int) bool {
 	// Generous for a loaded machine; a dead process returns at once.
 	deadline := time.Now().Add(10 * time.Second)

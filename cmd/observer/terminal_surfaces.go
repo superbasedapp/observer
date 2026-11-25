@@ -47,7 +47,7 @@ type terminalSurfaces struct {
 	attachHost attachSocketHost
 	// sandboxProber is the B9 dashapi.SandboxProber (nil only when NO
 	// terminal stack was built at all: no PTY backend, or neither surface
-	// requested). start.go / dashboard.go wire it into
+	// requested). nodeDashboardOptions (dashboard_options.go) wires it into
 	// dashapi.Options.SandboxProber; a nil value is the honest "sandbox
 	// feature absent" state (endpoint reports disabled, launch validation
 	// 501s), and a non-nil holder with the feature switched off reports the

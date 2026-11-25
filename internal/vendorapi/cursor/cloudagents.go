@@ -230,22 +230,22 @@ type cloudList[T any] struct {
 // cursor ("" on the last page).
 func cloudEnvelope[T any](surface vs.SurfaceID, r vendorapi.Response, doc *cloudList[T]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented list")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented list")
 	}
 	if doc.Items == nil {
-		return "", drift(surface, "required field items is missing")
+		return "", vendorapi.Drift(surface, "required field items is missing")
 	}
 	if doc.NextCursor == nil || *doc.NextCursor == "" {
 		return "", nil
 	}
 	if !cloudCursorRE.MatchString(*doc.NextCursor) {
-		return "", drift(surface, "nextCursor is not an opaque cursor")
+		return "", vendorapi.Drift(surface, "nextCursor is not an opaque cursor")
 	}
 	if *doc.NextCursor == r.Cursor {
-		return "", drift(surface, "nextCursor repeats the cursor the page was asked with")
+		return "", vendorapi.Drift(surface, "nextCursor repeats the cursor the page was asked with")
 	}
 	return *doc.NextCursor, nil
 }
@@ -297,44 +297,44 @@ func parseCloudAgents(r vendorapi.Response) (vendorapi.Page, error) {
 	page := vendorapi.Page{NextCursor: next}
 	seen := map[string]bool{}
 	for i, a := range *doc.Items {
-		id := str(a.ID)
+		id := vendorapi.Str(a.ID)
 		if !agentIDRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d].id is not a Cursor agent id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d].id is not a Cursor agent id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d] repeats an agent", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d] repeats an agent", i)
 		}
 		seen[id] = true
-		status := str(a.Status)
+		status := vendorapi.Str(a.Status)
 		if status == "" || len(status) > 64 {
-			return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d].status is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d].status is missing", i)
 		}
 		created, ok := isoTime(a.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d].createdAt is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d].createdAt is not an ISO timestamp", i)
 		}
 		body := map[string]string{"status": status, "created_at": created}
 		if a.UpdatedAt != nil {
 			v, ok := isoTime(a.UpdatedAt)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d].updatedAt is not an ISO timestamp", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d].updatedAt is not an ISO timestamp", i)
 			}
 			body["updated_at"] = v
 		}
-		if v := capText(str(a.Name)); v != "" {
+		if v := capText(vendorapi.Str(a.Name)); v != "" {
 			body["name"] = v
 		}
-		if v := str(a.URL); v != "" && len(v) <= vendorapi.MaxAttrValue {
+		if v := vendorapi.Str(a.URL); v != "" && len(v) <= vendorapi.MaxAttrValue {
 			body["url"] = v
 		}
-		if v := str(a.LatestRunID); v != "" {
+		if v := vendorapi.Str(a.LatestRunID); v != "" {
 			if !runIDRE.MatchString(v) {
-				return vendorapi.Page{}, drift(SurfaceCloudAgents, "items[%d].latestRunId is not a run id", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgents, "items[%d].latestRunId is not a run id", i)
 			}
 			body["latest_run_id"] = v
 		}
-		if a.Env != nil && str(a.Env.Type) != "" {
-			body["env_type"] = capText(str(a.Env.Type))
+		if a.Env != nil && vendorapi.Str(a.Env.Type) != "" {
+			body["env_type"] = capText(vendorapi.Str(a.Env.Type))
 		}
 		page.Snapshots = append(page.Snapshots, vendorapi.VendorSnapshot{Class: CloudAgentClass, Subject: id, Body: body})
 	}
@@ -365,34 +365,34 @@ func parseCloudAgentRuns(r vendorapi.Response) (vendorapi.Page, error) {
 	page := vendorapi.Page{NextCursor: next}
 	seen := map[string]bool{}
 	for i, run := range *doc.Items {
-		id := str(run.ID)
+		id := vendorapi.Str(run.ID)
 		if !runIDRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d].id is not a run id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d].id is not a run id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d] repeats a run", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d] repeats a run", i)
 		}
 		seen[id] = true
-		agent := str(run.AgentID)
+		agent := vendorapi.Str(run.AgentID)
 		if !agentIDRE.MatchString(agent) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d].agentId is not a Cursor agent id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d].agentId is not a Cursor agent id", i)
 		}
 		if want != "" && agent != want {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d] belongs to another agent than the one asked for", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d] belongs to another agent than the one asked for", i)
 		}
-		status := str(run.Status)
+		status := vendorapi.Str(run.Status)
 		if status == "" || len(status) > 64 {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d].status is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d].status is missing", i)
 		}
 		created, ok := isoTime(run.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d].createdAt is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d].createdAt is not an ISO timestamp", i)
 		}
 		body := map[string]string{"agent_id": agent, "status": status, "created_at": created}
 		if run.UpdatedAt != nil {
 			v, ok := isoTime(run.UpdatedAt)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceCloudAgentRuns, "items[%d].updatedAt is not an ISO timestamp", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentRuns, "items[%d].updatedAt is not an ISO timestamp", i)
 			}
 			body["updated_at"] = v
 		}
@@ -400,10 +400,10 @@ func parseCloudAgentRuns(r vendorapi.Response) (vendorapi.Page, error) {
 			branches := *run.Git.Branches
 			body["branch_count"] = strconv.Itoa(len(branches))
 			if len(branches) > 0 {
-				if v := str(branches[0].RepoURL); v != "" && len(v) <= vendorapi.MaxAttrValue {
+				if v := vendorapi.Str(branches[0].RepoURL); v != "" && len(v) <= vendorapi.MaxAttrValue {
 					body["repo_url"] = v
 				}
-				if v := str(branches[0].Branch); v != "" && len(v) <= vendorapi.MaxAttrValue {
+				if v := vendorapi.Str(branches[0].Branch); v != "" && len(v) <= vendorapi.MaxAttrValue {
 					body["branch"] = v
 				}
 			}
@@ -511,50 +511,50 @@ func tokenBody(t *cloudTokens, into map[string]string) bool {
 
 func parseCloudAgentUsage(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "status %d is not the documented 200", r.Status)
 	}
 	var doc usageDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "body does not decode as the documented object")
 	}
 	if doc.Runs == nil || doc.TotalUsage == nil {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "required field runs or totalUsage is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "required field runs or totalUsage is missing")
 	}
 	agent := r.Params[ParamAgentID]
 	if !agentIDRE.MatchString(agent) {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "the request's %s parameter is not a Cursor agent id", ParamAgentID)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "the request's %s parameter is not a Cursor agent id", ParamAgentID)
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.Runs)}
 	total := map[string]string{"run_count": strconv.Itoa(len(*doc.Runs))}
 	if !tokenBody(doc.TotalUsage, total) {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "totalUsage has a count that is not a whole non-negative number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "totalUsage has a count that is not a whole non-negative number")
 	}
 	if !costBody(doc.Cost, total) {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "cost has an amount that is not a non-negative number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "cost has an amount that is not a non-negative number")
 	}
 	page.Snapshots = append(page.Snapshots, vendorapi.VendorSnapshot{Class: CloudAgentUsageClass, Subject: agent, Body: total})
 	seen := map[string]bool{}
 	for i, run := range *doc.Runs {
-		id := str(run.ID)
+		id := vendorapi.Str(run.ID)
 		if !runIDRE.MatchString(id) || run.Usage == nil {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "runs[%d] misses id or usage", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "runs[%d] misses id or usage", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "runs[%d] repeats a run", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "runs[%d] repeats a run", i)
 		}
 		seen[id] = true
 		body := map[string]string{"agent_id": agent}
-		if v := str(run.UsageUUID); v != "" {
+		if v := vendorapi.Str(run.UsageUUID); v != "" {
 			if !runIDRE.MatchString(v) {
-				return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "runs[%d].usageUuid is not an id", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "runs[%d].usageUuid is not an id", i)
 			}
 			body["usage_uuid"] = v
 		}
 		if !tokenBody(run.Usage, body) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "runs[%d].usage has a count that is not a whole non-negative number", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "runs[%d].usage has a count that is not a whole non-negative number", i)
 		}
 		if !costBody(run.Cost, body) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentUsage, "runs[%d].cost has an amount that is not a non-negative number", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentUsage, "runs[%d].cost has an amount that is not a non-negative number", i)
 		}
 		page.Snapshots = append(page.Snapshots, vendorapi.VendorSnapshot{Class: CloudAgentRunUsageClass, Subject: id, Body: body})
 	}

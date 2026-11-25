@@ -22,10 +22,10 @@ import (
 // project_patterns table, populated only by a manual/cron `observer patterns
 // derive` run (cmd/observer/patterns.go → patterns.Deriver.Derive), and (2)
 // the MCP get_project_patterns tool's live top-N GROUP BY over actions for
-// hot_files/common_commands specifically (internal/mcp/tools_extra.go),
+// hot_files/common_commands specifically (internal/mcp/tools_get_project_patterns.go),
 // which exists BECAUSE project_patterns can be empty/stale on a node that
 // never ran the derive step. This seam mirrors path (1) only — the
-// dashboard's own handlePatterns (internal/intelligence/dashboard/dashboard.go)
+// dashboard's own handlePatterns (internal/intelligence/dashboard/patterns.go)
 // does the same, and replicating the Deriver's hotFiles()/commonCommands()
 // SQL here would require its unexported fileActionTypes/commandActionTypes/
 // tooltax internals. The honest consequence: a node that has never run

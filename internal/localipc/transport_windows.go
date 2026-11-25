@@ -78,7 +78,7 @@ func (pipeTransport) Supported() bool { return true }
 // Endpoint implements Transport: the hashed named-pipe name for this DB path.
 func (pipeTransport) Endpoint(dbPath string) (string, error) {
 	if strings.TrimSpace(dbPath) == "" {
-		return "", errors.New("attachsock.Endpoint: empty observer DB path")
+		return "", errors.New("localipc.Endpoint: empty observer DB path")
 	}
 	return pipeEndpoint(dbPath), nil
 }
@@ -102,7 +102,7 @@ func (pipeTransport) Listen(endpoint string) (net.Listener, error) {
 		// No SID, no owner-only DACL - refuse rather than fall back to a
 		// looser descriptor (which is exactly the privilege downgrade this
 		// transport exists to avoid).
-		return nil, fmt.Errorf("attachsock.ListenSocket: resolve owner SID for the pipe DACL: %w", err)
+		return nil, fmt.Errorf("localipc.ListenSocket: resolve owner SID for the pipe DACL: %w", err)
 	}
 	ln, err := winio.ListenPipe(endpoint, &winio.PipeConfig{
 		SecurityDescriptor: sddl,
@@ -117,10 +117,10 @@ func (pipeTransport) Listen(endpoint string) (net.Listener, error) {
 		// the pipe namespace rather than connecting.
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) && pipeNameExists(endpoint) {
 			return nil, fmt.Errorf(
-				"attachsock.ListenSocket: %w at %q - another observer daemon is serving the attach channel for this DB",
+				"localipc.ListenSocket: %w at %q - another observer daemon is serving the attach channel for this DB",
 				ErrSocketLiveDaemon, endpoint)
 		}
-		return nil, fmt.Errorf("attachsock.ListenSocket: listen pipe %q: %w", endpoint, err)
+		return nil, fmt.Errorf("localipc.ListenSocket: listen pipe %q: %w", endpoint, err)
 	}
 	return ln, nil
 }

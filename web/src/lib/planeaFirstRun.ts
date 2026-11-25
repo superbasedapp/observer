@@ -15,6 +15,7 @@
 
 import { PRODUCT_NAMES } from "../../../shared/lib/productNames.ts";
 import { SDK_CATALOG, type SdkEntry } from "../../../shared/lib/sdkCatalog.ts";
+import { sdkAgentPrompt } from "../../../shared/lib/sdkPrompt.ts";
 import type { FirstRunApps } from "./firstRun.ts";
 
 /** The obs component's state on this machine (componentState
@@ -112,9 +113,9 @@ export function firstRunAction(phase: FirstRunPhase, hotEnable: boolean | null |
   }
 }
 
-/** One SDK tab of the card: the language, its install line and a minimal
- *  init that sends to this machine. */
-export type SdkSnippet = { id: string; label: string; install: string; code: string };
+/** One SDK tab of the card: the language, its setup command ("" for a
+ *  language with none), its install line and its one init line. */
+export type SdkSnippet = { id: string; label: string; setup: string; install: string; code: string };
 
 /** sdkSnippets maps the SDK catalog (shared/lib/sdkCatalog.json, the one
  *  owner of every SDK's install line, published flag and init snippet,
@@ -122,7 +123,7 @@ export type SdkSnippet = { id: string; label: string; install: string; code: str
  *  the checkout line until the catalog marks the package published
  *  (scripts/sdk-install-strings.py flips it on the SDK release, E-66). */
 export function sdkSnippets(catalog: readonly SdkEntry[]): SdkSnippet[] {
-  return catalog.map((s) => ({ id: s.id, label: s.label, install: s.install, code: s.code }));
+  return catalog.map((s) => ({ id: s.id, label: s.label, setup: s.setup, install: s.install, code: s.code }));
 }
 
 /** The SDK tabs the card shows: one per catalog row. */
@@ -209,6 +210,84 @@ export function withAppsStart<G extends { id: string }>(full: readonly G[], show
   while (i < shown.length && before.has(shown[i].id)) i++;
   return [...shown.slice(0, i), standIn, ...shown.slice(i)];
 }
+
+/** traceHref is the local link to one app trace (the Traces page opened on
+ *  it). Every "your trace arrived" link on this machine is built here. */
+export function traceHref(traceId: string): string {
+  return `${APPS_HOME_PATH}?trace=${encodeURIComponent(traceId)}`;
+}
+
+// ------------------------------------------------------------ opened by the SDK's setup
+//
+// SDK quickstart plan 3.7 and 3.8: when a coding agent runs the SDK's
+// `setup` with no terminal for the person to answer y/N, setup opens
+// /apps?enable=1&from=setup and polls GET /api/apps/status. The page then
+// puts the Turn on button and the one consent sentence first (the button
+// calls the one enable seam, POST /api/apps/enable, source "dashboard"),
+// waits for setup's hello trace and links it. ?enable=1 alone puts the
+// button first without the setup lines.
+
+/** How the /apps page was opened. */
+export type AppsStartMode = "default" | "enable" | "setup";
+
+type AppsStartModeRule = { name: string; when: (q: URLSearchParams) => boolean; mode: AppsStartMode };
+
+/** APPS_START_MODE_RULES: walked top-down, one test per row. */
+export const APPS_START_MODE_RULES: readonly AppsStartModeRule[] = [
+  { name: "opened by the SDK's setup", when: (q) => q.get("enable") === "1" && q.get("from") === "setup", mode: "setup" },
+  { name: "opened to turn it on", when: (q) => q.get("enable") === "1", mode: "enable" },
+  { name: "the nav item", when: () => true, mode: "default" },
+];
+
+/** appsStartMode reads the /apps page's query string. */
+export function appsStartMode(search: string): AppsStartMode {
+  const q = new URLSearchParams(search);
+  return (APPS_START_MODE_RULES.find((r) => r.when(q)) ?? APPS_START_MODE_RULES[APPS_START_MODE_RULES.length - 1]).mode;
+}
+
+/** appsStartForwards: the nav item's /apps forwards to Traces once the pages
+ *  answer (E-71); opened to turn AI Apps on, the page stays to show the
+ *  result, the wait and the trace link. */
+export function appsStartForwards(mode: AppsStartMode, routesUp: boolean | null, homeShown: boolean): boolean {
+  return mode === "default" && routesUp === true && homeShown;
+}
+
+/** How far before the page opened a trace may have started and still be
+ *  the one setup sent: setup sends its hello only after AI Apps is on, so a
+ *  trace older than this is from an earlier run, never the one to link. */
+export const SETUP_TRACE_WINDOW_MS = 15 * 60 * 1000;
+
+/** setupArrivedTrace is the trace to link on the page setup opened: the
+ *  latest one, when it started after the page opened (less the window).
+ *  An undated trace is never claimed. */
+export function setupArrivedTrace(
+  latest: FirstRunApps["latest_trace"] | null | undefined,
+  openedAt: number,
+): FirstRunApps["latest_trace"] | null {
+  if (!latest?.trace_id || !latest.started_at) return null;
+  const at = Date.parse(latest.started_at);
+  if (Number.isNaN(at) || at < openedAt - SETUP_TRACE_WINDOW_MS) return null;
+  return latest;
+}
+
+/** setupApps is the apps block as the page setup opened sees it: only a
+ *  trace that arrived since counts, so the track waits for setup's hello
+ *  instead of showing an older trace as the first. */
+export function setupApps(apps: FirstRunApps | null | undefined, openedAt: number): FirstRunApps | null | undefined {
+  if (!apps) return apps;
+  return { ...apps, latest_trace: setupArrivedTrace(apps.latest_trace, openedAt) };
+}
+
+/** The setup page's lines around the consent and the wait. */
+export const SETUP_COPY = {
+  consentTitle: `Turn on ${PRODUCT_NAMES.planea} for your app's traces`,
+  consentWhy:
+    `Your coding agent ran the ${PRODUCT_NAMES.brand} SDK's setup, which sends your app's traces to this machine. It needs this one approval.`,
+  consentNotYou: "If you did not ask your coding agent to set up tracing, close this page: nothing changes.",
+  waitingTitle: "Waiting for setup's hello trace",
+  waitingBody:
+    "Setup sends one hello trace as soon as this is on. This page links it when it arrives; setup also prints the link for your coding agent.",
+} as const;
 
 /** firstRunPageTitle is the first-run page's heading (review E-71): a build
  *  without AI Apps says the edition does not include it, every other phase
@@ -313,26 +392,6 @@ export function receiverAddress(apps: FirstRunApps | null | undefined, configure
   return apps?.receiver.http_addr || configured || DEFAULT_RECEIVER_HTTP;
 }
 
-/** The catalog fields the agent prompt needs from one SDK. */
-export type PromptSdk = { label: string; install: string; published?: boolean; installPublished?: string };
-
-/** The placeholder the prompt puts where a checkout path goes. */
-export const CHECKOUT_PLACEHOLDER = "<path to your superbased checkout>";
-
-/** promptInstall is one SDK's install instruction in the agent prompt
- *  (U-06). A published SDK is its registry line. An unpublished one is the
- *  registry line to use once it is published, then the checkout line with
- *  its path made explicit: the prompt runs in the app's folder, where a
- *  "./sdk/python" path does not exist. Install-line comments are dropped. */
-export function promptInstall(s: PromptSdk): string {
-  const strip = (line: string) => line.replace(/\s+(#|\/\/).*$/, "").trim();
-  if (s.published || !s.installPublished) return `${s.label}: ${strip(s.install)}`;
-  const checkout = strip(s.install)
-    .replace(/(^|[\s=])\.\/sdk\//g, `$1${CHECKOUT_PLACEHOLDER}/sdk/`)
-    .replace(/<checkout>/g, CHECKOUT_PLACEHOLDER);
-  return `${s.label}: ${strip(s.installPublished)} once it is published; until then, from a superbased checkout: ${checkout}`;
-}
-
 /** snippetForReceiver points an SDK snippet at the daemon's live receiver
  *  (U-04): the catalog snippets name the default 127.0.0.1:4318, which is
  *  wrong on a machine whose receiver listens elsewhere. On the default the
@@ -345,26 +404,14 @@ export function snippetForReceiver(code: string, receiver: string | null | undef
   return code.replaceAll(DEFAULT_RECEIVER_HTTP, `${hostPort} (set OTEL_EXPORTER_OTLP_ENDPOINT=${url})`);
 }
 
-/** agentPrompt is the "Let your coding agent do it" text (plan 3.6 d),
- *  generated from the running daemon's receiver and dashboard addresses and
- *  the SDK catalog's install lines; it never hard-codes a port. */
-export function agentPrompt(i: {
-  receiver: string;
-  dashboard: string;
-  sdks: readonly PromptSdk[];
-}): string {
-  const endpoint = receiverURL(i.receiver);
-  const installs = i.sdks.map(promptInstall).join("; ");
-  const dash = i.dashboard.replace(/\/+$/, "");
-  return [
-    "Add superbased tracing to this app.",
-    `Install the superbased SDK for this project's language (${installs}).`,
-    "Call init with the service name set to this project's name at startup.",
-    "Wrap the main request handler as an agent span and each model call as an LLM span with its token usage.",
-    "Call shutdown before the process exits.",
-    `Traces go to ${endpoint} (set OTEL_EXPORTER_OTLP_ENDPOINT=${endpoint} if that is not the SDK's default).`,
-    `Run the app once, then check ${dash}/api/obs/traces for the trace.`,
-  ].join(" ");
+/** agentPrompt is the "Let your coding agent do it" text: the one SDK
+ *  prompt every surface shows (AI Apps SDK quickstart plan 3.9,
+ *  shared/lib/sdkPrompt.ts), four lines that run the catalog's setup
+ *  command. Setup finds this machine itself; on a dashboard that is not at
+ *  the default address the prompt also says to set SUPERBASED_NODE_URL, so
+ *  it never assumes a port. */
+export function agentPrompt(i: { dashboard: string; sdks?: readonly SdkEntry[] }): string {
+  return sdkAgentPrompt({ nodeUrl: i.dashboard }, i.sdks ?? SDK_CATALOG);
 }
 
 /** The coding-agent tab leads only on a machine with coding history

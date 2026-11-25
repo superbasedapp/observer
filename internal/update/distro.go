@@ -58,7 +58,7 @@ func IsCustomDistro(d string) bool {
 	if !strings.HasPrefix(n, CustomDistroPrefix) {
 		return false
 	}
-	return isHexSHA256(strings.TrimPrefix(n, CustomDistroPrefix))
+	return updatespec.IsHexSHA256(strings.TrimPrefix(n, CustomDistroPrefix))
 }
 
 // ArtifactDistro reports whether d may label an update artifact: a prebuilt

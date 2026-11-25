@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/firstrunstate"
 	"github.com/marmutapp/superbased-observer/internal/planechoice"
+	sdkcatalog "github.com/marmutapp/superbased-observer/shared/lib"
 )
 
 // appscmd_test.go covers `observer apps on|off|status` (lane POLISH-F2,
@@ -547,6 +549,50 @@ func TestSnippetHeadStopsAtInit(t *testing.T) {
 		if !strings.Contains(out.String(), "  "+s) {
 			t.Errorf("SDK rows lack %s:\n%s", s, out.String())
 		}
+	}
+}
+
+// TestAppsNextStepsLeadWithSetup: a language with a setup command prints it
+// first (in the install line's place, since setup installs the SDK), then
+// its init line; a language without one keeps its install line.
+func TestAppsNextStepsLeadWithSetup(t *testing.T) {
+	var out bytes.Buffer
+	printAppsNextSteps(&out)
+	lines := strings.Split(out.String(), "\n")
+	at := func(prefix string) int {
+		for i, l := range lines {
+			if strings.HasPrefix(l, prefix) {
+				return i
+			}
+		}
+		t.Fatalf("no line starts with %q in\n%s", prefix, out.String())
+		return -1
+	}
+	cases := []struct{ label, first, init string }{
+		{"Python", "uvx superbased-sdk setup", "superbased_sdk.init()"},
+		{"TypeScript", "npx @superbased/sdk setup", `require("@superbased/sdk").init()`},
+	}
+	for _, c := range cases {
+		i := at(fmt.Sprintf("  %-11s %s", c.label, c.first))
+		if i+1 >= len(lines) || !strings.Contains(lines[i+1], c.init) {
+			t.Errorf("%s: the setup line is not followed by the init line:\n%s", c.label, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "pip install superbased-sdk") || strings.Contains(out.String(), "npm install @superbased/sdk") {
+		t.Errorf("a language with setup still prints its install line:\n%s", out.String())
+	}
+	// Go has no setup of its own: its install line stays.
+	at(fmt.Sprintf("  %-11s %s", "Go", "go get github.com/superbasedapp/observer/sdk/go"))
+
+	// The rule, on rows of its own: setup when set, else the install line.
+	var b bytes.Buffer
+	printSDKNextSteps(&b, []sdkcatalog.SDK{
+		{Label: "A", Published: true, InstallPublished: "a install", Setup: "a setup", Snippet: []string{"a.init()"}},
+		{Label: "B", Published: true, InstallPublished: "b install", Snippet: []string{"b.init()"}},
+	})
+	want := fmt.Sprintf("\nSend a trace from your app:\n  %-11s a setup\n  %-11s a.init()\n  %-11s b install\n  %-11s b.init()\n", "A", "", "B", "")
+	if b.String() != want {
+		t.Fatalf("got\n%q\nwant\n%q", b.String(), want)
 	}
 }
 

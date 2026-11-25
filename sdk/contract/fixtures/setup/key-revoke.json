@@ -1,0 +1,38 @@
+{
+  "_doc": "POST <gateway_url>/v1/sdk/credential/revoke with the SDK key as bearer (section 13.7): a key ends itself; setup --forget calls it, then removes the SDK-held file (the file goes even when the revoke fails, and setup says so). No body. The answer is the SDK control API envelope (api_version, request_id) with revoked 1; a key that is already revoked or unknown is the gateway's usual 401.",
+  "method": "POST",
+  "url": "https://u-k7x2.superbased.app/v1/sdk/credential/revoke",
+  "request": {
+    "headers": {
+      "Authorization": "Bearer 00000000000000000000000000000001.FAKE-sdk-key-secret-for-contract-tests-only",
+      "Accept": "application/json"
+    },
+    "body": null
+  },
+  "responses": {
+    "revoked": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store"
+      },
+      "body": {
+        "api_version": "v1",
+        "request_id": "req_rv1",
+        "revoked": 1
+      }
+    },
+    "unauthorized": {
+      "status": 401,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "api_version": "v1",
+        "request_id": "req_rv2",
+        "error": "unauthorized",
+        "message": "the SDK key is not valid"
+      }
+    }
+  }
+}

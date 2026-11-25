@@ -2,7 +2,6 @@ package diag
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -58,21 +57,14 @@ func checkCodexTeams(cfg config.Config) Check {
 		return Check{Name: name, Status: StatusOK, Message: "codex managed-config not deployed (no /etc/codex/*.toml - run `observer org emit-managed-settings --provider codex`)"}
 	}
 
-	var details []string
-	worst := StatusOK
-	note := func(status Status, msg string) {
-		details = append(details, msg)
-		if status > worst {
-			worst = status
-		}
-	}
+	var d detailCheck
 
 	// (a) Managed artifacts present + parseable TOML.
 	for _, p := range present {
 		if err := parseableTOML(p); err != nil {
-			note(StatusWarn, "codex managed artifact "+p+" is not valid TOML: "+err.Error())
+			d.note(StatusWarn, "codex managed artifact "+p+" is not valid TOML: "+err.Error())
 		} else {
-			note(StatusOK, "codex managed artifact present + parseable ("+p+")")
+			d.note(StatusOK, "codex managed artifact present + parseable ("+p+")")
 		}
 	}
 
@@ -85,7 +77,7 @@ func checkCodexTeams(cfg config.Config) Check {
 		}
 		if b, err := os.ReadFile(p); err == nil {
 			for _, f := range codexManagedHookFindings(p, b, runtime.GOOS, fileExists) {
-				note(f.status, f.msg)
+				d.note(f.status, f.msg)
 			}
 		}
 	}
@@ -93,32 +85,17 @@ func checkCodexTeams(cfg config.Config) Check {
 	// (b) MCP pin resolvable: the [mcp_servers.observer] pin runs
 	// `npx -y @superbased/observer …`, so npx must be on PATH to start it.
 	pin := "[mcp_servers." + models.ObserverMCPServerName + "]"
-	if _, err := exec.LookPath("npx"); err == nil {
-		note(StatusOK, "npx present - the "+pin+" pin can bootstrap the MCP server")
-	} else {
-		note(StatusWarn, "npx not on PATH - the "+pin+" `npx -y @superbased/observer` pin will not start")
-	}
+	d.noteNPX(
+		"npx present - the "+pin+" pin can bootstrap the MCP server",
+		"npx not on PATH - the "+pin+" `npx -y @superbased/observer` pin will not start")
 
 	// (c) When the OTLP receiver is configured (Rail A enabled), confirm it is
 	// reachable — a managed_config.toml [otel] redirect targets it.
 	if cfg.Ingest.OTel.Enabled {
-		for _, addr := range []string{cfg.Ingest.OTel.GRPCAddr, cfg.Ingest.OTel.HTTPAddr} {
-			if addr == "" {
-				continue
-			}
-			if dialable(addr) {
-				note(StatusOK, "OTLP receiver reachable at "+addr+" (Rail A redirect target)")
-			} else {
-				note(StatusWarn, "OTLP receiver NOT reachable at "+addr+" - is `observer start` running with [ingest.otel].enabled?")
-			}
-		}
+		d.noteOTLPReceivers(cfg, "Rail A redirect target")
 	}
 
-	msg := "codex managed-config deployed - all checks passed"
-	if worst != StatusOK {
-		msg = "codex managed-config deployed - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return d.result(name, "codex managed-config deployed - all checks passed", "codex managed-config deployed - see warnings below")
 }
 
 // presentCodexManagedPaths returns the subset of codexManagedPaths that exist.

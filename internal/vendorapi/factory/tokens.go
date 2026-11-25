@@ -140,7 +140,7 @@ var tokensMetrics = []tokensMetric{
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceTokens}, a...)...)
+	return vendorapi.Drift(SurfaceTokens, format, a...)
 }
 
 func parseTokens(r vendorapi.Response) (vendorapi.Page, error) {

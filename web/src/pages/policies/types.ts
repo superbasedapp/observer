@@ -101,21 +101,10 @@ export type EgressPolicyGet = {
   policy: EgressPolicy;
 };
 
-// The closed reason-code vocabulary (egress_editor.go / the engine). "" = let
-// the engine derive it from the action + fail-posture.
-export const EGRESS_REASON_CODES: string[] = [
-  "",
-  "egress_flagged_local",
-  "egress_budget_band",
-  "egress_cohort_upstream",
-  "egress_overload_degrade",
-  "egress_sensitive_local_only",
-  "egress_deny_unavailable",
-  "egress_fail_open",
-  "egress_no_route",
-  "egress_switch_held",
-  "egress_effort_noop",
-];
+// The closed reason-code vocabulary: the one shared copy, which
+// internal/policyfam/egress/reasoncodes_mirror_test.go holds to the Go owner
+// (FRONT-02). "" = let the engine derive it from the action + fail-posture.
+export { EGRESS_REASON_CODES } from "@shared/lib/egressReasonCodes";
 
 // The action "kind" - exactly one primary is set on the wire; the UI edits a
 // single kind + operand and materializes the one-hot EgressAction on submit.

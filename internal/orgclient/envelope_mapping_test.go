@@ -15,10 +15,10 @@ import (
 // PushBatch -> PushEnvelope mapping in PushOnce. SelectUnpushedSince composes
 // a wire family into a PushBatch slice, the envelope-budget and snap-gate
 // sentinels walk PushBatch by reflection, but the envelope itself is a
-// hand-maintained struct literal in client.go - and twice now a family was
+// hand-maintained struct literal in envelope.go - and twice now a family was
 // composed, budgeted and then silently dropped before json.Marshal (the obs
 // slices once; the W2/W3 task and tool-account wires a second time). This test
-// parses client.go, finds the orgcontract.PushEnvelope composite literal, and
+// parses envelope.go, finds the orgcontract.PushEnvelope composite literal, and
 // requires that every PushBatch slice field whose NAME also exists on
 // PushEnvelope appears as a key in that literal. A family that deliberately
 // maps under a different name is not a same-name pair and is out of scope; a
@@ -29,9 +29,9 @@ func TestPushEnvelopeMapsEveryBatchFamily(t *testing.T) {
 	exceptions := map[string]string{}
 
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "client.go", nil, 0)
+	file, err := parser.ParseFile(fset, "envelope.go", nil, 0)
 	if err != nil {
-		t.Fatalf("parse client.go: %v", err)
+		t.Fatalf("parse envelope.go: %v", err)
 	}
 	keys := map[string]bool{}
 	found := 0
@@ -60,7 +60,7 @@ func TestPushEnvelopeMapsEveryBatchFamily(t *testing.T) {
 		return true
 	})
 	if found != 1 {
-		t.Fatalf("expected exactly one orgcontract.PushEnvelope literal in client.go, found %d", found)
+		t.Fatalf("expected exactly one orgcontract.PushEnvelope literal in envelope.go, found %d", found)
 	}
 
 	batchT := reflect.TypeOf(store.PushBatch{})
@@ -87,7 +87,7 @@ func TestPushEnvelopeMapsEveryBatchFamily(t *testing.T) {
 			continue
 		}
 		if !keys[f.Name] {
-			t.Errorf("PushBatch.%s is composed by SelectUnpushedSince but never mapped into the PushEnvelope literal in client.go - the rows are dropped before json.Marshal and the server ingest can never fire", f.Name)
+			t.Errorf("PushBatch.%s is composed by SelectUnpushedSince but never mapped into the PushEnvelope literal in envelope.go - the rows are dropped before json.Marshal and the server ingest can never fire", f.Name)
 		}
 	}
 	if checked < 20 {

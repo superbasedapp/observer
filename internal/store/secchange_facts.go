@@ -107,7 +107,7 @@ func (s *Store) LoadChangeFacts(ctx context.Context, projectID int64, rootHash, 
 	if err != nil {
 		return f, "", fmt.Errorf("store.LoadChangeFacts: %w", err)
 	}
-	f.CommittedAt, f.PatchFP = parseCommitTime(committed), fp.String
+	f.CommittedAt, f.PatchFP = parseStoredTime(committed), fp.String
 	if linkWindow <= 0 {
 		linkWindow = projectroi.DefaultLinkWindow
 	}

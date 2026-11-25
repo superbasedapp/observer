@@ -119,17 +119,6 @@ func (c HookCap) IsGate() bool {
 	return false
 }
 
-// ValidPhase reports whether phase is in c's closed phase set. An unknown
-// capability admits no phase.
-func (c HookCap) ValidPhase(phase string) bool {
-	for _, p := range hookCapPhases[c] {
-		if p == phase {
-			return true
-		}
-	}
-	return false
-}
-
 // Known reports whether c is in the closed capability vocabulary.
 func (c HookCap) Known() bool {
 	_, ok := hookCapPhases[c]
@@ -150,9 +139,6 @@ var hookDecisions = map[string]bool{
 	HookDecisionAllow: true, HookDecisionAsk: true, HookDecisionDeny: true,
 	HookDecisionModify: true, HookDecisionContext: true, HookDecisionMessage: true,
 }
-
-// KnownHookDecision reports whether d is in the closed decision vocabulary.
-func KnownHookDecision(d string) bool { return hookDecisions[d] }
 
 // GroundingKind says how a binding's facts were established.
 type GroundingKind string

@@ -65,7 +65,7 @@ func Activity() vendorapi.Driver {
 
 func buildActivity(_ vendorapi.Params, _ vendorapi.Window, cursor string) (vendorapi.Request, error) {
 	if cursor != "" {
-		return vendorapi.Request{}, drift(SurfaceActivity, "the report is not paged")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceActivity, "the report is not paged")
 	}
 	return vendorapi.Request{Method: "GET", Path: "/api/v1/activity"}, nil
 }
@@ -124,22 +124,22 @@ func parseActivity(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	if doc.Data == nil {
-		return vendorapi.Page{}, drift(s, "required field data is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field data is missing")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.Data)}
 	seen := map[string]bool{}
 	for i, row := range *doc.Data {
-		model, endpoint := str(row.Model), str(row.EndpointID)
+		model, endpoint := vendorapi.TrimStr(row.Model), vendorapi.TrimStr(row.EndpointID)
 		if row.Date == nil || model == "" || endpoint == "" || row.Permaslug == nil || row.Provider == nil {
-			return vendorapi.Page{}, drift(s, "data[%d] misses date, model, model_permaslug, endpoint_id or provider_name", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] misses date, model, model_permaslug, endpoint_id or provider_name", i)
 		}
 		day, err := time.Parse("2006-01-02", *row.Date)
 		if err != nil {
-			return vendorapi.Page{}, drift(s, "data[%d].date is not YYYY-MM-DD", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].date is not YYYY-MM-DD", i)
 		}
 		key := *row.Date + "|" + model + "|" + endpoint
 		if seen[key] {
-			return vendorapi.Page{}, drift(s, "data[%d] repeats a date, model and endpoint", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] repeats a date, model and endpoint", i)
 		}
 		seen[key] = true
 		type metric struct {
@@ -164,7 +164,7 @@ func parseActivity(r vendorapi.Response) (vendorapi.Page, error) {
 			{"cache_read_tokens", "tokens", cr, okcr},
 		} {
 			if !m.ok {
-				return vendorapi.Page{}, drift(s, "data[%d].%s is missing, negative or not a documented number", i, m.name)
+				return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].%s is missing, negative or not a documented number", i, m.name)
 			}
 			page.Facts = append(page.Facts, vendorapi.FactRow{
 				IntervalStart: day, IntervalEnd: day.Add(24 * time.Hour), SourceTZ: "UTC", CoverageDomain: Domain,

@@ -1,5 +1,5 @@
 {
-  "_doc": "Every span-attribute key the superbased SDKs write (contract: docs/plans/plane-a-sdk-buildout/contracts/sdk-api-surface.md section 9). 'vocabulary' keys and 'vocabulary_prefixes' must exist in internal/genaiattr or internal/otelident (go test ./tests/sdkcontract); 'sdk_owned' keys must not. 'content_keys' must equal the keys of genaiattr's 'content_fields', and 'content_prefixes' its indexed message-list prefixes. Each SDK's unit tests check that it emits only listed keys. Python copy: sdk/python/superbased_sdk/_keys.py. 'extra_content_prefixes' are content keys an instrumentor emits that genaiattr does not map yet (the SDKs still mask and drop them); none may be a genaiattr key. 'pending_vocabulary' keys are SDK keys another lane is adding to the Go vocabulary (B8: the prompt fields); they may be in it or not, and move to 'vocabulary' once they are.",
+  "_doc": "Every span-attribute key the superbased SDKs write (contract: docs/plans/plane-a-sdk-buildout/contracts/sdk-api-surface.md section 9). 'vocabulary' keys and 'vocabulary_prefixes' must exist in internal/genaiattr or internal/otelident (go test ./tests/sdkcontract); 'sdk_owned' keys must not. 'content_keys' must equal the keys of genaiattr's 'content_fields', and 'content_prefixes' its indexed message-list prefixes. Each SDK's unit tests check that it emits only listed keys. Python copy: sdk/python/superbased_sdk/_keys.py. 'extra_content_prefixes' are content keys an instrumentor emits that genaiattr does not map yet (the SDKs still mask and drop them); none may be a genaiattr key. 'pending_vocabulary' keys are SDK keys another lane is adding to the Go vocabulary (B8: the prompt fields); they may be in it or not, and move to 'vocabulary' once they are. sdk_owned includes sbo.setup.hello, the boolean on the one span setup sends (sdk-api-surface.md sections 9 and 17; go test ./tests/sdkcontract TestSDKOwnedSetupHello).",
   "semconv_commit": "76e0c19e7fe11dc693fe258642363a438af4d3aa",
   "vocabulary": [
     "agent.name",
@@ -70,7 +70,8 @@
     "sbo.admission.verdict_id",
     "sbo.experiment.item_id",
     "sbo.experiment.run_id",
-    "sbo.sdk"
+    "sbo.sdk",
+    "sbo.setup.hello"
   ],
   "pending_vocabulary": [],
   "sdk_owned_prefixes": [],

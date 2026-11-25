@@ -217,17 +217,6 @@ func CodingSurfaces() []CodingSurface {
 	return out
 }
 
-// CodingSurfacesFor returns the rows of one doctor group.
-func CodingSurfacesFor(group string) []CodingSurface {
-	var out []CodingSurface
-	for _, s := range CodingSurfaces() {
-		if s.Group() == group {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 // macRound is the one id form a SurfaceCell accepts beyond IsLiveCheckID: a
 // completed tracker ROUND (MAC-5, the 2026-10-27 macOS IDE hook round),
 // cited as the grounding of a vendor_none cell. It never names a pending
@@ -237,17 +226,6 @@ var macRound = regexp.MustCompile(`^MAC-[1-9][0-9]*$`)
 // surfaceCheckRef reports whether s is a valid live-check reference in a
 // SurfaceCell: a live-check id, or a completed round (macRound).
 func surfaceCheckRef(s string) bool { return IsLiveCheckID(s) || macRound.MatchString(s) }
-
-// LiveCheckRefs splits a cell's LiveCheck ("LC16, LC24") into ids.
-func LiveCheckRefs(s string) []string {
-	var out []string
-	for _, f := range strings.Split(s, ",") {
-		if f = strings.TrimSpace(f); f != "" {
-			out = append(out, f)
-		}
-	}
-	return out
-}
 
 // fu57Elsewhere names the FU-57 rows answered outside this table, with
 // where; together with the rows' FU57 lists they cover rows 1 to 30.
@@ -268,26 +246,6 @@ var newToolReasons = map[string]string{
 	"gemini-code-assist": "internal/adapter/geminicodeassist is an unregistered skeleton: the chat-mode memento shape is a static bundle read with no signed-in capture, so registration waits on live check LCR-64",
 	"windsurf-cascade":   "no Cascade reader exists: windsurf is devin's lifecycle alias (the windsurf package is the deprecated alias, not this id), and the Cascade store in state.vscdb waits on the Cascade grounding run",
 	"trae":               "decision D10 keeps Trae capture-only with no adapter yet: the macOS store is grounded (state.vscdb input history, ai-agent stdout logs) but no reader is built",
-}
-
-// NewToolReasons returns newToolReasons as a copy, for the pin test and the
-// lane report.
-func NewToolReasons() map[string]string {
-	out := make(map[string]string, len(newToolReasons))
-	for k, v := range newToolReasons {
-		out[k] = v
-	}
-	return out
-}
-
-// FU57Elsewhere returns fu57Elsewhere as a copy, for the pin test and the
-// lane report.
-func FU57Elsewhere() map[int]string {
-	out := make(map[int]string, len(fu57Elsewhere))
-	for k, v := range fu57Elsewhere {
-		out[k] = v
-	}
-	return out
 }
 
 // Cell constructors, to keep the table readable.

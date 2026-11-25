@@ -136,14 +136,7 @@ type eventsDoc struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceQDeveloperEvents}, a...)...)
-}
-
-func str(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return strings.TrimSpace(*p)
+	return vendorapi.Drift(SurfaceQDeveloperEvents, format, a...)
 }
 
 // epochTime reads an AWS JSON timestamp: epoch seconds, possibly with a
@@ -202,7 +195,7 @@ func parseEvents(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	seen := map[string]bool{}
 	for i, e := range *doc.Events {
-		id := str(e.EventID)
+		id := vendorapi.TrimStr(e.EventID)
 		if id == "" {
 			return vendorapi.Page{}, drift("Events[%d].EventId is missing", i)
 		}
@@ -214,22 +207,22 @@ func parseEvents(r vendorapi.Response) (vendorapi.Page, error) {
 		if !ok {
 			return vendorapi.Page{}, drift("Events[%d].EventTime is not an epoch time", i)
 		}
-		name := str(e.EventName)
+		name := vendorapi.TrimStr(e.EventName)
 		if !eventNameRE.MatchString(name) {
 			return vendorapi.Page{}, drift("Events[%d].EventName is not an action name", i)
 		}
 		// The lookup asked for one event source; another is a contract change.
-		if str(e.EventSource) != EventSource {
+		if vendorapi.TrimStr(e.EventSource) != EventSource {
 			return vendorapi.Page{}, drift("Events[%d].EventSource is not the requested source", i)
 		}
 		ev := vendorapi.AuditEvent{
 			Namespace: AuditNamespace, EventID: id, At: at, Action: snake(name),
 			Detail: map[string]string{"event_source": EventSource},
 		}
-		if u := str(e.Username); u != "" {
+		if u := vendorapi.TrimStr(e.Username); u != "" {
 			ev.ActorKind, ev.ActorIdentity = ActorUsername, u
 		}
-		switch ro := str(e.ReadOnly); ro {
+		switch ro := vendorapi.TrimStr(e.ReadOnly); ro {
 		case "true", "false":
 			ev.Detail["read_only"] = ro
 		case "":
@@ -237,8 +230,8 @@ func parseEvents(r vendorapi.Response) (vendorapi.Page, error) {
 			return vendorapi.Page{}, drift("Events[%d].ReadOnly is not true or false", i)
 		}
 		if len(e.Resources) > 0 {
-			ev.Target = str(e.Resources[0].ResourceName)
-			if t := str(e.Resources[0].ResourceType); t != "" {
+			ev.Target = vendorapi.TrimStr(e.Resources[0].ResourceName)
+			if t := vendorapi.TrimStr(e.Resources[0].ResourceType); t != "" {
 				ev.Detail["resource_type"] = t
 			}
 		}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -557,7 +558,7 @@ func (a *Adapter) parseSessionJSONL(ctx context.Context, path string, fromOffset
 			continue
 		}
 		res.NewOffset = bytesRead
-		a.handleTranscriptEntry(sc, line, lineNum, parseTimestamp(line.Timestamp), &res)
+		a.handleTranscriptEntry(sc, line, lineNum, parseutil.ParseRFC3339(line.Timestamp), &res)
 	}
 	if err := scanner.Err(); err != nil {
 		adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
@@ -816,7 +817,7 @@ func (a *Adapter) parseTrajectoryJSONL(ctx context.Context, path string, fromOff
 			SessionID:           sessionID,
 			ProjectRoot:         projectRoot,
 			GitRemote:           projectRemote,
-			Timestamp:           parseTimestamp(line.Timestamp),
+			Timestamp:           parseutil.ParseRFC3339(line.Timestamp),
 			Tool:                models.ToolOpenClaw,
 			Model:               line.ModelID,
 			InputTokens:         u.Input,
@@ -1701,19 +1702,6 @@ func millisToTime(ms int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms).UTC()
-}
-
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	return time.Time{}
 }
 
 func firstNonZero(values ...int64) int64 {

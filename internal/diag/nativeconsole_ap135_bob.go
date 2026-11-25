@@ -26,40 +26,31 @@ import (
 // administrator policy, and never changes the stand-down reading above it.
 func checkIBMBobTeamsPolicy(cfg config.Config, pol hook.IBMBobPolicy, dom hook.IBMBobPolicyDomains, home string) Check {
 	const name = "ibm-bob-teams"
-	var details []string
-	worst := StatusOK
-	note := func(s Status, msg string) {
-		details = append(details, msg)
-		if s > worst {
-			worst = s
-		}
-	}
+	var d detailCheck
 	if !pol.Found {
 		where := "HKLM\\SOFTWARE\\Policies\\IBM\\Bob"
 		if runtime.GOOS == "darwin" {
 			where = "/Library/Managed Preferences/com.ibm.bob.plist"
 		}
 		msg := "ibm bob policy not deployed (" + where + ") - run `observer org emit-managed-settings --provider ibm-bob` to generate it"
-		if !noteBobUserDomain(cfg, dom, note) {
+		if !noteBobUserDomain(cfg, dom, d.note) {
 			return Check{Name: name, Status: StatusOK, Message: msg}
 		}
 		msg = "ibm bob administrator policy not deployed (" + where + "), but Bob applies policy keys from " + bobUserSourcePhrase(dom) + " - see below"
-		return Check{Name: name, Status: worst, Message: msg, Details: details}
+		return Check{Name: name, Status: d.worst, Message: msg, Details: d.details}
 	}
 	if pol.OtelExport {
-		note(StatusOK, "OtelConfiguration names an OTLP endpoint ("+pol.Source+"); the endpoint is not probed on this OS")
+		d.note(StatusOK, "OtelConfiguration names an OTLP endpoint ("+pol.Source+"); the endpoint is not probed on this OS")
 	} else {
-		note(StatusOK, "policy present without a usable OtelConfiguration - Bob's OTLP export is not policy-managed")
+		d.note(StatusOK, "policy present without a usable OtelConfiguration - Bob's OTLP export is not policy-managed")
 	}
-	noteBobPolicyTelemetry(pol, note)
-	rems := noteBobPolicyHooks(pol, home, note)
-	noteBobPolicyGateway(pol, note)
-	noteBobUserDomain(cfg, dom, note)
-	msg := "ibm bob policy deployed - all checks passed"
-	if worst != StatusOK {
-		msg = "ibm bob policy deployed - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details, Remediations: rems}
+	noteBobPolicyTelemetry(pol, d.note)
+	rems := noteBobPolicyHooks(pol, home, d.note)
+	noteBobPolicyGateway(pol, d.note)
+	noteBobUserDomain(cfg, dom, d.note)
+	c := d.result(name, "ibm bob policy deployed - all checks passed", "ibm bob policy deployed - see warnings below")
+	c.Remediations = rems
+	return c
 }
 
 // bobNodeManaged reports whether this node is org-managed as the doctor

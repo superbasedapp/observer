@@ -13,8 +13,11 @@ import (
 
 // TestWatchActivityStamp pins the hook -> daemon activity signal: a stamp
 // that already exists at start is only a baseline, a later touch is one
-// "prompt" activity, and an unchanged stamp is silent.
+// "prompt" activity, and an unchanged stamp is silent. It polls every 100ms
+// instead of the daemon's activityStampPoll, so the quiet checks wait a few
+// polls rather than seconds.
 func TestWatchActivityStamp(t *testing.T) {
+	const poll = 100 * time.Millisecond
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "observer.db")
 	if err := budgetwarnfile.TouchActivity(dbPath); err != nil {
@@ -32,18 +35,18 @@ func TestWatchActivityStamp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		watchActivityStamp(ctx, dbPath, func(k string) { kind.Store(k); notes.Add(1) })
+		watchActivityStampEvery(ctx, dbPath, poll, func(k string) { kind.Store(k); notes.Add(1) })
 		close(done)
 	}()
 
-	time.Sleep(activityStampPoll + 500*time.Millisecond)
+	time.Sleep(5 * poll)
 	if n := notes.Load(); n != 0 {
 		t.Fatalf("baseline stamp produced %d notes, want 0", n)
 	}
 	if err := budgetwarnfile.TouchActivity(dbPath); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * activityStampPoll)
+	deadline := time.Now().Add(10 * time.Second)
 	for notes.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -53,7 +56,7 @@ func TestWatchActivityStamp(t *testing.T) {
 	if k, _ := kind.Load().(string); k != activityPrompt {
 		t.Fatalf("kind = %q, want %q", k, activityPrompt)
 	}
-	time.Sleep(activityStampPoll + 500*time.Millisecond)
+	time.Sleep(5 * poll)
 	if n := notes.Load(); n != 1 {
 		t.Fatalf("unchanged stamp produced %d notes total, want 1", n)
 	}

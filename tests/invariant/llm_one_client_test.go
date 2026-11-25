@@ -26,8 +26,10 @@ var oneClientAllow = []struct {
 }{
 	{"internal/proxy/provider.go", "path matcher: classifies inbound requests, builds none"},
 	{"internal/proxy/proxy.go", "path matcher: classifies inbound requests, builds none"},
-	{"internal/aigateway/gwhttp/dispatch.go", "route table: names the inbound gateway path, builds no upstream request"},
 	{"internal/aigateway/gwhttp/errdialect.go", "path matcher: picks the caller's error dialect from the inbound path, builds no request"},
+	{"internal/orgserver/aigwpooled/refusal.go", "path matcher: the pooled front's copy of gwhttp's error-dialect table (the L2 seam ask to export gwhttp's renderer), picks the dialect of a refusal written before the data plane runs, builds no request"},
+	{"internal/aigateway/includeusage.go", "path matcher: decides whether a relayed chat-completions stream body gets stream_options.include_usage, builds no request (the pure root cannot import llmwire, which imports net/http)"},
+	{"internal/aigateway/appendpoint.go", "path matcher: the one table of provider endpoints the gateway forwards to, their request shapes and the default path for a bare base URL (findings H1 and F-02), builds no request (the pure root cannot import llmwire, which imports net/http)"},
 	{"internal/proxy/unknownlane.go", "error text showing an example path to the user"},
 	{"internal/agentconfig/catalog_codebuddy.go", "settings catalog description of a foreign tool's config"},
 	{"internal/intelligence/dashboard/guard_cloud.go", "validation message showing an example URL"},

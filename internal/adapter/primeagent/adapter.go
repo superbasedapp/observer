@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -113,7 +114,8 @@ func (a *Adapter) IsSessionFile(path string) bool {
 // past them, so a bad line can never stall the poll loop. Two shapes are
 // deliberately DEFERRED rather than consumed, so the next parse re-reads
 // them whole: a partial trailing line (a record still being written), and
-// a tool call whose `toolResult` has not landed yet (pending.go).
+// a tool call whose `toolResult` has not landed yet
+// (adapter.DeferUnpairedTail).
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	f, err := os.Open(path) //nolint:gosec // path comes from the watcher's own watch roots
 	if err != nil {
@@ -126,7 +128,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		path:        path,
 		sessionID:   sessionIDFromPath(path),
 		rootCache:   map[string]string{},
-		pendingCall: map[string]pendingMark{},
+		pendingCall: map[string]adapter.PendingMark{},
 		seenMessage: map[string]messageMark{},
 		firstOffset: fromOffset,
 	}
@@ -189,7 +191,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
-	st.deferUnpairedTail(&res)
+	// Rewinds tool and token events only; cache observations stay.
+	adapter.DeferUnpairedTail(&res, st.path, st.pendingCall, false)
 	adapter.ApplyProjectIdentity(&res, st.identity)
 	return res, nil
 }
@@ -230,7 +233,11 @@ type parseState struct {
 
 	// pendingCall maps a toolCall id to its rewind coordinates so the
 	// later toolResult can stamp the outcome onto the same event.
-	pendingCall map[string]pendingMark
+	// Whatever is still pending at EOF drives the tail deferral
+	// (adapter.DeferUnpairedTail); a long-running kernel cell writes
+	// nothing to the transcript until it finishes, so mtime staleness
+	// during a live call is expected.
+	pendingCall map[string]adapter.PendingMark
 	// seenMessage maps an assistant entry id to the model + timestamp its
 	// record carried, so a later child_usage_attributed entry targeting it
 	// can emit a matching upgrade row.
@@ -313,7 +320,7 @@ func (st *parseState) emitSessionStart(rec *rawLine, res *adapter.ParseResult) {
 		SourceEventID: "session_start:" + st.sessionID,
 		SessionID:     st.sessionID,
 		ProjectRoot:   st.projectRoot(),
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTC(rec.Timestamp),
 		GitBranch:     st.branch,
 		GitRemote:     st.remote,
 		Tool:          models.ToolPrimeAgent,
@@ -417,11 +424,11 @@ func (st *parseState) emitAssistant(rec *rawLine, msg *agentMessage, lineNum int
 			OutcomePending:     true,
 		}
 		if call.ID != "" {
-			st.pendingCall[call.ID] = pendingMark{
-				idx:       len(res.ToolEvents),
-				lineStart: lineStart,
-				toolLen:   toolLen,
-				tokenLen:  tokenLen,
+			st.pendingCall[call.ID] = adapter.PendingMark{
+				ToolIdx:   len(res.ToolEvents),
+				LineStart: lineStart,
+				ToolLen:   toolLen,
+				TokenLen:  tokenLen,
 			}
 		}
 		res.ToolEvents = append(res.ToolEvents, ev)
@@ -536,7 +543,7 @@ func (st *parseState) emitChildUsage(rec *rawLine, res *adapter.ParseResult) {
 	}
 	mark, ok := st.seenMessage[rec.TargetID]
 	if !ok {
-		mark = messageMark{model: st.modelString(nil), ts: parseTimestamp(rec.Timestamp)}
+		mark = messageMark{model: st.modelString(nil), ts: parseutil.ParseRFC3339UTC(rec.Timestamp)}
 	}
 	u := rec.AggregateUsage
 	res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
@@ -561,15 +568,16 @@ func (st *parseState) emitChildUsage(rec *rawLine, res *adapter.ParseResult) {
 }
 
 // stampToolResult attaches a result to the call it answers. A result
-// whose call is not in this window is dropped: the deferral in pending.go
-// exists precisely so that cannot happen for a call observer emitted.
+// whose call is not in this window is dropped: the deferral
+// (adapter.DeferUnpairedTail) exists precisely so that cannot happen for a
+// call observer emitted.
 func (st *parseState) stampToolResult(msg *agentMessage, res *adapter.ParseResult) {
 	mark, ok := st.pendingCall[msg.ToolCallID]
-	if !ok || mark.idx >= len(res.ToolEvents) {
+	if !ok || mark.ToolIdx >= len(res.ToolEvents) {
 		return
 	}
 	delete(st.pendingCall, msg.ToolCallID)
-	ev := &res.ToolEvents[mark.idx]
+	ev := &res.ToolEvents[mark.ToolIdx]
 	output := msg.Content.text()
 	ev.ToolOutput = st.adapter.scrubber.String(contentcap.Cap(output, contentcap.DefaultMaxBytes))
 	ev.Success = !msg.IsError
@@ -627,7 +635,7 @@ func (st *parseState) emitCompaction(rec *rawLine, lineNum int, res *adapter.Par
 		SourceEventID: st.eventID("compaction", rec.ID, lineNum),
 		SessionID:     st.sessionID,
 		ProjectRoot:   st.projectRoot(),
-		Timestamp:     parseTimestamp(rec.Timestamp),
+		Timestamp:     parseutil.ParseRFC3339UTC(rec.Timestamp),
 		GitBranch:     st.branch,
 		GitRemote:     st.remote,
 		Model:         st.modelString(nil),
@@ -702,7 +710,7 @@ func (st *parseState) timestamp(rec *rawLine, msg *agentMessage) time.Time {
 			return t
 		}
 	}
-	return parseTimestamp(rec.Timestamp)
+	return parseutil.ParseRFC3339UTC(rec.Timestamp)
 }
 
 // modelString renders the billed model.

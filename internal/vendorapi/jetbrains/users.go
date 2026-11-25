@@ -84,7 +84,7 @@ type userRow struct {
 }
 
 func drift(format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, SurfaceUsers}, a...)...)
+	return vendorapi.Drift(SurfaceUsers, format, a...)
 }
 
 func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {

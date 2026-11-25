@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,15 +17,19 @@ import (
 
 // connect.go is the machine side of the Getting started v2 connect flow
 // (contract A, docs/plans/onboarding-v2-connect-flow.md; docs/security.md
-// CONNECT-1):
+// CONNECT-1), and of its second purpose, the AI Apps SDK setup's device
+// sign-in (purpose sdk_key; the SDK quickstart plan section 3.6;
+// docs/security.md SDKQS-1):
 //
 //	POST /v1/connect/requests        create a request (unauthenticated, per-IP limits)
-//	GET  /v1/connect/requests/{id}   poll it (proof of possession of the request's key)
+//	GET  /v1/connect/requests/{id}   poll it (the request's own proof: a device key
+//	                                 proof for a machine, a bearer device code for an SDK)
 //	GET  /connect/{id}               the approve_url: 302 into the console
 //	GET  /connect                    the verify_url (code entry): 302 into the console
 //
-// The browser side is portal_connect.go. The decisions are connectflow's and
-// the SQL is store/connect.go's; this file owns the HTTP shape only.
+// The browser side is portal_connect.go; the SDK key grant is
+// connect_keygrant.go. The decisions are connectflow's and the SQL is
+// store/connect.go's; this file owns the HTTP shape only.
 
 // connectPagePath and connectEntryPath are the console pages the approve and
 // verify URLs land on (webcloud's /connect/:id and /connect routes).
@@ -54,6 +59,9 @@ type connectCreateJSON struct {
 	VerifyURL  string `json:"verify_url"`
 	ExpiresIn  int    `json:"expires_in"`
 	Interval   int    `json:"interval"`
+	// DeviceCode is a device-code request's poll secret, answered here once
+	// and never again (absent for a machine, which polls with its key).
+	DeviceCode string `json:"device_code,omitempty"`
 }
 
 // connectTargetJSON is the dashboard an approved request connects to.
@@ -142,8 +150,21 @@ func (s *Server) handleConnectCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "invalid request")
 		return
 	}
+	if !s.connectAnswerOffered(in.Purpose) {
+		writeErr(w, http.StatusBadRequest, "invalid_purpose", "this SuperBased cloud does not take SDK sign-in requests yet")
+		return
+	}
+	auth, _ := connectflow.AuthFor(in.Purpose)
+	var deviceCode, deviceCodeHash string
+	if auth == connectflow.AuthDeviceCode {
+		if deviceCode, deviceCodeHash, err = connectflow.NewDeviceCode(rand.Reader); err != nil {
+			s.log.Error("cloudserver/api: mint device code", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal", "could not create the connect request")
+			return
+		}
+	}
 	c, err := s.store.CreateConnectRequest(r.Context(), store.CreateConnectInput{
-		Request: in, OriginNetwork: connectflow.NetworkPrefix(ip), Now: s.now(),
+		Request: in, OriginNetwork: connectflow.NetworkPrefix(ip), DeviceCodeHash: deviceCodeHash, Now: s.now(),
 	})
 	if err != nil {
 		s.log.Error("cloudserver/api: create connect request", "err", err)
@@ -158,12 +179,31 @@ func (s *Server) handleConnectCreate(w http.ResponseWriter, r *http.Request) {
 		VerifyURL:  s.portalBaseURL + "/connect",
 		ExpiresIn:  int(connectflow.RequestTTL / time.Second),
 		Interval:   int(connectflow.PollInterval / time.Second),
+		DeviceCode: deviceCode,
 	})
 }
 
-// handleConnectPoll is GET /v1/connect/requests/{id}: the machine proves it
-// holds the key it sent at create, and reads the request's status; an
-// approved request hands over its sign-in (store.DeliverConnectSignIn).
+// connectAnswerOffered reports whether this server can hand over what a
+// request of purpose p is answered with: a sign-in always; a key grant only
+// with the SDK key grant key configured (a request nothing could answer is
+// refused at create, so nobody approves it for nothing).
+func (s *Server) connectAnswerOffered(p connectflow.Purpose) bool {
+	answer, ok := connectflow.AnswerFor(p)
+	switch {
+	case !ok:
+		return false
+	case answer == connectflow.AnswerKeyGrant:
+		return s.sdkKeyGrantKey != nil
+	default:
+		return true
+	}
+}
+
+// handleConnectPoll is GET /v1/connect/requests/{id}: the requester proves
+// it is the requester (connectPollAuthRules, by the request's stored auth
+// kind) and reads the request's status; an approved request hands over its
+// answer: a machine's sign-in (store.DeliverConnectSignIn), or an SDK's key
+// grant (handleConnectKeyGrantPoll).
 func (s *Server) handleConnectPoll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	ctx := r.Context()
@@ -187,33 +227,11 @@ func (s *Server) handleConnectPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The proof binds the request's own key, this URL rebuilt from the
-	// configured external origin (never Host or X-Forwarded-*), and the
-	// request id as its bound "token".
-	pop, err := s.pop.Verify(PoPRequest{
-		ProofHeader:     r.Header.Get(headerPoP),
-		Method:          r.Method,
-		URL:             s.externalBaseURL + r.URL.EscapedPath(),
-		AccessToken:     c.RequestID,
-		DevicePublicKey: c.PublicKey,
-		Now:             now,
-		MaxAge:          s.clockSkew,
-		MaxSkew:         s.clockSkew,
-	})
-	if err != nil {
-		s.audit(ctx, "", "connect_poll_pop_failed")
-		writeErr(w, http.StatusUnauthorized, "unauthorized", "proof-of-possession failed")
+	if !s.connectPollAuthenticated(w, r, c, now) {
 		return
 	}
-	replay, err := s.store.RecordConnectPollJTI(ctx, c.RequestID, pop.JTI, pop.JTIExpiry)
-	if err != nil {
-		s.log.Error("cloudserver/api: connect poll replay record", "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "replay check failed")
-		return
-	}
-	if replay {
-		s.audit(ctx, "", "connect_poll_replay")
-		writeErr(w, http.StatusUnauthorized, "unauthorized", "proof replay detected")
+	if answer, _ := connectflow.AnswerFor(c.Purpose); answer == connectflow.AnswerKeyGrant {
+		s.handleConnectKeyGrantPoll(w, r, c, now)
 		return
 	}
 
@@ -246,6 +264,83 @@ func (s *Server) handleConnectPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Status = string(status)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// connectPollAuthRule is how a poll of one auth kind proves it comes from
+// the requester. check answers the poll itself when it refuses, and reports
+// whether the poll may go on.
+type connectPollAuthRule struct {
+	kind  connectflow.AuthKind
+	check func(s *Server, w http.ResponseWriter, r *http.Request, c store.ConnectRequest, now time.Time) bool
+}
+
+// connectPollAuthRules are the poll proofs, one row per auth kind. The row
+// is chosen by the REQUEST's stored auth kind (decided by its purpose at
+// create), never by what the caller sends: a device-code request ignores a
+// proof header, and a machine request ignores a bearer.
+var connectPollAuthRules = []connectPollAuthRule{
+	{kind: connectflow.AuthPoP, check: (*Server).connectPollPoP},
+	{kind: connectflow.AuthDeviceCode, check: (*Server).connectPollDeviceCode},
+}
+
+// connectPollAuthenticated walks connectPollAuthRules for c's auth kind. A
+// request with no row is refused.
+func (s *Server) connectPollAuthenticated(w http.ResponseWriter, r *http.Request, c store.ConnectRequest, now time.Time) bool {
+	for _, rule := range connectPollAuthRules {
+		if rule.kind == c.Auth {
+			return rule.check(s, w, r, c, now)
+		}
+	}
+	s.audit(r.Context(), "", "connect_poll_auth_unknown")
+	writeErr(w, http.StatusUnauthorized, "unauthorized", "this request cannot be polled")
+	return false
+}
+
+// connectPollPoP checks a machine's proof: it binds the request's own key,
+// this URL rebuilt from the configured external origin (never Host or
+// X-Forwarded-*), and the request id as its bound "token", with a
+// single-use jti.
+func (s *Server) connectPollPoP(w http.ResponseWriter, r *http.Request, c store.ConnectRequest, now time.Time) bool {
+	ctx := r.Context()
+	pop, err := s.pop.Verify(PoPRequest{
+		ProofHeader:     r.Header.Get(headerPoP),
+		Method:          r.Method,
+		URL:             s.externalBaseURL + r.URL.EscapedPath(),
+		AccessToken:     c.RequestID,
+		DevicePublicKey: c.PublicKey,
+		Now:             now,
+		MaxAge:          s.clockSkew,
+		MaxSkew:         s.clockSkew,
+	})
+	if err != nil {
+		s.audit(ctx, "", "connect_poll_pop_failed")
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "proof-of-possession failed")
+		return false
+	}
+	replay, err := s.store.RecordConnectPollJTI(ctx, c.RequestID, pop.JTI, pop.JTIExpiry)
+	if err != nil {
+		s.log.Error("cloudserver/api: connect poll replay record", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "replay check failed")
+		return false
+	}
+	if replay {
+		s.audit(ctx, "", "connect_poll_replay")
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "proof replay detected")
+		return false
+	}
+	return true
+}
+
+// connectPollDeviceCode checks an SDK's bearer device code against the hash
+// stored at create, in constant time (connectflow.DeviceCodeMatches). The
+// code is never logged or audited; only the failure is.
+func (s *Server) connectPollDeviceCode(w http.ResponseWriter, r *http.Request, c store.ConnectRequest, _ time.Time) bool {
+	if !connectflow.DeviceCodeMatches(c.DeviceCodeHash, connectflow.BearerToken(r.Header.Get("Authorization"))) {
+		s.audit(r.Context(), "", "connect_poll_device_code_failed")
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "the device code does not match this request")
+		return false
+	}
+	return true
 }
 
 // connectDeliveryRule maps one store refusal of a sign-in delivery to its

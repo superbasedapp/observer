@@ -571,6 +571,10 @@ func (c *Client) acceptBudgetDocument(ctx context.Context, resp *http.Response, 
 	}, nil
 }
 
+// FetchBudgetPolicy runs one poll of the org's signed budget policy for this
+// member and returns its typed outcome (BudgetFetchOutcome): not enrolled, a
+// fetch failure with whatever is cached, or the accepted document. Every
+// return site maps to exactly one fetch state.
 func (c *Client) FetchBudgetPolicy(ctx context.Context) (BudgetFetchOutcome, error) {
 	if c == nil {
 		return BudgetFetchOutcome{State: orgcontract.BudgetFetchNotEnrolled}, errors.New("orgclient.FetchBudgetPolicy: client unavailable")

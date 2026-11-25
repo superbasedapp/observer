@@ -5,6 +5,7 @@ import { fmtDateTime, fmtShortId } from "@shared/lib/format";
 import type { BillingSubscription, PortalSession } from "../../api";
 import { BillingPortalButton } from "./BillingPortalButton";
 import { dateWithRelative, statusMeta } from "./util";
+import { planDisplayName } from "../../lib/labels";
 import { Button } from "@shared/primitives/Button";
 import { Card } from "@shared/primitives/Card";
 import { Receipt } from "lucide-react";
@@ -39,7 +40,7 @@ export function SubscriptionCard({
       }
     >
       <DefinitionList>
-        <DefinitionRow label="Plan" value={`${sub.plan_name} (v${sub.plan_version})`} />
+        <DefinitionRow label="Plan" value={`${planDisplayName(sub.plan_name)} (v${sub.plan_version})`} />
         {dateLine && <DefinitionRow label={dateLine.label} value={dateLine.value} />}
         {sub.status === "past_due" && sub.past_due_since && (
           <DefinitionRow label="Payment due since" value={dateWithRelative(sub.past_due_since)} />

@@ -1,7 +1,6 @@
 package handoff
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -9,75 +8,6 @@ import (
 
 func msg(role models.TranscriptRole, text string, calls ...models.ToolCallRef) models.TranscriptMessage {
 	return models.TranscriptMessage{Role: role, Text: text, ToolCalls: calls}
-}
-
-func TestScanMarkers(t *testing.T) {
-	tests := []struct {
-		name string
-		msgs []models.TranscriptMessage
-		want []string
-	}{
-		{
-			name: "none",
-			msgs: []models.TranscriptMessage{msg(models.TranscriptUser, "hello world")},
-			want: nil,
-		},
-		{
-			name: "first user message carries the marker (prompt lane)",
-			msgs: []models.TranscriptMessage{
-				msg(models.TranscriptUser, "<!-- superbased-handoff abcd1234 -->\nlet's continue"),
-			},
-			want: []string{"abcd1234"},
-		},
-		{
-			name: "marker in a file-read tool_result excerpt (file lane)",
-			msgs: []models.TranscriptMessage{
-				msg(models.TranscriptUser, "read HANDOFF.md"),
-				msg(models.TranscriptAssistant, "reading", models.ToolCallRef{
-					Name:          "Read",
-					ResultExcerpt: "<!-- superbased-handoff deadbeef -->\n# Handover",
-				}),
-			},
-			want: []string{"deadbeef"},
-		},
-		{
-			name: "marker inside a tool call input excerpt",
-			msgs: []models.TranscriptMessage{
-				msg(models.TranscriptAssistant, "", models.ToolCallRef{
-					Name:         "Bash",
-					InputExcerpt: "grep superbased-handoff cafe0001 file",
-				}),
-			},
-			want: []string{"cafe0001"},
-		},
-		{
-			name: "no trailing space still captures to end of blob",
-			msgs: []models.TranscriptMessage{msg(models.TranscriptUser, "superbased-handoff feedface")},
-			want: []string{"feedface"},
-		},
-		{
-			name: "duplicates collapse, order preserved",
-			msgs: []models.TranscriptMessage{
-				msg(models.TranscriptUser, "superbased-handoff aaaa1111 -->"),
-				msg(models.TranscriptAssistant, "superbased-handoff bbbb2222 -->"),
-				msg(models.TranscriptUser, "superbased-handoff aaaa1111 again"),
-			},
-			want: []string{"aaaa1111", "bbbb2222"},
-		},
-		{
-			name: "prefix with no token yields nothing",
-			msgs: []models.TranscriptMessage{msg(models.TranscriptUser, "superbased-handoff ")},
-			want: nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ScanMarkers(tt.msgs)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ScanMarkers() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }
 
 func TestContainsMarker(t *testing.T) {

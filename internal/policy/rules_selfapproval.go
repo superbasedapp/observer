@@ -209,6 +209,9 @@ var selfApprovalVerbs = []selfApprovalVerb{
 	// it are the person's. `sdk status` only prints.
 	{path: []string{"sdk", "sign-in"}, grant: true, desc: "mints your SDK key on your organization, which lets apps send data off this machine"},
 	{path: []string{"sdk", "sign-out"}, grant: true, desc: "revokes your SDK key on your organization"},
+	// Installing an SDK key an admin issued (lane sdk-use-key) lets apps
+	// send data off this machine, the same as a sign-in.
+	{path: []string{"sdk", "use-key"}, grant: true, desc: "installs an SDK key an admin issued, which lets apps send data off this machine"},
 	// Review finding R-C02 (ruling D19): the machine's alert channels are
 	// where alert data (rule, metric, value, dimensions, an end user among
 	// them) is sent off this machine, and the admission setup wizard writes
@@ -816,8 +819,11 @@ var guardGrantRoutes = []guardGrantRoute{
 	// Plane A W2-8 (ruling D19): the dashboard form of `observer config
 	// proposals approve|reject`. A GET of the list is a read.
 	{path: "/api/config/proposals", prefix: true, desc: "the settings proposals an AI agent filed, waiting for the person's approval"},
-	// Plane A W2-7: the dashboard form of `observer sdk sign-in|sign-out`.
-	{path: "/api/sdk/credential", desc: "the SDK key sign-in and sign-out route"},
+	// Plane A W2-7: the dashboard form of `observer sdk sign-in|sign-out`,
+	// and under it (lane sdk-use-key) POST /api/sdk/credential/key, the form
+	// of `observer sdk use-key`. A prefix, so a later SDK key route under it
+	// is the person's by default.
+	{path: "/api/sdk/credential", prefix: true, desc: "the SDK key sign-in, sign-out and admin-issued key install routes"},
 	// Lane SEC-GATE5 milestone 3: the settings backup restore swaps the
 	// previous config.toml back in, which can bring back a lower [guard] or
 	// [security] setting (security.feedback.after_write = false among

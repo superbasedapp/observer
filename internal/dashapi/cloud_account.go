@@ -200,7 +200,7 @@ type CloudSyncState struct {
 	LastResultAt string `json:"last_result_at,omitempty"`
 }
 
-// signInView renders the probe as the status block. nil-receiver safe.
+// SignInView renders the probe as the status block. nil-receiver safe.
 func (c *CloudAccountSeams) SignInView() *CloudSignInView {
 	if c == nil {
 		return nil
@@ -224,7 +224,7 @@ func (c *CloudAccountSeams) SignInView() *CloudSignInView {
 	return v
 }
 
-// state snapshots the current/last login run. nil-receiver safe.
+// State snapshots the current/last login run. nil-receiver safe.
 func (c *CloudAccountSeams) State() CloudLoginState {
 	if c == nil {
 		return CloudLoginState{}
@@ -250,7 +250,7 @@ func (c *CloudAccountSeams) stateLocked() CloudLoginState {
 	}
 }
 
-// syncState snapshots the current/last sync run, plus the store-derived
+// SyncState snapshots the current/last sync run, plus the store-derived
 // LastResultAt (the same fact CloudStatusResponse.LastResultAt reports).
 // nil-receiver safe (unwired dashboards / embedders); st may be nil too.
 func (c *CloudAccountSeams) SyncState(ctx context.Context, st *store.Store) CloudSyncState {
@@ -288,7 +288,7 @@ func (c *CloudAccountSeams) syncStateLocked() CloudSyncState {
 	return st
 }
 
-// loginRunning reports whether a login is currently in flight - sync refuses
+// LoginRunning reports whether a login is currently in flight - sync refuses
 // to start while one is (the two would race on the credential store/outbox).
 func (c *CloudAccountSeams) LoginRunning() bool {
 	c.mu.Lock()
@@ -296,24 +296,24 @@ func (c *CloudAccountSeams) LoginRunning() bool {
 	return c.login != nil && c.login.running
 }
 
-// syncRunning reports whether a sync is currently in flight - the consent
+// SyncRunning reports whether a sync is currently in flight - the consent
 // action routes in cloud_consent.go (session consent, grant, revoke,
 // delete-account) refuse to start while one is: the same outbox/credential
-// race loginRunning guards login and sync against.
+// race LoginRunning guards login and sync against.
 func (c *CloudAccountSeams) SyncRunning() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sync != nil && c.sync.running
 }
 
-// errCloudSyncRunning is returned by startSync when a sync is in flight; the
+// errCloudSyncRunning is returned by StartSync when a sync is in flight; the
 // caller answers with the current state rather than a second spawn.
 var ErrCloudSyncRunning = errors.New("a sync is already running")
 
 var ErrCloudSyncScopeConflict = errors.New("another sync is running; wait for it to finish, then retry this session")
 
-// startSync spawns one sync subprocess unless one is running. Mirrors
-// startLogin: returns the state immediately (running=true) so the caller can
+// StartSync spawns one sync subprocess unless one is running. Mirrors
+// StartLogin: returns the state immediately (running=true) so the caller can
 // answer the POST; the goroutine finalizes the run when the child exits.
 func (c *CloudAccountSeams) StartSync(now time.Time, sessionID string) (CloudSyncState, error) {
 	c.mu.Lock()
@@ -376,11 +376,11 @@ func (o *cloudSyncOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// errCloudLoginRunning is returned by startLogin when a login is in flight;
+// errCloudLoginRunning is returned by StartLogin when a login is in flight;
 // the caller answers with the current state rather than a second spawn.
 var ErrCloudLoginRunning = errors.New("a sign-in is already running")
 
-// startLogin spawns one login subprocess unless one is running. It returns
+// StartLogin spawns one login subprocess unless one is running. It returns
 // the state immediately after the spawn (running=true) so the caller can
 // answer the POST; the goroutine finalizes the run when the child exits.
 func (c *CloudAccountSeams) StartLogin(now time.Time) (CloudLoginState, error) {
@@ -499,7 +499,7 @@ func (o *cloudLoginOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// cloudLooksLikeAuthURL is the line test: a whole-line absolute http(s) URL
+// CloudLooksLikeAuthURL is the line test: a whole-line absolute http(s) URL
 // (no spaces), which is how the CLI prints the authorize URL.
 func CloudLooksLikeAuthURL(line string) bool {
 	if line == "" || strings.ContainsAny(line, " \t") {
@@ -522,7 +522,7 @@ func (c *CloudAccountSeams) setAuthURL(run *cloudLoginRun, u string) {
 	}
 }
 
-// logout runs `observer cloud logout` synchronously (bounded), refusing while
+// Logout runs `observer cloud logout` synchronously (bounded), refusing while
 // a login is in flight (the two would race on the credential store).
 func (c *CloudAccountSeams) Logout(ctx context.Context) (string, error) {
 	c.mu.Lock()

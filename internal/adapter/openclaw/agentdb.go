@@ -13,6 +13,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
 
@@ -170,7 +172,7 @@ func (a *Adapter) parseAgentDB(ctx context.Context, path string, fromOffset int6
 	defer db.Close()
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
-	if !agentTableExists(ctx, db, "transcript_events") {
+	if !sqliteschema.TableExists(ctx, db, "transcript_events") {
 		// A store that predates (or postdates) this table is not an
 		// error — the adapter's other layouts still carry the install.
 		return res, nil
@@ -225,7 +227,7 @@ func (a *Adapter) parseAgentDB(ctx context.Context, path string, fromOffset int6
 			sc = a.newAgentScope(ctx, db, dbPath, sid)
 			scopes[sid] = sc
 		}
-		ts := parseTimestamp(line.Timestamp)
+		ts := parseutil.ParseRFC3339(line.Timestamp)
 		if ts.IsZero() {
 			ts = epochToTime(createdAt.Int64)
 		}
@@ -289,7 +291,7 @@ func (a *Adapter) newAgentScope(ctx context.Context, db *sql.DB, dbPath, session
 // degrade to "no grounded value" rather than an error, and a `message`
 // entry's own provider/model always wins over either.
 func agentSessionModel(ctx context.Context, db *sql.DB, sessionID string) (provider, model string) {
-	if agentTableExists(ctx, db, "session_windows") {
+	if sqliteschema.TableExists(ctx, db, "session_windows") {
 		var p, m sql.NullString
 		err := db.QueryRowContext(ctx,
 			`SELECT model_provider, model FROM session_windows WHERE session_id = ? LIMIT 1`,
@@ -302,7 +304,7 @@ func agentSessionModel(ctx context.Context, db *sql.DB, sessionID string) (provi
 	if provider != "" && model != "" {
 		return provider, model
 	}
-	if !agentTableExists(ctx, db, "session_nodes") {
+	if !sqliteschema.TableExists(ctx, db, "session_nodes") {
 		return provider, model
 	}
 	var entry sql.NullString
@@ -421,19 +423,6 @@ func queryTranscriptDelta(ctx context.Context, db *sql.DB, byRowID bool, fromOff
 		 ORDER BY COALESCE(created_at, 0) ASC, session_id ASC, seq ASC`, fromOffset)
 }
 
-// agentTableExists reports whether a table is present. The 2.0 schema is
-// grounded on its column LISTS, not on which tables a given build ships,
-// so every optional read is gated through here (the opencode/kilocode
-// pattern).
-func agentTableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
-}
-
 // stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
 // store (a Windows-side store read by a WSL observer over /mnt/c, or
 // the reverse), which modernc.org/sqlite cannot open in place while the
@@ -442,10 +431,7 @@ func agentTableExists(ctx context.Context, db *sql.DB, name string) bool {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the OpenClaw per-agent store (openclaw-agent.sqlite): every table this
@@ -456,19 +442,4 @@ var mirrorSpec = mirrorbase.Spec{
 	Dir:    "openclaw-mirror",
 	File:   agentDBBase,
 	Tables: []string{"transcript_events", "session_windows", "session_nodes"},
-}
-
-// isForeignMountPath reports whether path lives under a crossmount-
-// detected non-native home. Both bridge directions are covered.
-func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
 }

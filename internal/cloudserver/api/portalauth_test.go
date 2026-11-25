@@ -171,37 +171,17 @@ func newWorkOSHarness(t *testing.T, enabled bool) *workosHarness {
 // injected, for tests that assert what the server logs.
 func newWorkOSHarnessWithLogger(t *testing.T, enabled bool, logger *slog.Logger) *workosHarness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
 	fake := newFakeWorkOS(t, testWorkOSSecret)
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:               apiStore,
-		Queue:               jobs.NewPGQueue(apiStore),
-		Verifier:            fakeWorkOSVerifier{},
-		Logger:              logger,
-		ExternalBaseURL:     base,
-		RateLimit:           &api.RateLimitConfig{},
-		Attestor:            admAttestor{verified: true},
-		Credentials:         jobs.StaticCredentials{Key: "test-key"},
-		PortalWorkOSEnabled: enabled,
-		WorkOSClientID:      "client_test",
-		WorkOSAPIKey:        testWorkOSSecret,
-		WorkOSAuthorizeURL:  fake.srv.URL + "/authorize",
-		WorkOSTokenURL:      fake.srv.URL + "/token",
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &workosHarness{harness: &harness{srv: srv, store: s}, workos: fake}
+	h := newHarnessWith(t, harnessSetup{opts: func(o *api.Options) {
+		o.Verifier = fakeWorkOSVerifier{}
+		o.Logger = logger
+		o.PortalWorkOSEnabled = enabled
+		o.WorkOSClientID = "client_test"
+		o.WorkOSAPIKey = testWorkOSSecret
+		o.WorkOSAuthorizeURL = fake.srv.URL + "/authorize"
+		o.WorkOSTokenURL = fake.srv.URL + "/token"
+	}})
+	return &workosHarness{harness: h, workos: fake}
 }
 
 // browser is a cookie-jar client that never follows redirects, so every 302/303

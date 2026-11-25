@@ -145,7 +145,7 @@ function ProjectDigestsSection({
   }
   if (digests.length === 0) {
     if (digestWeekly) {
-      return null; // Plus, just no digest has landed yet - nothing to say
+      return null; // Personal Pro, just no digest has landed yet - nothing to say
     }
     return (
       <div className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3 text-[12px] text-fg-2">

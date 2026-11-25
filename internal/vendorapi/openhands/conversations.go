@@ -111,7 +111,7 @@ type conversation struct {
 
 // putShort sets an optional id-shaped body value, refusing an over-long one.
 func putShort(body map[string]string, key string, v *string) bool {
-	s := str(v)
+	s := vendorapi.Str(v)
 	if s == "" {
 		return true
 	}
@@ -131,29 +131,29 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 	out := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Items)}
 	seen := map[string]bool{}
 	for i, c := range *doc.Items {
-		id := str(c.ID)
+		id := vendorapi.Str(c.ID)
 		if !idRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].id is missing or not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].id is missing or not an id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d] repeats a conversation", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d] repeats a conversation", i)
 		}
 		seen[id] = true
 		created, ok := isoTime(c.CreatedAt)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].created_at is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].created_at is not an ISO timestamp", i)
 		}
 		at := created
 		body := map[string]string{"created_at": created.Format(time.RFC3339)}
 		if c.UpdatedAt != nil {
 			u, ok := isoTime(c.UpdatedAt)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].updated_at is not an ISO timestamp", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].updated_at is not an ISO timestamp", i)
 			}
 			at = u
 			body["updated_at"] = u.Format(time.RFC3339)
 		}
-		if v, _ := capText(str(c.Title), maxBodyText); v != "" {
+		if v, _ := capText(vendorapi.Str(c.Title), maxBodyText); v != "" {
 			body["title"] = v
 		}
 		for _, f := range []struct {
@@ -171,7 +171,7 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 			{"parent_conversation_id", c.ParentConversationID},
 		} {
 			if !putShort(body, f.key, f.v) {
-				return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].%s is over-long", i, f.key)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].%s is over-long", i, f.key)
 			}
 		}
 		if c.SubConversationIDs != nil {
@@ -182,7 +182,7 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 			if len(*c.PRNumber) > 0 {
 				n, ok := count(&(*c.PRNumber)[0])
 				if !ok {
-					return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].pr_number has a value that is not a pull request number", i)
+					return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].pr_number has a value that is not a pull request number", i)
 				}
 				body["pr_number"] = strconv.FormatInt(n, 10)
 			}
@@ -193,10 +193,10 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		u := vendorapi.UsageRow{
 			JoinKind: UsageJoinKind, JoinNamespace: UsageNamespace, JoinValue: id, At: at, SessionRef: id,
-			Model: str(c.LLMModel), Revision: at.Unix(), IdentityKind: IdentityCaller, Identity: IdentityCallerValue,
+			Model: vendorapi.Str(c.LLMModel), Revision: at.Unix(), IdentityKind: IdentityCaller, Identity: IdentityCallerValue,
 			Flags: map[string]string{},
 		}
-		if v := str(c.CreatedByUserID); v != "" {
+		if v := vendorapi.Str(c.CreatedByUserID); v != "" {
 			u.IdentityKind, u.Identity = "user_id", v
 		}
 		if t := c.Metrics.AccumulatedTokenUsage; t != nil {
@@ -208,7 +208,7 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 			u.ReasoningTokens, oks[4] = count(t.ReasoningTokens)
 			for _, ok := range oks {
 				if !ok {
-					return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].metrics.accumulated_token_usage has a count that is not a whole non-negative number", i)
+					return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].metrics.accumulated_token_usage has a count that is not a whole non-negative number", i)
 				}
 			}
 			u.Flags[InputBasisFlag] = InputBasisValue
@@ -216,7 +216,7 @@ func parseAppConversations(r vendorapi.Response) (vendorapi.Page, error) {
 		if c.Metrics.AccumulatedCost != nil {
 			usd, ok := vendorapi.DecimalMicros(string(*c.Metrics.AccumulatedCost), 0)
 			if !ok || usd < 0 {
-				return vendorapi.Page{}, drift(SurfaceAppConversations, "items[%d].metrics.accumulated_cost is not a non-negative amount", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceAppConversations, "items[%d].metrics.accumulated_cost is not a non-negative amount", i)
 			}
 			u.ChargedUnit, u.ChargedMicros = ChargedUnitUSD, usd
 		}

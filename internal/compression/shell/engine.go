@@ -77,6 +77,11 @@ func NewEngine() *Engine {
 
 // RegisterHook installs a named hook referenced by RuleSpec{Type:"hook", Hook:name}.
 // Replaces any prior registration with the same name.
+//
+// It is an extension point only: no production code registers a hook and
+// no embedded default filter uses type = "hook", so today a filter that
+// names one fails to compile with "hook ... not registered". Only the
+// engine tests call it.
 func (e *Engine) RegisterHook(name string, factory HookFactory) {
 	e.hooks[name] = factory
 }

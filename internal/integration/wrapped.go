@@ -82,15 +82,6 @@ var manualRouteKinds = map[RouteKind]bool{
 	RouteManual:         true,
 }
 
-// AllRouteKinds is the closed RouteKind vocabulary, for coverage sweeps that
-// must prove every kind has a defined behaviour.
-func AllRouteKinds() []RouteKind {
-	return []RouteKind{
-		RouteLauncher, RouteEnvSettings, RouteConfigFile, RouteProviderJSON,
-		RouteVSCodeSettings, RouteManual,
-	}
-}
-
 // HostedRouteInput is what the classifier sees for one (GUI row, hosted
 // adapter) pair.
 type HostedRouteInput struct {

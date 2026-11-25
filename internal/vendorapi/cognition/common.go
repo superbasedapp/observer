@@ -1,8 +1,6 @@
 package cognition
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -26,16 +24,6 @@ const (
 // cog_) as "Authorization: Bearer" (securitySchemes.bearerAuth).
 var bearerAuth = vendorapi.AuthContract{Kind: vs.AuthBearer, Scheme: vendorapi.SchemeBearer, Header: "Authorization"}
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // cursorRE bounds an opaque end_cursor before it is sent back as "after".
 var cursorRE = regexp.MustCompile(`^[A-Za-z0-9_=+/.:-]{1,512}$`)
 
@@ -53,22 +41,22 @@ type paginated[T any] struct {
 // documented default, false.
 func envelope[T any](surface vs.SurfaceID, r vendorapi.Response, doc *paginated[T]) (string, error) {
 	if r.Status != 200 {
-		return "", drift(surface, "status %d is not the documented 200", r.Status)
+		return "", vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
-	if err := decode(r.Body, doc); err != nil {
-		return "", drift(surface, "body does not decode as the documented paginated response")
+	if err := vendorapi.DecodeNumbers(r.Body, doc); err != nil {
+		return "", vendorapi.Drift(surface, "body does not decode as the documented paginated response")
 	}
 	if doc.Items == nil {
-		return "", drift(surface, "required field items is missing")
+		return "", vendorapi.Drift(surface, "required field items is missing")
 	}
 	if doc.HasNextPage == nil || !*doc.HasNextPage {
 		return "", nil
 	}
 	if doc.EndCursor == nil || !cursorRE.MatchString(*doc.EndCursor) {
-		return "", drift(surface, "has_next_page is true without a usable end_cursor")
+		return "", vendorapi.Drift(surface, "has_next_page is true without a usable end_cursor")
 	}
 	if r.Cursor != "" && *doc.EndCursor == r.Cursor {
-		return "", drift(surface, "end_cursor repeats the cursor the page was asked with")
+		return "", vendorapi.Drift(surface, "end_cursor repeats the cursor the page was asked with")
 	}
 	return *doc.EndCursor, nil
 }
@@ -126,11 +114,4 @@ func acuMicros(n *num) (int64, bool) {
 		return 0, false
 	}
 	return v, true
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

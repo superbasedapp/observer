@@ -213,7 +213,7 @@ func (a *Adapter) emitConversation(res *adapter.ParseResult, sourceFile, session
 	if cwd == "" && len(conv.History) > 0 {
 		cwd = conv.History[0].User.EnvContext.EnvState.CurrentWorkingDirectory
 	}
-	projectRoot, gitBranch, gitRemote, projectIdentity := resolveProjectRoot(cwd)
+	projectRoot, gitBranch, gitRemote, projectIdentity := adapter.ResolveProjectRoot(cwd)
 	// Snapshot append points so the identity backfill below touches only
 	// the events THIS conversation contributes to the shared res — a
 	// conversations_v2 file can hold several conversations with distinct

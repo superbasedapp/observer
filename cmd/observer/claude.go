@@ -16,6 +16,7 @@
 // API-key users (no `~/.claude/.credentials.json`) get the same
 // treatment minus the token export: just ANTHROPIC_BASE_URL set, claude
 // uses ANTHROPIC_API_KEY as today.
+
 package main
 
 import (
@@ -73,8 +74,11 @@ func newClaudeCmd() *cobra.Command {
 			"Pass --verify to run every pre-flight check (proxy reachable,\n" +
 			"credentials.json present + parseable, OAuth token discoverable)\n" +
 			"and print a one-line PASS/FAIL summary without launching claude.\n\n" +
-			"Requires a running observer proxy. Start one with `observer start`\n" +
-			"or `observer proxy start` first.",
+			"Routes through the observer proxy. When the daemon is not running\n" +
+			"the launcher starts it first (its service unit when one is installed,\n" +
+			"else `observer start` in the background, log in daemon.log beside\n" +
+			"the database), waits for its proxy, then launches routed. Pass\n" +
+			"--no-start (or set [launch].start_daemon = false) to skip that.",
 		SilenceErrors:      true,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -387,12 +391,12 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 	}
 
 	observerRoute := route.class == claudeRouteObserver
-	proxyUp := false
-	if !opts.noProxyRoute {
-		// The dial is irrelevant to a --no-proxy-route verdict (it turns solely on
-		// the persistent route), so only pay for it on a routed launch.
-		proxyUp = proxyReachable(proxyURL, 250*time.Millisecond)
-	}
+	// The dial is irrelevant to a --no-proxy-route verdict (it turns solely on
+	// the persistent route), so only a routed launch pays for it. L-169: a
+	// daemon found down is started first (launchProxyUp, the seam every
+	// launcher shares), so only one that cannot come up reaches the
+	// proxy-down rows below.
+	proxyUp := launchRoutedProxyUp(ctx, "claude", opts.configPath, proxyURL, opts.noProxyRoute, opts.stderr)
 	// An observer route in user/project/local scope is neutralizable with our
 	// one-shot CLI-scope `--settings` bypass (CLI beats those — probe 2026-07-20)
 	// UNLESS the operator passed their own --settings (we must not stack). A route
@@ -408,15 +412,14 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 		proxyReachable:          proxyUp,
 		persistentRoute:         observerRoute,
 		canNeutralizePersistent: canNeutralize,
+		// L-169 settles LPD-2: claude follows the managed-node rule every
+		// launcher follows. A daemon that could not come up on a machine whose
+		// organization owns the routes is a refusal; the --settings bypass
+		// would skip the organization's proxy-resident controls.
+		orgRequiresRoute: launchDownOrgOwned(ctx, opts.configPath, opts.noProxyRoute, proxyUp),
 	}); fb.action {
 	case proxyFailClosed:
-		// Distinguish the two residual causes for the copy: an un-overridable
-		// managed-scope route vs the operator's own --settings.
-		cause := blockOwnSettings
-		if route.scope == claudeScopeManaged {
-			cause = blockManaged
-		}
-		fmt.Fprintln(opts.stderr, claudeProxyFailClosedMsg(fb.reason, proxyURL, route.file, cause, attachDownNoticed))
+		fmt.Fprintln(opts.stderr, claudeFailClosedLine(fb.reason, proxyURL, route, attachDownNoticed))
 		return exitErr(1)
 	case proxyNeutralize:
 		return runClaudeBareDirect(opts, bin, fb.reason, proxyURL, observerRoute, route.file, launchArgs, continueDir, attachDownNoticed)
@@ -425,6 +428,22 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 	// baked-in route pointing at a dead proxy).
 
 	return runClaudeRoutedLaunch(opts, bin, proxyURL, route, launchArgs, continueDir)
+}
+
+// claudeFailClosedLine is the refusal for a claude fail-closed verdict: the
+// organization line every launcher prints on a managed machine whose
+// organization owns the routes (L-169, LPD-2), else claudeProxyFailClosedMsg
+// with the residual cause (an un-overridable managed-scope route vs the
+// operator's own --settings).
+func claudeFailClosedLine(reason proxyFallbackReason, proxyURL string, route claudeRouteResolution, attachDownNoticed bool) string {
+	if reason == reasonProxyDownOrgRoute {
+		return envProxyFailClosedMsg("claude", proxyURL, reason, envProxyDownFacts{}, runningAsDaemonChild())
+	}
+	cause := blockOwnSettings
+	if route.scope == claudeScopeManaged {
+		cause = blockManaged
+	}
+	return claudeProxyFailClosedMsg(reason, proxyURL, route.file, cause, attachDownNoticed)
 }
 
 // runClaudeRoutedLaunch prepares the claude child environment (OAuth token
@@ -1073,7 +1092,7 @@ func proxyReachable(proxyURL string, timeout time.Duration) bool {
 	if !ok {
 		return false
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout) //nolint:gosec // G704: false positive; a liveness probe of this node's own proxy address (config port or the operator's --proxy flag), nothing is sent
 	if err != nil {
 		return false
 	}

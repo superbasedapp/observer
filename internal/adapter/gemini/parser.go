@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
@@ -294,7 +295,7 @@ func (a *Adapter) parseLegacy(ctx context.Context, path string, fi os.FileInfo, 
 	state := sessionState{
 		SessionID:   firstNonEmpty(legacy.SessionID, sessionIDFromPath(path)),
 		ProjectHash: legacy.ProjectHash,
-		StartTime:   parseTimestamp(legacy.StartTime),
+		StartTime:   parseutil.ParseRFC3339UTCMillisZ(legacy.StartTime),
 	}
 	// First pass: pick a cwd hint from any message that has one, so
 	// downstream emission uses a stable project root.
@@ -327,51 +328,6 @@ func (a *Adapter) parseLegacy(ctx context.Context, path string, fi os.FileInfo, 
 // an immutable constant everywhere else.
 var maxRecordBytes int64 = 16 * 1024 * 1024
 
-// readRecord reads one '\n'-terminated record from r under the maxBytes
-// memory-safety bound. It returns the record bytes INCLUDING the
-// terminating '\n' when one was present, the total bytes consumed from
-// the stream (used to advance the byte cursor even when the record is
-// skipped), whether the record exceeded maxBytes (data is nil and its
-// bytes have been fully drained), and the terminating read error.
-//
-// The err return is the TERMINATOR SIGNAL callers rely on: bufio's
-// ReadSlice reports a nil error the moment it locates '\n' and io.EOF
-// only when the stream ends before one is found. So a record returned
-// with consumed > 0 AND err == io.EOF is an UNTERMINATED trailing
-// fragment — an append gemini-cli has not finished writing. A clean end
-// of stream yields consumed == 0.
-//
-// This mirrors codex's reader (internal/adapter/codex/adapter.go
-// readRecord) because the cursor invariant is the same one: only a
-// terminated record may move the byte cursor.
-func readRecord(r *bufio.Reader, maxBytes int64) (data []byte, consumed int64, oversized bool, err error) {
-	var buf []byte
-	for {
-		frag, readErr := r.ReadSlice('\n')
-		consumed += int64(len(frag))
-		if !oversized {
-			if int64(len(buf))+int64(len(frag)) > maxBytes {
-				// The record crossed the bound: stop accumulating, drop
-				// what we have, and keep draining to the terminator so the
-				// cursor advances past the whole record.
-				oversized = true
-				buf = nil
-			} else {
-				// frag aliases r's internal buffer (valid only until the
-				// next read); append copies it out immediately.
-				buf = append(buf, frag...)
-			}
-		}
-		if errors.Is(readErr, bufio.ErrBufferFull) {
-			continue
-		}
-		if oversized {
-			return nil, consumed, true, readErr
-		}
-		return buf, consumed, false, readErr
-	}
-}
-
 // parseJSONL handles the proposed event-record JSONL format. Streams
 // from fromOffset, returns NewOffset = bytes consumed.
 func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, fromOffset int64) (adapter.ParseResult, error) {
@@ -397,7 +353,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		record, consumed, oversized, readErr := readRecord(reader, maxRecordBytes)
+		record, consumed, oversized, readErr := adapter.ReadRecord(reader, maxRecordBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return res, fmt.Errorf("gemini.parseJSONL: read: %w", readErr)
 		}
@@ -469,7 +425,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 				state.ProjectHash = line.ProjectHash
 			}
 			if line.StartTime != "" {
-				state.StartTime = parseTimestamp(line.StartTime)
+				state.StartTime = parseutil.ParseRFC3339UTCMillisZ(line.StartTime)
 			}
 			if state.ProjectRoot == "" {
 				state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, line.Cwd)
@@ -500,7 +456,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 			if line.Tokens == nil || line.ID == "" {
 				continue
 			}
-			ts := parseTimestamp(line.Timestamp)
+			ts := parseutil.ParseRFC3339UTCMillisZ(line.Timestamp)
 			if ts.IsZero() {
 				ts = state.StartTime
 			}
@@ -556,7 +512,7 @@ func applyUntypedHeaderLine(path string, line rawJSONL, state *sessionState) (ha
 			state.ProjectHash = line.ProjectHash
 		}
 		if line.StartTime != "" {
-			state.StartTime = parseTimestamp(line.StartTime)
+			state.StartTime = parseutil.ParseRFC3339UTCMillisZ(line.StartTime)
 		}
 		if state.ProjectRoot == "" {
 			state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, line.Cwd)
@@ -574,7 +530,7 @@ func (a *Adapter) emitMessage(path string, idx int, msg rawLegacyMsg, state *ses
 	if msg.Model != "" {
 		state.Model = msg.Model
 	}
-	ts := parseTimestamp(msg.Timestamp)
+	ts := parseutil.ParseRFC3339UTCMillisZ(msg.Timestamp)
 	if ts.IsZero() {
 		ts = state.StartTime
 	}
@@ -780,7 +736,7 @@ func (tc liveToolCall) normalize() normalizedCall {
 		Output: tc.outputText(),
 		Status: tc.Status,
 		Error:  tc.errorText(),
-		TS:     parseTimestamp(tc.Timestamp),
+		TS:     parseutil.ParseRFC3339UTCMillisZ(tc.Timestamp),
 	}
 }
 
@@ -1304,18 +1260,6 @@ func sessionIDFromPath(path string) string {
 	base := filepath.Base(path)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	return base
-}
-
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05.000Z"} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t.UTC()
-		}
-	}
-	return time.Time{}
 }
 
 func firstNonEmpty(values ...string) string {

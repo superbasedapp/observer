@@ -144,6 +144,11 @@ public final class Admit {
       int status = v.httpStatus;
       String detail = status != 0 ? "HTTP " + status : (v.error.isEmpty() ? v.degraded : v.error);
       String fix = degradedFix(v.degraded, status, url);
+      if (v.planRefusal != null) {
+        // The org's plan refused it: its own words and where to fix it.
+        fix = String.join(" ", v.planRefusal.getMessage().trim().split("\\s+")) + " (upgrade: " + v.planRefusal.upgradeUrl() + ")";
+        PlanRefusalException.note(v.planRefusal, "");
+      }
       String verdict = v.allowed ? "admitted (fail open)" : "denied (failClosed)";
       String whereText = url.isEmpty() ? "" : " from " + where(url);
       String msg =
@@ -425,6 +430,14 @@ public final class Admit {
     }
     int status = raw.status;
     if (status < 200 || status >= 300) {
+      PlanRefusalException refusal = PlanRefusalException.parse(status, raw.body, raw.headers);
+      if (refusal != null) {
+        Verdict v =
+            degraded(status == 403 ? UNAVAILABLE : HTTP_ERROR, failClosed, status, "HTTP " + status + " " + refusal.code() + ": " + refusal.getMessage(), started);
+        v.planRefusal = refusal;
+        noteDegraded(v, url);
+        return v;
+      }
       if (status == 403 || status == 404) {
         return fail(UNAVAILABLE, status, "HTTP " + status, failClosed, started, url);
       }

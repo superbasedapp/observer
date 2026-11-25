@@ -17,6 +17,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -594,7 +595,7 @@ func (st *parseState) emitTool(m *rawMessage, b rawBlock, key string, pos int, m
 	// absolute one is relativized against the project root (a relative
 	// path handed to git.RelativePath would resolve against the
 	// OBSERVER's own working directory).
-	if isPath && isAbsAnyOS(target) && st.root != placeholderRoot {
+	if isPath && parseutil.IsAbsAnyOS(target) && st.root != placeholderRoot {
 		target = git.RelativePath(st.root, crossmount.TranslateForeignPath(target))
 	}
 	target = st.a.scrubber.String(target)
@@ -834,24 +835,6 @@ func (st *parseState) finish(res *adapter.ParseResult) {
 	}
 	res.ToolAccounts = append(res.ToolAccounts, st.accounts...)
 	adapter.ApplyProjectIdentity(res, st.identity)
-}
-
-// isAbsAnyOS reports whether p is absolute on EITHER OS family — a POSIX
-// `/…` path, a Windows drive path (`C:\…`, `C:/…`) or a UNC `\\…` path —
-// because a task written on one OS may be parsed by an observer on the
-// other, where filepath.IsAbs applies the wrong rules.
-func isAbsAnyOS(p string) bool {
-	if p == "" {
-		return false
-	}
-	if p[0] == '/' || strings.HasPrefix(p, `\\`) {
-		return true
-	}
-	if len(p) < 3 || p[1] != ':' || (p[2] != '\\' && p[2] != '/') {
-		return false
-	}
-	c := p[0]
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 func shortHash(s string) string {

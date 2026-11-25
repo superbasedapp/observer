@@ -13,7 +13,7 @@ import (
 // the runner captures stdout and stderr combined.
 const cloudStartupNoticePrefix = "config: deprecation: "
 
-// cloudStripStartupNotices drops the config-deprecation startup lines from a
+// CloudStripStartupNotices drops the config-deprecation startup lines from a
 // child's combined output so the preview panel shows ONLY what `observer cloud
 // preview` printed about the session (the bytes, digests and summary) - the
 // notices are about this machine's config file, not about what would upload,
@@ -34,7 +34,7 @@ func CloudStripStartupNotices(output string) string {
 	return strings.Join(kept, "\n")
 }
 
-// runOnce runs one `observer cloud <verb> <args...>` synchronously, bounded by
+// RunOnce runs one `observer cloud <verb> <args...>` synchronously, bounded by
 // timeout, and returns its combined output plus ok/exit_error - the shape
 // every synchronous action route in this file shares (preview, consent,
 // grant, revoke, delete-account).
@@ -47,7 +47,7 @@ func (c *CloudAccountSeams) RunOnce(ctx context.Context, verb string, args []str
 	return output, err == nil, CloudChildError(output, err)
 }
 
-// cloudChildError renders a failed child's error for the JSON exit_error
+// CloudChildError renders a failed child's error for the JSON exit_error
 // field the way a person would read it: cobra prints the RunE error as an
 // "Error: <message>" line on stderr, and THAT message is the reason (e.g.
 // "bounded_context_enrichment" cannot be granted standing consent: …), while

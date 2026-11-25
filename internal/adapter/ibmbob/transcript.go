@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -37,7 +38,7 @@ func (a *Adapter) ReadTranscript(ctx context.Context, sess models.Session, sourc
 	defer db.Close()
 
 	var envJSON string
-	if tableExists(ctx, db, "tasks") {
+	if sqliteschema.TableExists(ctx, db, "tasks") {
 		_ = db.QueryRowContext(ctx, `SELECT COALESCE(env, '') FROM tasks WHERE id = ?`, sess.ID).Scan(&envJSON)
 	}
 	model := modelID(decodeEnv(envJSON).Model)

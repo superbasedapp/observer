@@ -70,7 +70,12 @@ export function CloudDigestCard({ projectRoot }: { projectRoot: string }) {
   );
 }
 
-function CloudDigestLockedCard() {
+// CloudDigestLockedCard is state (b)'s upsell. The plan is named "Personal
+// Pro", the only name a customer sees for the paid individual plan (operator
+// ruling 2026-11-24; its internal id stays plus_beta). No price here: the
+// billing page it links to shows the live one, so a price change never
+// leaves a stale number in a released binary.
+export function CloudDigestLockedCard() {
   return (
     <section className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
@@ -88,7 +93,7 @@ function CloudDigestLockedCard() {
         size="sm"
         className="mt-2"
       >
-        Part of Plus - USD 15/month, 7-day trial
+        Part of Personal Pro - see plans
       </Button>
     </section>
   );

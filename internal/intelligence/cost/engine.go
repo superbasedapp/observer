@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/routingcore"
 )
 
 // DefaultBlendedInputRate is the fallback $/1M used when the install
@@ -411,6 +412,28 @@ func (e *Engine) Compute(model string, b TokenBundle) (float64, bool) {
 		return 0, false
 	}
 	return Compute(p, b), true
+}
+
+// RoutingPriceFn adapts the engine to the routing vocabulary's injected
+// pricing seam (routingcore.PriceFn): the one place the two vocabularies
+// meet. Each call prices the usage through Compute. A nil engine gives a nil
+// PriceFn, so callers keep their facts' default pricing.
+func (e *Engine) RoutingPriceFn() routingcore.PriceFn {
+	if e == nil {
+		return nil
+	}
+	return func(model string, u routingcore.PromptUsage) (float64, bool) {
+		return e.Compute(model, TokenBundle{
+			Input:             u.Input,
+			Output:            u.Output,
+			CacheRead:         u.CacheRead,
+			CacheCreation:     u.CacheCreation,
+			CacheCreation1h:   u.CacheCreation1h,
+			Reasoning:         u.Reasoning,
+			WebSearchRequests: u.WebSearchRequests,
+			Fast:              u.Fast,
+		})
+	}
 }
 
 // ComputeBreakdown is the AI/tool/total split variant of Compute.

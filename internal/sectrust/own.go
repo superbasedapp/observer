@@ -101,8 +101,3 @@ func ownFile(rel string) bool {
 		rel = rest
 	}
 }
-
-// OwnFile reports whether a file path relative to the repository root is
-// one of the developer's own files (the own-file table): the config
-// baseline grades its changes by that.
-func OwnFile(rel string) bool { return ownFile(rel) }

@@ -5,32 +5,15 @@ package scalibrfacade
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/google/osv-scalibr/extractor"
 	rpmmeta "github.com/google/osv-scalibr/extractor/filesystem/os/rpm/metadata"
 	"github.com/google/osv-scalibr/purl"
-)
 
-// imageRoot writes a tiny extracted image root (what internal/secimage
-// leaves in a run directory).
-func imageRoot(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for p, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
+)
 
 const (
 	debian12 = "ID=debian\nVERSION_ID=\"12\"\nVERSION=\"12 (bookworm)\"\nVERSION_CODENAME=bookworm\n"
@@ -115,7 +98,7 @@ func TestOSExtractAndMatch(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			root := imageRoot(t, c.files)
+			root := fstree.Write(t, c.files)
 			inv, err := ExtractOS(context.Background(), root, OSExtractOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -155,7 +138,7 @@ func TestOSExtractAndMatch(t *testing.T) {
 }
 
 func TestMatchOSMissingDatabase(t *testing.T) {
-	root := imageRoot(t, map[string]string{"etc/os-release": debian12, "var/lib/dpkg/status": debStatus})
+	root := fstree.Write(t, map[string]string{"etc/os-release": debian12, "var/lib/dpkg/status": debStatus})
 	inv, err := ExtractOS(context.Background(), root, OSExtractOptions{})
 	if err != nil {
 		t.Fatal(err)

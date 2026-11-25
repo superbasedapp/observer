@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/marmutapp/superbased-observer/internal/pastedsecret"
 )
 
 // pastedkey.go cleans a key pasted at `observer sandbox credentials add` and
@@ -19,30 +21,13 @@ import (
 // MaxKeyLen is the longest key accepted, in bytes.
 const MaxKeyLen = 4096
 
-// The bracketed-paste markers a terminal wraps a paste in.
-const (
-	pasteStart = "\x1b[200~"
-	pasteEnd   = "\x1b[201~"
-)
-
 // CleanPastedKey removes what a terminal paste wraps around a key: the
 // bracketed-paste markers wherever they are, then any whitespace, control
 // character, byte-order mark or zero-width character at either end. A
 // character inside the key is left for KeyProblem to judge.
-func CleanPastedKey(raw string) string {
-	s := strings.ReplaceAll(raw, pasteStart, "")
-	s = strings.ReplaceAll(s, pasteEnd, "")
-	return strings.TrimFunc(s, edgeJunk)
-}
-
-// edgeJunk is a character a paste carries around a key.
-func edgeJunk(r rune) bool {
-	switch r {
-	case '\uFEFF', '\u200B', '\u200C', '\u200D', '\u2060':
-		return true
-	}
-	return unicode.IsSpace(r) || unicode.IsControl(r)
-}
+// The rule's one owner is internal/pastedsecret (shared with `observer sdk
+// use-key`); this is its sandbox-credential name.
+func CleanPastedKey(raw string) string { return pastedsecret.Clean(raw) }
 
 // keyRule is one row of the key check: the rule's plain words and whether
 // a key breaks it.

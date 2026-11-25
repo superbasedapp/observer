@@ -15,7 +15,7 @@
 <h1 align="center">Track what every AI coding agent costs. See the limit coming.</h1>
 
 <p align="center">
-  <strong>See what Claude Code, Codex, Cursor and 37 more AI coding tools cost, per session and per model,<br>
+  <strong>See what Claude Code, Codex, Cursor and 47 more AI coding tools cost, per session and per model,<br>
   from the tokens your provider actually billed. Free, Apache-2.0, and it runs on your machine.</strong>
 </p>
 

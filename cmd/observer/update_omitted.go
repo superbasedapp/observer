@@ -70,6 +70,9 @@ func (*updateRuntime) AutoApplyLoop(context.Context) {}
 // SetReleaseListeners keeps nothing: no apply ever hands the listeners over.
 func (*updateRuntime) SetReleaseListeners(func()) {}
 
+// ListenersReleased is false: no apply ever releases the listeners.
+func (*updateRuntime) ListenersReleased() bool { return false }
+
 // newUpdateCmd registers `observer update` as a compiled-out verb.
 func newUpdateCmd() *cobra.Command {
 	return compiledOutVerb("update", "Self-update from the org server (not in this build)", "org.update")

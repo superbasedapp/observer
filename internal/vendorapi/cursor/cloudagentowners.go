@@ -100,18 +100,18 @@ func OwnerSubject(cloudAgentID, kind, identity string) string {
 
 func parseCloudAgentOwners(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "status %d is not the documented 200", r.Status)
 	}
 	var doc usageEventsDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "body does not decode as the documented object")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "body does not decode as the documented object")
 	}
 	if doc.UsageEvents == nil || doc.Pagination == nil || doc.Pagination.CurrentPage == nil || doc.Pagination.HasNextPage == nil {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "required field usageEvents, pagination.currentPage or pagination.hasNextPage is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "required field usageEvents, pagination.currentPage or pagination.hasNextPage is missing")
 	}
 	current, err := doc.Pagination.CurrentPage.Int64()
 	if err != nil || current < 1 {
-		return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "pagination.currentPage is not a page number")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "pagination.currentPage is not a page number")
 	}
 	page := vendorapi.Page{SourceRecords: len(*doc.UsageEvents)}
 	if *doc.Pagination.HasNextPage {
@@ -124,19 +124,19 @@ func parseCloudAgentOwners(r vendorapi.Response) (vendorapi.Page, error) {
 		// service-account example does: the account's own address), so the
 		// service account id decides first: such an event names no member.
 		switch {
-		case str(e.ServiceAccountID) != "":
+		case vendorapi.Str(e.ServiceAccountID) != "":
 			kind, identity = OwnerKindServiceAccount, *e.ServiceAccountID
-		case str(e.UserEmail) != "":
+		case vendorapi.Str(e.UserEmail) != "":
 			kind, identity = OwnerKindEmail, vendorapi.FoldEmail(*e.UserEmail)
 		default:
-			return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "usageEvents[%d] names neither userEmail nor serviceAccountId", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "usageEvents[%d] names neither userEmail nor serviceAccountId", i)
 		}
-		agent := str(e.CloudAgentID)
+		agent := vendorapi.Str(e.CloudAgentID)
 		if agent == "" {
 			continue
 		}
 		if !cloudAgentIDRE.MatchString(agent) {
-			return vendorapi.Page{}, drift(SurfaceCloudAgentOwners, "usageEvents[%d].cloudAgentId is not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCloudAgentOwners, "usageEvents[%d].cloudAgentId is not an id", i)
 		}
 		subject := OwnerSubject(agent, kind, identity)
 		if seen[subject] {

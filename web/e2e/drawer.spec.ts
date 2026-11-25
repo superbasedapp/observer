@@ -42,7 +42,7 @@ test("mobile nav drawer opens, closes on backdrop, navigates on tap", async ({
 
   // Re-open and tap a nav item → navigates and closes.
   await page.getByRole("button", { name: /open navigation|menu/i }).click();
-  await page.waitForTimeout(300);
+  // click() waits for the link to stop moving (the drawer's slide-in).
   // Nav links carry a count badge, so the accessible name is e.g.
   // "Sessions 8" — match loosely, scoped to the sidebar.
   await page.locator("aside").getByRole("link", { name: /Sessions/ }).click();

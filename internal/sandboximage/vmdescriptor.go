@@ -52,9 +52,6 @@ var vmEntryCaps = map[string]int64{
 	GuestBinaryName:  256 << 20,
 }
 
-// VMEntryCap is an entry's size cap (0: not a VM set entry).
-func VMEntryCap(name string) int64 { return vmEntryCaps[name] }
-
 // VMDescriptor is the signed description of one guest image set.
 type VMDescriptor struct {
 	Schema string `json:"schema"`

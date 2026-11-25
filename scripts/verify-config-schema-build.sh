@@ -19,50 +19,17 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
-
-JSON_COMMITTED="internal/config/schema/schema.gen.json"
-TYPES_COMMITTED="web/src/lib/configschema.gen.ts"
-
-if [ ! -d "web/cfgschema" ]; then
-    echo "verify-config-schema-build: missing web/cfgschema" >&2
-    exit 1
-fi
-for f in "$JSON_COMMITTED" "$TYPES_COMMITTED"; do
-    if [ ! -f "$f" ]; then
-        echo "verify-config-schema-build: missing $f — run 'make config-schema-build' and commit" >&2
-        exit 1
-    fi
-done
-
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
-
-go run ./web/cfgschema -root "$REPO_ROOT" -json "$tmpdir/schema.gen.json" -types "$tmpdir/configschema.gen.ts" >/dev/null \
-    || { echo "verify-config-schema-build: cfgschema failed" >&2; exit 1; }
-
-drift=0
-check() {
-    local committed="$1" rebuilt="$2"
-    if [ ! -f "$rebuilt" ]; then
-        echo "verify-config-schema-build: cfgschema did not emit $(basename "$rebuilt")" >&2
-        exit 1
-    fi
-    if ! diff -u "$committed" "$rebuilt" > "$tmpdir/.diff" 2>&1; then
-        echo "verify-config-schema-build: $committed drifted from a fresh cfgschema run"
-        echo "----- diff: committed (-) vs rebuilt (+) -----"
-        cat "$tmpdir/.diff"
-        echo "-----"
-        drift=1
-    fi
-}
-check "$JSON_COMMITTED" "$tmpdir/schema.gen.json"
-check "$TYPES_COMMITTED" "$tmpdir/configschema.gen.ts"
-
-if [ "$drift" -ne 0 ]; then
-    echo "config schema drift detected; run 'make config-schema-build' and commit" >&2
-    exit 1
-fi
-
-echo "config schema: $JSON_COMMITTED + $TYPES_COMMITTED in sync with internal/configschema"
+# The gate itself is scripts/verify-generated.sh, the one implementation
+# of the regenerate-and-diff drift gate; this wrapper names the generator
+# and the committed files it owns.
+exec "$(dirname "$0")/verify-generated.sh" \
+    --name verify-config-schema-build \
+    --tool cfgschema \
+    --tool-dir web/cfgschema \
+    --make config-schema-build \
+    --drift "config schema" \
+    --ok "config schema: internal/config/schema/schema.gen.json + web/src/lib/configschema.gen.ts in sync with internal/configschema" \
+    --quiet \
+    --artifact internal/config/schema/schema.gen.json \
+    --artifact web/src/lib/configschema.gen.ts \
+    -- go run ./web/cfgschema -root @ROOT@ -json @TMP@/schema.gen.json -types @TMP@/configschema.gen.ts

@@ -14,7 +14,7 @@ import (
 // ResultKindSessionEnrichment is the analysis_results kind a session result
 // carries (cloud 0037); a project digest is a rollup over sessions and has no
 // session to land on.
-const ResultKindSessionEnrichment = "session_enrichment"
+const ResultKindSessionEnrichment = cloudcontract.ResultKindSessionEnrichment
 
 // Revision is one result_revisions row: a partial correction.
 type Revision struct {

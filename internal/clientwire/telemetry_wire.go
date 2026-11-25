@@ -94,24 +94,6 @@ func TelemetryConfigPath(tool string, opts TelemetryOptions) (string, error) {
 	return filepath.Join(home, filepath.FromSlash(w.File)), nil
 }
 
-// TelemetryWired reports whether tool's exporter config currently carries
-// Observer's wiring (a read; never writes).
-func TelemetryWired(tool string, opts TelemetryOptions) bool {
-	c, _, ok := AdvertisedCapability(tool)
-	if !ok {
-		return false
-	}
-	path, err := TelemetryConfigPath(tool, opts)
-	if err != nil {
-		return false
-	}
-	content, err := os.ReadFile(path) //nolint:gosec // the tool's own config path from the registry
-	if err != nil {
-		return false
-	}
-	return telemetrywire.Wired(c.OTLP.Wire.Kind, content, readTelemetryOwnership(path))
-}
-
 // WireTelemetry applies (OpApply) or removes (OpRemove) Observer's exporter
 // wiring in tool's config file. It is the ONE writer of that edit: it takes
 // the shared settings-file lock (the hook registry's, so it serializes

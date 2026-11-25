@@ -39,9 +39,53 @@ export type SdkDiscovery = {
     org_id: string;
     minted_at: string;
     expires_at: string;
+    /** Where the held key came from ("" when none is held; absent from a
+     *  daemon older than lane sdk-use-key, read as a sign-in key). */
+    key_origin?: "" | "sign_in" | "admin_issued";
+    /** The organization's own dashboard base for the held key, for links to
+     *  an app's trace (`<dashboard_url>/trajectories?trace=<id>`); "" when
+     *  unknown, absent from an older daemon. Never where the key goes. */
+    dashboard_url?: string;
   };
   warnings: string[];
 };
+
+/** adminIssued: the held key is one an admin issued, installed with
+ *  `observer sdk use-key` or the "Use an SDK key from my admin" form. This
+ *  machine never revokes it (it is the admin's), so the card offers Remove,
+ *  not Revoke. */
+export function adminIssued(d: Pick<SdkDiscovery, "signed_in" | "online"> | null | undefined): boolean {
+  return !!d?.signed_in && d.online.key_origin === "admin_issued";
+}
+
+/** The body POST /api/sdk/credential/key takes. */
+export type InstallKeyBody = { key: string; gateway_url: string };
+
+/** installKeyRules: what the form checks before sending, in order (the
+ *  server checks again: sdkcredsvc.InstallKey). No message ever repeats the
+ *  key. */
+const installKeyRules: { error: string; breaks: (key: string, gateway: string) => boolean }[] = [
+  { error: "Paste the SDK key your admin gave you.", breaks: (k) => k === "" },
+  { error: "The key is one piece, <key_id>.<secret>, with no spaces or line breaks.", breaks: (k) => /\s/.test(k) },
+  { error: "Paste only the key, without SUPERBASED_API_KEY= or a header name.", breaks: (k) => /[=:]/.test(k) },
+  { error: "That is not an SDK key: an SDK key is <key_id>.<secret>.", breaks: (k) => !/^[A-Za-z0-9_-]+\.[\x21-\x7e]+$/.test(k) },
+  { error: "Enter your organization's gateway address (the admin's dialog shows it beside the key).", breaks: (_, g) => g === "" },
+  {
+    error: "The gateway address must start with https:// (plain http only to this machine).",
+    breaks: (_, g) => !/^https:\/\//i.test(g) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\/?$/i.test(g),
+  },
+];
+
+/** installKeyBody validates the form and builds the request, or returns the
+ *  first problem to show. */
+export function installKeyBody(key: string, gateway: string): { body: InstallKeyBody } | { error: string } {
+  const k = key.trim();
+  const g = gateway.trim().replace(/\/+$/, "");
+  for (const r of installKeyRules) {
+    if (r.breaks(k, g)) return { error: r.error };
+  }
+  return { body: { key: k, gateway_url: g } };
+}
 
 /** One settings proposal an AI agent filed (GET /api/config/proposals). */
 export type SettingsProposal = {

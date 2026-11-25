@@ -362,14 +362,6 @@ func ClassifyPaddleEvent(ev PaddleEvent) (kind string, binds bool) {
 	return act.kind, act.binds
 }
 
-// ResolveActivateStatus is a thin, read-only export of resolveActivateStatus
-// (same precedent as ClassifyPaddleEvent above): the live-defect fix's
-// (2026-09-12) status + trial-end decision for an "activate" action, WITHOUT
-// touching the database. Used by table-driven tests.
-func ResolveActivateStatus(ev PaddleEvent, existingStatus string, existingTrialEnd *time.Time) (status string, trialEnd *time.Time) {
-	return resolveActivateStatus(ev, existingStatus, existingTrialEnd)
-}
-
 // resolveAdjustmentAction classifies a refund/chargeback (adjustment.*) into an
 // entitlement effect. Adjustments never bind (they act on an already-linked
 // subscription). Paddle's action/type/status vocabulary is documented at

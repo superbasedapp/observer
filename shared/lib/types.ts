@@ -93,10 +93,14 @@ export type HourBucket = {
 
 export type AnalysisCostByHour = {
   days: number;
+  // The viewer zone the hours are in (the `tz` sent; UTC on fallback).
   timezone: string;
   buckets: HourBucket[];
 };
 
+// 2D bucket: day-of-week (0=Sun..6=Sat per Go's time.Weekday()) ×
+// hour-of-day (0..23). Cost summed over the window. Frontend renders
+// this as a 7×24 heatmap on the Analysis page's "When you spend".
 export type DowHourCell = {
   dow: number;
   hour: number;

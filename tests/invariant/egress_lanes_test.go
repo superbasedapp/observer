@@ -310,7 +310,7 @@ var egressLanes = []egressLane{
 		ID: "proxy.upstream", Pkg: "internal/proxy", Kind: egressRemote,
 		Reaches:  "the AI providers' API hosts and the configured [proxy.upstreams]",
 		Triggers: []egressTrigger{trigProxyRequest},
-		Gate:     "an AI client routed through the proxy (observer init, a launcher, or a managed node's maintained route); the proxy forwards what the client sent",
+		Gate:     "an AI client routed through the proxy (observer init, a launcher, or a managed node's maintained route), or an app pointed at an /up/<id> lane added by the user ([proxy.upstreams], `observer apps lane add`, or the dashboard; the local app lane, hosted AI gateway plan L7, loopback only and off until a lane is added); the proxy forwards what the client sent",
 	},
 	{
 		ID: "proxy.summary", Pkg: "internal/messagesummary", Kind: egressRemote,
@@ -491,6 +491,7 @@ var egressLanes = []egressLane{
 	{ID: "ingest.otlp", Pkg: "internal/ingest/otlp", Kind: egressListen, Reaches: "the OTLP gRPC and HTTP receiver (HTTP /v1/{logs,traces,metrics}, plus /api/public/otel/v1/traces, the Langfuse SDK exporter's traces path, an alias of /v1/traces behind the same guards)"},
 	{ID: "processobs.bridge", Pkg: "internal/processobs/bridge", Kind: egressListen, Reaches: "the cross-OS process-capture listener and pipe transport"},
 	{ID: "remotecfg", Pkg: "internal/remotecfg", Kind: egressListen, Reaches: "a loopback port probe while arming remote access"},
+	{ID: "proxy.handover", Pkg: "internal/listenhandover", Kind: egressListen, Reaches: "the API proxy's own listening socket: bound or adopted on the configured proxy address, duplicated and passed across the daemon's in-place re-exec so a restart keeps the port answering (L-168); never dials"},
 
 	// --- address-only: types and parsing, no connection --------------------
 	{ID: "config", Pkg: "internal/config", Kind: egressAddress, Reaches: "host and port validation"},

@@ -169,8 +169,9 @@ type CloudSyncLast struct {
 	ErrorClass      string
 	// PlanName / PlanLabel are the account plan GET /v1/usage reported on
 	// this run (migration 118, value-upgrade plan §W5) — e.g. "free" /
-	// "Free" or "plus" / "Plus". "" means unknown (no sync has ever
-	// recorded a plan, or a usage fetch failed on every run so far).
+	// "Signed-in Free" or "plus_beta" / "Personal Pro" (the server's label,
+	// shown verbatim). "" means unknown (no sync has ever recorded a plan,
+	// or a usage fetch failed on every run so far).
 	PlanName, PlanLabel string
 	// DigestWeekly reports whether the resolved plan includes the weekly
 	// project digest job kind, as 0/1; nil means unknown (an older server

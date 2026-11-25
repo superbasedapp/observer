@@ -64,8 +64,8 @@ type ExpectedHook struct {
 }
 
 // CaptureIntegrityOptions are the inputs InspectCaptureIntegrityWith takes
-// beyond the home directory. The zero value plus BinaryPath reproduces
-// InspectCaptureIntegrity.
+// beyond the home directory. The zero value plus BinaryPath is the plain
+// inspection: no expected targets and no repair-report window.
 type CaptureIntegrityOptions struct {
 	// BinaryPath is the running observer as a hook registration names it:
 	// the registration command (the npm / pip launcher when one resolves to
@@ -115,14 +115,6 @@ const (
 	maxCaptureConfigBytes   = 4 << 20
 )
 
-// InspectCaptureIntegrity reads the hook registry and Codex trust posture and
-// returns only closed labels from orgcontract. A whole-config checksum change
-// is reported as review-required evidence because tool config files also hold
-// unrelated settings; it is never classified as proof of capture bypass.
-func InspectCaptureIntegrity(homeDir, binaryPath string) CaptureIntegritySignals {
-	return InspectCaptureIntegrityWith(homeDir, CaptureIntegrityOptions{BinaryPath: binaryPath})
-}
-
 // captureCollector accumulates labels and located items for one inspection.
 type captureCollector struct {
 	homeDir string
@@ -164,10 +156,14 @@ func (c *captureCollector) riskAct(label, tool, path string, events []string, at
 	c.items[it.Key()] = it
 }
 
-// InspectCaptureIntegrityWith is InspectCaptureIntegrity with the T-847
-// inputs: the targets the node is expected to have registered (with their
-// dry-run drift) and the repair-report window. Every risk observed on a hook
-// artifact is also returned as a located item naming the tool and the file.
+// InspectCaptureIntegrityWith reads the hook registry and Codex trust posture
+// and returns only closed labels from orgcontract. A whole-config checksum
+// change is reported as review-required evidence because tool config files
+// also hold unrelated settings; it is never classified as proof of capture
+// bypass. opts carries the T-847 inputs: the targets the node is expected to
+// have registered (with their dry-run drift) and the repair-report window.
+// Every risk observed on a hook artifact is also returned as a located item
+// naming the tool and the file.
 func InspectCaptureIntegrityWith(homeDir string, opts CaptureIntegrityOptions) CaptureIntegritySignals {
 	c := &captureCollector{
 		homeDir: homeDir,

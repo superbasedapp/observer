@@ -60,7 +60,8 @@ type Capabilities struct {
 	SystemVisible bool
 	// MarkersVisible is true when the source can observe real
 	// cache_control marker positions (Tier 1 only). When false,
-	// the engine assumes breakpoints via [assumedBreakpoints].
+	// the breakpoints are the [assumedBreakpoints] model, which the
+	// engine does not consume yet.
 	MarkersVisible bool
 	// UsageObserved is true when the source can observe per-turn
 	// usage envelopes (Tier 1 + Tier 2; false for Tier 3 streaming
@@ -185,7 +186,11 @@ type AssumedBreakpoint struct {
 }
 
 // assumedBreakpoints returns the inferred cache_control breakpoint
-// model the engine uses when MarkersVisible=false (Tier 2 / Tier 3).
+// model for sources with MarkersVisible=false (Tier 2 / Tier 3).
+//
+// Reserved, not consumed: no engine path calls it yet (only
+// tier_test.go does). The §15.3 per-marker Tier-2 entry creation is
+// the planned consumer (see fixture_grading_test.go).
 //
 // **R1(a) live capture (2026-06-08 operator) — RESOLVED.** A real
 // Claude Code 2.1+ opus-4-8 request carries 3 explicit `cache_control`
@@ -204,8 +209,9 @@ type AssumedBreakpoint struct {
 //
 // Spec §24.4 isolation rule: this is the SINGLE adjustment site if
 // a future Claude Code SDK behavior change drops a breakpoint or
-// adds a fourth. Engine call sites read it through this function;
-// the returned slice's order maps to chain nesting order.
+// adds a fourth. Engine call sites must read it through this
+// function once they exist; the returned slice's order maps to
+// chain nesting order.
 func assumedBreakpoints() []AssumedBreakpoint {
 	return []AssumedBreakpoint{
 		// R1(a) shape: 2 system breakpoints + 1 rolling last-message

@@ -281,17 +281,3 @@ func parseUnixMillis(ms int64) time.Time {
 	}
 	return time.UnixMilli(ms).UTC()
 }
-
-// parseTimestamp converts the entry envelope's ISO-8601 timestamp.
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t.UTC()
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t.UTC()
-	}
-	return time.Time{}
-}

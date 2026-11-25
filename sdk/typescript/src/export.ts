@@ -12,6 +12,8 @@ import type { ReadableSpan, Span, SpanExporter, SpanProcessor } from "@opentelem
 
 import { K } from "./attrs.js";
 import { normalizeTags, scopeAttributes } from "./context.js";
+import { noteExported, noteRefused } from "./firsttrace.js";
+import { notePlanRefusal, parsePlanRefusal, planRefusalStats } from "./planrefusal.js";
 import { runtime } from "./runtime.js";
 import { applyPolicy, policyStats, type ExportPolicy } from "./policy.js";
 
@@ -68,6 +70,23 @@ function describe(err: unknown): string {
   return String(err);
 }
 
+/**
+ * A failed export's plan refusal: the OTLP/HTTP exporter fails a non-retried
+ * status (a 403) with an error carrying the status (`code`) and the body
+ * (`data`). When the org's plan refused it, keep the refusal for
+ * `diagnostics().planRefusal` and write one warning line (message and
+ * upgrade URL) at most once a minute. A retried status (a 429) reaches here
+ * without its body, so an allowance refusal on export is not seen here.
+ */
+export function noteExportRefusal(err: unknown): boolean {
+  const e = err as { code?: unknown; data?: unknown } | undefined;
+  if (!e || typeof e.code !== "number" || typeof e.data !== "string") return false;
+  const refusal = parsePlanRefusal(e.code, e.data);
+  if (!refusal) return false;
+  notePlanRefusal(refusal, "trace export");
+  return true;
+}
+
 /** Write at most one summary line per interval. Returns true when written. */
 export function maybeLogFailures(now = Date.now()): boolean {
   if (stats.unloggedFailures === 0) return false;
@@ -86,9 +105,16 @@ export function maybeLogFailures(now = Date.now()): boolean {
   return true;
 }
 
-/** Wraps a SpanExporter: never throws, counts failures and dropped spans. */
+/**
+ * Wraps a SpanExporter: never throws, counts failures and dropped spans. With
+ * `leg` (the destination it exports to), a successful export of a root span
+ * may write the process's first-trace line (firsttrace.ts).
+ */
 export class CountingExporter implements SpanExporter {
-  constructor(private readonly inner: SpanExporter) {}
+  constructor(
+    private readonly inner: SpanExporter,
+    private readonly leg?: "local" | "online",
+  ) {}
 
   export(spans: ReadableSpan[], resultCallback: (result: ExportResultLike) => void): void {
     const n = spans.length;
@@ -101,6 +127,7 @@ export class CountingExporter implements SpanExporter {
       if (result.code === 0) {
         stats.droppedSpans -= late; // a timed-out flush wrote these off; they made it
         stats.exportedSpans += n;
+        if (this.leg) noteExported(spans, this.leg);
       } else {
         if (late === 0) {
           stats.failedExports += 1;
@@ -108,6 +135,8 @@ export class CountingExporter implements SpanExporter {
         }
         stats.droppedSpans += n - late;
         noteError(result.error ? describe(result.error) : "export failed");
+        if (noteExportRefusal(result.error) && this.leg) noteRefused(spans, planRefusalStats.last);
+        else if (this.leg) noteExported(spans, this.leg, false);
         maybeLogFailures();
       }
       try {

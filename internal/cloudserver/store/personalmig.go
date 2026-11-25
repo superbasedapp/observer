@@ -33,7 +33,7 @@ import (
 //   - the personal org, found or provisioned through ProvisionOrg;
 //   - the re-key (D-IND-6), in ONE transaction per account: the account's
 //     live plus_beta subscription (org_id NULL) is bound to the personal org
-//     and rewritten to personal_pro v1, the account's Paddle-sourced plan
+//     and rewritten to personal_pro (personalmig.OrgPlanVersion), the account's Paddle-sourced plan
 //     rows are closed, and the ledger moves to rekeyed. Later webhooks find
 //     the bound row (boundSubscriptionOrgTx) and take the org branch, which
 //     changes no account plan: one subscription, one row, one entitlement.
@@ -599,7 +599,7 @@ var rekeyRefusals = []rekeyRefusal{
 //     trigger's per-org key are taken first, so a concurrent webhook for the
 //     account waits and the trigger's own lock is a re-entry;
 //  2. the live account subscription (org_id NULL) is bound to the org and
-//     its plan rewritten to personal_pro v1, inside a savepoint: a second
+//     its plan rewritten to personalmig.OrgPlanName/OrgPlanVersion, inside a savepoint: a second
 //     live subscription of the org is the trigger's refusal, reported as
 //     Refused with nothing written;
 //  3. the account's Paddle-sourced account_plans rows are closed at now (one

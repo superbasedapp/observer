@@ -696,7 +696,7 @@ func TestPendingDeferralIsBounded(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(strings.Join(lines[:cut+1], "")), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	old := time.Now().Add(-2 * pendingResultGrace)
+	old := time.Now().Add(-2 * adapter.PendingResultGrace)
 	if err := os.Chtimes(logPath, old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}

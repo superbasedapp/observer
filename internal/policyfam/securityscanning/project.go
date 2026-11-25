@@ -68,50 +68,6 @@ func num(n int64) *int64 { return &n }
 // forbidden). The section is not applied; what was in force stays.
 var ErrSectionConflict = errors.New("policyfam/securityscanning: the project section cannot merge over the floor in force")
 
-// MergeSpecs is over merged onto base, axis by axis: where both set a floor
-// the stronger one is kept (enum order, numbers, retention, version,
-// required components unioned, allow-sets intersected), where one does its
-// floor is kept, and the sections are unioned. An allow-set intersection
-// that would allow nothing, or a merged body the decoder would refuse, is
-// ErrSectionConflict naming the axis.
-func MergeSpecs(base, over PolicySpec) (PolicySpec, error) {
-	var out Body
-	for _, ax := range Axes {
-		bv, bset := floorValue(base.Body, ax.Name)
-		ov, oset := floorValue(over.Body, ax.Name)
-		var v postureop.Value
-		switch {
-		case bset && oset:
-			merged, err := mergeFloor(ax, bv, ov)
-			if err != nil {
-				return PolicySpec{}, fmt.Errorf("%w: %s: %w", ErrSectionConflict, ax.Name, err)
-			}
-			v = merged
-		case bset:
-			v = bv
-		case oset:
-			v = ov
-		default:
-			continue
-		}
-		floorWriters[ax.Name](&out, v)
-	}
-	if len(base.Body.Sections)+len(over.Body.Sections) > 0 {
-		out.Sections = map[string]Section{}
-		for id, s := range base.Body.Sections {
-			out.Sections[id] = s
-		}
-		for id, s := range over.Body.Sections {
-			out.Sections[id] = s
-		}
-	}
-	out = normalize(out)
-	if err := validate(out); err != nil {
-		return PolicySpec{}, fmt.Errorf("%w: %w", ErrSectionConflict, err)
-	}
-	return PolicySpec{Body: out}, nil
-}
-
 // mergeFloor keeps the stronger of two floors on one axis. Unlike raise (a
 // floor over the node's own value), both sides here are floors: a required
 // component set is unioned and an allow-set is intersected even when one

@@ -579,7 +579,7 @@ SELECT id, at, from_version, to_version, manifest_version, state, error_class, d
 		if err := rows.Scan(&r.ID, &at, &r.FromVersion, &r.ToVersion, &r.ManifestVersion, &st, &ec, &r.Detail, &r.DurationMS); err != nil {
 			return nil, fmt.Errorf("store.LoadUpdateEvents: scan: %w", err)
 		}
-		r.At = parseUpdateTime(at)
+		r.At = parseStoredTime(at)
 		r.State = updatespec.State(st)
 		r.ErrorClass = updatespec.ErrorClass(ec)
 		out = append(out, r)
@@ -588,16 +588,6 @@ SELECT id, at, from_version, to_version, manifest_version, state, error_class, d
 		return nil, fmt.Errorf("store.LoadUpdateEvents: %w", err)
 	}
 	return out, nil
-}
-
-// parseUpdateTime tolerates both precisions the ledger has ever written.
-func parseUpdateTime(s string) time.Time {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
 }
 
 // CloseDatabase closes the handle this Store holds.

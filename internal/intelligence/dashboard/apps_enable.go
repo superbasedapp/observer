@@ -149,8 +149,13 @@ type appsEnableRequest struct {
 	Source string `json:"source"`
 }
 
-// appsEnableSources is the closed caller table.
-var appsEnableSources = map[string]bool{"dashboard": true, "cli": true, "vscode": true}
+// appsEnableSources is the closed caller table. "sdk-setup" is the SDK's
+// `setup` command (SDK quickstart plan 3.7): on a terminal it shows the
+// consent sentence (GET /api/apps/status `consent`) and asks the person y/N
+// before it calls this seam; with no terminal it opens the AI Apps page
+// instead, whose Turn on button calls it with source "dashboard". The source
+// only names the caller in the audit row (ledger SDKQS-7).
+var appsEnableSources = map[string]bool{"dashboard": true, "cli": true, "vscode": true, "sdk-setup": true}
 
 // appsEnableStatus maps an outcome to the HTTP status: 200 only when AI
 // Apps is on and listening.

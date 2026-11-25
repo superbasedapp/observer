@@ -38,21 +38,13 @@ func NodeSessionCaps(tool string) sessionmsg.Caps {
 	return spendverdict.CapsFor(tool)
 }
 
-// RefreshSpendVerdicts brings the stored dedup verdicts (agent migration 143)
-// up to date for every session whose rows changed since it was last derived -
-// the one writer is internal/spendverdict.Refresh. The daemon calls it on a
-// ticker; a windowed reader calls it before reading.
-func (s *Store) RefreshSpendVerdicts(ctx context.Context, opts spendverdict.Options) (int, error) {
-	return spendverdict.Refresh(ctx, s.db, opts)
-}
-
 // spendVerdictReadBound caps the refresh a latency-bounded windowed read runs
 // first (the guard's budget lookup has a 3 s deadline): the daemon's ticker
 // keeps the queue short, so this is normally a single empty probe, and after
 // a one-time rule backfill the read proceeds on the verdicts derived so far.
 const spendVerdictReadBound = time.Second
 
-// refreshSpendVerdictsBounded runs RefreshSpendVerdicts under
+// refreshSpendVerdictsBounded runs spendverdict.Refresh under
 // spendVerdictReadBound before a windowed read. A failure leaves the previous
 // verdicts in place: only a session changed since its last derivation can be
 // off, and the next read retries.

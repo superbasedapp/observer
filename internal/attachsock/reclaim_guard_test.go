@@ -75,10 +75,17 @@ func TestWriterReclaimSkippedForC1Chunk(t *testing.T) {
 	cc := startServer(t, host)
 
 	stdinR, stdinW := io.Pipe()
+	var noticeCount int
+	var nmu sync.Mutex
 	resultCh := make(chan ExitStatus, 1)
 	go func() {
 		st, _ := Attach(context.Background(), cc, SpawnRequest{Tool: "t", Subcommand: "s"}, ClientIO{
 			Stdin: pipeStdin{stdinR},
+			Notice: func(_, _ string) {
+				nmu.Lock()
+				noticeCount++
+				nmu.Unlock()
+			},
 		})
 		resultCh <- st
 	}()
@@ -89,7 +96,13 @@ func TestWriterReclaimSkippedForC1Chunk(t *testing.T) {
 	}
 
 	_, _ = stdinW.Write([]byte{0x9b, '6', 'n'}) // 8-bit CSI reply
-	time.Sleep(100 * time.Millisecond)          // give the read loop time to classify
+	// The read loop has classified the chunk once its revoked notice (the
+	// not-reclaimed outcome) reaches the client.
+	waitFor(t, "the revoked notice", func() bool {
+		nmu.Lock()
+		defer nmu.Unlock()
+		return noticeCount >= 1
+	})
 
 	sess.endOutput(0)
 	select {

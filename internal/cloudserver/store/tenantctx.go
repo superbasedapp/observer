@@ -116,6 +116,32 @@ func InstallTenantContextKey(ctx context.Context, pool *pgxpool.Pool, key []byte
 	return id, nil
 }
 
+// ReadServerLogSettings reads the named server settings from pg_settings as
+// the pool login's session sees them (per-role and per-database settings
+// included). A setting the server does not have (pgaudit not loaded) is
+// simply absent from the map. The migrate command passes
+// tenantctx.KeyLogSettings to decide whether the tenant-context key may be
+// sent as a bound parameter.
+func ReadServerLogSettings(ctx context.Context, pool *pgxpool.Pool, names []string) (map[string]string, error) {
+	rows, err := pool.Query(ctx, `SELECT name, setting FROM pg_settings WHERE name = ANY($1)`, names)
+	if err != nil {
+		return nil, fmt.Errorf("read the server's logging settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, fmt.Errorf("read the server's logging settings: %w", err)
+		}
+		out[name] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the server's logging settings: %w", err)
+	}
+	return out, nil
+}
+
 // ensureTenantKey installs the process-random key the first time a tenant
 // transaction needs it. A configured key is never installed here.
 func (s *Store) ensureTenantKey(ctx context.Context) error {

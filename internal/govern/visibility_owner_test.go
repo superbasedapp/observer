@@ -16,12 +16,12 @@ func ownerGrant(consent, tenancy string, ownerManaged bool, authority ...string)
 	return g
 }
 
-// TestOwnerManagedVisibility is finding F12 (v1.42.1 ship-readiness audit):
-// a machine its owner manages from a personal organization of one keeps its
-// own AI Apps pages, Routing and Policies and the two Settings sections behind
-// them, while a team member's managed machine keeps today's defaults and an
-// individual machine has none. One case per audience and per rule the
-// capability meets.
+// TestOwnerManagedVisibility is finding F12 (v1.42.1 ship-readiness audit) as
+// widened by the operator ruling of 2026-11-24: a machine its owner manages
+// from a personal organization of one starts with every page and every
+// Settings section visible (the owner is the administrator), while a team
+// member's managed machine keeps today's defaults and an individual machine
+// has none. One case per audience and per rule the capability meets.
 func TestOwnerManagedVisibility(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	const (
@@ -45,17 +45,18 @@ func TestOwnerManagedVisibility(t *testing.T) {
 		settings     map[string]nodegov.Visibility
 	}{
 		{
-			name:         "owner-managed managed enrolment: the owner's own pages stay visible",
+			name:         "owner-managed managed enrolment: every page and section stays visible",
 			grant:        ownerGrant(ConsentManaged, TenancyManaged, true, AuthorityEnforceBudget),
 			wantAudience: nodegov.ManagedAudienceOwner, wantOwner: true,
 			page: V, pageSrc: VisibilitySourceDefault,
 			nav: map[string]nodegov.Visibility{
-				"security": H, "code-security": H, "egress": V,
-				"compression": R, "remote": R, "agent-config": R, "sessions": V, "privacy": V,
+				"security": V, "code-security": V, "egress": V,
+				"compression": V, "remote": V, "agent-config": V, "sessions": V, "privacy": V,
 			},
 			settings: map[string]nodegov.Visibility{
 				"routing": V, "observability": V,
-				"guard": H, "otel": H, "cloud": H, "pricing": R, "proxy": R, "enrolment": V,
+				"guard": V, "otel": V, "cloud": V, "pricing": V, "proxy": V, "enrolment": V,
+				"secrets": V, "intel": V, "hooks": V, "retention": V,
 			},
 		},
 		{
@@ -99,7 +100,21 @@ func TestOwnerManagedVisibility(t *testing.T) {
 			// The other nine owner pages keep the owner default; routing is
 			// asserted on its own below through nav.
 			page: V, pageSrc: VisibilitySourceDefault,
-			nav: map[string]nodegov.Visibility{"security": H},
+			nav: map[string]nodegov.Visibility{"security": V},
+		},
+		{
+			// The owner publishes from their online dashboard: an explicit
+			// read-only lock and a hide beat the owner's visible default,
+			// exactly as an admin's directive does on a team machine.
+			name:  "owner-managed, the owner locks Security and hides OTel export: the org's lists win",
+			grant: ownerGrant(ConsentManaged, TenancyManaged, true),
+			delivered: visBody(t, nodegov.PolicyInput{
+				ReadOnlySections: []string{"security"}, HiddenSettings: []string{"otel"},
+			}),
+			wantAudience: nodegov.ManagedAudienceOwner, wantOwner: true,
+			page: V, pageSrc: VisibilitySourceDefault,
+			nav:      map[string]nodegov.Visibility{"security": R, "remote": V},
+			settings: map[string]nodegov.Visibility{"otel": H, "guard": V},
 		},
 	}
 	for _, tc := range cases {

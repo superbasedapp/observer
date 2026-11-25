@@ -119,3 +119,67 @@ func TestGeneratePlansRefusesDrift(t *testing.T) {
 		t.Fatalf("a refused run wrote plus_beta v5 (count %d, %v)", n, err)
 	}
 }
+
+// TestGeneratePlansRelabelsCopy: the label is copy (cloud 0156). A row whose
+// only difference from its template is the label is reported as copy-only
+// drift and relabelled to the catalog's; nothing else in the row moves. The
+// fixture puts back the beta's "Plus" that 0079 copied into plus_beta v5,
+// which is what a deployment migrated before this change holds.
+func TestGeneratePlansRelabelsCopy(t *testing.T) {
+	pool := cloudtestpg.NewDB(t)
+	ctx := context.Background()
+	var before store.Plan
+	if err := pool.QueryRow(ctx, `SELECT plan_id::text, daily_cap, budget_pool FROM plans WHERE name = 'plus_beta' AND version = 5`).
+		Scan(&before.ID, &before.DailyCap, &before.BudgetPool); err != nil {
+		t.Fatal(err)
+	}
+	generatorExec(t, pool, `UPDATE plans SET label = 'Plus' WHERE name = 'plus_beta' AND version = 5`)
+	drift, err := store.CheckPlans(ctx, pool)
+	if err != nil || len(drift) != 1 || !drift[0].CopyOnly || drift[0].Missing ||
+		strings.Join(drift[0].Diff, ",") != "label Plus != catalog Personal Pro" {
+		t.Fatalf("CheckPlans = %+v, %v", drift, err)
+	}
+	rep, err := store.GeneratePlans(ctx, pool)
+	if err != nil {
+		t.Fatalf("GeneratePlans: %v", err)
+	}
+	if len(rep.Inserted) != 0 || strings.Join(rep.Relabelled, ",") != "plus_beta v5" || strings.Join(rep.Unchanged, ",") != "free v5" {
+		t.Fatalf("report = %+v", rep)
+	}
+	var after store.Plan
+	if err := pool.QueryRow(ctx, `SELECT plan_id::text, label, daily_cap, budget_pool FROM plans WHERE name = 'plus_beta' AND version = 5`).
+		Scan(&after.ID, &after.Label, &after.DailyCap, &after.BudgetPool); err != nil {
+		t.Fatal(err)
+	}
+	if after.Label != "Personal Pro" || after.ID != before.ID || after.DailyCap != before.DailyCap || after.BudgetPool != before.BudgetPool {
+		t.Fatalf("relabelled row = %+v, before %+v", after, before)
+	}
+	if drift, err := store.CheckPlans(ctx, pool); err != nil || len(drift) != 0 {
+		t.Fatalf("CheckPlans after = %+v, %v", drift, err)
+	}
+}
+
+// TestPlansStayImmutableButForTheGeneratorsLabel: 0156's trigger lets
+// through exactly a label-only UPDATE in the generator's transaction. A
+// label UPDATE by the table's owner outside it, and a generator UPDATE that
+// also moves an entitlement column, are refused as before.
+func TestPlansStayImmutableButForTheGeneratorsLabel(t *testing.T) {
+	pool := cloudtestpg.NewDB(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE plans SET label = 'Plus' WHERE name = 'plus_beta' AND version = 5`); err == nil ||
+		!strings.Contains(err.Error(), "plans rows are immutable") {
+		t.Fatalf("a label update outside the generator = %v, want the trigger's refusal", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('sbci.plan_writer', 'generator', true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE plans SET label = 'Plus', daily_cap = daily_cap + 1 WHERE name = 'plus_beta' AND version = 5`); err == nil ||
+		!strings.Contains(err.Error(), "plans rows are immutable") {
+		t.Fatalf("a generator update of a cap = %v, want the trigger's refusal", err)
+	}
+}

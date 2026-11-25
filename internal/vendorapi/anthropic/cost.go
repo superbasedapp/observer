@@ -81,7 +81,7 @@ type costResult struct {
 // costLine is the fact's feature dimension: the parsed line fields joined in
 // a fixed order, empty fields kept as empty so positions never shift.
 func costLine(r costResult) string {
-	return strings.Join([]string{str(r.CostType), str(r.TokenType), str(r.ServiceTier), str(r.ContextWindow), str(r.InferenceGeo)}, "|")
+	return strings.Join([]string{vendorapi.Str(r.CostType), vendorapi.Str(r.TokenType), vendorapi.Str(r.ServiceTier), vendorapi.Str(r.ContextWindow), vendorapi.Str(r.InferenceGeo)}, "|")
 }
 
 func parseCost(r vendorapi.Response) (vendorapi.Page, error) {
@@ -97,23 +97,23 @@ func parseCost(r vendorapi.Response) (vendorapi.Page, error) {
 			return vendorapi.Page{}, err
 		}
 		if b.Results == nil {
-			return vendorapi.Page{}, drift(SurfaceCostReport, "data[%d].results is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceCostReport, "data[%d].results is missing", i)
 		}
 		seen := map[string]bool{}
 		for j, res := range *b.Results {
 			if res.Amount == nil || res.Currency == nil {
-				return vendorapi.Page{}, drift(SurfaceCostReport, "data[%d].results[%d] misses amount or currency", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCostReport, "data[%d].results[%d] misses amount or currency", i, j)
 			}
 			if !strings.EqualFold(*res.Currency, "USD") {
-				return vendorapi.Page{}, drift(SurfaceCostReport, "data[%d].results[%d] currency is not USD", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCostReport, "data[%d].results[%d] currency is not USD", i, j)
 			}
 			micros, ok := vendorapi.DecimalMicros(*res.Amount, 2)
 			if !ok {
-				return vendorapi.Page{}, drift(SurfaceCostReport, "data[%d].results[%d] amount is not a decimal in cents", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCostReport, "data[%d].results[%d] amount is not a decimal in cents", i, j)
 			}
-			model, line := str(res.Model), costLine(res)
+			model, line := vendorapi.Str(res.Model), costLine(res)
 			if seen[model+"\x00"+line] {
-				return vendorapi.Page{}, drift(SurfaceCostReport, "data[%d].results[%d] repeats a cost line", i, j)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceCostReport, "data[%d].results[%d] repeats a cost line", i, j)
 			}
 			seen[model+"\x00"+line] = true
 			page.Facts = append(page.Facts, vendorapi.FactRow{

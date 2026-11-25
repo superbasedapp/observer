@@ -96,25 +96,14 @@ type membersDoc struct {
 	TotalCount *count `json:"total_count"`
 }
 
-func drift(s vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, s}, a...)...)
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return strings.TrimSpace(*s)
-}
-
 func decode(r vendorapi.Response, s vs.SurfaceID, v any) error {
 	if r.Status != 200 {
-		return drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	dec := json.NewDecoder(bytes.NewReader(r.Body))
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
-		return drift(s, "body does not decode as the documented response")
+		return vendorapi.Drift(s, "body does not decode as the documented response")
 	}
 	return nil
 }
@@ -126,11 +115,11 @@ func parseOrgMembers(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	if doc.Data == nil || doc.TotalCount == nil {
-		return vendorapi.Page{}, drift(s, "required field data or total_count is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field data or total_count is missing")
 	}
 	off, ok := vendorapi.OffsetOf(r.Cursor)
 	if !ok {
-		return vendorapi.Page{}, drift(s, "the page was asked with a cursor that is not an offset cursor")
+		return vendorapi.Page{}, vendorapi.Drift(s, "the page was asked with a cursor that is not an offset cursor")
 	}
 	page := vendorapi.Page{Snapshot: &vendorapi.SnapshotManifest{
 		Scope:          []vendorapi.ScopeKey{{Namespace: NamespaceUser, Kind: vs.KindUser}},
@@ -139,33 +128,33 @@ func parseOrgMembers(r vendorapi.Response) (vendorapi.Page, error) {
 	ids := make([]string, 0, len(*doc.Data))
 	seen := map[string]bool{}
 	for i, m := range *doc.Data {
-		id := str(m.ID)
+		id := vendorapi.TrimStr(m.ID)
 		if id == "" || m.Email == nil || m.Role == nil {
-			return vendorapi.Page{}, drift(s, "data[%d] misses id, email or role", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] misses id, email or role", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(s, "data[%d] repeats a member", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d] repeats a member", i)
 		}
 		seen[id] = true
 		if !memberRoles[*m.Role] {
-			return vendorapi.Page{}, drift(s, "data[%d].role is not a documented value", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "data[%d].role is not a documented value", i)
 		}
 		ids = append(ids, id)
 		attrs := map[string]string{"role": *m.Role}
-		if e := str(m.Email); e != "" {
+		if e := vendorapi.TrimStr(m.Email); e != "" {
 			attrs["email"] = e
 		}
-		name := strings.TrimSpace(str(m.FirstName) + " " + str(m.LastName))
+		name := strings.TrimSpace(vendorapi.TrimStr(m.FirstName) + " " + vendorapi.TrimStr(m.LastName))
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
 			Type: MemberType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: id}, DisplayName: name, Attrs: attrs,
 		})
 	}
 	if vendorapi.OffsetLoop(r.Cursor, ids) {
-		return vendorapi.Page{}, drift(s, "the page repeats the previous page's last member (offset paging loop)")
+		return vendorapi.Page{}, vendorapi.Drift(s, "the page repeats the previous page's last member (offset paging loop)")
 	}
 	next, ok := vendorapi.NextOffsetCursor(off, int(*doc.TotalCount), ids)
 	if !ok {
-		return vendorapi.Page{}, drift(s, "total_count %d does not cover offset %d plus %d members", *doc.TotalCount, off, len(ids))
+		return vendorapi.Page{}, vendorapi.Drift(s, "total_count %d does not cover offset %d plus %d members", *doc.TotalCount, off, len(ids))
 	}
 	page.NextCursor = next
 	return page, nil

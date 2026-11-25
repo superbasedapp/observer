@@ -30,13 +30,54 @@ mvn -q -f /path/to/sdk/java install -DskipTests
 <dependency>
   <groupId>app.superbased</groupId>
   <artifactId>superbased-sdk</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
 To use this machine's Observer, turn on Settings > Your apps in its
 dashboard (or `[observability] enabled = true`). The SDK sends spans to
 `http://127.0.0.1:4318/v1/traces` unless you point it elsewhere.
+
+### A key without installing Observer
+
+Java has no `setup` command of its own. Run the Node or Python one once in
+the project with `--key-only`:
+
+```bash
+npx @superbased/sdk setup --key-only
+```
+
+(or `uvx superbased-sdk setup --key-only`). You approve once in the browser;
+setup writes your own SDK key to a file only your user account can read, and
+the Java SDK reads it from there: no environment variable to set and nothing
+in the project folder. The key is never printed.
+
+| OS | The SDK-held key file |
+|---|---|
+| Linux, macOS | `$XDG_CONFIG_HOME/superbased/sdk-credential`, else `~/.config/superbased/sdk-credential` |
+| Windows | `%LOCALAPPDATA%\superbased\sdk-credential` |
+| Any | `SUPERBASED_CREDENTIAL_FILE` names another path |
+
+The SDK refuses the file (with a warning, then the next setting applies) when
+it is a symlink, is not a regular file, is readable by other users or is
+owned by another user; on Windows when it is a reparse point, is not inside
+your own `%LOCALAPPDATA%` or is owned by another user. Its key goes only to
+the gateway address stored beside it. When Observer on this machine is
+signed in, its own key wins and the file is reported as unused. From 14 days
+before the key expires the SDK says so; an expired key is not used (run
+setup again). `Superbased.diagnostics()` shows `credential_source` and
+`sdk_file` (`path`, `state`: `absent`, `used`, `unused`, `refused`,
+`expired` or `not_read`, and the refused rule in `reason`; never the key).
+
+The service name defaults to the `Implementation-Title` in your jar's
+manifest (normalised), else `custom-app`; `service_name_source` in
+diagnostics says which (`argument`, `env`, `manifest` or `default`).
+
+On a terminal (not under `CI`), the first trace a process exports writes one
+line to stderr with its link on the dashboard: `superbased: first trace from
+this process: https://.../trajectories?trace=...` (the local dashboard's
+`/apps/traces?trace=...` when it went to this machine).
+`SUPERBASED_FIRST_TRACE_LINK=0` (or `false`, `off`) turns it off.
 
 ## Quick start
 
@@ -126,11 +167,80 @@ number came from (`gateway_exact`, `proxy_exact`, `computed`, `reported`).
 `gatewayHeaders()` and `stampGatewayRequestId(headers, span)` join a call
 routed through the organization's AI gateway to its exact cost.
 
+**The AI gateway.** The AI gateway is the proxy your app's model calls go
+through: it prices each call exactly, holds your app's budgets and applies
+your organization's model and admission rules. `Gateway.endpoint(provider,
+upstream)` finds its address, first set wins: an address you pass
+(`Gateway.endpoint(provider, upstream, url)`), then `SUPERBASED_AI_GATEWAY_URL`
+(the gateway's address, without `/v1`), then your organization's address
+`<org url>/ai/<upstream>` when the destination is `online`, then this
+machine's app lane (`observer apps lane add`) when it is `local` or `both`. It
+throws `Gateway.NotConfiguredException` when nothing applies, never falling
+back to the provider itself. The provider is the client family
+(`Gateway.PROVIDER_OPENAI`, whose base URL ends in `/v1`,
+`PROVIDER_ANTHROPIC` or `PROVIDER_AZURE_OPENAI`); the upstream defaults to
+`openai` or `anthropic`.
+
+```java
+GatewayEndpoint ep = Gateway.endpoint(Gateway.PROVIDER_OPENAI, null);
+HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(ep.url("chat/completions")));
+ep.headers().forEach(req::header); // identity, request id, traceparent, X-SBO-Upstream
+String key = ep.apiKey();          // SUPERBASED_AI_GATEWAY_KEY; null on the machine lane
+```
+
+`Gateway.baseUrl(provider)` gives just the base URL for a client library.
+On the machine's app lane `apiKey()` is null: send the provider's own key,
+which the lane forwards; a remote gateway never needs it. A refusal reads with
+`GatewayRefusalException.parse(status, body, headers)`: `kind()` is
+`budget_exceeded` (402, with `budget()`), `model_not_allowed`,
+`admission_denied`, `plan_required` (403), `quota_exceeded` (429, with
+`retryAfter()`) or `other`, and `planRefusal()` (also its cause) carries the
+plan detail when the plan is why.
+
 **Content and sampling.** `captureContent` (default on),
 `maxContentChars` (8000), a `mask((value, key) -> ...)` hook and a
 `shouldExport(span -> ...)` hook apply to the exported copy of every span;
 `sampleRate` (or `SUPERBASED_SAMPLE_RATE`, `OTEL_TRACES_SAMPLER[_ARG]`)
 samples by trace id with the same rule as the other SDKs.
+
+## When the plan does not include AI Apps
+
+The organization's AI Apps gateway refuses ingest when its plan does not
+include AI Apps (HTTP 403 `plan_required`) or this month's allowance is used
+up (HTTP 429). The SDK reads that answer as a `PlanRefusalException`: a
+`PlanRefusalException.PlanRequired` for the first, a
+`PlanRefusalException.AllowanceExceeded` for the second. `getMessage()` says
+why, and `upgradeUrl()` is where the organization's billing owner changes the
+plan. It also has `kind()`, `code()`, `status()`, `capability()`, `plan()`
+(the plan in force), `allowance()`, `plans()` (the plans that include more),
+and on a 429 `quota()` and `retryAfter()`.
+
+- `getPrompt`, `getDataset` and `runExperiment` throw the exception they always
+  throw (`PromptException.FetchFailed`, `ExperimentException`), now with the
+  refusal as its cause and its `planRefusal()`, so an existing `catch` still
+  works.
+- The calls that never throw carry it: `ScoreResult.planRefusal()`,
+  `Verdict.planRefusal()` (from `admit()`) and `ExperimentResult.planRefusal()`.
+  `getTraceCost` returns null, as for any failed read.
+- Export never throws. A refused export shows in
+  `Superbased.diagnostics().get("plan_refusal")` (a map of the same fields;
+  `plan_refusal_at` says when), and the SDK logs one warning line a minute with
+  the message and the upgrade URL. The last refusal of any call is kept there.
+  On export, `retryAfter()` is not known (the OTLP exporter keeps the body but
+  not the headers).
+
+```java
+try {
+  Prompt p = Superbased.getPrompt("support-reply");
+} catch (PromptException.FetchFailed e) {
+  if (e.planRefusal() != null) {
+    System.err.println(e.planRefusal().getMessage() + " " + e.planRefusal().upgradeUrl());
+  }
+}
+```
+
+`PlanRefusalException.parse(status, body, headers)` reads a refusal from any
+HTTP answer, and returns null for anything else.
 
 ## Build and test
 
@@ -145,6 +255,24 @@ named after it) and fails when a section has no Java runner.
 attribute-key list; `ApiTest` covers the rest. The contract directory is
 `../contract` by default; elsewhere pass
 `-Dsuperbased.contract.dir=<repo>/sdk/contract`.
+
+## Changelog
+
+### 0.2.0 (not yet published)
+
+- The SDK reads the SDK-held key file `setup --key-only` writes (paths and
+  rules above): its destination is used after `SUPERBASED_DESTINATION` and
+  before the machine's default (`destination_source` `sdk_file`), and its key
+  after the machine's own (`credential_source` `sdk_file`). Windows reads this
+  file under its own rule; the machine's sign-in file is still not read on
+  Windows.
+- The service name defaults to the main jar's `Implementation-Title` instead
+  of `custom-app`. An app that relied on `custom-app` appears as a new
+  service: set `serviceName` (or `SUPERBASED_SERVICE_NAME`) to keep the old
+  one.
+- One first-trace line on stderr with the dashboard link, on a terminal
+  only.
+- Also in 0.2.0: the AI gateway helpers and the plan refusals (above).
 
 ## Publishing (not done yet)
 

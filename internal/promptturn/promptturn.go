@@ -24,6 +24,10 @@ const (
 	// ShapeGemini is Gemini generateContent (contents[] with functionResponse
 	// parts).
 	ShapeGemini
+	// ShapeEmbeddings is the OpenAI embeddings API (an input string, a list
+	// of strings, or token ids). Only AdmissionView reads it; Classify
+	// answers KindNone.
+	ShapeEmbeddings
 )
 
 // String names the shape for logs and audit reasons.
@@ -37,6 +41,8 @@ func (s Shape) String() string {
 		return "openai_responses"
 	case ShapeGemini:
 		return "gemini"
+	case ShapeEmbeddings:
+		return "embeddings"
 	default:
 		return "unknown"
 	}

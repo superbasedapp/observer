@@ -339,7 +339,9 @@ export function Sidebar({
               collapsed && "lg:hidden",
             )}
           >
-            Some pages are hidden by your organization
+            {gov.data?.online?.kind === "personal"
+              ? "Some pages are hidden by your personal dashboard"
+              : "Some pages are hidden by your organization"}
           </NavLink>
         )}
         {/* Footer detail overflows the 56px rail — hide it at lg+ when

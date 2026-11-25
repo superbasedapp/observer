@@ -158,7 +158,7 @@ SELECT c.sha, c.committed_at, c.subject, c.reachable, c.is_merge, c.parents_json
 			i = len(out)
 			idx[sha] = i
 			out = append(out, skillhistory.TimelineCommit{
-				SHA: sha, CommittedAt: parseCommitTime(at), Subject: subject,
+				SHA: sha, CommittedAt: parseStoredTime(at), Subject: subject,
 				Reachable: reachable != 0, IsMerge: merge != 0, Parents: parseParents(parents),
 			})
 		}
@@ -331,7 +331,7 @@ SELECT id, tool, started_at,
 		if err := rows.Scan(&ss.ID, &ss.Tool, &started, &parent, &forked, &source); err != nil {
 			return nil, fmt.Errorf("store.loadSkillSessions: scan: %w", err)
 		}
-		ss.StartedAt = parseCommitTime(started)
+		ss.StartedAt = parseStoredTime(started)
 		switch {
 		case forked != "" && source != "subagent":
 			ss.Relation, ss.ParentID = skillhistory.RelationFork, forked
@@ -369,7 +369,7 @@ SELECT session_id, tool, target, COALESCE(source_event_id, ''), timestamp
 		if err := rows.Scan(&inv.SessionID, &inv.Tool, &inv.Name, &inv.ToolUseID, &at); err != nil {
 			return nil, fmt.Errorf("store.loadSkillInvocations: scan: %w", err)
 		}
-		inv.At = parseCommitTime(at)
+		inv.At = parseStoredTime(at)
 		out = append(out, inv)
 	}
 	return out, rows.Err()

@@ -47,7 +47,7 @@ func TestSandboxProbeFresh(t *testing.T) {
 // well within the TTL, and the hook names the record's backend.
 func TestSandboxProbeReadsAgainAfterASettle(t *testing.T) {
 	reads := fakeLandlockABI(t, 9)
-	rt := landlockTestRuntime(t, landlockTestConfig(t, true, "process_lite"))
+	rt := testSandboxRuntime(t, landlockTestConfig(t, true, "process_lite"))
 	ctx := context.Background()
 	_ = rt.ProbeSandbox(ctx)
 	first := reads.Load()

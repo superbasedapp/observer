@@ -147,6 +147,11 @@ func TestManagedLauncherRendersSpendRefusalWithoutStartingVendor(t *testing.T) {
 
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	exhaustManagedBudgetLaunchBudget(t, dbPath, "opencode")
+	// The configured proxy answers (a live listener), so the proxy-down gate
+	// lets the routed launch reach the spend check (lane launcher-proxy-down).
+	proxyURL := openLoopbackURL(t)
+	_, port, _ := strings.Cut(strings.TrimPrefix(proxyURL, "http://"), ":")
+	appendTestConfig(t, cfgPath, "[proxy]\nport = "+port+"\n")
 	marker := filepath.Join(t.TempDir(), "vendor-started")
 	stub := filepath.Join(t.TempDir(), "vendor-stub")
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\ntouch \"$1\"\n"), 0o700); err != nil {
@@ -161,7 +166,7 @@ func TestManagedLauncherRendersSpendRefusalWithoutStartingVendor(t *testing.T) {
 	// refusal under test can only come from spend.
 	root.SetArgs([]string{
 		"opencode", "--config", cfgPath, "--opencode-path", stub, "--no-attach",
-		"--proxy", "http://127.0.0.1:8820", "--", marker,
+		"--proxy", proxyURL, "--", marker,
 	})
 	root.SetOut(output)
 	root.SetErr(output)

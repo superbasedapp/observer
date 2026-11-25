@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
-from . import _destination, _http
+from . import _destination, _http, _planrefusal
 
 API_VERSION_HEADER = "X-SBO-SDK-API-Version"
 API_VERSION = "1"
@@ -57,7 +57,12 @@ class Side:
         hdrs = dict(self.headers)
         if headers:
             hdrs.update(headers)
-        return _http.request(method, self.url(resource, query, **parts), body=body, headers=hdrs, timeout=self.timeout)
+        resp = _http.request(method, self.url(resource, query, **parts), body=body, headers=hdrs, timeout=self.timeout)
+        refusal = resp.plan_refusal()
+        if refusal is not None:
+            # diagnostics()["plan_refusal"]; the call reports it its own way.
+            _planrefusal.note(refusal)
+        return resp
 
 
 _lock = threading.Lock()

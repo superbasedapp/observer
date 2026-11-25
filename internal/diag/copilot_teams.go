@@ -2,7 +2,6 @@ package diag
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -26,44 +25,20 @@ func checkCopilotTeams(cfg config.Config) Check {
 		return Check{Name: name, Status: StatusOK, Message: "copilot native-console is server-side (GitHub policy UI + MCP registry); no node-local config to verify - set COPILOT_OTEL_ENABLED to redirect Copilot OTel here (Rail A)"}
 	}
 
-	var details []string
-	worst := StatusOK
-	note := func(status Status, msg string) {
-		details = append(details, msg)
-		if status > worst {
-			worst = status
-		}
-	}
+	var d detailCheck
 
 	// (a) OTLP receiver reachable — the COPILOT_OTEL redirect targets it.
 	if cfg.Ingest.OTel.Enabled {
-		for _, addr := range []string{cfg.Ingest.OTel.GRPCAddr, cfg.Ingest.OTel.HTTPAddr} {
-			if addr == "" {
-				continue
-			}
-			if dialable(addr) {
-				note(StatusOK, "OTLP receiver reachable at "+addr+" (Copilot Rail A redirect target)")
-			} else {
-				note(StatusWarn, "OTLP receiver NOT reachable at "+addr+" - is `observer start` running with [ingest.otel].enabled?")
-			}
-		}
+		d.noteOTLPReceivers(cfg, "Copilot Rail A redirect target")
 	} else {
-		note(StatusWarn, "COPILOT_OTEL_ENABLED is set but [ingest.otel].enabled is false - the redirected Copilot telemetry has no receiver")
+		d.note(StatusWarn, "COPILOT_OTEL_ENABLED is set but [ingest.otel].enabled is false - the redirected Copilot telemetry has no receiver")
 	}
 
 	// (b) MCP pin bootstrap: the superbased-observer MCP server runs via
 	// `npx -y @superbased/observer …`, so npx must be on PATH.
-	if _, err := exec.LookPath("npx"); err == nil {
-		note(StatusOK, "npx present - the superbased-observer MCP pin can bootstrap")
-	} else {
-		note(StatusWarn, "npx not on PATH - the `npx -y @superbased/observer` MCP pin will not start")
-	}
+	d.noteNPX("npx present - the superbased-observer MCP pin can bootstrap", npxPinWillNotStart)
 
-	msg := "copilot OTel redirect requested - checks passed"
-	if worst != StatusOK {
-		msg = "copilot OTel redirect requested - see warnings below"
-	}
-	return Check{Name: name, Status: worst, Message: msg, Details: details}
+	return d.result(name, "copilot OTel redirect requested - checks passed", "copilot OTel redirect requested - see warnings below")
 }
 
 // copilotOTelRequested reports whether the operator has turned on Copilot's OTLP

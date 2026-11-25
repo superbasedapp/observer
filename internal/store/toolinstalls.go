@@ -223,15 +223,10 @@ func (s *Store) ListLatestInstallRecords(ctx context.Context, subject string) ([
 	return out, nil
 }
 
-// FinishToolInstall settles an in-flight AI-tool INSTALL: CAS from `from` to
-// f.Status, stamping the exit code, finish time and the post-install
-// resolution. ok=false when the row was not in `from` (already settled).
-func (s *Store) FinishToolInstall(ctx context.Context, id int64, from string, f ToolInstallFinish) (bool, error) {
-	return s.FinishInstallRecord(ctx, SubjectTool, id, from, f)
-}
-
-// FinishInstallRecord is FinishToolInstall for a record of subject; a
-// non-empty f.Digest or f.PlacedPath is stamped too.
+// FinishInstallRecord settles an in-flight INSTALL of a record of subject:
+// CAS from `from` to f.Status, stamping the exit code, finish time and the
+// post-install resolution; a non-empty f.Digest or f.PlacedPath is stamped
+// too. ok=false when the row was not in `from` (already settled).
 func (s *Store) FinishInstallRecord(ctx context.Context, subject string, id int64, from string, f ToolInstallFinish) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE tool_installs
@@ -307,15 +302,10 @@ func (s *Store) RevertUninstallRecord(ctx context.Context, subject string, id in
 	return tiAffectedOne(res, err, "store.RevertUninstallRecord")
 }
 
-// FinishToolUninstall settles an in-flight AI-tool UNINSTALL: CAS from
-// `from` to f.Status with the uninstall exit code, finish time and the
-// post-uninstall resolution (a binary still found means another install
-// shadows it).
-func (s *Store) FinishToolUninstall(ctx context.Context, id int64, from string, f ToolInstallFinish) (bool, error) {
-	return s.FinishUninstallRecord(ctx, SubjectTool, id, from, f)
-}
-
-// FinishUninstallRecord is FinishToolUninstall for a record of subject.
+// FinishUninstallRecord settles an in-flight UNINSTALL of a record of
+// subject: CAS from `from` to f.Status with the uninstall exit code, finish
+// time and the post-uninstall resolution (a binary still found means another
+// install shadows it).
 func (s *Store) FinishUninstallRecord(ctx context.Context, subject string, id int64, from string, f ToolInstallFinish) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE tool_installs
@@ -325,13 +315,8 @@ func (s *Store) FinishUninstallRecord(ctx context.Context, subject string, id in
 	return tiAffectedOne(res, err, "store.FinishUninstallRecord")
 }
 
-// SetToolInstallStatus is the bare CAS used for the orphan sweep of an
-// AI-tool record (an in-flight row no live process tracks).
-func (s *Store) SetToolInstallStatus(ctx context.Context, id int64, from, to string) (bool, error) {
-	return s.SetInstallRecordStatus(ctx, SubjectTool, id, from, to)
-}
-
-// SetInstallRecordStatus is SetToolInstallStatus for a record of subject.
+// SetInstallRecordStatus is the bare CAS used for the orphan sweep of a
+// record of subject (an in-flight row no live process tracks).
 func (s *Store) SetInstallRecordStatus(ctx context.Context, subject string, id int64, from, to string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE tool_installs SET status = ? WHERE id = ? AND subject_kind = ? AND status = ?`, to, id, subject, from)
 	return tiAffectedOne(res, err, "store.SetInstallRecordStatus")

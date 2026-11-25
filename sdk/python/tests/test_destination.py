@@ -2,6 +2,7 @@
 file, dual export and the degraded cases (contracts/destination.md)."""
 
 import os
+import time
 
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -292,6 +293,13 @@ def test_one_down_destination_never_blocks_the_other(stub, dead_url, monkeypatch
     with sb.span("a"):
         pass
     sb.flush(1.0)
+    # Bounded poll: on a loaded machine the POST and the failure count can
+    # land after the flush window; the passing path still takes milliseconds.
+    deadline = time.time() + 10
+    while time.time() < deadline and not (
+        "/v1/traces" in stub.paths("POST") and sb.diagnostics()["failed_exports"] >= 1
+    ):
+        time.sleep(0.02)
     assert "/v1/traces" in stub.paths("POST")
     posted = [r for r in stub.requests if r["path"] == "/v1/traces"]
     assert posted and "authorization" not in {k.lower() for k in posted[0]["headers"]}  # the machine never gets the key
@@ -318,10 +326,12 @@ def test_a_down_machine_never_costs_the_online_copy(stub, dead_url, monkeypatch,
 
 
 def test_online_exporter_sends_the_bearer_key(stub, monkeypatch):
-    sb.init(destination="online", org_url=stub.url, api_key="ik_9.secret", export_timeout=1.0)
+    # The export returns as soon as the stub answers; the wide timeouts only
+    # matter on a loaded machine (a 1 s export timeout failed on a gate shard).
+    sb.init(destination="online", org_url=stub.url, api_key="ik_9.secret", export_timeout=10.0)
     with sb.span("o"):
         pass
-    assert sb.flush(3)
+    assert sb.flush(15)
     r = [r for r in stub.requests if r["path"] == "/v1/traces"][0]
     hdrs = {k.lower(): v for k, v in r["headers"].items()}
     assert hdrs["authorization"] == "Bearer ik_9.secret" and r["raw"]

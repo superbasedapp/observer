@@ -186,6 +186,66 @@ func TestAppsEnableRecordsIntentAndReportsOutcome(t *testing.T) {
 	}
 }
 
+// TestAppsEnableSourcesAreAuditedAndClosed pins the caller table (SDK
+// quickstart plan 3.7, ledger SDKQS-7): each known source turns AI Apps on
+// through the one seam and is named in the audit row; an unknown one is
+// refused before the seam runs. "sdk-setup" is the SDK's `setup` after the
+// person answered y on a terminal.
+func TestAppsEnableSourcesAreAuditedAndClosed(t *testing.T) {
+	cases := []struct {
+		body       string
+		wantCode   int
+		wantSource string // "" when refused
+	}{
+		{`{"source":"sdk-setup"}`, http.StatusOK, "sdk-setup"},
+		{`{"source":"dashboard"}`, http.StatusOK, "dashboard"},
+		{`{"source":"cli"}`, http.StatusOK, "cli"},
+		{`{"source":"vscode"}`, http.StatusOK, "vscode"},
+		{`{}`, http.StatusOK, "dashboard"},
+		{`{"source":" sdk-setup "}`, http.StatusOK, "sdk-setup"},
+		{`{"source":"sdk_setup"}`, http.StatusBadRequest, ""},
+		{`{"source":"setup"}`, http.StatusBadRequest, ""},
+		{`{"source":"agent"}`, http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.body, func(t *testing.T) {
+			f := newFirstRunFixture(t, true)
+			a := &fakeApps{
+				status: planechoice.AppsStatus{InBuild: true, Component: planechoice.ComponentAvailable, HotEnable: true},
+				report: planechoice.ClassifyEnable(planechoice.EnableFacts{
+					InBuild: true, Component: planechoice.ComponentActive,
+					Receiver: planechoice.Receiver{State: planechoice.ReceiverListening, HTTPAddr: "127.0.0.1:4318"},
+				}),
+			}
+			a.bind(f.server)
+			rr := f.post(t, "/api/apps/enable", tc.body)
+			if rr.Code != tc.wantCode {
+				t.Fatalf("code %d, want %d: %s", rr.Code, tc.wantCode, rr.Body.String())
+			}
+			rows, err := f.store.RecentRemoteAudit(context.Background(), 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantSource == "" {
+				if a.enabled != 0 || len(rows) != 0 {
+					t.Fatalf("a refused source reached the seam (%d) or the audit (%+v)", a.enabled, rows)
+				}
+				return
+			}
+			if a.enabled != 1 || len(rows) != 1 {
+				t.Fatalf("enabled %d, audit rows %+v", a.enabled, rows)
+			}
+			want := "apps_enable source=" + tc.wantSource + " outcome=" + string(planechoice.OutcomeOn)
+			if rows[0].Kind != "manage" || rows[0].Route != "/api/apps/enable" || rows[0].Detail != want {
+				t.Fatalf("audit row %+v, want detail %q", rows[0], want)
+			}
+			if r := f.get(t); r.Plane.Intent != planechoice.ChoiceApps {
+				t.Fatalf("an enable from %s recorded no apps intent: %+v", tc.wantSource, r.Plane)
+			}
+		})
+	}
+}
+
 func TestAppsEnableBindFailureIsConflictAndRecordsNoIntent(t *testing.T) {
 	f := newFirstRunFixture(t, true)
 	a := &fakeApps{

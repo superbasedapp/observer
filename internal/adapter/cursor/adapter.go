@@ -1,4 +1,4 @@
-// Package cursor implements the hook-driven capture path for Cursor.
+// adapter.go implements the hook-driven capture path for Cursor.
 // Cursor has no structured native session logs — every action is observed
 // via a registered hook fired before/after the user's tool calls.
 //
@@ -16,6 +16,7 @@
 // having an "edits-only" view of file activity.
 //
 // See spec §4.3.
+
 package cursor
 
 import (

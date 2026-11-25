@@ -292,7 +292,7 @@ type projectSpend struct {
 	UnpricedTurns int
 }
 
-// loadProjectSpend loads one project's turns and sessions in [since,
+// LoadProjectSpend loads one project's turns and sessions in [since,
 // until). It is the ONE place a project's dollar figures are resolved
 // - every Projects-page surface (detail summary, commits ledger, prompt
 // chains, the cost buckets and the CLI) goes through it - and it is
@@ -319,11 +319,11 @@ func LoadProjectSpend(ctx context.Context, st *store.Store, engine *cost.Engine,
 	}
 	turns, unpriced, err := st.LoadProjectSpendTurns(ctx, engine, projectID, since, until)
 	if err != nil {
-		return projectSpend{}, err
+		return projectSpend{}, fmt.Errorf("dashapi.LoadProjectSpend: %w", err)
 	}
 	sessions, err := st.LoadProjectSessions(ctx, projectID, since, until)
 	if err != nil {
-		return projectSpend{}, err
+		return projectSpend{}, fmt.Errorf("dashapi.LoadProjectSpend: %w", err)
 	}
 	out := projectSpend{Turns: turns, Sessions: sessions, UnpricedTurns: unpriced}
 	costBySession := make(map[string]float64, len(sessions))

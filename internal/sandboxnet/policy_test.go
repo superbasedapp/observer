@@ -70,12 +70,21 @@ func TestDestinationAllowed(t *testing.T) {
 		{"6to4 link-local metadata", net.ParseIP("2002:a9fe:a9fe::"), RuleLinkLocalUnicast},
 		{"6to4 cgnat", net.ParseIP("2002:6440:1::"), RuleSharedAddress},
 		{"6to4 public", net.ParseIP("2002:808:808::"), ""},
+		// SEC-02: Teredo (2001::/32) carries its client IPv4 in the low 32
+		// bits, every bit inverted; ipclass unwraps it like 6to4 and NAT64.
+		{"teredo loopback", net.ParseIP("2001:0:4136:e378:8000:63bf:80ff:fffe"), RuleLoopback},
+		{"teredo rfc1918", net.ParseIP("2001:0:4136:e378:8000:63bf:f5ff:fffe"), RulePrivate},
+		{"teredo link-local metadata", net.ParseIP("2001:0:4136:e378:8000:63bf:5601:5601"), RuleLinkLocalUnicast},
+		{"teredo cgnat", net.ParseIP("2001:0:4136:e378:8000:63bf:9bbf:fffe"), RuleSharedAddress},
+		{"teredo public", net.ParseIP("2001:0:4136:e378:8000:63bf:f7f7:f7f7"), ""},
+		{"teredo host interface address", net.ParseIP("2001:0:4136:e378:8000:63bf:3f57:fef5"), RuleHostLocal},
 		// NEW-05: a cloud metadata endpoint outside link-local space is its
 		// own rule, never allow-listable, in every encoding.
 		{"alibaba metadata", net.ParseIP("100.100.100.200"), RuleCloudMetadata},
 		{"alibaba metadata mapped", net.ParseIP("::ffff:100.100.100.200"), RuleCloudMetadata},
 		{"alibaba metadata nat64", net.ParseIP("64:ff9b::6464:64c8"), RuleCloudMetadata},
 		{"alibaba metadata 6to4", net.ParseIP("2002:6464:64c8::"), RuleCloudMetadata},
+		{"alibaba metadata teredo", net.ParseIP("2001:0:4136:e378:8000:63bf:9b9b:9b37"), RuleCloudMetadata},
 		{"aws imds over ipv6", net.ParseIP("fd00:ec2::254"), RuleCloudMetadata},
 		{"aws ipv6 dns", net.ParseIP("fd00:ec2::23"), RuleCloudMetadata},
 		{"ecs task metadata", net.ParseIP("169.254.170.2"), RuleLinkLocalUnicast},

@@ -132,7 +132,7 @@ func messageText(e event) (string, bool) {
 	}
 	var parts []string
 	for _, c := range *e.LLMMessage.Content {
-		if str(c.Type) == "text" && c.Text != nil {
+		if vendorapi.Str(c.Type) == "text" && c.Text != nil {
 			parts = append(parts, *c.Text)
 		}
 	}
@@ -147,31 +147,31 @@ func parseEvents(r vendorapi.Response) (vendorapi.Page, error) {
 	}
 	cid := r.Params[ParamConversationID]
 	if !idRE.MatchString(cid) {
-		return vendorapi.Page{}, drift(SurfaceEvents, "the request's %s parameter is not a conversation id", ParamConversationID)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "the request's %s parameter is not a conversation id", ParamConversationID)
 	}
 	out := vendorapi.Page{NextCursor: next, SourceRecords: len(*doc.Items)}
 	seen := map[string]bool{}
 	for i, e := range *doc.Items {
-		id := str(e.ID)
+		id := vendorapi.Str(e.ID)
 		if !idRE.MatchString(id) {
-			return vendorapi.Page{}, drift(SurfaceEvents, "items[%d].id is missing or not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d].id is missing or not an id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceEvents, "items[%d] repeats an event", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d] repeats an event", i)
 		}
 		seen[id] = true
 		at, ok := isoTime(e.Timestamp)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceEvents, "items[%d].timestamp is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d].timestamp is not an ISO timestamp", i)
 		}
-		kind, source := str(e.Kind), str(e.Source)
+		kind, source := vendorapi.Str(e.Kind), vendorapi.Str(e.Source)
 		if kind == "" || source == "" {
-			return vendorapi.Page{}, drift(SurfaceEvents, "items[%d] misses kind or source", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d] misses kind or source", i)
 		}
 		if role, ok := messageRoles[source]; ok && kind == messageKind {
 			text, ok := messageText(e)
 			if !ok || !utf8.ValidString(text) {
-				return vendorapi.Page{}, drift(SurfaceEvents, "items[%d].llm_message.content is not the documented part list", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d].llm_message.content is not the documented part list", i)
 			}
 			text, cut := capText(text, vendorapi.MaxContentBytes)
 			out.Content = append(out.Content, vendorapi.ContentItem{
@@ -190,15 +190,15 @@ func parseEvents(r vendorapi.Response) (vendorapi.Page, error) {
 		if len(source) <= vendorapi.MaxIDLen && tokenSafe(source) {
 			detail["source"] = source
 		}
-		if v := str(e.ToolCallID); v != "" {
+		if v := vendorapi.Str(e.ToolCallID); v != "" {
 			if len(v) > vendorapi.MaxAttrValue {
-				return vendorapi.Page{}, drift(SurfaceEvents, "items[%d].tool_call_id is over-long", i)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d].tool_call_id is over-long", i)
 			}
 			detail["tool_call_id"] = v
 		}
-		target := str(e.ToolName)
+		target := vendorapi.Str(e.ToolName)
 		if len(target) > vendorapi.MaxTargetLen {
-			return vendorapi.Page{}, drift(SurfaceEvents, "items[%d].tool_name is over-long", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceEvents, "items[%d].tool_name is over-long", i)
 		}
 		out.Audit = append(out.Audit, vendorapi.AuditEvent{
 			Namespace: EventNamespace, EventID: id, At: at, ActorIsAgent: source == "agent",

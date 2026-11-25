@@ -164,7 +164,7 @@ final class Experiments {
                 + resp.describe()
                 + " (an SDK key from sign-in has no sdk:eval scope; run experiments on the org with a CI credential that has it)");
       }
-      throw new ExperimentException(side + ": " + what + " failed: " + resp.describe());
+      throw new ExperimentException(side + ": " + what + " failed: " + resp.describe(), resp.planRefusal());
     }
     Map<String, Object> o = resp.object();
     return o == null ? new LinkedHashMap<>() : o;
@@ -199,6 +199,7 @@ final class Experiments {
 
   static Dataset getDataset(String nameOrId) {
     List<String> errors = new ArrayList<>();
+    PlanRefusalException refused = null;
     List<Control.Side> targets = Control.sides();
     if (targets.isEmpty()) {
       errors.add(Control.unavailableReason());
@@ -211,10 +212,13 @@ final class Experiments {
         }
       } catch (ExperimentException e) {
         errors.add(e.getMessage());
+        if (refused == null) {
+          refused = e.planRefusal();
+        }
       }
     }
     throw new ExperimentException(
-        "dataset '" + nameOrId + "' not found" + (errors.isEmpty() ? "" : ": " + String.join("; ", errors)));
+        "dataset '" + nameOrId + "' not found" + (errors.isEmpty() ? "" : ": " + String.join("; ", errors)), refused);
   }
 
   /** The default id of a literal item: content-derived (review E-75). */
@@ -517,6 +521,7 @@ final class Experiments {
               if (!resp.ok()) {
                 failedPosts.addAndGet(chunk.size());
                 result.errors.add(r.side.name + ": posting " + chunk.size() + " result(s) failed: " + resp.describe());
+                result.notePlanRefusal(resp.planRefusal());
               } else if (resp.object() != null && resp.object().get("rejected") instanceof List) {
                 for (Object rej : (List<Object>) resp.object().get("rejected")) {
                   if (rej instanceof Map) {
@@ -592,6 +597,7 @@ final class Experiments {
       Http.Response resp = r.side.call("POST", "experiment_finish", Map.of(), null, null, Map.of("id", r.runId));
       if (!resp.ok()) {
         result.errors.add(r.side.name + ": finish failed: " + resp.describe());
+        result.notePlanRefusal(resp.planRefusal());
       }
       Http.Response got = r.side.call("GET", "experiment", null, null, null, Map.of("id", r.runId));
       if (got.ok() && got.object() != null) {

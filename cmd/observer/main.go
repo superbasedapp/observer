@@ -1,11 +1,3 @@
-// Command observer is the CLI entry point for the SuperBased Observer.
-//
-// All capture/query/manage subcommands (scan, watch, init, uninstall, serve,
-// doctor, status, tail, prune, cost, score, discover, patterns, learn,
-// suggest, dashboard, metrics, summarize, export) are wired directly under
-// the root. The legacy `observer observer ...` nesting is preserved as a
-// hidden alias group so installed hooks and MCP registrations from earlier
-// versions keep working without re-init.
 package main
 
 import (
@@ -53,6 +45,10 @@ func main() {
 	if code, ok := extrunhost.TrampolineDispatch(os.Args); ok {
 		os.Exit(code)
 	}
+	// L-168 (ii): the proxy socket a restarting daemon handed over arrives
+	// without close-on-exec; claim it before this process can start any
+	// child, so none inherits it (proxy_handover.go).
+	claimProxyHandover()
 	// Sandbox network helpers (SR27-SBX-1) run before cobra and before the
 	// OOB channel below: they must hand the inherited OOB fd to the real
 	// launcher inside the sandbox untouched (sandbox_helpers.go).
@@ -197,7 +193,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	// Per-tool launcher verbs (`observer claude`, `observer gemini`, ...):
 	// one table, launchers.go.
 	for _, mk := range launcherCommands {
-		root.AddCommand(mk())
+		root.AddCommand(withNoStartFlag(mk()))
 	}
 	root.AddCommand(newIDECmd())
 	// Scriptable launch and run control over the daemon (P-228, phase 1b).

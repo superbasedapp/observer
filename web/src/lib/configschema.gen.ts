@@ -118,6 +118,10 @@ export type ConfigKeyPath =
   "proxy.org_route.fallbacks" |
   "proxy.org_route.terminal_policy" |
   "proxy.org_route.direct_fallback_custody_ack" |
+  "proxy.app_lanes.models" |
+  "proxy.app_lanes.budget" |
+  "proxy.app_lanes.include_usage" |
+  "proxy.app_lanes.worst_case_output_tokens" |
   "dashboard.addr" |
   "dashboard.org_announcements" |
   "dashboard.live_ribbon" |
@@ -450,6 +454,8 @@ export type ConfigKeyPath =
   "terminal.ssh.profiles" |
   "launch.tools" |
   "launch.agent_runtime_dir" |
+  "launch.start_daemon" |
+  "launch.start_daemon_wait_seconds" |
   "codeintel.enabled" |
   "codeintel.languages" |
   "codeintel.auto_index_limit" |

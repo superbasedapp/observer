@@ -166,12 +166,12 @@ func runPiLauncherWithSettings(t *testing.T, settings string) ([]string, string)
 	cmd.SetErr(&out)
 	cmd.SetArgs([]string{
 		"--config", codexArgvTempConfig(t), "--pi-path", bin,
-		"--proxy-url", closedProxyURL(t), "--no-attach",
+		"--proxy-url", openLoopbackURL(t), "--no-attach",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("observer pi failed: %v (output %q)", err, out.String())
 	}
-	return codexRecordedArgv(t, argsFile), out.String()
+	return recordedArgv(t, argsFile), out.String()
 }
 
 // TestPiLauncherBareLaunchPassesAModel: with no pi default model configured,

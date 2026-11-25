@@ -1,8 +1,6 @@
 package warp
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -50,20 +48,10 @@ var (
 	tokenRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 )
 
-func drift(surface vs.SurfaceID, format string, a ...any) error {
-	return fmt.Errorf("%w: %s: "+format, append([]any{vendorapi.ErrSchemaDrift, surface}, a...)...)
-}
-
-func decode(body []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	return dec.Decode(v)
-}
-
 // status200 refuses any status but the documented 200.
 func status200(surface vs.SurfaceID, r vendorapi.Response) error {
 	if r.Status != 200 {
-		return drift(surface, "status %d is not the documented 200", r.Status)
+		return vendorapi.Drift(surface, "status %d is not the documented 200", r.Status)
 	}
 	return nil
 }
@@ -99,13 +87,6 @@ func capText(s string, max int) (string, bool) {
 		cut--
 	}
 	return s[:cut], true
-}
-
-func str(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // num is a JSON number kept as its literal text; it refuses a quoted value

@@ -222,12 +222,3 @@ func Prefixes() []string {
 	}
 	return out
 }
-
-// RuleNames returns the gate table's row names in order (for tests).
-func RuleNames() []string {
-	out := make([]string, len(rules))
-	for i, r := range rules {
-		out[i] = r.name
-	}
-	return out
-}

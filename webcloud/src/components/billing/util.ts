@@ -10,6 +10,7 @@ import type { Tone } from "@shared/lib/tone";
 import { vocabView } from "@shared/lib/vocabEntry";
 import type { SubscriptionStatus } from "../../api";
 import { SUBSCRIPTION_STATUS } from "../../lib/vocab";
+import { PLAN_LABELS, labelFor } from "../../lib/labels";
 
 // isFuture reports whether an RFC3339 instant is still ahead of now. An
 // unparseable or missing value is treated as not-future, so a canceled
@@ -42,9 +43,10 @@ export function dateWithRelative(iso: string | null | undefined): string {
 }
 
 // humanPlanLabel maps the raw plan token ("free" / "plus_beta") onto the
-// short human name a Pill should carry - never the raw token verbatim.
+// short human name a Pill should carry - never the raw token verbatim. The
+// names are PLAN_LABELS's (lib/labels.ts), the one table.
 export function humanPlanLabel(planToken: string | null | undefined): string {
-  return isPlusPlan(planToken) ? "Personal Pro" : "Free";
+  return labelFor(PLAN_LABELS, isPlusPlan(planToken) ? "plus_beta" : "free");
 }
 
 export function isPlusPlan(planToken: string | null | undefined): boolean {
@@ -64,9 +66,9 @@ export function statusMeta(
 }
 
 // PLAN_COMPARISON_ROWS is the ruled §2 table (cloud-intelligence value-upgrade
-// plan, 2026-09-15): what every account gets for free, and what Plus adds on
-// top of it. No row is locked behind "coming soon" - everything free lists
-// ships today. Since plan v5 (cloud migrations 0078-0079, ruling R-AI1) there
+// plan, 2026-09-15): what every account gets for free, and what Personal Pro
+// (plus_beta; "Plus" until the 2026-11-24 ruling) adds on top of it. No row
+// is locked behind "coming soon" - everything free lists ships today. Since plan v5 (cloud migrations 0078-0079, ruling R-AI1) there
 // is no cap on the number of sessions enriched; the allowance is tokens. The
 // token rows are the seeded tier defaults (enrichment_tiers free v1 / paid v1):
 // keep them equal to the tier versions the server has in force

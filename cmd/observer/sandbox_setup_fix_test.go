@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/filehash"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
@@ -265,7 +266,7 @@ func TestSandboxSetupPlacedFileFacts(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("pinned bytes"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	sum, _ := sandboxSetupFileSHA256(bin)
+	sum, _ := filehash.SHA256(bin)
 	r := newSetupRig(t, setupBaseConfig+"[terminal.sandbox.vm]\ncloud_hypervisor_path = \""+filepath.ToSlash(bin)+"\"\n")
 	ctx := context.Background()
 	id, err := r.ledger.BeginSandboxOp(ctx, sandboxInstallRecord{Name: "cloud-hypervisor", Backend: sandboxbackend.BackendCloudHypervisor, Channel: string(sandboxsetup.ChPinned), Argv: []string{"pinned_download", "cloud-hypervisor", "v54.0"}, Display: "download"})

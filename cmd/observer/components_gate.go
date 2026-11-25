@@ -59,11 +59,14 @@ var daemonLoopComponents = map[string][]string{
 	// proxy never serves, so a held route stays off (the doctor names it)
 	// instead of pointing an AI tool at a port nothing answers.
 	"route-hold-putback": {"capture.proxy"},
-	"dashboard":          {"ui.dashboard"},
-	"guidance-scan":      {"analytics"},
-	"session-score":      {"analytics"},
-	"advisor-digest":     {"analytics"},
-	"commit-scan":        {"projects"},
+	// The route hold at the end of a run (routehold_stop.go, L-168): only a
+	// daemon whose proxy served takes routes off.
+	"route-stop-hold": {"capture.proxy"},
+	"dashboard":       {"ui.dashboard"},
+	"guidance-scan":   {"analytics"},
+	"session-score":   {"analytics"},
+	"advisor-digest":  {"analytics"},
+	"commit-scan":     {"projects"},
 	// The Projects-page quality trend reads report files and the codeintel
 	// index only; duplication answers not_in_build without codeintel.
 	"code-quality": {"projects"},

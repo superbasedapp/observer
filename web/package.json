@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "e2e": "playwright test",
     "test": "node --experimental-strip-types --test src/lib/*.test.ts && node scripts/test-components.mjs"
   },
   "dependencies": {

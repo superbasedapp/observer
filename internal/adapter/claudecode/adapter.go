@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/adapter/parseutil"
+	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
 	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
@@ -307,49 +310,9 @@ type rawMessage struct {
 // decodeContent returns the content blocks regardless of whether the source
 // encoded content as an array or as a bare string.
 func decodeContent(raw json.RawMessage) []rawContentBlock {
-	if len(raw) == 0 {
-		return nil
-	}
-	trimmed := bytesTrimSpace(raw)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	switch trimmed[0] {
-	case '[':
-		var blocks []rawContentBlock
-		if err := json.Unmarshal(raw, &blocks); err != nil {
-			return nil
-		}
-		return blocks
-	case '"':
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil
-		}
-		return []rawContentBlock{{Type: "text", Text: s}}
-	}
-	return nil
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	start, end := 0, len(b)
-	for start < end {
-		c := b[start]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			start++
-			continue
-		}
-		break
-	}
-	for end > start {
-		c := b[end-1]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			end--
-			continue
-		}
-		break
-	}
-	return b[start:end]
+	return transcriptutil.DecodeContent(raw, func(text string) rawContentBlock {
+		return rawContentBlock{Type: "text", Text: text}
+	})
 }
 
 type rawContentBlock struct {
@@ -434,7 +397,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// Capped at MaxBlocksPerSession to guard against watcher OOM
 	// on runaway transcripts — past the cap, observations degrade
 	// to BlockHashes=nil (Tier-3 for that session).
-	tier2Acc := newTier2Accumulator(MaxBlocksPerSession)
+	tier2Acc := cacheobs.New(MaxBlocksPerSession)
 	// Index of toolu_id → position in res.ToolEvents so we can update
 	// success/error when the paired tool_result appears later.
 	pending := map[string]int{}
@@ -609,7 +572,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// content-policy blocks, rate limits, and the rest are visible
 			// on the Actions / Sessions tabs.
 			if line.Type == "system" && line.Subtype == "api_error" && len(line.Error) > 0 {
-				ts := parseTimestamp(line.Timestamp)
+				ts := parseutil.ParseRFC3339(line.Timestamp)
 				projectRoot := a.resolveProjectRoot(line.Cwd, rootCache)
 				projectRemote := a.resolveProjectRemote(line.Cwd, rootCache)
 				ev := buildAPIErrorEvent(path, line, ts, projectRoot, projectRemote)
@@ -628,7 +591,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// Track the most recent token-bearing line's context so
 			// agent-name / permission-mode (which carry no timestamp /
 			// cwd / branch / model of their own) get reasonable values.
-			if ts := parseTimestamp(line.Timestamp); !ts.IsZero() {
+			if ts := parseutil.ParseRFC3339(line.Timestamp); !ts.IsZero() {
 				lastTs = ts
 			}
 			if line.Cwd != "" {
@@ -691,7 +654,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// target = "<trigger>: ~<preTokens> tokens", RawToolInput is
 			// the full compactMetadata JSON for analytic use.
 			if line.Type == "system" && line.Subtype == "compact_boundary" && line.CompactMetadata != nil {
-				ts := parseTimestamp(line.Timestamp)
+				ts := parseutil.ParseRFC3339(line.Timestamp)
 				if ts.IsZero() {
 					ts = lastTs
 				}
@@ -719,7 +682,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 				// accumulator and flag the NEXT assistant emit with
 				// CompactionSeen=true so the engine emits
 				// kind=compaction_reset (spec §7 row 6).
-				tier2Acc.observeCompaction()
+				tier2Acc.ObserveCompaction()
 				continue
 			}
 
@@ -735,7 +698,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// For now: just capture; the 30-min cap is the primary
 			// bash-duration fix.
 			if line.Type == "system" && line.Subtype == "turn_duration" && line.DurationMs > 0 {
-				ts := parseTimestamp(line.Timestamp)
+				ts := parseutil.ParseRFC3339(line.Timestamp)
 				if ts.IsZero() {
 					ts = lastTs
 				}
@@ -838,7 +801,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 				continue
 			}
 
-			ts := parseTimestamp(line.Timestamp)
+			ts := parseutil.ParseRFC3339(line.Timestamp)
 			projectRoot := a.resolveProjectRoot(line.Cwd, rootCache)
 			projectRemote := a.resolveProjectRemote(line.Cwd, rootCache)
 
@@ -891,7 +854,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 						CacheCreationTokens:   cacheCreation,
 						CacheCreation1hTokens: msg.Usage.CacheCreation.Ephemeral1hInputTokens,
 					}
-					obs := tier2Acc.emit(
+					obs := tier2Acc.Emit(
 						path,
 						line.SessionID,
 						msg.ID,
@@ -918,7 +881,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// a role fall back to "user" (R1: attachment lines carry
 			// user-injected file content).
 			if accumRole := tier2AccumulationRole(msg.Role, line.Type); accumRole != "" {
-				tier2Acc.observeContent(blocks, accumRole)
+				tier2Acc.ObserveBlocks(accumulateCacheBlocksTier2(blocks, accumRole))
 			}
 
 			// Emit a user_prompt action for user-role lines that carry text
@@ -1115,126 +1078,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 // the cap is exceeded, subsequent CacheTurnObservation emissions
 // carry BlockHashes=nil — degrading that session to Tier-3 for the
 // rest of the call rather than risking a watcher OOM on a runaway
-// transcript. Default 4096 per spec §11; configurable via
-// [cachetrack].max_blocks_per_session in C12.
-const MaxBlocksPerSession = 4096
-
-// tier2Accumulator is the per-call Tier-2 cache-observation
-// accumulator. Carries the running message-block list, the
-// cumulative cap counter, and the compaction-since-last-emit flag.
-//
-// THIS IS THE MIRROR-ABLE TEMPLATE for C21–C24 adapter rollout per
-// spec §14.3 (codex / opencode / kilo-cli / cline-cli). The shape
-// — "observeContent appends in array order; observeCompaction
-// resets and flags; emit produces one CacheTurnObservation with
-// the delta since last emit then resets" — is adapter-independent.
-// New adapters copy this struct + the three methods verbatim and
-// only change the per-record argument shapes the call sites pass
-// in.
-type tier2Accumulator struct {
-	// pendingBlocks is the delta since the last emit. The engine
-	// receives this slice in CacheTurnObservation.BlockHashes and
-	// pushes each entry into its rolling chain in order — so
-	// preserving array order here is the chain-determinism guard
-	// (spec §0 R3).
-	pendingBlocks []models.CacheBlockMeta
-	// totalBlocks is the cumulative count across all emits since
-	// either parse start or the last compaction. Used to gate
-	// capExceeded.
-	totalBlocks int
-	// compactionSeen carries forward to the NEXT emit so the
-	// engine can flip kind=compaction_reset on that turn (§7
-	// row 6).
-	compactionSeen bool
-	// capExceeded latches true once totalBlocks > maxBlocks; all
-	// subsequent observations carry BlockHashes=nil for the rest
-	// of this parse call. Reset by observeCompaction.
-	capExceeded bool
-	// maxBlocks is the cap; ≤0 disables capping entirely (used
-	// only by tests that want to verify the uncapped path).
-	maxBlocks int
-}
-
-// newTier2Accumulator returns a fresh accumulator with the given
-// cap. maxBlocks ≤ 0 disables the cap.
-func newTier2Accumulator(maxBlocks int) *tier2Accumulator {
-	return &tier2Accumulator{maxBlocks: maxBlocks}
-}
-
-// observeContent appends ordered block metas from an Anthropic-
-// shaped content array.
-//
-// ORDER PRESERVED: the input slice's order maps to the output
-// append order — no Go-map iteration anywhere on the path. This
-// determinism is the R3 guard that protects the engine's rolling
-// chain hash from byte-instability across re-parses
-// (TestAccumulateCacheBlocksTier2_Deterministic_R3Guard is the
-// regression).
-//
-// Attachments fold in alongside text and tool_result blocks at
-// the EXACT position they occupy in the source content array; they
-// are NEVER deferred to the end of the chain. The caller hands
-// pre-decoded blocks in source-array order; this function trusts
-// that ordering.
-func (a *tier2Accumulator) observeContent(blocks []rawContentBlock, role string) {
-	if a.capExceeded {
-		return
-	}
-	metas := accumulateCacheBlocksTier2(blocks, role)
-	a.pendingBlocks = append(a.pendingBlocks, metas...)
-	a.totalBlocks += len(metas)
-	if a.maxBlocks > 0 && a.totalBlocks > a.maxBlocks {
-		a.capExceeded = true
-		// Drop the running buffer too — once capped the engine
-		// can't reconstruct the chain anyway and the memory cost
-		// of carrying it forward is the whole reason for the cap.
-		a.pendingBlocks = nil
-	}
-}
-
-// observeCompaction marks the next emission as following a
-// compact_boundary and clears the running block accumulator. The
-// cap counter is also reset — a long-running session that compacts
-// regularly stays within memory bounds.
-func (a *tier2Accumulator) observeCompaction() {
-	a.pendingBlocks = nil
-	a.totalBlocks = 0
-	a.capExceeded = false
-	a.compactionSeen = true
-}
-
-// emit builds the CacheTurnObservation for one assistant turn with
-// usage. Resets pendingBlocks + compactionSeen for the next turn's
-// delta. The returned observation carries BlockHashes=nil when the
-// accumulator capExceeded.
-//
-// SourceEventID is "cachetrack:"+messageID so the (SourceFile,
-// SourceEventID) idempotency key is unique per turn and a re-parse
-// produces identical observations.
-func (a *tier2Accumulator) emit(
-	path, sessionID, messageID, model string,
-	ts time.Time,
-	usage models.CacheUsage,
-	fast bool,
-) models.CacheTurnObservation {
-	obs := models.CacheTurnObservation{
-		SourceFile:     path,
-		SourceEventID:  "cachetrack:" + messageID,
-		SessionID:      sessionID,
-		MessageID:      messageID,
-		Timestamp:      ts,
-		Model:          model,
-		Fast:           fast,
-		Usage:          usage,
-		CompactionSeen: a.compactionSeen,
-	}
-	if !a.capExceeded {
-		obs.BlockHashes = a.pendingBlocks
-	}
-	a.pendingBlocks = nil
-	a.compactionSeen = false
-	return obs
-}
+// transcript. It is the shared cacheobs default (4096, spec §11).
+const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
 
 // accumulateCacheBlocksTier2 converts an Anthropic-shaped content
 // array into ordered Tier-2 CacheBlockMeta entries. INPUT ARRAY
@@ -1251,33 +1096,27 @@ func (a *tier2Accumulator) emit(
 // Input/Content bytes ⇒ identical CanonicalBytes ⇒ identical
 // chain hash.
 //
-// THIS IS THE MIRROR-ABLE TEMPLATE for C21–C24 (codex / opencode /
-// kilo-cli / cline-cli per spec §14.3). The shape — "decode
-// content array → walk in array order → produce CacheBlockMeta per
-// entry" — is identical across Anthropic-shaped sources; only the
-// per-adapter source record's content-field shape differs, and the
-// caller decodes that before calling this function.
+// Attachments fold in alongside text and tool_result blocks at the
+// EXACT position they occupy in the source content array; they are
+// never deferred to the end of the chain. The per-session delta, cap
+// and compaction bookkeeping live in cacheobs.Accumulator, which the
+// caller feeds with this function's output.
 func accumulateCacheBlocksTier2(blocks []rawContentBlock, role string) []models.CacheBlockMeta {
-	if len(blocks) == 0 {
-		return nil
+	return cacheobs.ContentBlocks(blocks, role, canonicalBlockTier2)
+}
+
+// canonicalBlockTier2 adapts marshalCanonicalBlockTier2 to the
+// cacheobs.ContentBlocks walk: a block with no type or one that fails to
+// marshal is skipped, and the engine kind is the block's own type.
+func canonicalBlockTier2(b rawContentBlock) (canon []byte, kind string, ok bool) {
+	if b.Type == "" {
+		return nil, "", false
 	}
-	out := make([]models.CacheBlockMeta, 0, len(blocks))
-	for _, b := range blocks {
-		if b.Type == "" {
-			continue
-		}
-		canon, err := marshalCanonicalBlockTier2(b)
-		if err != nil {
-			continue
-		}
-		out = append(out, models.CacheBlockMeta{
-			LevelLabel:     "message", // R1: transcripts never expose tools/system
-			Kind:           b.Type,
-			CanonicalBytes: canon,
-			Role:           role,
-		})
+	canon, err := marshalCanonicalBlockTier2(b)
+	if err != nil {
+		return nil, "", false
 	}
-	return out
+	return canon, b.Type, true
 }
 
 // tier2AccumulationRole picks the chain-accumulation role for a
@@ -1787,19 +1626,6 @@ func findInnermostAPIError(raw json.RawMessage) (errType, message string) {
 	return node.Type, node.Message
 }
 
-func parseTimestamp(raw string) time.Time {
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	return time.Time{}
-}
-
 func truncateReasoning(s string) string {
 	const max = 500
 	if len(s) <= max {
@@ -1823,7 +1649,7 @@ func decodeResultContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	trimmed := bytesTrimSpace(raw)
+	trimmed := transcriptutil.TrimJSONSpace(raw)
 	if len(trimmed) == 0 {
 		return ""
 	}

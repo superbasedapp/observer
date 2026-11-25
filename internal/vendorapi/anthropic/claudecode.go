@@ -138,11 +138,11 @@ func ccActor(r ccRecord) (string, string, bool) {
 	}
 	switch *r.Actor.Type {
 	case "user_actor":
-		if e := vendorapi.FoldEmail(str(r.Actor.Email)); e != "" {
+		if e := vendorapi.FoldEmail(vendorapi.Str(r.Actor.Email)); e != "" {
 			return "email", e, true
 		}
 	case "api_actor":
-		if n := strings.TrimSpace(str(r.Actor.APIKeyName)); n != "" {
+		if n := strings.TrimSpace(vendorapi.Str(r.Actor.APIKeyName)); n != "" {
 			return "api_key_name", n, true
 		}
 	}
@@ -285,16 +285,16 @@ func parseClaudeCode(r vendorapi.Response) (vendorapi.Page, error) {
 	seen := map[string]bool{}
 	for i, rec := range *doc.Data {
 		if rec.Date == nil {
-			return vendorapi.Page{}, drift(SurfaceClaudeCodeUsage, "data[%d].date is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceClaudeCodeUsage, "data[%d].date is missing", i)
 		}
 		at, err := time.Parse(time.RFC3339Nano, *rec.Date)
 		if err != nil || !at.UTC().Equal(at.UTC().Truncate(day)) {
-			return vendorapi.Page{}, drift(SurfaceClaudeCodeUsage, "data[%d].date is not a UTC day", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceClaudeCodeUsage, "data[%d].date is not a UTC day", i)
 		}
 		start := at.UTC()
 		kind, id, ok := ccActor(rec)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceClaudeCodeUsage, "data[%d].actor is not a documented actor", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceClaudeCodeUsage, "data[%d].actor is not a documented actor", i)
 		}
 		segment := ""
 		if rec.IsRemote != nil {
@@ -305,12 +305,12 @@ func parseClaudeCode(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		key := start.Format(time.DateOnly) + "\x00" + kind + "\x00" + id + "\x00" + segment
 		if seen[key] {
-			return vendorapi.Page{}, drift(SurfaceClaudeCodeUsage, "data[%d] repeats an actor day and segment", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceClaudeCodeUsage, "data[%d] repeats an actor day and segment", i)
 		}
 		seen[key] = true
 		facts, ok := ccRecordFacts(rec)
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceClaudeCodeUsage, "data[%d] misses or mistypes a documented metric", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceClaudeCodeUsage, "data[%d] misses or mistypes a documented metric", i)
 		}
 		for _, f := range facts {
 			page.Facts = append(page.Facts, vendorapi.FactRow{

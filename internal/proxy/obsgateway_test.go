@@ -51,7 +51,7 @@ func (f *fakeObsSink) all() []ChatTurnFacts {
 // waitForCall blocks until the sink's callDoneChan fires or the timeout
 // elapses, failing the test in the latter case.
 // hostedLaneReq marks req as having arrived via a /up/<id> hosted-app lane —
-// the obsLaneCtxKey stamp serve() applies after stripUpstreamPrefix. The
+// the obsLaneCtxKey stamp serve() applies after resolveUpstreamPrefix. The
 // gateway rail only synthesizes for such requests (plane boundary).
 func hostedLaneReq(req *http.Request) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), obsLaneCtxKey{}, "openrouter"))

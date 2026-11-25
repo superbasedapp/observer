@@ -49,7 +49,7 @@ func buildUsers(_ vendorapi.Params, _ vendorapi.Window, cursor string) (vendorap
 	q := map[string][]string{"limit": {strconv.Itoa(UsersPageLimit)}}
 	if cursor != "" {
 		if !cursorRE.MatchString(cursor) {
-			return vendorapi.Request{}, drift(SurfaceUsers, "cursor is not a user id")
+			return vendorapi.Request{}, vendorapi.Drift(SurfaceUsers, "cursor is not a user id")
 		}
 		q["after_id"] = []string{cursor}
 	}
@@ -73,14 +73,14 @@ type userRecord struct {
 
 func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(SurfaceUsers, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "status %d is not the documented 200", r.Status)
 	}
 	var doc usersDoc
-	if err := decode(r.Body, &doc); err != nil {
-		return vendorapi.Page{}, drift(SurfaceUsers, "body does not decode as the documented list")
+	if err := vendorapi.DecodeNumbers(r.Body, &doc); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "body does not decode as the documented list")
 	}
 	if doc.Data == nil || doc.HasMore == nil {
-		return vendorapi.Page{}, drift(SurfaceUsers, "required field data or has_more is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "required field data or has_more is missing")
 	}
 	page := vendorapi.Page{Snapshot: &vendorapi.SnapshotManifest{
 		Scope:           []vendorapi.ScopeKey{{Namespace: NamespaceUser, Kind: vs.KindUser}},
@@ -90,17 +90,17 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 	}}
 	if *doc.HasMore {
 		if doc.LastID == nil || !cursorRE.MatchString(*doc.LastID) {
-			return vendorapi.Page{}, drift(SurfaceUsers, "has_more is true without a usable last_id")
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "has_more is true without a usable last_id")
 		}
 		page.NextCursor = *doc.LastID
 	}
 	seen := map[string]bool{}
 	for i, u := range *doc.Data {
 		if u.ID == nil || *u.ID == "" {
-			return vendorapi.Page{}, drift(SurfaceUsers, "data[%d].id is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "data[%d].id is missing", i)
 		}
 		if seen[*u.ID] {
-			return vendorapi.Page{}, drift(SurfaceUsers, "data[%d] repeats a user", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceUsers, "data[%d] repeats a user", i)
 		}
 		seen[*u.ID] = true
 		attrs := map[string]string{}
@@ -110,7 +110,7 @@ func parseUsers(r vendorapi.Response) (vendorapi.Page, error) {
 			}
 		}
 		page.Resources = append(page.Resources, vendorapi.ResourceObservation{
-			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.ID}, DisplayName: str(u.Name), Attrs: attrs,
+			Type: UserType, ID: vs.ExternalID{Namespace: NamespaceUser, Value: *u.ID}, DisplayName: vendorapi.Str(u.Name), Attrs: attrs,
 		})
 	}
 	return page, nil

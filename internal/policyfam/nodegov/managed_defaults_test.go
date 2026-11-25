@@ -58,8 +58,7 @@ func TestManagedDefaultsCoverVocabularyExactlyOnce(t *testing.T) {
 var visibilityRank = map[Visibility]int{VisibilityHidden: 0, VisibilityReadOnly: 1, VisibilityVisible: 2}
 
 // TestManagedDefaultsOwnerNeverStricter: a machine its owner manages is never
-// more restricted than a team member's on any row (the consent screen's
-// "fewer than a team member's machine" relies on it), and it is strictly less
+// more restricted than a team member's on any row, and it is strictly less
 // restricted overall.
 func TestManagedDefaultsOwnerNeverStricter(t *testing.T) {
 	for _, rows := range [][]ManagedDefault{ManagedNavDefaults, ManagedSettingsDefaults} {
@@ -122,40 +121,45 @@ func TestManagedDefaultsRespectTheFloor(t *testing.T) {
 	}
 }
 
-// TestManagedDefaultsClassification pins the rows the operator ruling is
-// about, one case per row and audience, so a reclassification is a reviewed
-// diff. The team column is today's managed defaults byte-for-byte; the owner
-// column is finding F12's (a personal organization of one keeps its own AI
-// Apps pages, Routing and Policies, and the two Settings sections behind
-// them).
+// TestManagedDefaultsClassification pins every row of both tables, one case
+// per id and audience, so a reclassification is a reviewed diff and a page
+// added to the vocabulary without a case here fails. The team column is the
+// managed defaults a team member's machine applies; the owner column is the
+// operator ruling of 2026-11-24 (a personal organization of one: the owner is
+// the administrator, so every page and Settings section starts visible).
 func TestManagedDefaultsClassification(t *testing.T) {
 	const (
 		H = VisibilityHidden
 		R = VisibilityReadOnly
 		V = VisibilityVisible
 	)
-	nav := []struct {
+	type row struct {
 		id          string
 		team, owner Visibility
-	}{
+	}
+	nav := []row{
 		{"overview", V, V},
+		{"live", V, V},
 		{"sessions", V, V},
-		{"cost", V, V},
-		{"terminals", V, V},
-		{"privacy", V, V},
-		{"settings", V, V},
-		{"security", H, H},
-		{"compression", R, R},
-		{"remote", R, R},
-		{"agent-config", R, R},
+		{"actions", V, V},
+		{"projects", V, V},
+		{"security", H, V},
 		// Code security is hidden by default like Guard's page (roadmap
 		// section 8 item 4, lane gov-tabs); the organization exposes it.
-		{"code-security", H, H},
-		// F12: the owner's own pages. Egress joined them by operator ruling
-		// R2 (2026-11-23): it sits in the Your AI apps group.
+		{"code-security", H, V},
 		{"egress", H, V},
+		{"search", V, V},
+		{"cost", V, V},
+		{"plans", V, V},
+		{"analysis", V, V},
+		{"tools", V, V},
+		{"compression", R, V},
+		{"cache", V, V},
+		{"suggestions", V, V},
 		{"routing", H, V},
-		{"policies", H, V},
+		{"benchmarks", V, V},
+		{"discovery", V, V},
+		{"patterns", V, V},
 		{"app-traces", H, V},
 		{"app-sessions", H, V},
 		{"app-analytics", H, V},
@@ -164,43 +168,81 @@ func TestManagedDefaultsClassification(t *testing.T) {
 		{"app-scores", H, V},
 		{"app-prompts", H, V},
 		{"app-alerts", H, V},
+		{"app-model-calls", H, V},
+		{"you", V, V},
+		{"policies", H, V},
+		{"agent-config", R, V},
+		{"privacy", V, V},
+		{"terminals", V, V},
+		{"remote", R, V},
+		{"messages", V, V},
+		{"requests", V, V},
+		{"settings", V, V},
 	}
-	for _, tc := range nav {
-		if got := ManagedNavDefault(tc.id, ManagedAudienceTeam); got != tc.team {
-			t.Errorf("team nav %q: got %q, want %q", tc.id, got, tc.team)
-		}
-		if got := ManagedNavDefault(tc.id, ManagedAudienceOwner); got != tc.owner {
-			t.Errorf("owner nav %q: got %q, want %q", tc.id, got, tc.owner)
-		}
-	}
-	settings := []struct {
-		id          string
-		team, owner Visibility
-	}{
-		{"guard", H, H},
-		{"otel", H, H},
-		{"cloud", H, H},
-		{"pricing", R, R},
-		{"proxy", R, R},
-		{"hooks", R, R},
-		{"secrets", R, R},
-		{"intel", R, R},
-		{"enrolment", V, V},
-		{"org", V, V},
+	settings := []row{
+		{"general", V, V},
+		{"pricing", R, V},
+		{"backfill", V, V},
+		{"tools", V, V},
 		{"health", V, V},
 		{"storage", V, V},
-		{"terminal", V, V},
-		// F12: the sections that configure the owner's own pages.
+		{"enrolment", V, V},
+		{"intelligence", R, V},
+		{"observer", R, V},
+		{"watcher", R, V},
+		{"freshness", R, V},
+		{"retention", R, V},
+		{"hooks", R, V},
+		{"proxy", R, V},
+		{"dashboard", R, V},
+		{"compression", R, V},
+		{"profiles", R, V},
+		{"org", V, V},
+		{"guard", H, V},
 		{"routing", H, V},
+		{"otel", H, V},
+		{"mcp", R, V},
+		{"advisor", V, V},
+		{"cachetrack", R, V},
 		{"observability", H, V},
+		{"secrets", R, V},
+		{"antigravity", V, V},
+		{"process", R, V},
+		{"browser", R, V},
+		{"terminal", V, V},
+		{"cloud", H, V},
+		{"intel", R, V},
+		{"tasks", R, V},
 	}
-	for _, tc := range settings {
-		if got := ManagedSettingsDefault(tc.id, ManagedAudienceTeam); got != tc.team {
-			t.Errorf("team settings %q: got %q, want %q", tc.id, got, tc.team)
-		}
-		if got := ManagedSettingsDefault(tc.id, ManagedAudienceOwner); got != tc.owner {
-			t.Errorf("owner settings %q: got %q, want %q", tc.id, got, tc.owner)
-		}
+	for _, tc := range []struct {
+		name  string
+		vocab []string
+		rows  []row
+		level func(id string, a ManagedAudience) Visibility
+	}{
+		{"nav", NavSectionIDs, nav, ManagedNavDefault},
+		{"settings", SettingsSectionIDs, settings, ManagedSettingsDefault},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			covered := map[string]bool{}
+			for _, c := range tc.rows {
+				if covered[c.id] {
+					t.Errorf("%q has two cases", c.id)
+				}
+				covered[c.id] = true
+				if got := tc.level(c.id, ManagedAudienceTeam); got != c.team {
+					t.Errorf("team %q: got %q, want %q", c.id, got, c.team)
+				}
+				if got := tc.level(c.id, ManagedAudienceOwner); got != c.owner {
+					t.Errorf("owner %q: got %q, want %q", c.id, got, c.owner)
+				}
+			}
+			for _, id := range tc.vocab {
+				if !covered[id] {
+					t.Errorf("%q has no classification case", id)
+				}
+			}
+		})
 	}
 	for _, a := range []ManagedAudience{ManagedAudienceTeam, ManagedAudienceOwner, "not-an-audience"} {
 		if got := ManagedNavDefault("not-a-page", a); got != VisibilityVisible {
@@ -210,6 +252,37 @@ func TestManagedDefaultsClassification(t *testing.T) {
 	// An audience this build does not know resolves the team level.
 	if got := ManagedNavDefault("app-traces", "not-an-audience"); got != VisibilityHidden {
 		t.Errorf("an unknown audience must resolve the team level, got %q", got)
+	}
+}
+
+// TestManagedDefaultsOwnerAudienceAllVisible is the operator ruling of
+// 2026-11-24: on a machine its owner manages from a personal organization of
+// one, every page and every Settings section defaults to fully visible, each
+// non-visible team row states its owner level explicitly with its own reason
+// (never through the team fallback), and the consent screen therefore lists
+// nothing for the owner.
+func TestManagedDefaultsOwnerAudienceAllVisible(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows []ManagedDefault
+	}{{"nav", ManagedNavDefaults}, {"settings", ManagedSettingsDefaults}} {
+		for _, r := range tc.rows {
+			if got := r.LevelFor(ManagedAudienceOwner); got != VisibilityVisible {
+				t.Errorf("%s %q: owner default %q, want visible", tc.name, r.ID, got)
+			}
+			if r.Level != VisibilityVisible {
+				if r.Owner != VisibilityVisible {
+					t.Errorf("%s %q: a restricted team row must state Owner: visible explicitly", tc.name, r.ID)
+				}
+				if why := r.WhyFor(ManagedAudienceOwner); !strings.HasPrefix(why, ownerIsAdmin) || why == ownerIsAdmin {
+					t.Errorf("%s %q: owner reason %q must open with ownerIsAdmin and say why", tc.name, r.ID, why)
+				}
+			}
+		}
+	}
+	nav, settings := ManagedRestrictions(ManagedAudienceOwner)
+	if len(nav)+len(settings) != 0 {
+		t.Fatalf("owner restrictions: pages %+v settings %+v, want none", nav, settings)
 	}
 }
 

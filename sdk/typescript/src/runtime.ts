@@ -8,7 +8,7 @@ import { trace, type Tracer, type TracerProvider } from "@opentelemetry/api";
 
 import type { DestinationChoice, Settings } from "./config.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const TRACER_NAME = "@superbased/sdk";
 export const SDK_MARKER = "superbased-typescript";
 
@@ -23,6 +23,8 @@ export interface Runtime {
   destinationSource: string;
   /** The machine's admission URL from discovery ("" when not discovered). */
   admissionUrl: string;
+  /** The online dashboard base for links ("" when unknown): the SDK-held file's, or the machine's when its key is in use. */
+  dashboardUrl: string;
   /** The provider holding the SDK's spans (instrumentations are registered on it). */
   provider: TracerProvider | null;
   /**
@@ -47,6 +49,7 @@ export const runtime: Runtime = {
   destination: "",
   destinationSource: "",
   admissionUrl: "",
+  dashboardUrl: "",
   provider: null,
   resourceService: "",
   ready: Promise.resolve(),
@@ -86,6 +89,7 @@ export function resetRuntime(): void {
     destination: "",
     destinationSource: "",
     admissionUrl: "",
+    dashboardUrl: "",
     provider: null,
     resourceService: "",
     ready: Promise.resolve(),

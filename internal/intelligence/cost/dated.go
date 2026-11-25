@@ -234,21 +234,6 @@ func (t *Table) DatedModels() []string {
 	return out
 }
 
-// DatedFor returns a copy of the dated rate timeline registered for the
-// exact key `model` (ascending by EffectiveFrom), or nil. It does NOT
-// run the resolution ladder — callers that want "which timeline actually
-// prices this SKU" should resolve first via LookupWithSource.
-func (t *Table) DatedFor(model string) []DatedPricing {
-	if t == nil || len(t.dated) == 0 {
-		return nil
-	}
-	e, ok := t.dated[model]
-	if !ok {
-		return nil
-	}
-	return append([]DatedPricing(nil), e...)
-}
-
 // datedRate returns the dated Pricing in force for `key` at `at`, i.e.
 // the LAST entry whose EffectiveFrom is <= at. Returns ok=false when the
 // key has no timeline, when `at` is the zero time (no usable timestamp —

@@ -1,0 +1,270 @@
+{
+  "_doc": "The AI Apps gateway's plan refusal (OTLP /v1/traces|logs|metrics and the SDK control API /v1/sdk/*), as every SDK's one pure parser reads it. A plan refusal is an HTTP 403 whose body's error is plan_required, or an HTTP 429 whose body's error is planea_events_quota_exceeded or planea_bytes_quota_exceeded, AND whose body carries a non-empty upgrade_url (a 429 over the org's OWN cap has none and is not a plan refusal). Every field is at the top level of the body (on /v1/sdk/* beside api_version and request_id); plan, allowance and plans may be absent, an allowance axis may be absent (no cap). The parser never raises: anything else (another code or status, a body that is not a JSON object, an empty body) is null. Each case gives status, headers, body (a JSON object, or a string: the raw body text) and want: null, or the fields the parser must read. kind is plan_required (403) or allowance_exceeded (429). message, when want has it, is the body's message (without one the SDK's own default line is not compared). plan_name / plan_version / plan_label are the plan in force; no plan_name means no plan (a plan, or an offered plan, without a string name is left out). plans lists the offered plans' names in order; offered_allowance is the first one's allowance. allowance compares axis by axis, an axis absent from want.allowance reads as no cap, and no allowance in want means none was read. No quota in want means none; no retry_after_seconds means no (or no readable) Retry-After header, which is integer seconds. A field of the wrong type is left out, never an error. Python runs these in sdk/python/tests/test_plan_refusal.py, TypeScript in sdk/typescript/test/planrefusal.test.mjs, Go in sdk/go/planrefusal_test.go, Java in sdk/java/src/test/java/app/superbased/sdk/PlanRefusalTest.java. ai_gateway_cases (hosted AI gateway lane L4) are the AI gateway's plan refusals, which arrive in the error dialect of the endpoint called (the gateway's own {error: message, reason: code}, the OpenAI SDKs' {error: {message, type, param, code}} or the Anthropic SDKs' {type: error, error: {type, message, details: {error_code}}}), always with the code at the top-level reason and the plan detail (capability org.aigateway, plan, allowance, plans, upgrade_url) and quota at the top level beside the envelope. A parser reads the code from reason when it is a non-empty string, else from error when error is a string; the message from error when it is a string, else from error.message. The AI gateway's plan refusals are a 403 plan_required or a 429 aigw_requests_quota_exceeded with a non-empty upgrade_url; its allowance axes are requests_monthly and concurrency, and its quota carries allowance (the allowance before grace) beside limit (the hard stop that refused). A 429 aigw_concurrency_exceeded (retry in a second), a 503 aigw_meter_unavailable, and a quota refusal over the organization's own cap (no upgrade_url) are not plan refusals. The four SDKs' parsers do not read ai_gateway_cases yet: the SDK lane (L8) adds the parsing and the test loop over them.",
+  "cases": [
+    {
+      "name": "403 plan_required with every field",
+      "status": 403,
+      "headers": {"Content-Type": "application/json"},
+      "body": {
+        "error": "plan_required",
+        "message": "AI Apps ingest is not part of this organization's plan (Team). Business (10,000,000 events and 50 GB a month) includes more. Dashboards and queries keep working. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.",
+        "capability": "org.planea.gateway",
+        "plan": {"name": "team", "version": 1, "label": "Team"},
+        "allowance": {"events_monthly": 0, "gb_monthly": 0},
+        "plans": [{"name": "business", "version": 2, "label": "Business", "allowance": {"events_monthly": 10000000, "gb_monthly": 50}}],
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"
+      },
+      "want": {
+        "kind": "plan_required",
+        "code": "plan_required",
+        "status": 403,
+        "message": "AI Apps ingest is not part of this organization's plan (Team). Business (10,000,000 events and 50 GB a month) includes more. Dashboards and queries keep working. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.",
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1",
+        "capability": "org.planea.gateway",
+        "plan_name": "team",
+        "plan_version": 1,
+        "plan_label": "Team",
+        "allowance": {"events_monthly": 0, "gb_monthly": 0},
+        "plans": ["business"],
+        "offered_allowance": {"events_monthly": 10000000, "gb_monthly": 50}
+      }
+    },
+    {
+      "name": "403 plan_required in the SDK control API envelope",
+      "status": 403,
+      "headers": {},
+      "body": {
+        "api_version": "1",
+        "request_id": "req_7",
+        "error": "plan_required",
+        "message": "This organization's plan (Starter) includes no AI Apps allowance.",
+        "capability": "org.planea.gateway",
+        "plan": {"name": "starter", "version": 3, "label": "Starter"},
+        "allowance": {"events_monthly": 0},
+        "upgrade_url": "https://superbased.app/pricing"
+      },
+      "want": {
+        "kind": "plan_required",
+        "code": "plan_required",
+        "status": 403,
+        "message": "This organization's plan (Starter) includes no AI Apps allowance.",
+        "upgrade_url": "https://superbased.app/pricing",
+        "capability": "org.planea.gateway",
+        "plan_name": "starter",
+        "allowance": {"events_monthly": 0},
+        "plans": []
+      }
+    },
+    {
+      "name": "403 plan_required with only capability and upgrade_url",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "plan_required", "capability": "org.planea.gateway", "upgrade_url": "https://superbased.app/pricing"},
+      "want": {
+        "kind": "plan_required",
+        "code": "plan_required",
+        "status": 403,
+        "upgrade_url": "https://superbased.app/pricing",
+        "capability": "org.planea.gateway",
+        "plans": []
+      }
+    },
+    {
+      "name": "429 events quota over the plan's allowance, with Retry-After",
+      "status": 429,
+      "headers": {"Retry-After": "3600", "Content-Type": "application/json"},
+      "body": {
+        "error": "planea_events_quota_exceeded",
+        "message": "This organization has used this month's AI Apps allowance of its plan (Team).",
+        "quota": {"quota": "events_monthly", "unit": "events", "used": 1000000, "limit": 1000000, "resets_at": "2026-12-01T00:00:00Z"},
+        "capability": "org.planea.gateway",
+        "plan": {"name": "team", "version": 2, "label": "Team"},
+        "allowance": {"events_monthly": 1000000, "gb_monthly": 10},
+        "plans": [{"name": "business", "version": 2, "label": "Business", "allowance": {"events_monthly": 10000000, "gb_monthly": 50}}],
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"
+      },
+      "want": {
+        "kind": "allowance_exceeded",
+        "code": "planea_events_quota_exceeded",
+        "status": 429,
+        "message": "This organization has used this month's AI Apps allowance of its plan (Team).",
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1",
+        "capability": "org.planea.gateway",
+        "plan_name": "team",
+        "allowance": {"events_monthly": 1000000, "gb_monthly": 10},
+        "plans": ["business"],
+        "quota": {"quota": "events_monthly", "unit": "events", "used": 1000000, "limit": 1000000, "resets_at": "2026-12-01T00:00:00Z"},
+        "retry_after_seconds": 3600
+      }
+    },
+    {
+      "name": "429 bytes quota, no cap on events, no plan on offer",
+      "status": 429,
+      "headers": {"retry-after": "60"},
+      "body": {
+        "error": "planea_bytes_quota_exceeded",
+        "message": "This organization has used this month's AI Apps allowance of its plan (Business).",
+        "quota": {"quota": "bytes_monthly", "unit": "bytes", "used": 53687091200, "limit": 53687091200, "resets_at": "2026-12-01T00:00:00Z"},
+        "capability": "org.planea.gateway",
+        "plan": {"name": "business", "version": 2, "label": "Business"},
+        "allowance": {"gb_monthly": 50},
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2"
+      },
+      "want": {
+        "kind": "allowance_exceeded",
+        "code": "planea_bytes_quota_exceeded",
+        "status": 429,
+        "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_2",
+        "capability": "org.planea.gateway",
+        "plan_name": "business",
+        "allowance": {"gb_monthly": 50},
+        "plans": [],
+        "quota": {"quota": "bytes_monthly", "unit": "bytes", "used": 53687091200, "limit": 53687091200, "resets_at": "2026-12-01T00:00:00Z"},
+        "retry_after_seconds": 60
+      }
+    },
+    {
+      "name": "429 events quota over the org's own cap (no upgrade_url) is not a plan refusal",
+      "status": 429,
+      "headers": {"Retry-After": "3600"},
+      "body": {
+        "error": "planea_events_quota_exceeded",
+        "message": "This organization has used this month's AI Apps cap.",
+        "quota": {"quota": "events_monthly", "unit": "events", "used": 500, "limit": 500, "resets_at": "2026-12-01T00:00:00Z"}
+      },
+      "want": null
+    },
+    {
+      "name": "429 quota code with an empty upgrade_url is not a plan refusal",
+      "status": 429,
+      "headers": {},
+      "body": {"error": "planea_bytes_quota_exceeded", "message": "over", "upgrade_url": ""},
+      "want": null
+    },
+    {
+      "name": "403 plan_required without an upgrade_url is not a plan refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "plan_required", "message": "not in plan", "capability": "org.planea.gateway"},
+      "want": null
+    },
+    {
+      "name": "403 insufficient_scope is not a plan refusal",
+      "status": 403,
+      "headers": {},
+      "body": {"api_version": "1", "request_id": "req_1", "error": "insufficient_scope", "message": "this key lacks sdk:eval"},
+      "want": null
+    },
+    {
+      "name": "401 is not a plan refusal, even with an upgrade_url",
+      "status": 401,
+      "headers": {},
+      "body": {"error": "plan_required", "message": "unauthorized", "upgrade_url": "https://superbased.app/pricing"},
+      "want": null
+    },
+    {
+      "name": "404 is not a plan refusal",
+      "status": 404,
+      "headers": {},
+      "body": {"error": "not_found", "message": "no such route"},
+      "want": null
+    },
+    {
+      "name": "429 rate_limited is not a plan refusal",
+      "status": 429,
+      "headers": {"Retry-After": "1"},
+      "body": {"error": "rate_limited", "message": "slow down", "upgrade_url": "https://superbased.app/pricing"},
+      "want": null
+    },
+    {
+      "name": "429 ingest_throttled is not a plan refusal",
+      "status": 429,
+      "headers": {"Retry-After": "2"},
+      "body": {"error": "ingest_throttled", "message": "too many requests"},
+      "want": null
+    },
+    {
+      "name": "plan_required on a 429 is not a plan refusal (the code and the status disagree)",
+      "status": 429,
+      "headers": {},
+      "body": {"error": "plan_required", "capability": "org.planea.gateway", "upgrade_url": "https://superbased.app/pricing"},
+      "want": null
+    },
+    {
+      "name": "a quota code on a 403 is not a plan refusal (the code and the status disagree)",
+      "status": 403,
+      "headers": {},
+      "body": {"error": "planea_events_quota_exceeded", "capability": "org.planea.gateway", "upgrade_url": "https://superbased.app/pricing"},
+      "want": null
+    },
+    {
+      "name": "a malformed body is not a plan refusal",
+      "status": 403,
+      "headers": {},
+      "body": "{\"error\":\"plan_required\",\"upgrade_url\":",
+      "want": null
+    },
+    {
+      "name": "a JSON body that is not an object is not a plan refusal",
+      "status": 403,
+      "headers": {},
+      "body": "[\"plan_required\"]",
+      "want": null
+    },
+    {
+      "name": "an empty body is not a plan refusal",
+      "status": 403,
+      "headers": {},
+      "body": "",
+      "want": null
+    },
+    {
+      "name": "the raw body text of a plan refusal parses like the object",
+      "status": 403,
+      "headers": {},
+      "body": "{\"error\":\"plan_required\",\"message\":\"Not in plan.\",\"capability\":\"org.planea.gateway\",\"upgrade_url\":\"https://superbased.app/pricing\"}",
+      "want": {
+        "kind": "plan_required",
+        "code": "plan_required",
+        "status": 403,
+        "message": "Not in plan.",
+        "upgrade_url": "https://superbased.app/pricing",
+        "capability": "org.planea.gateway",
+        "plans": []
+      }
+    },
+    {
+      "name": "fields of the wrong type are left out, the refusal still reads",
+      "status": 403,
+      "headers": {"Retry-After": "soon"},
+      "body": {
+        "error": "plan_required",
+        "message": 7,
+        "capability": "org.planea.gateway",
+        "plan": "team",
+        "allowance": {"events_monthly": "many", "gb_monthly": true},
+        "plans": [{"name": "business", "version": 2, "label": "Business"}, "pro", {"version": 3}],
+        "upgrade_url": "https://superbased.app/pricing"
+      },
+      "want": {
+        "kind": "plan_required",
+        "code": "plan_required",
+        "status": 403,
+        "upgrade_url": "https://superbased.app/pricing",
+        "capability": "org.planea.gateway",
+        "allowance": {},
+        "plans": ["business"]
+      }
+    }
+  ],
+  "ai_gateway_cases": [
+    {"name": "AI gateway 403 plan_required in the gateway's own dialect", "status": 403, "headers": {"Content-Type": "application/json", "X-SBO-Request-Id": "req_1"}, "body": {"error": "The AI gateway is not part of this organization's plan (Team). Business (1,000,000 requests a month, 64 at a time) includes more. Model calls through the AI gateway are refused until then; dashboards and AI Apps ingest keep working. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.", "reason": "plan_required", "capability": "org.aigateway", "plan": {"name": "team", "version": 1, "label": "Team"}, "plans": [{"name": "business", "version": 3, "label": "Business", "allowance": {"requests_monthly": 1000000, "concurrency": 64}}], "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"}, "want": {"kind": "plan_required", "code": "plan_required", "status": 403, "message": "The AI gateway is not part of this organization's plan (Team). Business (1,000,000 requests a month, 64 at a time) includes more. Model calls through the AI gateway are refused until then; dashboards and AI Apps ingest keep working. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1", "capability": "org.aigateway", "plan_name": "team", "plan_version": 1, "plan_label": "Team", "plans": ["business"], "offered_allowance": {"requests_monthly": 1000000, "concurrency": 64}}},
+    {"name": "AI gateway 403 plan_required (a plan allowing 0) in the OpenAI dialect", "status": 403, "headers": {"x-request-id": "req_2"}, "body": {"error": {"message": "This organization's plan (Business) includes no AI gateway allowance.", "type": "permission_error", "param": null, "code": "plan_required"}, "reason": "plan_required", "capability": "org.aigateway", "plan": {"name": "business", "version": 2, "label": "Business"}, "allowance": {"requests_monthly": 0, "concurrency": 0}, "plans": [{"name": "business", "version": 3, "label": "Business", "allowance": {"requests_monthly": 1000000, "concurrency": 64}}], "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"}, "want": {"kind": "plan_required", "code": "plan_required", "status": 403, "message": "This organization's plan (Business) includes no AI gateway allowance.", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1", "capability": "org.aigateway", "plan_name": "business", "plan_version": 2, "allowance": {"requests_monthly": 0, "concurrency": 0}, "plans": ["business"], "offered_allowance": {"requests_monthly": 1000000, "concurrency": 64}}},
+    {"name": "AI gateway 429 over a paid plan's allowance and grace, OpenAI dialect, with Retry-After", "status": 429, "headers": {"Retry-After": "518400"}, "body": {"error": {"message": "this organization has used its plan's AI gateway allowance of 250000 requests this month (275000 forwarded); new model calls through the AI gateway resume at the start of next month (UTC). Dashboards and AI Apps ingest keep working. Business (1,000,000 requests a month, 64 at a time) includes more. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.", "type": "rate_limit_error", "param": null, "code": "aigw_requests_quota_exceeded"}, "reason": "aigw_requests_quota_exceeded", "quota": {"quota": "requests_monthly", "unit": "requests", "used": 275000, "limit": 275000, "allowance": 250000, "resets_at": "2026-12-01T00:00:00Z"}, "capability": "org.aigateway", "plan": {"name": "personal_pro", "version": 3, "label": "Personal Pro"}, "allowance": {"requests_monthly": 250000, "concurrency": 16}, "plans": [{"name": "business", "version": 3, "label": "Business", "allowance": {"requests_monthly": 1000000, "concurrency": 64}}], "upgrade_url": "https://cloud.superbased.app/portal/billing"}, "want": {"kind": "allowance_exceeded", "code": "aigw_requests_quota_exceeded", "status": 429, "message": "this organization has used its plan's AI gateway allowance of 250000 requests this month (275000 forwarded); new model calls through the AI gateway resume at the start of next month (UTC). Dashboards and AI Apps ingest keep working. Business (1,000,000 requests a month, 64 at a time) includes more. The organization's billing owner can change the plan at https://cloud.superbased.app/portal/orgs/org_1.", "upgrade_url": "https://cloud.superbased.app/portal/billing", "capability": "org.aigateway", "plan_name": "personal_pro", "allowance": {"requests_monthly": 250000, "concurrency": 16}, "plans": ["business"], "quota": {"quota": "requests_monthly", "unit": "requests", "used": 275000, "limit": 275000, "allowance": 250000, "resets_at": "2026-12-01T00:00:00Z"}, "retry_after_seconds": 518400}},
+    {"name": "AI gateway 429 over the plan's allowance in the Anthropic dialect", "status": 429, "headers": {"retry-after": "60", "request-id": "req_3"}, "body": {"type": "error", "error": {"type": "rate_limit_error", "message": "over the allowance", "details": {"error_code": "aigw_requests_quota_exceeded"}}, "reason": "aigw_requests_quota_exceeded", "quota": {"quota": "requests_monthly", "unit": "requests", "used": 10000, "limit": 10000, "allowance": 10000, "resets_at": "2026-12-01T00:00:00Z"}, "capability": "org.aigateway", "plan": {"name": "personal_free", "version": 3, "label": "Personal Free"}, "allowance": {"requests_monthly": 10000, "concurrency": 4}, "upgrade_url": "https://cloud.superbased.app/portal/billing"}, "want": {"kind": "allowance_exceeded", "code": "aigw_requests_quota_exceeded", "status": 429, "message": "over the allowance", "upgrade_url": "https://cloud.superbased.app/portal/billing", "capability": "org.aigateway", "plan_name": "personal_free", "allowance": {"requests_monthly": 10000, "concurrency": 4}, "plans": [], "quota": {"quota": "requests_monthly", "unit": "requests", "used": 10000, "limit": 10000, "allowance": 10000, "resets_at": "2026-12-01T00:00:00Z"}, "retry_after_seconds": 60}},
+    {"name": "AI gateway 429 over the organization's own cap (no upgrade_url) is not a plan refusal", "status": 429, "headers": {"Retry-After": "3600"}, "body": {"error": "this organization has used the AI gateway cap it set for itself of 100 requests this month (100 forwarded)", "reason": "aigw_requests_quota_exceeded", "quota": {"quota": "requests_monthly", "unit": "requests", "used": 100, "limit": 100, "allowance": 100, "resets_at": "2026-12-01T00:00:00Z"}}, "want": null},
+    {"name": "AI gateway 429 aigw_concurrency_exceeded is not a plan refusal", "status": 429, "headers": {"Retry-After": "1"}, "body": {"error": "this organization already has 4 AI gateway requests in flight, its limit at a time; retry in a moment.", "reason": "aigw_concurrency_exceeded"}, "want": null},
+    {"name": "AI gateway 503 aigw_meter_unavailable is not a plan refusal", "status": 503, "headers": {"Retry-After": "5"}, "body": {"error": "the AI gateway could not read this organization's usage or limits; retry shortly.", "reason": "aigw_meter_unavailable"}, "want": null},
+    {"name": "AI gateway quota code on a 403 is not a plan refusal (the code and the status disagree)", "status": 403, "headers": {}, "body": {"error": "x", "reason": "aigw_requests_quota_exceeded", "capability": "org.aigateway", "upgrade_url": "https://cloud.superbased.app/portal/orgs/org_1"}, "want": null}
+  ]
+}

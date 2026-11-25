@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/genout"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
@@ -472,7 +473,7 @@ func TestWriteCreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "nested", "actiontax.gen.json")
 	data := generateOrFail(t)
-	if err := write(out, data); err != nil {
+	if err := genout.WriteFile(out, data); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	got, err := os.ReadFile(out)

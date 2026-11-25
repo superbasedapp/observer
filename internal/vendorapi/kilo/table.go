@@ -163,36 +163,36 @@ func parseTable(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	if d.Rows == nil || d.EffectiveGranularity == nil {
-		return vendorapi.Page{}, drift(s, "required field rows or effectiveGranularity is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field rows or effectiveGranularity is missing")
 	}
 	if *d.EffectiveGranularity != "day" {
-		return vendorapi.Page{}, drift(s, "effectiveGranularity %q is not the requested day", *d.EffectiveGranularity)
+		return vendorapi.Page{}, vendorapi.Drift(s, "effectiveGranularity %q is not the requested day", *d.EffectiveGranularity)
 	}
 	if len(*d.Rows) >= TableLimit {
-		return vendorapi.Page{}, drift(s, "%d rows reach the limit: the unpaged answer may be cut", len(*d.Rows))
+		return vendorapi.Page{}, vendorapi.Drift(s, "%d rows reach the limit: the unpaged answer may be cut", len(*d.Rows))
 	}
 	page := vendorapi.Page{}
 	seen := map[string]bool{}
 	for i := range *d.Rows {
 		row := &(*d.Rows)[i]
 		if row.Datetime == nil {
-			return vendorapi.Page{}, drift(s, "rows[%d] misses datetime", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d] misses datetime", i)
 		}
 		start, ok := bucketDay(*row.Datetime)
 		if !ok {
-			return vendorapi.Page{}, drift(s, "rows[%d].datetime is not a UTC day", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d].datetime is not a UTC day", i)
 		}
 		if len(row.Dimensions) != len(tableDims) {
-			return vendorapi.Page{}, drift(s, "rows[%d].dimensions is not the asked user and model", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d].dimensions is not the asked user and model", i)
 		}
 		user := strings.TrimSpace(row.Dimensions["user"])
 		model := strings.TrimSpace(row.Dimensions["model"])
 		if user == "" || model == "" {
-			return vendorapi.Page{}, drift(s, "rows[%d].dimensions misses user or model", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d].dimensions misses user or model", i)
 		}
 		key := fmt.Sprintf("%d|%s|%s", start.Unix(), user, model)
 		if seen[key] {
-			return vendorapi.Page{}, drift(s, "rows[%d] repeats a day, user and model", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d] repeats a day, user and model", i)
 		}
 		seen[key] = true
 		for _, m := range tableMetrics {
@@ -207,7 +207,7 @@ func parseTable(r vendorapi.Response) (vendorapi.Page, error) {
 				v, ok = whole(n)
 			}
 			if n == nil || !ok {
-				return vendorapi.Page{}, drift(s, "rows[%d].%s is not a non-negative number", i, m.field)
+				return vendorapi.Page{}, vendorapi.Drift(s, "rows[%d].%s is not a non-negative number", i, m.field)
 			}
 			page.Facts = append(page.Facts, vendorapi.FactRow{
 				IntervalStart: start, IntervalEnd: start.Add(day), SourceTZ: "UTC", CoverageDomain: TableDomain,

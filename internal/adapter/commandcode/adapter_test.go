@@ -691,8 +691,8 @@ func assistantToolUse(id, callID, name, input string) string {
 
 // toolResult is the user-role record that answers a tool_use. Every
 // tool-call test needs one: an unanswered trailing tool_use is DEFERRED
-// (see pending.go), so the row only materialises once the outcome is on
-// disk.
+// (see adapter.DeferUnpairedTail), so the row only materialises once the
+// outcome is on disk.
 func toolResult(id, callID, text string) string {
 	return `{"type":"message","id":"` + id +
 		`","timestamp":"2026-07-28T18:38:39.100Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` +
@@ -700,7 +700,7 @@ func toolResult(id, callID, text string) string {
 		`"}]}],"meta":{"source":"tool","messageId":"uuid-` + id + `"}}}`
 }
 
-// --- cross-tick tool_use -> tool_result pairing (pending.go) -----------
+// --- cross-tick tool_use -> tool_result pairing (adapter.DeferUnpairedTail)
 
 // appendLine appends one more JSONL record to a staged transcript, the
 // way Command Code does while a session runs.
@@ -792,7 +792,7 @@ func TestUnpairedToolUseFlushedWhenTranscriptGoesStale(t *testing.T) {
 	body := header("s1", "/home/user/project") + "\n" +
 		assistantToolUse("m1", "chatcmpl-tool-ee", "read_file", `{"file_path":"/nope"}`) + "\n"
 	path, a := stageTranscript(t, "s1", body, nil)
-	old := time.Now().Add(-2 * pendingResultGrace)
+	old := time.Now().Add(-2 * adapter.PendingResultGrace)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +824,7 @@ func TestUnpairedToolUseFlushedWhenTailGrows(t *testing.T) {
 	filler := userText("m9", strings.Repeat("x", 4096))
 	body := header("s1", "/home/user/project") + "\n" +
 		assistantToolUse("m1", "chatcmpl-tool-ee", "read_file", `{"file_path":"/nope"}`) + "\n"
-	for i := 0; i*len(filler) <= maxDeferTailBytes; i++ {
+	for i := 0; i*len(filler) <= adapter.MaxDeferTailBytes; i++ {
 		body += filler + "\n"
 	}
 	path, a := stageTranscript(t, "s1", body, nil)

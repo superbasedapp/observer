@@ -20,6 +20,9 @@ type bootstrapEnv struct {
 	exits []int
 	at    []time.Duration
 	start time.Time
+	// fired is closed by the first recorded exit.
+	fired     chan struct{}
+	firedOnce sync.Once
 }
 
 func newBootstrapEnv(t *testing.T) *bootstrapEnv {
@@ -39,7 +42,7 @@ func newBootstrapEnvMode(t *testing.T, mode, rules string) *bootstrapEnv {
 	setTestHome(t, filepath.Join(dir, "home"))
 	cp := filepath.Join(dir, "config.toml")
 	writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[guard]\nenabled = true\nmode = %q\n%s", filepath.Join(dir, "o.db"), mode, rules))
-	return &bootstrapEnv{cp: cp}
+	return &bootstrapEnv{cp: cp, fired: make(chan struct{})}
 }
 
 func (e *bootstrapEnv) exit(code int) {
@@ -47,6 +50,18 @@ func (e *bootstrapEnv) exit(code int) {
 	defer e.mu.Unlock()
 	e.exits = append(e.exits, code)
 	e.at = append(e.at, time.Since(e.start))
+	e.firedOnce.Do(func() { close(e.fired) })
+}
+
+// holdUntilExit is a posture resolver's hang: it returns only once the
+// watchdog has recorded an exit, so the watchdog always fires while the
+// posture is still resolving, however loaded the machine. The 30s cap only
+// keeps a broken watchdog from hanging the test.
+func (e *bootstrapEnv) holdUntilExit() {
+	select {
+	case <-e.fired:
+	case <-time.After(30 * time.Second):
+	}
 }
 
 func (e *bootstrapEnv) recorded() ([]int, []time.Duration) {
@@ -82,7 +97,7 @@ func runBootstrap(t *testing.T, e *bootstrapEnv, maxRuntime time.Duration, resol
 func TestHookBootstrapTimeoutFailsClosed(t *testing.T) {
 	e := newBootstrapEnv(t)
 	h := runBootstrap(t, e, 300*time.Millisecond, func(string, string, integration.HookCap) bool {
-		time.Sleep(1500 * time.Millisecond)
+		e.holdUntilExit()
 		return true
 	})
 	exits, _ := e.recorded()
@@ -114,18 +129,20 @@ func TestHookBootstrapDeadlineIsAbsolute(t *testing.T) {
 		t.Errorf("a disabled watchdog = %v, want 0 (still disabled)", got)
 	}
 
-	// End to end: a resolver that holds past the budget is answered at the
-	// budget measured from start, not budget + hold.
+	// End to end: a resolver that holds until the watchdog fires is
+	// answered at the budget measured from start. A watchdog armed only
+	// after the posture resolved would fire 30s (holdUntilExit's cap) plus
+	// the budget after start.
 	e2 := newBootstrapEnv(t)
 	runBootstrap(t, e2, budget, func(string, string, integration.HookCap) bool {
-		time.Sleep(budget + hold)
+		e2.holdUntilExit()
 		return true
 	})
 	exits, at := e2.recorded()
 	if len(exits) == 0 || exits[0] != 2 {
 		t.Fatalf("exits = %v, want the block", exits)
 	}
-	if at[0] > budget+400*time.Millisecond {
+	if at[0] > budget+2*time.Second {
 		t.Errorf("the watchdog fired %v after start; the deadline is %v from start", at[0], budget)
 	}
 }
@@ -176,7 +193,7 @@ func TestHookBootstrapNonEnforcingNodeFailsOpen(t *testing.T) {
 	// The recorded exit does not end the test process, so the receiver may
 	// still write its own allow after it; only the first exit matters.
 	runBootstrap(t, e, 300*time.Millisecond, func(string, string, integration.HookCap) bool {
-		time.Sleep(1500 * time.Millisecond)
+		e.holdUntilExit()
 		return true
 	})
 	exits, _ := e.recorded()
@@ -203,7 +220,7 @@ func TestHookBootstrapPolicyFileKeepsInterimClosed(t *testing.T) {
 	writeFileT(t, bundle, "{}\n")
 	e := newBootstrapEnvMode(t, "observe", bootstrapPromptNotEnforced+fmt.Sprintf("[guard.rules]\norg_bundle = %q\n", bundle))
 	runBootstrap(t, e, 300*time.Millisecond, func(string, string, integration.HookCap) bool {
-		time.Sleep(1500 * time.Millisecond)
+		e.holdUntilExit()
 		return true
 	})
 	exits, _ := e.recorded()

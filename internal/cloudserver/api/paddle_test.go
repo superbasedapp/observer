@@ -6,9 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,9 +15,6 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -468,36 +463,7 @@ func TestPaddleWebhookExcessH1CandidatesIgnoredBeyondCap(t *testing.T) {
 // Paddle wiring — the honest dark posture).
 func newHarnessPaddleFull(t *testing.T, opts func(*api.Options)) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	priceMap := map[string]store.PaddlePlan{"pri_test_plus": {Name: "plus_beta", Version: 1}}
-	s.SetPaddlePriceMap(priceMap)
-	apiStore.SetPaddlePriceMap(priceMap)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	o := api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{},
-		Attestor:        admAttestor{verified: true},
-		Credentials:     jobs.StaticCredentials{Key: "test-key"},
-	}
-	if opts != nil {
-		opts(&o)
-	}
-	handler := api.New(o).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{stores: withTestPaddlePrices, opts: opts})
 }
 
 // signedPaddleMulti POSTs a body with a Paddle-Signature header carrying ONE

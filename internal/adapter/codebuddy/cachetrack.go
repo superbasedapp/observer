@@ -1,7 +1,6 @@
 package codebuddy
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
@@ -9,107 +8,30 @@ import (
 )
 
 // MaxBlocksPerSession caps the per-session Tier-2 accumulator's running
-// block count. Matches the claudecode template's cap (same memory
-// budget, same OOM guard).
+// block count: the shared cacheobs default (same memory budget, same OOM
+// guard as every other Tier-2 producer).
 const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
+
+// The canonical block forms live in cacheobs (message.go), so this
+// adapter's chain bytes cannot drift from the other Tier-2 producers'. The
+// wrappers below keep the parse loop's call sites unchanged.
 
 // accumulateTextCache feeds one text block's (already scrubbed) content
 // into acc, tagged by the message's role.
 func accumulateTextCache(acc *cacheobs.Accumulator, text, role string) {
-	canon, ok := marshalCacheTextBlock(text)
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel:     "message", // R1: transcripts never expose tools/system
-		Kind:           "text",
-		CanonicalBytes: canon,
-		Role:           role,
-	}})
+	acc.ObserveText(text, role)
 }
 
 // accumulateToolCallCache feeds one tool_use block's name + (already
 // scrubbed) input JSON into acc.
 func accumulateToolCallCache(acc *cacheobs.Accumulator, name, scrubbedInput string) {
-	canon, ok := marshalCacheToolUseBlock(name, scrubbedInput)
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel:     "message",
-		Kind:           "tool_use",
-		CanonicalBytes: canon,
-		Role:           "assistant",
-	}})
+	acc.ObserveToolUse(name, scrubbedInput)
 }
 
 // accumulateToolResultCache feeds one tool_result block's (already
 // scrubbed, already flattened) text into acc.
 func accumulateToolResultCache(acc *cacheobs.Accumulator, scrubbedText string) {
-	canon, ok := marshalCacheToolResultBlock(scrubbedText)
-	if !ok {
-		return
-	}
-	acc.ObserveBlocks([]models.CacheBlockMeta{{
-		LevelLabel:     "message",
-		Kind:           "tool_result",
-		CanonicalBytes: canon,
-		Role:           "tool",
-	}})
-}
-
-// marshalCacheTextBlock produces the deterministic JSON canonical form of
-// a plain text block. Each payload is an explicit STRUCT (never a map)
-// so encoding/json's deterministic field order preserves the R3
-// byte-stability invariant.
-func marshalCacheTextBlock(text string) ([]byte, bool) {
-	if text == "" {
-		return nil, false
-	}
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "text", Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
-}
-
-// marshalCacheToolUseBlock produces the canonical form of one assistant
-// tool_use call.
-func marshalCacheToolUseBlock(name, input string) ([]byte, bool) {
-	if name == "" && input == "" {
-		return nil, false
-	}
-	payload := struct {
-		Type  string `json:"type"`
-		Name  string `json:"name,omitempty"`
-		Input string `json:"input,omitempty"`
-	}{Type: "tool_use", Name: name, Input: input}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
-}
-
-// marshalCacheToolResultBlock produces the canonical form of one tool
-// result's flattened text.
-func marshalCacheToolResultBlock(text string) ([]byte, bool) {
-	if text == "" {
-		return nil, false
-	}
-	payload := struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	}{Type: "tool_result", Text: text}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return nil, false
-	}
-	return buf, true
+	acc.ObserveToolResult(scrubbedText)
 }
 
 // emitCacheObservation drains acc's pending content-block delta into one
@@ -126,16 +48,11 @@ func emitCacheObservation(acc *cacheobs.Accumulator, path, sessionID, messageID,
 		CacheReadTokens:     tp.cacheRead,
 		CacheCreationTokens: tp.cacheWrit,
 	}
-	if cacheobs.IsZeroUsage(usage) {
-		return nil
-	}
-	obs := acc.Emit(path, sessionID, messageID, model, ts, usage, false)
 	// §15.3 boundary: a CodeBuddy usage record never states which
 	// upstream provider served the model (CodeBuddy fronts every model
 	// through its own gateway; the model id is not a provider id),
 	// so provider is always "" here — a no-op today, kept for
 	// consistency with every other Tier-2 producer's identical overlay
 	// call.
-	obs = cacheobs.ApplyImplicitCacheOverlay(obs, "", model)
-	return &obs
+	return acc.EmitTurn(path, sessionID, messageID, model, "", ts, usage)
 }

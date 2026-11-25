@@ -10,7 +10,7 @@ import (
 // net/http and SQL.
 func TestPureCoreImports(t *testing.T) {
 	importpin.Check(t, importpin.Spec{
-		Files:     []string{"doc.go", "wire.go", "usage.go", "errors.go"},
+		Files:     []string{"doc.go", "wire.go", "usage.go", "errors.go", "shape.go"},
 		Forbidden: []string{"net/http", "database/sql", "os", "os/exec", "net", "github.com/fsnotify/fsnotify"},
 		ForbiddenTrees: []string{
 			"github.com/jackc/pgx",

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Send } from "lucide-react";
+import { KeyRound, Send } from "lucide-react";
 import { HelpTooltip } from "@shared/primitives/HelpTooltip";
 import { Button, Card, Input, Pill, SegmentedControl, confirmDialog } from "@/components/primitives";
 import { localConfirmHeaders } from "@/lib/api";
@@ -8,7 +8,9 @@ import { useApi } from "@/lib/useApi";
 import { orgDisplayLabel } from "@/lib/orgName";
 import {
   DESTINATION_CHOICES,
+  adminIssued,
   destinationLabel,
+  installKeyBody,
   sdkKeyNudge,
   sendsOnline,
   sourceText,
@@ -26,6 +28,14 @@ import type { ConfigResponse, EnrolmentStatus } from "@/lib/types";
 // SDK data (your own SDK key, minted by your organization). The key is kept
 // in a file only you can read; it is never shown here and no route returns
 // it. Contract: docs/plans/plane-a-sdk-buildout/contracts/destination.md.
+//
+// "Use an SDK key from my admin" (lane sdk-use-key) is the form of `observer
+// sdk use-key`: for an organization that issues no member keys, the member
+// pastes the key an admin minted on Machine identities and the gateway
+// address the admin's dialog showed. The key goes in the POST body of
+// /api/sdk/credential/key (never a URL), the field is cleared as soon as the
+// request is sent, and the answer never carries it. An admin-issued key is
+// removed, never revoked, by sign-out.
 
 /** The field paths the schema-driven "More settings" card must not repeat. */
 export const SDK_DESTINATION_FIELDS = ["Observability.SDK.Destination", "Observability.SDK.GatewayURL"];
@@ -66,6 +76,8 @@ export function SdkDestinationCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [useKeyOpen, setUseKeyOpen] = useState(false);
+  const fromAdmin = adminIssued(d);
   useEffect(() => {
     setChoice(saved.destination);
     setGateway(saved.gateway);
@@ -103,12 +115,21 @@ export function SdkDestinationCard({
   const signInOut = async (signIn: boolean) => {
     if (
       !signIn &&
-      !(await confirmDialog({
-        title: "Revoke your SDK key?",
-        body: "It is revoked on your organization and removed from this machine; apps stop sending online.",
-        confirmLabel: "Revoke",
-        tone: "danger",
-      }))
+      !(await confirmDialog(
+        fromAdmin
+          ? {
+              title: "Remove this SDK key from this machine?",
+              body: "Your admin issued it, so it is removed from this machine only and not revoked: it keeps working wherever else it is used until an admin revokes it on Machine identities. Apps on this machine stop sending online.",
+              confirmLabel: "Remove",
+              tone: "danger",
+            }
+          : {
+              title: "Revoke your SDK key?",
+              body: "It is revoked on your organization and removed from this machine; apps stop sending online.",
+              confirmLabel: "Revoke",
+              tone: "danger",
+            },
+      ))
     )
       return;
     setBusy(true);
@@ -122,7 +143,11 @@ export function SdkDestinationCard({
       });
       const body = (await r.json().catch(() => ({}))) as { message?: string; warning?: string };
       if (!r.ok) throw new Error(body.message || `HTTP ${r.status}`);
-      setNote(signIn ? "Signed in: your SDK key is on this machine." : body.warning || "Signed out: your SDK key was revoked.");
+      setNote(
+        signIn
+          ? "Signed in: your SDK key is on this machine."
+          : body.warning || (fromAdmin ? "Removed: the SDK key is no longer on this machine." : "Signed out: your SDK key was revoked."),
+      );
       res.reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Request failed");
@@ -190,18 +215,46 @@ export function SdkDestinationCard({
         </Button>
         {d?.signed_in ? (
           <Button size="sm" variant="secondary" disabled={readOnly || busy} onClick={() => void signInOut(false)}>
-            Sign out (revoke my SDK key)
+            {fromAdmin ? "Remove this SDK key" : "Sign out (revoke my SDK key)"}
           </Button>
-        ) : nudge ? null : (
-          <Button size="sm" variant="secondary" disabled={readOnly || busy} onClick={() => void signInOut(true)}>
-            Get my SDK key
-          </Button>
+        ) : (
+          <>
+            {!nudge && (
+              <Button size="sm" variant="secondary" disabled={readOnly || busy} onClick={() => void signInOut(true)}>
+                Get my SDK key
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={readOnly || busy}
+              aria-expanded={useKeyOpen}
+              onClick={() => setUseKeyOpen((o) => !o)}
+            >
+              Use an SDK key from my admin
+            </Button>
+          </>
         )}
       </div>
+      {!d?.signed_in && useKeyOpen && (
+        <UseAdminKeyForm
+          defaultGateway={saved.gateway}
+          disabled={readOnly || busy}
+          onBusy={setBusy}
+          onDone={(msg) => {
+            setUseKeyOpen(false);
+            setErr(null);
+            setNote(msg);
+            res.reload();
+          }}
+        />
+      )}
       {d?.signed_in && (
         <p className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-fg-3">
           <span>
-            Your SDK key ({d.online.scopes.join(", ")}) is kept in a file only you can read. It is never shown here.
+            {fromAdmin
+              ? "An SDK key your admin issued is kept in a file only you can read. It is never shown here; its scopes are on Machine identities in your organization's dashboard."
+              : `Your SDK key (${d.online.scopes.join(", ")}) is kept in a file only you can read. It is never shown here.`}
           </span>
           <HelpTooltip technical subject="where the key is kept" content={`Key ${d.online.key_id}, in ${d.online.credential_file}`} />
         </p>
@@ -229,9 +282,106 @@ export function SdkDestinationCard({
         <HelpTooltip
           technical
           subject="the command-line twins"
-          content="observer sdk status; observer sdk sign-in; observer config set observability.sdk.destination both --yes"
+          content="observer sdk status; observer sdk sign-in; observer sdk use-key --gateway-url <address> (the key on stdin); observer config set observability.sdk.destination both --yes"
         />
       </p>
     </Card>
+  );
+}
+
+/**
+ * UseAdminKeyForm installs an SDK key an admin issued (POST
+ * /api/sdk/credential/key, the form of `observer sdk use-key`). The key field
+ * is a password field, cleared the moment the request is sent; the key never
+ * goes in a URL and the answer never carries it.
+ */
+export function UseAdminKeyForm({
+  defaultGateway,
+  disabled,
+  onBusy,
+  onDone,
+}: {
+  defaultGateway: string;
+  disabled: boolean;
+  onBusy: (busy: boolean) => void;
+  onDone: (note: string) => void;
+}) {
+  const [key, setKey] = useState("");
+  const [gateway, setGateway] = useState(defaultGateway);
+  const [err, setErr] = useState<string | null>(null);
+  const install = async () => {
+    const built = installKeyBody(key, gateway);
+    if ("error" in built) {
+      setErr(built.error);
+      return;
+    }
+    setErr(null);
+    // The key leaves the form state now; only the request carries it.
+    setKey("");
+    onBusy(true);
+    try {
+      const r = await fetch("/api/sdk/credential/key", {
+        method: "POST",
+        headers: await localConfirmHeaders(),
+        body: JSON.stringify(built.body),
+      });
+      const body = (await r.json().catch(() => ({}))) as { message?: string };
+      if (!r.ok) throw new Error(body.message || `HTTP ${r.status}`);
+      onDone("Installed: the SDK key your admin issued is on this machine. Restart your apps to pick it up.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      onBusy(false);
+    }
+  };
+  return (
+    <form
+      data-testid="sdk-use-admin-key"
+      className="mt-3 space-y-2 rounded-2 border border-line-2 bg-bg-2 px-3 py-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void install();
+      }}
+    >
+      <p className="flex items-center gap-1.5 text-[12px] text-fg-1">
+        <KeyRound className="h-3.5 w-3.5 text-fg-3" aria-hidden />
+        Your admin mints the key on Machine identities and shows it once, with the gateway address.
+      </p>
+      <Input
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        label="SDK key"
+        help="It is kept in a file only you can read and is never shown again here."
+        mono
+        placeholder="Paste the key your admin gave you"
+        value={key}
+        disabled={disabled}
+        onChange={(e) => setKey(e.target.value)}
+      />
+      <Input
+        label="Gateway address"
+        help="The address the admin's dialog shows beside the key (SUPERBASED_ORG_URL)."
+        mono
+        placeholder="https://your-org.superbased.app"
+        value={gateway}
+        disabled={disabled}
+        onChange={(e) => setGateway(e.target.value)}
+      />
+      <p className="text-[11px] text-fg-3">
+        After this, an SDK on this machine sends to this machine and your organization unless you chose another destination.
+        Removing the key later does not revoke it; your admin does that.
+      </p>
+      <div className="flex gap-2">
+        <Button size="sm" variant="primary" type="submit" disabled={disabled}>
+          Install the key
+        </Button>
+      </div>
+      {err && (
+        <p role="alert" className="text-[12px] text-danger">
+          {err}
+        </p>
+      )}
+    </form>
   );
 }

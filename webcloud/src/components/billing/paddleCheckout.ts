@@ -1,6 +1,6 @@
 // paddleCheckout - the one Paddle.js owner of the portal: loading the CDN
 // script once, initializing it once per page load, and opening a checkout
-// overlay. Both checkouts use it: the personal Billing page's Plus checkout
+// overlay. Both checkouts use it: the personal Billing page's Personal Pro checkout
 // (PlanComparison.tsx) and an org's Team checkout (OrgBillingCard.tsx), so
 // Paddle's "Initialize only once" rule holds across both.
 

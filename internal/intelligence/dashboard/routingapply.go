@@ -333,7 +333,7 @@ func (s *Server) applyEvidenceReport(ctx context.Context, days int) (*modelvalue
 	if err != nil {
 		return nil, err
 	}
-	if fn := enginePriceFn(s.opts.CostEngine); fn != nil {
+	if fn := s.opts.CostEngine.RoutingPriceFn(); fn != nil {
 		facts.Price = fn
 	}
 	rep := modelvalue.Build(facts, modelvalue.Options{})

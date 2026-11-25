@@ -120,7 +120,7 @@ func (s *Store) LoadPromptGrades(ctx context.Context, projectID int64, actionIDs
 			Tier:      tier,
 			Model:     model,
 			Result:    result,
-			GradedAt:  parseCommitTime(gradedAtStr),
+			GradedAt:  parseStoredTime(gradedAtStr),
 		}
 		if existing, ok := out[actionID]; !ok || tierPriority[tier] > tierPriority[existing.Tier] {
 			out[actionID] = row

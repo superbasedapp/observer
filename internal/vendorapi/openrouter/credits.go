@@ -41,7 +41,7 @@ func Credits() vendorapi.Driver {
 
 func buildCredits(_ vendorapi.Params, _ vendorapi.Window, cursor string) (vendorapi.Request, error) {
 	if cursor != "" {
-		return vendorapi.Request{}, drift(SurfaceCredits, "the balance is not paged")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceCredits, "the balance is not paged")
 	}
 	return vendorapi.Request{Method: "GET", Path: "/api/v1/credits"}, nil
 }
@@ -60,12 +60,12 @@ func parseCredits(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	if doc.Data == nil {
-		return vendorapi.Page{}, drift(s, "required field data is missing")
+		return vendorapi.Page{}, vendorapi.Drift(s, "required field data is missing")
 	}
 	total, ok1 := dollars(doc.Data.TotalCredits)
 	used, ok2 := dollars(doc.Data.TotalUsage)
 	if !ok1 || !ok2 {
-		return vendorapi.Page{}, drift(s, "data.total_credits or data.total_usage is missing, negative or not a number")
+		return vendorapi.Page{}, vendorapi.Drift(s, "data.total_credits or data.total_usage is missing, negative or not a number")
 	}
 	return vendorapi.Page{SourceRecords: 1, Snapshots: []vendorapi.VendorSnapshot{{
 		Class: SnapshotClass, Subject: "account", Body: map[string]string{

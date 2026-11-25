@@ -52,7 +52,7 @@ func remoteReturnFixture(t *testing.T) (workspace.ReturnRequest, func(dir string
 		t.Fatal(err)
 	}
 	git(root, "clone", "-q", "--", "file://"+remote, copyDir)
-	rr, err := ociCloneRemoteReturn(managed, termsvc.SandboxRun{ID: runID, Dir: copyDir, Tool: "claude-code"})
+	rr, err := cloneRemoteReturn(managed, termsvc.SandboxRun{ID: runID, Dir: copyDir, Tool: "claude-code"})
 	if err != nil || rr == nil {
 		t.Fatalf("no return planned for a clone-remote copy: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCloneRemoteReturnPlanErrorIsSaid(t *testing.T) {
 	if err := os.MkdirAll(copyDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	rr, err := ociCloneRemoteReturn(managed, termsvc.SandboxRun{ID: runID, Dir: copyDir})
+	rr, err := cloneRemoteReturn(managed, termsvc.SandboxRun{ID: runID, Dir: copyDir})
 	if err == nil || rr != nil {
 		t.Fatalf("a copy with no repository planned a return: %+v %v", rr, err)
 	}

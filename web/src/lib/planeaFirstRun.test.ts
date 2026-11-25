@@ -182,7 +182,8 @@ test("the card shows one tab per SDK catalog row, in catalog order", () => {
     const row = SDK_CATALOG.find((r) => r.id === s.id)!;
     assert.equal(s.install, row.published ? row.installPublished : row.installCheckout, s.id);
     assert.equal(s.code, row.code, s.id);
-    assert.match(s.code, /127\.0\.0\.1:4318/, `${s.id}: the snippet names this machine's receiver`);
+    assert.equal(s.setup, row.setup, s.id);
+    assert.match(s.code, /\b(init|Init)\(/, `${s.id}: the snippet is the init line`);
   }
 });
 

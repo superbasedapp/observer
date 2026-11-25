@@ -40,6 +40,7 @@
 //     overlay itself needs to navigate across Paddle's own subdomains, so
 //     enumerating hosts one violation at a time is a losing game. The two
 //     explicit hosts are kept alongside the wildcard for documentation value.
+
 package api
 
 import (

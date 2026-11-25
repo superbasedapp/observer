@@ -19,11 +19,13 @@ const (
 	// migration 0043, operator ruling "Pin Haiku"; v3 kept the same caps but
 	// pinned GPT-6 Luna, migration 0041, D-299).
 	PlanFree = "free"
-	// PlanPlusBeta is the paid Plus plan (v4: 500/day, 15000/month - 5x free
-	// on both windows - concurrency 4, its OWN budget pool 'plus_beta' - never
-	// the free pool - pinned to the same Claude Haiku 5.5 route as free). Plus
-	// buys volume, the weekly digest and the long hosted history; both plans
-	// run enrichment on the same model since 0041.
+	// PlanPlusBeta is the paid individual plan's internal name; customers see
+	// it as "Personal Pro" (its catalog label, operator ruling 2026-11-24; it
+	// was "Plus"). v4: 500/day, 15000/month - 5x free on both windows -
+	// concurrency 4, its OWN budget pool 'plus_beta' - never the free pool -
+	// pinned to the same Claude Haiku 5.5 route as free. It buys volume, the
+	// weekly digest and the long hosted history; both plans run enrichment on
+	// the same model since 0041.
 	PlanPlusBeta = "plus_beta"
 	// DefaultFreePlanVersion is the free-plan version an account with NO
 	// account_plans row resolves to. Absence-means-free is what lets every
@@ -127,15 +129,6 @@ type PlanAssignment struct {
 	// therefore pushed to the next cycle boundary (R4: downgrades take effect
 	// at cycle end, upgrades mid-cycle).
 	Deferred bool
-}
-
-// NextMonthlyCycleStart returns the first instant of the next UTC calendar
-// month — the cycle boundary a deferred downgrade starts at. It is anchored to
-// exactly the window MonthlyWindowKey names, so an assignment that begins here
-// begins with a fresh monthly counter.
-func NextMonthlyCycleStart(now time.Time) time.Time {
-	u := now.UTC()
-	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 }
 
 // CeilToMonthlyCycleStart returns the first monthly cycle boundary AT OR AFTER

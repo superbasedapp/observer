@@ -94,10 +94,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // kept, so the store's other tables (credentials included) never leave
 // the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the Devin store (sessions.db): every table this
@@ -114,14 +111,5 @@ var mirrorSpec = mirrorbase.Spec{
 // non-native home. Covers both bridge directions (/mnt/c on WSL2, and
 // \\wsl.localhost\ on Windows).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }

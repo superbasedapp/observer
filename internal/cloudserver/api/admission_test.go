@@ -3,16 +3,12 @@ package api_test
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -28,29 +24,10 @@ func (a admAttestor) Attest(context.Context, store.RouteInfo, time.Time) (jobs.A
 // wired (attestor + credentials), rate limiting disabled.
 func newHarnessAdmission(t *testing.T, attestor jobs.ProviderAttestor, creds jobs.CredentialSource) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{},
-		Attestor:        attestor,
-		Credentials:     creds,
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+	return newHarnessWith(t, harnessSetup{opts: func(o *api.Options) {
+		o.Attestor = attestor
+		o.Credentials = creds
+	}})
 }
 
 func acctBlobCount(t *testing.T, h *harness, acct string) int {
@@ -129,28 +106,11 @@ func TestFA6AdmissionAdmitsWhenVerified(t *testing.T) {
 // harness happens to wire an unhealthy attestor.
 func newHarnessNoAdmissionDeps(t *testing.T) *harness {
 	t.Helper()
-	pool := cloudtestpg.NewDB(t)
-	s := store.New(pool)
-	apiStore := mustAPIStore(t, pool)
-	s.SetDeletionJournal(mustJournal(t))
-	apiStore.SetDeletionJournal(mustJournal(t))
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	base := "http://" + lis.Addr().String()
-	handler := api.New(api.Options{
-		Store:           apiStore,
-		Queue:           jobs.NewPGQueue(apiStore),
-		Verifier:        identity.NewDevAuth(),
-		ExternalBaseURL: base,
-		RateLimit:       &api.RateLimitConfig{},
+	return newHarnessWith(t, harnessSetup{opts: func(o *api.Options) {
 		// Attestor + Credentials deliberately omitted.
-	}).Handler()
-	srv := &httptest.Server{Listener: lis, Config: &http.Server{Handler: handler}}
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return &harness{srv: srv, store: s}
+		o.Attestor = nil
+		o.Credentials = nil
+	}})
 }
 
 // TestFA6AdmissionFailsClosedWhenUnwired is the re-fix regression for the

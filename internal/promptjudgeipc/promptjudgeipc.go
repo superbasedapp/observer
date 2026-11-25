@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/localipc"
@@ -245,8 +246,10 @@ func Serve(ctx context.Context, ln net.Listener, answer Answerer) error {
 		select {
 		case slots <- struct{}{}:
 			go func() {
-				defer func() { <-slots }()
-				serveConn(ctx, conn, answer)
+				var once sync.Once
+				free := func() { once.Do(func() { <-slots }) }
+				defer free()
+				serveConn(ctx, conn, answer, free)
 			}()
 		default:
 			go refuseBusy(conn)
@@ -265,14 +268,20 @@ func refuseBusy(conn net.Conn) {
 	_, _ = conn.Write(append(line, '\n'))
 }
 
-func serveConn(ctx context.Context, conn net.Conn, answer Answerer) {
+// serveConn answers one ask. free releases its concurrency slot: it runs as
+// soon as the answer is decided, before the answer is written, so a client
+// that asks again the moment it reads an answer finds the slot free (the cap
+// bounds the answerer's work, not the write).
+func serveConn(ctx context.Context, conn net.Conn, answer Answerer, free func()) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(MaxBudget + time.Second))
 	raw, err := readLine(conn, MaxLineBytes)
 	if err != nil {
 		return
 	}
-	line, err := json.Marshal(handle(ctx, raw, answer))
+	resp := handle(ctx, raw, answer)
+	free()
+	line, err := json.Marshal(resp)
 	if err != nil {
 		return
 	}

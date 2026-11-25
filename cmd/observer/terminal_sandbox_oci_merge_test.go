@@ -124,7 +124,7 @@ func TestFreshRequestBackendReachesChosenDriver(t *testing.T) {
 		t.Skip("oci-runc runs on Linux and WSL2")
 	}
 	countProbeEnv(t, true)
-	rt := ociTestRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
+	rt := testSandboxRuntime(t, ociTestConfig(t, true, "oci-runc", "bwrap"))
 	real, ok := rt.drivers[sandboxbackend.BackendOCIRunc]
 	if !ok {
 		t.Fatal("the oci-runc driver is not active")

@@ -58,11 +58,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 
+	"github.com/marmutapp/superbased-observer/internal/genout"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
@@ -203,7 +203,7 @@ func main() {
 		log.Fatalf("taxgen: %v", err)
 	}
 	for _, a := range arts {
-		if err := write(filepath.Join(*outDir, a.Name), a.Data); err != nil {
+		if err := genout.WriteFile(filepath.Join(*outDir, a.Name), a.Data); err != nil {
 			log.Fatalf("taxgen: %v", err)
 		}
 	}
@@ -562,19 +562,4 @@ func encodeJSON(v any) ([]byte, error) {
 	}
 	// json.Encoder.Encode already terminates with exactly one newline.
 	return buf.Bytes(), nil
-}
-
-// write puts the bytes at path, creating the parent directory when the
-// gate points it at a scratch location.
-func write(path string, data []byte) error {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-	//nolint:gosec // G306: a committed, publicly-distributed source artifact; world-readable is intended.
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
 }

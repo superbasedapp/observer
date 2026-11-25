@@ -233,3 +233,130 @@ func bumpCLITime(t map[string]any) {
 		}
 	}
 }
+
+// TestCLIAdapter_CacheObservations_IncrementalClosesEmittedDeltas pins
+// CAPTURE-01 (opencode's T-930 ported to kilo-code CLI): an incremental parse
+// replays the session from its first message to keep the chain complete, but a
+// step an earlier parse already emitted must close its delta without emitting,
+// so the first new step carries only the blocks written since that step (here
+// the new prompt and the new reply), not the session's older blocks again.
+// Each block is observed once across the two parses.
+func TestCLIAdapter_CacheObservations_IncrementalClosesEmittedDeltas(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "kilo.db")
+	setupCLIDBForCachetrack(t, path)
+
+	a := NewCLIWithOptions(nil, []string{root})
+	first, err := a.ParseSessionFile(context.Background(), path, 0)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	if len(first.CacheObservations) != 1 || len(first.CacheObservations[0].BlockHashes) != 4 {
+		t.Fatalf("first parse = %d observations, want 1 with 4 blocks", len(first.CacheObservations))
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{
+		`INSERT INTO message(id, session_id, time_created, time_updated, data) VALUES
+			('msg_user2',   'ses_1', 10000, 10001,
+			 '{"role":"user","agent":"code","model":{"providerID":"kilo","modelID":"kilo-auto"},"time":{"created":10000}}'),
+			('msg_assist2', 'ses_1', 11000, 11500,
+			 '{"parentID":"msg_user2","role":"assistant","mode":"code","agent":"code","path":{"cwd":"/tmp/kilo-test","root":"/tmp/kilo-test"},"modelID":"kilo-auto","providerID":"kilo","time":{"created":11000,"completed":11500},"finish":"stop","tokens":{"total":5214,"input":20,"output":10,"reasoning":0,"cache":{"read":5120,"write":64}},"cost":0.001}')`,
+		`INSERT INTO part(id, message_id, session_id, time_created, time_updated, data) VALUES
+			('prt_u2', 'msg_user2',   'ses_1', 10000, 10001, '{"type":"text","text":"And again"}'),
+			('prt_t2', 'msg_assist2', 'ses_1', 11100, 11200, '{"type":"text","text":"Still green."}')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+	_ = db.Close()
+
+	later, err := a.ParseSessionFile(context.Background(), path, first.NewOffset)
+	if err != nil {
+		t.Fatalf("incremental parse: %v", err)
+	}
+	if len(later.CacheObservations) != 1 {
+		t.Fatalf("incremental observations = %d, want 1", len(later.CacheObservations))
+	}
+	obs := later.CacheObservations[0]
+	if obs.MessageID != "msg_assist2" {
+		t.Errorf("MessageID = %q, want msg_assist2", obs.MessageID)
+	}
+	if got := len(obs.BlockHashes); got != 2 {
+		t.Errorf("BlockHashes = %d, want 2 (new prompt + new reply; the already-emitted step's delta is closed)", got)
+	}
+	seen := map[string]bool{}
+	for _, b := range first.CacheObservations[0].BlockHashes {
+		seen[b.Kind+"\x00"+string(b.CanonicalBytes)] = true
+	}
+	for _, b := range obs.BlockHashes {
+		if seen[b.Kind+"\x00"+string(b.CanonicalBytes)] {
+			t.Errorf("block %s %s was observed by both parses", b.Kind, b.CanonicalBytes)
+		}
+	}
+}
+
+// TestCLIAdapter_CacheObservations_IncrementalKeepsUnemittedStepBlocks pins
+// the other half of the T-930 contract: an assistant step the earlier parse
+// did NOT emit (zero tokens, still streaming) closes no delta, so its blocks
+// ride on the first emitted step of the next parse instead of being lost.
+func TestCLIAdapter_CacheObservations_IncrementalKeepsUnemittedStepBlocks(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "kilo.db")
+	setupCLIDBForCachetrack(t, path)
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO message(id, session_id, time_created, time_updated, data) VALUES
+		('msg_user2',   'ses_1', 9100, 9101,
+		 '{"role":"user","agent":"code","model":{"providerID":"kilo","modelID":"kilo-auto"},"time":{"created":9100}}'),
+		('msg_assist2', 'ses_1', 9200, 9300,
+		 '{"parentID":"msg_user2","role":"assistant","agent":"code","modelID":"kilo-auto","providerID":"kilo","time":{"created":9200},"tokens":{"total":0,"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO part(id, message_id, session_id, time_created, time_updated, data) VALUES
+		('prt_u2', 'msg_user2',   'ses_1', 9100, 9101, '{"type":"text","text":"And again"}'),
+		('prt_t2', 'msg_assist2', 'ses_1', 9250, 9260, '{"type":"text","text":"Working"}')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	a := NewCLIWithOptions(nil, []string{root})
+	first, err := a.ParseSessionFile(context.Background(), path, 0)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	if len(first.CacheObservations) != 1 {
+		t.Fatalf("first parse = %d observations, want 1 (the streaming step has no tokens)", len(first.CacheObservations))
+	}
+
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The streaming step completes, with tokens, after the first parse.
+	if _, err := db.Exec(`UPDATE message SET time_updated = 12000, data =
+		'{"parentID":"msg_user2","role":"assistant","agent":"code","modelID":"kilo-auto","providerID":"kilo","time":{"created":9200,"completed":12000},"finish":"stop","tokens":{"total":5214,"input":20,"output":10,"reasoning":0,"cache":{"read":5120,"write":64}}}'
+		WHERE id = 'msg_assist2'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	later, err := a.ParseSessionFile(context.Background(), path, first.NewOffset)
+	if err != nil {
+		t.Fatalf("incremental parse: %v", err)
+	}
+	if len(later.CacheObservations) != 1 {
+		t.Fatalf("incremental observations = %d, want 1", len(later.CacheObservations))
+	}
+	if got := len(later.CacheObservations[0].BlockHashes); got != 2 {
+		t.Errorf("BlockHashes = %d, want 2 (the step's own prompt + reply, never emitted before)", got)
+	}
+}

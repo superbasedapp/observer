@@ -220,7 +220,7 @@ var Providers = []ProviderDef{
 	{ID: "coderabbit", Group: GroupUsage, Ref: []string{"coderabbit"}, Shows: sh(ShowsCycle)},
 	{ID: "pi", Group: GroupUsage, Ref: []string{"pi"}, Gap: GapTrafficOnly, Tools: []string{"pi"}},
 
-	// --- 2026-10-21 capture wave (AP-134; src_wave1021.go) ---------------------
+	// --- 2026-10-21 capture wave (AP-134; src_experimental_2026_10.go) -----
 	// Not in the reference list (no Ref): Observer's own rows for tools it
 	// captures. Every live source is experimental (undocumented endpoints).
 	{ID: ProviderAutohand, Group: GroupPlans, Shows: sh(Shows5h, ShowsDaily, ShowsWeekly, ShowsMonthly), Tools: []string{"autohand"}},

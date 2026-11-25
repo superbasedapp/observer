@@ -6,14 +6,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"go/parser"
-	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +25,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
 // envelopeAllowlist / cellAllowlist are the ONLY JSON keys the aggregate wire
@@ -507,32 +505,16 @@ func TestAggregateEgressSeamSeparate(t *testing.T) {
 		"github.com/marmutapp/superbased-observer/internal/aggregatesvc")
 }
 
-// assertNoImport fails if any non-test .go file in pkgDir imports forbidden.
+// assertNoImport fails if any non-test .go file in pkgDir imports forbidden
+// or a package below it. It runs on importpin, the shared scanner: every
+// import literal is decoded (a raw-string literal cannot slip past) and a
+// scan that finds no file fails instead of passing vacuously.
 func assertNoImport(t *testing.T, pkgDir, forbidden string) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(pkgDir, "*.go"))
-	if err != nil {
-		t.Fatalf("glob %s: %v", pkgDir, err)
-	}
-	if len(matches) == 0 {
-		t.Fatalf("no source files in %s", pkgDir)
-	}
-	fset := token.NewFileSet()
-	for _, path := range matches {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		for _, imp := range file.Imports {
-			p := strings.Trim(imp.Path.Value, `"`)
-			if p == forbidden || strings.HasPrefix(p, forbidden+"/") {
-				t.Errorf("%s imports forbidden %q", filepath.Base(path), forbidden)
-			}
-		}
-	}
+	importpin.Check(t, importpin.Spec{
+		Dirs:           []string{pkgDir},
+		ForbiddenTrees: []string{forbidden},
+	})
 }
 
 // TestAggregateRequestShape captures the complete outbound request via httptest

@@ -253,7 +253,7 @@ func (s *Store) insertFileChanges(ctx context.Context, rows []FileChangeRow, res
 		case r.ActionID != 0:
 			res, execErr = actionStmt.ExecContext(
 				ctx,
-				nullString(r.SessionID), r.ProjectID, r.ActionID, r.FilePathHash, r.InputDigest,
+				nullableString(r.SessionID), r.ProjectID, r.ActionID, r.FilePathHash, r.InputDigest,
 				r.Language, r.Category, r.Actor, r.Confidence, r.Source,
 				boolInt(r.Sidechain), boolInt(r.Overwrite), boolInt(r.DeletedFile),
 				r.Stats.AddedCode, r.Stats.ModifiedCode, r.Stats.DeletedCode,
@@ -273,7 +273,7 @@ func (s *Store) insertFileChanges(ctx context.Context, rows []FileChangeRow, res
 			// writer, not one each writer re-implements.
 			res, execErr = editorStmt.ExecContext(
 				ctx,
-				nullString(r.SessionID), r.ProjectID, r.FilePathHash, r.InputDigest,
+				nullableString(r.SessionID), r.ProjectID, r.FilePathHash, r.InputDigest,
 				r.Language, r.Category, r.Actor, r.Confidence, r.Source,
 				boolInt(r.Sidechain), boolInt(r.Overwrite), boolInt(r.DeletedFile),
 				r.Stats.AddedCode, r.Stats.ModifiedCode, r.Stats.DeletedCode,
@@ -772,16 +772,6 @@ func placeholders(n int) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-// nullString renders "" as SQL NULL, so a session-less editor row stores
-// NULL rather than an empty string that the unique index would treat as a
-// real value.
-func nullString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // BackfillLOCOptions bounds one `observer backfill --loc` run.

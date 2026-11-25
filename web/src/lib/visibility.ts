@@ -47,6 +47,100 @@ import { hiddenTabIds, tabOfPath } from "./tabVisibility.ts";
 // re-exported here so the governance surfaces' existing imports keep working.
 export { orgDisplayLabel, orgDisplayLabelSentence } from "./orgName.ts";
 
+/** One local page's equivalent on the online dashboard (GET /api/governance
+ *  `online.pages`, internal/settingslink orgPages). `href` is absent when the
+ *  daemon knows no address a link may open; `members` is true when any
+ *  signed-in member may open it there (otherwise only an admin whose role
+ *  includes it). */
+export type OnlinePage = { href?: string; label: string; members: boolean };
+
+/**
+ * The /api/governance `online` block (operator ruling 2, 2026-11-24): where
+ * this machine's organization chooses what its dashboard shows (Settings >
+ * Developer dashboards), and each local page's online equivalent. Built by
+ * the daemon from the address the enrolment holds, never a guessed host.
+ * Absent on an unenrolled node and on an older daemon.
+ */
+export type GovernanceOnline = {
+  /** "personal": the organization is the developer's own (they are its only
+   *  admin); "team" otherwise. */
+  kind: "personal" | "team";
+  visibility: { href?: string; label: string };
+  pages?: Record<string, OnlinePage>;
+};
+
+/**
+ * onlineHref keeps only an address a link may open: https, or http on a
+ * loopback host, with no credentials (settingslink.OrgDashboardBase, the
+ * daemon's own rule, re-checked here so a stale or odd answer can never become
+ * a link). Anything else is null.
+ */
+export function onlineHref(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.username || u.password) return null;
+  if (u.protocol === "https:") return u.toString();
+  if (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)) return u.toString();
+  return null;
+}
+
+/**
+ * onlinePageFor is the online equivalent of local page `navId` that a link may
+ * go to, or null: it needs an address a link may open, and the person must be
+ * able to open it there (any page on their own personal dashboard; on a team's
+ * dashboard, a page every member may open).
+ */
+export function onlinePageFor(
+  online: GovernanceOnline | null | undefined,
+  navId: string | null | undefined,
+): { href: string; label: string } | null {
+  if (!online || !navId) return null;
+  const page = online.pages?.[navId];
+  const href = onlineHref(page?.href);
+  if (!page || !href) return null;
+  if (online.kind !== "personal" && !page.members) return null;
+  return { href, label: page.label };
+}
+
+/**
+ * onlineEquivalentOf maps an in-app address onto the online equivalent of the
+ * page it opens (onlinePageFor), for a link whose target this machine hides.
+ */
+export function onlineEquivalentOf(
+  href: string,
+  online: GovernanceOnline | null | undefined,
+  navPaths: ReadonlyArray<{ id: string; path: string }>,
+): { href: string; label: string } | null {
+  return onlinePageFor(online, pathNavId(href, navPaths));
+}
+
+/**
+ * onlineJumpsFor lists, in nav order, the pages in `hiddenNav` (pages this
+ * machine hides) that have an online equivalent the person may open
+ * (onlinePageFor): the command palette offers them as jumps to the online
+ * dashboard, in place of the hidden page it no longer lists.
+ */
+export function onlineJumpsFor<T extends { id: string }>(
+  navItems: readonly T[],
+  hiddenNav: readonly string[],
+  online: GovernanceOnline | null | undefined,
+): { item: T; href: string; label: string }[] {
+  if (!online || hiddenNav.length === 0) return [];
+  const hidden = new Set(hiddenNav);
+  const out: { item: T; href: string; label: string }[] = [];
+  for (const item of navItems) {
+    if (!hidden.has(item.id)) continue;
+    const page = onlinePageFor(online, item.id);
+    if (page) out.push({ item, ...page });
+  }
+  return out;
+}
+
 /**
  * The subset of the /api/governance response these helpers read. `visibility`
  * is absent on a daemon that predates the arc; the legacy lists (the org's

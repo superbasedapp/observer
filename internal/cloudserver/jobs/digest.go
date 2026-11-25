@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
+	"github.com/marmutapp/superbased-observer/internal/cloudresult"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -80,9 +81,9 @@ func buildDigestResultSchema() json.RawMessage {
 
 // BuildDigestPrompt builds the evidence-as-data prompt for one
 // cloudcontract.DigestEvidence payload, reusing the SAME per-request
-// unforgeable fence as BuildLunaPrompt (buildEvidenceUserMessage, luna.go).
+// unforgeable fence as BuildLunaPrompt (cloudresult.BuildEvidenceUserMessage).
 func BuildDigestPrompt(evidence []byte) (LunaPrompt, error) {
-	user, err := buildEvidenceUserMessage(evidence)
+	user, err := cloudresult.BuildEvidenceUserMessage(evidence)
 	if err != nil {
 		return LunaPrompt{}, err
 	}
@@ -139,32 +140,33 @@ func ProcessDigestCompletion(content string, sessionCount int, periodStart, peri
 }
 
 // scrubNormalizedDigest secret-scrubs every SafeText field of a validated
-// digest result and re-wraps each masked value (mirrors scrubNormalized).
+// digest result and re-wraps each masked value (mirrors
+// cloudresult.ScrubNormalized).
 func scrubNormalizedDigest(nr cloudcontract.NormalizedDigestResult) (cloudcontract.NormalizedDigestResult, error) {
 	out := cloudcontract.NormalizedDigestResult{
 		Confidence: nr.Confidence, SchemaVersion: nr.SchemaVersion,
 		SessionCount: nr.SessionCount, PeriodStart: nr.PeriodStart, PeriodEnd: nr.PeriodEnd,
 	}
 	var err error
-	if out.Headline, err = scrubField("headline", nr.Headline.String(), cloudcontract.MaxDigestHeadlineBytes, true); err != nil {
+	if out.Headline, err = cloudresult.ScrubField("headline", nr.Headline.String(), cloudcontract.MaxDigestHeadlineBytes, true); err != nil {
 		return nr, err
 	}
-	if out.CostTrend, err = scrubField("cost_trend", nr.CostTrend.String(), cloudcontract.MaxDigestCostTrendBytes, false); err != nil {
+	if out.CostTrend, err = cloudresult.ScrubField("cost_trend", nr.CostTrend.String(), cloudcontract.MaxDigestCostTrendBytes, false); err != nil {
 		return nr, err
 	}
-	if out.SuggestedNextSession, err = scrubField("suggested_next_session", nr.SuggestedNextSession.String(), cloudcontract.MaxDigestNextSessionBytes, false); err != nil {
+	if out.SuggestedNextSession, err = cloudresult.ScrubField("suggested_next_session", nr.SuggestedNextSession.String(), cloudcontract.MaxDigestNextSessionBytes, false); err != nil {
 		return nr, err
 	}
-	if out.Themes, err = scrubList("themes", nr.Themes, cloudcontract.MaxDigestListItemBytes); err != nil {
+	if out.Themes, err = cloudresult.ScrubList("themes", nr.Themes, cloudcontract.MaxDigestListItemBytes); err != nil {
 		return nr, err
 	}
-	if out.RecurringErrorClasses, err = scrubList("recurring_error_classes", nr.RecurringErrorClasses, cloudcontract.MaxDigestListItemBytes); err != nil {
+	if out.RecurringErrorClasses, err = cloudresult.ScrubList("recurring_error_classes", nr.RecurringErrorClasses, cloudcontract.MaxDigestListItemBytes); err != nil {
 		return nr, err
 	}
-	if out.UnfinishedThreads, err = scrubList("unfinished_threads", nr.UnfinishedThreads, cloudcontract.MaxDigestListItemBytes); err != nil {
+	if out.UnfinishedThreads, err = cloudresult.ScrubList("unfinished_threads", nr.UnfinishedThreads, cloudcontract.MaxDigestListItemBytes); err != nil {
 		return nr, err
 	}
-	if out.Limitations, err = scrubList("limitations", nr.Limitations, cloudcontract.MaxLimitationBytes); err != nil {
+	if out.Limitations, err = cloudresult.ScrubList("limitations", nr.Limitations, cloudcontract.MaxLimitationBytes); err != nil {
 		return nr, err
 	}
 	return out, nil

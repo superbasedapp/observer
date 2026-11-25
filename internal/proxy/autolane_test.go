@@ -443,7 +443,7 @@ func TestAutoLane(t *testing.T) {
 	}
 }
 
-// TestAutoLaneEndToEnd exercises the full HTTP path (stripUpstreamPrefix →
+// TestAutoLaneEndToEnd exercises the full HTTP path (resolveUpstreamPrefix →
 // serve()'s auto-lane resolution → forward) rather than resolveAutoLane in
 // isolation, so it also pins Content-Length correctness (the existing
 // outReq.ContentLength = len(reqBody) convention) and the exact byte

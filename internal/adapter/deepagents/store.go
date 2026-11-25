@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
+	"github.com/marmutapp/superbased-observer/internal/adapter/sqliteschema"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
@@ -111,10 +112,7 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 // so the store's other tables never leave the vendor's file (T-927,
 // MIRROR-CRED-1; this adapter's private byte copy was RB1 sweep finding A2).
 func stageMirrorIfForeign(srcDB string) (string, error) {
-	if !isForeignMountPath(srcDB) {
-		return srcDB, nil
-	}
-	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
+	return mirrorbase.StageIfForeign(context.Background(), srcDB, mirrorSpec, allHomesFunc())
 }
 
 // mirrorSpec is the allow-list mirror of the store: every table this
@@ -130,26 +128,7 @@ var mirrorSpec = mirrorbase.Spec{
 // isForeignMountPath reports whether path lives under a crossmount-detected
 // non-native home (both bridge directions).
 func isForeignMountPath(path string) bool {
-	for _, h := range allHomesFunc() {
-		if h.Origin == "native" {
-			continue
-		}
-		sep := string(filepath.Separator)
-		if strings.HasPrefix(path, h.Path+sep) || strings.HasPrefix(path, h.Path+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-// tableExists reports whether a table is present, so an empty or foreign
-// store (the Windows install's 0-byte sessions.db) degrades to "nothing to
-// do" instead of erroring.
-func tableExists(ctx context.Context, db *sql.DB, name string) bool {
-	var got string
-	err := db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
-	return err == nil && got == name
+	return crossmount.UnderForeignHome(path, allHomesFunc())
 }
 
 // threadRow is one conversation thread (a dcode session) that gained a
@@ -206,7 +185,7 @@ func decodeMeta(raw []byte) checkpointMeta {
 // every thread is a UUIDv6, so the lexicographic max is the chronological
 // max). 0 for an empty / foreign store or an unparseable id.
 func latestCursor(ctx context.Context, db *sql.DB) (int64, error) {
-	if !tableExists(ctx, db, "checkpoints") {
+	if !sqliteschema.TableExists(ctx, db, "checkpoints") {
 		return 0, nil
 	}
 	var id sql.NullString
@@ -277,7 +256,7 @@ type sideCost struct {
 // or row is absent, the row is the `null` tombstone dcode writes when a
 // thread is deleted, or the subtotal carries no tokens.
 func loadSideCost(ctx context.Context, db *sql.DB, threadID string) (sideCost, bool) {
-	if !tableExists(ctx, db, "dcode_btw_costs") {
+	if !sqliteschema.TableExists(ctx, db, "dcode_btw_costs") {
 		return sideCost{}, false
 	}
 	var raw string

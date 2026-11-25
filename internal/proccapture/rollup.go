@@ -1,9 +1,6 @@
 package proccapture
 
-import (
-	"sort"
-	"time"
-)
+import "time"
 
 // Rollup is one accumulated rollup group (a process_rollups row, or the
 // increment an upsert adds to one).
@@ -230,15 +227,4 @@ func (a *Accumulator) Delta() Delta {
 		}
 	}
 	return d
-}
-
-// SortRollupsByCount orders rollups by count descending, then by key, the
-// order the summary read shows them in.
-func SortRollupsByCount(rs []Rollup) {
-	sort.SliceStable(rs, func(i, j int) bool {
-		if rs[i].Count != rs[j].Count {
-			return rs[i].Count > rs[j].Count
-		}
-		return rs[i].Key.ExeBasename < rs[j].Key.ExeBasename
-	})
 }

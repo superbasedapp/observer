@@ -7,18 +7,11 @@ import (
 	"syscall"
 )
 
-// setProcGroup launches the harness in its own process group so the runner can
-// escalate a signal to the whole group (plan §3.2 step 2) — a hung grandchild
-// (codex app-server) can't outlive the cell.
-func setProcGroup(cmd *exec.Cmd) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-}
-
 // killProcGroup sends SIGKILL to the harness's process group. Called from
-// cmd.Cancel on context cancellation/timeout.
+// cmd.Cancel on context cancellation/timeout. The runner launches each
+// harness in its own process group (procgroup.Set) so the signal reaches the
+// whole group (plan §3.2 step 2): a hung grandchild (codex app-server) can't
+// outlive the cell.
 func killProcGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil

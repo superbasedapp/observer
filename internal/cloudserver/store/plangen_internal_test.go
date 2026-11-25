@@ -15,7 +15,9 @@ import (
 
 // TestPlanFromTemplateReproducesTheV5Rows pins the projection to cloud
 // migration 0079's two v5 rows, column by column: generating them from the
-// catalog changes no production row.
+// catalog changes no entitlement column of a production row. The one copy
+// column differs on purpose: plus_beta's label is "Personal Pro" (operator
+// ruling 2026-11-24), which the generator writes over 0079's "Plus" (0156).
 func TestPlanFromTemplateReproducesTheV5Rows(t *testing.T) {
 	t.Parallel()
 	const haiku = "session_enrichment.claude-haiku-5-5.v1"
@@ -25,7 +27,7 @@ func TestPlanFromTemplateReproducesTheV5Rows(t *testing.T) {
 			BudgetPool: FreeBudgetPool, DigestWeekly: false, ResultsRetentionDays: 30, RouteID: haiku, EnrichmentTier: "free",
 		},
 		{
-			Name: PlanPlusBeta, Version: 5, Label: "Plus", DailyCap: 500, MonthlyCap: 15000, ConcurrencyCap: 4,
+			Name: PlanPlusBeta, Version: 5, Label: "Personal Pro", DailyCap: 500, MonthlyCap: 15000, ConcurrencyCap: 4,
 			BudgetPool: "plus_beta", DigestWeekly: true, ResultsRetentionDays: 365, RouteID: haiku, EnrichmentTier: "paid",
 		},
 	}

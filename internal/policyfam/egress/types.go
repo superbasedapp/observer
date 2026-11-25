@@ -1,5 +1,7 @@
 package egress
 
+import "slices"
+
 // Action is the primary egress verb a rule resolves to (exactly one per rule,
 // lint-enforced). The zero value ActionNone is "no egress action".
 type Action string
@@ -20,9 +22,10 @@ const (
 )
 
 // ProviderShape is the incoming wire shape. v1 is anthropic|openai only —
-// Gemini is excluded (design finding 17): admission's extractLastUserText sends
-// non-OpenAI providers through the Anthropic parser, so a Gemini body yields no
-// text and skips the gate.
+// Gemini is excluded (design finding 17): when this was written, admission's
+// extractor sent non-OpenAI providers through the Anthropic parser, so a
+// Gemini body yielded no text and skipped the gate. Admission now reads the
+// shared promptturn.AdmissionView, which knows Gemini; egress is unchanged.
 type ProviderShape string
 
 const (
@@ -81,17 +84,22 @@ const (
 	ReasonEffortNoop         ReasonCode = "egress_effort_noop"
 )
 
-// validReasonCode reports whether s is a member of the closed reason enum.
-func validReasonCode(s string) bool {
-	switch ReasonCode(s) {
-	case ReasonFlaggedLocal, ReasonBudgetBand, ReasonCohortUpstream,
-		ReasonOverloadDegrade, ReasonSensitiveLocalOnly, ReasonDenyUnavailable,
-		ReasonFailOpen, ReasonNoRoute, ReasonSwitchHeld, ReasonEffortNoop:
-		return true
-	default:
-		return false
-	}
+// reasonCodes is the closed reason vocabulary in declaration order: the one
+// list validReasonCode checks and ReasonCodes hands out. The dashboards'
+// reason-code pickers read its TypeScript mirror, shared/lib/
+// egressReasonCodes.ts, which reasoncodes_mirror_test.go pins to it (FRONT-02).
+var reasonCodes = []ReasonCode{
+	ReasonFlaggedLocal, ReasonBudgetBand, ReasonCohortUpstream,
+	ReasonOverloadDegrade, ReasonSensitiveLocalOnly, ReasonDenyUnavailable,
+	ReasonFailOpen, ReasonNoRoute, ReasonSwitchHeld, ReasonEffortNoop,
 }
+
+// ReasonCodes returns the closed reason vocabulary, in declaration order. The
+// slice is a copy.
+func ReasonCodes() []ReasonCode { return slices.Clone(reasonCodes) }
+
+// validReasonCode reports whether s is a member of the closed reason enum.
+func validReasonCode(s string) bool { return slices.Contains(reasonCodes, ReasonCode(s)) }
 
 // Target is a typed upstream target: an id, its URL, and its declared wire
 // shape. A shape is REQUIRED for any enforce-mode route_to_upstream (design

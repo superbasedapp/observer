@@ -92,12 +92,13 @@ func newAppsCmd() *cobra.Command {
 			"sent by the superbased SDKs or any OpenTelemetry exporter to this machine.\n\n" +
 			"  observer apps on       turn it on (no restart with a running daemon)\n" +
 			"  observer apps off      turn it off (takes effect at the next start)\n" +
-			"  observer apps status   what is on, the receiver, the latest trace\n\n" +
+			"  observer apps status   what is on, the receiver, the latest trace\n" +
+			"  observer apps lane     route an app's model calls through this machine\n\n" +
 			"Coding-agent capture is never changed by these commands.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.AddCommand(newAppsOnCmd(), newAppsOffCmd(), newAppsStatusCmd())
+	cmd.AddCommand(newAppsOnCmd(), newAppsOffCmd(), newAppsStatusCmd(), newAppsLaneCmd())
 	return cmd
 }
 
@@ -468,19 +469,32 @@ func appsPrintOn(cmd *cobra.Command, o appsOnOptions, dashURL, httpAddr string, 
 }
 
 // printAppsNextSteps prints one row per SDK from the catalog (plan 3.9):
-// the install line and the snippet up to its init call.
+// the snippet up to its init call, after the SDK's setup command for a
+// language that has one (setup installs the SDK, so it takes the install
+// line's place; AI Apps SDK quickstart plan 3.5), else after its install
+// line.
 func printAppsNextSteps(out io.Writer) {
 	rows, err := sdkcatalog.All()
 	if err == nil && len(rows) > 0 {
-		fmt.Fprintln(out, "\nSend a trace from your app:")
-		for _, r := range rows {
-			fmt.Fprintf(out, "  %-11s %s\n", r.Label, r.Install())
-			for _, l := range snippetHead(r.Snippet) {
-				fmt.Fprintf(out, "  %-11s %s\n", "", l)
-			}
-		}
+		printSDKNextSteps(out, rows)
 	}
 	fmt.Fprintf(out, "More: %s\n", appsDocsURL)
+}
+
+// printSDKNextSteps is printAppsNextSteps' rows: per SDK the setup command
+// (or the install line), then the init line.
+func printSDKNextSteps(out io.Writer, rows []sdkcatalog.SDK) {
+	fmt.Fprintln(out, "\nSend a trace from your app:")
+	for _, r := range rows {
+		first := r.Install()
+		if r.Setup != "" {
+			first = r.Setup
+		}
+		fmt.Fprintf(out, "  %-11s %s\n", r.Label, first)
+		for _, l := range snippetHead(r.Snippet) {
+			fmt.Fprintf(out, "  %-11s %s\n", "", l)
+		}
+	}
 }
 
 // snippetHead is a snippet's non-blank lines up to and including the first

@@ -56,12 +56,12 @@ func Sessions() vendorapi.Driver {
 
 func buildSessions(p vendorapi.Params, _ vendorapi.Window, cursor string) (vendorapi.Request, error) {
 	if cursor != "" {
-		return vendorapi.Request{}, drift(SurfaceSessions, "the session list is not paged")
+		return vendorapi.Request{}, vendorapi.Drift(SurfaceSessions, "the session list is not paged")
 	}
 	q := map[string][]string{}
 	if org := p[ParamOrganizationID]; org != "" {
 		if !ValidID(org) {
-			return vendorapi.Request{}, drift(SurfaceSessions, "organization id is not an id")
+			return vendorapi.Request{}, vendorapi.Drift(SurfaceSessions, "organization id is not an id")
 		}
 		q["organizationId"] = []string{org}
 	}
@@ -108,45 +108,45 @@ func parseSessions(r vendorapi.Response) (vendorapi.Page, error) {
 		return vendorapi.Page{}, err
 	}
 	var env envelope
-	if err := decode(r.Body, &env); err != nil {
-		return vendorapi.Page{}, drift(SurfaceSessions, "body does not decode as the {data} envelope")
+	if err := vendorapi.DecodeNumbers(r.Body, &env); err != nil {
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "body does not decode as the {data} envelope")
 	}
 	if env.Data == nil {
-		return vendorapi.Page{}, drift(SurfaceSessions, "required field data is missing")
+		return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "required field data is missing")
 	}
 	var recs []record
 	if !isNull(env.Data) {
-		if err := decode(env.Data, &recs); err != nil {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data is not a list of session records")
+		if err := vendorapi.DecodeNumbers(env.Data, &recs); err != nil {
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data is not a list of session records")
 		}
 	}
 	out := vendorapi.Page{SourceRecords: len(recs)}
 	seen := map[string]bool{}
 	for i, rec := range recs {
-		id := str(rec.ID)
+		id := vendorapi.Str(rec.ID)
 		if !ValidID(id) {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d].id is missing or not an id", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d].id is missing or not an id", i)
 		}
 		if seen[id] {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d] repeats a session", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d] repeats a session", i)
 		}
 		seen[id] = true
-		if str(rec.Status) == "" {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d].status is missing", i)
+		if vendorapi.Str(rec.Status) == "" {
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d].status is missing", i)
 		}
-		created, ok := isoTime(str(rec.CreatedAt))
+		created, ok := isoTime(vendorapi.Str(rec.CreatedAt))
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d].createdAt is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d].createdAt is not an ISO timestamp", i)
 		}
-		updated, ok := isoTime(str(rec.UpdatedAt))
+		updated, ok := isoTime(vendorapi.Str(rec.UpdatedAt))
 		if !ok {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d].updatedAt is not an ISO timestamp", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d].updatedAt is not an ISO timestamp", i)
 		}
 		body := map[string]string{
 			"created_at": created.Format(time.RFC3339), "updated_at": updated.Format(time.RFC3339),
 		}
 		if !putTime(body, "last_activity_at", rec.LastActivityAt) || !putTime(body, "expired_at", rec.ExpiredAt) {
-			return vendorapi.Page{}, drift(SurfaceSessions, "data[%d] has a timestamp that is not ISO", i)
+			return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d] has a timestamp that is not ISO", i)
 		}
 		fields := []field{{"status", rec.Status}, {"sandbox_type", rec.SandboxType}}
 		if rc := rec.RepoContext; rc != nil {
@@ -164,7 +164,7 @@ func parseSessions(r vendorapi.Response) (vendorapi.Page, error) {
 		}
 		for _, f := range fields {
 			if !putShort(body, f.key, f.v) {
-				return vendorapi.Page{}, drift(SurfaceSessions, "data[%d].%s is over-long", i, f.key)
+				return vendorapi.Page{}, vendorapi.Drift(SurfaceSessions, "data[%d].%s is over-long", i, f.key)
 			}
 		}
 		out.Snapshots = append(out.Snapshots, vendorapi.VendorSnapshot{Class: SessionClass, Subject: id, Body: body})

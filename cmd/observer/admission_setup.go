@@ -39,6 +39,9 @@ type admissionSetupChoices struct {
 	JudgeModel     string
 	JudgeAPIKeyEnv string
 	SetJudge       bool
+	// JudgeUseOrgRelay sends the judgement to the organization's admission
+	// judge (use_org_relay), offered when the machine is enrolled.
+	JudgeUseOrgRelay bool
 	// AdoptTemplates lists starter-template keys to write; Purpose seeds
 	// valid_use_case, DeniedTopics seeds denied_topics.
 	AdoptTemplates []string
@@ -70,6 +73,7 @@ func applyAdmissionSetup(cfg config.Config, ch admissionSetupChoices) config.Con
 		cfg.Observability.Admission.Judge.BaseURL = ch.JudgeBaseURL
 		cfg.Observability.Admission.Judge.Model = ch.JudgeModel
 		cfg.Observability.Admission.Judge.APIKeyEnv = ch.JudgeAPIKeyEnv
+		cfg.Observability.Admission.Judge.UseOrgRelay = ch.JudgeUseOrgRelay
 	}
 	byID := map[string]int{}
 	for i, c := range cfg.Observability.Admission.Criterion {
@@ -360,18 +364,30 @@ func collectAdmissionChoices(ctx context.Context, p *setupPrompter, cfg config.C
 // collectJudge gathers the judge base_url/model/api_key_env via a numbered
 // hosting menu.
 func collectJudge(p *setupPrompter, cfg config.Config, local []localModelServer, ch *admissionSetupChoices) error {
-	idx, err := p.choose("choose:", []string{
+	options := []string{
 		"local model server (loopback - no egress, no key)",
 		"hosted provider (OpenAI-compatible - opt-in egress, api_key_env)",
 		"aggregator (OpenRouter - opt-in egress, api_key_env)",
 		"private endpoint (your VPC - opt-in egress, api_key_env)",
-	}, 1)
+	}
+	// Enrolled with an organization: offer its admission judge (the org
+	// relay; hosted AI gateway plan section 4 item 3). The prompt goes to
+	// the org server, which judges with the org's own provider.
+	if setupOrgEnrolled(cfg) {
+		options = append(options, "use my organization's judge (org relay - the org's admission judge, no key here)")
+	}
+	idx, err := p.choose("choose:", options, 1)
 	if err != nil {
 		return err
 	}
 	pick := strconv.Itoa(idx + 1)
 	ch.SetJudge = true
+	ch.JudgeUseOrgRelay = false
 	switch pick {
+	case "5":
+		ch.JudgeBaseURL, ch.JudgeModel, ch.JudgeAPIKeyEnv = "", "", ""
+		ch.JudgeUseOrgRelay = true
+		fmt.Fprintln(p.out, "  note: the request text goes to your organization's server, which runs its admission judge.")
 	case "1":
 		base := "http://127.0.0.1:11434/v1"
 		if len(local) > 0 {
@@ -429,6 +445,13 @@ func collectJudge(p *setupPrompter, cfg config.Config, local []localModelServer,
 	return nil
 }
 
+// setupOrgEnrolled reports whether the machine is enrolled with an
+// organization ([org_client] enabled with a server): the setup then offers
+// the org's admission judge.
+func setupOrgEnrolled(cfg config.Config) bool {
+	return cfg.OrgClient.Enabled && strings.TrimSpace(cfg.OrgClient.OrgServerURL) != ""
+}
+
 // printAdmissionSummary prints the resolved config's admission posture + the
 // exact next commands.
 func printAdmissionSummary(out io.Writer, cfg config.Config) {
@@ -450,6 +473,9 @@ func printAdmissionSummary(out io.Writer, cfg config.Config) {
 // "hosting is derived from base_url" note).
 func judgeSetupHostingLabel(cfg config.Config) string {
 	j := cfg.Observability.Admission.Judge
+	if j.UseOrgRelay || (j.Model == "" && cfg.Observability.Judge.UseOrgRelay) {
+		return "org_relay"
+	}
 	if j.Model == "" {
 		j = cfg.Observability.Judge
 	}

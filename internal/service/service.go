@@ -1,7 +1,7 @@
-// Package service renders the systemd unit (and, in launchd.go, the
-// launchd LaunchAgent) that supervises `observer start` and builds the
+// service.go renders the systemd unit (launchd.go renders the launchd
+// LaunchAgent) that supervises `observer start` and builds the
 // systemctl/journalctl/launchctl argv that the `observer service`
-// command runs.
+// command runs. The package comment is in doc.go.
 //
 // It is a pure-logic package per the CLAUDE.md module rules: string
 // rendering + argv construction only — no exec, no file I/O, no
@@ -9,6 +9,7 @@
 // (cmd/observer/service.go) performs systemd detection, unit-file
 // writes, and process execution against these results, so the
 // rendering and command-shape logic stays unit-testable in isolation.
+
 package service
 
 import (
@@ -85,6 +86,14 @@ func Description(runs []string) string {
 	return "SuperBased Observer (" + strings.Join(runs, " + ") + ")"
 }
 
+// DocumentationURL is the unit's Documentation= value, the same one the
+// reference unit deploy/supervisor/observer.service names.
+const DocumentationURL = "https://superbased.app/docs"
+
+// StopTimeout is the unit's TimeoutStopSec= value: how long systemd waits for
+// the daemon's drain before it sends SIGKILL (the reference unit's 120s).
+const StopTimeout = "120s"
+
 // DefaultPath is systemd's own manager default and the fallback used when
 // UnitOptions.Path is empty. It has no ~/.local/bin, no npm global-prefix
 // bin dir, and no version-manager shims, so a daemon started under it
@@ -109,7 +118,14 @@ func RenderUnit(opts UnitOptions) string {
 	var b strings.Builder
 	b.WriteString("[Unit]\n")
 	b.WriteString("Description=" + Description(opts.Runs) + "\n")
-	b.WriteString("After=network.target\n\n")
+	// The reference unit's ordering (deploy/supervisor/observer.service,
+	// INFRA-01): start once the network is up, so the first org push and
+	// pricing fetch do not fail at boot. A user manager has no
+	// network-online.target; there both lines are a no-op, as is the
+	// network.target this unit named before.
+	b.WriteString("Documentation=" + DocumentationURL + "\n")
+	b.WriteString("After=network-online.target\n")
+	b.WriteString("Wants=network-online.target\n\n")
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=simple\n")
 	b.WriteString("ExecStart=" + execStart + "\n")
@@ -130,6 +146,10 @@ func RenderUnit(opts UnitOptions) string {
 	// and restarts the restored binary.
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=3\n")
+	// Time for the daemon to drain in-flight proxied requests when systemd
+	// itself stops it (the update path drains on its own); systemd's
+	// default of 90s is shorter than the reference unit's 120s.
+	b.WriteString("TimeoutStopSec=" + StopTimeout + "\n")
 	path := opts.Path
 	if path == "" {
 		path = DefaultPath

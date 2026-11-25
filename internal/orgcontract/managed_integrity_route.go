@@ -72,10 +72,6 @@ func validUnroutedSurfaceLabel(label string) bool {
 	return ok && unroutedSurfaceTools[tool] && unroutedSurfaceKinds[kind]
 }
 
-// UnroutedSurfaceTools returns the closed tool half of the UnroutedSurfaces
-// vocabulary, sorted, for the registry pin test.
-func UnroutedSurfaceTools() []string { return sortedSet(unroutedSurfaceTools) }
-
 // UnroutedSurfaceKinds returns the closed surface-kind half, sorted.
 func UnroutedSurfaceKinds() []string { return sortedSet(unroutedSurfaceKinds) }
 

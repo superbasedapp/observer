@@ -679,7 +679,7 @@ func (s *server) readLoop(fc *frameConn, sess Session) {
 	}
 }
 
-// The attach endpoint's creation, naming and dial live behind the Transport
-// seam (transport.go + transport_{unix,windows,other}.go): ListenSocket, Dial,
-// Endpoint and ErrSocketLiveDaemon are defined there, so everything in this
-// file stays transport-agnostic (net.Listener / net.Conn only).
+// The attach endpoint's creation, naming and dial live behind the
+// internal/localipc transport (ListenSocket, Endpoint, the transport's Dial
+// and ErrSocketLiveDaemon are defined there), so everything in this file
+// stays transport-agnostic (net.Listener / net.Conn only).

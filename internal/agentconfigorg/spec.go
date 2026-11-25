@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
@@ -80,7 +81,7 @@ func DecodeSpec(raw []byte) (Spec, error) {
 		return Spec{}, fmt.Errorf("agentconfigorg.DecodeSpec: trailing data after the document")
 	}
 	for i := range s.Settings {
-		s.Settings[i].Value = nativeNumbers(s.Settings[i].Value)
+		s.Settings[i].Value = cfgfmt.NativeNumbers(s.Settings[i].Value)
 	}
 	return s, nil
 }
@@ -104,7 +105,7 @@ func Normalize(s Spec) Spec {
 		} else if e.Placement == "" {
 			e.Placement = orgcontract.AgentConfigPlacementLocalOnly
 		}
-		e.Value = nativeNumbers(e.Value)
+		e.Value = cfgfmt.NativeNumbers(e.Value)
 	}
 	sort.SliceStable(out.Settings, func(i, j int) bool { return entryKey(out.Settings[i]) < entryKey(out.Settings[j]) })
 	out.Instructions = nil
@@ -150,28 +151,4 @@ func entryKey(e Entry) string {
 		target = "common:" + e.Common
 	}
 	return target + "\x00" + e.Project + "\x00" + e.Mode
-}
-
-// nativeNumbers turns json.Number into int64 / float64 recursively so a
-// value compares and re-encodes the way a vendor file holds it.
-func nativeNumbers(v any) any {
-	switch x := v.(type) {
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return i
-		}
-		f, _ := x.Float64()
-		return f
-	case []any:
-		for i := range x {
-			x[i] = nativeNumbers(x[i])
-		}
-		return x
-	case map[string]any:
-		for k := range x {
-			x[k] = nativeNumbers(x[k])
-		}
-		return x
-	}
-	return v
 }

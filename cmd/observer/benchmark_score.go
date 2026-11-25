@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/benchmark"
+	"github.com/marmutapp/superbased-observer/internal/procgroup"
 )
 
 // benchmark_score.go is the scoring adapter (plan §3.4). It owns the
@@ -90,7 +91,7 @@ func (s benchmarkScorer) scoreTestsPass(ctx context.Context, in scoreInput) ([]b
 
 	c := exec.CommandContext(runCtx, "sh", "-c", cmd)
 	c.Dir = in.WorkspaceDir
-	setProcGroup(c)
+	procgroup.Set(c)
 	c.Cancel = func() error { return killProcGroup(c) }
 	runErr := c.Run()
 

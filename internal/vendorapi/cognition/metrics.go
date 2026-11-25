@@ -80,11 +80,11 @@ type activeUsers struct {
 func parseMetricsActive(r vendorapi.Response) (vendorapi.Page, error) {
 	s := SurfaceMetricsActive
 	if r.Status != 200 {
-		return vendorapi.Page{}, drift(s, "status %d is not the documented 200", r.Status)
+		return vendorapi.Page{}, vendorapi.Drift(s, "status %d is not the documented 200", r.Status)
 	}
 	var rows []activeUsers
-	if err := decode(r.Body, &rows); err != nil || rows == nil {
-		return vendorapi.Page{}, drift(s, "body is not the documented array of active-user entries")
+	if err := vendorapi.DecodeNumbers(r.Body, &rows); err != nil || rows == nil {
+		return vendorapi.Page{}, vendorapi.Drift(s, "body is not the documented array of active-user entries")
 	}
 	page := vendorapi.Page{}
 	var prevEnd int64 = -1
@@ -92,18 +92,18 @@ func parseMetricsActive(r vendorapi.Response) (vendorapi.Page, error) {
 		start, ok1 := unixSeconds(e.Start)
 		end, ok2 := unixSeconds(e.End)
 		if !ok1 || !ok2 || !end.After(start) || end.Sub(start) > day {
-			return vendorapi.Page{}, drift(s, "[%d] is not a period of at most one day in Unix seconds", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "[%d] is not a period of at most one day in Unix seconds", i)
 		}
 		if start.Unix() < prevEnd {
-			return vendorapi.Page{}, drift(s, "[%d] overlaps or precedes the previous period", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "[%d] overlaps or precedes the previous period", i)
 		}
 		prevEnd = end.Unix()
 		if e.Active == nil {
-			return vendorapi.Page{}, drift(s, "[%d].active_users is missing", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "[%d].active_users is missing", i)
 		}
 		n, err := strconv.ParseInt(string(*e.Active), 10, 64)
 		if err != nil || n < 0 {
-			return vendorapi.Page{}, drift(s, "[%d].active_users is not a non-negative integer", i)
+			return vendorapi.Page{}, vendorapi.Drift(s, "[%d].active_users is not a non-negative integer", i)
 		}
 		page.Facts = append(page.Facts, vendorapi.FactRow{
 			IntervalStart: start, IntervalEnd: end, SourceTZ: "UTC", CoverageDomain: ConsumptionDomain,

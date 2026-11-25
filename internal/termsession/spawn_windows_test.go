@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // comspec is the absolute cmd.exe this file's probe children run through.
@@ -121,11 +123,17 @@ func waitExit(t *testing.T, p PTY, timeout time.Duration) int {
 // TestPTYSupportedWindows pins that a ConPTY-capable Windows host reports the
 // embedded terminal as available — cmd relies on this to WIRE the launch seam
 // (and show the "Launch here" button) on native Windows. On a pre-1809 host
-// (no CreatePseudoConsole) it would be false and the seam stays unwired; the
-// CI/dev hosts this runs on are modern, so we assert true here.
+// (no CreatePseudoConsole) it is false and the seam stays unwired, so the test
+// skips there; on Windows 10 1809 (build 17763) or later, where kernel32 ships
+// CreatePseudoConsole, it must report true.
 func TestPTYSupportedWindows(t *testing.T) {
+	const firstConPTYBuild = 17763 // Windows 10 1809
+	build := windows.RtlGetVersion().BuildNumber
+	if build < firstConPTYBuild {
+		t.Skipf("Windows build %d predates ConPTY (build %d); launch seam stays unwired by design", build, firstConPTYBuild)
+	}
 	if !PTYSupported() {
-		t.Skip("ConPTY not available on this Windows host (pre-1809); launch seam stays unwired by design")
+		t.Fatalf("PTYSupported() = false on Windows build %d, which ships ConPTY (build %d and later)", build, firstConPTYBuild)
 	}
 }
 

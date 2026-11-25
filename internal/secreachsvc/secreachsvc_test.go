@@ -15,23 +15,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secreach"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/fstree"
 )
-
-// writeTree writes files (slash paths relative to root) under a temp dir.
-func writeTree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for rel, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
-}
 
 func goFile(pkg string, imports ...string) string {
 	var b strings.Builder
@@ -48,7 +33,7 @@ func goFile(pkg string, imports ...string) string {
 // module with no Go files.
 func projectTree(t *testing.T) string {
 	t.Helper()
-	return writeTree(t, map[string]string{
+	return fstree.Write(t, map[string]string{
 		"go.mod":                       "module example.com/app\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/net v0.1.0 // indirect\n\tgolang.org/x/text v0.3.0\n)\n",
 		"go.sum":                       "golang.org/x/net v0.1.0 h1:x=\ngolang.org/x/net v0.1.0/go.mod h1:y=\ngithub.com/aws/sdk/service/s3 v1.0.0 h1:z=\n",
 		"main.go":                      goFile("main", "fmt", "golang.org/x/net/html"),
@@ -163,7 +148,7 @@ func TestScanGoImportsIncomplete(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			g, err := ScanGoImports(tc.ctx, writeTree(t, tc.files), tc.lim)
+			g, err := ScanGoImports(tc.ctx, fstree.Write(t, tc.files), tc.lim)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -190,8 +175,8 @@ func TestScanGoImportsRootErrors(t *testing.T) {
 }
 
 func TestScanGoImportsSkipsSymlinks(t *testing.T) {
-	outside := writeTree(t, map[string]string{"x/x.go": goFile("x", "example.com/outside")})
-	root := writeTree(t, map[string]string{"a.go": goFile("a", "fmt")})
+	outside := fstree.Write(t, map[string]string{"x/x.go": goFile("x", "example.com/outside")})
+	root := fstree.Write(t, map[string]string{"a.go": goFile("a", "fmt")})
 	if err := os.Symlink(filepath.Join(outside, "x"), filepath.Join(root, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
@@ -361,7 +346,7 @@ func (f *fakeCodeIntel) CodeIntelProjectImports(context.Context, string, string,
 }
 
 func TestTiersCodeIntelLadder(t *testing.T) {
-	root := writeTree(t, map[string]string{
+	root := fstree.Write(t, map[string]string{
 		"go.mod": "module example.com/app\n",
 		"a.go":   goFile("a", "fmt"),
 		"b.go":   goFile("a", "os"),
@@ -442,7 +427,7 @@ func TestTiersCodeIntelLadder(t *testing.T) {
 }
 
 func TestCache(t *testing.T) {
-	root := writeTree(t, map[string]string{"go.mod": "module m\n", "a.go": goFile("a", "fmt")})
+	root := fstree.Write(t, map[string]string{"go.mod": "module m\n", "a.go": goFile("a", "fmt")})
 	c := NewCache(time.Minute)
 	now := time.Unix(1000, 0)
 	c.now = func() time.Time { return now }
@@ -460,7 +445,7 @@ func TestCache(t *testing.T) {
 	}
 	// An incomplete list is kept for an eighth of the TTL only.
 	o.limits = Limits{MaxDirs: 1}
-	other := writeTree(t, map[string]string{"a/a.go": goFile("a", "fmt")})
+	other := fstree.Write(t, map[string]string{"a/a.go": goFile("a", "fmt")})
 	inc := c.get(context.Background(), o, other)
 	if inc == nil || inc.complete() {
 		t.Fatalf("want an incomplete list, got %+v", inc)

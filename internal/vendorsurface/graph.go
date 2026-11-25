@@ -61,26 +61,6 @@ var dimensionTable = []struct {
 	{ClassContent, Dimension{AxisArtifact, "Content", ""}},
 }
 
-// DimensionOf returns the orthogonal dimension of a reporting class.
-func DimensionOf(c DataClass) (Dimension, bool) {
-	for _, r := range dimensionTable {
-		if r.Class == c {
-			return r.Dim, true
-		}
-	}
-	return Dimension{}, false
-}
-
-// ReportingClass returns the reporting class a dimension rolls up to.
-func ReportingClass(d Dimension) (DataClass, bool) {
-	for _, r := range dimensionTable {
-		if r.Dim == d {
-			return r.Class, true
-		}
-	}
-	return "", false
-}
-
 // DataClasses returns the 21 reporting classes in plan order.
 func DataClasses() []DataClass {
 	return []DataClass{

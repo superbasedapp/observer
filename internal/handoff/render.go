@@ -1,7 +1,6 @@
 package handoff
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -57,9 +56,4 @@ func RenderMarkdown(d Doc) string {
 		fmt.Fprintf(&b, "\n## %s\n\n%s\n", s.Title, s.Body)
 	}
 	return b.String()
-}
-
-// RenderJSON renders the HandoverDoc for the MCP / hook lanes.
-func RenderJSON(d Doc) ([]byte, error) {
-	return json.MarshalIndent(d, "", "  ")
 }
